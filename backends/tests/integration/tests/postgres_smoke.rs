@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 40,
-        "all forty migrations under backends/migrations should be recorded as applied \
+        applied, 41,
+        "all forty-one migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -257,7 +257,17 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          the first render, and the next render mints one. The paired CHECK is \
          added AFTER that UPDATE, because it is validated against every \
          existing row and a token with no expiry is exactly the row it \
-         refuses.)"
+         refuses, \
+         and issue #91's 0042 invoices.amount_refunded, the gross counter a \
+         refund against a paid invoice moves (D5) -- with no DEFAULT, so \
+         every writer of the table names it, and with the over-refund guard \
+         refunded_at_most_paid, which is what makes the refund settlement \
+         transaction fail closed. FORTY-ONE FILES, NOT FORTY-TWO NUMBERS: \
+         0041 is taken by a branch that was in flight when this one was \
+         written and is absent from this tree, so the numbering has a \
+         one-wide gap. sqlx applies files in name order and records what it \
+         applied; it does not require the sequence to be dense, which is why \
+         this assertion counts ROWS and the sentence above says `files`.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2378,7 +2388,34 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// no index declaration, so a `CHECK` and an `INDEX` are invisible to the
 /// schema in one direction and visible to the live introspection in the
 /// other.
-const EXPECTED_DRIFT_CHANGES: u32 = 172;
+///
+/// **172 -> 173 on 2026-09-10** (issue #91, D5), by migration `0042`, and the
+/// breakdown is worth a line because two of that migration's three additions
+/// moved nothing:
+///
+///   * the **column** `invoices.amount_refunded` contributes **zero**. It is
+///     `BIGINT` with no DEFAULT and `model Invoice` declares it as a plain
+///     `amount_refunded Int`, so the two compare equal in both directions.
+///     That is what the migration's "no DEFAULT" paragraph buys and it is the
+///     same trade `rate_limit_windows.attempts` took: a column born matching
+///     its model costs this constant nothing. Had the ADD's backfill DEFAULT
+///     been left in place it would have been a permanent
+///     `column amount_refunded default value differs` line — migration
+///     `0033`'s problem, avoided by the `DROP DEFAULT` on the next line.
+///   * `refunded_at_most_paid` contributes **zero**, because it is
+///     multi-column and `cratestack migrate baseline` skips every
+///     multi-column CHECK in both directions — the same blindness the five
+///     `invoices` CHECKs `the_invoice_invariants_are_enforced_by_the_database_itself`
+///     exists to cover. It is the *load-bearing* half of this migration and
+///     the report cannot see it at all, which is exactly why that test
+///     writes the row it refuses.
+///   * `amount_refunded_non_negative` is the whole of the +1: single-column,
+///     hand-named, so it reports as one
+///     `[safe] CHECK ... exists in the live database but is not declared in
+///     the schema` line, exactly as its six siblings on this table already
+///     do. Declaring it with `@db_enforce` would make it worse rather than
+///     better, for the reason `EXPECTED_DRIFT_CHANGES` gives above.
+const EXPECTED_DRIFT_CHANGES: u32 = 173;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2433,6 +2470,10 @@ const EXPECTED_DRIFT_CHANGES: u32 = 172;
 /// One table for +5 changes — see `EXPECTED_DRIFT_CHANGES` for why that is
 /// the floor a modelled table can reach and not a sign this one is compared
 /// less than the others.
+/// **Still 24 after migration 0042 (2026-09-10)**, and that is the assertion
+/// that makes that migration's +1 mean what it says: `invoices` was already
+/// on this list as a declared-and-differing table and stays exactly one entry
+/// on it. A line arrived; no table did.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -2493,6 +2534,11 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 /// thing after the fact, and a table born with a model does not repeat that.
 /// It is the third table in this schema (after 0035's three and
 /// `invoice_items`) to cost this constant nothing at all.
+/// **Still 19 after migration 0042 (2026-09-10)**: `invoices.amount_refunded`
+/// is `BIGINT` and not `INT`, deliberately and for `rate_limit_windows.attempts`'
+/// reason, so it is *compared* rather than excluded — which is what lets
+/// `EXPECTED_DRIFT_CHANGES` say the column itself drifted by zero instead of
+/// saying nothing about it at all.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -2873,16 +2919,26 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // rather than a `GENERATED` one — which cratestack has no
             // representation for.
             ("invoice_items", "amount_is_the_product"),
-            // S4b's four invoice invariants. Together they are what makes
+            // S4b's four invoice invariants, plus migration `0042`'s fifth.
+            // Together they are what makes
             // "draft -> open -> paid | void | uncollectible" a property of
-            // the database rather than of four call sites remembering, and
+            // the database rather than of five call sites remembering, and
             // every one of them is invisible to the drift report — which is
-            // why the four cases below exercise them against a real Postgres
+            // why the cases below exercise them against a real Postgres
             // by trying to store the row each one refuses.
             ("invoices", "amounts_add_up"),
             ("invoices", "number_is_assigned_at_finalize"),
             ("invoices", "only_a_live_invoice_has_an_intent"),
             ("invoices", "paid_means_nothing_remaining"),
+            // Migration `0042`'s over-refund guard (issue #91, D5):
+            // `amount_refunded <= amount_paid`. `payment_intents`'
+            // `no_over_refund` applied to the document rather than to the
+            // intent, and invisible here for exactly the same reason — which
+            // is why it is the CHECK
+            // `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused`
+            // reaches through the settlement rather than one this report
+            // could ever notice going missing.
+            ("invoices", "refunded_at_most_paid"),
             ("jobs", "lock_is_paired"),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),

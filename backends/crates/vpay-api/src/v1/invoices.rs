@@ -788,9 +788,12 @@ async fn transition_once(
 /// means creating a **hosted checkout session**, and migration `0028`'s
 /// `urls_match_ui_mode` requires both URLs on one.
 ///
-/// They are required rather than defaulted, because vpay does not know where
-/// a merchant's "thank you" page is and inventing one would send a paying
-/// customer to a `404`. `docs/flows/invoices.md` records the divergence.
+/// They may be **omitted** when the merchant registration carries
+/// `merchant_clients[].invoices.success_url` / `.cancel_url` (issue #91, D2),
+/// and a request that sends its own still wins. vpay never invents one:
+/// a merchant that configured neither and sent neither gets a `400` naming
+/// both, because guessing a "thank you" page would send a paying customer to
+/// a `404`. `docs/flows/invoices.md` records the divergence and the default.
 ///
 /// # A second `pay` is refused
 ///
@@ -844,8 +847,7 @@ async fn pay_once(
         .ok_or_else(|| not_found(id))?;
 
     let params: PayParams = post.form().await?;
-    let success_url = required_forward_url(params.success_url, "success_url", config)?;
-    let cancel_url = required_forward_url(params.cancel_url, "cancel_url", config)?;
+    let (success_url, cancel_url) = forward_urls(&params, config, scope.merchant_id())?;
 
     if current.status != InvoiceStatus::Open.as_wire_str() {
         return Err(not_open(&current));
@@ -1333,34 +1335,118 @@ pub(crate) fn not_found(id: &str) -> ApiError {
     }
 }
 
-/// One of `pay`'s two forwarding URLs, required and validated by exactly the
-/// rules `POST /v1/checkout/sessions` applies to its own.
+/// `pay`'s two forwarding URLs: whatever the request sent, else whatever this
+/// merchant configured, validated by exactly the rules
+/// `POST /v1/checkout/sessions` applies to its own.
+///
+/// # Request-then-default, in that order
+///
+/// A request that carries a URL **wins** over the configured one (D2). A
+/// merchant may legitimately want one bill to land somewhere else — a
+/// one-off, a campaign page — and a configured default that could not be
+/// overridden would make that impossible without an operator editing the
+/// deployment's YAML.
+///
+/// It also makes the key safe to add to a running deployment: every request
+/// that worked before this existed carries both URLs and behaves identically.
+///
+/// # Both are validated, whichever they came from
 ///
 /// Through [`super::checkout_sessions::checked_forward_url`] rather than a
-/// copy: the scheme allow-list, the livemode `https` rule and the length
-/// bound are properties of *where a payer's browser may be sent*, not of
-/// which route asked, and a second copy is how one of the two surfaces ends
-/// up accepting `javascript:`.
+/// copy, and on **both** paths rather than only on the request's: the scheme
+/// allow-list, the livemode `https` rule and the length bound are properties
+/// of *where a payer's browser may be sent*, not of which route asked or of
+/// which document the value came out of. `vpay_config`'s
+/// `validate_invoice_urls` refuses a malformed configured value at boot; this
+/// is what stops the two rule sets from ever diverging, and a second copy is
+/// how one of the surfaces ends up accepting `javascript:`.
+///
+/// # Missing values are named together
+///
+/// A merchant that configured neither and sent neither gets **one** `400`
+/// naming both, rather than one about `success_url` followed — after they fix
+/// it — by another about `cancel_url`. Two round trips to learn two halves of
+/// one mistake is the shape this repository's error messages avoid.
+///
+/// The message is kept under `ApiError`'s 200-character ceiling on purpose:
+/// past it the envelope truncates with an ellipsis, and the first casualty
+/// would be the sentence that says a merchant may configure these once
+/// instead of sending them every time — the whole point of D2.
 ///
 /// # Errors
 ///
-/// [`ApiError::invalid_param`] naming the parameter.
-fn required_forward_url(
-    raw: Option<String>,
-    param: &'static str,
+/// [`ApiError::invalid_param`] naming every parameter that is absent, or the
+/// one that is malformed.
+fn forward_urls(
+    params: &PayParams,
     config: &ResourceConfig,
-) -> Result<String, ApiError> {
-    let url = present(raw).ok_or_else(|| {
-        ApiError::invalid_param(
-            param,
+    merchant_id: &str,
+) -> Result<(String, String), ApiError> {
+    let defaults = config.invoice_url_defaults(merchant_id);
+
+    let resolve = |sent: Option<String>, configured: Option<&String>| {
+        present(sent).or_else(|| present(configured.cloned()))
+    };
+    let success_url = resolve(
+        params.success_url.clone(),
+        defaults.and_then(|urls| urls.success_url.as_ref()),
+    );
+    let cancel_url = resolve(
+        params.cancel_url.clone(),
+        defaults.and_then(|urls| urls.cancel_url.as_ref()),
+    );
+
+    let missing: Vec<&'static str> = [
+        ("success_url", success_url.is_none()),
+        ("cancel_url", cancel_url.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(param, absent)| absent.then_some(param))
+    .collect();
+
+    if let Some(first) = missing.first() {
+        let named = missing
+            .iter()
+            .map(|param| format!("`{param}`"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        return Err(ApiError::invalid_param(
+            *first,
             format!(
-                "`{param}` is required: paying an invoice creates a hosted checkout session, \
-                 and vpay does not know where your payer should be sent afterwards."
+                "{named} must be sent, or configured as `merchant_clients[].invoices`: paying \
+                 an invoice creates a hosted checkout session and vpay cannot guess where to \
+                 send your payer."
             ),
-        )
-    })?;
-    super::checkout_sessions::checked_forward_url(&url, param, config.livemode())?;
-    Ok(url)
+        ));
+    }
+
+    // `Vec::first` above proved both are `Some`; these two `ok_or_else` arms
+    // are unreachable and are spelled as a fallible resolve rather than an
+    // `expect` because `clippy.toml` denies `expect` outside tests, and
+    // because an unreachable branch that answers the honest refusal is
+    // cheaper than one that panics a request thread.
+    let success_url = success_url.ok_or_else(|| missing_url("success_url"))?;
+    let cancel_url = cancel_url.ok_or_else(|| missing_url("cancel_url"))?;
+
+    super::checkout_sessions::checked_forward_url(&success_url, "success_url", config.livemode())?;
+    super::checkout_sessions::checked_forward_url(&cancel_url, "cancel_url", config.livemode())?;
+    Ok((success_url, cancel_url))
+}
+
+/// The refusal for a forwarding URL that is neither sent nor configured.
+///
+/// Its own function because [`forward_urls`] produces it from two places —
+/// the message that names every absent parameter at once, and the
+/// unreachable arms that keep the resolve total.
+fn missing_url(param: &'static str) -> ApiError {
+    ApiError::invalid_param(
+        param,
+        format!(
+            "`{param}` must be sent, or configured as `merchant_clients[].invoices`: paying an \
+             invoice creates a hosted checkout session and vpay cannot guess where to send \
+             your payer."
+        ),
+    )
 }
 
 /// Blank is absent, on create and in a value position everywhere else —
@@ -1511,7 +1597,186 @@ fn metadata_value_too_long() -> ApiError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{METADATA_MAX_KEYS, parse_due_date, validated_metadata};
+    use super::{METADATA_MAX_KEYS, PayParams, forward_urls, parse_due_date, validated_metadata};
+    use crate::ResourceConfig;
+    use crate::test_fixtures::config_with_invoice_defaults;
+
+    const MERCHANT: &str = "acme-cameroon-tenant";
+
+    /// `forward_urls` over a `ResourceConfig` built from `config`.
+    fn resolve(
+        config: &vpay_config::Config,
+        success_url: Option<&str>,
+        cancel_url: Option<&str>,
+    ) -> Result<(String, String), crate::ApiError> {
+        let resource_config =
+            ResourceConfig::from_config(config).expect("the fixture projects onto the port");
+        forward_urls(
+            &PayParams {
+                success_url: success_url.map(str::to_owned),
+                cancel_url: cancel_url.map(str::to_owned),
+            },
+            &resource_config,
+            MERCHANT,
+        )
+    }
+
+    /// A **malformed URL on the request does not fall back to the configured
+    /// one.** It is refused, naming the parameter the caller sent.
+    ///
+    /// This is the shape of the bug D2 could have introduced and no delivered
+    /// case covered: `present(sent).or_else(|| present(configured))` resolves
+    /// the *request's* value whenever it is non-blank, so a
+    /// `success_url=javascript:alert(1)` reaches `checked_forward_url` and is
+    /// refused there — rather than being quietly replaced by the merchant's
+    /// configured page, which would turn a caller's mistake into a silent
+    /// redirect somewhere else and hide the mistake forever.
+    ///
+    /// The blank case is the deliberate exception and is asserted beside it:
+    /// `success_url=` is what a client templating an optional field emits,
+    /// and `present` treats it as absent, so the configured value wins.
+    #[test]
+    fn a_malformed_url_on_the_request_is_refused_rather_than_replaced_by_the_default() {
+        let config = config_with_invoice_defaults(
+            false,
+            Some("https://shop.acme.example/thanks"),
+            Some("https://shop.acme.example/basket"),
+        );
+
+        let error = resolve(&config, Some("javascript:alert(1)"), None)
+            .expect_err("a scheme a payer may not be sent to is refused");
+        assert_eq!(
+            error.param(),
+            Some("success_url"),
+            "the refusal names what the caller sent, not what the operator configured"
+        );
+
+        // Blank is absent — the one case where the configured value wins over
+        // something the request carried.
+        assert_eq!(
+            resolve(&config, Some("   "), None).expect("blank falls back"),
+            (
+                "https://shop.acme.example/thanks".to_owned(),
+                "https://shop.acme.example/basket".to_owned()
+            )
+        );
+    }
+
+    /// One configured and one sent resolve **independently**, and the `400`
+    /// names only what is genuinely absent.
+    #[test]
+    fn each_url_resolves_on_its_own_and_the_refusal_names_only_what_is_missing() {
+        let only_success = config_with_invoice_defaults(false, Some("https://a.example/ok"), None);
+        assert_eq!(
+            resolve(&only_success, None, Some("https://b.example/cancelled"))
+                .expect("one from the file, one from the request"),
+            (
+                "https://a.example/ok".to_owned(),
+                "https://b.example/cancelled".to_owned()
+            )
+        );
+
+        let error = resolve(&only_success, None, None).expect_err("cancel_url is nowhere");
+        assert_eq!(error.param(), Some("cancel_url"));
+        let message = format!("{error}");
+        assert!(
+            message.contains("`cancel_url`") && !message.contains("`success_url`"),
+            "a merchant that configured half is told about the other half only: {message}"
+        );
+    }
+
+    /// The refusal naming **both** parameters survives `ApiError`'s
+    /// 200-character ceiling — asserted on the **envelope**, not on `Display`.
+    ///
+    /// `bounded_message` truncates the public `error.message` at 200
+    /// characters and appends `…`. The clause that says these may be
+    /// configured once instead of sent every time is the last one in the
+    /// sentence, so it is the first casualty if the message ever grows — and
+    /// the whole point of D2 is what it says. `Display` carries a
+    /// 41-character `invalid request parameter …` prefix that never reaches a
+    /// caller, so this reads the JSON a merchant actually receives.
+    #[tokio::test]
+    async fn the_refusal_naming_both_urls_reaches_the_wire_untruncated() {
+        use axum::response::IntoResponse as _;
+
+        let error = resolve(&config_with_invoice_defaults(false, None, None), None, None)
+            .expect_err("neither configured nor sent");
+        let bytes = axum::body::to_bytes(error.into_response().into_body(), usize::MAX)
+            .await
+            .expect("reading the envelope succeeds");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("the envelope is JSON");
+        let message = envelope
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .expect("a 400 carries a message")
+            .to_owned();
+
+        assert!(
+            message.contains("`success_url`") && message.contains("`cancel_url`"),
+            "one refusal names both missing parameters: {message}"
+        );
+        assert!(
+            message.contains("`merchant_clients[].invoices`"),
+            "the clause that says a merchant may configure these once must survive: {message}"
+        );
+        assert!(
+            !message.contains('…'),
+            "the message is past the 200-character ceiling and lost its tail ({} characters): \
+             {message}",
+            message.chars().count()
+        );
+        assert_eq!(
+            envelope
+                .get("error")
+                .and_then(|error| error.get("param"))
+                .and_then(serde_json::Value::as_str),
+            Some("success_url"),
+            "`param` names the first absent one, so a client can still point at a field"
+        );
+    }
+
+    /// **A configured URL is validated on the request path too**, and
+    /// livemode is where that second check is visible.
+    ///
+    /// `vpay_config`'s `validate_invoice_urls` refuses `http://` under
+    /// `deployment.livemode` at boot, so a deployment carrying one never
+    /// starts and this belt can never fire in production. That is exactly why
+    /// it needs a test: the argument for keeping it is that a *configured*
+    /// value and a *passed* one must be admitted by one rule, and the cheapest
+    /// way to lose that is for someone to notice the boot check and delete the
+    /// request-time one as redundant.
+    ///
+    /// **The decisive mutation:** drop the two `checked_forward_url` calls in
+    /// `forward_urls` — or apply them only to the value the request carried —
+    /// and this case passes an `http://` page to a livemode payer.
+    #[test]
+    fn a_configured_url_is_held_to_the_livemode_https_rule_at_request_time_as_well() {
+        let livemode = config_with_invoice_defaults(
+            true,
+            Some("http://shop.acme.example/thanks"),
+            Some("https://shop.acme.example/basket"),
+        );
+        let error = resolve(&livemode, None, None)
+            .expect_err("a livemode payer is not forwarded over plaintext");
+        assert_eq!(error.param(), Some("success_url"));
+
+        // And the same pair is fine off livemode, so this is the https rule
+        // firing rather than the fixture being malformed.
+        assert!(
+            resolve(
+                &config_with_invoice_defaults(
+                    false,
+                    Some("http://shop.acme.example/thanks"),
+                    Some("https://shop.acme.example/basket"),
+                ),
+                None,
+                None
+            )
+            .is_ok()
+        );
+    }
 
     /// `due_date` is unix seconds, and the three ways it can be wrong each
     /// name the parameter rather than the body.

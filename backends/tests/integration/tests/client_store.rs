@@ -71,6 +71,9 @@ fn configured_merchant() -> MerchantClient {
         // browser, never a credential this store resolves.
         publishable_keys: Vec::new(),
         checkout_origins: Vec::new(),
+        // Nor is a forwarding URL: where a payer lands after paying an
+        // invoice is not a credential this store resolves.
+        invoices: vpay_config::InvoiceDefaults::default(),
     }
 }
 

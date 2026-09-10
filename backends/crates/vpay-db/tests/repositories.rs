@@ -5853,12 +5853,16 @@ async fn open_invoice_for(pool: &PgPool, invoice_id: &str, intent_id: &str) -> a
     .await
     .context("seeding the invoice's customer")?;
 
+    // `amount_refunded` is named, because migration `0042` gives the column
+    // no DEFAULT: an insert that omitted it is a `23502` rather than a
+    // silent zero. That is the tripwire the migration's header describes,
+    // and this fixture is one of the statements it is aimed at.
     sqlx::query(
         "INSERT INTO invoices \
             (id, merchant_id, livemode, customer_id, currency_code, status, number, \
-             amount_due, amount_paid, amount_remaining, metadata, payment_intent_id, \
-             finalized_at) \
-         VALUES ($1, 'merchant_a', false, $2, 'XAF', 'open', $3, 5000, 0, 5000, \
+             amount_due, amount_paid, amount_remaining, amount_refunded, metadata, \
+             payment_intent_id, finalized_at) \
+         VALUES ($1, 'merchant_a', false, $2, 'XAF', 'open', $3, 5000, 0, 5000, 0, \
                  '{}'::jsonb, $4, now())",
     )
     .bind(invoice_id)
@@ -5883,6 +5887,89 @@ async fn invoice_state(pool: &PgPool, id: &str) -> anyhow::Result<(String, i64, 
     .fetch_one(pool)
     .await
     .context("reading the invoice back")
+}
+
+/// One invoice's committed `amount_refunded` (migration `0042`).
+///
+/// Its own reader rather than a fourth member of [`invoice_state`]'s tuple:
+/// every existing caller of that helper asserts a three-tuple, and widening
+/// it would have edited assertions this change has nothing to do with —
+/// which is how a change starts touching cases it did not mean to.
+async fn invoice_amount_refunded(pool: &PgPool, id: &str) -> anyhow::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT amount_refunded FROM invoices WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .context("reading the invoice's refunded total back")
+}
+
+/// One refund's committed status.
+async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT status FROM refunds WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .context("reading the refund back")
+}
+
+/// A `pending` refund of `amount` against `intent_id`.
+///
+/// Written with a raw `INSERT`, exactly as
+/// `backends/tests/integration/tests/refunds.rs` writes its fixtures and for
+/// the same reason: **nothing in this repository creates a refund.**
+/// `POST /v1/refunds` is unrouted, `ProviderAdapter::refund` is
+/// `NotImplemented` on MTN and `Unsupported` on Orange, and `vpay_db::Refunds`
+/// deliberately exposes no `create` — a write path no shipping code calls is
+/// a feature this repository would be claiming it has (`AGENTS.md` rule 2).
+///
+/// What that costs, stated rather than hidden: the two cases below prove what
+/// the *settlement* does with a refund once one exists. They prove nothing
+/// about how it comes to exist, because that code does not exist.
+async fn pending_refund(
+    pool: &PgPool,
+    id: &str,
+    intent_id: &str,
+    amount: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
+         VALUES ($1, $2, $3, 'XAF', 'pending', '{}'::jsonb)",
+    )
+    .bind(id)
+    .bind(intent_id)
+    .bind(amount)
+    .execute(pool)
+    .await
+    .context("seeding a pending refund")?;
+    Ok(())
+}
+
+/// Pays `invoice_id` through the real settlement, so the refund cases below
+/// start from a `paid` invoice the shipping code produced rather than one a
+/// test wrote by hand.
+async fn settle_invoice(
+    repositories: &dyn Repositories,
+    charge_id: &str,
+    invoice_id: &str,
+    event_suffix: &str,
+) -> anyhow::Result<()> {
+    let intent_data = json!({ "object": "payment_intent" });
+    let invoice_data = json!({ "id": invoice_id, "object": "invoice", "status": "paid" });
+    let settled = repositories
+        .apply_succeeded(
+            charge_id,
+            None,
+            &format!("evt_intent_{event_suffix}"),
+            &intent_data,
+            Some(vpay_db::InvoicePaidEvent {
+                event_id: &format!("evt_invoice_{event_suffix}"),
+                data: &invoice_data,
+            }),
+        )
+        .await
+        .context("settling the charge that pays the invoice")?;
+    anyhow::ensure!(settled.is_some(), "the fixture charge must settle");
+    Ok(())
 }
 
 /// `attach_intent` is a compare-and-swap, and it is the enforcer — not the
@@ -6098,6 +6185,393 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
         event_count(&pool, "in_paid").await?,
         1,
         "a repeat settlement emits no second invoice.paid"
+    );
+
+    Ok(())
+}
+
+/// A refund settlement records the amount on the invoice the refunded intent
+/// paid, leaves the invoice `paid`, and emits nothing (issue #91, D5).
+///
+/// # What this is a claim about, and what it is not
+///
+/// It is a claim about `vpay_db::settlement`'s refund transaction and about
+/// migration `0042`'s column. It is **not** a claim that a merchant can
+/// refund anything: no rail can (`ProviderAdapter::refund` is
+/// `NotImplemented` on MTN and `Unsupported` on Orange), `POST /v1/refunds`
+/// is unrouted, and the `pending` row below is written by this suite because
+/// nothing else in the repository can write one. `docs/status.md` says so.
+///
+/// # The three properties
+///
+/// 1. `amount_refunded` moves and **nothing else does**: `status` is still
+///    `paid`, `amount_paid` is still the whole bill and `amount_remaining` is
+///    still `0`. That is the whole of D5 — a settled document must not start
+///    claiming the payer owes it again, because `amount_remaining` is the
+///    number `pay` mints an intent for.
+/// 2. `invoice.paid` is not re-emitted. The count of events against the
+///    invoice is still the one the payment wrote.
+/// 3. A second settlement of the same refund writes nothing: the
+///    compare-and-swap on `status = 'pending'` answers `None`, which is what
+///    an at-least-once retry has to get.
+///
+/// **The decisive mutation:** change the increment in
+/// `vpay_db::invoices::add_refund_for_intent_in_tx` from
+/// `amount_refunded = amount_refunded + $2` to `amount_refunded = $2` — the
+/// second-settlement assertion still passes (it writes nothing), but
+/// `two_refunds_against_one_invoice_add_up` below fails, which is why that
+/// case exists as well as this one.
+#[tokio::test]
+async fn a_refund_settlement_records_the_amount_and_leaves_the_invoice_paid() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_refunded",
+        "ch_refunded",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    open_invoice_for(&pool, "in_refunded", "pi_refunded").await?;
+    settle_invoice(
+        repositories.as_ref(),
+        "ch_refunded",
+        "in_refunded",
+        "refunded",
+    )
+    .await?;
+    assert_eq!(
+        invoice_state(&pool, "in_refunded").await?,
+        ("paid".to_owned(), 5000, 0),
+        "the fixture starts from a paid invoice"
+    );
+    let events_after_payment = event_count(&pool, "in_refunded").await?;
+
+    pending_refund(&pool, "re_partial", "pi_refunded", 2000).await?;
+
+    let settled = repositories
+        .apply_refund_succeeded("re_partial")
+        .await
+        .context("settling the refund must succeed")?;
+    let (refund, invoice) = settled.context("a pending refund settles")?;
+    assert_eq!(refund.amount, 2000);
+    assert_eq!(
+        invoice.as_ref().map(|row| row.id.clone()).as_deref(),
+        Some("in_refunded"),
+        "the statement finds the invoice through the intent it was paying"
+    );
+
+    assert_eq!(refund_status(&pool, "re_partial").await?, "succeeded");
+    assert_eq!(
+        invoice_state(&pool, "in_refunded").await?,
+        ("paid".to_owned(), 5000, 0),
+        "a refund moves NOTHING but the refunded total: a settled bill must never start \
+         claiming the payer owes it again"
+    );
+    assert_eq!(invoice_amount_refunded(&pool, "in_refunded").await?, 2000);
+    assert_eq!(
+        event_count(&pool, "in_refunded").await?,
+        events_after_payment,
+        "`invoice.paid` is not re-emitted: the invoice did not transition, and telling a \
+         merchant a second time that a bill was settled would be a lie about a transition \
+         that did not happen"
+    );
+
+    // A retry of the same refund. `None`, nothing written, no second
+    // increment — the answer an at-least-once worker has to get.
+    assert!(
+        repositories
+            .apply_refund_succeeded("re_partial")
+            .await?
+            .is_none(),
+        "an already-settled refund settles nothing"
+    );
+    assert_eq!(invoice_amount_refunded(&pool, "in_refunded").await?, 2000);
+
+    Ok(())
+}
+
+/// Two refunds against one invoice add up, and the second one that would take
+/// the total past what was collected is refused by the database — **with the
+/// refund left `pending`**.
+///
+/// # This is the abandon test for the refund transaction
+///
+/// The over-refund trips migration `0042`'s `refunded_at_most_paid` on the
+/// *second* statement of the transaction, after the refund row has already
+/// been flipped to `succeeded` inside it. The whole transaction rolls back,
+/// so the refund is still `pending` and a retry finds it exactly where it
+/// was.
+///
+/// **The decisive mutation:** move the `amount_refunded` write out of the
+/// settlement transaction — commit the refund flip first and update the
+/// invoice on the pool afterwards, which is the shape a worker hook would
+/// take. The over-refund then leaves the refund `succeeded` with the
+/// invoice's total unmoved, and the last two assertions below fail. That is
+/// the permanent inconsistency the transaction exists to prevent: an invoice
+/// has no poller, no sweep and no job that would ever notice.
+///
+/// **The second decisive mutation:** delete `refunded_at_most_paid` from
+/// migration `0042` — the over-refund commits, and the invoice reports more
+/// money given back than was ever taken.
+#[tokio::test]
+async fn two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    live_charge(
+        repositories.as_ref(),
+        "pi_twice",
+        "ch_twice",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    open_invoice_for(&pool, "in_twice", "pi_twice").await?;
+    settle_invoice(repositories.as_ref(), "ch_twice", "in_twice", "twice").await?;
+
+    pending_refund(&pool, "re_one", "pi_twice", 3000).await?;
+    pending_refund(&pool, "re_two", "pi_twice", 1500).await?;
+    // 3000 + 1500 + 1000 = 5500 against a 5000 invoice. The third is the one
+    // the CHECK has to stop.
+    pending_refund(&pool, "re_three", "pi_twice", 1000).await?;
+
+    assert!(
+        repositories
+            .apply_refund_succeeded("re_one")
+            .await?
+            .is_some()
+    );
+    assert!(
+        repositories
+            .apply_refund_succeeded("re_two")
+            .await?
+            .is_some()
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_twice").await?,
+        4500,
+        "the increment is an expression over the row's own column, so two refunds add up \
+         rather than the second overwriting the first"
+    );
+
+    let over = repositories.apply_refund_succeeded("re_three").await;
+    assert!(
+        over.is_err(),
+        "a refund past what was collected must fail closed, not be clamped: {over:?}"
+    );
+
+    assert_eq!(
+        refund_status(&pool, "re_three").await?,
+        "pending",
+        "the refund flip is INSIDE the transaction the invoice write aborted; a refund \
+         recorded as settled against an invoice that could not be updated is a permanent \
+         inconsistency nothing in vpay would ever notice"
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_twice").await?,
+        4500,
+        "and nothing of the refused refund reached the invoice either"
+    );
+
+    Ok(())
+}
+
+/// A refund against an intent that pays no invoice settles the refund and
+/// touches nothing else — the normal case, and the one that must not be an
+/// error.
+///
+/// Most intents have no invoice at all. `Ok(Some((refund, None)))` is what
+/// says so; an `Err`, or a refusal to settle, would make every refund on the
+/// ordinary payment path depend on an invoice existing.
+#[tokio::test]
+async fn a_refund_against_an_intent_with_no_invoice_settles_and_touches_nothing()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_plain", "XAF"))
+        .await?;
+    pending_refund(&pool, "re_plain", "pi_plain", 2500).await?;
+
+    let (refund, invoice) = repositories
+        .apply_refund_succeeded("re_plain")
+        .await?
+        .context("a pending refund settles whether or not it pays an invoice")?;
+    assert_eq!(refund.id, "re_plain");
+    assert!(
+        invoice.is_none(),
+        "no invoice is bound to this intent, and that is a normal answer rather than a refusal"
+    );
+    assert_eq!(refund_status(&pool, "re_plain").await?, "succeeded");
+
+    Ok(())
+}
+
+/// A refund against an invoice that is **not** `paid` moves the refund and
+/// leaves the document alone.
+///
+/// The compare-and-swap in `add_refund_for_intent_in_tx` is `status =
+/// 'paid'`, and this is what it refuses: a `void` document collected nothing,
+/// so `refunded_at_most_paid` would refuse the row anyway — the guard is what
+/// makes the answer "there is nothing to record here" rather than an error a
+/// retry would repeat forever.
+///
+/// **The decisive mutation:** drop `AND status = 'paid'` from that statement
+/// — the settlement fails with a CHECK violation instead of answering `None`,
+/// and the refund is stuck `pending` for good.
+#[tokio::test]
+async fn a_refund_against_an_unpaid_invoice_records_nothing_on_it() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_void", "XAF"))
+        .await?;
+    open_invoice_for(&pool, "in_void", "pi_void").await?;
+    sqlx::query("UPDATE invoices SET status = 'void', voided_at = now() WHERE id = 'in_void'")
+        .execute(&pool)
+        .await
+        .context("voiding the invoice")?;
+
+    pending_refund(&pool, "re_void", "pi_void", 1000).await?;
+    let (_, invoice) = repositories
+        .apply_refund_succeeded("re_void")
+        .await?
+        .context("the refund itself still settles")?;
+    assert!(
+        invoice.is_none(),
+        "a document that collected nothing has nothing to give back"
+    );
+    assert_eq!(refund_status(&pool, "re_void").await?, "succeeded");
+    assert_eq!(invoice_amount_refunded(&pool, "in_void").await?, 0);
+
+    Ok(())
+}
+
+/// **The concurrency claim, measured.** Two refunds settling *at the same
+/// time* against one invoice add up, and an over-refund is still refused —
+/// by the statement, against the other transaction's committed value.
+///
+/// # Why this case exists beside the sequential one
+///
+/// `add_refund_for_intent_in_tx`'s doc comment, migration `0042`'s header,
+/// `docs/reference/vpay-db.md` and `docs/flows/invoices.md` all make the same
+/// claim in the same words: "two refunds settling concurrently add up … the
+/// second blocks on the row lock and re-evaluates against the first's
+/// committed value". Every other refund case in this file settles one refund
+/// after another has returned, and a sequential case cannot tell a guard that
+/// holds under contention from one that has simply never been contended —
+/// which is `docs/plans/exp32-invoices-notes/opus-review.md`'s recorded
+/// lesson about wire tests with sequential calls. Until this case existed the
+/// claim was prose.
+///
+/// # The two pairs
+///
+/// * 3,000 and 1,500 against a 5,000 bill, `tokio::join!`ed: **both** commit
+///   and the committed total is 4,500. A lost update is the failure this
+///   rules out.
+/// * 3,000 and 3,000 against a second 5,000 bill: **exactly one** commits.
+///   The loser is refused by `refunded_at_most_paid` — evaluated against the
+///   winner's committed 3,000, which is only true because the increment is an
+///   expression over the row's own column — and is left `pending`, with its
+///   `succeeded` flip rolled back inside the same transaction.
+///
+/// **The decisive mutations.** Change the increment in
+/// `vpay_db::invoices::add_refund_for_intent_in_tx` to `amount_refunded = $2`
+/// and the first pair commits 1,500 or 3,000 instead of 4,500. Compute the
+/// new total in Rust from a `SELECT` earlier in the same transaction and the
+/// second pair commits 6,000 against a 5,000 bill, because both reads saw
+/// zero — the case the sequential one cannot fail on.
+#[tokio::test]
+async fn two_refunds_settling_concurrently_add_up_and_the_over_refund_still_loses()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // Two invoices, and their ids are deliberately different lengths:
+    // `open_invoice_for` derives the invoice number from `invoice_id.len()`,
+    // and two same-length ids under one merchant collide on
+    // `invoices_merchant_number_key` rather than proving anything about
+    // refunds.
+    for (intent, charge, invoice, suffix) in [
+        ("pi_race", "ch_race", "in_race", "race"),
+        ("pi_race_over", "ch_race_over", "in_race_over", "race_over"),
+    ] {
+        live_charge(
+            repositories.as_ref(),
+            intent,
+            charge,
+            "processing",
+            "submitted",
+        )
+        .await?;
+        open_invoice_for(&pool, invoice, intent).await?;
+        settle_invoice(repositories.as_ref(), charge, invoice, suffix).await?;
+        assert_eq!(
+            invoice_state(&pool, invoice).await?,
+            ("paid".to_owned(), 5000, 0),
+            "each pair starts from a bill the settlement really paid"
+        );
+    }
+
+    // Pair one: 3,000 + 1,500 = 4,500, which fits.
+    pending_refund(&pool, "re_race_a", "pi_race", 3000).await?;
+    pending_refund(&pool, "re_race_b", "pi_race", 1500).await?;
+    let (first, second) = tokio::join!(
+        repositories.apply_refund_succeeded("re_race_a"),
+        repositories.apply_refund_succeeded("re_race_b"),
+    );
+    assert!(
+        first.is_ok() && second.is_ok(),
+        "two refunds that fit must both commit even when they race: {first:?} {second:?}"
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_race").await?,
+        4500,
+        "the increment is an expression over the row's own column, so a concurrent pair adds \
+         up; a total read first would have lost one of the two"
+    );
+    assert_eq!(refund_status(&pool, "re_race_a").await?, "succeeded");
+    assert_eq!(refund_status(&pool, "re_race_b").await?, "succeeded");
+
+    // Pair two: 3,000 + 3,000 against 5,000. Exactly one may commit, and the
+    // one that does not must be refused by the database rather than clamped.
+    pending_refund(&pool, "re_race_c", "pi_race_over", 3000).await?;
+    pending_refund(&pool, "re_race_d", "pi_race_over", 3000).await?;
+    let (left, right) = tokio::join!(
+        repositories.apply_refund_succeeded("re_race_c"),
+        repositories.apply_refund_succeeded("re_race_d"),
+    );
+    let winners = usize::from(left.is_ok()) + usize::from(right.is_ok());
+    assert_eq!(
+        winners, 1,
+        "exactly one of two racing refunds that cannot both fit may commit: {left:?} {right:?}"
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_race_over").await?,
+        3000,
+        "the loser reached the invoice with nothing: `refunded_at_most_paid` was evaluated \
+         against the winner's COMMITTED value, which is the whole of the concurrency claim"
+    );
+    let settled = [
+        refund_status(&pool, "re_race_c").await?,
+        refund_status(&pool, "re_race_d").await?,
+    ];
+    assert_eq!(
+        settled
+            .iter()
+            .filter(|status| *status == "succeeded")
+            .count(),
+        1,
+        "one refund settled and one did not: {settled:?}"
+    );
+    assert_eq!(
+        settled.iter().filter(|status| *status == "pending").count(),
+        1,
+        "and the loser is still `pending` — its `succeeded` flip was rolled back with the \
+         invoice write it could not make, so a retry finds it exactly where it was: {settled:?}"
     );
 
     Ok(())

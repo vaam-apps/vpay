@@ -1582,9 +1582,9 @@ pub struct InvoiceStatusTransitions {
 /// zero-decimal, so `5000` means 5,000 FCFA and there is no division
 /// anywhere.
 ///
-/// # Eighteen keys, and the count is the tripwire
+/// # Nineteen keys, and the count is the tripwire
 ///
-/// `the_invoice_object_is_the_documented_eighteen_keys` below is what keeps
+/// `the_invoice_object_is_the_documented_nineteen_keys` below is what keeps
 /// `docs/api/README.md`'s listing honest, and it exists for the reason
 /// [`CustomerObject`]'s twin does: this struct is the `data.object` of all
 /// four `invoice.*` event types, so a nineteenth key is signed, delivered
@@ -1595,7 +1595,10 @@ pub struct InvoiceStatusTransitions {
 ///
 /// The README said *seventeen* from the day this object landed until the S4b
 /// review on 2026-09-07. The object was eighteen the whole time and no test
-/// of any name held the number.
+/// of any name held the number. It is **nineteen** since 2026-09-10, when
+/// migration `0042` added `amount_refunded` (issue #91, D5) — the count, the
+/// test's name and `docs/api/README.md` moved in the same commit, which is
+/// what the tripwire is for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct InvoiceObject {
@@ -1622,6 +1625,15 @@ pub struct InvoiceObject {
     /// `amount_due - amount_paid`, and the amount
     /// `POST /v1/invoices/{id}/pay` creates an intent for.
     pub amount_remaining: i64,
+    /// What has been given back out of [`Self::amount_paid`] — a **gross**
+    /// total that is not subtracted from it, so a refunded invoice is still
+    /// `paid` with [`Self::amount_remaining`] at `0` (D5; migration `0042`).
+    ///
+    /// `0` on every invoice in every deployment today: no rail can refund
+    /// (`docs/status.md`). Rendered anyway, and never omitted when zero,
+    /// because a key that appears only sometimes is a key a merchant's typed
+    /// client has to guess at.
+    pub amount_refunded: i64,
     /// Unix **seconds**, or `null`. **Advisory**: nothing in vpay acts on it
     /// — there is no dunning and no automatic transition.
     pub due_date: Option<i64>,
@@ -1693,6 +1705,7 @@ impl InvoiceObject {
             amount_due: row.amount_due,
             amount_paid: row.amount_paid,
             amount_remaining: row.amount_remaining,
+            amount_refunded: row.amount_refunded,
             due_date: row.due_date.map(OffsetDateTime::unix_timestamp),
             description: row.description.clone(),
             metadata: metadata_of(&row.metadata, "invoices")?,
@@ -2291,6 +2304,7 @@ mod tests {
             amount_due: 5000,
             amount_paid: 0,
             amount_remaining: 5000,
+            amount_refunded: 0,
             due_date: None,
             description: Some("September hosting".to_owned()),
             metadata: json!({ "order_id": "1234" }),
@@ -2331,7 +2345,9 @@ mod tests {
     /// # The count was wrong and nothing held it
     ///
     /// `docs/api/README.md` said **seventeen keys** from the day S4b landed
-    /// until the review on 2026-09-07. The object is eighteen, and — unlike
+    /// until the review on 2026-09-07. The object was eighteen then and is
+    /// **nineteen** since migration `0042` added `amount_refunded`, and —
+    /// unlike
     /// the customer's and the refund's, whose counts each name a test — no
     /// test of any name existed: adding a key to [`InvoiceObject`] and
     /// rendering it was caught by nothing in the repository. This is
@@ -2342,7 +2358,7 @@ mod tests {
     /// # Why the count is the assertion and not only the key list
     ///
     /// This object is the `data.object` of `invoice.created`,
-    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A nineteenth
+    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A twentieth
     /// key is signed, delivered at-least-once and stored in `events`
     /// **forever**. `InvoiceRow`'s `seq`, `merchant_id` and `updated_at` are
     /// each one field's inattention away from being there, so they are named.
@@ -2353,7 +2369,7 @@ mod tests {
     /// pointing at a route that exists, and `metadata` a map rather than a
     /// string.
     #[test]
-    fn the_invoice_object_is_the_documented_eighteen_keys() {
+    fn the_invoice_object_is_the_documented_nineteen_keys() {
         let rendered = serde_json::to_value(
             InvoiceObject::render(
                 &invoice_row(),
@@ -2375,6 +2391,7 @@ mod tests {
             "amount_due",
             "amount_paid",
             "amount_remaining",
+            "amount_refunded",
             "due_date",
             "description",
             "metadata",
@@ -2398,7 +2415,7 @@ mod tests {
 
         assert_eq!(
             object.len(),
-            18,
+            19,
             "an undocumented key was added to the invoice object: {object:?}"
         );
 
@@ -2414,6 +2431,7 @@ mod tests {
                 "amount_due": 5000,
                 "amount_paid": 0,
                 "amount_remaining": 5000,
+                "amount_refunded": 0,
                 "due_date": null,
                 "description": "September hosting",
                 "metadata": { "order_id": "1234" },
@@ -2444,6 +2462,47 @@ mod tests {
                 "livemode": false,
             })
         );
+    }
+
+    /// `amount_refunded` is rendered **from the row**, and a non-zero value
+    /// is what proves it.
+    ///
+    /// Every other assertion about this key — here, in both merchant SDKs'
+    /// fixtures, in the integration suite — reads `0`, which is also what
+    /// `InvoiceRow`'s zero value, a hard-coded literal in [`InvoiceObject::render`]
+    /// and `vpay_sdk::Invoice`'s `#[serde(default)]` all produce. Measured on
+    /// 2026-09-11: replacing `amount_refunded: row.amount_refunded` with
+    /// `amount_refunded: 0` in that renderer left all 342 cases in this crate
+    /// GREEN, and no case anywhere in the workspace reads the key off a wire
+    /// response at all. This is the case that fails.
+    ///
+    /// It is a *money* key: it tells a merchant how much of a bill they have
+    /// already given back, and a renderer that answered `0` regardless would
+    /// tell them they still hold money they do not.
+    #[test]
+    fn an_invoices_amount_refunded_is_rendered_from_the_row_and_not_from_a_constant() {
+        let mut row = invoice_row();
+        row.status = vpay_core::InvoiceStatus::Paid.as_wire_str().to_owned();
+        row.amount_paid = 5000;
+        row.amount_remaining = 0;
+        row.amount_refunded = 2500;
+
+        let rendered = serde_json::to_value(
+            InvoiceObject::render(&row, &[invoice_line_row()], None)
+                .expect("a paid, part-refunded row renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered.get("amount_refunded"),
+            Some(&json!(2500)),
+            "the wire value is the row's, not a constant: {rendered:?}"
+        );
+        // …and the three amounts beside it did not move, which is the whole
+        // of D5 on the wire as well as in the table.
+        assert_eq!(rendered.get("amount_paid"), Some(&json!(5000)));
+        assert_eq!(rendered.get("amount_remaining"), Some(&json!(0)));
+        assert_eq!(rendered.get("status"), Some(&json!("paid")));
     }
 
     /// A phone-only customer renders `null` for the two absent identifiers

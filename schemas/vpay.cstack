@@ -1727,6 +1727,13 @@ model Invoice {
   amount_due Int
   amount_paid Int
   amount_remaining Int
+  // Migration 0042 (issue #91, D5). Declared with no `@default(...)` because
+  // the live column has none — the migration adds it with a DEFAULT purely to
+  // backfill and drops the DEFAULT in the next statement, so this declaration
+  // and the database agree and the column contributes nothing to the drift
+  // report. A GROSS counter beside the three amounts above and not inside
+  // `amounts_add_up`; that migration's header says why.
+  amount_refunded Int
   due_date DateTime?
   description String? @length(min: 1, max: 1000)
   payment_intent_id String? @length(min: 1, max: 64)

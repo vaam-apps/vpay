@@ -2050,6 +2050,7 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
     assert_eq!(invoice.amount_due, 11_000);
     assert_eq!(invoice.amount_paid, 0);
     assert_eq!(invoice.amount_remaining, 11_000);
+    assert_eq!(invoice.amount_refunded, 0);
     assert_eq!(invoice.due_date, None);
     assert_eq!(invoice.description.as_deref(), Some("September hosting"));
     assert_eq!(
@@ -2081,6 +2082,46 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
         "customer=cus_1&currency=xaf&description=September%20hosting&due_date=1753401600\
          &metadata[order_id]=1234"
     );
+}
+
+/// `Invoice::amount_refunded` is read **off the wire**, and defaults only when
+/// the key is genuinely absent.
+///
+/// Both halves are needed and neither is covered by any other case in this
+/// crate. The field is `#[serde(default)]` (deliberately: a client of this
+/// version must keep decoding a server that predates migration `0042`), and
+/// every fixture carries it as `0` — which is exactly what the default
+/// produces. Measured on 2026-09-11: renaming the field's wire key to
+/// `amount_refunded_MUTANT` left all 165 cases in this crate GREEN. A non-zero
+/// value is the only thing that tells the two apart.
+///
+/// The tolerance half is a claim `docs/sdks/parity.md` makes in as many words
+/// and nothing tested: an object with no `amount_refunded` at all must decode
+/// rather than fail, and read `0`.
+#[test]
+fn an_invoices_amount_refunded_is_read_from_the_wire_and_defaults_only_when_absent() {
+    let mut carried = support::invoice_json("in_refunded");
+    carried["amount_refunded"] = serde_json::json!(2_500);
+    let invoice: vpay_sdk::Invoice =
+        serde_json::from_value(carried).expect("an invoice carrying a refunded total decodes");
+    assert_eq!(
+        invoice.amount_refunded, 2_500,
+        "the value comes off the wire; a renamed or misspelled key would read 0 here"
+    );
+    // Gross, on this side of the wire too: the three amounts beside it are
+    // untouched by a refund.
+    assert_eq!(invoice.amount_paid, 0);
+    assert_eq!(invoice.amount_remaining, 11_000);
+
+    let mut older = support::invoice_json("in_old");
+    older
+        .as_object_mut()
+        .expect("the fixture is an object")
+        .remove("amount_refunded")
+        .expect("the fixture carries the key to begin with");
+    let invoice: vpay_sdk::Invoice = serde_json::from_value(older)
+        .expect("a server that predates migration 0042 sends no such key, and must still decode");
+    assert_eq!(invoice.amount_refunded, 0);
 }
 
 /// `customer` and `currency` are the two required fields, and every unset one

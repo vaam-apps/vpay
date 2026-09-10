@@ -304,7 +304,20 @@ mod tests {
     ///
     /// All four interpolate crate constants only (`COLUMNS`,
     /// `LIVE_CHARGE_STATES`), which is the audit the sibling test performs.
-    const EXPECTED_ASSERT_SITES: usize = 56;
+    ///
+    /// **56 → 57 on 2026-09-10** (issue #91, D5), and this one really is a
+    /// single addition rather than a net: `invoices::add_refund_for_intent_in_tx`,
+    /// the statement that moves `amount_refunded` inside the refund
+    /// settlement's transaction. It interpolates `COLUMNS` and nothing else;
+    /// its three caller-supplied values — the intent id, the amount and the
+    /// instant — are `$1`, `$2` and `$3`. The other statement that landed with
+    /// it, `refunds::settle_in_tx`, is **not** here and that is the point of
+    /// counting: it builds no string at all, so it is an ordinary
+    /// `&'static str` and the compiler's own check is never switched off for
+    /// it. A new site is worth exactly this much scrutiny — the audit in
+    /// `docs/reference/vpay-db.md` § dynamic SQL strings and sqlx 0.9 was
+    /// re-read against both statements before this number moved.
+    const EXPECTED_ASSERT_SITES: usize = 57;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

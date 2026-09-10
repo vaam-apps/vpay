@@ -1330,6 +1330,47 @@ mod tests {
         assert_eq!(error.param(), Some("success_url"));
     }
 
+    /// This crate's half of the two-crate seam D2 created: **every shape
+    /// `vpay_config`'s `validate_invoice_urls` admits is admitted here too.**
+    ///
+    /// `merchant_clients[].invoices.success_url` / `.cancel_url` are validated
+    /// at boot by `vpay-config` and again here by [`checked_forward_url`],
+    /// because a route resolves a configured URL and a passed one into the
+    /// same variable and must not admit them by two different rules. The two
+    /// validators cannot be one function: `vpay-config` depends on no other
+    /// vpay crate by design, so the alternative to a duplicate rule is a
+    /// dependency edge that has deliberately never existed.
+    ///
+    /// The list below is the *same four values* as
+    /// `an_invoice_url_is_bounded_http_s_and_may_carry_a_query_or_a_fragment`
+    /// in `vpay_config::config`, and the last two are the ones that matter:
+    /// a query string and a fragment, which `validate_checkout_base_url`
+    /// refuses (vpay appends `/c/{id}` to *that* value) and which a final
+    /// forwarding destination legitimately carries. If this crate ever grew
+    /// the base URL's stricter rule, a merchant's configured
+    /// `https://shop.example/thanks?order=1234` would boot fine and then
+    /// `400` on every `pay` — and this is the test that says so.
+    #[test]
+    fn every_invoice_url_shape_the_config_admits_is_admitted_by_the_request_path() {
+        for admitted in [
+            "https://shop.example/thanks",
+            "http://localhost:3000/thanks",
+            "https://shop.example/thanks?order=1234",
+            "https://shop.example/thanks#receipt",
+        ] {
+            checked_forward_url(admitted, "success_url", false).unwrap_or_else(|error| {
+                panic!(
+                    "`vpay_config::validate_invoice_urls` admits {admitted} at boot, so a `pay` \
+                     that resolves it must not refuse it: {error}"
+                )
+            });
+        }
+
+        // And the other direction on the one value both refuse for the same
+        // reason, so "both accept everything" is not how this passes.
+        assert!(checked_forward_url("javascript:alert(1)", "success_url", false).is_err());
+    }
+
     /// The placeholder is a wire contract shared with a Next app and two
     /// SDKs that cannot import this constant.
     ///

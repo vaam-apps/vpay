@@ -26,21 +26,22 @@ invoice gets sent.
 
 ### Invoice — `in_…`
 
-| Field                                             | Meaning                                                           |
-| ------------------------------------------------- | ----------------------------------------------------------------- |
-| `id`                                              | `in_…`, minted before the row exists                              |
-| `customer`                                        | the `cus_…` this bills. **Required**                              |
-| `currency`                                        | lower-case ISO-4217; every line is in it                          |
-| `status`                                          | `draft` → `open` → `paid` \| `void` \| `uncollectible`            |
-| `number`                                          | `{prefix}-{000001}`, assigned at finalize, `null` while a draft   |
-| `amount_due` / `amount_paid` / `amount_remaining` | integer minor units ([money.md](money.md))                        |
-| `due_date`                                        | unix seconds, **advisory** — nothing in vpay reads it             |
-| `description`, `metadata`                         | the merchant's own                                                |
-| `payment_intent`                                  | the `pi_…` paying it, or `null`                                   |
-| `hosted_invoice_url`                              | the checkout session for that intent, or `null`                   |
-| `lines`                                           | every line, expanded, as a `list`                                 |
-| `status_transitions`                              | `finalized_at`, `paid_at`, `voided_at`, `marked_uncollectible_at` |
-| `created`, `livemode`                             | as everywhere else                                                |
+| Field                                             | Meaning                                                                            |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `id`                                              | `in_…`, minted before the row exists                                               |
+| `customer`                                        | the `cus_…` this bills. **Required**                                               |
+| `currency`                                        | lower-case ISO-4217; every line is in it                                           |
+| `status`                                          | `draft` → `open` → `paid` \| `void` \| `uncollectible`                             |
+| `number`                                          | `{prefix}-{000001}`, assigned at finalize, `null` while a draft                    |
+| `amount_due` / `amount_paid` / `amount_remaining` | integer minor units ([money.md](money.md))                                         |
+| `amount_refunded`                                 | how much of `amount_paid` has been given back — **gross**, see [Refunds](#refunds) |
+| `due_date`                                        | unix seconds, **advisory** — nothing in vpay reads it                              |
+| `description`, `metadata`                         | the merchant's own                                                                 |
+| `payment_intent`                                  | the `pi_…` paying it, or `null`                                                    |
+| `hosted_invoice_url`                              | the checkout session for that intent, or `null`                                    |
+| `lines`                                           | every line, expanded, as a `list`                                                  |
+| `status_transitions`                              | `finalized_at`, `paid_at`, `voided_at`, `marked_uncollectible_at`                  |
+| `created`, `livemode`                             | as everywhere else                                                                 |
 
 **`customer` is required, and a payment intent's is not.** An invoice is a
 bill _to somebody_: it carries a number a merchant quotes in a conversation,
@@ -201,9 +202,53 @@ Stripe's `pay` charges a payment method the merchant already has on file, so
 there is nowhere to send anybody. vpay has no stored payment methods on this
 market — a mobile-money payment is a payer approving a prompt on their own
 handset — so paying means creating a hosted session, and migration `0028`'s
-`urls_match_ui_mode` requires both URLs on one. They are **required** rather
-than defaulted, because vpay does not know where a merchant's "thank you" page
-is and inventing one would send a paying customer to a `404`.
+`urls_match_ui_mode` requires both URLs on one.
+
+**They may be configured per merchant instead of sent per request** (issue
+#91, D2, 2026-09-10). A registration may carry
+
+```yaml
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    invoices:
+      success_url: https://shop.acme.example/invoice-paid
+      cancel_url: https://shop.acme.example/invoice-cancelled
+```
+
+and then `POST /v1/invoices/{id}/pay` may omit both. The resolution order is
+**request, then configuration, then refuse**:
+
+| Sent on the request | Configured | Result                                              |
+| ------------------- | ---------- | --------------------------------------------------- |
+| both                | either     | the request's, always                               |
+| one                 | the other  | the request's for one, the configured for the other |
+| neither             | both       | the configured pair                                 |
+| neither             | neither    | one `400` naming **both** parameters                |
+
+A request that sends its own **wins**, because a merchant may legitimately
+want one bill to land somewhere else and a default that could not be
+overridden would need an operator to edit the deployment's YAML. It is also
+what makes the key safe to add to a running deployment: every request that
+worked before behaves identically after.
+
+vpay still never invents one. A merchant with neither configured nor passed
+gets a `400`, because guessing a "thank you" page would send a paying customer
+to a `404`.
+
+**Why an invoice has this and `POST /v1/checkout/sessions` does not.** An
+invoice is paid from a link in an e-mail, days after the merchant's process
+ran; a checkout session is created by that process, which already has the
+payer's context in hand. Repeating two constants on every monthly bill is two
+more strings to get wrong on every bill.
+
+**Configured values are validated at boot** — bounded, `http(s)`, a host, no
+embedded credentials, `https` under `deployment.livemode` — because a typo in
+a value whose whole job is to save every request from repeating it is a typo in
+every invoice that merchant ever raises. And they are validated **again** at
+request time by the same function a passed URL goes through, so one rule
+decides where a payer may be sent rather than two that can drift. See
+[../reference/vpay-config.md](../reference/vpay-config.md).
 
 ### When the intent succeeds
 
@@ -244,6 +289,79 @@ remaining is a row Postgres refuses.
 
 ---
 
+## Refunds
+
+**Decided 2026-09-10** (issue #91, D5; it was an open maintainer question from
+2026-09-07 until then).
+
+A refund against the intent that paid an invoice **leaves the invoice `paid`**
+and adds its amount to `amount_refunded`. There is no credit note object, no
+sixth status, and no second `invoice.paid`.
+
+| Column             | Before a 2,000 refund on a 5,000 bill | After    |
+| ------------------ | ------------------------------------- | -------- |
+| `status`           | `paid`                                | `paid`   |
+| `amount_due`       | 5000                                  | 5000     |
+| `amount_paid`      | 5000                                  | **5000** |
+| `amount_remaining` | 0                                     | **0**    |
+| `amount_refunded`  | 0                                     | **2000** |
+
+**`amount_refunded` is gross and sits beside the arithmetic, not inside it.**
+It is not subtracted from `amount_paid` and takes no part in `amounts_add_up`
+— exactly the shape `payment_intents.amount_refunded` has had since migration
+`0003`. The alternative (decrement `amount_paid`, let the difference land in
+`amount_remaining`, amend `paid_means_nothing_remaining` to tolerate it) makes
+a fully refunded invoice read `paid` with the whole bill _remaining_, and
+`amount_remaining` is the number `pay` mints an intent for and the number a
+merchant chases a payer with. Migration `0042`'s header carries the argument
+in full; it is a call a maintainer can reverse, and the two places to change
+are that migration and one statement.
+
+**Two guards, and only one of them is visible to any tool.**
+`amount_refunded_non_negative` refuses a rebate, which vpay has no concept of.
+`refunded_at_most_paid` (`amount_refunded <= amount_paid`) refuses giving back
+money nobody collected — including any refund at all against a `void` or
+`uncollectible` document, whose `amount_paid` is 0. It is multi-column and
+therefore invisible to `cratestack migrate baseline` in both directions, which
+is why
+`two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused` reaches
+it through the real settlement rather than trusting a drift report.
+
+**The write is in the refund's own settlement transaction.** The `refunds` row
+moves `pending` → `succeeded` and the invoice's total moves in the same commit
+(`vpay_db::Settlement::apply_refund_succeeded`). A second write afterwards
+would leave a window in which money is recorded as returned and the document
+still says the whole amount was kept — and an invoice has no poller, no sweep
+and no job that would ever notice. The increment is
+`amount_refunded = amount_refunded + $n`, an expression over the row's own
+column rather than a total read first, so two refunds settling concurrently
+add up and the over-refund is refused by the database rather than clamped.
+
+**`invoice.paid` is not re-emitted.** The invoice did not transition. Telling a
+merchant a second time that a bill was settled, because part of it came back,
+would be a lie about a transition that did not happen.
+
+### None of this is reachable today
+
+**No vpay rail can refund.** `mtn_momo::refund` is
+`ProviderError::NotImplemented` (refunds are MTN's Disbursements product, for
+which this deployment has never held a credential) and Orange Money answers
+`Unsupported` (its Web Payment product documents no refund API at all).
+`POST /v1/refunds` is unrouted and `vpay_db::Refunds` exposes no `create` —
+[../status.md](../status.md) carries all four. So **`amount_refunded` is `0`
+on every invoice in every deployment**, `apply_refund_succeeded` is called by
+no shipping binary, and the cases that prove it seed a `pending` refunds row
+with a raw `INSERT`, exactly as `backends/tests/integration/tests/refunds.rs`
+already does.
+
+What is built is the _database's_ answer and the transaction that writes it.
+What is not built is everything that would produce a refund in the first
+place. The decision was worth landing as a statement rather than a paragraph
+because the schema had already taken a position and a sentence in a document
+is not something a future writer trips over.
+
+---
+
 ## Events
 
 Four types, all Stripe's own spellings, all written **inside the transaction
@@ -275,16 +393,16 @@ rather than discovered.
 
 ## The surface
 
-| Route                                  | Methods                          | Notes                                                               |
-| -------------------------------------- | -------------------------------- | ------------------------------------------------------------------- |
-| `/v1/invoices`                         | `POST`, `GET`                    | list takes `customer`, `status`, and the standard cursor            |
-| `/v1/invoices/{id}`                    | `GET`, `POST`, `PATCH`, `DELETE` | `POST`/`PATCH` are one handler; both are draft-only, as is `DELETE` |
-| `/v1/invoices/{id}/finalize`           | `POST`                           |                                                                     |
-| `/v1/invoices/{id}/void`               | `POST`                           |                                                                     |
-| `/v1/invoices/{id}/mark_uncollectible` | `POST`                           |                                                                     |
-| `/v1/invoices/{id}/pay`                | `POST`                           | requires `success_url`, `cancel_url`                                |
-| `/v1/invoice_items`                    | `POST`                           | no collection `GET` — see below                                     |
-| `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE` | writes are draft-parent-only                                        |
+| Route                                  | Methods                          | Notes                                                                     |
+| -------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
+| `/v1/invoices`                         | `POST`, `GET`                    | list takes `customer`, `status`, and the standard cursor                  |
+| `/v1/invoices/{id}`                    | `GET`, `POST`, `PATCH`, `DELETE` | `POST`/`PATCH` are one handler; both are draft-only, as is `DELETE`       |
+| `/v1/invoices/{id}/finalize`           | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/void`               | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/mark_uncollectible` | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/pay`                | `POST`                           | `success_url`, `cancel_url` — sent, or from `merchant_clients[].invoices` |
+| `/v1/invoice_items`                    | `POST`                           | no collection `GET` — see below                                           |
+| `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE` | writes are draft-parent-only                                              |
 
 `PATCH` is mounted beside `POST` on both `{id}` paths. Stripe's API has no
 `PATCH` — a merchant's existing client, and the real `stripe` package, send
@@ -307,16 +425,18 @@ being an existence oracle.
 
 ## Where the code is
 
-| Concern           | File                                                                  |
-| ----------------- | --------------------------------------------------------------------- |
-| Schema            | `backends/migrations/0036_create-invoices.sql`                        |
-| Model             | `schemas/vpay.cstack`, `model Invoice` / `model InvoiceItem`          |
-| Repository        | `backends/crates/vpay-db/src/invoices.rs`                             |
-| Settlement hook   | `backends/crates/vpay-db/src/settlement.rs`, `flip_invoice`           |
-| API               | `backends/crates/vpay-api/src/v1/invoices.rs`, `.../invoice_items.rs` |
-| Wire objects      | `backends/crates/vpay-api/src/model.rs`, `InvoiceObject`              |
-| Worker projection | `backends/crates/vpay-worker/src/handlers.rs`, `invoice_snapshot`     |
-| Status type       | `backends/crates/vpay-core/src/state.rs`, `InvoiceStatus`             |
+| Concern                 | File                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| Schema                  | `backends/migrations/0036_create-invoices.sql`, `0042_invoices-amount-refunded.sql` |
+| Model                   | `schemas/vpay.cstack`, `model Invoice` / `model InvoiceItem`                        |
+| Repository              | `backends/crates/vpay-db/src/invoices.rs`                                           |
+| Settlement hook         | `backends/crates/vpay-db/src/settlement.rs`, `flip_invoice`                         |
+| Refund settlement       | `backends/crates/vpay-db/src/settlement.rs`, `apply_refund_succeeded`               |
+| Per-merchant `pay` URLs | `backends/crates/vpay-config/src/oauth.rs`, `InvoiceDefaults`                       |
+| API                     | `backends/crates/vpay-api/src/v1/invoices.rs`, `.../invoice_items.rs`               |
+| Wire objects            | `backends/crates/vpay-api/src/model.rs`, `InvoiceObject`                            |
+| Worker projection       | `backends/crates/vpay-worker/src/handlers.rs`, `invoice_snapshot`                   |
+| Status type             | `backends/crates/vpay-core/src/state.rs`, `InvoiceStatus`                           |
 
 `invoices` and `invoice_items` are the second and third vpay tables **born**
 with a `schemas/vpay.cstack` model. Two of the twelve repository methods run
@@ -336,21 +456,24 @@ pair. Migration 0032 had to rename `providers.flow`'s after the fact.
 
 **Built and proven against a real Postgres and the shipping router (2026-09-07,
 S4b, amended the same day by review).**
-`backends/tests/integration/tests/invoices.rs` is **fifteen** cases (twelve as
-delivered, plus three from the review: two concurrent `pay` requests attaching
-exactly one intent, a foreign list cursor, and the representable ceiling);
-`vpay-db`'s `tests/repositories.rs` adds **six** (the settlement transaction,
-the two compare-and-swaps an HTTP test cannot isolate, and — from the review —
-that the settlement flips only the invoice its own intent is bound to);
+`backends/tests/integration/tests/invoices.rs` is **sixteen** cases (twelve as
+delivered, three from the review — two concurrent `pay` requests attaching
+exactly one intent, a foreign list cursor, and the representable ceiling — and
+one from 2026-09-10 for D2's forwarding URLs);
+`vpay-db`'s `tests/repositories.rs` adds **ten** (the settlement transaction,
+the two compare-and-swaps an HTTP test cannot isolate, from the review that the
+settlement flips only the invoice its own intent is bound to, and from
+2026-09-10 four for the refund settlement — D5);
 `postgres_smoke.rs` pins the drift and the multi-column CHECK inventory;
 `vpay-db`'s own module adds three with no container; `vpay-api`'s `model`
-module pins the wire object's eighteen keys.
+module pins the wire object's **nineteen** keys.
 
 **The merchant SDKs caught up on 2026-09-08 (exp33).** `sdks/rust` adds
 sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
 `sdks/nodejs` seventeen in `src/client.test.ts` (207 in the package, 0
 skipped), asserting the exact bytes each of the thirteen methods puts on the
-wire and the decode of all eighteen keys. Both are stub-backed, deliberately:
+wire and the decode of all **nineteen** keys (eighteen until migration `0042`
+added `amount_refunded` on 2026-09-10). Both are stub-backed, deliberately:
 what proves the _server_ is `invoices.rs`, and what these prove is that a
 merchant's client sends what the server documents. **Since the exp33 review
 the same day, each SDK also has a live suite** — two cases in
@@ -432,17 +555,11 @@ green while a settlement paid an invoice it was never bound to.
   See [Paying](#paying): the number is in the intent's `description` and on
   the wire the page reads; the page renders the amount and the merchant name
   only.
-- **A refund does not move an invoice** (2026-09-07). Nothing in this
-  repository writes a `refunds` row yet — `POST /v1/refunds` is unrouted,
-  `mtn_momo::refund` is `NotImplemented` and Orange Money answers
-  `Unsupported` ([../status.md](../status.md)) — so a refunded paid invoice is
-  not a state this system can reach today. It is written down because that
-  will change and the answer is not obvious: `paid_means_nothing_remaining`
-  makes a `paid` invoice with anything remaining unstorable, so a refund
-  cannot simply decrement `amount_paid`, and Stripe's own answer is a credit
-  note, which vpay does not have. **Whether a refunded invoice stays `paid`
-  with a credit note beside it, or gains a sixth status, is a maintainer's
-  decision** and is deliberately not taken here.
+- ~~**A refund does not move an invoice** (2026-09-07)~~ **— decided
+  2026-09-10 (issue #91, D5); see [Refunds](#refunds).** The invoice stays
+  `paid` and gains `amount_refunded`. No credit note and no sixth status.
+  **No rail can still refund**, so the column is `0` in every deployment; what
+  changed is that the answer is now a statement rather than an open question.
 - **An invoice cannot be issued past `2^53 - 1` minor units** (2026-09-07,
   review). `POST /v1/invoices/{id}/finalize` answers `400` naming `invoice`
   above it, because `pay` mints its intent for `amount_remaining` without

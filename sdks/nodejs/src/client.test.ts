@@ -2554,6 +2554,10 @@ describe("invoices", () => {
     amount_due: 11000,
     amount_paid: 0,
     amount_remaining: 11000,
+    // Zero on every real invoice today (no vpay rail can refund), and spelled
+    // out anyway: `amount_refunded` is optional on the type, so a fixture that
+    // omitted it would read identically whether the server sent it or not.
+    amount_refunded: 0,
     due_date: null,
     description: "September hosting",
     metadata: { order_id: "1234" },
@@ -2602,7 +2606,7 @@ describe("invoices", () => {
       "customer=cus_1&currency=xaf&description=September%20hosting&due_date=1753401600&metadata[order_id]=1234",
     );
 
-    // Every one of the eighteen keys decodes, including the two that do not
+    // Every one of the nineteen keys decodes, including the two that do not
     // come from the row.
     expect(invoice.id).toBe("in_123");
     expect(invoice.object).toBe("invoice");
@@ -2613,6 +2617,7 @@ describe("invoices", () => {
     expect(invoice.amount_due).toBe(11000);
     expect(invoice.amount_paid).toBe(0);
     expect(invoice.amount_remaining).toBe(11000);
+    expect(invoice.amount_refunded).toBe(0);
     expect(invoice.due_date).toBeNull();
     expect(invoice.description).toBe("September hosting");
     expect(invoice.metadata).toEqual({ order_id: "1234" });

@@ -251,6 +251,42 @@ pub(crate) fn merchant_client_with(
         // `merchant_client_with_display_name` is how the one suite that
         // tests the configured half opts in.
         display_name: None,
+        // Neither forwarding URL configured, which is the registration a
+        // merchant that never pays an invoice through vpay has — and the one
+        // that makes `POST /v1/invoices/{id}/pay` with an empty body answer
+        // the `400` naming both parameters.
+        // `merchant_client_with_invoice_urls` is how a suite opts in.
+        invoices: vpay_config::InvoiceDefaults::default(),
+    }
+}
+
+/// The same again, with this merchant's default invoice forwarding URLs
+/// (issue #91, D2) — what `POST /v1/invoices/{id}/pay` falls back to when the
+/// request carries none.
+///
+/// Its own helper for [`merchant_client_with_display_name`]'s reason, and the
+/// same one: absent is the shape that exercises the refusal, so a suite has
+/// to say the word to get the configured branch, and both branches end up
+/// covered rather than only whichever the default happens to be.
+pub(crate) fn merchant_client_with_invoice_urls(
+    client_id: &str,
+    merchant_id: &str,
+    jwks: Value,
+    publishable_keys: &[&str],
+    success_url: &str,
+    cancel_url: &str,
+) -> MerchantClient {
+    MerchantClient {
+        invoices: vpay_config::InvoiceDefaults {
+            success_url: Some(success_url.to_owned()),
+            cancel_url: Some(cancel_url.to_owned()),
+        },
+        // Built on the publishable-key helper rather than the bare one:
+        // `POST /v1/invoices/{id}/pay` mints a hosted checkout session, and a
+        // tenant with no registered key answers `checkout_not_configured`
+        // before it ever looks at a forwarding URL — so a fixture without one
+        // would make the URL case pass for the wrong reason.
+        ..merchant_client_with_publishable_keys(client_id, merchant_id, jwks, publishable_keys)
     }
 }
 

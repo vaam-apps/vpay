@@ -61,7 +61,8 @@ mod support;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client,
-    merchant_client_with_publishable_keys, migrated_postgres, serve,
+    merchant_client_with_invoice_urls, merchant_client_with_publishable_keys, migrated_postgres,
+    serve,
 };
 
 /// The merchant every test acts as, and the tenant it acts for. Never the
@@ -74,6 +75,18 @@ const MERCHANT_A: &str = "acme-cameroon-tenant";
 /// invoice to fail to read.
 const CLIENT_B: &str = "beta-douala";
 const MERCHANT_B: &str = "beta-douala-tenant";
+
+/// The third merchant: the one that has configured
+/// `merchant_clients[].invoices` (issue #91, D2), so
+/// `POST /v1/invoices/{id}/pay` may omit both URLs.
+///
+/// A third registration rather than defaults on `CLIENT_A`, deliberately.
+/// Merchant A is what every other case in this file pays with, and giving it
+/// defaults would mean the refusal — "neither configured nor passed is a
+/// `400` naming both" — had no merchant left to be proved against. The two
+/// halves of D2 need two registrations or one of them is untested.
+const CLIENT_C: &str = "gamma-yaounde";
+const MERCHANT_C: &str = "gamma-yaounde-tenant";
 
 const RAIL: &str = "mtn_momo";
 const CANONICAL_PHONE: &str = "237600000200";
@@ -93,6 +106,19 @@ const CHECKOUT_BASE: &str = "https://checkout.vpay.test";
 /// will not invent them.
 const SUCCESS_URL: &str = "https://shop.acme.example/invoice-paid";
 const CANCEL_URL: &str = "https://shop.acme.example/invoice-cancelled";
+
+/// Merchant C's publishable key. Distinct from [`PK_A`] because
+/// `Config::validate_all` refuses a key claimed by two merchants.
+const PK_C: &str = "pk_test_gammayaoundesandbox02";
+
+/// What merchant C configured in `merchant_clients[].invoices`.
+///
+/// Deliberately different strings from [`SUCCESS_URL`] and [`CANCEL_URL`]:
+/// the case that proves a *passed* URL wins sends those two and asserts the
+/// session carries them and not these, which a shared constant would make
+/// impossible to tell apart.
+const CONFIGURED_SUCCESS_URL: &str = "https://shop.gamma.example/thank-you";
+const CONFIGURED_CANCEL_URL: &str = "https://shop.gamma.example/cart";
 
 // ------------------------------------------------------------------ harness
 
@@ -408,8 +434,12 @@ fn form_body(pairs: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-/// Two merchants, one rail, one currency, `livemode: false`.
-fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
+/// Three merchants, one rail, one currency, `livemode: false`.
+///
+/// A and B are the tenancy pair. C is the one with
+/// `merchant_clients[].invoices` configured — see [`CLIENT_C`] for why it is
+/// a third registration and not a field on A.
+fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, jwks_c: Value) -> Config {
     Config {
         deployment: Deployment {
             name: "invoices".to_owned(),
@@ -447,6 +477,14 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         merchant_clients: vec![
             merchant_client_with_publishable_keys(CLIENT_A, MERCHANT_A, jwks_a, &[PK_A]),
             merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
+            merchant_client_with_invoice_urls(
+                CLIENT_C,
+                MERCHANT_C,
+                jwks_c,
+                &[PK_C],
+                CONFIGURED_SUCCESS_URL,
+                CONFIGURED_CANCEL_URL,
+            ),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: CheckoutConfig {
@@ -465,9 +503,10 @@ async fn harness() -> anyhow::Result<Harness> {
     let (server_pem, _server_jwks) = generate_key();
     let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
+    let (_pem_c, jwks_c) = generate_key();
 
     let served = serve(&repositories, &server_pem, |base_url| {
-        config_with(base_url, jwks_a, jwks_b)
+        config_with(base_url, jwks_a, jwks_b, jwks_c)
     })
     .await?;
 
@@ -1574,6 +1613,45 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
          stops being a sentence in a document"
     );
 
+    // Migration `0042`. A refunded PAID invoice is storable — the whole of
+    // D5's shape: `amount_paid` and `amount_remaining` do not move, so
+    // neither `paid_means_nothing_remaining` nor `amounts_add_up` is amended
+    // and a settled bill never claims the payer owes it again.
+    let stored = sqlx::query(
+        "UPDATE invoices SET status = 'paid', amount_paid = 5000, amount_remaining = 0, \
+                             amount_refunded = 2500, paid_at = now() \
+         WHERE id = $1",
+    )
+    .bind(&invoice)
+    .execute(&harness.pool)
+    .await;
+    assert!(
+        stored.is_ok(),
+        "a paid invoice with part of it given back must be storable; that is what D5 decided \
+         and this is the row it decided about: {stored:?}"
+    );
+
+    // …and `refunded_at_most_paid` is what stops it being a way to record
+    // money nobody collected. This is the ceiling the refund settlement's
+    // `amount_refunded + $n` runs into, which is why that transaction fails
+    // closed rather than over-refunding.
+    let refused = sqlx::query("UPDATE invoices SET amount_refunded = 5001 WHERE id = $1")
+        .bind(&invoice)
+        .execute(&harness.pool)
+        .await;
+    assert!(
+        refused.is_err(),
+        "a merchant cannot give back more than was collected"
+    );
+    let refused = sqlx::query("UPDATE invoices SET amount_refunded = -1 WHERE id = $1")
+        .bind(&invoice)
+        .execute(&harness.pool)
+        .await;
+    assert!(
+        refused.is_err(),
+        "a negative refund is a rebate, which vpay has no concept of"
+    );
+
     // `amount_is_the_product`, on the line.
     let refused = sqlx::query("UPDATE invoice_items SET amount = amount + 1")
         .execute(&harness.pool)
@@ -1953,6 +2031,146 @@ async fn an_invoice_over_the_representable_ceiling_is_refused_at_finalize() -> a
         "`pay` minted an intent for {amount}, past the {MAX_AMOUNT} `POST /v1/payment_intents` \
          refuses — a JSON number that no longer round-trips through a double"
     );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------- per-merchant forwarding URLs
+
+/// The URLs the checkout session for an invoice's intent actually carries,
+/// read straight out of `checkout_sessions`.
+///
+/// Out of the table and not off the `pay` response, deliberately: the
+/// response carries `hosted_invoice_url`, which is a link to vpay's own page
+/// and says nothing about where the payer goes *afterwards*. The two columns
+/// below are the whole of what D2 changes, and they are what migration
+/// `0028`'s `urls_match_ui_mode` constrains.
+async fn session_urls(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT success_url, cancel_url FROM checkout_sessions WHERE payment_intent_id = $1",
+    )
+    .bind(payment_intent_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the checkout session `pay` minted")
+}
+
+/// A finalized invoice of `client_id`'s, ready to be paid.
+async fn open_invoice(harness: &Harness, client_id: &str) -> anyhow::Result<String> {
+    let invoice = harness.draft_with_a_line(client_id).await?;
+    let (status, body) = harness
+        .post(client_id, &format!("/v1/invoices/{invoice}/finalize"), &[])
+        .await?;
+    anyhow::ensure!(status == 200, "finalizing: {status} {body}");
+    Ok(invoice)
+}
+
+/// `POST /v1/invoices/{id}/pay` with **no body** uses the merchant's
+/// configured `merchant_clients[].invoices` URLs; a request that sends its
+/// own wins; a merchant with neither gets one `400` naming both (issue #91,
+/// D2).
+///
+/// # Why all three halves are one case
+///
+/// They are one rule — *request, then configuration, then refuse* — and the
+/// only way to be sure the fallback is a fallback rather than an override is
+/// to see the same handler prefer a passed value in the next breath. Split
+/// across three cases, a mutation that made configuration win could leave two
+/// of them green.
+///
+/// # The decisive mutations
+///
+/// * Drop the configuration lookup from `vpay_api::v1::invoices`'
+///   `forward_urls` (resolve the request's value alone) — the first assertion
+///   below fails: paying with an empty body answers `400` for a merchant that
+///   configured both.
+/// * Reverse the precedence (configuration first) — the second block fails:
+///   the session carries `https://shop.gamma.example/thank-you` where the
+///   request sent `https://shop.acme.example/invoice-paid`.
+/// * Answer the missing case one parameter at a time — the third block
+///   fails: the message no longer names `cancel_url` as well.
+#[tokio::test]
+async fn paying_uses_the_merchants_configured_urls_and_a_passed_one_still_wins()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    // 1. Configured, and the request sends nothing at all.
+    let invoice = open_invoice(&harness, CLIENT_C).await?;
+    let (status, body) = harness
+        .post(CLIENT_C, &format!("/v1/invoices/{invoice}/pay"), &[])
+        .await?;
+    assert_eq!(
+        status, 200,
+        "a merchant that configured both URLs may omit them: {body}"
+    );
+    let intent = field(&body, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+    assert_eq!(
+        session_urls(&harness.pool, &intent).await?,
+        (
+            Some(CONFIGURED_SUCCESS_URL.to_owned()),
+            Some(CONFIGURED_CANCEL_URL.to_owned())
+        ),
+        "the session must carry the merchant's configured destinations, not vpay's guess"
+    );
+
+    // 2. Configured, and the request sends its own. The request wins — a
+    //    default that could not be overridden would make a one-off
+    //    destination impossible without editing the deployment's YAML.
+    let second = open_invoice(&harness, CLIENT_C).await?;
+    let (status, body) = harness
+        .post(
+            CLIENT_C,
+            &format!("/v1/invoices/{second}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let intent = field(&body, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+    assert_eq!(
+        session_urls(&harness.pool, &intent).await?,
+        (Some(SUCCESS_URL.to_owned()), Some(CANCEL_URL.to_owned())),
+        "a URL on the request wins over the configured default"
+    );
+
+    // 3. Neither configured nor passed: one `400`, naming both, so a merchant
+    //    learns the whole of the mistake in one round trip.
+    let bare = open_invoice(&harness, CLIENT_A).await?;
+    let (status, body) = harness
+        .post(CLIENT_A, &format!("/v1/invoices/{bare}/pay"), &[])
+        .await?;
+    assert_eq!(status, 400, "{body}");
+    let message = at(&body, &["error", "message"])
+        .as_str()
+        .expect("a 400 carries a message")
+        .to_owned();
+    assert!(
+        message.contains("`success_url`") && message.contains("`cancel_url`"),
+        "one refusal names both missing parameters: {message}"
+    );
+    assert_eq!(
+        at(&body, &["error", "param"]).as_str(),
+        Some("success_url"),
+        "`param` names the first absent one, so a client can still point at a field"
+    );
+
+    // Nothing was written for the refusal: no intent, no session, and the
+    // invoice is still `open`. A `400` that had already minted a `pi_…` would
+    // be an orphan for every merchant who ever forgets a URL.
+    let (_, unchanged) = harness
+        .get(CLIENT_A, &format!("/v1/invoices/{bare}"))
+        .await?;
+    assert_eq!(field(&unchanged, "status").as_str(), Some("open"));
+    assert_eq!(field(&unchanged, "payment_intent").as_str(), None);
 
     harness.shutdown().await;
     Ok(())

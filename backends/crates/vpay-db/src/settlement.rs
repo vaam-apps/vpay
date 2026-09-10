@@ -396,6 +396,55 @@ pub trait Settlement: Send + Sync {
         event_data: &serde_json::Value,
     ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError>;
 
+    /// Settles a refund a rail reported as paid back: the `refunds` row
+    /// `pending` -> `succeeded`, and the invoice that intent paid gains the
+    /// amount on `invoices.amount_refunded` — in **one** transaction.
+    ///
+    /// Returns the settled refund and the invoice as it now stands, or
+    /// `Ok(None)` if the refund was no longer `pending`, which means this
+    /// settlement already happened. The invoice half is `None` for a refund
+    /// against an intent that pays no invoice (most of them) or whose invoice
+    /// is not `paid`.
+    ///
+    /// # Why the two writes are one transaction
+    ///
+    /// [`flip_invoice`]'s argument, and it is the same one: a second write
+    /// after the refund commits would leave a window in which the money is
+    /// recorded as returned and the document still says the whole amount was
+    /// kept, and a crash in that window would make it permanent. An invoice
+    /// has no poller, no sweep and no job that would ever notice.
+    ///
+    /// # No event
+    ///
+    /// `invoice.paid` is **not** re-emitted (D5) — the invoice is still
+    /// `paid` and telling a merchant a second time that a bill was settled
+    /// because part of it came back would be a lie about a transition that
+    /// did not happen. `charge.refunded` and `charge.refund.updated` are
+    /// documented types this repository still emits nothing for
+    /// (`docs/status.md`), and this method does not change that: emitting one
+    /// needs the wire object `vpay-api` shapes, which is the caller's to
+    /// supply, and there is no caller.
+    ///
+    /// # There is no rail behind this
+    ///
+    /// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported`
+    /// on Orange, and nothing creates the `pending` row this settles, so no
+    /// shipping binary calls this method. It exists because D5 is a decision
+    /// about what the database does when a refund lands, and the alternative
+    /// was to leave that decision as a sentence in a document with no
+    /// statement behind it. `docs/status.md` carries the gap.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if any statement or the commit fails — including
+    /// migration `0042`'s `refunded_at_most_paid` for a refund larger than
+    /// what the invoice actually collected, which rolls the whole
+    /// transaction back and leaves the refund `pending` for a retry to find.
+    async fn apply_refund_succeeded(
+        &self,
+        refund_id: &str,
+    ) -> Result<Option<(crate::refunds::SettledRefund, Option<crate::InvoiceRow>)>, DbError>;
+
     /// Moves a charge between two *live* states, as a compare-and-swap, and
     /// reports whether it fired.
     ///
@@ -614,6 +663,49 @@ impl Settlement for crate::repository::PgRepositories {
         record_transition(&charge.provider_code, &previous_state, &charge.state);
 
         Ok(Some((charge, intent)))
+    }
+
+    async fn apply_refund_succeeded(
+        &self,
+        refund_id: &str,
+    ) -> Result<Option<(crate::refunds::SettledRefund, Option<crate::InvoiceRow>)>, DbError> {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let now = OffsetDateTime::now_utc();
+
+        let Some(refund) = crate::refunds::settle_in_tx(&mut tx, refund_id, now).await? else {
+            // Not `pending` any more. Nothing was written, so the transaction
+            // is closed explicitly rather than dropped —
+            // `apply_succeeded`'s reason: the connection returns to the pool
+            // without waiting for a background rollback.
+            tx.rollback().await.map_err(DbError::Query)?;
+            return Ok(None);
+        };
+
+        // The invoice, if the refunded intent was paying one. `Ok(None)` is
+        // the normal answer and is not an error: most intents have no invoice
+        // at all, and one whose invoice is not `paid` is refused by the
+        // statement's own compare-and-swap rather than by a read here.
+        let invoice = invoices::add_refund_for_intent_in_tx(
+            &mut tx,
+            &refund.payment_intent_id,
+            refund.amount,
+            now,
+        )
+        .await?;
+
+        if let Some(row) = invoice.as_ref() {
+            tracing::info!(
+                refund_id = %refund.id,
+                payment_intent_id = %refund.payment_intent_id,
+                invoice_id = %row.id,
+                amount_refunded = row.amount_refunded,
+                "a refund was recorded against the invoice the intent it refunds had paid"
+            );
+        }
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some((refund, invoice)))
     }
 
     async fn set_live_state(

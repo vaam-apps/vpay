@@ -39,6 +39,17 @@ property of the session, decided by the merchant at create, and the page refuses
 to run in the wrong one: `/c/{id}` refuses if it _is_ framed, `/e/{id}` refuses
 if it is _not_.
 
+**"Required on create" is about `POST /v1/checkout/sessions`.** There is a
+second creator of hosted sessions — `POST /v1/invoices/{id}/pay` — and since
+2026-09-10 it may take both URLs from the merchant's registration
+(`merchant_clients[].invoices`, issue #91 D2) instead of from the request. The
+session that reaches this page is identical either way: `urls_match_ui_mode`
+still requires both columns, and nothing here reads where they came from. See
+[invoices.md](invoices.md#it-takes-success_url-and-cancel_url-and-stripes-pay-does-not).
+`POST /v1/checkout/sessions` deliberately has no such default — a merchant's
+process that creates a session already has the payer's context in hand, where
+a bill paid from a link in an e-mail does not.
+
 ## The object
 
 `checkout.session`, `cs_…`, one row in `checkout_sessions` (migration `0028`).

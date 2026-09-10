@@ -73,7 +73,8 @@ const INVOICE_ITEM_MODEL: &str = "InvoiceItem";
 /// Every column of `invoices`, in one place so the statements below cannot
 /// drift on the shape they decode into [`InvoiceRow`].
 const COLUMNS: &str = "id, seq, merchant_id, livemode, customer_id, currency_code, status, number, \
-                       amount_due, amount_paid, amount_remaining, due_date, description, metadata, \
+                       amount_due, amount_paid, amount_remaining, amount_refunded, due_date, \
+                       description, metadata, \
                        payment_intent_id, finalized_at, paid_at, voided_at, \
                        marked_uncollectible_at, created_at, updated_at";
 
@@ -89,7 +90,8 @@ const COLUMNS: &str = "id, seq, merchant_id, livemode, customer_id, currency_cod
 /// in this crate.
 const QUALIFIED_COLUMNS: &str = "invoices.id, invoices.seq, invoices.merchant_id, invoices.livemode, invoices.customer_id, \
      invoices.currency_code, invoices.status, invoices.number, invoices.amount_due, \
-     invoices.amount_paid, invoices.amount_remaining, invoices.due_date, invoices.description, \
+     invoices.amount_paid, invoices.amount_remaining, invoices.amount_refunded, \
+     invoices.due_date, invoices.description, \
      invoices.metadata, invoices.payment_intent_id, invoices.finalized_at, invoices.paid_at, \
      invoices.voided_at, invoices.marked_uncollectible_at, invoices.created_at, \
      invoices.updated_at";
@@ -199,6 +201,20 @@ pub struct InvoiceRow {
     /// `amount_due - amount_paid`, stored rather than computed; migration
     /// `0036`'s `amounts_add_up` is what keeps it honest.
     pub amount_remaining: i64,
+    /// What has been given back out of [`Self::amount_paid`], as a **gross**
+    /// running total (migration `0042`).
+    ///
+    /// It is deliberately *not* subtracted from [`Self::amount_paid`] and
+    /// takes no part in `amounts_add_up`, so a refunded invoice is still
+    /// `paid` with nothing remaining — `payment_intents.amount_refunded`'s
+    /// shape since migration `0003`, applied to the document. Migration
+    /// `0042`'s header carries the argument against the alternative.
+    ///
+    /// `0` on every row in every deployment today: the only statement that
+    /// moves it is reached from [`crate::Settlement::apply_refund_succeeded`],
+    /// which no shipping binary calls because no rail can refund
+    /// (`docs/status.md`).
+    pub amount_refunded: i64,
     /// When the merchant says this is due, or `None`. **Advisory**: nothing
     /// in vpay reads it. See migration `0036`'s column comment.
     pub due_date: Option<OffsetDateTime>,
@@ -1113,6 +1129,10 @@ impl Invoices for crate::repository::PgRepositories {
 /// nothing else moves `amount_paid`), so the only value it can hold is zero,
 /// and writing it is what lets `amounts_add_up` be a real check on this
 /// statement rather than a check on a column this statement ignores.
+/// `amount_refunded = 0` is written for the same reason and buys the same
+/// thing on migration `0042`'s `refunded_at_most_paid`: a draft has never
+/// been paid, so it can never have been refunded, and naming the column here
+/// is what makes that CHECK evaluate against this statement.
 ///
 /// # Errors
 ///
@@ -1128,6 +1148,7 @@ async fn resum_draft(
             amount_due = lines.total, \
             amount_paid = 0, \
             amount_remaining = lines.total, \
+            amount_refunded = 0, \
             updated_at = $2 \
          FROM (SELECT COALESCE(SUM(amount), 0) AS total FROM invoice_items \
                WHERE invoice_id = $1) lines \
@@ -1169,9 +1190,9 @@ pub(crate) async fn insert_in_tx(
     let sql = format!(
         "INSERT INTO invoices \
             (id, merchant_id, livemode, customer_id, currency_code, status, number, \
-             amount_due, amount_paid, amount_remaining, due_date, description, metadata, \
-             created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, 'draft', NULL, 0, 0, 0, $6, $7, $8, $9, $9) \
+             amount_due, amount_paid, amount_remaining, amount_refunded, due_date, \
+             description, metadata, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, 'draft', NULL, 0, 0, 0, 0, $6, $7, $8, $9, $9) \
          RETURNING {COLUMNS}"
     );
 
@@ -1281,6 +1302,11 @@ async fn next_number_in_tx(
 /// statement that opens the invoice, so there is no instant at which the
 /// invoice is `open` with a total that does not match its (now frozen) lines.
 ///
+/// `amount_paid = 0` and `amount_refunded = 0` are named for [`resum_draft`]'s
+/// reason: the statement writes every amount it is responsible for, so
+/// `amounts_add_up` and `refunded_at_most_paid` are checks on this statement
+/// rather than on columns it happened not to touch.
+///
 /// # Errors
 ///
 /// [`DbError::Query`] if any statement fails, including
@@ -1302,6 +1328,7 @@ pub(crate) async fn finalize_in_tx(
             amount_due = lines.total, \
             amount_paid = 0, \
             amount_remaining = lines.total, \
+            amount_refunded = 0, \
             finalized_at = $4, \
             updated_at = $4 \
          FROM (SELECT COALESCE(SUM(amount), 0) AS total FROM invoice_items \
@@ -1431,6 +1458,77 @@ pub(crate) async fn mark_paid_for_intent_in_tx(
         .map_err(classify_write)
 }
 
+/// Adds a succeeded refund to a **paid** invoice's running refunded total,
+/// **inside the refund settlement transaction**.
+///
+/// `Ok(None)` means this intent is not paying an invoice, or the invoice it
+/// paid is not `paid` — a `void` or `uncollectible` document, or one whose
+/// settlement has not committed yet. Both are normal answers rather than
+/// errors: most refunds will be against intents with no invoice at all.
+///
+/// # The compare-and-swap is `status = 'paid'`, and it is the whole guard
+///
+/// There is no `can_refund` beside this statement, for the module header's
+/// reason. `WHERE payment_intent_id = $1 AND status = 'paid'` is what refuses
+/// a refund recorded against a document that was voided, written off, or
+/// never settled; "matched no row" is the refusal, and it cannot be raced
+/// past because it is evaluated by the same statement that writes.
+///
+/// # The increment is an expression, not a value
+///
+/// `amount_refunded = amount_refunded + $2` rather than a total the caller
+/// computed from a read. A read-then-write would let two refunds settling
+/// concurrently both read `0` and both write their own amount, losing one of
+/// them; the expression makes the second writer block on the row lock and
+/// re-evaluate against the first's committed value. Migration `0042`'s
+/// `refunded_at_most_paid` is then a real ceiling rather than an advisory
+/// one: the over-refund is refused by the database, the error propagates, and
+/// the transaction — including the refund row's own `pending` -> `succeeded`
+/// flip — rolls back.
+///
+/// # What it deliberately does not do
+///
+/// It does not change `status`, `amount_paid`, `amount_remaining` or
+/// `paid_at`, and it emits no event. The invoice stays `paid` and
+/// `invoice.paid` is **not** re-emitted (D5): a merchant that received the
+/// event once must not be told a second time that a bill was settled because
+/// part of it came back.
+///
+/// # `pub(crate)` and reached only from [`crate::settlement`]
+///
+/// [`mark_paid_for_intent_in_tx`]'s visibility argument verbatim: the point
+/// is that this write is not reachable without the settlement it belongs to.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails, including
+/// `refunded_at_most_paid` for a refund larger than what was collected —
+/// which **aborts the whole refund settlement**, deliberately. A refund total
+/// that could not be written is a document that would understate what a payer
+/// has been given back.
+pub(crate) async fn add_refund_for_intent_in_tx(
+    conn: &mut PgConnection,
+    payment_intent_id: &str,
+    amount: i64,
+    now: OffsetDateTime,
+) -> Result<Option<InvoiceRow>, DbError> {
+    let sql = format!(
+        "UPDATE invoices SET \
+            amount_refunded = amount_refunded + $2, \
+            updated_at = $3 \
+         WHERE payment_intent_id = $1 AND status = 'paid' \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, InvoiceRow>(AssertSqlSafe(sql))
+        .bind(payment_intent_id)
+        .bind(amount)
+        .bind(now)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(classify_write)
+}
+
 /// `time::OffsetDateTime` as the `chrono::DateTime<Utc>` CrateStack's
 /// generated inputs take.
 ///
@@ -1546,6 +1644,7 @@ mod tests {
             amount_due: 0,
             amount_paid: 0,
             amount_remaining: 0,
+            amount_refunded: 0,
             due_date: None,
             description: None,
             payment_intent_id: None,

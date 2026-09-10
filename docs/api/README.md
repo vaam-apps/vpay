@@ -113,7 +113,7 @@ means. `DELETE` appears on three paths: those two and
 | POST        | `/v1/invoices/{id}/finalize`           |                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `200` + the invoice in `open` with its `number` assigned and `amount_due` frozen; `400` naming `invoice` when it has no lines; `409` when it is not a `draft` (S4b)                                                                                                                                                                                                          |
 | POST        | `/v1/invoices/{id}/void`               |                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `200` + the invoice in `void`, **keeping its number**; `409` when it is not `open`, or when its payment intent has not been canceled (S4b)                                                                                                                                                                                                                                   |
 | POST        | `/v1/invoices/{id}/mark_uncollectible` |                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `200` + the invoice in `uncollectible`, still owed and never expected; `409` as for `void`. **Emits no event** — see [../flows/webhooks.md](../flows/webhooks.md) (S4b)                                                                                                                                                                                                      |
-| POST        | `/v1/invoices/{id}/pay`                | `success_url`, `cancel_url` (**both required**, same rules as a checkout session's)                                                                                                                                                                                                                                                                                                                                                                 | `200` + the invoice with `payment_intent` and `hosted_invoice_url` set — a `pi_…` for `amount_remaining` and a hosted checkout session for it; `409` when it is not `open` or an intent is already live; `500 checkout_not_configured` when this deployment serves no checkout page (S4b)                                                                                    |
+| POST        | `/v1/invoices/{id}/pay`                | `success_url`, `cancel_url` (same rules as a checkout session's). **Required unless this merchant configured `merchant_clients[].invoices.success_url` / `.cancel_url`**, in which case either may be omitted; a value on the request always wins over the configured one (issue #91 D2, 2026-09-10)                                                                                                                                                | `200` + the invoice with `payment_intent` and `hosted_invoice_url` set — a `pi_…` for `amount_remaining` and a hosted checkout session for it; `400` naming **both** parameters when neither is sent nor configured; `409` when it is not `open` or an intent is already live; `500 checkout_not_configured` when this deployment serves no checkout page (S4b)              |
 | POST        | `/v1/invoice_items`                    | `invoice` (**required**, an `in_…` of yours **in `draft`**), `description` (**required**, ≤1000), `quantity` (≥1, default 1), `unit_amount` (**required**, integer minor units)                                                                                                                                                                                                                                                                     | `201` + `line_item`, and the invoice's `amount_due` moves with it; `400` naming `invoice` when it is not one of your drafts (S4b)                                                                                                                                                                                                                                            |
 | GET         | `/v1/invoice_items/{id}`               |                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `200` + `line_item` whatever the parent's status, or the uniform `404` (S4b)                                                                                                                                                                                                                                                                                                 |
 | POST, PATCH | `/v1/invoice_items/{id}`               | `description`, `quantity`, `unit_amount` — `amount` is **not** a parameter, ever                                                                                                                                                                                                                                                                                                                                                                    | `200` + `line_item` with `amount` recomputed; `409` when the parent is no longer a `draft`; the uniform `404` (S4b)                                                                                                                                                                                                                                                          |
@@ -231,13 +231,21 @@ answer, and is why an update can clear a field.
 
 ### The `invoice` object (S4b)
 
-A merchant's bill to one customer. **Eighteen keys**, counted from the
+A merchant's bill to one customer. **Nineteen keys**, counted from the
 rendering rather than from this list and pinned by
-`the_invoice_object_is_the_documented_eighteen_keys` — it said _seventeen_
-until the S4b review on 2026-09-07, when the count was measured and no test of
-any name existed to hold it. Like the customer, this is the object whose
-_rules_ matter more than its shape;
+`the_invoice_object_is_the_documented_nineteen_keys` — it said _seventeen_
+until the S4b review on 2026-09-07, when the count was measured (eighteen) and
+no test of any name existed to hold it, and it is nineteen since migration
+`0042` added `amount_refunded` on 2026-09-10. Like the customer, this is the
+object whose _rules_ matter more than its shape;
 [../flows/invoices.md](../flows/invoices.md) is the whole of them.
+
+`amount_refunded` is **gross**: it is not subtracted from `amount_paid` and
+does not raise `amount_remaining`, so a refunded invoice is still `paid` with
+nothing remaining. It is `0` on every invoice in every deployment today,
+because no vpay rail can refund — see
+[../flows/invoices.md](../flows/invoices.md)'s Refunds section, which says both
+what the column means and what does not exist behind it.
 
 ```json
 {
@@ -245,6 +253,7 @@ _rules_ matter more than its shape;
   "customer": "cus_…", "currency": "xaf",
   "status": "open", "number": "A7K3M9QP-000001",
   "amount_due": 11000, "amount_paid": 0, "amount_remaining": 11000,
+  "amount_refunded": 0,
   "due_date": null, "description": "September hosting",
   "metadata": { "order_id": "1234" },
   "payment_intent": null, "hosted_invoice_url": null,

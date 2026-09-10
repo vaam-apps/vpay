@@ -18,6 +18,7 @@ of it.
 - [Optional flags that are required in practice](#optional-flags-that-are-required-in-practice)
 - [OAuth client shapes](#oauth-client-shapes)
 - [The `checkout:` block, and `checkout_origins`](#the-checkout-block-and-checkout_origins)
+- [`merchant_clients[].invoices` — the `pay` forwarding defaults](#merchant_clientsinvoices--the-pay-forwarding-defaults)
 
 ---
 
@@ -472,6 +473,68 @@ deployment that serves hosted checkout should set this for every merchant.
 
 There is nowhere else this could live: there is no merchants table (ADR-0003),
 so a registration is the only place a human-readable name for a tenant exists.
+
+### `merchant_clients[].invoices` — the `pay` forwarding defaults
+
+Two optional URLs, `success_url` and `cancel_url`, that
+`POST /v1/invoices/{id}/pay` falls back to when the request carries none
+(issue #91, D2, 2026-09-10).
+
+```yaml
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    invoices:
+      success_url: https://shop.acme.example/invoice-paid
+      cancel_url: https://shop.acme.example/invoice-cancelled
+```
+
+**Why here and not on a request.** An invoice is paid from a link in an
+e-mail, days after the merchant's process ran, and a merchant's "thank you"
+and "cancelled" pages are a property of the _merchant_ rather than of each
+individual bill. A checkout session created by that process has the payer's
+context in hand and gets no such key.
+
+**A request that sends a URL wins.** These are defaults and never a ceiling —
+a merchant may want one bill to land somewhere else, and a default that could
+not be overridden would need an operator to edit this file. It is also what
+makes the key safe to add to a running deployment: every request that worked
+before behaves identically.
+
+**The shape rules are `validate_invoice_urls`':** non-blank, 1–2048
+characters, `http` or `https`, a host, no embedded credentials, and `https`
+under `deployment.livemode`
+(`ConfigError::MalformedInvoiceUrl` / `InsecureInvoiceUrl`).
+
+A **query string and a fragment are allowed**, unlike on
+`checkout.public_base_url`. That validator refuses both because vpay _appends_
+`/c/{id}` to its value and there is no correct way to append a path to a URL
+that already carries a `?`. Nothing is ever appended to these two: they are
+final destinations a payer's browser is sent to unmodified, so
+`https://shop.example/thanks?order=1234#receipt` is legitimate.
+
+Blank is **refused**, not treated as absent. `success_url: ""` is what a YAML
+quoting mistake produces, and an operator who wrote the key meant to write a
+URL. (The API's own `present` helper does treat blank as absent on a
+_request_, where it is a client templating an optional field — that argument
+does not reach a file a human edited.)
+
+**Validated at boot, and again at request time.** Boot refuses a malformed
+value because a typo in something whose whole job is to save every request
+from repeating it is a typo in every invoice that merchant ever raises — a
+deployment that will not start beats a `400` blaming the merchant for the
+operator's file. The route then puts whatever it resolved, configured or
+passed, through `vpay_api::v1::checkout_sessions::checked_forward_url` anyway,
+so exactly one rule decides where a payer may be sent. Trusting the boot check
+and skipping the second is how a configured URL ends up admitted by rules a
+passed one is not.
+
+The two validators are **duplicated across the crate boundary on purpose**:
+this crate depends on no other vpay crate (see the top of
+`backends/crates/vpay-config/src/oauth.rs` for why it depends on neither
+`vpay-api` nor `authkestra-op`), so the alternative to a duplicate rule is a
+dependency edge that has deliberately never existed. What holds them together
+is a test rather than a type.
 
 ### One unreachable branch, and the test that proves it is
 

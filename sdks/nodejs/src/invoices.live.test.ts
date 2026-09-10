@@ -94,6 +94,10 @@ describe("invoices against a running vpay", () => {
     expect(open.amount_due).toBe(32_500);
     expect(open.amount_remaining).toBe(32_500);
     expect(open.amount_paid).toBe(0);
+    // Migration 0042's key, against a running server. `amount_refunded` is
+    // optional on the type, so this is the only assertion in this SDK that the
+    // server really sends it rather than the field merely being declarable.
+    expect(open.amount_refunded).toBe(0);
 
     const read = await client.invoices.retrieve(draft.id);
     expect(read.lines.data).toHaveLength(2);
