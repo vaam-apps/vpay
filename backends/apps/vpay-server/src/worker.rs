@@ -216,10 +216,10 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level and is required here — see docs/reference/vpay-config.md
     // § optional flags that are required in practice.
-    let database_url = common.database_url.as_deref().context(
-        "--database-url / DATABASE_URL is required: `vpay-server worker` cannot start without \
-         a database to open a pool against and migrate (see docs/status.md)",
-    )?;
+    let database_url = common
+        .database_url
+        .as_deref()
+        .ok_or(StartupError::MissingDatabaseUrl)?;
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
     vpay_api::boot::reconcile_reference_tables(

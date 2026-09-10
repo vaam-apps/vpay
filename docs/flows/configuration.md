@@ -190,10 +190,15 @@ pins it, empty string included.
    `/v1/oauth/jwks.json`.
 9. Serve.
 
-**A pre-existing gap this ordering does not fix:** a missing
+~~**A pre-existing gap this ordering does not fix:** a missing
 `--database-url` still exits `1`, not `78`, because `main` produces a bare
 `anyhow` error there with nothing for the exit-code classifier to read. The
-`StartupError` added for the signing key covers only the signing key.
+`StartupError` added for the signing key covers only the signing key.~~
+**Closed 2026-09-10 (issue #87).** `StartupError::MissingDatabaseUrl` is
+raised at step 4's own call site in both modes, so the exit-code classifier
+finds a typed leaf and the answer is `78` — the same number the two steps
+either side of it give, which is what makes "`78` means fix the deploy,
+`69` means wait for Postgres" a rule an operator can hold. `a_missing_database_url_is_exit_78_naming_the_problem` and its `worker::` twin in `backends/apps/vpay-server/tests/cli.rs` are the two cases, and each one fails if *its* mode's site reverts.
 
 1. Load `application.yml`, overlay `application-{profile}.yml`.
 2. Resolve `${}` placeholders. **An unresolved placeholder is fatal**, never an
@@ -400,6 +405,16 @@ requirement (steps 1–3 above; **57 tests in `vpay-config`** as of 2026-09-03
 described below — plus subprocess tests in each binary). `--database-url` is likewise required at runtime and opens
 a real pool. *Updated 2026-09-02 — this section had said all of that was
 "not started".*
+
+**Updated 2026-09-10 (issue #87): a missing `--database-url` / `DATABASE_URL`
+is exit `78` now, in `serve` and in `worker`, and two subprocess cases say
+so** — `a_missing_database_url_is_exit_78_naming_the_problem` and its
+`worker::` twin in `backends/apps/vpay-server/tests/cli.rs`. It was `1` until
+then, because the call site raised a bare `anyhow` context string with nothing
+for `exit_code_for` to classify; the correction to the boot sequence above has
+the detail. Each case fails when *its own* call site reverts, and each calls
+`env_remove("DATABASE_URL")`, without which it asserts "no database URL" on a
+machine that has one.
 
 **New 2026-09-02:** `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE`
 on `vpay-server`, required at runtime and checked *before* the database

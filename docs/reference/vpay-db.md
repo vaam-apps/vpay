@@ -1604,13 +1604,21 @@ work, and each binary installs the provider at boot
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
 (`cratestack = { package = "cratestack-pg", version = "=0.12.0" }`) and runs
-**twenty-two** queries through the generated data layer, spread over ten
-**twenty-four** queries through the generated data layer, spread over nine
-tables.
-This section says which nine, what deliberately did not move, and which of
+**thirty-two** statements through the generated data layer, spread over
+**twelve** tables.
+This section says which twelve, what deliberately did not move, and which of
 CrateStack's behaviours vpay has had to work around rather than adopt. It is
 the application's side of `schemas/vpay.cstack`'s own header, which carries
 the schema's side.
+
+**Corrected 2026-09-10 (issue #87), and the correction is two things.** These
+two lines read ~~"**twenty-two** queries … over ten"~~ and ~~"**twenty-four**
+queries … over nine"~~ *one after the other*, contradicting each other in
+consecutive sentences — a conflict resolved by keeping both halves — and
+neither was right. **Thirty-two over twelve** is measured, by the rule the
+registry below states, and the running totals in the paragraphs that follow
+were never re-derived after S4b, S5 or ADR-0017: read them as the history of
+what each change *said*, not as arithmetic that adds up to today's number.
 
 It said "**one** query" until 2026-09-06, when the two `disabled_clients`
 writes followed the read; "**three**" until later the same day, when migration
@@ -1620,24 +1628,35 @@ capability defaults and the provider pass moved with them. It said "**six**"
 until the outbox landed, and "**eight** over five tables" from 2026-09-06,
 when S4a's `customers` added `touch_last_used` and `delete`.
 
-**"Twenty-two over ten" since 2026-09-07** (S4b's `invoices` and
+~~**"Twenty-two over ten" since 2026-09-07** (S4b's `invoices` and
 `invoice_items`, one query each — see "Migration 0036" below). It was
 **"twenty over eight"** earlier the same day
-([ADR-0017](../adr/0017-staff-authentication.md)),
-**"Twenty-four over nine" since 2026-09-07** (S5, the money tables), and
-the +4 is `checkout_sessions`' four reads — the first and so far only
-CrateStack queries on a table money moves through. The section
-"The money tables: what moved, and what stays raw forever" below is the
-whole account, including why the other three money tables moved **nothing**
-and what would have to change upstream before they could.
+([ADR-0017](../adr/0017-staff-authentication.md)),~~ ~~**"Twenty-four over
+nine" since 2026-09-07** (S5, the money tables), and the +4 is
+`checkout_sessions`' four reads~~ — **two totals written the same day on
+branches that did not see each other, both kept, left contradicting each
+other in consecutive sentences, and struck 2026-09-10 for their arithmetic
+and not for their substance.** The substance is right, and the sections below
+expand it: S4b added `invoices` and `invoice_items`, one statement each;
+ADR-0017 added three whole tables; and S5 added `checkout_sessions`' four
+reads — the first and so far only CrateStack statements on a table money
+moves through. The section "The money tables: what moved, and what stays raw
+forever" below is the whole account, including why the other three money
+tables moved **nothing** and what would have to change upstream before they
+could.
 
-It was **"twenty over eight" earlier the same day** ([ADR-0017](../adr/0017-staff-authentication.md)),
-and the +12 is different in kind from every increment before it: it is not a
-method here and a method there, it is **three whole tables whose every
-repository method runs through the generated layer**. `staff_members` (six),
-`staff_sessions` (six) and `oauth_authorization_codes` (two hand-written
-queries' worth of work in two generated calls) have no raw `sqlx` statement
-between them.
+ADR-0017's increment is different in kind from every one before it: it is not
+a method here and a method there, it is **three whole tables whose every
+repository method runs through the generated layer** — sixteen of the
+thirty-two statements in the registry below, exactly half, on tables created
+for the purpose. `staff_members`
+(**seven**, corrected 2026-09-10 — `create`, `find_by_email`, `find`,
+`enrol_totp`, `record_totp_step`, `set_password`, `record_sign_in`; this said
+six from the day it was written), `staff_sessions` (six) and
+`oauth_authorization_codes` (**three** generated calls — `store_code`'s
+`create`, and `consume_code`'s `find_unique` followed by the `update_many`
+that is the swap; this said two, counting only the pair inside `consume_code`)
+have no raw `sqlx` statement between them.
 
 That is a property of migration `0035` rather than of ambition. Everything
 this section records as a reason for staying on raw `sqlx` was designed out
@@ -1713,29 +1732,69 @@ relations / 17 unmappable columns**.
 
 ### What runs through it today
 
-`DisabledClients`, all three methods; and both halves of
-`ConfigReconcile::reconcile`'s upsert work:
+**Thirty-two statements, twelve tables, twelve models** — the whole list,
+measured 2026-09-10 rather than accumulated. The rule, so it can be
+re-derived: every `find_unique`/`find_many`/`create`/`upsert`/`update_many`/
+`delete_many` chain in `backends/crates/vpay-db/src/*.rs` outside a
+`#[cfg(test)]` module, each ending in exactly one `run(ctx)` or
+`run_in_tx(tx, ctx)`. (`migrations.rs` has a `.run(&self.pool)` that is
+`sqlx::migrate!`'s, not a builder's, and is not one of the thirty-two.)
 
-| Method | CrateStack builder | Policy slot it needs |
-|---|---|---|
-| `is_client_disabled` | `find_unique(id).run(ctx)` | `read` |
-| `disable_client` | `upsert(CreateDisabledClientInput).run(ctx)` | `create` **and** `update` |
-| `enable_client` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
-| `reconcile`, per currency | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
-| `reconcile`, per currency | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `reconcile`, per provider | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `create_in_tx` (the outbox) | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `mark_fanned_out_in_tx` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
-| `touch_last_used` (customers) | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)` | `update` |
-| `delete` (customers) | `delete_many().where_(id).where_(merchant_id).run(ctx)` | `delete` |
-| `mark_uncollectible` (invoices) | `update_many().where_(id).where_(merchant_id).where_(status.eq(Open)).set(UpdateInvoiceInput).run(ctx)` | `update` |
-| `items_for_invoice` | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)` | `read` |
+**What this table used to be, because the shape of the error is the useful
+part.** It listed sixteen statements over nine tables. It omitted
+`staff_members`, `staff_sessions` and `oauth_authorization_codes` entirely —
+the three tables the section above calls wholly generated, sixteen statements
+between them, exactly half the total. It carried `get_for_merchant` twice,
+once without its `run(ctx)`. And a blank line sat between the twelfth and
+thirteenth rows, which ends a GitHub-flavoured table: the five
+`checkout_sessions` rows rendered as a second table whose *header* was the
+first of them, so the column titles a reader used to read those rows were
+never on screen. Every row below was re-read off the source.
 
-| `get_for_merchant` (checkout sessions) | `find_many().where_(id).where_(merchant_id).limit(1)` | `read` |
-| `get_for_merchant` (checkout sessions) | `find_many().where_(id).where_(merchant_id).limit(1).run(ctx)` | `read` |
-| `get_by_id_unscoped` (checkout sessions) | `find_unique(id).run(ctx)` | `read` |
-| `find_open_by_intent` (checkout sessions) | `find_many().where_(payment_intent_id).where_(status).limit(1).run(ctx)` | `read` |
-| `find_latest_by_intent` (checkout sessions) | `latest_by_intent_query(..).run(ctx)` — `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)`, extracted so `the_latest_session_query_orders_by_seq_and_takes_one` previews the builder the method runs | `read` |
+| Method | Table | CrateStack builder | Policy slot it needs |
+|---|---|---|---|
+| `is_client_disabled` | `disabled_clients` | `find_unique(client_id).run(ctx)` | `read` |
+| `disable_client` | `disabled_clients` | `upsert(CreateDisabledClientInput).run(ctx)` | `create` **and** `update` |
+| `enable_client` | `disabled_clients` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
+| `reconcile`, per currency | `currencies` | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
+| `reconcile`, per currency | `currencies` | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `reconcile`, per provider | `providers` | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `create_in_tx` (the outbox) | `webhook_deliveries` | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
+| `mark_fanned_out_in_tx` | `events` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
+| `touch_last_used` | `customers` | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)` | `update` |
+| `delete` | `customers` | `delete_many().where_(id).where_(merchant_id).run(ctx)` | `delete` |
+| `mark_uncollectible` | `invoices` | `update_many().where_(id).where_(merchant_id).where_(status.eq(open)).set(UpdateInvoiceInput).run(ctx)` | `update` |
+| `items_for_invoice` | `invoice_items` | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)` | `read` |
+| `get_for_merchant` | `checkout_sessions` | `find_many().where_(id).where_(merchant_id).limit(1).run(ctx)` | `read` |
+| `get_by_id_unscoped` | `checkout_sessions` | `find_unique(id).run(ctx)` | `read` |
+| `find_open_by_intent` | `checkout_sessions` | `find_many().where_(payment_intent_id).where_(status).limit(1).run(ctx)` | `read` |
+| `find_latest_by_intent` | `checkout_sessions` | `latest_by_intent_query(..).run(ctx)` — `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)`, extracted so `the_latest_session_query_orders_by_seq_and_takes_one` previews the builder the method runs | `read` |
+| `create` | `staff_members` | `create(CreateStaffMemberInput).run(ctx)` | `create` |
+| `find_by_email` | `staff_members` | `find_many().where_(email).limit(1).run(ctx)` — `find_many`, not `find_unique`, because `email` is not the primary key | `read` |
+| `find` | `staff_members` | `find_unique(id).run(ctx)` | `read` |
+| `enrol_totp` | `staff_members` | `update_many().where_(id).where_(totp_enrolled_at.is_null()).set(UpdateStaffMemberInput).run(ctx)` — the second filter is the compare-and-swap that makes a re-enrolment lose | `update` |
+| `record_totp_step` | `staff_members` | `update_many().where_(id).where_(last_totp_step.lt(step)).set(UpdateStaffMemberInput).run(ctx)` — monotonic by filter, which is what refuses a replayed code | `update` |
+| `set_password` | `staff_members` | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)` | `update` |
+| `record_sign_in` | `staff_members` | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)` | `update` |
+| `create` | `staff_sessions` | `create(CreateStaffSessionInput).run(ctx)` | `create` |
+| `load` | `staff_sessions` | `find_unique(id).run(ctx)` | `read` |
+| `touch` | `staff_sessions` | `update_many().where_(id).where_(last_seen_at.lt(now)).set(UpdateStaffSessionInput).run(ctx)` | `update` |
+| `mark_authenticated` | `staff_sessions` | `update_many().where_(id).where_(state.eq(pending_totp)).set(UpdateStaffSessionInput).run(ctx)` — the state filter is the swap | `update` |
+| `record_access_token` | `staff_sessions` | `update_many().where_(id).set(UpdateStaffSessionInput).run(ctx)` | `update` |
+| `delete` | `staff_sessions` | `delete_many().where_(id).run(ctx)` | `delete` |
+| `store_code` | `oauth_authorization_codes` | `create(CreateOauthAuthorizationCodeInput).run(ctx)` | `create` |
+| `consume_code` | `oauth_authorization_codes` | `find_unique(code_hash).run(ctx)` | `read` |
+| `consume_code` | `oauth_authorization_codes` | `update_many().where_(code_hash).where_(consumed_at.is_null()).set(UpdateOauthAuthorizationCodeInput).run(ctx)` — the swap: exactly one concurrent caller sees one row | `update` |
+
+**Twelve tables, and therefore twelve of the file's seventeen models.** The
+five with no statement at all are `PaymentIntent`, `Charge`, `Refund`,
+`LedgerTransaction` and `LedgerEntry`. That split is checkable against the
+schema without reading any of this: exactly those twelve models declare an
+`@@allow` arm in `schemas/vpay.cstack` and the five declare none, so no
+permission in the file is one no caller asked for. `schema.rs`'s
+`the_three_money_models_answer_no_rows_to_every_action` holds that emptiness
+for `PaymentIntent`, `Charge` and `Refund`; the two ledger models are in the
+same position with no test watching them.
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
@@ -2672,8 +2731,10 @@ is recognised as an implementation.
 
 Everything else. That sentence used to begin "Everything else, **including
 the two `disabled_clients` writes**"; those moved on 2026-09-06, and the
-`currencies` and `providers` upserts followed the same day, so the line is now
-three tables wide — plus one statement on a table that has otherwise moved.
+`currencies` and `providers` upserts followed the same day, so the line was
+~~three tables wide~~ **— twelve tables wide as of 2026-09-10, the count this
+clause stopped tracking after S4b, S5 and ADR-0017; the registry above is the
+list** — plus one statement on a table that has otherwise moved.
 That statement is `reconcile`'s disable pass, `UPDATE providers SET enabled =
 false WHERE code <> ALL($1) AND enabled`: it addresses rows by their
 *absence* from a list, which no generated builder expresses, and it is the

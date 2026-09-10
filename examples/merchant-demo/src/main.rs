@@ -198,7 +198,30 @@ const CALLBACK_NOT_EXERCISED: &str = concat!(
 /// reasoning as [`ConfirmPaymentIntentParams`]'s own shape.
 enum Steering {
     /// MTN: the payer's MSISDN, which is the one field of a push exchange a
-    /// merchant chooses. A documentation number in the `2376000000xx` block.
+    /// merchant chooses.
+    ///
+    /// The three [`OUTCOMES`] carry are **hex steering codes, not phone
+    /// numbers** — the last three characters are what the rail stub keys a
+    /// WireMock scenario on, and a Cameroon E.164 number has eight digits
+    /// after the `6`, no letters:
+    ///
+    /// | Value | Outcome | Mapping that keys on it |
+    /// |---|---|---|
+    /// | `237600000ce0` | settles (`PENDING`, then `SUCCESSFUL`) | `wiremock/mtn/mappings/requesttopay-scenario.json`, scenario `mtn-e2e-poll` |
+    /// | `237600000f01` | `insufficient_funds` (`FAILED`/`NOT_ENOUGH_FUNDS`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-decline` |
+    /// | `237600000f02` | `payer_timeout` (`FAILED`/`COULD_NOT_PERFORM_TRANSACTION`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-expiry` |
+    ///
+    /// Each has a digits-only twin — `…100`, `…101`, `…102` — matched into
+    /// the *same* scenario by the same mapping's regex, because the checkout
+    /// page's own validator
+    /// (`frontends/apps/checkout/src/lib/msisdn.ts`) refuses a letter and a
+    /// payer could never type the hex form. This program sends the hex
+    /// spelling, and step 6 shows `/v1` refusing one of them with a `400`.
+    ///
+    /// **Corrected 2026-09-10 (issue #87):** this said "a documentation
+    /// number in the `2376000000xx` block", which none of the three is —
+    /// they are `2376000000f0x`/`…0ce0`, and calling them documentation
+    /// numbers is what made the `400` in step 6 read as a bug.
     Msisdn(&'static str),
     /// Orange: where the rail returns the payer afterwards. The *outcome* on
     /// this rail is steered by the amount instead (see [`Outcome::amount`]),
@@ -1581,19 +1604,27 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The two MSISDNs `wiremock/mtn/mappings/basicuserinfo.json` answers for,
-/// and what each one is here to show.
+/// The three numbers step 6 looks up, and what each one is here to show.
 ///
-/// Digits only, both of them: `GET /v1/account_holders` validates Cameroon
-/// E.164 server-side, so the hex steering numbers step 4 uses
-/// (`237600000f01`) are refused before the rail is called — which is itself
-/// worth a reader seeing, and is why the third row exists.
+/// The first two are digits only and are the pair
+/// `wiremock/mtn/mappings/basicuserinfo.json` answers for: `GET
+/// /v1/account_holders` validates Cameroon E.164 server-side, so the hex
+/// steering numbers step 4 uses (`237600000f01`) are refused before the rail
+/// is called — which is itself worth a reader seeing, and is why the third
+/// row exists.
 ///
-/// `237600000100` is the same number step 4's *settling* MTN outcome uses.
-/// That is deliberate: a merchant's real question is "does the number I am
-/// about to send money to belong to the person I think it does", and showing
-/// the same number both paying and having a name is closer to that than two
-/// unrelated fixtures would be.
+/// **Corrected 2026-09-10 (issue #87).** This said "`237600000100` is the
+/// same number step 4's *settling* MTN outcome uses". It is not: step 4
+/// sends `237600000ce0` ([`OUTCOMES`]). `…100` is that number's digits-only
+/// **twin** — `requesttopay-scenario.json` matches
+/// `237600000(ce0|100)` into the one `mtn-e2e-poll` scenario, so it walks
+/// the identical `PENDING` → `SUCCESSFUL` path — and `basicuserinfo.json`
+/// gives it a named holder on top. The point the old sentence was making
+/// survives the correction, which is why it is restated rather than
+/// deleted: a merchant's real question is "does the number I am about to
+/// send money to belong to the person I think it does", and one number that
+/// both pays and has a name is closer to that than two unrelated fixtures.
+/// It is simply not the number this program pays with.
 const ACCOUNT_HOLDER_CASES: [(&str, AccountHolderExpectation, &str); 3] = [
     (
         "237600000100",

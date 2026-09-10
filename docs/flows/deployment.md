@@ -188,7 +188,7 @@ here is a hard failure, not a degraded mode.
 | Needed | Supplied as | Missing ⇒ |
 |---|---|---|
 | `VPAY_CONFIG` | baked `ENV` in the image | exit 78 |
-| `DATABASE_URL` | Secret (`database.existingSecret`) | non-zero exit at boot |
+| `DATABASE_URL` | Secret (`database.existingSecret`) | exit 78, **both** modes (it was a bare non-zero — `1` — until 2026-09-10, issue #87) |
 | Every `${VAR}` in the config | Secret, `envFrom` (`rails.existingSecret`) | exit 78, **both** binaries |
 | The RS256 signing key | Secret, mounted file (`signingKey.existingSecret`) | exit 78, **server only** |
 | Postgres, reachable and migratable | outside the chart entirely | exit 69 |
