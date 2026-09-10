@@ -2617,3 +2617,127 @@ async fn the_dashboard_token_is_re_minted_from_a_live_session_and_from_nothing_e
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------- test 25
+
+/// **The stage route does not move `last_seen_at`, and `/staff/session`
+/// does.**
+///
+/// # What the property is for
+///
+/// ADR-0017 decision 2 gives a session a thirty-minute *idle* bound, and
+/// `/staff/session` moves it on every accepted read — that is what makes it
+/// idle rather than "since login". `session_stage` deliberately does not, and
+/// the reason is the one case where a session is half a credential: a caller
+/// holding a `pending_totp` session has presented a password and no second
+/// factor. Being *asked* for a credential is not use of a session, so a page
+/// left open on the code form — or a script polling this route, which is
+/// unauthenticated and unlimited exactly as `/staff/session` is — must not be
+/// able to hold a half-authenticated session open until the twelve-hour
+/// absolute bound. It idles out in thirty minutes like any other.
+///
+/// # Why it needs a test rather than the comment it had
+///
+/// The branch that added the route stated this in four places — the handler's
+/// doc comment, `docs/flows/dashboard-auth.md`, the ADR amendment and the
+/// implementation notes — and nothing measured it. Measured by the exp44
+/// review before this test existed: one line,
+/// `state.repositories().touch(&session.id, now).await?;`, added to
+/// `session_stage`, and `staff_sign_in`, `boot_coherence` and
+/// `dashboard_read_surface` ran **43 of 43 green**.
+///
+/// The row is **aged** before each read because `StaffSessions::touch` filters
+/// on `last_seen_at < now`: a stamp inside the same instant writes nothing, so
+/// a test that did not age the row could not tell a deliberate no-op from an
+/// accidental one. And the `/staff/session` control is what stops this passing
+/// because touching broke everywhere at once.
+#[tokio::test]
+async fn the_stage_route_does_not_move_the_idle_bound() -> anyhow::Result<()> {
+    /// Where the idle bound stands, read straight off the row.
+    async fn idle_bound(pool: &sqlx::PgPool, id: &str) -> anyhow::Result<OffsetDateTime> {
+        Ok(
+            sqlx::query("SELECT last_seen_at FROM staff_sessions WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .context("reading last_seen_at")?
+                .get("last_seen_at"),
+        )
+    }
+
+    /// Puts the idle bound five minutes into the past, so that any touch is
+    /// unmistakable and none of it is inside `touch`'s `last_seen_at < now`
+    /// filter.
+    async fn age(pool: &sqlx::PgPool, id: &str) -> anyhow::Result<OffsetDateTime> {
+        sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+            .bind(OffsetDateTime::now_utc() - time::Duration::minutes(5))
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("aging the session")?;
+        idle_bound(pool, id).await
+    }
+
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+    let pool = harness.repositories.op_store_pool();
+    let id = hex(&sha256(enrolling.session.as_bytes()));
+
+    // ---- a `pending_totp` session: the case the property exists for -------
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        idle_bound(&pool, &id).await?,
+        aged,
+        "THE STAGE READ MUST NOT MOVE THE IDLE BOUND. A session that has proved a password and \
+         no second factor must idle out on schedule however often this route is asked"
+    );
+
+    // ---- and after the second factor, still not ---------------------------
+    let code = enrolling
+        .totp
+        .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", &code), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        idle_bound(&pool, &id).await?,
+        aged,
+        "the stage read is not use of a session at either stage"
+    );
+
+    // ---- the control: `/staff/session` DOES move it -----------------------
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&enrolling.session), None)
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        idle_bound(&pool, &id).await? > aged,
+        "the control: an accepted /staff/session read is what moves the idle bound, so the \
+         assertions above are about this route and not about a touch that stopped working"
+    );
+    Ok(())
+}
