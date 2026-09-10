@@ -150,3 +150,44 @@ so the case cannot pass because touching broke everywhere.
    `docs/runbooks/demo.md`, and it means the walkthrough stack re-mints its
    token every twenty-four seconds. Worth a maintainer's eye because it is the
    stack a person clicks through.
+
+## The gate, recipe by recipe, on the review head
+
+Exit codes read from a file, never from a banner.
+
+| Recipe | Measured |
+|---|---|
+| `fmt-check` | clean |
+| `clippy --workspace --all-targets -- -D warnings` | clean |
+| `verify` | the twelve gates; `verify-migrations` **40 files** against the manifest, `verify-links` **1042 links in 204 files** |
+| `test-rust` | **did not complete — see below.** Best complete run: **1671 of 1671, 0 skipped, exit 0**, on the rebased head before this review's three added tests. Furthest the review head reached: **1522 of 1523 run**, the one failure a container timeout |
+| `test-doc` | **111 passed, 1 ignored** |
+| `verify-ignored` | **0 ignored (expected 0), 46 binaries (expected 46), 1674 total** |
+| `lint-web` | clean |
+| `test-web` | all green — dashboard **182 in 21 files**, checkout 507 in 24, ui 74 in 18, shop 102 in 12, nodejs SDK 208 in 9, stripe-js 146 in 9, config 63, tokens 8, api-client 4 |
+| `deny` | advisories, bans, licenses, sources all ok |
+| `just test-e2e` (`demo_project=exp44-review`, `demo_port=19000`, `demo_dashboard_port=14000`) | **19 of 19 passing**, exit 0 — dashboard **9**, checkout 1, shop-hosted 3, shop-embedded 6 |
+
+### Why `test-rust` did not complete, and why that is the host
+
+Six consecutive runs aborted at five **different** tests — 1425, 1545, 1234,
+1523, 1209 and 1209 of 1674 — and every one of them on the same stderr:
+
+    Error: postgres:16-alpine container starts (it is cached locally on this machine)
+    Caused by: failed to create a container: Timeout error
+
+`journalctl --user -u docker` carries the matching cause,
+`libnetwork: restoring thread network namespace failed: operation not
+permitted`, and the daemon had accumulated sixteen containers stuck in
+`created`. A plain `docker run --rm postgres:16-alpine` succeeded throughout,
+and lowering nextest's parallelism to four and then to three moved the failure
+without removing it. This is the rootless-Docker fault this machine has had
+before; its known fix is a daemon restart, which was **not** performed because
+other work was holding live compose stacks on the same daemon — including the
+user's own `vpay-demo`.
+
+What that leaves unproven is only the interaction of the three added tests with
+the rest of the workspace. Each was run individually against a real Postgres,
+each passes, and each fails against its own mutation. Nothing else on this
+branch changed between the complete 1671-of-1671 run and the review head except
+those three tests, one `justfile` grep and four sentences of prose.
