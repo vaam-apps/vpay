@@ -45,6 +45,7 @@ import {
   readOrder,
   shopPublishableKey,
   shopUrl,
+  waitForOrderStatus,
 } from "../support/shop";
 
 /** Drives the shop's UI to `/orders/{id}/embedded`. */
@@ -338,6 +339,72 @@ describe("the shop, paid inside an iframe on its own page", () => {
         readOrder(orderId).then((order) => {
           expect(order.status).to.equal("unpaid");
         });
+      });
+    });
+  });
+
+  it("a decline at submit reaches the shop as `failed`, through the webhook", () => {
+    // WHAT THIS IS THE FIRST BROWSER EVIDENCE OF.
+    //
+    // MTN refuses `unknownPayer` on the SUBMIT, before any charge is polled,
+    // so vpay commits the failure in `persist_decline` rather than in the
+    // worker's settlement. That path emitted no event until 2026-09-10 (vpay
+    // issue #57): the charge and `last_payment_error` were written, nothing
+    // signed was sent, and this shop — which moves an order only from a
+    // signed event — left the order `unpaid` for ever. `README.md` and the
+    // test-numbers panel said so in as many words, and now say `failed`.
+    //
+    // The Rust suite proves the event is written and delivered. What no test
+    // covered is the composition: a real browser, the real stack, the shop's
+    // own database. Not one line of this shop changed for the row to move, so
+    // this case is the only thing standing between the README's new claim and
+    // nobody having watched it happen.
+    buyWithoutLeavingTheShop();
+
+    orderIdFromUrl().then((orderId) => {
+      inFrame('[data-screen="select_rail"]').should("be.visible");
+      inFrame('button[data-rail="mtn_momo"]').click();
+      inFrame("#vpay-msisdn").type(MTN.unknownPayer);
+      inFrame('button[type="submit"]').click();
+
+      // The payer's half: the confirm is a 409 and vpay's page returns them
+      // to the number they submitted, with the reason on the field. There is
+      // no outcome screen for this one — nothing was ever in flight.
+      inFrame('[data-testid="msisdn-problem"]', { timeout: 60_000 })
+        .should("be.visible")
+        .and("not.be.empty");
+
+      // The merchant's half, and the one that did not exist before: the
+      // shop's own database, moved by its own webhook handler after verifying
+      // vpay's signature.
+      waitForOrderStatus(orderId, "failed");
+      readOrder(orderId).then((order) => {
+        expect(order.status, "the shop's own orders.get").to.equal("failed");
+        expect(order.paymentIntentId).to.match(/^pi_/);
+      });
+    });
+  });
+
+  it("the shop cancels the intent and the order reaches `cancelled`, through the webhook", () => {
+    // The other transition vpay emitted nothing for until 2026-09-10 (issue
+    // #57), and the other claim `README.md` now makes. `orders.cancel` calls
+    // `POST /v1/payment_intents/{id}/cancel` and writes NOTHING locally — the
+    // `cancelled` status arrives as a signed `payment_intent.canceled`, which
+    // is why the button's copy says "asked", not "done".
+    //
+    // A cancel is legal here because nothing was ever confirmed: the intent
+    // is still `requires_payment_method` and no charge exists, which are
+    // exactly the two guards `payment_intents::cancel_in_tx` carries.
+    buyWithoutLeavingTheShop();
+
+    orderIdFromUrl().then((orderId) => {
+      cy.visit(`${shopUrl()}/orders/${orderId}`);
+      cy.get('[data-testid="order-cancel"]').click();
+      cy.get('[data-testid="order-action-note"]').should("be.visible");
+
+      waitForOrderStatus(orderId, "cancelled");
+      readOrder(orderId).then((order) => {
+        expect(order.status, "the shop's own orders.get").to.equal("cancelled");
       });
     });
   });

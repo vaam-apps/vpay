@@ -1066,6 +1066,125 @@ async fn a_hand_written_provider_insert_must_now_name_every_capability_column() 
     Ok(())
 }
 
+/// Migration `0039` applied to an `events` table that already holds one row
+/// of **every** type it names — the deployment step, not a parse — and
+/// refused by a stored row it does not name.
+///
+/// # Why this is not covered by the vocabulary test
+///
+/// `customers::the_event_vocabulary_holds_exactly_the_customer_types_that_have_writers`
+/// asserts what the constraint *accepts* once it is in place, on an empty
+/// table. `ADD CONSTRAINT … CHECK` does something else as well: it **scans
+/// the existing rows** and fails the whole migration if one of them violates
+/// it. That is the half a deployment meets and a fresh test database never
+/// does — every suite in this repository migrates an empty database — and it
+/// is the half that decides whether an upgrade boots.
+///
+/// `0039` widens the list rather than narrowing it, so the scan is expected
+/// to pass; the case exists because that is a property of the *diff between
+/// two lists* and nothing was checking it. The next migration that reopens
+/// this vocabulary by removing a label — a real possibility, since the list
+/// is meant to shrink when a writer is retired — fails here with the reason
+/// named, instead of failing on a customer's database at boot.
+///
+/// The migration's own text is `include_str!`d, exactly as
+/// `migration_0033_changes_no_stored_capability_on_a_populated_table` does,
+/// so this cannot pass against a copy of the DDL the file no longer carries.
+/// It is applied a second time on top of itself, which its `DROP CONSTRAINT`
+/// / `ADD CONSTRAINT` pair makes well-defined.
+#[tokio::test]
+async fn migration_0039_validates_a_populated_events_table_in_both_directions()
+-> anyhow::Result<()> {
+    /// Migration 0039 itself, read from the file.
+    const MIGRATION_0039: &str =
+        include_str!("../../../migrations/0039_events-customer-created-updated.sql");
+
+    /// The fifteen labels `type_is_a_documented_event` names on this head.
+    /// Written out rather than parsed out of the migration, so a label
+    /// silently dropped from the file is a failure here and not a shorter
+    /// loop that still passes.
+    const EVERY_TYPE: [&str; 15] = [
+        "payment_intent.created",
+        "payment_intent.processing",
+        "payment_intent.succeeded",
+        "payment_intent.payment_failed",
+        "payment_intent.canceled",
+        "charge.refunded",
+        "charge.refund.updated",
+        "checkout.session.expired",
+        "customer.created",
+        "customer.updated",
+        "customer.deleted",
+        "invoice.created",
+        "invoice.finalized",
+        "invoice.paid",
+        "invoice.voided",
+    ];
+
+    let (_container, pool) = migrated_postgres().await?;
+
+    for kind in EVERY_TYPE {
+        sqlx::query(
+            "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+             VALUES ($1, 'merchant_a', false, $2, 'obj_1', '{}'::jsonb)",
+        )
+        .bind(format!("evt_{}", Uuid::new_v4().simple()))
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("`{kind}` must be storable before the re-apply means anything"))?;
+    }
+
+    sqlx::raw_sql(MIGRATION_0039)
+        .execute(&pool)
+        .await
+        .context(
+            "0039 applied to a populated events table must succeed: ADD CONSTRAINT scans every \
+             stored row, and a deployment's events table is never empty",
+        )?;
+
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .context("counting the rows the migration validated")?;
+    assert_eq!(
+        kept,
+        i64::try_from(EVERY_TYPE.len()).expect("fifteen fits"),
+        "the migration changes no data: every row it validated is still there"
+    );
+
+    // The other direction, so "it applied" is not a thing this test can say
+    // about a constraint that validates nothing. A row the new list does not
+    // name has to stop the migration — which is exactly what would happen on
+    // a real database if a label were removed while rows carrying it existed.
+    sqlx::raw_sql("ALTER TABLE events DROP CONSTRAINT type_is_a_documented_event")
+        .execute(&pool)
+        .await
+        .context("dropping the constraint to plant the offending row")?;
+    sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ($1, 'merchant_a', false, 'customer.subscription.created', 'obj_1', '{}'::jsonb)",
+    )
+    .bind(format!("evt_{}", Uuid::new_v4().simple()))
+    .execute(&pool)
+    .await
+    .context("planting a row outside the vocabulary")?;
+
+    let refused = sqlx::raw_sql(MIGRATION_0039).execute(&pool).await;
+    let error = refused.expect_err(
+        "0039 must refuse to apply over a stored row its list does not name; if it applied, \
+         ADD CONSTRAINT is not validating and this migration proves nothing about the rows \
+         already in a deployment's database",
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("type_is_a_documented_event"),
+        "the failure must name the constraint an operator has to reconcile: {message}"
+    );
+
+    Ok(())
+}
+
 /// Migration 0033 run against a **populated** `providers` table changes no
 /// stored value — including on rows the previous release's three-column
 /// `INSERT` created out of the defaults it drops.

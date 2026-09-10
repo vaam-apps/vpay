@@ -1771,6 +1771,217 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A cancel and a settlement racing for one intent leave **one** terminal
+/// state and **one** terminal event, whichever of them commits first.
+///
+/// # The window this is about, and why the `NOT EXISTS` guard does not close it
+///
+/// `payment_intents::cancel_in_tx` refuses an intent that has a live charge,
+/// as a `NOT EXISTS` predicate of its own `UPDATE` rather than as a preceding
+/// `SELECT`. That closes the window in which a charge is already committed
+/// when the cancel's statement takes its snapshot. It cannot close the other
+/// one: a confirm commits its charge *while* a cancel's transaction is open,
+/// which is a legal interleaving of two requests and not a defect in either.
+/// What stops that from becoming a payment settled onto a withdrawn intent is
+/// the **settlement's own** status guard —
+/// `payment_intents::succeed_after_submission`'s
+/// `WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in.
+///
+/// Nothing asserted that before this case, and the cancel becoming an event
+/// writer (issue #57) is what makes it worth asserting: a merchant now
+/// receives `payment_intent.canceled`, so "exactly one terminal event" is a
+/// claim someone builds dedupe logic on rather than an internal detail.
+///
+/// # Direction 1 is a real interleaving, forced with a barrier
+///
+/// The cancel's transaction is held open after its `UPDATE` and its event.
+/// A charge is then committed on another connection — which no lock prevents,
+/// because a charge insert does not touch `payment_intents` — and
+/// `Settlement::apply_succeeded` is started against it. It updates `charges`,
+/// reaches `payment_intents`, and **blocks** on the row the cancel holds;
+/// the 750 ms assertion below is what proves it blocked rather than passed.
+/// Releasing the cancel then makes the settlement re-evaluate its guard
+/// against the committed `canceled` row and match nothing.
+///
+/// The settlement's answer is [`vpay_db::DbError::WriteMatchedNoRow`], and
+/// that is asserted rather than glossed: `vpay_db::settlement`'s own comment
+/// says such a case "pages rather than being reported as a merchant's
+/// problem". This is a rail-accepted payment on a withdrawn intent — money
+/// an operator has to reconcile by hand — and the property that matters is
+/// that it is **loud and rolled back**, not that it is impossible. The charge
+/// is asserted still `submitting` afterwards for exactly that reason: a
+/// settlement that half-committed would leave the charge succeeded with no
+/// event and no intent to match it.
+///
+/// # Direction 2 is the outcome, asserted sequentially
+///
+/// `Settlement::apply_succeeded` opens and commits its own transaction, so it
+/// cannot be held open from a test without a seam in shipping code
+/// (AGENTS.md rule 1). The state it leaves behind is what the cancel then
+/// meets, and the cancel's compare-and-swap is a single statement whose
+/// answer does not depend on how it got there: a `succeeded` intent is
+/// refused, and no `payment_intent.canceled` is written for it.
+#[tokio::test]
+async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // ---------------------------------------- direction 1: the cancel wins
+    repositories
+        .insert(&fixture_intent("pi_race_cancel_first", "XAF"))
+        .await
+        .context("inserting the intent both writers want")?;
+
+    let (canceled, cancel_is_in) = tokio::sync::oneshot::channel::<()>();
+    let (release, wait_for_release) = tokio::sync::oneshot::channel::<()>();
+    let canceller = Arc::clone(&repositories);
+    let cancel = tokio::spawn(async move {
+        canceller
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let row = tx
+                        .cancel_in_tx("merchant_a", "pi_race_cancel_first")
+                        .await?
+                        .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                            table: "payment_intents",
+                            key: "pi_race_cancel_first".to_owned(),
+                        })?;
+                    tx.insert_in_tx(&vpay_db::NewEvent {
+                        id: vpay_db::events::event_id(),
+                        merchant_id: row.merchant_id.clone(),
+                        livemode: row.livemode,
+                        event_type: "payment_intent.canceled".to_owned(),
+                        object_id: row.id.clone(),
+                        data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                    })
+                    .await?;
+                    let _ = canceled.send(());
+                    // The row lock is held for as long as this transaction
+                    // is open, which is the whole of the barrier.
+                    let _ = wait_for_release.await;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    });
+
+    cancel_is_in.await.context("the cancel took the row")?;
+
+    // The confirm's half of the interleaving: a charge committed on another
+    // connection while the cancel's transaction is open. Nothing refuses it
+    // — `charges` is a different table and the cancel's `NOT EXISTS` has
+    // already been evaluated.
+    let mut charge = fixture_charge("ch_race_cancel_first", "pi_race_cancel_first");
+    charge.state = "submitted".to_owned();
+    one_tx::insert_for_intent(repositories.as_ref(), &charge)
+        .await
+        .context("the charge a confirm commits before calling the rail")?;
+
+    let settler = Arc::clone(&repositories);
+    let settlement = tokio::spawn(async move {
+        settler
+            .apply_succeeded(
+                "ch_race_cancel_first",
+                Some("MTN-TXN-RACE"),
+                "evt_race_cancel_first",
+                &json!({"id": "pi_race_cancel_first", "object": "payment_intent", "status": "succeeded"}),
+                None,
+            )
+            .await
+    });
+
+    // It must not answer while the cancel holds the intent's row. 750 ms for
+    // `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value`'s
+    // reason: the passing direction cannot lose this race, because the
+    // cancel's transaction stays open until `release` fires below.
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    assert!(
+        !settlement.is_finished(),
+        "the settlement answered while the cancel still held the intent's row lock, so the \
+         two are not serialised and both terminal writes can land"
+    );
+
+    release.send(()).expect("the cancel is still waiting");
+    cancel
+        .await
+        .context("the cancel task did not panic")?
+        .context("the cancel commits")?;
+
+    let refused = settlement
+        .await
+        .context("the settlement task did not panic")?
+        .expect_err("a settlement onto a canceled intent must not succeed quietly");
+    assert!(
+        matches!(
+            refused,
+            vpay_db::DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                ..
+            }
+        ),
+        "the settlement must fail loudly on the intent, not skip it: {refused:?}"
+    );
+
+    let after = PaymentIntents::get_for_merchant(
+        repositories.as_ref(),
+        "merchant_a",
+        "pi_race_cancel_first",
+    )
+    .await?
+    .context("the intent survives")?;
+    assert_eq!(after.status, "canceled", "one terminal state, and it is the cancel's");
+    assert_eq!(
+        events_about(&pool, "pi_race_cancel_first").await?,
+        vec!["payment_intent.canceled".to_owned()],
+        "one terminal event: a merchant told a payment was withdrawn must not also be told \
+         it succeeded"
+    );
+    assert_eq!(
+        charge_state(&pool, "ch_race_cancel_first").await?,
+        "submitted",
+        "the refused settlement rolled back whole — a charge left `succeeded` with no event \
+         and no matching intent is the state an operator cannot reconcile"
+    );
+
+    // ------------------------------------ direction 2: the settlement wins
+    live_charge(
+        repositories.as_ref(),
+        "pi_race_settle_first",
+        "ch_race_settle_first",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    repositories
+        .apply_succeeded(
+            "ch_race_settle_first",
+            Some("MTN-TXN-RACE-2"),
+            "evt_race_settle_first",
+            &json!({"id": "pi_race_settle_first", "object": "payment_intent", "status": "succeeded"}),
+            None,
+        )
+        .await
+        .context("the settlement commits")?
+        .context("a live charge settles")?;
+
+    let refused = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_race_settle_first")
+        .await
+        .context("the cancel statement runs")?;
+    assert!(
+        refused.is_none(),
+        "a succeeded intent cannot be canceled: {refused:?}"
+    );
+    assert_eq!(
+        events_about(&pool, "pi_race_settle_first").await?,
+        vec!["payment_intent.succeeded".to_owned()],
+        "and the refusal writes no event — `cancel_with_event` abandons its transaction on \
+         exactly this answer"
+    );
+
+    Ok(())
+}
+
 /// A decline at submit writes the charge, the `last_payment_error` and the
 /// `payment_intent.payment_failed` in **one** transaction — and a rollback
 /// leaves all three undone.

@@ -1314,6 +1314,26 @@ async fn a_retention_stamp_never_moves_a_customers_clock_backwards() -> anyhow::
             .context("stamping forward")?
     );
 
+    // AND NEITHER STAMP EMITTED ANYTHING. Migration `0039`'s header says so
+    // in prose — `touch_last_used` moves `last_used_at`, a column on no wire
+    // object at all, so an event for it would carry a body byte-identical to
+    // the previous one, once per payment, for ever — and nothing asserted it
+    // until the sabotage review of 2026-09-10. It is the cheap half of a
+    // real risk: `customer.updated` now exists, and the stamp is a write to
+    // the same table on the confirm path, so a later author reaching for
+    // "every customer write emits" would turn one webhook per payment into
+    // the merchant's problem. The only event about this customer is the one
+    // its `POST` wrote.
+    assert_eq!(
+        events_about(&h.pool, &customer)
+            .await?
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>(),
+        vec!["customer.created".to_owned()],
+        "the retention stamp must emit nothing: it moves a column that is on no wire object"
+    );
+
     h.shutdown().await;
     Ok(())
 }
@@ -2065,15 +2085,39 @@ async fn two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the
             "round {round}: the `right` key was clobbered: {stored}"
         );
 
-        // Two updates, two events, and the **last** one describes the state
-        // that is actually stored — which is the whole reason the lock is
-        // here rather than the race merely being tolerated.
+        // Two updates, two events, and **each carries the state its own
+        // transaction committed** — which is the whole reason the lock is
+        // here rather than the race merely being tolerated. They do not
+        // coalesce: two `POST`s are two transitions, and a merchant building
+        // dedupe logic on "one transition, one event" is entitled to both.
         let emitted = events_about(&h.pool, &customer).await?;
         let kinds: Vec<&str> = emitted.iter().map(|(kind, _)| kind.as_str()).collect();
         assert_eq!(
             kinds,
             vec!["customer.created", "customer.updated", "customer.updated"],
             "round {round}"
+        );
+        // The FIRST update's event is the one an ordering assertion alone
+        // would let through. Whichever request took the lock first merged
+        // onto an empty map, so its body carries exactly **one** of the two
+        // keys. An event carrying both would mean it was rendered from a row
+        // the second transaction had already written — the body describing a
+        // state its own transaction did not commit, which is the mirror of
+        // the bug the lock closes and is not caught by the assertion on the
+        // last event. Added by the sabotage review, 2026-09-10.
+        let first_update = emitted
+            .get(1)
+            .map(|(_, data)| data.clone())
+            .expect("three events");
+        let first_metadata = first_update
+            .get("metadata")
+            .and_then(serde_json::Value::as_object)
+            .expect("the event body carries a metadata object");
+        assert_eq!(
+            first_metadata.len(),
+            1,
+            "round {round}: the first update committed one key and its event must say so, \
+             not report the merge the second one went on to make: {first_update}"
         );
         let last = emitted
             .last()

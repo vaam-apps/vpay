@@ -42,6 +42,17 @@ export const MTN = {
   insufficientFunds: "237600000101",
   /** Arms `FAILED / COULD_NOT_PERFORM_TRANSACTION` — the payer let it expire. */
   payerTimeout: "237600000102",
+  /**
+   * Refused on the **submit**, before any charge is polled:
+   * `requesttopay.json` answers `400 PAYER_NOT_FOUND` to this `partyId`.
+   *
+   * The only one of these four whose outcome is decided by
+   * `vpay_api::v1::payment_intents::persist_decline` rather than by the
+   * worker's status query — which is why it emitted no event, and left a
+   * webhook-driven shop's order `unpaid` for ever, until vpay issue #57
+   * (2026-09-10).
+   */
+  unknownPayer: "237600000400",
 } as const;
 
 /** Products from the seeded catalogue (`prisma/migrations/…_seed_catalogue`). */

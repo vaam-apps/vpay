@@ -222,15 +222,26 @@ replaced (`PaymentIntents::cancel`, `Customers::create`, `Customers::update`)
 were **deleted** rather than kept beside their transactional twins, because no
 gate in this repository objects to a `pub` method nobody calls.
 
-**Only one of the three has been driven to a receiver.**
-`a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver` takes
-a cancel through the shipping route, the shipping fan-out and the shipping
-delivery handler and reads the bytes back out of the WireMock receiver's own
-journal. The submit-time `payment_intent.payment_failed`, `customer.created`
-and `customer.updated` are asserted at the `events` row and no further. The
-fan-out is type-agnostic — it reads by `seq` and branches on nothing — so
-"they would deliver too" is an argument and not a measurement, and it is
-written here in those words.
+**Two of the three have been driven to a receiver, and the `customer.*` pair
+has not.** `a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver`
+and `a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver`
+(both in `backends/tests/integration/tests/webhooks.rs`) take their transition
+through the shipping route, the shipping fan-out and the shipping delivery
+handler, and read the bytes back out of the WireMock receiver's own journal —
+the second one against a real MTN stub answering `400 PAYER_NOT_FOUND`, which
+is the only way to reach `persist_decline` from the API without a test seam.
+The second was added by the sabotage review of 2026-09-10; until then this
+paragraph said "only one of the three", and the delivery of the submit-time
+`payment_intent.payment_failed` was an argument. It was worth measuring
+rather than arguing because that body is the only
+`payment_intent.payment_failed` in the system rendered by `vpay-api` instead
+of by `vpay_db::settlement`.
+
+`customer.created` and `customer.updated` are still asserted at the `events`
+row and no further. The fan-out is type-agnostic — it reads by `seq` and
+branches on nothing, and has now been observed carrying four types — so "they
+would deliver too" remains an argument for those two, and it is written here
+in those words.
 
 **Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
 `events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and

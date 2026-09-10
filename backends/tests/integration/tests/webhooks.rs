@@ -1684,6 +1684,220 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
     }
 }
 
+// ------------------------------ payment_intent.payment_failed, at submit ---
+
+/// The documentation MSISDN `wiremock/mtn/mappings/requesttopay.json` answers
+/// `400 PAYER_NOT_FOUND` to, matched on the outgoing body's
+/// `$.payer.partyId`.
+///
+/// The payer is the only part of a confirm's rail request a merchant can
+/// choose, so it is the only way to reach a rail's decline branch from the
+/// API without a test seam in shipping code —
+/// `confirm_rails::UNKNOWN_PAYER_MSISDN`'s reason, and the same number.
+const UNKNOWN_PAYER_MSISDN: &str = "237600000400";
+
+/// The `wiremock/{rail}` root the conformance suite and `compose.yml` both
+/// mount, so a stub fixed in one place is fixed everywhere.
+fn rail_mappings_dir(rail: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../conformance/wiremock")
+        .join(rail)
+}
+
+/// A decline **at submit** emits exactly one `payment_intent.payment_failed`,
+/// and it walks the whole outbox to the receiver.
+///
+/// # Why this case exists, and what it is not a duplicate of
+///
+/// `confirm_rails::a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`
+/// proves the write: the charge, `last_payment_error`, and one event, all in
+/// `persist_decline`'s own transaction. It stops at the `events` row, because
+/// that harness boots no receiver.
+///
+/// The branch that added the event (issue #57) argued the rest — "the fan-out
+/// is type-agnostic, so it would deliver too" — and said in
+/// `docs/flows/webhooks.md` that it was an argument and not a measurement.
+/// This is the measurement. It matters because the argument is not quite
+/// free: `handle_fan_out` reads `events` by `seq` and branches on nothing,
+/// but the *body* this path writes is rendered by `vpay-api` rather than by
+/// `vpay_db::settlement`, and it is the only `payment_intent.payment_failed`
+/// body in the system with that provenance. A delivery is what proves the
+/// bytes a merchant's verifier receives are well-formed and carry the
+/// failure a merchant branches on.
+///
+/// # The money invariants it pins, at the same time
+///
+/// A payment the rail refused outright must leave: the intent back at
+/// `requires_payment_method` (the lifecycle has no `failed` status) carrying
+/// `last_payment_error`; **one** charge row, terminal; **one** event; and no
+/// `client_secret` anywhere in a body that is stored, signed and replayed.
+#[tokio::test]
+async fn a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver() {
+    let h = harness().await.expect("harness");
+    let mtn = vpay_testkit::containers::start_wiremock(&rail_mappings_dir("mtn"))
+        .await
+        .expect("the MTN stub container starts");
+    let mtn_url = format!(
+        "http://127.0.0.1:{}",
+        mtn.get_host_port_ipv4(8080)
+            .await
+            .expect("the MTN stub's mapped port")
+    );
+
+    let (server_pem, _) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let receiver_url = h.receiver_url.clone();
+    let served = serve(&h.repositories, &server_pem, move |base_url| {
+        decline_config(base_url, jwks_a, &receiver_url, &mtn_url)
+    })
+    .await
+    .expect("a server");
+
+    let client = vpay_sdk::Client::builder(&served.base_url)
+        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .build()
+        .expect("the SDK client builds");
+
+    let intent = client
+        .payment_intents()
+        .create(cancel_test_intent(), vpay_sdk::RequestOptions::new())
+        .await
+        .expect("creating the intent the rail will refuse");
+
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            vpay_sdk::ConfirmPaymentIntentParams::mtn_momo(UNKNOWN_PAYER_MSISDN),
+            vpay_sdk::RequestOptions::new(),
+        )
+        .await
+        .expect_err("the rail refuses this payer at submit");
+    match error {
+        vpay_sdk::Error::Api { status, .. } => assert_eq!(
+            status, 409,
+            "the rail answered and its answer was `no`; that is not a 5xx"
+        ),
+        other => panic!("expected a vpay API error envelope, got {other:?}"),
+    }
+
+    // THE MONEY INVARIANTS, read out of Postgres rather than off a response.
+    let after = client
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .expect("re-reading the refused intent");
+    assert_eq!(
+        after.status,
+        vpay_sdk::IntentStatus::RequiresPaymentMethod,
+        "the lifecycle has no `failed` status: a declined intent goes back with an error"
+    );
+    assert_eq!(
+        after.last_payment_error.as_ref().map(|e| e.code.as_str()),
+        Some("invalid_payer"),
+        "the code a merchant branches on is on the object"
+    );
+    let charges: i64 = sqlx::query_scalar("SELECT count(*) FROM charges WHERE payment_intent_id = $1")
+        .bind(&intent.id)
+        .fetch_one(&h.pool)
+        .await
+        .expect("counting the charges");
+    assert_eq!(charges, 1, "one charge per intent, forever");
+
+    let emitted = events_for_object(&h.pool, &intent.id)
+        .await
+        .expect("events");
+    let (kind, data) = match emitted.as_slice() {
+        [one] => one.clone(),
+        other => panic!("a decline at submit must emit exactly one event, got {other:?}"),
+    };
+    assert_eq!(kind, "payment_intent.payment_failed");
+    assert_eq!(
+        data.pointer("/last_payment_error/code"),
+        Some(&json!("invalid_payer")),
+        "the event body carries the failure, so a webhook-driven merchant needs no second \
+         call: {data}"
+    );
+    assert_eq!(
+        data.get("client_secret"),
+        None,
+        "an event body is stored, signed, delivered at-least-once and replayed: {data}"
+    );
+
+    // AND IT IS DELIVERED. The same fan-out pass, the same delivery handler,
+    // the same signature, read back out of the receiver's own journal — the
+    // step `docs/flows/webhooks.md` recorded as an argument until this case.
+    let endpoints = h.registry_with_secrets(&[SECRET]);
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
+        .await
+        .expect("fan-out");
+
+    let event_id = single_event_id(&h.pool, &intent.id)
+        .await
+        .expect("the failed event's id");
+    let delivery = h
+        .repositories
+        .for_event(&event_id)
+        .await
+        .expect("deliveries")
+        .pop()
+        .expect("one delivery for one endpoint");
+    let job = claim_delivery_job(&h.pool, delivery.id)
+        .await
+        .expect("the delivery job");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
+        .await
+        .expect("the delivery handler ran");
+    assert!(
+        matches!(outcome, Outcome::Done),
+        "a 2xx receiver ends the job: {outcome:?}"
+    );
+
+    let recorded = journal(&h.receiver_url)
+        .await
+        .expect("the receiver's journal")
+        .pop()
+        .expect("the receiver recorded a POST");
+    let signature = recorded
+        .header("vpay-signature")
+        .expect("the delivery carried a Vpay-Signature");
+    let verified = vpay_sdk::webhooks::verify(&recorded.body, signature, SECRET, TOLERANCE)
+        .expect("the shipping Rust SDK verifies the header vpay emitted");
+    assert_eq!(verified.id, event_id);
+    assert_eq!(
+        verified.kind, "payment_intent.payment_failed",
+        "the same type the worker's poll path emits for the same outcome — a merchant has \
+         one branch, not two (docs/flows/webhooks.md)"
+    );
+    assert_eq!(
+        vpay_sdk::KnownEventType::from_wire(&verified.kind),
+        Some(vpay_sdk::KnownEventType::PaymentIntentPaymentFailed),
+    );
+    assert_eq!(
+        verified.data.object.pointer("/last_payment_error/code"),
+        Some(&json!("invalid_payer")),
+        "the failure survives the whole outbox: render, store, fan out, sign, deliver, verify"
+    );
+
+    served.server.abort();
+}
+
+/// [`cancel_config`], with the MTN host pointed at a stub that will answer.
+///
+/// The rail has to be reachable here where the cancel case's does not: this
+/// case's whole subject is what the rail's refusal writes.
+fn decline_config(base_url: &str, jwks_a: Value, receiver_url: &str, mtn_url: &str) -> Config {
+    let mut config = cancel_config(base_url, jwks_a, receiver_url);
+    if let Some(rail) = config.providers.first_mut() {
+        rail.host.url = mtn_url.to_owned();
+        rail.host.label = "mtn-wiremock".to_owned();
+    }
+    config
+}
+
 // ------------------------------------------------------------- plumbing ---
 
 /// The configuration both `/v1/events` tests boot: two merchants, no rails,
