@@ -227,6 +227,7 @@ demo-staff:
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
 
     out={{demo_staff_password_file}}
     mkdir -p "$(dirname "$out")"
@@ -287,6 +288,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
 
     set -e
     docker compose {{demo_compose}} up -d --build --wait
@@ -311,7 +313,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     # The three browser surfaces the specs visit. Polled rather than assumed:
     # a Cypress failure on "cannot verify this server is running" says nothing
     # about which of them is missing.
-    for probe in "dashboard http://localhost:3000/" \
+    for probe in "dashboard http://localhost:{{demo_dashboard_port}}/" \
                  "shop http://localhost:{{demo_shop_port}}/healthz" \
                  "checkout http://localhost:{{demo_checkout_port}}/healthz"; do
         name=${probe%% *}; url=${probe##* }
@@ -2141,6 +2143,22 @@ demo_checkout_port := "3080"
 # the port `pnpm --filter @vpay/checkout dev` uses for its own dev server, so
 # do not run both at once without moving one.)
 demo_shop_port := "3001"
+# The host port `just demo` publishes the DASHBOARD
+# on, so the OAuth redirect URI and the dashboard app's VPAY_DASHBOARD_REDIRECT_URI
+# environment variable can both reference it.
+#
+#     just demo_dashboard_port=13000 demo
+#
+# Three things have to agree about it:
+#
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_DASHBOARD_PORT`);
+#   2. the redirect_uri in the overlay (`gen-demo-keys` writes it);
+#   3. the VPAY_DASHBOARD_REDIRECT_URI env var set in `compose.e2e.yml`
+#      (authkestra matches it byte for byte).
+#
+# All three are things this recipe set can write. See ADR-0016 and the brief for exp35.
+demo_dashboard_port := "3000"
+
 
 # The demo dashboard's one staff member — ADR-0017 decision 1's only way in.
 #
@@ -2365,7 +2383,7 @@ gen-demo-keys: gen-e2e-signing-key
     # VPAY_DASHBOARD_REDIRECT_URI, because equality with THAT is the property
     # that matters.
     dashboard_redirect_present() {
-        grep -qF '    - http://localhost:3000/dash/v1/callback' "$overlay"
+        grep -qF "    - http://localhost:{{demo_dashboard_port}}/dash/v1/callback" "$overlay"
     }
 
     # Added 2026-09-07 (exp28). Without both staff_auth secrets `staff_login`
@@ -2466,7 +2484,7 @@ gen-demo-keys: gen-e2e-signing-key
             # and every staff sign-in dies at /authorize with a 400 naming
             # redirect_uri while the server, the app and the base config are
             # each individually right.
-            echo "gen-demo-keys: $overlay does not register the dashboard app's redirect_uri on port 3000 — regenerating the pair"
+            echo "gen-demo-keys: $overlay does not register the dashboard app's redirect_uri on port {{demo_dashboard_port}} — regenerating the pair"
         elif ! staff_auth_present; then
             # Added 2026-09-07 (exp28). Without the two staff_auth secrets
             # `vpay-server` mounts /dash/v1's READ surface and no login at all
@@ -2877,8 +2895,9 @@ demo-up: gen-demo-keys
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
     echo "demo-up: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}, orange stub :{{demo_orange_port}}"
-    echo "demo-up: checkout page :{{demo_checkout_port}}, shop :{{demo_shop_port}}"
+    echo "demo-up: checkout page :{{demo_checkout_port}}, dashboard :{{demo_dashboard_port}}, shop :{{demo_shop_port}}"
 
     # `--wait`, not a sleep. Postgres and all three WireMock containers carry
     # healthchecks (compose.yml, compose.e2e.yml), so this returns when the
@@ -2971,8 +2990,9 @@ demo-status:
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
     echo "demo-status: project {{demo_project}}, server :{{demo_port}}, receiver :{{demo_receiver_port}}, orange stub :{{demo_orange_port}}"
-    echo "demo-status: checkout page :{{demo_checkout_port}}, shop :{{demo_shop_port}}"
+    echo "demo-status: checkout page :{{demo_checkout_port}}, dashboard :{{demo_dashboard_port}}, shop :{{demo_shop_port}}"
     docker compose {{demo_compose}} ps
     echo
     echo "demo-status: every vpay-ish container on this machine —"
@@ -3004,6 +3024,7 @@ demo-down:
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
     docker compose {{demo_compose}} down -v
     echo "demo-down: project {{demo_project}} is gone (containers and volumes)"
 
@@ -3031,6 +3052,14 @@ demo-shop:
 # Print vpay's checkout page origin for the current demo_checkout_port.
 demo-checkout:
     @echo "http://localhost:{{demo_checkout_port}}"
+
+# Print the demo dashboard's origin — the value the dashboard app's
+# VPAY_DASHBOARD_REDIRECT_URI gets set to. The dashboard is on the same
+# loopback as every other demo service.
+#
+# Print the dashboard origin for the current demo_dashboard_port.
+demo-dashboard:
+    @echo "http://localhost:{{demo_dashboard_port}}"
 
 # ------------------------------------------------------- stripe compat ----
 
@@ -3080,6 +3109,7 @@ stripe-compat: gen-demo-keys build-sdk-node
     export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
     # Six services, not the eight `demo_services` names: this suite drives
     # `/v1` and never opens a browser, so building two Next.js images for it
     # would cost minutes it does not buy anything with. `compat_services` is

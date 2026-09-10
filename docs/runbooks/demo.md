@@ -857,10 +857,8 @@ demo_project=vpay-demo-b demo_port=18088 demo-staff`.
 
 ### Sign in
 
-The dashboard is on **http://localhost:3000**. That port is fixed, not a
-variable: `compose.e2e.yml` hard-codes `3000:3000` and the dashboard client's
-registered `redirect_uri` names it, so two demo stacks cannot both serve a
-dashboard (see [§7](#7-two-demos-on-one-machine)).
+The dashboard is on **http://localhost:{{demo_dashboard_port}}**; see `just demo-dashboard`.
+Run it with `just demo_dashboard_port=PORT demo` to publish it on a custom port.
 
 1. **Work email and password.** `ada@example.test` and the contents of the
    file above.

@@ -260,7 +260,7 @@ services:
       # must spell identically, and `authkestra_op` matches it exactly: no
       # prefix, no wildcard. `just gen-demo-keys` writes the same string into
       # the overlay, and a check in that recipe fails a stale one.
-      VPAY_DASHBOARD_REDIRECT_URI: http://localhost:3000/dash/v1/callback
+      VPAY_DASHBOARD_REDIRECT_URI: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}/dash/v1/callback
       # The single read-only scope the registration grants. Requested
       # explicitly: an authorization request with no `scope` is granted none,
       # and a token with no scope is refused by `/dash/v1` with a `403` that

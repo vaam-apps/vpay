@@ -288,17 +288,22 @@ services:
   # `ports:` across files, so a plain list would leave compose.e2e.yml's
   # `3000:3000` published as well and the loopback binding would buy nothing.
   #
-  # The port itself is NOT a `demo_*` variable and cannot become one: the
-  # dashboard client's registered `redirect_uri` names 3000 and authkestra
-  # matches a redirect URI byte for byte. Two demo stacks therefore cannot
-  # both serve a dashboard — the justfile's `demo_services` says so — and
-  # 3000 being spoken for in this file set is why `demo_shop_port` defaults
-  # to 3001 rather than to the 3000 the shop's container listens on.
+  # The port IS now a `demo_*` variable (exp35), and authkestra's redirect_uri
+  # check is byte-for-byte, so this port must match what `gen-demo-keys` writes
+  # into the overlay and what the dashboard app gets as
+  # `VPAY_DASHBOARD_REDIRECT_URI`. Both are templated with `demo_dashboard_port`.
   #
-  # CI's e2e job drives every one of these ports as `http://localhost:…` from
+  # `!override` for the identical reason `vpay-server's `ports:` is: compose
+  # APPENDS `ports:` across files, so a plain list would leave
+  # compose.e2e.yml's `3000:3000` in place as well and `just
+  # demo_dashboard_port=...` would fail the whole `up` on "port is already
+  # allocated". The port can now vary, so two demo stacks can each serve a
+  # dashboard.
+  #
+  # CI's e2e job drives every one of these ports as `http://localhost:...` from
   # the same host, so loopback costs it nothing.
   dashboard:
-    ports: !override ["127.0.0.1:3000:3000"]
+    ports: !override ["127.0.0.1:${VPAY_DEMO_DASHBOARD_PORT:-3000}:3000"]
 
   vpay-worker:
     environment:
