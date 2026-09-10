@@ -2768,15 +2768,48 @@ maintainer's `vpay-demo` stack was not touched):**
 - `just demo-up` + `just demo-walk` — **exit 0, six payments on two rails**,
   every one settled by the worker asking the rail and evidenced by a signed
   webhook. The one number in it that moved is the point: the settling Orange
-  outcome now settles after **41** of the demo's own polls where it used to
-  settle on the first, and the two amount-keyed Orange outcomes (5001, 5002)
-  still settle after **2**, unchanged — which is the priority argument above,
-  measured rather than asserted.
+  outcome settles after **7** of the demo's own polls where it used to settle
+  on the first, and the two amount-keyed Orange outcomes (5001, 5002) still
+  settle after **2**, unchanged — which is the priority argument above,
+  measured rather than asserted. **The whole walkthrough takes 58 seconds**,
+  and it is worth saying so where a reader will look for it: the settling
+  Orange outcome is now the same 7 polls the settling MTN outcome has always
+  been, because `SETTLE_POLL_INTERVAL` is two seconds and the rung it waits
+  for is ten. *(This bullet said **41** polls until the sabotage review of
+  2026-09-10 re-ran it. 41 polls is 82 seconds, which no rung of `poll_delay`
+  produces; the Orange stub's own journal for the corrected run reads
+  `webpayment` at T, `transactionstatus` → `PENDING` at T+0.591 s and
+  → `SUCCESS` at T+10.680 s, with the 5001 and 5002 outcomes answered
+  terminally at T+0.466 s and T+0.414 s. The likeliest cause of 41 is the
+  authoring host: the same review measured a first poll arriving **60.96 s**
+  late under five CPU hogs, because load starves the worker's claim loop.)*
 - `just test-e2e` — **19 Cypress tests, 19 passing, 0 failing**:
   `checkout.cy.ts` (1), `dashboard.cy.ts` (8), `shop-hosted.cy.ts` (**4**, one
   of them new), `shop-embedded.cy.ts` (6). The Orange legs are the ones this
   change is about: "the payer pays on the rail's own page" 15.9 s and "the
   payer cancels on the rail's own page and the order reaches `failed`" 5.4 s.
+
+- **The window itself, in a real browser, read out of the stub's own request
+  journal** (added by the sabotage review, 2026-09-10). A person bought a
+  coffee on `examples/shop`, chose Orange, landed on the rail's page and did
+  nothing: submit at T, the browser's `GET` of the page at **T + 53 ms**,
+  `PENDING` at T+0.170 s, T+10.192 s, T+30.233 s, T+60.289 s, and **`EXPIRED`
+  at T + 105.398 s** — `poll_delay(0..3)` to the second. `vpay-worker` then
+  logged `the rail reported a charge as failed … failure_code: "payer_timeout"`
+  beside `a checkout session was settled … paid: false`. **A payer who never
+  clicks reaches `payer_timeout`, not `paid`**, on the stack and not only in a
+  suite with no worker in it.
+- **And the documented test number worked from a browser, under load ×5.** The
+  same journey with five CPU hogs running, typing `237600000400`: page at
+  T + 60 ms, the form submitted at T + 12.123 s (about the 11.96 s a human took
+  on 2026-09-06), the worker's **first** poll at T + 60.956 s → `FAILED`, and
+  the charge settled `provider_error` — which is what
+  `examples/shop/README.md` promises and what a run on 2026-09-06 came back
+  `paid` for. That is also the answer to "is ten seconds enough under load":
+  the margin is **monotone in load and in the payer's favour**, because load
+  delays the *poller* while the payer's browser is one `302` and one `GET` out
+  of the same submit. The unconditional rung insures against a fast machine,
+  not a slow one.
 
 **Three mutations, run and reverted.**
 

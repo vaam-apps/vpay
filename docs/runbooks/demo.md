@@ -80,6 +80,12 @@ nothing on this page runs a path the one-liner does not:
 | `just demo` | `demo-up` then `demo-walk` |
 | `just demo-staff` | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](#6-signing-in-to-the-dashboard)) |
 
+**`just demo-walk` takes about a minute** — 58 s measured on 2026-09-10, six
+payments, of which two wait a ten-second rung of `vpay_worker::poll_delay` (the
+settling MTN outcome, and since issue #58 the settling Orange one) and four are
+terminal on the first ask. `just demo` is that plus `demo-up`, which is an
+image build the first time.
+
 `demo-walk` is separately re-runnable, which is what you want while reading its
 output: each run mints fresh idempotency keys and fresh intents.
 
@@ -236,7 +242,11 @@ the fifth mints one hosted and one embedded Checkout Session and prints the
 hosted `url` in full and the embedded secret redacted. Every amount is XAF on
 both rails (the demo overlay; the real MTN sandbox rejects XAF, see §"One
 currency"). Verbatim and complete from the program's first line to its last;
-nothing below was written by hand. The `demo-up` output above it (image
+nothing below was written by hand. **It is a 2026-09-04 capture and it is
+left as one**: issue #58 changed the `selected by:` line outcome 4/6 prints and
+added a ten-second rung to its settlement, so a run today prints different
+bytes there. Hand-editing a transcript labelled verbatim would be worse than
+the staleness; the current behaviour is §"The demo's test numbers" below. The `demo-up` output above it (image
 builds, `docker compose up --wait`) is the same as §3's and is not repeated.
 
 ```console
