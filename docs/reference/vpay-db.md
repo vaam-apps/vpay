@@ -221,6 +221,19 @@ two different `409`s). The status pair mirrors `vpay_core::state`'s
 plus `a_confirmed_intent_cannot_be_canceled` are what prove the two agree end to
 end.
 
+**There is no pooled `cancel` any more, and its absence is load-bearing
+(2026-09-10, [issue #57](https://github.com/vaam-apps/vpay/issues/57)).** The
+statement lives in `payment_intents::cancel_in_tx`, reachable only through
+`TxRepositories`, because a cancel emits `payment_intent.canceled` and that
+event has to commit with the status flip or not at all — the same rule
+`settlement`, `checkout_sessions::expire_due` and `customers::delete_idle`
+already apply. Leaving the pooled variant beside the transactional one would
+have kept "cancel without an event" one call away; deleting it makes it not
+expressible. `Ok(None)` is the answer that must write **no** event, and
+`a_cancel_and_its_event_roll_back_together` is what proves the pair share one
+unit of work — it abandons a transaction that ran both statements and requires
+that neither survived.
+
 ### `set_payload` is a separate write from `reschedule`
 
 The recovery table keeps per-job state in the payload — the `not_found_streak`

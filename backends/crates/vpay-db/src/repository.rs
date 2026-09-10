@@ -370,6 +370,29 @@ pub trait TxRepositories: Send {
         new: &str,
     ) -> Result<Option<crate::PaymentIntentRow>, DbError>;
 
+    /// `payment_intents`: the merchant-scoped cancel, guarded on the status
+    /// **and** on there being no live charge.
+    ///
+    /// Transactional-only, and there is no pooled variant to fall back to:
+    /// `payment_intent.canceled` is written beside this statement, and an
+    /// event committed apart from the transition it describes is either a
+    /// webhook for something that did not happen or a transition no merchant
+    /// hears about (issue #57). See [`crate::payment_intents::cancel_in_tx`].
+    ///
+    /// `Ok(None)` means the guard refused — no such intent for this merchant,
+    /// a status that forbids it, or a charge the rail may still be acting on
+    /// — and it must produce no event; the caller re-reads to tell the three
+    /// apart.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`].
+    async fn cancel_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::PaymentIntentRow>, DbError>;
+
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
     ///
@@ -493,6 +516,14 @@ impl TxRepositories for PendingTransaction {
         new: &str,
     ) -> Result<Option<crate::PaymentIntentRow>, DbError> {
         crate::payment_intents::transition_in_tx(self.conn(), merchant_id, id, expected, new).await
+    }
+
+    async fn cancel_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::PaymentIntentRow>, DbError> {
+        crate::payment_intents::cancel_in_tx(self.conn(), merchant_id, id).await
     }
 
     async fn record_payment_error(

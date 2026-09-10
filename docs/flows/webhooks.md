@@ -19,17 +19,69 @@ event union or an exhaustive `switch`. This is why a late success emits a plain
 `payment_intent.succeeded`: an event merchants structurally tend to ignore is
 the worst possible carrier for "money actually arrived".
 
-**Eight of the thirteen are written, and only eight.**
-`payment_intent.succeeded` and `payment_intent.payment_failed` come from the
-settlement transaction (TX 1 below); `checkout.session.expired` comes from the
-housekeeping sweep, since 2026-09-04; `customer.deleted` comes from the
-twelve-month customer retention sweep, since 2026-09-06 (S4a); and the four
-`invoice.*` types come from S4b, since 2026-09-07 —
-`invoice.created`/`invoice.finalized`/`invoice.voided` from the transitions
-that write them, each inside the transition's own transaction, and
-`invoice.paid` from TX 1 beside the `payment_intent.succeeded` that pays it.
-The other five are documented shapes nothing emits — events are written for
-terminal transitions only.
+### Which of them is written, and by what
+
+**Nine of the thirteen are written, and only nine.** Every writer below puts
+its `events` row in the *same transaction* as the transition it reports;
+there is no other shape in this repository, and TX 1 below is the reason.
+
+| Type | Written by | Since |
+|---|---|---|
+| `payment_intent.created` | — nothing | — |
+| `payment_intent.processing` | — nothing | — |
+| `payment_intent.succeeded` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-03 |
+| `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
+| `payment_intent.canceled` | `vpay_api::v1::payment_intents::cancel_with_event` | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
+| `charge.refunded` | — nothing | — |
+| `charge.refund.updated` | — nothing | — |
+| `checkout.session.expired` | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep | 2026-09-04 |
+| `customer.deleted` | `vpay_db::customers::delete_idle`, from the retention sweep | 2026-09-06 |
+| `invoice.created` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+| `invoice.finalized` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+| `invoice.paid` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-07 |
+| `invoice.voided` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+
+The four with no writer are documented shapes nothing emits — events are
+written for terminal transitions only, and `created`/`processing` are
+progress. The two refund types have no writer because no rail in this
+repository refunds anything (`../status.md`).
+
+**`payment_intent.payment_failed` has two writers, and that is deliberate.**
+A rail can refuse a charge in two places — at the submit, before the charge
+was ever polled (`persist_decline`, the `409 charge_declined` a merchant gets
+synchronously), and at a later status query (`apply_failed`, the worker's poll
+ladder). To a merchant they are one thing: this payment did not go through,
+the intent is back at `requires_payment_method`, `last_payment_error` says
+why. A second type would be a type a Stripe-shaped handler has no branch for,
+which is this document's standing rule. A merchant cannot receive both for one
+intent: there is one charge per intent, forever, and the submit path runs only
+when the rail refused it before anything polled it.
+
+Until 2026-09-10 only the poll path emitted, and the submit path was the one
+terminal outcome no signed event reported
+([#57](https://github.com/vaam-apps/vpay/issues/57)). The visible cost was in
+`examples/shop`: MTN's documented test number `237600000400` is refused at
+submit, so the shop's order stayed `unpaid` for ever and its README had to say
+so. **One case is fail-closed rather than emitting:** if the intent moved
+between the rail's refusal and the write — which `cancel`'s live-charge
+`NOT EXISTS` makes unreachable while a charge is `submitting` — the
+`last_payment_error` stamp matches no row, so there is no committed intent to
+render and no event is written. The alternative would be a body that is either
+stale or invented. It is a `WARN` naming both omissions.
+
+**`payment_intent.canceled` was in this vocabulary for seven days short of a
+week of releases with nothing writing it**, which is exactly the state
+migration `0023`'s lockstep rule exists to prevent and the one case that
+predates the rule. It came in with `0018`, both merchant SDKs carried the
+variant, this document listed it — and `POST /v1/payment_intents/{id}/cancel`
+was a single pooled statement that moved the row and told nobody. A merchant
+who settles from signed events could not reach a cancelled state at all
+(`examples/shop`'s order page was the visible half). Since 2026-09-10 the
+cancel runs in a transaction and the event is written inside it; the pooled
+`vpay_db::PaymentIntents::cancel` was **deleted** rather than left beside the
+transactional one, so "cancel without an event" is no longer expressible. A
+cancel the compare-and-swap refuses — a status that forbids it, or a charge
+the rail may still be acting on — writes no event, which is the other half.
 
 **The four `invoice.*` bodies carry `lines.data` EMPTY, and the `/v1` object
 does not.** The event's `data` is rendered inside the transaction that wrote

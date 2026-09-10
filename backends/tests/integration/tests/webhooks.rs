@@ -1300,6 +1300,390 @@ async fn reading_events_requires_a_scope() {
     served.server.abort();
 }
 
+// --------------------------------------------- payment_intent.canceled ----
+
+/// A cancel emits **exactly one** `payment_intent.canceled`, and it walks the
+/// whole outbox to the receiver.
+///
+/// # What this is the first evidence of
+///
+/// `payment_intent.canceled` has been in `type_is_a_documented_event` since
+/// migration `0018`, in this document's vocabulary, and in both merchant
+/// SDKs — and until 2026-09-10 **nothing wrote it** (issue #57). Cancelling
+/// moved the row to `canceled` on a pooled statement and told nobody, so a
+/// shop that settles from signed events could not reach a cancelled order at
+/// all. This case drives the shipping route through the shipping SDK, then
+/// the shipping fan-out and delivery handlers, and reads the bytes back out
+/// of the receiver's own journal.
+///
+/// # The three things it separates
+///
+/// 1. **one event, from the transition's own transaction.** The event's
+///    `data.object` is the intent as committed — `status: "canceled"` — and
+///    not a projection of the request.
+/// 2. **a refused cancel writes nothing.** The second cancel is a `409`, and
+///    the event count does not move. Writing the event outside
+///    `cancel_with_event`'s transaction — or before its `Ok(None)` check —
+///    makes this the assertion that fails, with two events for one cancel.
+/// 3. **an intent with a live charge is refused, and emits nothing.** That
+///    is the `NOT EXISTS` guard, and it is the case where an event would be
+///    a webhook for a cancel that did not happen.
+///
+/// The body carries **no `client_secret`**: `cancel` answers
+/// `SecretRendering::Omit` and the event renders the same twelve-key object,
+/// so the payer credential cannot reach a body that is stored, signed and
+/// replayed on every rung of the ladder.
+#[tokio::test]
+async fn a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver() {
+    let h = harness().await.expect("harness");
+
+    let (server_pem, _) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let receiver_url = h.receiver_url.clone();
+    let served = serve(&h.repositories, &server_pem, move |base_url| {
+        cancel_config(base_url, jwks_a, &receiver_url)
+    })
+    .await
+    .expect("a server");
+
+    let client = vpay_sdk::Client::builder(&served.base_url)
+        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .build()
+        .expect("the SDK client builds");
+
+    let intent = client
+        .payment_intents()
+        .create(cancel_test_intent(), vpay_sdk::RequestOptions::new())
+        .await
+        .expect("creating the intent to cancel");
+    assert_eq!(
+        events_for_object(&h.pool, &intent.id)
+            .await
+            .expect("events"),
+        Vec::<(String, Value)>::new(),
+        "a create emits nothing — `payment_intent.created` is one of the documented types \
+         nothing writes (docs/flows/webhooks.md)"
+    );
+
+    let canceled = client
+        .payment_intents()
+        .cancel(&intent.id, vpay_sdk::RequestOptions::new())
+        .await
+        .expect("cancelling a fresh intent");
+    assert_eq!(canceled.status, vpay_sdk::IntentStatus::Canceled);
+
+    let emitted = events_for_object(&h.pool, &intent.id)
+        .await
+        .expect("events");
+    let (kind, data) = match emitted.as_slice() {
+        [one] => one.clone(),
+        other => panic!("a cancel must emit exactly one event, got {other:?}"),
+    };
+    assert_eq!(kind, "payment_intent.canceled");
+    // `events.data` is the wire **object** itself; the `data: { object: … }`
+    // envelope is put around it at delivery (`vpay_worker::webhooks::event_bytes`)
+    // and by `GET /v1/events`. Asserting on the stored column is asserting on
+    // what the transition committed.
+    assert_eq!(
+        data.get("status"),
+        Some(&json!("canceled")),
+        "the body is the row this transaction wrote, not the row the request read: {data}"
+    );
+    assert_eq!(data.get("id"), Some(&json!(intent.id)));
+    assert_eq!(data.get("object"), Some(&json!("payment_intent")));
+    assert_eq!(
+        data.get("client_secret"),
+        None,
+        "an event body is stored, signed, delivered at-least-once and replayed; a payer \
+         credential in one outlives every window it was minted for: {data}"
+    );
+
+    // AND THE TWO WRITES SHARE ONE TRANSACTION, observably.
+    //
+    // Postgres' `now()` is `transaction_timestamp()`: it is fixed at the
+    // *start of the transaction* and every call inside one returns the same
+    // instant. The cancel statement sets `payment_intents.updated_at =
+    // now()` and the `events` row takes `created_at`'s `DEFAULT now()`
+    // (migration `0018`), so the two are bit-identical **iff** they were
+    // written in the same transaction.
+    //
+    // This is the assertion that catches "write the canceled event outside
+    // the cancel transaction". Committing the cancel and then opening a
+    // second transaction for the event leaves the happy path looking
+    // identical in every other respect — one event, right type, right body —
+    // and makes this one fail, because the second transaction takes its own
+    // `now()`. Measured rather than assumed: the two timestamps below are
+    // read straight out of the two tables.
+    let (canceled_at, emitted_at) = cancel_and_event_timestamps(&h.pool, &intent.id)
+        .await
+        .expect("the intent's updated_at and its event's created_at");
+    assert_eq!(
+        canceled_at, emitted_at,
+        "`now()` is the transaction's start instant, so the status flip and the event row \
+         carry the same one only when they are one transaction (issue #57). If these differ, \
+         the event has been moved out of `cancel_with_event`'s unit of work and a crash \
+         between the two commits leaves a canceled intent nobody is told about"
+    );
+
+    // The refused cancel. The compare-and-swap matches nothing, the
+    // transaction is abandoned, and no second event describes a withdrawal
+    // that did not happen.
+    let error = client
+        .payment_intents()
+        .cancel(&intent.id, vpay_sdk::RequestOptions::new())
+        .await
+        .expect_err("a canceled intent cannot be canceled again");
+    match error {
+        vpay_sdk::Error::Api { status, .. } => assert_eq!(status, 409),
+        other => panic!("expected a vpay API error envelope, got {other:?}"),
+    }
+    assert_eq!(
+        events_for_object(&h.pool, &intent.id)
+            .await
+            .expect("events")
+            .len(),
+        1,
+        "a cancel the database refused must write no event"
+    );
+
+    // An intent the rail may still be acting on: refused by the `NOT EXISTS`
+    // guard, and silent for the same reason.
+    let in_flight = client
+        .payment_intents()
+        .create(cancel_test_intent(), vpay_sdk::RequestOptions::new())
+        .await
+        .expect("creating the intent whose charge is live");
+    insert_live_charge(&h.pool, &in_flight.id)
+        .await
+        .expect("the charge a confirm commits before submitting");
+    let error = client
+        .payment_intents()
+        .cancel(&in_flight.id, vpay_sdk::RequestOptions::new())
+        .await
+        .expect_err("an intent with a live charge must not be cancellable");
+    match error {
+        vpay_sdk::Error::Api { status, .. } => assert_eq!(status, 409),
+        other => panic!("expected a vpay API error envelope, got {other:?}"),
+    }
+    assert_eq!(
+        events_for_object(&h.pool, &in_flight.id)
+            .await
+            .expect("events"),
+        Vec::<(String, Value)>::new(),
+        "a cancel refused because a rail may hold the payment must emit nothing at all"
+    );
+
+    // And the one event that was written walks the outbox exactly as every
+    // other type does: same fan-out pass, same delivery handler, same
+    // signature, read back out of the receiver.
+    let endpoints = h.registry_with_secrets(&[SECRET]);
+    let job = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
+        .await
+        .expect("fan-out");
+
+    let event_id = single_event_id(&h.pool, &intent.id)
+        .await
+        .expect("the canceled event's id");
+    let delivery = h
+        .repositories
+        .for_event(&event_id)
+        .await
+        .expect("deliveries")
+        .pop()
+        .expect("one delivery for one endpoint");
+    let job = claim_delivery_job(&h.pool, delivery.id)
+        .await
+        .expect("the delivery job");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
+        .await
+        .expect("the delivery handler ran");
+    assert!(
+        matches!(outcome, Outcome::Done),
+        "a 2xx receiver ends the job: {outcome:?}"
+    );
+
+    let recorded = journal(&h.receiver_url)
+        .await
+        .expect("the receiver's journal")
+        .pop()
+        .expect("the receiver recorded a POST");
+    let signature = recorded
+        .header("vpay-signature")
+        .expect("the delivery carried a Vpay-Signature");
+    let verified = vpay_sdk::webhooks::verify(&recorded.body, signature, SECRET, TOLERANCE)
+        .expect("the shipping Rust SDK verifies the header vpay emitted");
+    assert_eq!(verified.id, event_id);
+    assert_eq!(
+        verified.kind, "payment_intent.canceled",
+        "the type a merchant's handler branches on"
+    );
+    assert_eq!(
+        vpay_sdk::KnownEventType::from_wire(&verified.kind),
+        Some(vpay_sdk::KnownEventType::PaymentIntentCanceled),
+        "the SDK's vocabulary has carried this variant since it was written; this is the \
+         first delivery that ever reached it"
+    );
+    assert_eq!(verified.data.object.get("status"), Some(&json!("canceled")));
+
+    served.server.abort();
+}
+
+/// Every `(type, data)` this merchant has about one object, oldest first.
+///
+/// Read straight out of Postgres rather than through `GET /v1/events`: what
+/// is being asserted is what the *transition's transaction* committed, and a
+/// read through the API would also be exercising the list's own rendering.
+async fn events_for_object(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<(String, Value)>> {
+    let rows: Vec<(String, Value)> =
+        sqlx::query_as("SELECT type, data FROM events WHERE object_id = $1 ORDER BY seq")
+            .bind(object_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows)
+}
+
+/// `payment_intents.updated_at` and the single event's `events.created_at`,
+/// for one object.
+///
+/// Both columns are written by `now()` — the first explicitly, the second by
+/// migration `0018`'s `DEFAULT` — and `now()` in Postgres is
+/// `transaction_timestamp()`, which is why comparing them says something
+/// about *transactions* rather than about clocks.
+async fn cancel_and_event_timestamps(
+    pool: &PgPool,
+    intent_id: &str,
+) -> anyhow::Result<(OffsetDateTime, OffsetDateTime)> {
+    let updated_at: OffsetDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM payment_intents WHERE id = $1")
+            .bind(intent_id)
+            .fetch_one(pool)
+            .await?;
+    let created_at: OffsetDateTime =
+        sqlx::query_scalar("SELECT created_at FROM events WHERE object_id = $1")
+            .bind(intent_id)
+            .fetch_one(pool)
+            .await?;
+    Ok((updated_at, created_at))
+}
+
+/// The `evt_…` of the single event about `object_id`, or an error naming how
+/// many there were instead.
+async fn single_event_id(pool: &PgPool, object_id: &str) -> anyhow::Result<String> {
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM events WHERE object_id = $1 ORDER BY seq")
+            .bind(object_id)
+            .fetch_all(pool)
+            .await?;
+    match ids.as_slice() {
+        [one] => Ok(one.clone()),
+        other => anyhow::bail!("expected exactly one event about {object_id}, found {other:?}"),
+    }
+}
+
+/// A charge in `submitting` for `intent_id` — the row a confirm commits
+/// *before* it calls the rail.
+///
+/// Written with raw SQL rather than by confirming, because this suite starts
+/// no rail stub and the charge's *state* is the whole of what the cancel
+/// guard reads. `provider_code` and `currency_code` are foreign keys, so the
+/// values are the ones `cancel_config` reconciled.
+async fn insert_live_charge(pool: &PgPool, intent_id: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO charges \
+            (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
+             currency_code) \
+         VALUES ($1, $2, 'mtn_momo', $3, 'submitting', 5000, 'XAF')",
+    )
+    .bind(format!("ch_{}", uuid::Uuid::new_v4().simple()))
+    .bind(intent_id)
+    .bind(uuid::Uuid::new_v4())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The intent the cancel case creates: the smallest one this deployment
+/// accepts, on the one rail it configures.
+fn cancel_test_intent() -> vpay_sdk::CreatePaymentIntentParams {
+    vpay_sdk::CreatePaymentIntentParams {
+        amount: 5000,
+        currency: "xaf".to_owned(),
+        payment_method_types: vec![vpay_sdk::PaymentMethodType::MtnMomo],
+        metadata: BTreeMap::new(),
+        description: None,
+        customer: None,
+    }
+}
+
+/// The configuration the cancel case boots: merchant A, one endpoint at the
+/// **real** receiver container, one currency, one rail.
+///
+/// The rail is configured and unreachable on purpose. Nothing here confirms
+/// anything — a cancel never opens a socket to a rail — but `charges`
+/// carries a foreign key onto `providers`, and `payment_method_types` is
+/// checked against the configured rails at create. So the rail has to exist
+/// in configuration and does not have to answer.
+fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
+    Config {
+        deployment: Deployment {
+            name: "webhooks-cancel".to_owned(),
+            livemode: false,
+            public_base_url: base_url.to_owned(),
+        },
+        providers: vec![vpay_config::ProviderHost {
+            code: "mtn_momo".to_owned(),
+            enabled: true,
+            host: vpay_config::HostEntry {
+                url: "http://127.0.0.1:1".to_owned(),
+                label: "unreachable-by-design".to_owned(),
+            },
+            settings: BTreeMap::from([
+                ("target_environment".to_owned(), "sandbox".to_owned()),
+                (
+                    "api_user".to_owned(),
+                    "11111111-2222-3333-4444-555555555555".to_owned(),
+                ),
+            ]),
+            callback_url: None,
+            currency: "XAF".to_owned(),
+            credentials: BTreeMap::from([
+                (
+                    "subscription_key".to_owned(),
+                    "stub-subscription-key".to_owned(),
+                ),
+                ("api_key".to_owned(), "stub-api-key".to_owned()),
+            ]),
+        }],
+        currencies: vec![CurrencyEntry {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }],
+        merchant_clients: vec![merchant_client_with(
+            CLIENT_A,
+            MERCHANT_A,
+            jwks_a,
+            &[
+                vpay_api::SCOPE_PAYMENTS_WRITE,
+                vpay_api::SCOPE_PAYMENTS_READ,
+            ],
+            vec![webhook_endpoint(
+                ENDPOINT_ID,
+                &format!("{receiver_url}/webhooks"),
+                &[SECRET],
+            )],
+            // No publishable keys: nothing here reaches `/v1/browser`.
+            Vec::new(),
+        )],
+        webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
+        dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
+    }
+}
+
 // ------------------------------------------------------------- plumbing ---
 
 /// The configuration both `/v1/events` tests boot: two merchants, no rails,

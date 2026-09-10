@@ -873,7 +873,16 @@ pub enum KnownEventType {
     /// back in [`IntentStatus::RequiresPaymentMethod`] with
     /// [`PaymentIntent::last_payment_error`] populated.
     PaymentIntentPaymentFailed,
-    /// A PaymentIntent was withdrawn. Nothing emits this today.
+    /// A PaymentIntent was withdrawn by `POST /v1/payment_intents/{id}/cancel`.
+    ///
+    /// `data.object` is a [`PaymentIntent`] with [`IntentStatus::Canceled`],
+    /// written in the same transaction as the status change (vpay issue #57,
+    /// 2026-09-10). Until then this variant was in the union and nothing on
+    /// the server wrote it; a handler matching on it would never have fired.
+    ///
+    /// Only a cancel the server **accepted** produces one. A cancel refused
+    /// because the intent had already moved, or because a rail may still be
+    /// acting on its charge, answers `409` and emits nothing.
     PaymentIntentCanceled,
     /// A charge was refunded. Nothing emits this today.
     ChargeRefunded,

@@ -122,6 +122,29 @@ mod one_tx {
             .map(TxOutcome::into_inner)
     }
 
+    /// The cancel, in a transaction of its own — the shape
+    /// `vpay_api::v1::payment_intents::cancel_with_event` runs it in, minus
+    /// the event, so the statement's own guards can be asserted without the
+    /// API layer.
+    ///
+    /// There is no pooled `PaymentIntents::cancel` to call instead, since
+    /// 2026-09-10 (issue #57): a cancel commits with its
+    /// `payment_intent.canceled` or not at all.
+    pub(super) async fn cancel_in_tx(
+        repositories: &dyn Repositories,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<vpay_db::PaymentIntentRow>, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(tx.cancel_in_tx(merchant_id, id).await?))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
     pub(super) async fn insert_in_tx(
         repositories: &dyn Repositories,
         new: &vpay_db::NewEvent,
@@ -1495,8 +1518,7 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
         .await
         .context("inserting the intent must succeed")?;
 
-    let cancelled = repositories
-        .cancel("merchant_a", "pi_cas")
+    let cancelled = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_cas")
         .await
         .context("cancelling a requires_payment_method intent must succeed")?
         .context("cancel must return the updated row")?;
@@ -1583,7 +1605,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     );
 
     assert_eq!(
-        repositories.cancel("merchant_a", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
         None,
         "an intent whose charge may be live must not be cancellable"
     );
@@ -1601,7 +1623,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
             .await
             .context("moving the charge must succeed")?;
         assert_eq!(
-            repositories.cancel("merchant_a", "pi_in_flight").await?,
+            one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
             None,
             "a charge in `{state}` is still one the rail may act on"
         );
@@ -1613,8 +1635,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
         .execute(&pool)
         .await
         .context("failing the charge must succeed")?;
-    let cancelled = repositories
-        .cancel("merchant_a", "pi_in_flight")
+    let cancelled = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight")
         .await?
         .context("an intent whose only charge has failed must still be cancellable")?;
     assert_eq!(cancelled.status, "canceled");
@@ -1623,15 +1644,236 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     // status guard: neither may be reached from another merchant, and a
     // second cancel does nothing.
     assert_eq!(
-        repositories.cancel("merchant_b", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_b", "pi_in_flight").await?,
         None
     );
     assert_eq!(
-        repositories.cancel("merchant_a", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
         None
     );
 
     Ok(())
+}
+
+/// The cancel and its `payment_intent.canceled` are **one** transaction: a
+/// rollback after the event insert leaves neither.
+///
+/// # Why this test exists and what mutation it catches
+///
+/// `vpay_api::v1::payment_intents::cancel_with_event` runs exactly the two
+/// statements below in one unit of work (issue #57). Nothing observable from
+/// outside that handler distinguishes "one transaction" from "two commits in
+/// a row" on the happy path — both end with a canceled intent and an event.
+/// The difference is only visible when the unit of work is abandoned, which
+/// is what a crash between two commits looks like.
+///
+/// So this drives the seam directly. `TxOutcome::Abandon` rolls back, and if
+/// `TxRepositories::insert_in_tx` ever ran on the pool instead of on the
+/// caller's connection — the mutation this is armed against — the event
+/// would survive the rollback and the first assertion would fail with a
+/// webhook for a cancel that did not happen.
+///
+/// The committed half is asserted afterwards on a second intent, so
+/// "everything rolled back" cannot pass by the statements simply never
+/// having worked.
+#[tokio::test]
+async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_abandoned_cancel", "XAF"))
+        .await
+        .context("inserting the intent to cancel")?;
+
+    let abandoned = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx
+                    .cancel_in_tx("merchant_a", "pi_abandoned_cancel")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_abandoned_cancel".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "payment_intent.canceled".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(row))
+            })
+        })
+        .await?
+        .into_inner();
+    assert_eq!(
+        abandoned.status, "canceled",
+        "the statement did run — the rollback below is a rollback of real work"
+    );
+
+    let after = PaymentIntents::get_for_merchant(
+        repositories.as_ref(),
+        "merchant_a",
+        "pi_abandoned_cancel",
+    )
+    .await?
+    .context("the intent must still exist")?;
+    assert_eq!(
+        after.status, "requires_payment_method",
+        "the abandoned transaction must leave the intent exactly as it was"
+    );
+    assert_eq!(
+        events_about(&pool, "pi_abandoned_cancel").await?,
+        Vec::<String>::new(),
+        "the event must roll back with the transition it describes; if it survived, \
+         `insert_in_tx` is no longer running on the caller's connection and a merchant can \
+         be told about a cancel that did not happen"
+    );
+
+    // The other direction, so "nothing happened" is not the only thing these
+    // statements can do.
+    repositories
+        .insert(&fixture_intent("pi_committed_cancel", "XAF"))
+        .await
+        .context("inserting the intent to cancel for real")?;
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx
+                    .cancel_in_tx("merchant_a", "pi_committed_cancel")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_committed_cancel".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "payment_intent.canceled".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+    assert_eq!(
+        events_about(&pool, "pi_committed_cancel").await?,
+        vec!["payment_intent.canceled".to_owned()]
+    );
+
+    Ok(())
+}
+
+/// A decline at submit writes the charge, the `last_payment_error` and the
+/// `payment_intent.payment_failed` in **one** transaction — and a rollback
+/// leaves all three undone.
+///
+/// The seam-level half of
+/// `confirm_rails::a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`,
+/// which drives the real route and asserts the committed result. This one
+/// asserts the property that route cannot show: that the three writes are one
+/// unit. The mutation it is armed against is the same as
+/// [`a_cancel_and_its_event_roll_back_together`]'s — an `insert_in_tx` that
+/// stopped taking the caller's connection would leave an event behind here
+/// announcing a failure whose charge is still `submitting`.
+#[tokio::test]
+async fn a_submit_decline_writes_its_charge_error_and_event_in_one_transaction()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_declined", "XAF"))
+        .await
+        .context("inserting the intent")?;
+    one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_declined", "pi_declined"),
+    )
+    .await
+    .context("the charge a confirm commits before submitting")?;
+
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.mark_failed("ch_declined", "invalid_payer", "PAYER_NOT_FOUND")
+                    .await?;
+                let intent = tx
+                    .record_payment_error(
+                        "merchant_a",
+                        "pi_declined",
+                        "requires_payment_method",
+                        "invalid_payer",
+                        "The payment was declined (invalid_payer).",
+                    )
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_declined".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: intent.merchant_id.clone(),
+                    livemode: intent.livemode,
+                    event_type: "payment_intent.payment_failed".to_owned(),
+                    object_id: intent.id.clone(),
+                    data: json!({
+                        "id": intent.id,
+                        "object": "payment_intent",
+                        "status": "requires_payment_method",
+                    }),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let state: String = sqlx::query_scalar("SELECT state FROM charges WHERE id = 'ch_declined'")
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the charge")?;
+    assert_eq!(
+        state, "submitting",
+        "the abandoned transaction must leave the charge live"
+    );
+    let (code, message) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_payment_error_code, last_payment_error_message \
+             FROM payment_intents WHERE id = 'pi_declined'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("re-reading the intent")?;
+    assert_eq!((code, message), (None, None));
+    assert_eq!(
+        events_about(&pool, "pi_declined").await?,
+        Vec::<String>::new(),
+        "no charge, no error, and therefore no event: a webhook saying a payment failed \
+         while the charge is still in flight is the one this transaction exists to prevent"
+    );
+
+    Ok(())
+}
+
+/// Every `events.type` about one object, oldest first.
+///
+/// A free function rather than an inline query at each site because the two
+/// abandon tests above are about a **count** as much as a value, and
+/// "reading the events" is the step it would be easiest to write two
+/// slightly different ways.
+async fn events_about(pool: &sqlx::PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
+    sqlx::query_scalar::<_, String>("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
+        .bind(object_id)
+        .fetch_all(pool)
+        .await
+        .context("reading the events a transaction did or did not commit")
 }
 
 /// The `claim_id` a [`vpay_db::IdempotencyClaim::Fresh`] carries, or an

@@ -110,35 +110,36 @@ one eagerly would leave an unpayable row behind every time the popup worked.
 A demo that can only show a payment working is showing the easy half. Every
 outcome below is reachable from this shop, on the demo stack, by paying with
 a documented fake number — and what the shop does about each is the point.
-**Two of them are not reachable, and this document says which and why rather
-than leaving them to be discovered:** `cancelled` (no event exists for it)
-and MTN's `237600000400` (a decline at submit emits no event either). Both
-are called out below, in the panel on `/checkout`, and in `docs/status.md`.
+**Every outcome in the table below is now reachable**, which it was not until
+2026-09-10: `cancelled` and MTN's `237600000400` were both unreachable because
+vpay emitted no event for either transition
+([issue #57](https://github.com/vaam-apps/vpay/issues/57)). Both now emit, in
+the transaction of the transition they describe, and this shop settles both
+from the signed event exactly as it always settled the others — no code in
+this example changed.
 
-| The buyer sees                            | The order becomes | Where it comes from                                                  |
-| ----------------------------------------- | ----------------- | -------------------------------------------------------------------- |
-| A sentence written for the outcome        | `failed`          | `payment_intent.payment_failed`, and `last_payment_error.code` on it |
-| "Try again" — for a payer-actionable code | a **new** order   | `orders.retry`: one charge per intent, forever                       |
-| Nothing, and the order stays open         | `unpaid`          | The payer clicked "cancel" on the rail's page — a navigation         |
-| "Cancel this payment"                     | `unpaid` — below  | `orders.cancel` → the intent is `canceled` at vpay → **no event**    |
+| The buyer sees                            | The order becomes | Where it comes from                                                            |
+| ----------------------------------------- | ----------------- | ------------------------------------------------------------------------------ |
+| A sentence written for the outcome        | `failed`          | `payment_intent.payment_failed`, and `last_payment_error.code` on it           |
+| "Try again" — for a payer-actionable code | a **new** order   | `orders.retry`: one charge per intent, forever                                 |
+| Nothing, and the order stays open         | `unpaid`          | The payer clicked "cancel" on the rail's page — a navigation                   |
+| "Cancel this payment"                     | `cancelled`       | `orders.cancel` → the intent is `canceled` at vpay → `payment_intent.canceled` |
 
-> **`cancelled` is unreachable on today's vpay, and this shop does not pretend
-> otherwise.** Measured on the demo stack on 2026-09-06: "Cancel this payment"
-> reaches `POST /v1/payment_intents/{id}/cancel`, the intent really does become
-> `canceled` — read out of vpay's own `payment_intents` row — and **vpay emits
-> no event for that transition**. It writes three types and only three
-> (`payment_intent.succeeded`, `payment_intent.payment_failed`,
-> `checkout.session.expired`; `docs/status.md`'s "Events written by the worker"
-> row says so, and the `events` table gained nothing during the run). So the
-> order stays `unpaid`.
+> **`cancelled` became reachable on 2026-09-10, and the change was entirely
+> vpay's.** This paragraph said the opposite until then, and the measurement
+> behind it was right at the time: "Cancel this payment" reached
+> `POST /v1/payment_intents/{id}/cancel`, the intent really did become
+> `canceled`, and the `events` table gained nothing during the run — so the
+> order stayed `unpaid` for ever. vpay now writes one `payment_intent.canceled`
+> inside the cancel's own transaction, the fan-out delivers it like every
+> other type, and `SETTLING_EVENTS` in `src/server/webhook.ts` — which has
+> mapped that type to `cancelled` since it was written — does the rest.
 >
-> The button and the procedure are left exactly as they are, because they are
-> what a merchant's code should look like. What this shop will **not** do is
-> write `cancelled` locally from its own request — that would be it deciding a
-> settled status from something other than a signed event, which is the one
-> thing the whole example exists to argue against. The gap is vpay's; it is in
-> [`../../docs/plans/exp22-shop-demo-notes/opus.md`](../../docs/plans/exp22-shop-demo-notes/opus.md)
-> and in `docs/status.md`.
+> What this shop still will **not** do is write `cancelled` locally from its
+> own request. That would be it deciding a settled status from something other
+> than a signed event, which is the one thing the whole example exists to
+> argue against, and it is why the button's code did not have to change when
+> the event arrived.
 
 The buyer-facing sentences live in `src/lib/failures.ts`, keyed on **vpay's**
 closed `FailureCode` vocabulary (`docs/flows/failures.md`) rather than on
@@ -174,35 +175,36 @@ cannot drift.
 Typed on **vpay's** checkout page: MTN is a push rail, so vpay prompts the
 handset.
 
-| Number         | What happens                                                                                          | Order    | vpay code              | The rail said                   |
-| -------------- | ----------------------------------------------------------------------------------------------------- | -------- | ---------------------- | ------------------------------- |
-| `237600000000` | Pays. Any number not listed below does the same.                                                      | `paid`   | —                      | `SUCCESSFUL`                    |
-| `237600000101` | Declined — the wallet has too little money                                                            | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
-| `237600000102` | The prompt expires — nobody enters the PIN                                                            | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
-| `237600000400` | Refused at submit — the rail has no such account. vpay's page says so; this shop never hears about it | `unpaid` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
-| `237600000503` | The rail is unavailable                                                                               | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
+| Number         | What happens                                                                  | Order    | vpay code              | The rail said                   |
+| -------------- | ----------------------------------------------------------------------------- | -------- | ---------------------- | ------------------------------- |
+| `237600000000` | Pays. Any number not listed below does the same.                              | `paid`   | —                      | `SUCCESSFUL`                    |
+| `237600000101` | Declined — the wallet has too little money                                    | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
+| `237600000102` | The prompt expires — nobody enters the PIN                                    | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
+| `237600000400` | Refused at submit — the rail has no such account, before any charge is polled | `failed` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
+| `237600000503` | The rail is unavailable                                                       | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
 
-> **`237600000400` leaves the order `unpaid`, and that is a second gap of
-> the same shape as `cancelled`.** MTN refuses this MSISDN on the **submit**,
-> before any charge is polled, so vpay commits the failure through
-> `vpay_api::v1::payment_intents::persist_decline` — which writes the charge,
-> writes `last_payment_error` on the intent, and **emits no event**.
-> `payment_intent.payment_failed` is written by
-> `vpay_db::settlement::apply_failed` and by nothing else, and only the
-> worker's poll path calls it. So a decline **at submit** is a terminal
-> outcome no signed event reports: the payer sees the real reason on vpay's
-> page, the merchant can read it from `GET /v1/payment_intents/{id}`, and a
-> shop that settles only from webhooks — this one — never learns of it. The
-> order stays `unpaid` and "Try again" is not offered, because nothing told
-> this shop there was anything to retry.
+> **`237600000400` reaches `failed` through a different path from the other
+> four, and it did not reach it at all until 2026-09-10.** MTN refuses this
+> MSISDN on the **submit**, before any charge is polled, so vpay commits the
+> failure through `vpay_api::v1::payment_intents::persist_decline` rather
+> than through the worker's settlement. That path emitted nothing until
+> [issue #57](https://github.com/vaam-apps/vpay/issues/57): the charge and
+> `last_payment_error` were written, no event was, and a shop that settles
+> only from webhooks — this one — left the order `unpaid` for ever, with
+> "Try again" not offered because nothing had told it there was anything to
+> retry. This paragraph said exactly that, and it was true when it was
+> written.
 >
-> The other four MTN numbers are unaffected: they are decided by the **status
-> query**, which is the worker's path, which does emit. Pinned by
+> `persist_decline` now writes one `payment_intent.payment_failed` in that
+> same transaction — the **same type** the poll path emits, because to a
+> buyer it is the same thing happening — so the order becomes `failed`,
+> `last_payment_error.code` is `invalid_payer`, and "Try again" is offered on
+> exactly the rule the other four use (`FailureCode::payer_actionable`). Not
+> one line of this shop changed. Pinned by
 > `a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read` in
-> `backends/tests/integration`, which asserts the `events` table stays empty
-> for such a decline and will fail on the day vpay starts emitting one.
-> Whether it should is a maintainer's call, written up in
-> [`../../docs/plans/exp22-shop-demo-notes/opus-review.md`](../../docs/plans/exp22-shop-demo-notes/opus-review.md).
+> `backends/tests/integration`, whose event assertion was inverted from "the
+> `events` table stays empty" to an exact one-element list — the mutation it
+> is armed against is the insert being dropped again.
 
 **No number produces `payer_declined` on this rail.** MTN documents no reason
 for a payer who answered the prompt and refused it — its nine-row table has
@@ -256,12 +258,12 @@ Three outcomes this rail **cannot** express, stated rather than faked:
   than failing the charge. Right, and not something a demo can show in a
   minute.
 
-**`cancelled` is reachable from no number at all — and on today's vpay from
-nothing else either.** Clicking "cancel" on the rail's page is a navigation:
-the order stays `unpaid` and the charge may still settle. The order _would_
-become `cancelled` when the shop cancels its PaymentIntent (the button on the
-order page) and vpay delivered `payment_intent.canceled` — which it does not.
-See the note under "Failure outcomes" above.
+**`cancelled` is reachable from no number at all, and never was — it is not a
+rail outcome.** Clicking "cancel" on the rail's page is a navigation: the
+order stays `unpaid` and the charge may still settle. The order becomes
+`cancelled` when the shop cancels its PaymentIntent (the button on the order
+page) and vpay delivers `payment_intent.canceled` — which, since 2026-09-10,
+it does. See the note under "Failure outcomes" above.
 
 ### Which rail can pay for what
 

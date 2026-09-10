@@ -617,12 +617,40 @@ pub(crate) async fn cancel(
         .await
 }
 
+/// The `type` of the event a cancel emits.
+///
+/// Spelled as a constant for `vpay_db::settlement`'s reason: the type is a
+/// property of *which transition this is*, and a caller free to choose it
+/// could report a withdrawn payment as a succeeded one.
+///
+/// It has been in `type_is_a_documented_event` since migration `0018` and in
+/// both merchant SDKs' vocabularies since they were written — and until
+/// 2026-09-10 (issue #57) **nothing wrote it**, which is exactly the state
+/// migration `0023`'s lockstep rule exists to prevent and the one case that
+/// predates it. [`cancel_once`] is now its only writer.
+const EVENT_CANCELED: &str = "payment_intent.canceled";
+
+/// The `type` of the event a decline **at submit** emits — the same label the
+/// worker's poll path writes for the same outcome.
+///
+/// Spelled here as well as in `vpay_db::settlement`, which is a duplication
+/// worth being explicit about rather than removing. The string is Stripe's
+/// and cannot change; what each copy records is *which writer* produces it,
+/// and the two writers are in different crates because the wire object comes
+/// from different places (the worker projects a snapshot, this path renders
+/// the row its own transaction wrote). The repository already draws the line
+/// this way — `vpay_api::v1::invoices`' three `EVENT_*` constants sit beside
+/// their transitions, `vpay_db::customers`' `customer.deleted` sits beside
+/// the sweep's — and the vocabulary that keeps them honest is a database
+/// CHECK, not a shared Rust constant.
+const EVENT_PAYMENT_FAILED: &str = "payment_intent.payment_failed";
+
 async fn cancel_once(
     repositories: &dyn Repositories,
     scope: &MerchantScope,
     id: &str,
 ) -> Result<Response, ApiError> {
-    if let Some(row) = repositories.cancel(scope.merchant_id(), id).await? {
+    if let Some(row) = cancel_with_event(repositories, scope, id).await? {
         return object_response(&row, SecretRendering::Omit);
     }
 
@@ -661,6 +689,64 @@ fn charge_in_flight() -> ApiError {
                   it to reach a terminal state."
             .to_owned(),
     }
+}
+
+/// Runs the cancel and appends `payment_intent.canceled` beside it, in one
+/// transaction.
+///
+/// `Ok(None)` is the compare-and-swap's own refusal, and the transaction is
+/// **abandoned** on that path rather than committed: an event about a cancel
+/// that did not happen is worse than no event, and there is nothing else in
+/// the transaction to keep. [`cancel_once`] then re-reads on the pool to say
+/// which guard refused, which is a read that must not run on a connection
+/// holding this row's lock.
+///
+/// The event's `data` is the row the `UPDATE` returned — the intent as it now
+/// stands, `status: "canceled"` — rendered here rather than projected from
+/// what the request asked for, for `vpay_api::v1::invoices`' reason. It is
+/// the twelve-key [`PaymentIntentObject`] and carries no `client_secret`:
+/// [`SecretRendering::Omit`] is what `cancel` answers a merchant with, and an
+/// event body is stored, signed, delivered at-least-once and replayed on
+/// every rung of the retry ladder, so a payer credential in one would outlive
+/// every window it was minted for.
+///
+/// # Errors
+///
+/// [`ApiError::Db`] if the write or the commit fails, or
+/// [`ApiError::Internal`] if the canceled row will not render — which the
+/// `payment_intents` CHECKs make impossible.
+async fn cancel_with_event(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+) -> Result<Option<vpay_db::PaymentIntentRow>, ApiError> {
+    let outcome: TxOutcome<Option<vpay_db::PaymentIntentRow>> = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let Some(row) = tx.cancel_in_tx(scope.merchant_id(), id).await? else {
+                    return Ok::<_, ApiError>(TxOutcome::Abandon(None));
+                };
+
+                let object = PaymentIntentObject::try_from(&row)?;
+                let data =
+                    serde_json::to_value(&object).map_err(ApiError::internal_serialization)?;
+
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: ids::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: EVENT_CANCELED.to_owned(),
+                    object_id: row.id.clone(),
+                    data,
+                })
+                .await?;
+
+                Ok(TxOutcome::Commit(Some(row)))
+            })
+        })
+        .await?;
+
+    Ok(outcome.into_inner())
 }
 
 // ---------------------------------------------------------------- confirm
@@ -1450,6 +1536,30 @@ fn submitted_response(
 /// [public] — it is logged via Display, never sent" (`docs/flows/errors.md`).
 /// One rail message must not reach a merchant through a side door.
 ///
+/// # The event, since 2026-09-10 (issue #57)
+///
+/// `payment_intent.payment_failed` is appended in **this** transaction, so a
+/// decline the rail made at submit reaches a webhook-driven merchant. Before
+/// that it did not: the type was written only by
+/// `vpay_db::settlement::apply_failed`, on the worker's poll path, so a rail
+/// that refused the charge outright — MTN's `PAYER_NOT_FOUND`, the demo's
+/// `237600000400` — was the one terminal outcome no signed event reported,
+/// and a shop that settles only from webhooks left the order `unpaid` for
+/// ever (`examples/shop/README.md`).
+///
+/// It is the **same type** the poll path emits, deliberately: the two are the
+/// same thing happening to a merchant — this payment did not go through, the
+/// intent is back at `requires_payment_method`, `last_payment_error` says why
+/// — and a second label would be a type a Stripe-shaped handler has no branch
+/// for (`docs/flows/webhooks.md`'s standing rule). A merchant cannot receive
+/// both for one intent, because there is one charge per intent and this path
+/// runs only when the rail refused it before it was ever polled.
+///
+/// **No event is written when the intent write matched nothing**, and that is
+/// the fail-closed half rather than an omission: the event's `data` is the
+/// intent as committed, and on that path there is no committed intent this
+/// transaction wrote. See the body.
+///
 /// # Errors
 ///
 /// As [`persist_submitted`]. `Ok(None)` from the intent write is *not* an
@@ -1484,21 +1594,59 @@ async fn persist_decline(
                         &bounded(public_message, LAST_PAYMENT_ERROR_MAX_CHARS),
                     )
                     .await?;
-                if updated.is_none() {
-                    // The intent moved while the rail was deciding. The charge
-                    // is still failed — that write is about the rail's answer
-                    // and is true whatever the intent says — and the missing
-                    // half is logged rather than turned into a `500`, because
-                    // the merchant's answer is the decline, which is accurate.
-                    tracing::warn!(
-                        merchant_id = %scope.merchant_id(),
-                        payment_intent_id = %intent_id,
-                        "a rail declined a charge whose intent was no longer \
-                         requires_payment_method; last_payment_error was not recorded"
-                    );
+                match updated {
+                    Some(intent) => {
+                        // The event's `data` is the row this transaction just
+                        // wrote — the intent carrying `last_payment_error`,
+                        // still `requires_payment_method`, because the
+                        // lifecycle has no `failed` status. Rendered from the
+                        // row and never projected from the request, for
+                        // `vpay_api::v1::invoices`' reason; the twelve-key
+                        // object, so no `client_secret` reaches a body that is
+                        // stored, signed and replayed.
+                        let object = PaymentIntentObject::try_from(&intent)?;
+                        let data = serde_json::to_value(&object)
+                            .map_err(ApiError::internal_serialization)?;
+
+                        tx.insert_in_tx(&vpay_db::NewEvent {
+                            id: ids::event_id(),
+                            merchant_id: intent.merchant_id.clone(),
+                            livemode: intent.livemode,
+                            event_type: EVENT_PAYMENT_FAILED.to_owned(),
+                            object_id: intent.id.clone(),
+                            data,
+                        })
+                        .await?;
+                    }
+                    None => {
+                        // The intent moved while the rail was deciding. The
+                        // charge is still failed — that write is about the
+                        // rail's answer and is true whatever the intent says —
+                        // and the missing half is logged rather than turned
+                        // into a `500`, because the merchant's answer is the
+                        // decline, which is accurate.
+                        //
+                        // **And no event.** The event body is the intent as
+                        // committed; there is no committed intent here, so the
+                        // only honest bodies would be a stale snapshot or a
+                        // fabricated one. `payment_intents::cancel`'s
+                        // `NOT EXISTS` on a live charge makes this
+                        // unreachable while a charge is `submitting`, which is
+                        // why it is a log line and not a repair path — but it
+                        // is logged as the *event* being skipped as well, so
+                        // the day it does fire an operator is told what the
+                        // merchant was not.
+                        tracing::warn!(
+                            merchant_id = %scope.merchant_id(),
+                            payment_intent_id = %intent_id,
+                            "a rail declined a charge whose intent was no longer \
+                             requires_payment_method; last_payment_error was not recorded \
+                             and no payment_intent.payment_failed was emitted"
+                        );
+                    }
                 }
 
-                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(charge))
+                Ok::<_, ApiError>(TxOutcome::Commit(charge))
             })
         })
         .await?

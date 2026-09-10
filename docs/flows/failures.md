@@ -61,7 +61,12 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
   `provider_account_blocked` one, which is a different code, a different
   severity and a different on-call answer).
   The rail's raw reason is stored and logged; only the taxonomy code and a
-  generic message are public.
+  generic message are public. **Since 2026-09-10 it also emits one
+  `payment_intent.payment_failed`, inside that same transaction**
+  ([issue #57](https://github.com/vaam-apps/vpay/issues/57)), so a merchant
+  who only listens to webhooks hears about a decline made at *submit* and not
+  only about one the poll ladder found. Both paths use the same type on
+  purpose — see [webhooks.md](webhooks.md).
 
 **`provider_error` is still the escape hatch, and it is now reachable from a
 real response path** — an unmapped string arrives as `provider_error`
