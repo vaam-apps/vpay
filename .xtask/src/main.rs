@@ -9476,7 +9476,7 @@ export class HolderResource {
     /// needs to know which one broke, because only one of them is a defect:
     ///
     /// 1. neither enumerator has gone quiet (the vacuity half), and
-    /// 2. the two SDKs happen to declare the *same* 14 methods today.
+    /// 2. the two SDKs happen to declare the *same* 32 methods today.
     ///
     /// (2) is a fact about this tree, **not** a rule — ADR-0015 decision 2
     /// expressly lets a capability land in one SDK with a dated ⛔ row for the
@@ -9484,6 +9484,12 @@ export class HolderResource {
     /// The list is still asserted rather than relaxed to "non-empty", because
     /// a guard that only counts is a guard that survives the list changing
     /// under it; the message below is what carries the distinction.
+    ///
+    /// **It caught exactly that on 2026-09-08**, one branch later: exp33's
+    /// thirteen invoice methods landed in both SDKs and this list was not
+    /// updated with them, so `cargo nextest -p xtask` failed on a head whose
+    /// `just verify` was green — `verify-sdk-parity` counts capabilities, and
+    /// only this test names them. The list is the thirteen longer for it.
     #[test]
     fn the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records() {
         /// What to do about a failure, since two unlike causes reach it.
@@ -9510,6 +9516,23 @@ export class HolderResource {
             "customers.retrieve",
             "customers.update",
             "events.list",
+            // S4b, 2026-09-08 (exp33). Thirteen methods, both SDKs, in one
+            // PR — the ordinary reason again. `invoice_items` has no `list`:
+            // the server mounts no collection GET and a line is read off its
+            // invoice.
+            "invoice_items.create",
+            "invoice_items.del",
+            "invoice_items.retrieve",
+            "invoice_items.update",
+            "invoices.create",
+            "invoices.del",
+            "invoices.finalize",
+            "invoices.list",
+            "invoices.mark_uncollectible",
+            "invoices.pay",
+            "invoices.retrieve",
+            "invoices.update",
+            "invoices.void",
             "payment_intents.cancel",
             "payment_intents.confirm",
             "payment_intents.create",
