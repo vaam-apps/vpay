@@ -209,6 +209,29 @@ from.
 
 ## Status
 
+**Updated 2026-09-10: three transitions that emitted nothing now emit, and the
+vocabulary is fifteen types of which eleven have a writer** (issues
+[#57](https://github.com/vaam-apps/vpay/issues/57) and
+[#66](https://github.com/vaam-apps/vpay/issues/66)). Nothing about the
+two-step outbox changed: each new event is one more row in `events`, written
+in the transaction of the transition it describes, and TX 2 fans it out with
+no branch on `type`. What changed is *which* transitions have a writer — see
+the table under "Only real Stripe event types" above, which is new and is the
+thing to read rather than counting by hand. The four pooled statements these
+replaced (`PaymentIntents::cancel`, `Customers::create`, `Customers::update`)
+were **deleted** rather than kept beside their transactional twins, because no
+gate in this repository objects to a `pub` method nobody calls.
+
+**Only one of the three has been driven to a receiver.**
+`a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver` takes
+a cancel through the shipping route, the shipping fan-out and the shipping
+delivery handler and reads the bytes back out of the WireMock receiver's own
+journal. The submit-time `payment_intent.payment_failed`, `customer.created`
+and `customer.updated` are asserted at the `events` row and no further. The
+fan-out is type-agnostic — it reads by `seq` and branches on nothing — so
+"they would deliver too" is an argument and not a measurement, and it is
+written here in those words.
+
 **Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
 `events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and
 `cratestack-core`'s `src/` is byte-identical between the two releases
