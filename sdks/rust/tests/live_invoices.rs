@@ -211,10 +211,19 @@ async fn live_invoice_lifecycle() {
     assert_eq!(open.amount_due, 32_500);
     assert_eq!(open.amount_remaining, 32_500);
     assert_eq!(open.amount_paid, 0);
-    // Migration 0042's key, against a running server: this is the only place
-    // in this crate that proves the server actually SENDS it. `amount_refunded`
-    // is `#[serde(default)]`, so every offline fixture would decode `0` whether
-    // the key were on the wire or not.
+    // Migration 0042's key, against a running server: a real invoice has had
+    // nothing given back.
+    //
+    // What this does NOT prove, corrected 2026-09-11 (exp47 review): that the
+    // server sends the key at all. `Invoice::amount_refunded` is
+    // `#[serde(default)]`, so an absent key decodes to `0` and this assertion
+    // passes either way. The key's presence on the server's object is pinned
+    // by `vpay_api::model`'s
+    // `the_invoice_object_is_the_documented_nineteen_keys`; that the field is
+    // read off the wire rather than defaulted is pinned by this crate's
+    // `an_invoices_amount_refunded_is_read_from_the_wire_and_defaults_only_when_absent`;
+    // and the Node SDK's live case observes presence at runtime, because a
+    // missing key there reads `undefined` and fails its `toBe(0)`.
     assert_eq!(open.amount_refunded, 0);
 
     let read = client
