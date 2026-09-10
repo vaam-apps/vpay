@@ -125,6 +125,55 @@ boundary in front of it. The four `findBy` sites in
 the awaited element itself or on attributes set in the same render commit, not
 on a later tick. Nothing else has the racing shape.
 
+### F1a — the same race, reported independently on three other branches
+
+While this review was running, the coordinator reported `select.test.tsx`
+flaking under load in three separate full runs on branches that touch no
+frontend code at all (the exp28, exp32 and exp42 reviews) — always green in
+isolation, and all of them on **vitest 3**. That is the same defect seen from
+the other side: the file was assuming a schedule rather than waiting for a
+condition, and vitest 4 merely made the window wide enough to hit reliably.
+
+So the whole file was hardened, not just the one assertion:
+
+- `getByRole('option', …)` immediately after `fireEvent.click(trigger)` →
+  `findByRole`. Base UI mounts the popup and its items into a **portal**, which
+  is not guaranteed to have happened by the time `fireEvent` returns.
+- `expect(onValueChange).toHaveBeenCalledWith('fr')` → wrapped in `waitFor`.
+  The commit is Base UI's, not the click's.
+- The two `getByRole('option', …)` lookups after `findByRole('listbox')` →
+  `findByRole`, for the same portal reason.
+- The two focus assertions → `waitFor` (the original F1 fix).
+
+Every assertion in the file that follows an interaction now waits for its
+condition. Nothing about *what* is asserted changed anywhere.
+
+Rates measured on this host, `pnpm --filter @vpay/ui …` twenty times per cell,
+with CPU load supplied by 16–24 busy-loop processes whose PIDs are recorded and
+stopped by PID:
+
+| tree | vitest | what was run | load | result |
+| --- | --- | --- | --- | --- |
+| `master`'s file | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 12) | **13 pass, 7 fail** — all seven at `select.test.tsx:60` |
+| hardened | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 13) | **20 pass, 0 fail** |
+| hardened | **4.1.11** | full `@vpay/ui` suite | none | **20 pass, 0 fail** (74 tests, 18 files) |
+| `master`'s file | 3.2.7 | `select.test.tsx` alone | 20 burners (load ≈ 14) | 20 pass, 0 fail |
+| `master`'s file | 3.2.7 | full `@vpay/ui` suite | 24 burners (load rose to **46**) | 20 pass, 0 fail |
+| hardened | 3.2.7 | full `@vpay/ui` suite | 20 burners | **20 pass, 0 fail** (74 tests) |
+
+Two things to read off that table honestly.
+
+- **The fix is version-agnostic.** It is green on vitest 3 as well, so it can be
+  cherry-picked onto any branch still on vitest 3 without waiting for this one
+  to merge — which is what the exp28/exp32/exp42 branches need.
+- **The vitest 3 flake was not reproduced here, only explained.** CPU
+  contention alone, up to load 46 on 24 cores, did not make `master`'s version
+  fail on vitest 3 in forty attempts. The reported sightings were inside full
+  `just ci` runs, where the contention is Docker, Postgres containers and cargo
+  I/O rather than CPU, and that shape was not reconstructed. What is
+  established is the mechanism and that the fix closes it; the vitest 3 *rate*
+  under `just ci`-shaped load is unmeasured, and no number for it is claimed.
+
 ### F2 — `just audit-web` never gated this advisory, before or after
 
 The draft's notes say `just audit-web` is "clean — no known vulnerabilities
@@ -279,10 +328,10 @@ break quietly:
 
 ## 4. Gates
 
-`just ci` was started six times and reached the end three times. Two runs died in
+`just ci` was started seven times and reached the end four times. Two runs died in
 `test-rust` on the same rootless-Docker container-creation timeout, on a machine
 carrying other agents' testcontainers; neither is a result, and both are
-recorded rather than dropped, and a fourth (run 5) died on an unrelated
+recorded rather than dropped, and a third (run 5) died on an unrelated
 shutdown-timing case that had passed on the identical Rust twenty minutes
 earlier — this branch changes no Rust at all, and `test-rust`'s 1658/1658 is
 reproduced on both green runs. All six under Node 22.23.2 (`.nvmrc`),
@@ -296,24 +345,26 @@ read from a file rather than from a banner.
 | 3 | the F1 fix's head | **100** | `test-rust` again, again on `failed to create a container: Timeout error` (the MTN wiremock stub), this time under `checkout_sessions::the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled` after 245 s. A different test from run 1, the same cause: 95 containers on the daemon, load ≈ 9, other agents' testcontainers alongside. 1437 of 1438 run passed. Not counted as a result |
 | 4 | the F1 fix's head | **0** | ran to the end — the gate for the code change |
 | 5 | this documentation commit's head | **100** | `test-rust`, `vpay-server::cli` `worker::a_valid_config_lets_the_worker_boot` — `expected exit 0 after SIGTERM, got unix_wait_status(256)`, a shutdown-timing case that had passed on the identical Rust in run 4 minutes earlier. Environment again; 1323 of 1324 run passed. Not counted as a result |
-| 6 | this documentation commit's head | **0** | ran to the end, every number identical to run 4 |
+| 6 | the head before the F1a hardening | **0** | ran to the end, every number identical to run 4 |
+| 7 | **the final head** | **0** | ran to the end after F1a. `verify` twelve gates, `verify-links` 1036/197, `test-rust` 1658/1658 (1584 s), `test-doc` 111/1 ignored, `verify-ignored` 45 binaries/1658, `test-web` 1284/96, `deny` ok — identical to runs 4 and 6 |
 
-Recipe by recipe, from run 6 — the green one on the final head — with run 2's
-numbers noted where they differ. Runs 4 and 6 agree on every number below;
-the last commit in this branch is this file, so its own row was written from
-run 4 and confirmed by run 6.
+Recipe by recipe, from run 7 — the green one on the final head — with run 2's
+numbers noted where they differ. Runs 4, 6 and 7 agree on every number below.
+Run 7's own row is the one thing here that cannot be gated by the run it
+describes; it was added afterwards, and `just verify` — the only gate that reads
+these documents — was re-run on the exact final head after adding it.
 
 | recipe | result |
 | --- | --- |
 | `fmt-check` | ok |
 | `clippy` | ok, no warnings |
 | `verify` | **the twelve gates**, all ok, plus the advisory `verify-docs` report. `verify-status` 1 unimplemented item; `verify-errors` 19 error types; `verify-sdk-parity` 450 proving tests / 33 dated gaps; `verify-links` **1036 links in 197 tracked markdown files** (1033 in 195 before this review's two notes files were tracked); `verify-npm-scope` 2 publishable packages; `verify-serde` 85 types; `verify-repositories` 4 implementations, no generated schema exported; `verify-toolchain` `1.98.0`; `verify-migrations` 39 files |
-| `test-rust` | **1658 run, 1658 passed, 0 skipped** (1513 s on run 4, 1466 s on run 6) — equal to `master`'s, as it must be: this branch touches no Rust |
+| `test-rust` | **1658 run, 1658 passed, 0 skipped** (1513 s, 1466 s, 1584 s on runs 4, 6, 7) — equal to `master`'s, as it must be: this branch touches no Rust |
 | `test-doc` | **111 passed, 1 ignored** |
 | `verify-ignored` | `0 ignored (expected 0), 45 test binaries (expected 45), 1658 total (minimum 1080)` |
 | `lint-web` | ok — `build-sdk-node`, then `pnpm -r typecheck`, then `pnpm -r lint`, 15 of 15 packages |
-| `test-web` | run 2: **failed** at `@vpay/ui` (F1). Runs 4 and 6: **1284 passed, 0 skipped, across 96 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1 |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` (runs 4 and 6 — run 2 never reached it) |
+| `test-web` | run 2: **failed** at `@vpay/ui` (F1). Runs 4, 6 and 7: **1284 passed, 0 skipped, across 96 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1 |
+| `deny` | `advisories ok, bans ok, licenses ok, sources ok` (runs 4, 6 and 7 — run 2 never reached it) |
 
 Not in `just ci`, run separately:
 

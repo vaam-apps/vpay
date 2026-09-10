@@ -9,7 +9,7 @@ const LOCALES = [
 ];
 
 describe('Select', () => {
-  it('opens the popup and reports the chosen item', () => {
+  it('opens the popup and reports the chosen item', async () => {
     const onValueChange = vi.fn();
     const { unmount } = render(
       <Select items={LOCALES} defaultValue="en" onValueChange={onValueChange} aria-label="Locale" />,
@@ -18,13 +18,20 @@ describe('Select', () => {
     expect(trigger.textContent).toBe('English');
 
     fireEvent.click(trigger);
-    const option = screen.getByRole('option', { name: 'Français' });
+    // `findByRole`, not `getByRole`: Base UI mounts the popup into a portal
+    // and the items with it, which is not guaranteed to have happened by the
+    // time `fireEvent` returns. See the docblock on the case below — every
+    // assertion in this file that follows an interaction waits for its
+    // condition rather than assuming the schedule that produced it.
+    const option = await screen.findByRole('option', { name: 'Français' });
     // Base UI's Select.Item only commits a click that was preceded by a
     // pointerdown on the same item — it is how a real click is
     // distinguished from a click event fired by whatever opened the popup.
     fireEvent.pointerDown(option, { pointerType: 'mouse' });
     fireEvent.click(option, { detail: 1 });
-    expect(onValueChange).toHaveBeenCalledWith('fr');
+    await waitFor(() => {
+      expect(onValueChange).toHaveBeenCalledWith('fr');
+    });
     unmount();
   });
 
@@ -52,8 +59,8 @@ describe('Select', () => {
     fireEvent.keyDown(trigger, { key: 'ArrowDown', code: 'ArrowDown' });
 
     const list = await screen.findByRole('listbox');
-    const english = screen.getByRole('option', { name: 'English' });
-    const french = screen.getByRole('option', { name: 'Français' });
+    const english = await screen.findByRole('option', { name: 'English' });
+    const french = await screen.findByRole('option', { name: 'Français' });
 
     // The selected item is the one the keyboard lands on, not the first.
     expect(english.getAttribute('aria-selected')).toBe('true');
@@ -62,9 +69,12 @@ describe('Select', () => {
     // `findByRole('listbox')` above can resolve a tick before focus lands.
     // Written as a bare assertion this passed on vitest 3 and failed six
     // runs in ten on vitest 4 (exp41 review) — the schedule changed, the
-    // component did not. What is asserted is unchanged: focus must reach
-    // this item, and `waitFor` still fails, naming the element it found
-    // instead, if it never does.
+    // component did not. It had also been flaking under load on branches
+    // that touch no frontend code at all, on vitest 3, always green in
+    // isolation, which is the same race seen from the other side: this file
+    // was assuming a schedule rather than waiting for a condition. What is
+    // asserted is unchanged: focus must reach this item, and `waitFor` still
+    // fails, naming the element it found instead, if it never does.
     await waitFor(() => {
       expect(document.activeElement).toBe(english);
     });
