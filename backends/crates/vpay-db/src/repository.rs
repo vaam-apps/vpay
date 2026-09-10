@@ -467,6 +467,13 @@ pub trait TxRepositories: Send {
     /// the caller's transaction, because "vpay erased this payer" is not
     /// allowed to be true of one table and false of five.
     ///
+    /// One statement in it is not about a copy of the payer at all:
+    /// rewriting `events.data` changes the bytes a webhook delivery already
+    /// mid-ladder would re-render, so the deliveries that can still be
+    /// attempted have their `payload_sha256` cleared in the same transaction
+    /// — otherwise the digest guard dead-letters exactly the delivery that
+    /// tells the merchant the erasure happened.
+    ///
     /// The transaction is opened by `vpay-api` rather than by `vpay-db` for
     /// [`TxRepositories::insert_customer_in_tx`]'s reason and one more: the
     /// caller has to take the row lock, decide the `404` and the already-

@@ -3568,3 +3568,260 @@ async fn the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_s
          is what makes this a starved pool rather than a refused query; it waited {waited:?}"
     );
 }
+
+// ------------------------------------------- an erasure under a live delivery
+
+/// **A customer erased while one of its own events is mid-ladder is still
+/// delivered** — and the body that arrives is the redacted one.
+///
+/// # The collision this pins, and why nothing else could see it
+///
+/// `vpay_db::customers::erase_in_tx` rewrites `events.data` for every
+/// `customer.*` event of the erased object, which is the whole point of the
+/// erasure: `events` is never pruned and it held the largest surviving copy
+/// of the payer.
+///
+/// `webhook_deliveries.payload_sha256` (migration `0022`) is the digest the
+/// **first signed attempt** recorded, and `refuse_a_re_rendered_body` compares
+/// every later attempt's freshly-rendered bytes against it. The envelope is
+/// re-rendered per attempt rather than stored, so that column is the only
+/// thing standing between a merchant and two different bodies under one event
+/// id.
+///
+/// Put the two together and a delivery that failed its first attempt — a
+/// receiver having a bad day, which is the case the ladder exists for — is
+/// **dead-lettered** the moment the payer is erased, with an operator-facing
+/// message blaming "a renderer changed under a live delivery". The merchant
+/// never learns the customer was deleted, and un-parking a dead letter is
+/// manual (`docs/runbooks/webhook-delivery-failures.md`).
+///
+/// Every existing test in this file delivers on the first attempt, and every
+/// test in `customers.rs` runs with no endpoints configured
+/// (`support::no_webhook_endpoints`), so neither suite has a delivery in
+/// flight when an erasure lands. This is the seam.
+///
+/// # What it asserts, in the order that makes each one mean something
+///
+/// 1. the first attempt fails against the flaky receiver and **records a
+///    digest** — without that the guard has nothing to fire on and the rest
+///    of this test is vacuous;
+/// 2. the body that went out carried the payer's name, so the erasure below
+///    is really changing the bytes;
+/// 3. the erasure runs and anonymises the customer;
+/// 4. the next attempt is `Outcome::Done` and **not** an error. Restoring the
+///    `payload_sha256` clear in `redact_stored_copies` turns this line into
+///    `JobError::Poisoned`, which is the mutation this case is for;
+/// 5. the receiver's second body is the redacted object — the payer's name is
+///    gone from the wire, not merely from the row.
+#[tokio::test]
+async fn an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering() {
+    const PAYER: &str = "Ada Ngo Quibblewort";
+    let h = harness().await.expect("harness");
+
+    // A customer and its `customer.created`, written the way
+    // `POST /v1/customers` writes them: one transaction, the event's `data`
+    // the rendered object.
+    let customer_id = "cus_midladder00000000000".to_owned();
+    let event = h
+        .repositories
+        .transaction(|tx| {
+            let customer_id = customer_id.clone();
+            Box::pin(async move {
+                let row = tx
+                    .insert_customer_in_tx(&vpay_db::NewCustomer {
+                        id: customer_id.clone(),
+                        merchant_id: MERCHANT_A.to_owned(),
+                        livemode: false,
+                        name: Some(PAYER.to_owned()),
+                        email: None,
+                        phone: None,
+                        address: vpay_db::CustomerAddress::default(),
+                        metadata: json!({}),
+                        created_at: OffsetDateTime::now_utc(),
+                    })
+                    .await?;
+                let event = tx
+                    .insert_in_tx(&NewEvent {
+                        id: vpay_db::events::event_id(),
+                        merchant_id: row.merchant_id.clone(),
+                        livemode: row.livemode,
+                        event_type: "customer.created".to_owned(),
+                        object_id: row.id.clone(),
+                        data: json!({
+                            "id": row.id,
+                            "object": "customer",
+                            "name": row.name,
+                            "email": null,
+                            "phone": null,
+                            "address": null,
+                            "metadata": {},
+                            "created": 1_753_401_600,
+                            "livemode": false,
+                        }),
+                    })
+                    .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(event))
+            })
+        })
+        .await
+        .expect("the customer and its event")
+        .into_inner();
+
+    let flaky = h.flaky_registry();
+    let fanout = claim_fanout_job(h.repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(h.repositories.as_ref(), &flaky, &fanout)
+        .await
+        .expect("fan-out");
+    let delivery_id = h
+        .repositories
+        .for_event(&event.id)
+        .await
+        .expect("deliveries")
+        .pop()
+        .expect("one delivery")
+        .id;
+
+    // 1. One failed attempt against the flaky path, which is what records the
+    //    digest. A delivery that never got that far has nothing to compare.
+    let job = claim_delivery_job(&h.pool, delivery_id)
+        .await
+        .expect("the delivery job");
+    let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &flaky, &job)
+        .await
+        .expect("the first attempt runs");
+    assert!(
+        matches!(outcome, Outcome::RescheduleAfter(_)),
+        "the flaky receiver must leave this delivery owed another attempt: {outcome:?}"
+    );
+    let staged = h
+        .repositories
+        .get(delivery_id)
+        .await
+        .expect("the delivery row")
+        .expect("it exists");
+    let first_digest = staged
+        .payload_sha256
+        .clone()
+        .expect("the first signed attempt records the digest the guard compares against");
+    assert_eq!(staged.state, "pending", "still owed an attempt");
+
+    // 2. And those bytes carried the payer. If they did not, the erasure
+    //    below would change nothing and step 4 could not fail.
+    let sent = journal(&h.receiver_url)
+        .await
+        .expect("the receiver's journal")
+        .pop()
+        .expect("the flaky path recorded the POST");
+    let sent_body = String::from_utf8_lossy(&sent.body).into_owned();
+    assert!(
+        sent_body.contains(PAYER),
+        "the first attempt must have carried the payer's name, or this test is not about an \
+         erasure changing a body in flight: {sent_body}"
+    );
+
+    // 3. The erasure, exactly as `DELETE /v1/customers/{id}` runs it.
+    let now = OffsetDateTime::now_utc();
+    h.repositories
+        .transaction(|tx| {
+            let customer_id = customer_id.clone();
+            Box::pin(async move {
+                let row = tx
+                    .lock_customer_for_update(MERCHANT_A, &customer_id)
+                    .await?
+                    .expect("the customer this test created");
+                let redacted = row.redacted(now);
+                let data = json!({
+                    "id": redacted.id,
+                    "object": "customer",
+                    "name": redacted.name,
+                    "email": redacted.email,
+                    "phone": redacted.phone,
+                    "address": null,
+                    "metadata": {},
+                    "created": 1_753_401_600,
+                    "livemode": false,
+                    "deleted": true,
+                });
+                tx.erase_customer_in_tx(&row, now, &vpay_db::events::event_id(), &data)
+                    .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .expect("the erasure");
+
+    // The bytes really did move: the same event now renders to a different
+    // digest, which is precisely what `refuse_a_re_rendered_body` refuses.
+    let after = vpay_db::Events::get_by_id(h.repositories.as_ref(), MERCHANT_A, &event.id)
+        .await
+        .expect("the event row")
+        .expect("the event survives its object");
+    let redacted_digest = payload_sha256(&event_bytes(&after).expect("it renders"));
+    assert_ne!(
+        redacted_digest, first_digest,
+        "the erasure must have rewritten this event's body, or nothing here is under test"
+    );
+
+    // 4. The rest of the ladder runs. Every remaining attempt must be
+    //    `Ok(..)`; without the `payload_sha256` clear in
+    //    `vpay_db::customers::redact_stored_copies` the very next one is
+    //    `Err(JobError::Poisoned)` — "a renderer changed under a live
+    //    delivery" — and the delivery is parked for a human.
+    //
+    //    The flaky mapping answers 500 three times and 200 thereafter, so
+    //    two more failures and then the success; the loop is bounded rather
+    //    than counted, because what is under test is that none of them is an
+    //    error, not how many 500s the fixture has left.
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        assert!(attempts <= 5, "the flaky receiver recovers within the ladder");
+        let job = claim_delivery_job(&h.pool, delivery_id)
+            .await
+            .expect("the delivery job");
+        let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &flaky, &job)
+            .await
+            .expect(
+                "an erasure vpay performed on purpose must not dead-letter the delivery that \
+                 tells the merchant about it",
+            );
+        match outcome {
+            Outcome::Done => break,
+            Outcome::RescheduleAfter(_) => {
+                h.repositories
+                    .reschedule(job.id, WORKER, Duration::ZERO, Some("receiver refused"))
+                    .await
+                    .expect("the job reschedules");
+            }
+        }
+    }
+
+    // 5. And what arrived is the redacted object.
+    let delivered = journal(&h.receiver_url)
+        .await
+        .expect("the receiver's journal")
+        .pop()
+        .expect("the second POST");
+    let delivered_body = String::from_utf8_lossy(&delivered.body).into_owned();
+    assert!(
+        !delivered_body.contains(PAYER),
+        "the redelivered body still names the payer vpay erased: {delivered_body}"
+    );
+    assert!(
+        delivered_body.contains(vpay_db::REDACTED),
+        "the redelivered body should carry the marker in place of the payer: {delivered_body}"
+    );
+    assert_eq!(
+        h.repositories
+            .get(delivery_id)
+            .await
+            .expect("the delivery row")
+            .expect("it exists")
+            .payload_sha256
+            .as_deref(),
+        Some(redacted_digest.as_str()),
+        "the successful attempt re-stamps the digest with what it actually sent"
+    );
+}

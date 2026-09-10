@@ -433,7 +433,20 @@ second time uses the wrong secret, and requires
 unmodified" is an observation now, not an argument from the scheme being
 identical. The body is not stored; `payload_sha256` is written on the
 first attempt and compared on every later one, and a mismatch is
-`JobError::Poisoned`. Non-2xx and transport failures walk
+`JobError::Poisoned`. **There is exactly one place vpay clears that digest on
+purpose** (2026-09-11): erasing a customer rewrites `events.data` for every
+`customer.*` body of that payer, which changes the bytes a delivery already
+mid-ladder would re-render, so
+`vpay_db::customers::erase_in_tx` clears `payload_sha256` on the deliveries
+of those events that are still `pending` or `failed` — in the same
+transaction — and the next attempt signs and sends the redacted body.
+Without it the guard dead-letters exactly the delivery that tells the
+merchant the erasure happened, blaming a renderer change that did not
+happen. `succeeded` and `exhausted` rows keep their digest: nothing
+re-renders them, and it is the record of what a merchant was actually sent.
+See [customers.md](customers.md) § "A delivery already in flight" and
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`.
+Non-2xx and transport failures walk
 `vpay_worker::delivery_delay` — the seven rungs above, rung by rung — and the
 eighth failure is `state = 'exhausted'` with an `alert = true` log line, never
 another rung (`the_ladder_walks_delivery_delay_and_then_succeeds`,

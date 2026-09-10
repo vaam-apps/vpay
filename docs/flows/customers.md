@@ -260,10 +260,9 @@ somewhere else, and no code named them:
 
 `vpay_db::customers::erase_in_tx` rewrites all five **in the transaction that
 erases the customer**, because "vpay erased this payer" may not be true of one
-table and false of four. `provider_requests` and `webhook_deliveries` need no
-statement and that is a property of their schemas rather than an oversight:
-the first stores a status code and an attempt number and no bodies (migration
-`0016`), the second a `payload_sha256` and not the payload (`0022`).
+table and false of four. `provider_requests` needs no statement and that is a
+property of its schema rather than an oversight: it stores a status code and
+an attempt number and no bodies (migration `0016`).
 
 **The two `failure_raw` columns were added to that list on 2026-09-11, by the
 review, after they survived an erasure in a test.** They are not identifier
@@ -290,6 +289,32 @@ literals a fixture put there — including one the fixture writes into
 does not depend on anybody having thought of the column. A test that named
 tables would have named the wrong ones, which is exactly what happened to the
 issue.
+
+### A delivery already in flight, and the digest that would have parked it
+
+`webhook_deliveries` stores no payload — a `payload_sha256` and not the bytes
+(`0022`) — so it holds no copy of the payer. It still gets a statement, and
+for the opposite reason to a leak.
+
+That digest is recorded by the **first signed attempt** and compared against
+every later one, so that two different bodies can never go out under one
+event id. Rewriting `events.data` changes the bytes a pending delivery would
+re-render. A `customer.created` mid-ladder when the erasure lands — a
+merchant's receiver having an outage, which is the case the ladder exists for
+— therefore failed that comparison and was **dead-lettered**, with an
+operator-facing message blaming "a renderer changed under a live delivery".
+The merchant never learned the payer was erased, and un-parking a dead letter
+is manual ([../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md)).
+
+So the erasure clears `payload_sha256` on the deliveries that can still be
+attempted, in the same transaction, and the next attempt signs and sends the
+redacted body. It narrows the digest guard in exactly one place: the one
+change of bytes vpay makes on purpose. `succeeded` and `exhausted` deliveries
+are left alone — nothing re-renders them, and the digest of what a merchant
+was actually sent is forensics.
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`
+in `tests/webhooks.rs` is the proof; removing the statement turns its fourth
+step into `JobError::Poisoned`. Found by the review, 2026-09-11.
 
 ### What the merchant is told, and what changed about it
 

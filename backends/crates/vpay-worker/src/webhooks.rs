@@ -846,6 +846,20 @@ async fn owed_delivery(
 /// answer for a delivery whose only attempts so far were abandoned before
 /// rendering, and there is nothing to compare against.
 ///
+/// # The one place `None` is written back deliberately
+///
+/// `vpay_db::customers::erase_in_tx` rewrites `events.data` for every
+/// `customer.*` body of an erased payer — that is the erasure — and clears
+/// this column on the deliveries of those events that can still be
+/// attempted, in the same transaction. Without it, a `customer.created`
+/// mid-ladder when the erasure lands re-renders to different bytes here and
+/// is dead-lettered with the message below, which would blame a deploy that
+/// never happened and would leave the merchant never told the payer was
+/// erased. That is the only change of bytes vpay makes on purpose; every
+/// other difference is still this function's to refuse.
+/// `an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`
+/// in `tests/webhooks.rs` holds both halves.
+///
 /// # Errors
 ///
 /// [`JobError::Poisoned`], which dead-letters: no retry re-renders the body

@@ -871,7 +871,7 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 ///
 /// # What else is written, and why each one is here rather than in a sweep
 ///
-/// Five more statements, all in this transaction:
+/// Six more statements, all in this transaction:
 ///
 /// 1. the `customer.deleted` event, whose body is the **redacted** object;
 /// 2. every stored `customer.*` event body for this object — see
@@ -890,7 +890,12 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 /// 5. `idempotency_keys.response_body` for any stored `POST /v1/customers`
 ///    response naming this customer — the exact JSON that was answered, kept
 ///    for 24 hours to replay. A replay after an erasure now answers the
-///    redacted object, which is the same thing a fresh `GET` answers.
+///    redacted object, which is the same thing a fresh `GET` answers;
+/// 6. `webhook_deliveries.payload_sha256`, cleared on the deliveries of those
+///    events that can still be attempted. This one protects a *delivery*
+///    rather than the payer: step 2 changes the bytes a pending delivery
+///    would re-render, and the digest guard would dead-letter it. See
+///    [`redact_stored_copies`].
 ///
 /// A sweep over these afterwards would be a window in which "vpay erased this
 /// payer" is true of one table and false of five, on a promise a payer was
@@ -1057,10 +1062,10 @@ async fn hard_delete(
 /// Rewrites every copy of this payer's identifiers vpay keeps outside
 /// `customers`.
 ///
-/// Four statements, and the set is closed by measurement rather than by
+/// Five statements, and the set is closed by measurement rather than by
 /// intuition: `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
 /// scans every `text`, `varchar` and `jsonb` column `information_schema`
-/// knows about, so a fifth store added later fails that test rather than
+/// knows about, so a sixth store added later fails that test rather than
 /// waiting to be noticed here.
 ///
 /// # The rail's own words are a copy too, and they were missed on 2026-09-10
@@ -1091,8 +1096,9 @@ async fn hard_delete(
 ///
 /// `provider_requests` deliberately has no redaction: migration `0016` stores
 /// no request or response body, only a status code, an attempt number and an
-/// operator-facing `error_kind`. `webhook_deliveries` likewise keeps
-/// `payload_sha256` and not the payload.
+/// operator-facing `error_kind`. `webhook_deliveries` keeps
+/// `payload_sha256` and not the payload — but it does get a statement, and
+/// for the opposite reason to a leak: see the fourth one below.
 async fn redact_stored_copies(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     customer_id: &str,
@@ -1186,6 +1192,33 @@ async fn redact_stored_copies(
     sqlx::query(refunds)
         .bind(customer_id)
         .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // NOT a leak, and the only statement here that is not about one: the
+    // erasure has just changed the bytes `vpay_worker::webhooks::event_bytes`
+    // renders for every `customer.*` event of this object, and
+    // `webhook_deliveries.payload_sha256` is the digest the FIRST signed
+    // attempt recorded so that a later attempt cannot send different bytes.
+    // A delivery mid-ladder when the erasure lands would therefore re-render
+    // to a different body, fail `refuse_a_re_rendered_body`, and be
+    // DEAD-LETTERED with "a renderer changed under a live delivery" — an
+    // operator sent hunting a deploy that never happened, and a merchant who
+    // never learns the payer was erased.
+    //
+    // Clearing the digest on the deliveries that can still be attempted is
+    // what makes the next attempt re-sign the redacted body instead. It
+    // narrows that guard in exactly one place: the one change of bytes vpay
+    // makes on purpose, in the transaction that makes it. `succeeded` and
+    // `exhausted` are terminal and are left alone — nothing will re-render
+    // them, and the digest of what a merchant was actually sent is forensics.
+    let deliveries = "UPDATE webhook_deliveries SET payload_sha256 = NULL \
+         WHERE state IN ('pending', 'failed') \
+           AND event_id IN \
+               (SELECT id FROM events WHERE object_id = $1 AND type LIKE 'customer.%')";
+    sqlx::query(deliveries)
+        .bind(customer_id)
         .execute(&mut **tx)
         .await
         .map_err(classify_write)?;
