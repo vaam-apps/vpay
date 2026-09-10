@@ -2464,6 +2464,47 @@ mod tests {
         );
     }
 
+    /// `amount_refunded` is rendered **from the row**, and a non-zero value
+    /// is what proves it.
+    ///
+    /// Every other assertion about this key — here, in both merchant SDKs'
+    /// fixtures, in the integration suite — reads `0`, which is also what
+    /// `InvoiceRow`'s zero value, a hard-coded literal in [`InvoiceObject::render`]
+    /// and `vpay_sdk::Invoice`'s `#[serde(default)]` all produce. Measured on
+    /// 2026-09-11: replacing `amount_refunded: row.amount_refunded` with
+    /// `amount_refunded: 0` in that renderer left all 342 cases in this crate
+    /// GREEN, and no case anywhere in the workspace reads the key off a wire
+    /// response at all. This is the case that fails.
+    ///
+    /// It is a *money* key: it tells a merchant how much of a bill they have
+    /// already given back, and a renderer that answered `0` regardless would
+    /// tell them they still hold money they do not.
+    #[test]
+    fn an_invoices_amount_refunded_is_rendered_from_the_row_and_not_from_a_constant() {
+        let mut row = invoice_row();
+        row.status = vpay_core::InvoiceStatus::Paid.as_wire_str().to_owned();
+        row.amount_paid = 5000;
+        row.amount_remaining = 0;
+        row.amount_refunded = 2500;
+
+        let rendered = serde_json::to_value(
+            InvoiceObject::render(&row, &[invoice_line_row()], None)
+                .expect("a paid, part-refunded row renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered.get("amount_refunded"),
+            Some(&json!(2500)),
+            "the wire value is the row's, not a constant: {rendered:?}"
+        );
+        // …and the three amounts beside it did not move, which is the whole
+        // of D5 on the wire as well as in the table.
+        assert_eq!(rendered.get("amount_paid"), Some(&json!(5000)));
+        assert_eq!(rendered.get("amount_remaining"), Some(&json!(0)));
+        assert_eq!(rendered.get("status"), Some(&json!("paid")));
+    }
+
     /// A phone-only customer renders `null` for the two absent identifiers
     /// rather than omitting the keys.
     ///
