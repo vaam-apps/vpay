@@ -1,0 +1,22 @@
+# Fixture for `the_dashboard_token_ttl_is_refused_outside_its_bounds`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `staff_auth.access_token_ttl_seconds` is bounded 10..=3600. This one is
+# 3601: one over the ceiling, so the document fails on that rule and on
+# nothing else.
+#
+# The ceiling is policy, and it is far below the real constraint —
+# `vpay_api::op::keys::ROTATION_OVERLAP` is 24 hours, and a token must expire
+# long before the key that signed it stops being published. One hour is what
+# keeps a *revoked* session's already-minted token short: ADR-0017's
+# Consequences records that a signed-out session's JWT stays cryptographically
+# valid for the rest of its TTL, and this bound is the only thing that says how
+# long "the rest of its TTL" may be.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+staff_auth:
+  access_token_ttl_seconds: 3601

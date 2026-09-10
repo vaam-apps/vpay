@@ -3698,6 +3698,104 @@ mod tests {
         }
     }
 
+    /// `staff_auth.access_token_ttl_seconds` is refused outside `10..=3600`,
+    /// and until the exp44 review nothing in this repository said so.
+    ///
+    /// # Why a bound needs a test and not only a doc comment
+    ///
+    /// Both ends are load-bearing, and neither is recoverable from the type.
+    ///
+    /// **The floor** is what stops the dashboard's re-mint margin collapsing.
+    /// `frontends/apps/dashboard/src/server/gate.ts` replaces the `/dash/v1`
+    /// token when a fifth of its life is left, so below ten seconds that
+    /// margin is under two — and every render on any real network becomes an
+    /// authorization-code leg. A credential operation per page view presents
+    /// as latency rather than as an error, which is the class of defect a
+    /// green suite is worst at catching.
+    ///
+    /// **The ceiling** is the only thing bounding how long a *signed-out*
+    /// session's already-minted JWT stays cryptographically valid.
+    /// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)'s
+    /// Consequences records that as a residual and does not close it; this
+    /// bound is what says how long "the rest of its TTL" may be, and it sits
+    /// far below `vpay_api::op::keys::ROTATION_OVERLAP` so a token always dies
+    /// before the key that signed it stops being published.
+    ///
+    /// Measured before this test existed: `#[garde(range(min = 10, max =
+    /// 3600))]` replaced with `#[garde(skip)]`, `cargo nextest run -p
+    /// vpay-config` **112 passed, 0 failed** — the branch that added the field
+    /// claimed the bound in four places and asserted it in none.
+    ///
+    /// The accepted values are not decoration: a rule that refused
+    /// *everything* would satisfy the two fixtures and be caught only at
+    /// somebody's boot.
+    #[test]
+    fn the_dashboard_token_ttl_is_refused_outside_its_bounds() {
+        for fixture in [
+            "staff-auth-token-ttl-too-short.yml",
+            "staff-auth-token-ttl-too-long.yml",
+        ] {
+            let error = load_fixture(fixture).map(|_| ()).expect_err(&format!(
+                "{fixture} carries an access_token_ttl_seconds outside 10..=3600 and must be                  refused"
+            ));
+            let ConfigError::Validation(report) = &error else {
+                panic!("{fixture} must fail garde's structural pass, not with {error:?}");
+            };
+            assert!(
+                report.contains("access_token_ttl_seconds"),
+                "the refusal has to name the field an operator must edit: {report}"
+            );
+        }
+
+        // Both bounds are inclusive, and 900 is what a deployment that writes
+        // nothing gets.
+        for accepted in [10_u32, StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS, 3600] {
+            let staff_auth = StaffAuth {
+                access_token_ttl_seconds: accepted,
+                ..StaffAuth::default()
+            };
+            assert!(
+                staff_auth.validate().is_ok(),
+                "{accepted} is inside the bound and must load"
+            );
+        }
+        // Zero is the value a `#[derive(Default)]` would hand this field, and
+        // it is refused — which is why `StaffAuth`'s `Default` is written out.
+        for refused in [0_u32, 9, 3601, u32::MAX] {
+            let staff_auth = StaffAuth {
+                access_token_ttl_seconds: refused,
+                ..StaffAuth::default()
+            };
+            assert!(
+                staff_auth.validate().is_err(),
+                "{refused} is outside the bound and must be refused"
+            );
+        }
+        assert_eq!(
+            StaffAuth::default().access_token_ttl_seconds,
+            StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+            "a derived `Default` would make this zero, which the bound refuses"
+        );
+    }
+
+    /// A document that writes no `staff_auth` block at all gets the shipping
+    /// TTL, which is what "not writing the key is exactly what shipped" means.
+    ///
+    /// Asserted against `config/application.yml` — the file an operator
+    /// actually edits, which writes no `staff_auth` — rather than a hand-built
+    /// struct, so it proves the **serde** default and not only the `Default`
+    /// impl beside it.
+    #[test]
+    fn a_config_that_writes_no_staff_auth_gets_the_shipping_token_ttl() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("example config should load");
+        assert_eq!(
+            config.staff_auth.access_token_ttl_seconds,
+            StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS
+        );
+    }
+
     /// The shapes `validate_checkout_base_url` accepts and refuses, as a
     /// table over the function itself — the fixtures above prove one of these
     /// arrives through a YAML document; this proves the rest of the rule.
