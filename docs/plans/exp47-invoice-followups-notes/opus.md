@@ -22,7 +22,7 @@ mutation of "drop the CHECK amendment → the storable test FAILS".
 amendment to `paid_means_nothing_remaining`**.
 
 **Why.** The constraint is `status <> 'paid' OR amount_remaining = 0`. Under
-the shape the issue itself decided — Stripe-shaped, a *gross* counter beside
+the shape the issue itself decided — Stripe-shaped, a _gross_ counter beside
 the money columns — a refund moves neither `amount_paid` nor
 `amount_remaining`, so a refunded paid invoice satisfies it already, and
 `amounts_add_up` too. The amendment would have been vacuous, and its named
@@ -30,7 +30,7 @@ mutation could not have fired: there is no storable-test that fails when a
 vacuous constraint change is reverted.
 
 The only design under which that sentence is true is the one D5's own text
-describes as the *problem* rather than the answer: decrement `amount_paid`,
+describes as the _problem_ rather than the answer: decrement `amount_paid`,
 let `amounts_add_up` push the difference into `amount_remaining`, and relax the
 CHECK to `amount_remaining = amount_refunded`. That was written, considered and
 rejected here, because it makes a fully refunded invoice read
@@ -50,14 +50,14 @@ The schema already had the precedent: `payment_intents.amount_refunded`
 `0017`'s GAP note describes the writer that would move it. `invoices` now has
 the same shape.
 
-**What replaces the mutation.** The load-bearing CHECK is a *new* one,
+**What replaces the mutation.** The load-bearing CHECK is a _new_ one,
 `refunded_at_most_paid` (`amount_refunded <= amount_paid`), and it is what
 makes the settlement fail closed. Both required mutations were run:
 
-| Mutation | Result |
-|---|---|
+| Mutation                                                                                                                    | Result                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Move the `amount_refunded` write out of the settlement transaction (commit the refund flip, update the invoice on the pool) | `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused` **FAILS** — refund left `succeeded`, invoice unmoved |
-| Delete `refunded_at_most_paid` from migration `0042` | the same case **FAILS** — 5,500 refunded committed against a 5,000 bill |
+| Delete `refunded_at_most_paid` from migration `0042`                                                                        | the same case **FAILS** — 5,500 refunded committed against a 5,000 bill                                                     |
 
 **This is reversible, and it is a maintainer's call.** If the gross shape is
 wrong, two places change: migration `0042` (the CHECK) and
@@ -71,7 +71,7 @@ in the tree assumes either shape.
 ### 1. D5 — refunds against a paid invoice
 
 - Migration `0042_invoices-amount-refunded.sql`: `amount_refunded BIGINT NOT
-  NULL` with **no DEFAULT** (added with one purely to backfill, dropped on the
+NULL` with **no DEFAULT** (added with one purely to backfill, dropped on the
   next line), `amount_refunded_non_negative`, `refunded_at_most_paid`.
 - `model Invoice` declares it, so the column contributes **zero** drift; the
   +1 is `amount_refunded_non_negative` as an undeclared single-column CHECK.
@@ -98,7 +98,7 @@ it says so. No rail can refund, `POST /v1/refunds` is unrouted,
 `vpay_db::Refunds` still exposes no `create`. The four cases seed a `pending`
 refunds row with a raw `INSERT`, exactly as
 `backends/tests/integration/tests/refunds.rs` already does. What is proven is
-what the *database* does when a refund lands; nothing about how one comes to
+what the _database_ does when a refund lands; nothing about how one comes to
 exist.
 
 ### 2. D2 — per-merchant default return URLs
@@ -136,7 +136,7 @@ a server change, a page change, a vitest suite and a screenshot. The gap row in
 **Item 4 of the brief — a Cypress case through `hosted_invoice_url`.** Not
 attempted. `just test-e2e` shares fixed Cypress fixture ports (4180/4181) on
 master and another agent's stack was up on this machine for most of this pass;
-running it would have been a collision, and running it *badly* would have been
+running it would have been a collision, and running it _badly_ would have been
 worse than not running it. The gap row is unchanged and still open.
 
 Both are listed in the brief's own priority order — items 1 and 2 first if the

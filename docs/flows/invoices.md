@@ -26,25 +26,25 @@ invoice gets sent.
 
 ### Invoice — `in_…`
 
-| Field | Meaning |
-|---|---|
-| `id` | `in_…`, minted before the row exists |
-| `customer` | the `cus_…` this bills. **Required** |
-| `currency` | lower-case ISO-4217; every line is in it |
-| `status` | `draft` → `open` → `paid` \| `void` \| `uncollectible` |
-| `number` | `{prefix}-{000001}`, assigned at finalize, `null` while a draft |
-| `amount_due` / `amount_paid` / `amount_remaining` | integer minor units ([money.md](money.md)) |
-| `amount_refunded` | how much of `amount_paid` has been given back — **gross**, see [Refunds](#refunds) |
-| `due_date` | unix seconds, **advisory** — nothing in vpay reads it |
-| `description`, `metadata` | the merchant's own |
-| `payment_intent` | the `pi_…` paying it, or `null` |
-| `hosted_invoice_url` | the checkout session for that intent, or `null` |
-| `lines` | every line, expanded, as a `list` |
-| `status_transitions` | `finalized_at`, `paid_at`, `voided_at`, `marked_uncollectible_at` |
-| `created`, `livemode` | as everywhere else |
+| Field                                             | Meaning                                                                            |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `id`                                              | `in_…`, minted before the row exists                                               |
+| `customer`                                        | the `cus_…` this bills. **Required**                                               |
+| `currency`                                        | lower-case ISO-4217; every line is in it                                           |
+| `status`                                          | `draft` → `open` → `paid` \| `void` \| `uncollectible`                             |
+| `number`                                          | `{prefix}-{000001}`, assigned at finalize, `null` while a draft                    |
+| `amount_due` / `amount_paid` / `amount_remaining` | integer minor units ([money.md](money.md))                                         |
+| `amount_refunded`                                 | how much of `amount_paid` has been given back — **gross**, see [Refunds](#refunds) |
+| `due_date`                                        | unix seconds, **advisory** — nothing in vpay reads it                              |
+| `description`, `metadata`                         | the merchant's own                                                                 |
+| `payment_intent`                                  | the `pi_…` paying it, or `null`                                                    |
+| `hosted_invoice_url`                              | the checkout session for that intent, or `null`                                    |
+| `lines`                                           | every line, expanded, as a `list`                                                  |
+| `status_transitions`                              | `finalized_at`, `paid_at`, `voided_at`, `marked_uncollectible_at`                  |
+| `created`, `livemode`                             | as everywhere else                                                                 |
 
 **`customer` is required, and a payment intent's is not.** An invoice is a
-bill *to somebody*: it carries a number a merchant quotes in a conversation,
+bill _to somebody_: it carries a number a merchant quotes in a conversation,
 it may be chased for months, and on this market the payer's identity is a
 phone number (the maintainer's decision of 2026-09-05, [customers.md](customers.md)).
 An invoice with no customer is a bill nobody could be asked to pay, and
@@ -57,7 +57,7 @@ An invoice with no customer is a bill nobody could be asked to pay, and
 
 **The route says `invoice_items` and the object says `line_item`, and that is
 deliberate.** Stripe has two objects where vpay has one. An `invoiceitem`
-there is a *pending* charge not yet attached to any document; a `line_item` is
+there is a _pending_ charge not yet attached to any document; a `line_item` is
 what appears on `invoice.lines` once it is. vpay's `POST /v1/invoice_items`
 writes straight onto a named draft — there is no pending-charge inbox, because
 that is a subscription feature and subscriptions are not built. So the route
@@ -105,10 +105,10 @@ moves an invoice out of `paid`, `void` or `uncollectible`, and no route tries.
 
 1. **`invoices_status_enum_check`** closes the vocabulary at five labels.
 2. **Every transition is a compare-and-swap.** `UPDATE invoices SET … WHERE id
-   = $1 AND merchant_id = $2 AND status = '<from>'`. "Matched no row" *is* the
+= $1 AND merchant_id = $2 AND status = '<from>'`. "Matched no row" _is_ the
    refusal. There is no `can_transition_to` anywhere in this codebase, and
    [`vpay_core::InvoiceStatus`](../reference/vpay-core.md) says why: a Rust
-   guard beside the write is the thing a future writer calls *instead of*
+   guard beside the write is the thing a future writer calls _instead of_
    taking the lock.
 3. **Five multi-column CHECKs** make the combinations a broken transition
    would produce unstorable — `number_is_assigned_at_finalize`,
@@ -125,7 +125,7 @@ each one exists to refuse, straight past the API and the repository.
 
 ### A draft is deleted; an issued invoice is voided
 
-Stripe's own shape, and here it is *forced* rather than chosen:
+Stripe's own shape, and here it is _forced_ rather than chosen:
 `number_is_assigned_at_finalize` says a non-draft invoice has a number, so a
 voided draft would be a non-draft row with no number, which the database
 refuses. Rather than discover that as a `23514`, `void`'s statement never
@@ -187,7 +187,7 @@ the one that exists is the one the browser tests already drive.
 
 **The payer is not shown the invoice number, and that is a gap rather than a
 decision** (recorded by the S4b review, 2026-09-07). `pay` writes
-`Invoice {number}` into the intent's `description`, so the number *reaches*
+`Invoice {number}` into the intent's `description`, so the number _reaches_
 the payer's browser — `GET /v1/browser/checkout/sessions/{id}` expands the
 intent and `description` is one of its keys — and
 `frontends/apps/checkout` renders the amount and the merchant name and
@@ -219,12 +219,12 @@ merchant_clients:
 and then `POST /v1/invoices/{id}/pay` may omit both. The resolution order is
 **request, then configuration, then refuse**:
 
-| Sent on the request | Configured | Result |
-|---|---|---|
-| both | either | the request's, always |
-| one | the other | the request's for one, the configured for the other |
-| neither | both | the configured pair |
-| neither | neither | one `400` naming **both** parameters |
+| Sent on the request | Configured | Result                                              |
+| ------------------- | ---------- | --------------------------------------------------- |
+| both                | either     | the request's, always                               |
+| one                 | the other  | the request's for one, the configured for the other |
+| neither             | both       | the configured pair                                 |
+| neither             | neither    | one `400` naming **both** parameters                |
 
 A request that sends its own **wins**, because a merchant may legitimately
 want one bill to land somewhere else and a default that could not be
@@ -280,7 +280,7 @@ rail-declined intent lands back on `requires_payment_method`
 unconfirmed intent sits, so "not processing" would let a merchant mint a second
 intent one millisecond after the first. `canceled` is the one status that says
 a human decided this attempt is over. It is also consistent with this
-repository's standing rule that a retry is a *new* PaymentIntent
+repository's standing rule that a retry is a _new_ PaymentIntent
 ([AGENTS.md](../../AGENTS.md)).
 
 **Partial payments are out of scope.** `paid_means_nothing_remaining` is where
@@ -298,20 +298,20 @@ A refund against the intent that paid an invoice **leaves the invoice `paid`**
 and adds its amount to `amount_refunded`. There is no credit note object, no
 sixth status, and no second `invoice.paid`.
 
-| Column | Before a 2,000 refund on a 5,000 bill | After |
-|---|---|---|
-| `status` | `paid` | `paid` |
-| `amount_due` | 5000 | 5000 |
-| `amount_paid` | 5000 | **5000** |
-| `amount_remaining` | 0 | **0** |
-| `amount_refunded` | 0 | **2000** |
+| Column             | Before a 2,000 refund on a 5,000 bill | After    |
+| ------------------ | ------------------------------------- | -------- |
+| `status`           | `paid`                                | `paid`   |
+| `amount_due`       | 5000                                  | 5000     |
+| `amount_paid`      | 5000                                  | **5000** |
+| `amount_remaining` | 0                                     | **0**    |
+| `amount_refunded`  | 0                                     | **2000** |
 
 **`amount_refunded` is gross and sits beside the arithmetic, not inside it.**
 It is not subtracted from `amount_paid` and takes no part in `amounts_add_up`
 — exactly the shape `payment_intents.amount_refunded` has had since migration
 `0003`. The alternative (decrement `amount_paid`, let the difference land in
 `amount_remaining`, amend `paid_means_nothing_remaining` to tolerate it) makes
-a fully refunded invoice read `paid` with the whole bill *remaining*, and
+a fully refunded invoice read `paid` with the whole bill _remaining_, and
 `amount_remaining` is the number `pay` mints an intent for and the number a
 merchant chases a payer with. Migration `0042`'s header carries the argument
 in full; it is a call a maintainer can reverse, and the two places to change
@@ -354,7 +354,7 @@ no shipping binary, and the cases that prove it seed a `pending` refunds row
 with a raw `INSERT`, exactly as `backends/tests/integration/tests/refunds.rs`
 already does.
 
-What is built is the *database's* answer and the transaction that writes it.
+What is built is the _database's_ answer and the transaction that writes it.
 What is not built is everything that would produce a refund in the first
 place. The decision was worth landing as a statement rather than a paragraph
 because the schema had already taken a position and a sentence in a document
@@ -367,12 +367,12 @@ is not something a future writer trips over.
 Four types, all Stripe's own spellings, all written **inside the transaction
 of the transition they describe**:
 
-| Type | Written by |
-|---|---|
-| `invoice.created` | `POST /v1/invoices` |
+| Type                | Written by                        |
+| ------------------- | --------------------------------- |
+| `invoice.created`   | `POST /v1/invoices`               |
 | `invoice.finalized` | `POST /v1/invoices/{id}/finalize` |
-| `invoice.paid` | the settlement transaction (TX1) |
-| `invoice.voided` | `POST /v1/invoices/{id}/void` |
+| `invoice.paid`      | the settlement transaction (TX1)  |
+| `invoice.voided`    | `POST /v1/invoices/{id}/void`     |
 
 A refused transition writes **none** — the transaction is abandoned rather
 than committed, which is also what makes a refused finalize burn no number.
@@ -393,16 +393,16 @@ rather than discovered.
 
 ## The surface
 
-| Route | Methods | Notes |
-|---|---|---|
-| `/v1/invoices` | `POST`, `GET` | list takes `customer`, `status`, and the standard cursor |
-| `/v1/invoices/{id}` | `GET`, `POST`, `PATCH`, `DELETE` | `POST`/`PATCH` are one handler; both are draft-only, as is `DELETE` |
-| `/v1/invoices/{id}/finalize` | `POST` | |
-| `/v1/invoices/{id}/void` | `POST` | |
-| `/v1/invoices/{id}/mark_uncollectible` | `POST` | |
-| `/v1/invoices/{id}/pay` | `POST` | `success_url`, `cancel_url` — sent, or from `merchant_clients[].invoices` |
-| `/v1/invoice_items` | `POST` | no collection `GET` — see below |
-| `/v1/invoice_items/{id}` | `GET`, `POST`, `PATCH`, `DELETE` | writes are draft-parent-only |
+| Route                                  | Methods                          | Notes                                                                     |
+| -------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
+| `/v1/invoices`                         | `POST`, `GET`                    | list takes `customer`, `status`, and the standard cursor                  |
+| `/v1/invoices/{id}`                    | `GET`, `POST`, `PATCH`, `DELETE` | `POST`/`PATCH` are one handler; both are draft-only, as is `DELETE`       |
+| `/v1/invoices/{id}/finalize`           | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/void`               | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/mark_uncollectible` | `POST`                           |                                                                           |
+| `/v1/invoices/{id}/pay`                | `POST`                           | `success_url`, `cancel_url` — sent, or from `merchant_clients[].invoices` |
+| `/v1/invoice_items`                    | `POST`                           | no collection `GET` — see below                                           |
+| `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE` | writes are draft-parent-only                                              |
 
 `PATCH` is mounted beside `POST` on both `{id}` paths. Stripe's API has no
 `PATCH` — a merchant's existing client, and the real `stripe` package, send
@@ -425,18 +425,18 @@ being an existence oracle.
 
 ## Where the code is
 
-| Concern | File |
-|---|---|
-| Schema | `backends/migrations/0036_create-invoices.sql`, `0042_invoices-amount-refunded.sql` |
-| Model | `schemas/vpay.cstack`, `model Invoice` / `model InvoiceItem` |
-| Repository | `backends/crates/vpay-db/src/invoices.rs` |
-| Settlement hook | `backends/crates/vpay-db/src/settlement.rs`, `flip_invoice` |
-| Refund settlement | `backends/crates/vpay-db/src/settlement.rs`, `apply_refund_succeeded` |
-| Per-merchant `pay` URLs | `backends/crates/vpay-config/src/oauth.rs`, `InvoiceDefaults` |
-| API | `backends/crates/vpay-api/src/v1/invoices.rs`, `.../invoice_items.rs` |
-| Wire objects | `backends/crates/vpay-api/src/model.rs`, `InvoiceObject` |
-| Worker projection | `backends/crates/vpay-worker/src/handlers.rs`, `invoice_snapshot` |
-| Status type | `backends/crates/vpay-core/src/state.rs`, `InvoiceStatus` |
+| Concern                 | File                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| Schema                  | `backends/migrations/0036_create-invoices.sql`, `0042_invoices-amount-refunded.sql` |
+| Model                   | `schemas/vpay.cstack`, `model Invoice` / `model InvoiceItem`                        |
+| Repository              | `backends/crates/vpay-db/src/invoices.rs`                                           |
+| Settlement hook         | `backends/crates/vpay-db/src/settlement.rs`, `flip_invoice`                         |
+| Refund settlement       | `backends/crates/vpay-db/src/settlement.rs`, `apply_refund_succeeded`               |
+| Per-merchant `pay` URLs | `backends/crates/vpay-config/src/oauth.rs`, `InvoiceDefaults`                       |
+| API                     | `backends/crates/vpay-api/src/v1/invoices.rs`, `.../invoice_items.rs`               |
+| Wire objects            | `backends/crates/vpay-api/src/model.rs`, `InvoiceObject`                            |
+| Worker projection       | `backends/crates/vpay-worker/src/handlers.rs`, `invoice_snapshot`                   |
+| Status type             | `backends/crates/vpay-core/src/state.rs`, `InvoiceStatus`                           |
 
 `invoices` and `invoice_items` are the second and third vpay tables **born**
 with a `schemas/vpay.cstack` model. Two of the twelve repository methods run
@@ -474,7 +474,7 @@ sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
 skipped), asserting the exact bytes each of the thirteen methods puts on the
 wire and the decode of all **nineteen** keys (eighteen until migration `0042`
 added `amount_refunded` on 2026-09-10). Both are stub-backed, deliberately:
-what proves the *server* is `invoices.rs`, and what these prove is that a
+what proves the _server_ is `invoices.rs`, and what these prove is that a
 merchant's client sends what the server documents. **Since the exp33 review
 the same day, each SDK also has a live suite** — two cases in
 `sdks/rust/tests/live_invoices.rs` and three in
@@ -516,7 +516,7 @@ green while a settlement paid an invoice it was never bound to.
   `POST /v1/invoices` and both SDKs had it optional, documented as letting
   "the server apply this deployment's own default"; there is no such default,
   and no stub answering `201` to anything could have said so.
-  `invoices.rs` is still what proves the *server*, over a socket, against a
+  `invoices.rs` is still what proves the _server_, over a socket, against a
   real Postgres.
 - **The Stripe-compat suite still has no invoice cases.** `sdks/stripe-compat`
   drives the real `stripe@22.6.1` package rather than either merchant SDK, so

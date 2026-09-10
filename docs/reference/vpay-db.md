@@ -776,11 +776,11 @@ the fail-closed direction, pinned by
 transaction and runs two statements in it:
 
 1. `refunds::settle_in_tx` — `UPDATE refunds SET status = 'succeeded' WHERE id
-   = $1 AND status = 'pending'`. `Ok(None)` is "already settled", the answer an
+= $1 AND status = 'pending'`. `Ok(None)` is "already settled", the answer an
    at-least-once retry has to get.
 2. `invoices::add_refund_for_intent_in_tx` — `UPDATE invoices SET
-   amount_refunded = amount_refunded + $2 WHERE payment_intent_id = $1 AND
-   status = 'paid'`. `Ok(None)` is "this intent pays no invoice", which is most
+amount_refunded = amount_refunded + $2 WHERE payment_intent_id = $1 AND
+status = 'paid'`. `Ok(None)` is "this intent pays no invoice", which is most
    of them.
 
 Both are `pub(crate)`, so a consumer of this crate cannot settle a refund
@@ -1562,8 +1562,8 @@ addition, not a net.** `invoices::add_refund_for_intent_in_tx` is
 `UPDATE invoices SET amount_refunded = amount_refunded + $2, updated_at = $3
 WHERE payment_intent_id = $1 AND status = 'paid' RETURNING {COLUMNS}`. It
 interpolates `invoices::COLUMNS` and nothing else; all three caller-supplied
-values are bound, and the increment is an *expression over the row's own
-column* rather than a computed total, so there is not even an arithmetic
+values are bound, and the increment is an _expression over the row's own
+column_ rather than a computed total, so there is not even an arithmetic
 result to interpolate.
 
 The other statement that landed with it, `refunds::settle_in_tx`, adds **no

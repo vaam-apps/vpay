@@ -21,19 +21,19 @@ That was reproduced against a real Postgres (`postgres:16-alpine`, every
 migration applied, a table populated with rows in every status). The shipped
 constraint is `CHECK (status <> 'paid' OR amount_remaining = 0)`.
 
-| # | Row | Constraint | Result |
-|---|---|---|---|
-| A1 | `paid`, paid 5000, remaining 0, **refunded 2000** | as shipped | **stored** |
-| A2 | the same, **refunded 5000** (fully refunded) | as shipped | **stored** |
-| B1 | the same as A2 | amended to `… OR amount_refunded > 0` | **stored** — *identical outcome* |
-| B3a | `paid`, due 5000, paid 4000, remaining **1000**, refunded 1 | as shipped | **refused** |
-| B3b | the same row | amended | **stored** |
-| C1 | A1's row | amended to `amount_remaining = amount_refunded` (the net design) | **refused** |
+| #   | Row                                                         | Constraint                                                       | Result                           |
+| --- | ----------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------- |
+| A1  | `paid`, paid 5000, remaining 0, **refunded 2000**           | as shipped                                                       | **stored**                       |
+| A2  | the same, **refunded 5000** (fully refunded)                | as shipped                                                       | **stored**                       |
+| B1  | the same as A2                                              | amended to `… OR amount_refunded > 0`                            | **stored** — _identical outcome_ |
+| B3a | `paid`, due 5000, paid 4000, remaining **1000**, refunded 1 | as shipped                                                       | **refused**                      |
+| B3b | the same row                                                | amended                                                          | **stored**                       |
+| C1  | A1's row                                                    | amended to `amount_remaining = amount_refunded` (the net design) | **refused**                      |
 
 A1/A2 versus B1 is the vacuity: the row the amendment was supposed to make
 storable is storable without it, so reverting the amendment fails nothing and
 the brief's named mutation could not have fired. **B3a versus B3b is more than
-that** — the amendment does not merely add nothing, it *widens* what is
+that** — the amendment does not merely add nothing, it _widens_ what is
 storable: a `paid` invoice with 1,000 still outstanding becomes legal the
 moment any refund is recorded against it, which is the row
 `paid_means_nothing_remaining` exists to refuse. C1 confirms the third
@@ -45,21 +45,21 @@ case — the amendment was not neutral, it was a weakening.
 
 ### `refunded_at_most_paid` as the replacement, attacked
 
-| Case | Result |
-|---|---|
-| Partial refund (2,500 of 5,000 paid) | stored |
-| Exactly the whole bill (5,000) | stored |
-| One minor unit over (5,001) | **refused** — `refunded_at_most_paid` |
-| Negative (−1) | **refused** — `amount_refunded_non_negative` |
-| Any refund against `void` (paid 0) | **refused** |
-| Any refund against `uncollectible` | **refused** |
-| Any refund against `open` or `draft` | **refused** |
-| Shrink the bill under an existing refund (due/paid 5000→1000, refunded 5000) | **refused** |
-| Move a refunded invoice back to `open` (paid → 0) | **refused** |
+| Case                                                                         | Result                                       |
+| ---------------------------------------------------------------------------- | -------------------------------------------- |
+| Partial refund (2,500 of 5,000 paid)                                         | stored                                       |
+| Exactly the whole bill (5,000)                                               | stored                                       |
+| One minor unit over (5,001)                                                  | **refused** — `refunded_at_most_paid`        |
+| Negative (−1)                                                                | **refused** — `amount_refunded_non_negative` |
+| Any refund against `void` (paid 0)                                           | **refused**                                  |
+| Any refund against `uncollectible`                                           | **refused**                                  |
+| Any refund against `open` or `draft`                                         | **refused**                                  |
+| Shrink the bill under an existing refund (due/paid 5000→1000, refunded 5000) | **refused**                                  |
+| Move a refunded invoice back to `open` (paid → 0)                            | **refused**                                  |
 
 "An invoice whose `amount_paid` is later changed by anything" cannot strand a
 refund above it, and not only because the CHECK re-evaluates: on a `paid`
-invoice `amount_paid` is *pinned* to `amount_due` by `amounts_add_up` and
+invoice `amount_paid` is _pinned_ to `amount_due` by `amounts_add_up` and
 `paid_means_nothing_remaining` together, `void` and `uncollectible` are
 reachable only from `open` (`vpay_db::invoices`' two transitions are
 `WHERE … status = 'open'`), and `resum_draft`/`finalize_in_tx` — the only
@@ -82,10 +82,10 @@ header claims.
 
 `add_refund_for_intent_in_tx`, migration `0042`'s header,
 `docs/reference/vpay-db.md` and `docs/flows/invoices.md` each state that two
-refunds settling *concurrently* add up and that the second re-evaluates the
+refunds settling _concurrently_ add up and that the second re-evaluates the
 CHECK against the first's committed value. Every delivered case settles refunds
-sequentially. Measured: replacing the increment with a total read first *inside
-the same transaction* leaves
+sequentially. Measured: replacing the increment with a total read first _inside
+the same transaction_ leaves
 `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused` **green**
 and loses one of two concurrent refunds.
 
@@ -100,10 +100,10 @@ Zero is also what a hard-coded literal produces, and what
 `#[serde(default)]` produces for a key that never arrived. Two mutations, both
 green as delivered:
 
-| Mutation | As delivered | After |
-|---|---|---|
+| Mutation                                                                                 | As delivered            | After |
+| ---------------------------------------------------------------------------------------- | ----------------------- | ----- |
 | `amount_refunded: row.amount_refunded` → `amount_refunded: 0` in `InvoiceObject::render` | 342/342 `vpay-api` pass | FAILS |
-| `#[serde(rename = "amount_refunded_MUTANT")]` on `vpay_sdk::Invoice` | 165/165 `vpay-sdk` pass | FAILS |
+| `#[serde(rename = "amount_refunded_MUTANT")]` on `vpay_sdk::Invoice`                     | 165/165 `vpay-sdk` pass | FAILS |
 
 No case in the workspace read the key off a wire response, so `just ci` could
 not have caught either. Fixed by one case per side, each asserting a **non-zero**
@@ -125,14 +125,14 @@ each half. The Node live case does observe presence, because a missing key reads
 function existed anywhere in the tree. Written, and used by four cases covering
 what the container suite could not reach:
 
-| Attack | Answer |
-|---|---|
-| `success_url=javascript:alert(1)` sent, both configured | `400` naming `success_url` — **not** silently replaced by the configured page |
-| `success_url=` (blank) sent, both configured | configured value wins (blank is absent, deliberately) |
-| One configured, the other sent | both resolve, independently |
-| One configured, the other nowhere | `400` naming only the absent one |
-| Neither anywhere | one `400` naming both, 192 characters on the wire, under the 200 ceiling, with the `merchant_clients[].invoices` clause intact |
-| Configured `http://` under livemode | `400` at request time as well as at boot |
+| Attack                                                  | Answer                                                                                                                         |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `success_url=javascript:alert(1)` sent, both configured | `400` naming `success_url` — **not** silently replaced by the configured page                                                  |
+| `success_url=` (blank) sent, both configured            | configured value wins (blank is absent, deliberately)                                                                          |
+| One configured, the other sent                          | both resolve, independently                                                                                                    |
+| One configured, the other nowhere                       | `400` naming only the absent one                                                                                               |
+| Neither anywhere                                        | one `400` naming both, 192 characters on the wire, under the 200 ceiling, with the `merchant_clients[].invoices` clause intact |
+| Configured `http://` under livemode                     | `400` at request time as well as at boot                                                                                       |
 
 Mutations: validate only the request's value → the livemode case FAILS;
 resolve configuration-then-request → the malformed-URL case FAILS.
@@ -177,11 +177,11 @@ All three now say forty-one files, highest `0042`, one-wide gap at `0041`.
 
 `just ci`, exit code read from a file rather than from a harness banner.
 
-| Run | Head | Result |
-|---|---|---|
-| 1 — as delivered, rebased | `bf1faed` | **0**. `verify` twelve gates ok; nextest **1689/1689, 0 skipped**; doctests 120 passed, 1 ignored (`vpay_sdk`); `verify-ignored: 0 ignored, 46 binaries`; web all green; `deny` ok |
-| 2 — review's head, first attempt | `5766cbf` | **100**, and *not* this change: `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` timed out at 120 s in `failed to create a container: Timeout error`. Host load 19, `fs.inotify.max_user_instances` 128, 24 `created`-state `postgres:16-alpine` containers left by earlier runs — the flake the project memory records. Debris removed, re-run |
-| 3 — review's head, re-run | `5766cbf` | **0**. `verify` twelve gates ok; nextest **1696/1696, 0 skipped** (1545 s, 2 slow); doctests **120 passed, 1 ignored**; `verify-ignored: 0 ignored (expected 0), 46 binaries, 1696 total`; web 1294 vitest cases across nine projects; `deny`: advisories, bans, licenses, sources ok |
+| Run                              | Head      | Result                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — as delivered, rebased        | `bf1faed` | **0**. `verify` twelve gates ok; nextest **1689/1689, 0 skipped**; doctests 120 passed, 1 ignored (`vpay_sdk`); `verify-ignored: 0 ignored, 46 binaries`; web all green; `deny` ok                                                                                                                                                                                   |
+| 2 — review's head, first attempt | `5766cbf` | **100**, and _not_ this change: `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` timed out at 120 s in `failed to create a container: Timeout error`. Host load 19, `fs.inotify.max_user_instances` 128, 24 `created`-state `postgres:16-alpine` containers left by earlier runs — the flake the project memory records. Debris removed, re-run |
+| 3 — review's head, re-run        | `5766cbf` | **0**. `verify` twelve gates ok; nextest **1696/1696, 0 skipped** (1545 s, 2 slow); doctests **120 passed, 1 ignored**; `verify-ignored: 0 ignored (expected 0), 46 binaries, 1696 total`; web 1294 vitest cases across nine projects; `deny`: advisories, bans, licenses, sources ok                                                                                |
 
 The seven cases this review added all ran in run 3 (`vpay-api` 5, `vpay-sdk` 1,
 `vpay-db` 1) — 1689 → 1696.

@@ -491,7 +491,7 @@ merchant_clients:
 
 **Why here and not on a request.** An invoice is paid from a link in an
 e-mail, days after the merchant's process ran, and a merchant's "thank you"
-and "cancelled" pages are a property of the *merchant* rather than of each
+and "cancelled" pages are a property of the _merchant_ rather than of each
 individual bill. A checkout session created by that process has the payer's
 context in hand and gets no such key.
 
@@ -507,7 +507,7 @@ under `deployment.livemode`
 (`ConfigError::MalformedInvoiceUrl` / `InsecureInvoiceUrl`).
 
 A **query string and a fragment are allowed**, unlike on
-`checkout.public_base_url`. That validator refuses both because vpay *appends*
+`checkout.public_base_url`. That validator refuses both because vpay _appends_
 `/c/{id}` to its value and there is no correct way to append a path to a URL
 that already carries a `?`. Nothing is ever appended to these two: they are
 final destinations a payer's browser is sent to unmodified, so
@@ -516,7 +516,7 @@ final destinations a payer's browser is sent to unmodified, so
 Blank is **refused**, not treated as absent. `success_url: ""` is what a YAML
 quoting mistake produces, and an operator who wrote the key meant to write a
 URL. (The API's own `present` helper does treat blank as absent on a
-*request*, where it is a client templating an optional field — that argument
+_request_, where it is a client templating an optional field — that argument
 does not reach a file a human edited.)
 
 **Validated at boot, and again at request time.** Boot refuses a malformed
