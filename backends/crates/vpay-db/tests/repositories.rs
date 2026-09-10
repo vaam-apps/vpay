@@ -8634,3 +8634,187 @@ async fn the_open_session_read_filters_by_status_and_the_latest_read_orders_by_s
 
     Ok(())
 }
+
+// ------------------------------------------------- rate_limit_windows ----
+//
+// Added by the exp36 review. `count_attempt` is one statement, and three of
+// the things it decides are decided INSIDE it — whether the window has
+// elapsed, what the answer resets to, and which rows the sweep takes. Nothing
+// exercised any of them against a database: `vpay_api::staff::rate_limit`'s
+// unit tests cover `Verdict::of`'s arithmetic over an integer the statement
+// hands back, and the integration cases over a booted server all run inside
+// one 300-second window, so a `CASE` that never reset would have passed every
+// one of them and locked a deployment out of its own dashboard for good.
+
+/// **A window that has elapsed is replaced, and the answer starts again at
+/// one.**
+///
+/// The whole of "fixed window" lives in one `CASE` in `COUNT_ATTEMPT`, and
+/// this is the only thing that runs it. `now` is a parameter of
+/// `count_attempt` precisely so a test can be on the far side of a boundary
+/// without waiting five minutes for it.
+///
+/// **The mutation:** drop the `window_started_at <= $4` arm from either
+/// `CASE` — the counter then climbs for ever and the eleventh wrong password
+/// anybody ever types is the last one that account can type. A limiter that
+/// never forgets is the durable lockout ADR-0017 refuses.
+#[tokio::test]
+async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let window = time::Duration::seconds(300);
+    let start = time::OffsetDateTime::now_utc();
+    let key = "a".repeat(64);
+
+    for expected in 1..=3_i64 {
+        let attempts = repositories
+            .count_attempt(&key, "sign_in:email", window, start)
+            .await?;
+        assert_eq!(attempts, expected, "the position inside the first window");
+    }
+
+    // One second short of the boundary: still the same window.
+    let attempts = repositories
+        .count_attempt(&key, "sign_in:email", window, start + window - time::Duration::seconds(1))
+        .await?;
+    assert_eq!(attempts, 4, "inside the window, the count carries on");
+
+    // At the boundary the window has elapsed — `window_started_at <= now -
+    // window` — and is replaced.
+    let attempts = repositories
+        .count_attempt(&key, "sign_in:email", window, start + window)
+        .await?;
+    assert_eq!(
+        attempts, 1,
+        "an elapsed window is a NEW window starting now, so the answer is 1. Anything else is a \
+         counter that never forgets, which is a permanent lockout an attacker triggers by \
+         guessing at somebody else's address"
+    );
+
+    Ok(())
+}
+
+/// **The `id` is the budget, and the `scope` column is a label that separates
+/// nothing.**
+///
+/// Worth pinning in exactly this direction, because the opposite is the
+/// natural misreading of a table with a `scope` column in it — and acting on
+/// it (passing a raw email with two different scopes, say, to save a hash)
+/// would silently merge two budgets into one. What keeps the three budgets
+/// apart is that `vpay_api::staff::rate_limit` hashes `"<scope>:<value>"`
+/// into the `id`; the column exists so an operator reading the table can tell
+/// a per-email row from a per-address one, and for nothing else.
+///
+/// The other half is the ordinary one: two ids are two budgets, and spending
+/// one moves nothing else.
+#[tokio::test]
+async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let window = time::Duration::seconds(300);
+    let now = time::OffsetDateTime::now_utc();
+    let (one, two) = ("1".repeat(64), "2".repeat(64));
+
+    for _ in 0..5 {
+        repositories
+            .count_attempt(&one, "sign_in:email", window, now)
+            .await?;
+    }
+    assert_eq!(
+        repositories
+            .count_attempt(&two, "sign_in:email", window, now)
+            .await?,
+        1,
+        "another key's first attempt is its first attempt"
+    );
+    assert_eq!(
+        repositories
+            .count_attempt(&one, "sign_in:address", window, now)
+            .await?,
+        6,
+        "the SAME id under another scope is the SAME row. The scope column is not part of the \
+         key, so a caller that stopped hashing the scope into the id would merge two budgets \
+         into one and never notice"
+    );
+
+    let label: String =
+        sqlx::query_scalar("SELECT scope FROM rate_limit_windows WHERE id = $1")
+            .bind(&one)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        label, "sign_in:email",
+        "and the label a row was born with is the one it keeps — `ON CONFLICT DO UPDATE` does \
+         not set it, so a row cannot come to disagree with the digest that named it"
+    );
+
+    Ok(())
+}
+
+/// **The table an unauthenticated caller populates is bounded, and here is
+/// the bound.**
+///
+/// Migration 0038 and `vpay_db::rate_limits` both claim that a caller
+/// spending fresh keys "drains the table faster than they fill it". That is
+/// true in the limit and *not* true inside one window — nothing has elapsed
+/// yet, so there is nothing to sweep — and the honest statement of the bound
+/// is therefore **two rows per attempt for the width of one window, and then
+/// flat**. This measures both halves rather than repeating the sentence.
+///
+/// 1000 fresh keys inside one window: 1000 rows, because the sweep can find
+/// nothing elapsed to take. Then 40 attempts past the boundary, each removing
+/// up to 32: the table collapses.
+///
+/// **The mutation:** delete the `LIMIT $5`'s companion — the `DELETE` — and
+/// the second count stays at 1040.
+#[tokio::test]
+async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let window = time::Duration::seconds(300);
+    let start = time::OffsetDateTime::now_utc();
+
+    let count = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM rate_limit_windows")
+            .fetch_one(&pool)
+            .await
+    };
+
+    // A thousand keys nobody has ever seen, all inside one window. This is
+    // what an attacker spending fresh addresses looks like.
+    for n in 0..1000 {
+        let key = format!("{n:064}");
+        repositories
+            .count_attempt(&key, "sign_in:address", window, start)
+            .await?;
+    }
+    let filled = count(pool.clone()).await?;
+    assert_eq!(
+        filled, 1000,
+        "inside one window nothing has elapsed, so the sweep takes nothing and the table holds \
+         one row per key. That is the bound — two rows per attempt for the width of one window \
+         — and it is not the same claim as `drains faster than they fill`"
+    );
+
+    // Past the boundary every one of those rows is elapsed. Each attempt
+    // sweeps up to 32, and never the row it is about.
+    let later = start + window + time::Duration::seconds(1);
+    for n in 0..40 {
+        let key = format!("{:064}", 100_000 + n);
+        repositories
+            .count_attempt(&key, "sign_in:address", window, later)
+            .await?;
+    }
+    let swept = count(pool.clone()).await?;
+    assert!(
+        swept <= 60,
+        "40 attempts sweeping up to 32 elapsed rows each must have drained 1000 stale rows; the \
+         table holds {swept}. A table that does not drain is a disk-filling attack with a 401 in \
+         front of it"
+    );
+    assert!(
+        swept >= 40,
+        "the sweep must never take the row the same statement is INSERTing — `id <> $1` — so the \
+         40 live keys are all still there; found {swept}"
+    );
+
+    Ok(())
+}

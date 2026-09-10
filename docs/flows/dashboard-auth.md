@@ -125,7 +125,21 @@ The current-password check has **its own rate-limit budget**, keyed by the
 session (`change_password:session`, five per five minutes by default) — the
 narrowest thing identifying that caller, and deliberately not the sign-in
 budget: a thief holding a stolen cookie must not be able to lock the owner out
-of their own login by guessing here.
+of their own login by guessing here. A **successful** change spends a unit too,
+for `login`'s reason and no other: the limiter counts before it knows the
+answer, because an attempt over budget must not cost an argon2id
+verification.
+
+> *Added 2026-09-10 by the exp36 review (finding F5).* That budget was
+> exercised by nothing. The case proving the current password is required
+> makes two wrong attempts against a default of five and stops, so a
+> `check_password_change` that had been deleted — or wired to a policy of a
+> thousand — passed the whole suite, and the check it guards is an argon2id
+> verification anybody holding a stolen cookie can drive at will.
+> `the_current_password_check_has_its_own_budget_and_it_is_the_sessions`
+> reads `401` at the fourth attempt against a budget of three with the
+> limiter call deleted, and asserts the second half too: a second browser of
+> the same person still has its own budget.
 
 Every refusal is the same `401` this document's next section describes. Absent
 and wrong are one answer.

@@ -133,3 +133,55 @@ renders fails a deployment for a setting nothing reads.
 resources valid. `ci/values-full.yaml` carries a well-formed value so the
 guard's passing side is exercised by something too — a guard's own values file
 only ever proves that it fires.
+
+### F4 — the window rollover and the sweep were decided in SQL and run by nothing · **gate-hole**
+
+`count_attempt` is one statement, and three of the things it decides are
+decided **inside** it: whether the window has elapsed, what the answer resets
+to, and which rows the sweep takes.
+
+Nothing ran any of them. `vpay_api::staff::rate_limit`'s unit tests cover
+`Verdict::of`'s arithmetic over an integer the statement hands back;
+`the_statement_keeps_the_three_properties_that_make_it_safe` asserts the
+**text** of six fragments, which is a test of a string; and every case over a
+booted server runs inside one 300-second window. **A `CASE` that never reset
+passed all of them.** Its symptom in production is a staff member locked out
+of the dashboard for good by ten wrong passwords — the durable lockout
+ADR-0017 refuses by name, arrived at by accident.
+
+Three cases in `vpay-db/tests/repositories.rs`, each measured against its
+mutation:
+
+| Case | Mutation | As mutated |
+|---|---|---|
+| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended` | `attempts = attempts + 1`, dropping the reset arm | `5` where it demands `1` |
+| `the_rate_limit_table_grows_by_one_window_and_is_then_swept` | the sweep matches nothing | **1040 rows** where it demands ≤ 60 |
+| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | — | pins that `scope` separates nothing, so a caller who stopped hashing it into the `id` would merge two budgets and never notice |
+
+**And the bound is now stated as it is.** Migration 0038 and the module both
+say a caller spending fresh keys "drains the table faster than they fill it".
+That is true in the limit and **not** true inside one window — nothing has
+elapsed, so there is nothing to sweep. Measured: 1000 fresh keys inside one
+window leave **1000 rows**. The honest bound is two rows per attempt for the
+width of one window and then flat — about `2 × rate × 300` at steady state.
+Which is still a bound, and a bound is what ADR-0017's objection needed; it is
+not "the table never grows", and the difference is a page an operator sizes a
+disk from.
+
+### F5 — the current-password budget was exercised by nothing · **gate-hole**
+
+`change_password:session` exists because the check it guards is an argon2id
+verification that somebody holding a stolen session cookie can drive at will.
+The case that proves the current password is required makes **two** wrong
+attempts against a default budget of **five** and stops — so a
+`check_password_change` that had been deleted, or wired to a policy of a
+thousand, passed the entire suite.
+
+`the_current_password_check_has_its_own_budget_and_it_is_the_sessions`
+configures three, and reads `401` where it demands `429` with the limiter call
+deleted. It also pins the two properties that were nowhere written down as
+tests: a **successful** change spends a unit too (`login`'s rule — the limiter
+counts before it knows the answer), and the budget is the **session's**, so a
+second browser of the same person still has its own. The second is what stops
+a thief with a stolen cookie from locking the owner out of their own sign-in,
+and it was an argument in a doc comment and nothing else.

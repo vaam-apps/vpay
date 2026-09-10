@@ -1785,6 +1785,106 @@ async fn a_forwarded_for_header_from_a_trusted_peer_is_the_client_address() -> a
     Ok(())
 }
 
+// ------------------------------------------------------- test 21b (review)
+
+/// **The current-password check has a budget, and it fires** (issue #79 item
+/// 3, `change_password:session`).
+///
+/// The budget exists because the check it guards is an argon2id verification
+/// that somebody holding a stolen session cookie can drive at will — that is
+/// the whole reason it is keyed by the *session* rather than by the email, so
+/// that a thief cannot lock the owner out of their own login by guessing
+/// here. Nothing exercised it: the case that proves the current password is
+/// required makes two wrong attempts against a default budget of five and
+/// stops, so a `check_password_change` that had been deleted, or wired to a
+/// policy of a thousand, would have passed the whole suite.
+///
+/// Three deliberate properties, in order:
+///
+/// 1. **a successful change spends a unit too.** `login`'s rule, for
+///    `login`'s reason: the limiter counts before it knows the answer,
+///    because an attempt over budget must not cost an argon2id verification.
+///    `sign_in` above replaces the printed password, so unit one is gone
+///    before this test's first wrong guess — and that is asserted here rather
+///    than worked around, because a limiter that counted only failures would
+///    let an attacker alternate a known-good change with a guess for ever.
+/// 2. **over budget is `429` and not `401`**, so the refusal is visibly the
+///    limiter's and not the credential's.
+/// 3. **it is the session's budget, not the account's.** A second browser,
+///    signed in as the same person, still has its own — because the
+///    alternative is a denial of service anyone with a stolen cookie can
+///    fire at the owner's sign-in.
+///
+/// **The decisive mutation** is deleting the `check_password_change` call in
+/// `change_password`: the third attempt then reads `401`.
+#[tokio::test]
+async fn the_current_password_check_has_its_own_budget_and_it_is_the_sessions()
+-> anyhow::Result<()> {
+    let harness = harness_with(staff_auth_with(
+        Vec::new(),
+        RateLimits {
+            change_password: RateLimitPolicy {
+                attempts: 3,
+                window_seconds: 300,
+            },
+            ..RateLimits::default()
+        },
+    ))
+    .await?;
+
+    // Unit 1 of 3: the successful change `sign_in` makes.
+    let mine = harness.sign_in().await?;
+
+    let guess = |session: String, n: u8| {
+        let harness = &harness;
+        async move {
+            let (status, body) = harness
+                .post_form(
+                    "/dash/v1/staff/password",
+                    Some(&session),
+                    &[
+                        ("current_password", format!("wrong-{n}").as_str()),
+                        ("new_password", "a-perfectly-acceptable-new-password"),
+                    ],
+                )
+                .await?;
+            anyhow::Ok((status, body))
+        }
+    };
+
+    // Units 2 and 3: refused on the credential, inside the budget.
+    for n in 0..2_u8 {
+        let (status, body) = guess(mine.session.clone(), n).await?;
+        assert_eq!(
+            status, 401,
+            "guess {n} is inside the budget and must be refused on the credential: {body}"
+        );
+    }
+
+    // Unit 4: over it.
+    let (status, body) = guess(mine.session.clone(), 9).await?;
+    assert_eq!(
+        status, 429,
+        "the fourth attempt against a budget of three must be the limiter's refusal. A 401 here \
+         means the current-password check is an unbounded argon2id verification anybody holding \
+         a session cookie can drive: {body}"
+    );
+
+    // And a second browser of the SAME person is untouched, because the
+    // budget is the session's. A shared one would let a thief lock the owner
+    // out of their own account by guessing at the password change.
+    let step = totp::step_at(OffsetDateTime::now_utc().unix_timestamp());
+    let theirs = harness.authenticate(NEW_PASSWORD, step + 1).await?;
+    let (status, body) = guess(theirs, 9).await?;
+    assert_eq!(
+        status, 401,
+        "a second session of the same staff member has its own budget and is refused on the \
+         credential, not by the limiter: {body}"
+    );
+
+    Ok(())
+}
+
 // ------------------------------------------------------- test 19b (review)
 
 /// **A REPEATED `X-Forwarded-For` is one chain, over a real socket** — the

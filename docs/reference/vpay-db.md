@@ -2800,6 +2800,42 @@ there with a comment.
 
 ## Migration 0038: `rate_limit_windows`, and the one model with no `@@allow`
 
+### What runs the statement, added 2026-09-10 by the exp36 review
+
+`count_attempt` is one statement, and three of the things it decides are
+decided **inside** it — whether the window has elapsed, what the answer resets
+to, and which rows the sweep takes. As delivered, nothing exercised any of
+them against a database. `vpay_api::staff::rate_limit`'s unit tests cover
+`Verdict::of`'s arithmetic over an integer the statement hands back, the
+statement's own test asserts the *text* of six fragments, and every case over
+a booted server runs inside one 300-second window. **A `CASE` that never reset
+would have passed all of them** — and its symptom in production is a staff
+member locked out of the dashboard for good by ten wrong passwords, which is
+the durable lockout ADR-0017 refuses by name.
+
+Three cases in `vpay-db/tests/repositories.rs` now run it, each with a
+measured mutation:
+
+| Case | Mutation | As mutated |
+|---|---|---|
+| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended` | `attempts = attempts + 1`, dropping the reset arm | reads `5` where it demands `1` |
+| `the_rate_limit_table_grows_by_one_window_and_is_then_swept` | the sweep takes nothing | 1040 rows where it demands ≤ 60 |
+| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | — | pins that `scope` separates nothing, so a caller that stopped hashing it into the `id` would merge two budgets |
+
+### The bound, stated as it actually is
+
+Migration 0038 and this module both say a caller spending fresh keys "drains
+the table faster than they fill it". That is true **in the limit** and not
+true inside one window: nothing has elapsed yet, so there is nothing to sweep.
+Measured — 1000 fresh keys inside one window leave **1000 rows**, and 40
+attempts past the boundary take the table back down.
+
+So the honest bound is **two rows per attempt for the width of one window,
+then flat**: at *r* attempts per second and a 300-second window, roughly
+`2 × r × 300` rows at steady state. It is a bound, which is what the objection
+ADR-0017 raised needed answering; it is not "the table never grows".
+
+
 **172 changes over 24 relations, unmappable 19** (from 167 / 23 / 19). The +5
 is four hand-named CHECKs and one index, and **not one column-level line** —
 no `column … type differs`, no `column … default value differs`, no undeclared
