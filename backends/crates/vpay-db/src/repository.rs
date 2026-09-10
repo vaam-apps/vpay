@@ -377,7 +377,8 @@ pub trait TxRepositories: Send {
     /// `payment_intent.canceled` is written beside this statement, and an
     /// event committed apart from the transition it describes is either a
     /// webhook for something that did not happen or a transition no merchant
-    /// hears about (issue #57). See [`crate::payment_intents::cancel_in_tx`].
+    /// hears about (issue #57). See `payment_intents::cancel_in_tx`, named
+    /// without a link because it is `pub(crate)`.
     ///
     /// `Ok(None)` means the guard refused — no such intent for this merchant,
     /// a status that forbids it, or a charge the rail may still be acting on
@@ -392,6 +393,65 @@ pub trait TxRepositories: Send {
         merchant_id: &str,
         id: &str,
     ) -> Result<Option<crate::PaymentIntentRow>, DbError>;
+
+    /// `customers`: inserts a customer.
+    ///
+    /// Transactional, and it is the only shape this write has, because
+    /// `customer.created` is emitted beside it (issue #66). The transaction
+    /// is opened by `vpay-api` rather than by `vpay-db` so the handler can
+    /// render the wire object **from the row this returns** — `seq` and
+    /// `updated_at` are the database's, so a projection of the request would
+    /// be a second implementation of the insert.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::UniqueViolation`] on a replayed `cus_…`; [`DbError::Query`]
+    /// for any of the five CHECKs migration `0034` carries, each of which
+    /// `vpay-api` refuses first with a `400` naming the parameter.
+    async fn insert_customer_in_tx(
+        &mut self,
+        new: &crate::NewCustomer,
+    ) -> Result<crate::CustomerRow, DbError>;
+
+    /// `customers`: reads one customer of this merchant's and **holds its row
+    /// lock** for the rest of the transaction.
+    ///
+    /// The first half of `POST /v1/customers/{id}`, whose `metadata` merge is
+    /// a read-modify-write over the stored map. Reading on the pool left a
+    /// window in which two concurrent updates each adding one key lost one of
+    /// them, and the `customer.updated` a merchant then received described a
+    /// state the database no longer held (issue #66). The lock is what makes
+    /// the second request re-read the committed merge.
+    ///
+    /// `Ok(None)` is "no such customer for you", covering a missing id and
+    /// another merchant's alike.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`].
+    async fn lock_customer_for_update(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::CustomerRow>, DbError>;
+
+    /// `customers`: applies a patch, merchant-scoped in the statement.
+    ///
+    /// `Ok(None)` means this merchant has no such customer — which, after
+    /// [`TxRepositories::lock_customer_for_update`] found one in the same
+    /// transaction, cannot happen; the guard stays in the write anyway,
+    /// because that is where a tenancy filter belongs.
+    ///
+    /// # Errors
+    ///
+    /// As [`TxRepositories::insert_customer_in_tx`].
+    async fn update_customer_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        patch: &crate::CustomerPatch,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::CustomerRow>, DbError>;
 
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
@@ -524,6 +584,31 @@ impl TxRepositories for PendingTransaction {
         id: &str,
     ) -> Result<Option<crate::PaymentIntentRow>, DbError> {
         crate::payment_intents::cancel_in_tx(self.conn(), merchant_id, id).await
+    }
+
+    async fn insert_customer_in_tx(
+        &mut self,
+        new: &crate::NewCustomer,
+    ) -> Result<crate::CustomerRow, DbError> {
+        crate::customers::insert_in_tx(self.conn(), new).await
+    }
+
+    async fn lock_customer_for_update(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::CustomerRow>, DbError> {
+        crate::customers::lock_for_update(self.conn(), merchant_id, id).await
+    }
+
+    async fn update_customer_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        patch: &crate::CustomerPatch,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::CustomerRow>, DbError> {
+        crate::customers::update_in_tx(self.conn(), merchant_id, id, patch, now).await
     }
 
     async fn record_payment_error(

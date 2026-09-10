@@ -533,13 +533,20 @@ acquiring one afterwards, and the only one whose whole content is another
 person's personal data. [`../flows/customers.md`](../flows/customers.md) is the
 product document; this section is why the code is shaped the way it is.
 
-### Two of seven methods go through CrateStack, and one column decides which
+### Two of eight methods go through CrateStack, and one column decides which
 
 | Method | |
 |---|---|
 | `touch_last_used` | **CrateStack** — `update_many(..).set(..)` |
 | `delete` | **CrateStack** — `delete_many(..)` |
-| `create`, `update`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx` |
+| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx` |
+
+*(The table read `create`, `update` and "two of seven" until 2026-09-10. The
+two pooled writers are gone: `POST /v1/customers` and
+`POST /v1/customers/{id}` each emit an event that must commit with the row, so
+the statements moved behind `TxRepositories` and a third joined them —
+`lock_for_update`, the `SELECT … FOR UPDATE` the update's `metadata` merge is
+computed under. See "The customer writes are transactional" below.)*
 
 The column is `metadata JSONB NOT NULL`, undeclared on `model Customer` for
 the two costs that model's GAP note measures: `map_scalar` does not read
@@ -588,6 +595,38 @@ guard and not the write's would render a `customer.deleted` object for a
 customer the write then refuses to delete — and
 `the_sweep_guard_names_every_table_that_can_reference_a_customer` pins the
 count at two so the day invoices exist, the omission is a test failure.
+
+### The customer writes are transactional, and there is no pooled variant
+
+`POST /v1/customers` emits `customer.created` and `POST /v1/customers/{id}`
+emits `customer.updated` (2026-09-10, issue #66). Both events have to commit
+with the row or not at all, so both statements live behind `TxRepositories`
+and the pooled `Customers::create`/`Customers::update` were **deleted**. That
+deletion is the load-bearing part: leaving them beside the transactional ones
+would have kept "write the row and tell nobody" one call away, and no gate in
+this repository objects to a method nobody happens to call.
+
+`vpay-api` opens the transaction rather than `vpay-db`, for the reason
+`insert_invoice_in_tx` gives: the event's `data` is the **wire object**, whose
+shape this crate does not know, and it has to be rendered from the row the
+statement returned — `seq` and both timestamps are the database's, so a
+projection of the request would be a second implementation of the insert.
+
+`lock_for_update` is the third method and the one worth reading the argument
+for. `metadata` is merged key-wise in `vpay-api` (Stripe's contract), so the
+written value is a function of the stored one and the update is a
+read-modify-write. Reading on the pool left a window in which two concurrent
+updates each adding one key lost one of them — documented, and tolerable while
+nothing depended on the result being definite. An event is exactly such a
+dependency: a merchant acting on a body describing the losing merge acts on a
+state the database does not hold. So the read takes the row lock and the whole
+sequence is one transaction. `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value`
+forces the interleaving at this seam rather than racing for it, and
+`a_customer_write_and_its_event_roll_back_together` is the abandon case.
+
+The merge itself stays in Rust rather than becoming a `jsonb ||` in the
+statement, deliberately: that would move Stripe's semantics into a migration
+and out of the layer that documents them.
 
 ### `touch_last_used` is monotonic by *filter*, not by `GREATEST`
 
@@ -1431,6 +1470,19 @@ adds three predicates and **no** site: it is the existing `list_page`
 statement with `($5::TEXT IS NULL OR status::TEXT = $5)` and two timestamp
 bounds written the same way, so an absent filter sends the byte-identical
 statement `/v1` sends and a filter value can never reach the SQL text.
+
+**Re-done 2026-09-10 for issues #57 and #66, where the count moved 55 → 56 and
+the net of +1 hides four additions and three removals.** Four terminal writes
+left the pool for the caller's transaction, because each now commits with the
+`events` row that reports it: `payment_intents::cancel` → `cancel_in_tx`
+(interpolates `COLUMNS` and `LIVE_CHARGE_STATES`), `customers::create` →
+`insert_in_tx` and `customers::update` → `update_in_tx` (both `COLUMNS`), and
+the new `customers::lock_for_update` (`COLUMNS`), the `SELECT … FOR UPDATE`
+that makes the update's `metadata` merge definite. The three pooled originals
+were **deleted** rather than kept beside the transactional ones — which is
+what makes "write the row and tell nobody" inexpressible — so the count moved
+by one. Every one of the four interpolates crate constants and binds every
+caller value, so the paragraph below is unchanged.
 
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is

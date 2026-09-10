@@ -1862,6 +1862,239 @@ async fn a_submit_decline_writes_its_charge_error_and_event_in_one_transaction()
     Ok(())
 }
 
+/// A customer create and its `customer.created` are one transaction, and so
+/// are an update and its `customer.updated`: a rollback leaves neither.
+///
+/// The seam-level half of
+/// `customers::a_customer_create_and_update_each_emit_one_event_and_a_no_op_emits_none`,
+/// which drives the real routes and asserts the committed result. This one
+/// asserts what that route cannot show — that `TxRepositories::insert_in_tx`
+/// runs on the *caller's* connection, so an abandoned unit of work takes the
+/// event with it. Run the events insert on the pool instead and the first
+/// assertion fails with a webhook for a customer that does not exist.
+#[tokio::test]
+async fn a_customer_write_and_its_event_roll_back_together() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let new = fixture_customer("cus_abandoned00000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx.insert_customer_in_tx(&new).await?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "customer.created".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "customer"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let survivors: i64 = sqlx::query_scalar("SELECT count(*) FROM customers WHERE id = $1")
+        .bind("cus_abandoned00000000000")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(survivors, 0, "the abandoned insert must leave no customer");
+    assert_eq!(
+        events_about(&pool, "cus_abandoned00000000000").await?,
+        Vec::<String>::new(),
+        "the event must roll back with the row it describes"
+    );
+
+    // The update half, on a customer that really is committed.
+    let new = fixture_customer("cus_committed00000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_customer_in_tx(&new).await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let current = tx
+                    .lock_customer_for_update("merchant_a", "cus_committed00000000000")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "customers",
+                        key: "cus_committed00000000000".to_owned(),
+                    })?;
+                assert_eq!(current.name.as_deref(), None);
+                let row = tx
+                    .update_customer_in_tx(
+                        "merchant_a",
+                        "cus_committed00000000000",
+                        &vpay_db::CustomerPatch {
+                            name: Some(Some("Ada".to_owned())),
+                            ..vpay_db::CustomerPatch::default()
+                        },
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "customers",
+                        key: "cus_committed00000000000".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "customer.updated".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "customer", "name": "Ada"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM customers WHERE id = $1")
+        .bind("cus_committed00000000000")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(name, None, "the abandoned update must leave the row alone");
+    assert_eq!(
+        events_about(&pool, "cus_committed00000000000").await?,
+        Vec::<String>::new(),
+        "and no event may describe an update that did not commit"
+    );
+
+    Ok(())
+}
+
+/// `lock_customer_for_update` really takes the row lock: a second transaction
+/// asking for the same row **blocks** until the first commits, and then reads
+/// the first's committed value.
+///
+/// # Why this test and not only the concurrent-request one
+///
+/// `customers::two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the_committed_state`
+/// drives two real requests and is the case a merchant would recognise, but
+/// the interleaving it needs is a matter of timing — nothing outside the
+/// handler can force both reads to land before either write. This one forces
+/// it: transaction A holds the lock while B asks for it, so "B waited" and "B
+/// saw A's value" are observations rather than probabilities.
+///
+/// **The decisive mutation:** drop `FOR UPDATE` from
+/// `vpay_db::customers::lock_for_update`. B's read returns immediately, the
+/// timeout below does not fire, and B reads the value from *before* A's
+/// write.
+#[tokio::test]
+async fn a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value() -> anyhow::Result<()>
+{
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+
+    let new = fixture_customer("cus_locked0000000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_customer_in_tx(&new).await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+
+    // A: lock, write, and hold the transaction open until told to commit.
+    let (release, wait_for_release) = tokio::sync::oneshot::channel::<()>();
+    let (locked, lock_taken) = tokio::sync::oneshot::channel::<()>();
+    let writer = Arc::clone(&repositories);
+    let a = tokio::spawn(async move {
+        writer
+            .transaction(|tx| {
+                Box::pin(async move {
+                    tx.lock_customer_for_update("merchant_a", "cus_locked0000000000000")
+                        .await?;
+                    tx.update_customer_in_tx(
+                        "merchant_a",
+                        "cus_locked0000000000000",
+                        &vpay_db::CustomerPatch {
+                            name: Some(Some("written by A".to_owned())),
+                            ..vpay_db::CustomerPatch::default()
+                        },
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                    let _ = locked.send(());
+                    // Hold the lock. The transaction is still open, so the
+                    // row lock is still held, which is the whole point.
+                    let _ = wait_for_release.await;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    });
+
+    lock_taken.await.expect("A took the lock");
+
+    // B: ask for the same lock. It must not answer while A holds it.
+    let reader = Arc::clone(&repositories);
+    let b = tokio::spawn(async move {
+        reader
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let row = tx
+                        .lock_customer_for_update("merchant_a", "cus_locked0000000000000")
+                        .await?;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(row))
+                })
+            })
+            .await
+    });
+
+    // Give B every chance to answer, then require that it has not. 750 ms is
+    // not a race this test can lose in the passing direction: A's transaction
+    // is open and stays open until `release` fires below, so a B that has
+    // answered by now answered *without* waiting for the lock — which is
+    // exactly the mutation. It is long enough that a slow container cannot
+    // make it fire spuriously, and it is a wait rather than a poll because
+    // polling `b` would consume the handle this needs afterwards.
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    assert!(
+        !b.is_finished(),
+        "B answered while A still held the row lock, so `FOR UPDATE` is not in the statement"
+    );
+
+    release.send(()).expect("A is still waiting");
+    a.await.expect("A did not panic")?;
+    let seen = b
+        .await
+        .expect("B did not panic")?
+        .into_inner()
+        .expect("the customer is still there");
+    assert_eq!(
+        seen.name.as_deref(),
+        Some("written by A"),
+        "B re-read under the lock and must see the value A committed, not the one it would \
+         have read before waiting"
+    );
+
+    Ok(())
+}
+
+/// A `customers` row for `merchant_a`, phone-only — the shape S4a's
+/// maintainer decision makes complete.
+fn fixture_customer(id: &str) -> vpay_db::NewCustomer {
+    vpay_db::NewCustomer {
+        id: id.to_owned(),
+        merchant_id: "merchant_a".to_owned(),
+        livemode: false,
+        name: None,
+        email: None,
+        phone: Some("237600000200".to_owned()),
+        metadata: json!({}),
+        created_at: time::OffsetDateTime::now_utc(),
+    }
+}
+
 /// Every `events.type` about one object, oldest first.
 ///
 /// A free function rather than an inline query at each site because the two

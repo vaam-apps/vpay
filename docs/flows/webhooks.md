@@ -11,8 +11,9 @@ Constant-time comparison; reject a timestamp older than 5 minutes.
 `payment_intent.created`, `payment_intent.processing`,
 `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`,
-`checkout.session.expired`, `customer.deleted`, `invoice.created`,
-`invoice.finalized`, `invoice.paid`, `invoice.voided`.
+`checkout.session.expired`, `customer.created`, `customer.updated`,
+`customer.deleted`, `invoice.created`, `invoice.finalized`, `invoice.paid`,
+`invoice.voided`.
 
 A custom type is silently dropped by any merchant using `stripe-node`'s typed
 event union or an exhaustive `switch`. This is why a late success emits a plain
@@ -21,7 +22,7 @@ the worst possible carrier for "money actually arrived".
 
 ### Which of them is written, and by what
 
-**Nine of the thirteen are written, and only nine.** Every writer below puts
+**Eleven of the fifteen are written, and only eleven.** Every writer below puts
 its `events` row in the *same transaction* as the transition it reports;
 there is no other shape in this repository, and TX 1 below is the reason.
 
@@ -35,6 +36,8 @@ there is no other shape in this repository, and TX 1 below is the reason.
 | `charge.refunded` | — nothing | — |
 | `charge.refund.updated` | — nothing | — |
 | `checkout.session.expired` | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep | 2026-09-04 |
+| `customer.created` | `vpay_api::v1::customers::create_with_event` | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
+| `customer.updated` | `vpay_api::v1::customers::update_once`, under the row's lock | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
 | `customer.deleted` | `vpay_db::customers::delete_idle`, from the retention sweep | 2026-09-06 |
 | `invoice.created` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
 | `invoice.finalized` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
@@ -94,7 +97,8 @@ object, and it is stated here rather than discovered
 
 **Two Stripe invoice types are deliberately absent.**
 `invoice.marked_uncollectible` and `invoice.payment_failed` are not in the
-list, for `customer.created`'s reason immediately below: nothing writes them.
+list, for the reason `customer.created` was absent until 2026-09-10: nothing
+writes them.
 `POST /v1/invoices/{id}/mark_uncollectible` is a single statement with no
 transaction to put an event in, and a failed intent leaves the invoice `open`
 with the merchant already receiving `payment_intent.payment_failed`. A
@@ -112,21 +116,25 @@ is written inside the same transaction as the delete, so a crash cannot leave
 a customer erased with nobody told; see
 [customers.md](customers.md).
 
-**`customer.created` and `customer.updated` are NOT in the list above**, and
-that is deliberate rather than an omission. Both are real Stripe types and a
-Stripe-shaped handler has branches for them — but nothing in vpay writes
-either, and migration `0023`'s rule is that this vocabulary moves in lockstep
-with the code that writes it. `POST /v1/customers` and
-`POST /v1/customers/{id}` are single statements on the pool; emitting an event
-means putting the write and the event in one transaction, which is a change to
-the shape of two repository methods rather than a line in a `CHECK`. Adding
-the labels ahead of a writer would put two values in a closed vocabulary that
-no code can produce, which is what the mechanism exists to prevent. The five
-unwritten types above are the precedent for **not** doing it again: they came
-in together in `0018`, before the rule was written down, and have been listed
-as unwritten in this document's Status section ever since. Consequence for a
-merchant, stated plainly: **an external mirror of your customers has to
-poll.**
+**`customer.created` and `customer.updated` joined the list on 2026-09-10**
+([issue #66](https://github.com/vaam-apps/vpay/issues/66)), in migration
+`0039`, in the same change that wrote them — which is migration `0023`'s
+lockstep rule working as intended rather than an exception to it. This
+paragraph used to say the opposite and to explain why: `POST /v1/customers`
+and `POST /v1/customers/{id}` were single statements on the pool, emitting an
+event meant putting the write and the event in one transaction, and adding the
+labels ahead of a writer would have put two values in a closed vocabulary that
+no code could produce. The transaction is what changed; the labels followed
+it, not the other way round. **An external mirror of a merchant's customers no
+longer has to poll.**
+
+`customer.updated`'s transaction opens with `SELECT … FOR UPDATE` on the row,
+and that is load-bearing rather than cautious. `metadata` is merged key-wise,
+so the written value is a function of the stored one, and a pooled read left a
+window in which two concurrent updates each adding one key lost one of them. A
+merchant acting on an event describing the losing merge would be acting on a
+state the database does not hold — see [customers.md](customers.md). A
+**bodiless** update emits nothing: nothing was written.
 
 **`charge.refunded` and `charge.refund.updated` carry a `refund`**, which
 since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)) is
@@ -667,19 +675,29 @@ delivery has been observed reaching a receiver.**
   `a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan`); the runbook
   procedures for re-arming them have not been followed against a running
   system.
-- The three event types this document lists that nothing writes at all —
-  `payment_intent.created`, `payment_intent.processing`,
-  `payment_intent.canceled` — plus the two refund types, are unchanged: events
-  are written for terminal transitions only (decision 4 of
-  `docs/plans/2026-09-03-step4-worker.md`).
-- **`customer.created` and `customer.updated` are not in the vocabulary at
-  all** (2026-09-06, S4a), which is a different and stronger statement than
-  the five above: those are *listed and unwritten*, these are *absent*,
-  because the database refuses a type no code writes. A merchant mirroring
-  their customers externally has to poll `GET /v1/customers`. See the section
-  above for why the labels were not added ahead of a writer, and
-  [customers.md](customers.md) "What is not built" for what adding them would
-  cost.
+- The event types this document lists that nothing writes at all are
+  **two**, plus the two refund types: `payment_intent.created` and
+  `payment_intent.processing`. Events are written for terminal transitions
+  only (decision 4 of `docs/plans/2026-09-03-step4-worker.md`), and those two
+  are progress. *(This bullet named `payment_intent.canceled` as a third
+  until 2026-09-10; it has a writer now — see the table above and
+  [issue #57](https://github.com/vaam-apps/vpay/issues/57). It was the one
+  type in this vocabulary that predated migration `0023`'s lockstep rule and
+  never acquired a writer, which is why it sat here for a week of releases.)*
+- **`customer.created` and `customer.updated` were not in the vocabulary at
+  all** (2026-09-06, S4a) — a different and stronger statement than the four
+  above, because the database refuses a type no code writes. **Closed
+  2026-09-10** by migration `0039` and
+  [issue #66](https://github.com/vaam-apps/vpay/issues/66), in the same change
+  that made both routes transactional. A merchant mirroring their customers
+  externally no longer has to poll `GET /v1/customers`.
+- **No deployment has ever emitted a `customer.created` or a
+  `customer.updated` either.** Both are proven against a real Postgres through
+  the shipping router (`a_customer_create_and_update_each_emit_one_event_and_a_no_op_emits_none`,
+  `two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the_committed_state`)
+  and neither has been fanned out to a receiver in any suite — the fan-out is
+  type-agnostic and has been observed for other types, which is an argument
+  and not a measurement.
 - **No deployment has ever emitted a `customer.deleted`.** The event, its
   fan-out and its delivery rows are proven against a real Postgres through the
   real worker loop by

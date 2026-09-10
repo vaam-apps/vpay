@@ -182,10 +182,18 @@ polling — the object is gone, and a `GET` afterwards is byte-identical to a
 `GET` for an id that never existed — so this body is the only record of who
 was erased. It is emitted by the twelve-month retention sweep. **It is not
 emitted by `DELETE /v1/customers/{id}`**, for the reason
-`POST /v1/checkout/sessions/{id}/expire` emits nothing: you asked for it. And
-there is no `customer.created` or `customer.updated`; both are real Stripe
-types and neither is in the vocabulary, because nothing writes them — see
-[../flows/customers.md](../flows/customers.md), "What is not built".
+`POST /v1/checkout/sessions/{id}/expire` emits nothing: you asked for it.
+
+**`customer.created` and `customer.updated` joined the vocabulary on
+2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)); this
+paragraph said neither was in it, and that was true while nothing wrote them.
+Both carry the same seven-key `customer` object below. `customer.updated`
+carries the **merged** `metadata` as committed — vpay computes the key-wise
+merge under the row's lock, so two concurrent updates produce two events
+describing the two committed states rather than one describing a merge that
+was lost. A `POST /v1/customers/{id}` with **no body** is Stripe's no-op and
+emits nothing, because nothing changed. See
+[../flows/customers.md](../flows/customers.md), "Events".
 
 ### The `customer` object (S4a)
 

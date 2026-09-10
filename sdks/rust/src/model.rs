@@ -900,6 +900,22 @@ pub enum KnownEventType {
     /// settlement moves a session — that transition already sends a
     /// `payment_intent.*` event for the same thing happening.
     CheckoutSessionExpired,
+    /// A Customer was created by `POST /v1/customers`.
+    ///
+    /// `data.object` is the [`Customer`] as the insert stored it — the
+    /// canonical `phone`, and `metadata` as sent. Written in the same
+    /// transaction as the row (vpay issue #66, 2026-09-10).
+    CustomerCreated,
+    /// A Customer was changed by `POST /v1/customers/{id}`.
+    ///
+    /// `data.object` is the [`Customer`] **after** the change, including the
+    /// key-wise `metadata` merge — which vpay computes under the row's lock,
+    /// so two concurrent updates produce two events describing the two
+    /// committed states rather than one describing a merge that was lost.
+    ///
+    /// A request that changes nothing — a bodiless `POST`, which is what
+    /// "touch this object" is on the wire — emits **no** event.
+    CustomerUpdated,
     /// A Customer was deleted — by `DELETE /v1/customers/{id}` or by vpay's
     /// twelve-month retention sweep (S4a).
     ///
@@ -956,6 +972,8 @@ impl KnownEventType {
             KnownEventType::ChargeRefunded => "charge.refunded",
             KnownEventType::ChargeRefundUpdated => "charge.refund.updated",
             KnownEventType::CheckoutSessionExpired => "checkout.session.expired",
+            KnownEventType::CustomerCreated => "customer.created",
+            KnownEventType::CustomerUpdated => "customer.updated",
             KnownEventType::CustomerDeleted => "customer.deleted",
             KnownEventType::InvoiceCreated => "invoice.created",
             KnownEventType::InvoiceFinalized => "invoice.finalized",
@@ -986,6 +1004,8 @@ impl KnownEventType {
             "charge.refunded" => Some(KnownEventType::ChargeRefunded),
             "charge.refund.updated" => Some(KnownEventType::ChargeRefundUpdated),
             "checkout.session.expired" => Some(KnownEventType::CheckoutSessionExpired),
+            "customer.created" => Some(KnownEventType::CustomerCreated),
+            "customer.updated" => Some(KnownEventType::CustomerUpdated),
             "customer.deleted" => Some(KnownEventType::CustomerDeleted),
             "invoice.created" => Some(KnownEventType::InvoiceCreated),
             "invoice.finalized" => Some(KnownEventType::InvoiceFinalized),

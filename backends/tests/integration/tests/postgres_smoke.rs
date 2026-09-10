@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 38,
-        "all thirty-eight migrations under backends/migrations should be recorded as applied \
+        applied, 39,
+        "all thirty-nine migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -240,7 +240,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          table since 0034, and the first whose model carries NO @@allow arm \
          on purpose: the count is one INSERT ... ON CONFLICT DO UPDATE ... \
          RETURNING attempts, because the increment is an expression over the \
-         row's own column and a generated Update input carries values)"
+         row's own column and a generated Update input carries values, \
+         and issue #66's 0039, which reopens the events vocabulary for \
+         customer.created and customer.updated in the same change that \
+         writes them -- 0034 declined to add these two labels for exactly \
+         the reason 0023 states, that a value in a closed vocabulary no \
+         code can produce is what the mechanism exists to prevent, and \
+         POST /v1/customers and POST /v1/customers/{{id}} are transactional \
+         from this commit.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

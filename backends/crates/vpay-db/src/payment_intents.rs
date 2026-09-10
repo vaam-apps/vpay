@@ -602,7 +602,7 @@ pub(crate) async fn fail_after_submission(
 /// created as the `charge_state` enum and migration `0037` re-closed as
 /// `charges_state_enum_check`, and exactly the set the partial index
 /// `charges_live_idx` (migration 0014, rebuilt unchanged by `0037`) is built
-/// over, so the `NOT EXISTS` in [`PaymentIntents::cancel`] is an index lookup.
+/// over, so the `NOT EXISTS` in [`cancel_in_tx`] is an index lookup.
 ///
 /// Spelled as SQL text rather than built from `vpay_core::ChargeState`
 /// because this crate carries the vocabularies as `String` (D4) and the list

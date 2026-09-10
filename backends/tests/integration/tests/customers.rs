@@ -1759,3 +1759,394 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
     h.shutdown().await;
     Ok(())
 }
+
+// --------------------------------------------- customer.created/.updated ---
+
+/// Every `(type, data)` this database holds about one object, oldest first.
+async fn events_about(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<(String, Value)>> {
+    let rows: Vec<(String, Value)> =
+        sqlx::query_as("SELECT type, data FROM events WHERE object_id = $1 ORDER BY seq")
+            .bind(object_id)
+            .fetch_all(pool)
+            .await
+            .context("reading the events a customer write did or did not commit")?;
+    Ok(rows)
+}
+
+/// `customers.updated_at` and the `created_at` of the event at `index`.
+async fn customer_and_event_stamps(
+    pool: &PgPool,
+    customer_id: &str,
+    index: i64,
+) -> anyhow::Result<(time::OffsetDateTime, time::OffsetDateTime)> {
+    let updated_at: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM customers WHERE id = $1")
+            .bind(customer_id)
+            .fetch_one(pool)
+            .await
+            .context("reading the customer's updated_at")?;
+    let created_at: time::OffsetDateTime = sqlx::query_scalar(
+        "SELECT created_at FROM events WHERE object_id = $1 ORDER BY seq OFFSET $2 LIMIT 1",
+    )
+    .bind(customer_id)
+    .bind(index)
+    .fetch_one(pool)
+    .await
+    .context("reading the event's created_at")?;
+    Ok((updated_at, created_at))
+}
+
+/// `POST /v1/customers` emits exactly one `customer.created`, in the same
+/// transaction as the insert; `POST /v1/customers/{id}` emits exactly one
+/// `customer.updated`; and a **bodiless** update emits nothing at all.
+///
+/// # What was here before, and why it is not a gap being filled quietly
+///
+/// Neither event existed until 2026-09-10
+/// ([issue #66](https://github.com/vaam-apps/vpay/issues/66)). `POST
+/// /v1/customers` was a single statement on the pool and the update was a
+/// read-modify-write on it; migration `0034` deliberately did **not** add the
+/// two labels to `type_is_a_documented_event`, because `0023`'s rule is that
+/// the vocabulary moves with the code that writes it. Migration `0039` adds
+/// them in the same change that writes them.
+///
+/// # The transaction claim, and how it is measured rather than asserted
+///
+/// `customers.updated_at` takes migration `0034`'s `DEFAULT now()` on the
+/// **insert**, and `events.created_at` takes migration `0018`'s. Postgres'
+/// `now()` is `transaction_timestamp()` — fixed at the start of the
+/// transaction — so the two are bit-identical exactly when the insert and the
+/// event were one transaction. Moving the event into a second transaction is
+/// invisible in every other assertion here and fails that one.
+///
+/// The **update** cannot use the same equality: its `updated_at` is bound
+/// from the calling process's clock rather than from `now()` (it is the same
+/// instant `last_used_at`'s `GREATEST` needs, and that one must be the
+/// caller's — see `vpay_db::Customers::touch_last_used`). What holds instead
+/// is an *ordering*: the transaction starts, Rust then reads its clock, so
+/// the event's `created_at` is at or before the row's `updated_at`. An event
+/// written in a transaction opened **after** the update committed is strictly
+/// after it, and fails. `a_customer_write_and_its_event_roll_back_together`
+/// in `vpay-db` is the other half, and the one that proves the rollback.
+#[tokio::test]
+async fn a_customer_create_and_update_each_emit_one_event_and_a_no_op_emits_none()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    let created = sdk
+        .customers()
+        .create(
+            CreateCustomerParams {
+                phone: Some("+237 6 00 00 02 00".to_owned()),
+                metadata: BTreeMap::from([("tier".to_owned(), "gold".to_owned())]),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("creating a customer");
+
+    let emitted = events_about(&h.pool, &created.id).await?;
+    let (kind, data) = match emitted.as_slice() {
+        [one] => one.clone(),
+        other => panic!("a create must emit exactly one event, got {other:?}"),
+    };
+    assert_eq!(kind, "customer.created");
+    // `events.data` is the wire object itself; the `data: { object: … }`
+    // envelope is put around it at delivery and by `GET /v1/events`.
+    assert_eq!(data.get("id"), Some(&serde_json::json!(created.id)));
+    assert_eq!(data.get("object"), Some(&serde_json::json!("customer")));
+    assert_eq!(
+        data.get("phone"),
+        Some(&serde_json::json!("237600000200")),
+        "the body carries the *canonical* MSISDN the row holds, not the merchant's spelling: \
+         {data}"
+    );
+    assert_eq!(
+        data.pointer("/metadata/tier"),
+        Some(&serde_json::json!("gold"))
+    );
+    assert_eq!(
+        data.get("last_used_at"),
+        None,
+        "`last_used_at` is an internal retention clock on no wire object; an event body is \
+         stored for ever and is the last place to leak one: {data}"
+    );
+
+    let (updated_at, event_at) = customer_and_event_stamps(&h.pool, &created.id, 0).await?;
+    assert_eq!(
+        updated_at, event_at,
+        "on the insert both columns take `DEFAULT now()`, and `now()` is the transaction's \
+         start instant — so these agree only when the row and its event were one \
+         transaction (issue #66)"
+    );
+
+    // A bodiless update: Stripe's no-op. The object comes back unchanged, and
+    // nothing is written — including no event, because nothing changed.
+    let unchanged = sdk
+        .customers()
+        .update(
+            &created.id,
+            UpdateCustomerParams::default(),
+            RequestOptions::new(),
+        )
+        .await
+        .expect("a bodiless update answers the object");
+    assert_eq!(unchanged.id, created.id);
+    assert_eq!(
+        events_about(&h.pool, &created.id).await?.len(),
+        1,
+        "an update that changes nothing must emit nothing: a `customer.updated` for a no-op \
+         is a webhook a merchant has to work out how to ignore"
+    );
+
+    // A real update.
+    let patched = sdk
+        .customers()
+        .update(
+            &created.id,
+            UpdateCustomerParams {
+                name: Some(Some("Ada".to_owned())),
+                metadata: BTreeMap::from([("order".to_owned(), "42".to_owned())]),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("updating the customer");
+    assert_eq!(patched.name.as_deref(), Some("Ada"));
+
+    let emitted = events_about(&h.pool, &created.id).await?;
+    let (kind, data) = match emitted.as_slice() {
+        [_created, second] => second.clone(),
+        other => panic!("a create then one real update is two events, got {other:?}"),
+    };
+    assert_eq!(kind, "customer.updated");
+    assert_eq!(data.get("name"), Some(&serde_json::json!("Ada")));
+    assert_eq!(
+        data.pointer("/metadata/tier"),
+        Some(&serde_json::json!("gold")),
+        "the body is the **merged** metadata the transaction wrote, not the keys the request \
+         carried: {data}"
+    );
+    assert_eq!(
+        data.pointer("/metadata/order"),
+        Some(&serde_json::json!("42")),
+        "{data}"
+    );
+
+    let (updated_at, event_at) = customer_and_event_stamps(&h.pool, &created.id, 1).await?;
+    assert!(
+        event_at <= updated_at,
+        "the update's transaction starts before it reads the process clock, so the event's \
+         `now()` is at or before the row's `updated_at`. An event written in a transaction \
+         opened after the update committed is strictly later. event={event_at}, \
+         row={updated_at}"
+    );
+
+    // A 404 writes nothing at all — the transaction is abandoned before any
+    // write, and there is no object for an event to be about.
+    let missing = "cus_00000000000000000000000x";
+    let error = sdk
+        .customers()
+        .update(
+            missing,
+            UpdateCustomerParams {
+                name: Some(Some("Nobody".to_owned())),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("no such customer");
+    match error {
+        vpay_sdk::Error::Api { status, .. } => assert_eq!(status, 404),
+        other => panic!("expected a vpay API error envelope, got {other:?}"),
+    }
+    assert_eq!(events_about(&h.pool, missing).await?, Vec::new());
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Two concurrent `POST /v1/customers/{id}` requests each adding one metadata
+/// key keep **both**, and the second event carries both.
+///
+/// # The window this closes, and why it stopped being acceptable
+///
+/// `metadata` is merged key-wise (Stripe's contract), so the written value is
+/// a function of the stored one. Until 2026-09-10 the read ran on the pool
+/// and `vpay_api::v1::customers::update`'s own doc comment said, in as many
+/// words, that two concurrent updates could lose a key and that this was not
+/// closed. It could be left while nothing depended on the result being
+/// definite. `customer.updated` is exactly such a dependency: a merchant
+/// acting on an event describing the losing merge acts on a state the
+/// database does not hold.
+///
+/// The read is now `SELECT … FOR UPDATE` inside the transaction that writes,
+/// so the second request blocks, re-reads the committed merge, and merges
+/// onto that.
+///
+/// **The decisive mutation:** drop `FOR UPDATE` from
+/// `vpay_db::customers::lock_for_update`. Both requests then read the same
+/// stored map and the later write clobbers the earlier key.
+///
+/// # Why six rounds and not one
+///
+/// The interleaving that loses a key needs both reads to land before either
+/// write, and nothing outside the handler can force that ordering — a test
+/// seam that could would be a code path no deployment runs (AGENTS.md rule
+/// 1). So the *passing* direction is deterministic (with the lock, no
+/// interleaving can lose a key, and six rounds all keep both), and the
+/// mutation is caught probabilistically by giving it six chances. Measured
+/// 2026-09-10: with `FOR UPDATE` removed, this fails.
+#[tokio::test]
+async fn two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the_committed_state()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    for round in 0..6_u32 {
+        let customer = sdk
+            .customers()
+            .create(
+                CreateCustomerParams {
+                    phone: Some("237600000200".to_owned()),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .expect("the customer both requests patch")
+            .id;
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for key in ["left", "right"] {
+            let sdk = h.a();
+            let barrier = Arc::clone(&barrier);
+            let customer = customer.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                sdk.customers()
+                    .update(
+                        &customer,
+                        UpdateCustomerParams {
+                            metadata: BTreeMap::from([(key.to_owned(), round.to_string())]),
+                            ..Default::default()
+                        },
+                        RequestOptions::new(),
+                    )
+                    .await
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("the task did not panic")
+                .expect("both concurrent updates succeed");
+        }
+
+        let stored: Value = sqlx::query_scalar("SELECT metadata FROM customers WHERE id = $1")
+            .bind(&customer)
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the merged metadata")?;
+        assert_eq!(
+            stored.pointer("/left"),
+            Some(&serde_json::json!(round.to_string())),
+            "round {round}: the `left` key was clobbered by a merge computed over a stale \
+             read: {stored}"
+        );
+        assert_eq!(
+            stored.pointer("/right"),
+            Some(&serde_json::json!(round.to_string())),
+            "round {round}: the `right` key was clobbered: {stored}"
+        );
+
+        // Two updates, two events, and the **last** one describes the state
+        // that is actually stored — which is the whole reason the lock is
+        // here rather than the race merely being tolerated.
+        let emitted = events_about(&h.pool, &customer).await?;
+        let kinds: Vec<&str> = emitted.iter().map(|(kind, _)| kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["customer.created", "customer.updated", "customer.updated"],
+            "round {round}"
+        );
+        let last = emitted
+            .last()
+            .map(|(_, data)| data.clone())
+            .expect("three events");
+        assert_eq!(
+            last.get("metadata"),
+            Some(&stored),
+            "round {round}: the last event must carry the committed merge, key for key: \
+             {last}"
+        );
+    }
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// The event vocabulary is closed, and it is closed around exactly the three
+/// `customer.*` types that have writers.
+///
+/// `customer.created` and `customer.updated` are migration `0039`'s;
+/// `customer.deleted` is `0034`'s. Everything else Stripe spells
+/// `customer.*` — `customer.subscription.created`,
+/// `customer.source.created` — is asserted **absent**, because vpay has no
+/// subscriptions and no stored instruments, and a label in a closed
+/// vocabulary that nothing produces is what that CHECK exists to prevent.
+///
+/// **The decisive mutation:** drop either new label from migration `0039` and
+/// the corresponding transition above starts failing with a `23514`, while
+/// this case names which label is missing.
+#[tokio::test]
+async fn the_event_vocabulary_holds_exactly_the_customer_types_that_have_writers()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+
+    for accepted in ["customer.created", "customer.updated", "customer.deleted"] {
+        let written = sqlx::query(
+            "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+             VALUES ($1, $2, false, $3, 'cus_x', '{}'::jsonb)",
+        )
+        .bind(format!("evt_{}", uuid::Uuid::new_v4().simple()))
+        .bind(MERCHANT_A)
+        .bind(accepted)
+        .execute(&h.pool)
+        .await;
+        assert!(
+            written.is_ok(),
+            "`{accepted}` has a writer in vpay and must be in \
+             type_is_a_documented_event: {written:?}"
+        );
+    }
+
+    for refused in [
+        "customer.subscription.created",
+        "customer.source.created",
+        "customer.discount.created",
+    ] {
+        let written = sqlx::query(
+            "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+             VALUES ($1, $2, false, $3, 'cus_x', '{}'::jsonb)",
+        )
+        .bind(format!("evt_{}", uuid::Uuid::new_v4().simple()))
+        .bind(MERCHANT_A)
+        .bind(refused)
+        .execute(&h.pool)
+        .await;
+        assert!(
+            written.is_err(),
+            "`{refused}` has no writer in vpay, so the database must refuse it — a label in a \
+             closed vocabulary that nothing produces is what that CHECK exists to prevent"
+        );
+    }
+
+    h.shutdown().await;
+    Ok(())
+}

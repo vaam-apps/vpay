@@ -1472,7 +1472,7 @@ async fn persist_submitted(
         TxOutcome::Commit(committed) => committed,
         TxOutcome::Abandon((_, charge)) => {
             // Unreachable while `cancel` refuses an intent with a live charge
-            // (`vpay_db::PaymentIntents::cancel`'s `NOT EXISTS`), and loud
+            // (`vpay_db::payment_intents::cancel_in_tx`'s `NOT EXISTS`), and loud
             // rather than quiet because if it ever fires, a rail is holding a
             // payment for an intent that says it is not being paid.
             return Err(ApiError::Internal(format!(

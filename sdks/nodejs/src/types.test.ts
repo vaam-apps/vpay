@@ -265,6 +265,20 @@ const customerPhoneIsNullableAndNotOptional: Exactly<
 const deletedIsAlwaysTrue: Exactly<DeletedCustomer["deleted"], true> = true;
 /** `customer.deleted` is in the union; a type this SDK predates is not. */
 const customerDeletedIsKnown: KnownEventType = "customer.deleted";
+/**
+ * `customer.created` and `customer.updated` are in the union too, since
+ * 2026-09-10.
+ *
+ * Both were **absent** until then, and the reason was recorded rather than
+ * left implicit: the server emitted neither, so a union entry would have been
+ * a claim about vpay that was false
+ * ([vpay issue #66](https://github.com/vaam-apps/vpay/issues/66),
+ * `docs/sdks/parity.md`). These two annotations are the whole assertion —
+ * remove either literal from `KnownEventType` and this file stops compiling,
+ * which is what `pnpm -r typecheck` is for.
+ */
+const customerCreatedIsKnown: KnownEventType = "customer.created";
+const customerUpdatedIsKnown: KnownEventType = "customer.updated";
 
 describe("the customer object", () => {
   it("customer.deleted is a known event type and its payload is a customer", () => {
@@ -296,5 +310,44 @@ describe("the customer object", () => {
       data: { object: payload },
     };
     expect((event.data.object as Customer).phone).toBe("237600000200");
+  });
+
+  it("customer.created and customer.updated are known event types and their payloads are customers", () => {
+    // If this file compiles, the two annotations above have been made.
+    expect(customerCreatedIsKnown).toBe("customer.created");
+    expect(customerUpdatedIsKnown).toBe("customer.updated");
+
+    // The payload is the same object `customer.deleted` carries and the same
+    // one `customers.retrieve` returns — one shape, so a merchant's handler
+    // and their read cannot disagree about a field. `metadata` on an
+    // `updated` body is the **merged** map, not the keys the request sent.
+    const payload: Customer = {
+      id: "cus_123",
+      object: "customer",
+      name: "Ada",
+      email: null,
+      phone: "237600000200",
+      metadata: { tier: "gold", order_id: "1234" },
+      created: 1_700_000_000,
+      livemode: false,
+    };
+    const created: Event = {
+      id: "evt_created",
+      object: "event",
+      type: "customer.created",
+      created: 1_700_000_000,
+      livemode: false,
+      data: { object: payload },
+    };
+    const updated: Event = {
+      id: "evt_updated",
+      object: "event",
+      type: "customer.updated",
+      created: 1_700_000_001,
+      livemode: false,
+      data: { object: payload },
+    };
+    expect((created.data.object as Customer).id).toBe("cus_123");
+    expect((updated.data.object as Customer).metadata["tier"]).toBe("gold");
   });
 });
