@@ -193,9 +193,50 @@ pub(crate) fn customer_json(id: &str) -> Value {
         // Canonical, as the server stores and renders it — not the `+237 6 …`
         // a merchant would have typed.
         "phone": "237600000200",
+        // The server renders one nested object with all six components,
+        // nulls included, or `null` for a customer with no address at all.
+        // This fixture carries the object, so a decode that dropped the key
+        // or flattened it fails rather than reading as "no address".
+        "address": {
+            "line1": "12 Rue Njo-Njo",
+            "line2": null,
+            "city": "Douala",
+            "state": null,
+            "postal_code": null,
+            "country": "CM",
+        },
         "metadata": { "order_id": "1234" },
         "created": 1_753_401_600,
         "livemode": false,
+    })
+}
+
+/// The customer object as it comes back **after an erasure**: every
+/// identifier the redaction marker, `deleted: true`, and the merchant's own
+/// `metadata` untouched.
+///
+/// A fixture of its own rather than a flag on [`customer_json`], because it
+/// is a different shape — ten keys rather than nine — and the test that reads
+/// it is about the key that is only there sometimes.
+pub(crate) fn erased_customer_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "customer",
+        "name": "[redacted]",
+        "email": "[redacted]",
+        "phone": "[redacted]",
+        "address": {
+            "line1": "[redacted]",
+            "line2": "[redacted]",
+            "city": "[redacted]",
+            "state": "[redacted]",
+            "postal_code": "[redacted]",
+            "country": "[redacted]",
+        },
+        "metadata": { "order_id": "1234" },
+        "created": 1_753_401_600,
+        "livemode": false,
+        "deleted": true,
     })
 }
 

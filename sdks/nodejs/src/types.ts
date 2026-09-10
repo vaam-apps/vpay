@@ -484,11 +484,42 @@ export type ListParams = {
 };
 
 /**
+ * A postal address on a {@link Customer} — Stripe's six components (issue
+ * #67).
+ *
+ * Every component is nullable and the server renders all six even when they
+ * are `null`: an address is one fact about a payer, and a key that appeared
+ * and disappeared would change the shape of a signed `customer.*` webhook
+ * body per payer. The object as a whole is `null` when there is no address.
+ *
+ * The same shape is sent and received. On {@link UpdateCustomerParams} an
+ * address **replaces** the stored one rather than merging with it — a request
+ * that names `line1` and not `city` clears the city — because an address
+ * assembled by the server out of two requests is an address that was never
+ * anybody's. Sending `null` removes it entirely.
+ */
+export interface Address {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  /**
+   * ISO 3166-1 alpha-2 — `CM`, `FR`, `NG`. Lower case is accepted and stored
+   * **upper case**, so what comes back may not be what was sent: the same
+   * wire contract {@link Customer.phone}'s canonicalisation is. A
+   * three-letter code or a country name is a `400` naming `address`.
+   */
+  country: string | null;
+}
+
+/**
  * A `customer` — the merchant-owned record of a payer they expect to see
  * again (S4a).
  *
- * Seven keys and no more. `last_used_at` — the clock vpay's twelve-month
- * retention sweep reads — is deliberately **not** on the wire.
+ * Nine keys, plus `deleted` on an erased one. `last_used_at` — the clock
+ * vpay's twelve-month retention sweep reads — is deliberately **not** on the
+ * wire.
  *
  * At least one of `name`, `email` and `phone` is always present. A phone
  * number **alone** is a complete customer, which is what the object is for
@@ -506,10 +537,29 @@ export interface Customer {
    * reference is comparing the same string.
    */
   phone: string | null;
+  address: Address | null;
   metadata: Record<string, string>;
   /** Unix seconds. */
   created: number;
   livemode: boolean;
+  /**
+   * `true` on a customer vpay has **erased**, and absent on a live one — the
+   * server omits the key rather than sending `false`.
+   *
+   * `DELETE /v1/customers/{id}` removes a customer with no payment history
+   * outright, and a later retrieve is a `404`. A customer an intent, a
+   * checkout session or an invoice references cannot be removed — vpay never
+   * detaches a payment from the payer it was taken from — so it is
+   * **anonymised** instead: the row and the payment record stay, and every
+   * identifier on it comes back as `[redacted]`. `metadata` is untouched,
+   * because that is the merchant's own data.
+   *
+   * So a `cus_…` in your own records goes on resolving after an erasure,
+   * which is why this key exists. Such a customer cannot be updated or
+   * attached to a new payment — both answer `409`. See
+   * `docs/flows/customers.md`.
+   */
+  deleted?: true | undefined;
 }
 
 /**
@@ -545,8 +595,38 @@ export interface CreateCustomerParams {
    * what comes back may not be what was sent — see {@link Customer.phone}.
    */
   phone?: string | undefined;
+  /**
+   * The payer's postal address, sent as `address[line1]=…`. An address alone
+   * does not name anybody, so it does not satisfy the one-of rule above: a
+   * create carrying only an address is refused exactly as one carrying
+   * nothing is.
+   */
+  address?: AddressParams | undefined;
   metadata?: Record<string, string> | undefined;
 }
+
+/**
+ * The six address components, in the shape the wire spells them.
+ *
+ * A `type` alias rather than an `interface` for {@link ListParams}' reason:
+ * only this form is assignable to the form encoder's
+ * `Record<string, FormValue>` without a cast.
+ *
+ * Separate from {@link Address} — which the *response* carries — because what
+ * a merchant may send and what the server returns are two contracts, and the
+ * second one grows keys the first must not accept. They happen to have the
+ * same six fields today. This SDK deliberately does not validate `country`
+ * locally, exactly as it does not validate an MSISDN: which codes vpay
+ * accepts is a rule vpay owns and may widen.
+ */
+export type AddressParams = {
+  line1?: string | undefined;
+  line2?: string | undefined;
+  city?: string | undefined;
+  state?: string | undefined;
+  postal_code?: string | undefined;
+  country?: string | undefined;
+};
 
 /**
  * `POST /v1/customers/{id}` request fields (S4a).
@@ -573,6 +653,18 @@ export interface UpdateCustomerParams {
   name?: string | null | undefined;
   email?: string | null | undefined;
   phone?: string | null | undefined;
+  /**
+   * The address, in the same three states — with one difference worth
+   * stating, because it is the one a merchant can get wrong silently.
+   *
+   * `undefined` leaves the stored address alone. `null` removes it (sent as
+   * `address=`). An object **replaces** it whole: every component the request
+   * does not name is cleared, so correcting a street means sending the city
+   * again. vpay does not merge components, deliberately — an address
+   * assembled out of two requests is an address that was never anybody's, and
+   * its failure mode is a plausible wrong address rather than a visible one.
+   */
+  address?: AddressParams | null | undefined;
   metadata?: Record<string, string> | undefined;
 }
 

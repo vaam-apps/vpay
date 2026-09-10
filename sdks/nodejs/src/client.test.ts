@@ -2268,6 +2268,18 @@ describe("customers", () => {
     // Canonical, as the server stores and renders it — not the `+237 6 …` a
     // merchant would have typed.
     phone: "237600000200",
+    // The server renders one nested object with all six components, nulls
+    // included, or `null` for a customer with no address at all. This fixture
+    // carries the object, so a decode that dropped the key or flattened it
+    // fails rather than reading as "no address".
+    address: {
+      line1: "12 Rue Njo-Njo",
+      line2: null,
+      city: "Douala",
+      state: null,
+      postal_code: null,
+      country: "CM",
+    },
     metadata: { order_id: "1234" },
     created: 1_700_000_000,
     livemode: false,
@@ -2285,6 +2297,7 @@ describe("customers", () => {
         name: "Ada Ngo",
         email: "ada@example.com",
         phone: "+237 6 00 00 02 00",
+        address: { line1: "12 Rue Njo-Njo", city: "Douala", country: "CM" },
         metadata: { order_id: "1234" },
       },
       { idempotencyKey: "idem_cus" },
@@ -2298,10 +2311,52 @@ describe("customers", () => {
     // refuse offline a number a later vpay accepts. `+` is `%2B` because a
     // bare `+` is a space in a form body.
     expect(req.body).toBe(
-      "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000&metadata[order_id]=1234",
+      "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000&address[line1]=12%20Rue%20Njo-Njo&address[city]=Douala&address[country]=CM&metadata[order_id]=1234",
     );
     expect(customer.id).toBe("cus_123");
     expect(customer.object).toBe("customer");
+    // And it decodes back off the object, as one nested value rather than six
+    // flattened keys.
+    expect(customer.address?.line1).toBe("12 Rue Njo-Njo");
+    expect(customer.address?.country).toBe("CM");
+    expect(customer.address?.state).toBeNull();
+    // A live customer carries no `deleted` key at all.
+    expect(customer.deleted).toBeUndefined();
+  });
+
+  it("an erased customer decodes with deleted true and no identifier", async () => {
+    // The object `GET /v1/customers/{id}` answers after vpay has anonymised a
+    // customer with payment history: a 200 rather than a 404, so a merchant's
+    // stored `cus_…` keeps resolving. A type that dropped `deleted` would
+    // leave them unable to tell an erased customer from a live one whose
+    // payer happens to be called `[redacted]`.
+    const erased = {
+      ...sampleCustomer(),
+      name: "[redacted]",
+      email: "[redacted]",
+      phone: "[redacted]",
+      address: {
+        line1: "[redacted]",
+        line2: "[redacted]",
+        city: "[redacted]",
+        state: "[redacted]",
+        postal_code: "[redacted]",
+        country: "[redacted]",
+      },
+      deleted: true,
+    };
+    const server = await withServer({
+      resource: () => ({ status: 200, body: erased }),
+    });
+    const client = makeClient(server);
+
+    const customer = await client.customers.retrieve("cus_123");
+
+    expect(customer.deleted).toBe(true);
+    expect(customer.phone).toBe("[redacted]");
+    expect(customer.address?.country).toBe("[redacted]");
+    // `metadata` is the merchant's own data and survives the erasure.
+    expect(customer.metadata["order_id"]).toBe("1234");
   });
 
   it("a phone number alone is a complete customer, and every other field is omitted", async () => {
@@ -2322,6 +2377,8 @@ describe("customers", () => {
     expect(customer.email).toBeNull();
 
     const req = server.requests.find((r) => r.url === "/v1/customers")!;
+    // `address` is absent from the body entirely when the merchant sent none
+    // — not `address=`, which is the wire's "remove it".
     expect(req.body).toBe("phone=237600000200");
   });
 
@@ -2356,6 +2413,9 @@ describe("customers", () => {
         name: "Ada Ngo",
         // clear
         email: null,
+        // clear the whole address — `address=`, the same spelling `email=`
+        // uses, and NOT six empty components
+        address: null,
         // leave alone — `phone` is simply not mentioned
         metadata: { order_id: "5678", tier: "" },
       },
@@ -2369,9 +2429,30 @@ describe("customers", () => {
     // simplification — makes a payer's email unclearable, and this is the
     // assertion that fails when somebody does it.
     expect(req.body).toBe(
-      "name=Ada%20Ngo&email=&metadata[order_id]=5678&metadata[tier]=",
+      "name=Ada%20Ngo&email=&address=&metadata[order_id]=5678&metadata[tier]=",
     );
     expect(req.headers["idempotency-key"]).toBe("idem_upd");
+  });
+
+  it("an address is replaced whole on the wire, never merged component-wise", async () => {
+    // The three states of `address`, and the one that is not `name`'s: an
+    // object REPLACES the stored address, so a request naming `line1` and not
+    // `city` clears the city. The body is the assertion, because the failure
+    // mode of a component-wise merge is a plausible wrong address rather than
+    // a visible one.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleCustomer() }),
+    });
+    const client = makeClient(server);
+
+    await client.customers.update("cus_123", {
+      address: { line1: "9 Boulevard de la Liberté", country: "CM" },
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/customers/cus_123")!;
+    expect(req.body).toBe(
+      "address[line1]=9%20Boulevard%20de%20la%20Libert%C3%A9&address[country]=CM",
+    );
   });
 
   it("customers.list: exact query string", async () => {

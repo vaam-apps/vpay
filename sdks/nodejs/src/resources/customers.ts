@@ -1,7 +1,8 @@
 /**
  * `/v1/customers` — the five merchant operations on the Customer object
  * (S4a), and the one thing this file does that no other resource does: it
- * distinguishes *clear this field* from *leave it alone*.
+ * distinguishes *clear this field* from *leave it alone* — for four fields
+ * now, `address` included.
  *
  * # The three states, and why `update` looks the way it does
  *
@@ -32,6 +33,7 @@
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
 import type {
+  AddressParams,
   CreateCustomerParams,
   Customer,
   DeletedCustomer,
@@ -52,6 +54,33 @@ function patch(value: string | null | undefined): FormValue | undefined {
     return undefined;
   }
   return value === null ? "" : value;
+}
+
+/**
+ * The six address components as a nested body value, with every unset one
+ * omitted entirely.
+ *
+ * Omitted and not sent empty, because on this API those are different
+ * requests everywhere else — and because the server replaces the address
+ * whole, so an omitted component is cleared either way and `address[city]=`
+ * would only add a pair saying the same thing.
+ */
+function addressBody(address: AddressParams): Record<string, FormValue> {
+  const body: Record<string, FormValue> = {};
+  for (const key of [
+    "line1",
+    "line2",
+    "city",
+    "state",
+    "postal_code",
+    "country",
+  ] as const) {
+    const value = address[key];
+    if (value !== undefined) {
+      body[key] = value;
+    }
+  }
+  return body;
 }
 
 /** `client.customers` — see {@link CustomersResource}. */
@@ -83,6 +112,9 @@ export class CustomersResource {
     }
     if (params.phone !== undefined) {
       body["phone"] = params.phone;
+    }
+    if (params.address !== undefined) {
+      body["address"] = addressBody(params.address);
     }
     if (params.metadata !== undefined) {
       body["metadata"] = params.metadata;
@@ -126,6 +158,14 @@ export class CustomersResource {
     if (phone !== undefined) {
       body["phone"] = phone;
     }
+    if (params.address !== undefined) {
+      // `address=` — the wire's own "remove this", the same spelling `name=`
+      // uses. NOT six empty components: the server reads a *scalar* `address`
+      // as the clear, and one spelling means a merchant reading the body sees
+      // what they asked for.
+      body["address"] =
+        params.address === null ? "" : addressBody(params.address);
+    }
     if (params.metadata !== undefined) {
       body["metadata"] = params.metadata;
     }
@@ -143,21 +183,29 @@ export class CustomersResource {
   }
 
   /**
-   * `DELETE /v1/customers/{id}` — a **hard** delete.
+   * `DELETE /v1/customers/{id}` — an **erasure**, in one of two shapes.
    *
    * `del` and not `delete`: `delete` is a reserved word in older JavaScript
    * object literals, which is why Stripe's own SDKs spell it this way, and
    * `sdks/rust`'s `CustomersResource::del` matches so a merchant who read one
    * SDK's docs can use the other.
    *
-   * The row is removed, not flagged: a subsequent `retrieve` answers the same
-   * 404 as an id that never existed, and the only record of what was deleted
-   * is the `customer.deleted` event.
+   * A customer with **no payment history** is removed outright: a subsequent
+   * {@link retrieve} answers the same 404 as an id that never existed.
    *
-   * A customer any PaymentIntent or Checkout Session references **cannot** be
-   * deleted and answers `409`: vpay keeps a payment attached to the payer it
-   * was taken from. Clear `name`, `email` and `phone` with {@link update}
-   * instead if the payer's details have to go.
+   * A customer any PaymentIntent, Checkout Session or Invoice references
+   * cannot be removed — vpay keeps a payment attached to the payer it was
+   * taken from — so it is **anonymised** instead. The row and the payment
+   * record stay; every identifier on the customer becomes `[redacted]`, and
+   * so does every copy vpay kept elsewhere. A later {@link retrieve} answers
+   * `200` with {@link Customer.deleted} `true`, so your own stored `cus_…`
+   * keeps resolving. `metadata` is untouched: that is your data, not the
+   * payer's.
+   *
+   * Either way this answers `{deleted: true}`, and a second call is a no-op
+   * rather than a second erasure. Until 2026-09-10 the second case answered
+   * `409` instead, with advice — clear `name`, `email` and `phone` — that the
+   * server's own one-of rule refuses.
    *
    * Carries an `Idempotency-Key` like every other write on this API, which is
    * what makes a retried delete answer the original `{deleted: true}` rather

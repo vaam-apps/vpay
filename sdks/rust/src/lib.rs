@@ -64,17 +64,17 @@ pub use auth::Credentials;
 pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
-    AccountHolder, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
+    AccountHolder, Address, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
     CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, DeletedInvoice,
     DeletedInvoiceItem, Event, EventData, IntentStatus, Invoice, InvoiceLine, InvoiceStatus,
     InvoiceStatusTransitions, KnownEventType, LastPaymentError, List, NextAction, PaymentIntent,
     PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
-    AccountHoldersResource, BalanceResource, CheckoutResource, CheckoutSessionsResource,
-    ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreateCustomerParams,
-    CreateInvoiceItemParams, CreateInvoiceParams, CreatePaymentIntentParams, CreateRefundParams,
-    CustomersResource, EventsResource, InvoiceItemsResource, InvoicesResource,
+    AccountHoldersResource, AddressParams, BalanceResource, CheckoutResource,
+    CheckoutSessionsResource, ConfirmPaymentIntentParams, CreateCheckoutSessionParams,
+    CreateCustomerParams, CreateInvoiceItemParams, CreateInvoiceParams, CreatePaymentIntentParams,
+    CreateRefundParams, CustomersResource, EventsResource, InvoiceItemsResource, InvoicesResource,
     ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListInvoicesParams,
     ListPaymentIntentsParams, PayInvoiceParams, PaymentIntentsResource, RefundsResource,
     RequestOptions, RetrieveAccountHolderParams, UpdateCustomerParams, UpdateInvoiceItemParams,
@@ -118,9 +118,10 @@ pub mod checkout {
 /// record of a payer, and the one object on this surface that is *personal
 /// data*: `docs/flows/customers.md` is the policy around it.
 pub mod customers {
-    pub use crate::model::{Customer, DeletedCustomer};
+    pub use crate::model::{Address, Customer, DeletedCustomer};
     pub use crate::resources::{
-        CreateCustomerParams, CustomersResource, ListCustomersParams, UpdateCustomerParams,
+        AddressParams, CreateCustomerParams, CustomersResource, ListCustomersParams,
+        UpdateCustomerParams,
     };
 }
 
