@@ -262,7 +262,37 @@ the port being the default.
 
 ### `just ci`
 
-See the commit that adds this file for the recipe-by-recipe numbers.
+On `df08a42`, exit code read from a file rather than from a harness banner —
+**exit 0**:
+
+| recipe | result |
+|---|---|
+| `fmt-check` | ok |
+| `clippy --workspace --all-targets -D warnings` | ok |
+| `verify` | the twelve gates passed; `verify-docs` is advisory and never fails |
+| ↳ `verify-links` | 1007 links in 189 tracked markdown files resolve to a tracked path |
+| ↳ `verify-status` | 1 unimplemented item, declared in `docs/status.md` |
+| ↳ `verify-migrations` | 37 migration files match `MANIFEST.sha256` |
+| `test-rust` (`cargo nextest run --workspace`) | **1605 run, 1605 passed, 0 skipped** (1091 s) |
+| `test-doc` (`cargo test --doc --workspace`) | **107 passed, 0 failed, 1 ignored** |
+| `verify-ignored` | 0 ignored (expected 0), 45 test binaries (expected 45), 1605 total (floor 1080) |
+| `lint-web` | `pnpm -r typecheck`, `pnpm -r lint` ok |
+| `test-web` | **1244 passed, 0 skipped** across 9 packages (checkout 507, nodejs 190, dashboard 150, stripe-js 146, shop 102, ui 74, config 63, tokens 8, api-client 4) |
+| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+
+**The Rust and web counts are master's, not this branch's.** No `.rs`, `.ts` or
+`.tsx` file is touched between `d5a93df` and `df08a42` — the diff is `justfile`,
+three compose/workflow files and five markdown files — so the test count is a
+function of sources that are byte-identical to the base commit's.
+
+Note the brief for this review gave master's count as **1575 as of #93**. What
+`d5a93df` actually produces is **1605**. The figure in the brief is stale by 30;
+nothing on this branch moved it.
+
+**One caveat on `check-schema`**, pre-existing and not caused by this branch: it
+warned `cratestack 0.11.1 on PATH, this repository pins 0.12.0`, ran in full
+anyway, and passed *against the 0.11.1 grammar*. So `schemas/vpay.cstack` is
+type-checked here under an older CLI than the pin names.
 
 ---
 
