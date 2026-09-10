@@ -2556,6 +2556,109 @@ async fn a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_th
     Ok(())
 }
 
+/// [`RECEIVER_ACK_DELAY`] and [`RECEIVER_PATH`] must go on being what
+/// `slow-ack.json` actually does.
+///
+/// The constant is **transcribed** from that mapping, and the two `const`
+/// assertions at the top of this file pin the constant against the two
+/// shipping budgets — not against the file. So nothing stopped the mapping
+/// from drifting away from the number the compiler is checking, and the
+/// drift is silent in the direction that matters most: raise the delay past
+/// `WEBHOOK_REQUEST_TIMEOUT` and both SIGTERM cases fail with *"the worker
+/// never logged `webhook delivered`"*, which reads as a drain regression and
+/// is not one. Measured on this branch: 11 s in the mapping, both constants
+/// untouched, `FAIL` in 20 s with exactly that message.
+///
+/// Lower it instead and the failure is worse, because it is a failure about
+/// timing: the receiver answers before the signal arrives, the clean case's
+/// ordering assertion fires, and its message tells the reader to raise
+/// `RECEIVER_ACK_DELAY` — advice that would not help, because the constant
+/// is not what the receiver reads.
+///
+/// So this asserts the two agree, container-free, in milliseconds. It also
+/// asserts the mapping keeps the path to itself: the receiver tree's
+/// catch-all (`any-post-200.json`, `urlPattern: ".*"`) would answer
+/// [`RECEIVER_PATH`] immediately if its priority ever beat this one's, and
+/// an immediate 200 is a delivery that was never in flight.
+#[test]
+fn the_slow_receiver_mapping_is_the_delay_both_sigterm_cases_are_built_on() {
+    let path = receiver_mappings_dir().join("mappings/slow-ack.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    let document: Value = serde_json::from_str(&text).expect("slow-ack.json is JSON");
+    let mappings = document
+        .get("mappings")
+        .and_then(Value::as_array)
+        .expect("slow-ack.json has a `mappings` array");
+    let [mapping] = mappings.as_slice() else {
+        panic!(
+            "slow-ack.json declares one mapping; it now declares {}",
+            mappings.len()
+        )
+    };
+
+    assert_eq!(
+        mapping.pointer("/request/urlPath").and_then(Value::as_str),
+        Some(RECEIVER_PATH),
+        "the slow mapping must answer the path both SIGTERM cases deliver to"
+    );
+    assert_eq!(
+        mapping
+            .pointer("/response/fixedDelayMilliseconds")
+            .and_then(Value::as_u64),
+        Some(u64::try_from(RECEIVER_ACK_DELAY.as_millis()).expect("the delay fits in a u64")),
+        "RECEIVER_ACK_DELAY is transcribed from this mapping, and the const assertions at the          top of this file check the transcription rather than the mapping. This is the check          that they agree"
+    );
+    assert_eq!(
+        mapping.pointer("/response/status").and_then(Value::as_u64),
+        Some(200),
+        "a 2xx is what `handle_deliver` records as delivered; anything else walks the ladder"
+    );
+
+    // Priority is WireMock's: *lower* wins. Every other mapping in the tree
+    // must lose on this path.
+    let priority = mapping
+        .get("priority")
+        .and_then(Value::as_u64)
+        .expect("the slow mapping states a priority rather than relying on the default");
+    for entry in std::fs::read_dir(receiver_mappings_dir().join("mappings"))
+        .expect("the receiver mapping directory is readable")
+    {
+        let other = entry.expect("a directory entry").path();
+        if other == path || other.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let document: Value = serde_json::from_str(
+            &std::fs::read_to_string(&other).expect("a mapping file is readable"),
+        )
+        .expect("a mapping file is JSON");
+        for other_mapping in document
+            .get("mappings")
+            .and_then(Value::as_array)
+            .expect("a mapping file has a `mappings` array")
+        {
+            let url_path = other_mapping
+                .pointer("/request/urlPath")
+                .and_then(Value::as_str);
+            if url_path == Some(RECEIVER_PATH) || url_path.is_none() {
+                let other_priority = other_mapping
+                    .get("priority")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(5);
+                assert!(
+                    other_priority > priority,
+                    "{} declares a mapping that can match {RECEIVER_PATH} at priority \
+                     {other_priority}, which ties or beats slow-ack.json's {priority} — and \
+                     a tie is WireMock choosing for us. Both SIGTERM cases would then get an \
+                     immediate answer and would be signalling a worker that is not \
+                     mid-delivery",
+                    other.display()
+                );
+            }
+        }
+    }
+}
+
 /// [`SIGTERM_MSISDN`] must go on arming nothing in the shared rail tree.
 ///
 /// Both cases above depend on the rail being *boring* for that number: an

@@ -287,8 +287,11 @@ done.**
   four-record exactly-once invariant the two `SIGKILL` cases assert holds too.
 
 The receiver is made slow the same way the rail is in the cases above — a
-`fixedDelayMilliseconds` mapping (`slow-ack.json`, 6 s) — and the number is
-chosen against two shipping budgets rather than against a stopwatch: **below**
+`fixedDelayMilliseconds` mapping (`slow-ack.json`, 6 s, pinned to the
+constant it is transcribed into by
+`the_slow_receiver_mapping_is_the_delay_both_sigterm_cases_are_built_on`) —
+and the number is chosen against two shipping budgets rather than against a
+stopwatch: **below**
 `vpay_worker::webhooks::WEBHOOK_REQUEST_TIMEOUT` (10 s), so the
 acknowledgement always beats the delivery client's own deadline, and **below**
 the worker's `--shutdown-grace-seconds` (20 s), so the drain can never run out
