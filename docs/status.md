@@ -4561,15 +4561,22 @@ until the provider pass moved onto CrateStack it reached a supervisor as `69`,
 incoherent. It is `1` now. Measured 2026-09-06 and pinned by a new assertion
 in `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`.
 
-**Maintainer decision, surfaced not taken:** `Internal`/`1` is defensible —
-the database is healthy, and `Capabilities::is_coherent` exists but is checked
-only in `vpay-server`'s `#[cfg(test)]` assertion and the conformance suite,
-never at boot — but `Category::Configuration`/`78` ("fix the deploy") is what
-the flow label got for the same class of mistake one paragraph earlier, and
-the two now disagree. Either answer is better than the `69` this replaced.
-Deciding between them, and whether boot should check
-`Capabilities::is_coherent` before it reconciles at all, is not the review's
-call.
+**Maintainer decision, surfaced not taken — and taken on 2026-09-10 (issue
+#61).** The surfaced question was: `Internal`/`1` is defensible (the database
+is healthy, and `Capabilities::is_coherent` was checked only in
+`vpay-server`'s `#[cfg(test)]` assertion and the conformance suite, never at
+boot), but `Category::Configuration`/`78` ("fix the deploy") is what the flow
+label gets for the same class of mistake, and the two disagreed. **Decided:
+boot checks first.** `boot_seeds` refuses an incoherent rail as
+`ConfigError::IncoherentCapabilities` — `78` — before the reconcile, and the
+CHECK stays exactly as it was, still `PersistenceError::Check` /
+`Category::Internal` / `1` for any writer that reaches it. So the disagreement
+is gone in the direction the issue chose, without weakening the last line:
+both numbers are measured, in `main`'s order and against a real Postgres, by
+`boot_refuses_an_incoherent_rail_as_78_before_the_check_can_answer_it_as_1`
+(`backends/tests/integration/tests/boot_coherence.rs`), and
+`a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+is unchanged. See the "Config guard rails" row above.
 
 **Migration 0033 was only ever applied to an empty table.** Its header makes
 three claims. The refusal it creates is asserted

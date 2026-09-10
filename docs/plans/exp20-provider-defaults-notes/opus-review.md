@@ -269,6 +269,14 @@ second resolves one paragraph.
    `Category::Configuration` / `78` for the same class of mistake, and the two
    now disagree. Related: should boot check `Capabilities::is_coherent` before
    it reconciles at all, rather than letting the CHECK answer?
+
+   **Decided 2026-09-10 (issue #61), and this item is closed.** Boot checks
+   first: `boot_seeds` refuses an incoherent rail as
+   `ConfigError::IncoherentCapabilities` / `78` before the reconcile, and the
+   CHECK is untouched — still `1`, still the last line, still with its own
+   test. Both numbers are now measured in `main`'s order against a real
+   Postgres by `boot_coherence.rs`; `docs/status.md` and
+   `docs/flows/configuration.md` carry the decision.
 2. **`fn reconcile` is 249 lines** on the review head — 203 before exp20, 237
    as delivered, and the review's two comment blocks (READ COMMITTED, the
    `23514` classification) took it the rest of the way. exp17's review left the

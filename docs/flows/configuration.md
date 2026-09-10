@@ -222,7 +222,7 @@ gateway that boots half-configured is worse than one that does not boot.
 | `livemode` ⇒ every host is `https://` | |
 | `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
 | `livemode` ⇒ secrets come from `${}`, not literals | Stops a real key reaching git |
-| `partial-refunds` ⇒ `refunds` | Boot step 4 refuses an incoherent capability set; also enforced in Rust and by a database CHECK constraint — see below |
+| `partial-refunds` ⇒ `refunds` | **Not a rule about the YAML** — boot step 4 refuses a *linked adapter* whose capability set is incoherent, exit `78` naming the rail and the rule; the database CHECK is the last line — see below |
 | `checkout.public_base_url` is a well-formed origin, `https://` under `livemode` | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port |
 | Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read |
 | `checkout_origins` without a `checkout.public_base_url` | There is no page for those origins to frame |
@@ -281,9 +281,11 @@ config shape; an OAuth `MerchantClient` names no rails. A payment intent's
 rails are instead checked per request, against the deployment's enabled set,
 and answered as a `400` naming `payment_method_types`.
 
-**The `partial-refunds ⇒ refunds` row is
-not a `vpay-config` boot guard at all**, despite living in this table; see the
-correction below for where it actually lives.
+**The `partial-refunds ⇒ refunds` row refuses a boot since 2026-09-10
+(issue #61), but not for anything in the YAML.** It read "not a
+`vpay-config` boot guard at all, despite living in this table" until then,
+and was true of every layer the rule had; what changed is where the rule is
+asked, not what a deployment can do to break it. See the correction below.
 
 **Correction of the correction:** an earlier pass through this doc said the
 rule "mirrors the DB CHECK" was false, because at the time there was no
@@ -303,35 +305,65 @@ Postgres 16 via testcontainers). So the original "mirrors the DB CHECK"
 framing was right after all — it just could not have been built through
 `schemas/vpay.cstack`.
 
-**This is now a `vpay-config` boot-time guard** (2026-09-10, issue #61): boot
-step 4 calls `Capabilities::is_coherent` on every configured provider and
-refuses with `ConfigError::IncoherentCapabilities` (exit 78) if a provider's
-capabilities are incoherent. It is enforced three times, independently —
-belt and braces and belt:
+**Boot refuses it now** (2026-09-10, issue #61), and the thing that changed
+is an *exit code*. Boot step 4's join — `vpay_api::boot::boot_seeds`, which
+`vpay-server` runs in both `serve` and `worker` mode, before it opens a pool —
+asks every configured rail's adapter for its `Capabilities` and refuses a set
+that is not `is_coherent` with `ConfigError::IncoherentCapabilities`:
+`Category::Configuration`, exit **78**, naming the rail and
+`partial_refunds_imply_refunds`. The same deployment used to reach the CHECK
+and exit **1**, "page someone", about a database that was working perfectly.
 
-- **At boot**, in step 4: `boot_seeds` calls `Capabilities::is_coherent` on
-  every configured provider's capabilities and refuses with exit 78 if
-  incoherent, preventing a reconcile that would write inconsistent data.
-  Test: `a_provider_with_incoherent_capabilities_is_a_config_error` in
-  `backends/crates/vpay-api/src/v1/boot.rs`.
-- **In Rust**, on every adapter's static capability declaration:
-  `Capabilities::is_coherent` in
-  `backends/crates/vpay-provider/src/lib.rs` requires
-  `supports_partial_refunds ⇒ supports_refunds`, tested by
-  `vpay-provider::tests::partial_refunds_imply_refunds` and by the
-  conformance suite's `every_adapter_declares_coherent_capabilities`.
-- **In the database**, on the `providers` table itself: `backends/migrations/0002_create-providers.sql`
-  declares the CHECK constraint `partial_refunds_imply_refunds`, tested by
+**What it is not: a rule about a deployment's YAML.** A capability set is a
+property of an adapter's *code* (ADR-0002). Nothing in `application.yml`
+makes a coherent rail incoherent, `Config::validate_all` does not run this
+check, and no configuration a merchant or an operator can write reaches it —
+what it catches is a **linking** mistake, a binary that shipped with an
+adapter whose own capability table contradicts itself. The error type lives
+in `vpay-config` for the exit code, not because the file is the subject.
+
+Three things now have an opinion on the rule, and they are not three of a
+kind:
+
+- **At boot**, in step 4 — the only one of the three that is a *runtime*
+  guard on a deployment. `a_provider_with_incoherent_capabilities_is_a_config_error`
+  (`backends/crates/vpay-api/src/v1/boot.rs`) asserts the refusal and the
+  message for both values of `enabled`;
+  `boot_refuses_an_incoherent_rail_as_78_before_the_check_can_answer_it_as_1`
+  (`backends/tests/integration/tests/boot_coherence.rs`) measures, against a
+  real Postgres and in `main`'s order, that it answers `78` before anything
+  is written and that the CHECK would have answered `1`.
+- **In the test suite**, over every adapter in the workspace: the conformance
+  suite's `every_adapter_declares_coherent_capabilities` and `vpay-server`'s
+  `no_adapter_advertises_partial_without_full_refunds` are what make the boot
+  guard unreachable in a shipped binary. They are tests, not a guard — they
+  fail a build, never a boot.
+- **In the database**, on the `providers` table itself:
+  `backends/migrations/0002_create-providers.sql` declares the CHECK
+  `partial_refunds_imply_refunds`, proven to fire by
   `partial_refunds_without_refunds_is_rejected_by_the_database` in
-  `backends/tests/integration/tests/postgres_smoke.rs`.
+  `backends/tests/integration/tests/postgres_smoke.rs`. It is the last line
+  and stays that way: it refuses any writer, including one that is not
+  `reconcile`.
 
-Neither has anything to do with `vpay-config` or a deployment's YAML. *That
-sentence used to end "there is still no YAML-loading or reconciliation code
-in this repo", which stopped being true for loading on 2026-09-02 and for
-reconciliation on 2026-09-03 — see the boot sequence above. The
-`partial_refunds_imply_refunds` CHECK is now reachable from `reconcile`
-itself: a seed setting `supports_partial_refunds` without `supports_refunds`
-is a `DbError::Query` that rolls the whole reconcile back.*
+None of the three is a rule about a deployment's YAML — that is the point of
+the paragraph above, and it is why "boot refuses it" and "an operator can
+cause it" are different sentences. *This said "**Neither** has anything to do
+with `vpay-config`…" while listing two, and before that ended "there is still
+no YAML-loading or reconciliation code in this repo", which stopped being
+true for loading on 2026-09-02 and for reconciliation on 2026-09-03 — see the
+boot sequence above.*
+
+*The CHECK became reachable from `reconcile` itself on 2026-09-03, and what a
+seed that reaches it produces is `DbError::Persistence(PersistenceError::Check
+{ constraint: "partial_refunds_imply_refunds" })` — `Category::Internal`,
+exit `1` — which rolls the whole reconcile back. This sentence said
+`DbError::Query` (exit `69`, "wait for Postgres") until 2026-09-10; the
+provider pass moved onto CrateStack on 2026-09-06 and the classification
+moved with it, measured then by
+`a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
+and re-measured on the boot path by `boot_coherence.rs`. Since issue #61 that
+route is no longer how a **deployment** finds out: boot answers first.*
 
 ## The checkout page reads its own two files, and they are not these
 
@@ -397,7 +429,12 @@ between binaries. The config guard rules (stub-host detection, literal
 secrets, `partial-refunds ⇒ refunds`) are implemented and tested in Rust;
 `partial-refunds ⇒ refunds` is additionally enforced by a database CHECK
 constraint (`backends/migrations/0002_create-providers.sql`), tested against
-a real Postgres — see the correction above. That CHECK is multi-column, which
+a real Postgres — see the correction above. **Updated 2026-09-10 (issue
+#61):** that rule is also asked at boot step 4 now, of the adapter rather
+than of the file, and a rail that fails it is exit `78` before the pool is
+opened rather than exit `1` after the reconcile —
+`boot_refuses_an_incoherent_rail_as_78_before_the_check_can_answer_it_as_1`
+measures both numbers. That CHECK is multi-column, which
 means `cratestack migrate baseline` cannot see it in either direction:
 deleting it from migration 0002 leaves the drift count unmoved (measured
 2026-09-06) and only
