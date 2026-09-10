@@ -2658,6 +2658,52 @@ five and that is not one of them, so a payer who cancels gets `EXPIRED` →
 `payer_timeout`, and the shop's README and the demo runbook now say so where
 they used to say the order stayed open.
 
+**The limit this shape has, measured rather than reasoned about (added by the
+sabotage review, 2026-09-10).** The payer's whole state machine is **one
+WireMock scenario per container**, `orange-hosted-page-payer`, and WireMock
+scenarios cannot be keyed on a path variable — so it is keyed on nothing per
+charge. That was true of the two demo arms before this change as well; what is
+new is that *every* accepted Orange submit now moves it and *every* payer
+action now arms a terminal answer through it. Driven against
+`wiremock/wiremock:3.9.2` with the committed mappings and nothing else:
+
+| two charges in flight | what the stub answers |
+|---|---|
+| A submits, B submits, A polls twice | A `PENDING` then `SUCCESS`; **B's first poll is `SUCCESS`** — A consumed B's rung |
+| C submits, D submits, C's payer clicks `Cancel`, D polls | **D gets `EXPIRED`** — C's payer decided D |
+| G submits at amount `5001`, H submits, H's payer clicks `Pay`, G polls | **G gets `SUCCESS`** — the payer-action mappings are priority 3 and `demo-outcomes.json`'s amount-keyed ones are 4, so a click overrides a number the shop's README promises will expire |
+
+A new accepted submit resets the scenario to `submitted`, so nothing is
+inherited across a *quiet* boundary; what is not fixable in WireMock is two
+charges overlapping. **Nothing in this repository is exposed:** `demo-walk` is
+strictly sequential and opens no page at all (measured: `5001` → `EXPIRED`,
+`5002` → `FAILED`, `5000` → `PENDING` then `SUCCESS`, each on its own submit),
+both Cypress specs pay one at a time, and every Rust suite — conformance and
+integration alike — calls `vpay_testkit::containers::start_wiremock` per test
+and so gets its own container and its own scenario. No harness needed
+serialising. The limit is now stated in four places a reader will actually
+reach: the mapping's metadata, `examples/shop/README.md`, `docs/runbooks/demo.md`
+and **the stub's rendered page itself**. Whether the payer-action mappings
+should sit *below* `demo-outcomes.json`'s amount-keyed ones instead of above
+them is left as a maintainer decision; the argument for 3 is in the mapping's
+own metadata and the cost of 3 is the third row above.
+
+**The stub page's hidden inputs are an HTML-injection point, and this change
+does not close it.** `checked_return_url` validates scheme and length only, so
+a `return_url` containing `"` is accepted by `/v1`, reaches the stub's form as
+`<input type="hidden" name="return" value="…">`, and closes the attribute
+early — on the WireMock origin, in the demo. The two `href`s added by this
+change are immune because they percent-encode with `urlEncode` first; the form
+is not, because a GET form's hidden input must carry the value the browser will
+re-encode. The fix that exists is a decoding hop — hidden inputs written
+`{{{urlEncode …}}}`, and the `/pay` mappings split on the presence of `msisdn`
+(only the form sends it) so the form's arm can answer
+`{{{urlEncode … decode=true}}}` while the links' arm stays as it is. It was
+**not** taken here: it is surgery on a stub four suites share, for a value no
+test in this repository sends, and it needs a full `test-e2e` to validate. It
+is a maintainer decision, recorded on the stub page rather than only in the
+mapping's metadata.
+
 **A wrong comment corrected while doing it.** `stub-hosted-page.json` claimed
 WireMock's double stache HTML-escapes and that the form's hidden inputs relied
 on it. Driven against `wiremock/wiremock:3.9.2` with a return URL of

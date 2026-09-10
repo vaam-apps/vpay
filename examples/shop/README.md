@@ -258,6 +258,23 @@ a redirect rail, so vpay never sees the number.
 >
 > MTN's numbers are unaffected by any of it: a push rail takes the number in
 > the merchant's own submit, so there was never a window to lose.
+>
+> **One payment at a time, and it is not a style note.** The payer's state
+> machine is a single WireMock scenario on a single container, and WireMock
+> scenarios cannot be keyed on a payment. Measured 2026-09-10 with two Orange
+> charges in flight: the second never gets its `PENDING` rung, because the
+> first consumed it; and a payer clicking **Pay** or **Cancel** on one charge's
+> page decides _whichever charge asks the rail next_ — including a charge these
+> numbers promise will fail. Nothing here drives two at once, so you will not
+> meet it by following this README; two browser tabs on two orders will.
+>
+> **And the stub's page is not safe for a `return_url` containing a `"`.** The
+> two links percent-encode; the test-number form's hidden inputs do not, and
+> vpay's own `return_url` validation checks only the scheme and the length. A
+> quote closes the attribute and injects into the stub's page. It is a WireMock
+> test stub (ADR-0006) and no test in this repository sends such a URL, so it is
+> recorded — on the page itself, in the mapping's metadata and in
+> `docs/status.md` — rather than fixed.
 
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |

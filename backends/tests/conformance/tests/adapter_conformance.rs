@@ -2054,6 +2054,18 @@ async fn the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry() {
         page.contains(r#"<a id="pay""#),
         "the payer must have something to click: {page}"
     );
+    // The stub's two known limits, on the page a payer is actually looking at
+    // rather than only in the mapping's `metadata` — which nothing renders.
+    // Asserted on the id and not on the prose so that rewording is free and
+    // deleting the section is not: a limit recorded where no reader reaches it
+    // is a limit nobody knows about, and both of these are reachable from the
+    // demo (one Orange charge overlapping another; a `return_url` carrying a
+    // double quote, which `vpay_api::v1::payment_intents::checked_return_url`
+    // would accept). See the mapping's own metadata for both arguments.
+    assert!(
+        page.contains(r#"id="stub-limits""#),
+        "the stub's limits must be visible ON the stub's page: {page}"
+    );
 
     for poll in 1..=PENDING_POLLS_ON_THE_HOSTED_PAGE {
         let status = status_of(&rail, &charge, &format!("poll {poll}")).await;

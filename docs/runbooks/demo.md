@@ -716,6 +716,17 @@ Two things to know before you drive them:
   MTN's numbers are unaffected by any of it — a push rail carries the number
   in the merchant's own submit, so there was never a window to lose.
 
+  **Drive one payment at a time.** The window is a single WireMock scenario on
+  a single container, keyed on nothing per charge, because WireMock scenarios
+  cannot be. Measured 2026-09-10: with two Orange charges in flight the second
+  never gets its `PENDING` rung, and a payer clicking Pay or Cancel on one
+  charge's page decides whichever charge the worker asks about next — a `5001`
+  charge included, whose amount-keyed mapping the payer-action mappings
+  outrank. `just demo-walk` is strictly sequential and opens no page, so it
+  never meets this; two browser tabs on two orders will. See
+  [../status.md](../status.md) §"The Orange stub's hosted page grew a payer's
+  window" for the measurements.
+
 The one outcome no *number* reaches is `cancelled`, because it is not a rail
 outcome at all. Clicking "cancel" on the rail's page ends the payment, but
 what the rail then reports is `EXPIRED`, so the order comes back **`failed`**
