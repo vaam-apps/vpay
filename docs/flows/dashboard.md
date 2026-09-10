@@ -170,6 +170,14 @@ call, so `http://localhost:3000/dash/v1/callback` is a string the two OAuth
 legs must spell identically and not a page. A browser never sees a code, a
 verifier or a token.
 
+That string is the demo stack's, and its port stopped being a literal on
+2026-09-10 (issue #78): `justfile`'s `demo_dashboard_port` is written into the
+app's `VPAY_DASHBOARD_REDIRECT_URI` and into the generated overlay's
+`dashboard_client.redirect_uris` together, so `just demo_dashboard_port=13000
+demo` spells `http://localhost:13000/dash/v1/callback` in both. Nothing about
+the flow changes — the identity of the two strings is still the property that
+matters, and it is still matched byte for byte.
+
 The `/dash/v1` access token is not kept in the app either. The token endpoint
 writes it to the `staff_sessions` row, and every render reads it back from
 `GET /dash/v1/staff/session` — which is exactly what makes signing out a
@@ -359,6 +367,17 @@ and since exp28 it checks the `NAV_LINKS` constant as well, so a
 conditionally-rendered link cannot slip past it. Neither finding changes what
 this app claims to do; both are cases of a rule this repository states being
 checked by nobody.
+
+**The demo stack's dashboard port became a variable, 2026-09-10 (issue #78).**
+`demo_dashboard_port` (default 3000) is threaded through the publication in
+`compose.demo.yml` — still `!override` and still bound to `127.0.0.1`, because
+what is behind it is a real staff sign-in form — the app's
+`VPAY_DASHBOARD_REDIRECT_URI`, the generated overlay's registered
+`redirect_uris`, Cypress's `baseUrl` and `test-e2e`'s readiness probe, so two
+demo stacks can each serve a dashboard. It changes nothing about the flow: the
+two OAuth legs still have to spell one string identically, and `gen-demo-keys`
+regenerating the overlay when the variable moves is what keeps them doing so.
+Measured in [../plans/exp35-dashboard-port-notes/opus-review.md](../plans/exp35-dashboard-port-notes/opus-review.md).
 
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate

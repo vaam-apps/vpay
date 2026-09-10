@@ -512,10 +512,21 @@ jobs:
       # profile it thinks it covers".** `dashboard.cy.ts` signs in now, so a
       # redirect URI *is* read, and it is the demo overlay's — `just
       # gen-demo-keys` writes `http://localhost:3000/dash/v1/callback` into it
-      # and refuses to keep an overlay that predates that line. The sandbox
-      # overlay's copy of the same setting is still exercised by nothing in
-      # this workflow, which is what docs/status.md's "GitHub Actions" row
-      # records.
+      # and refuses to keep an overlay that names a different port. The
+      # sandbox overlay's copy of the same setting is still exercised by
+      # nothing in this workflow, which is what docs/status.md's "GitHub
+      # Actions" row records.
+      #
+      # THE `3000` IN THAT STRING IS A DEFAULT, NOT A LITERAL, since
+      # 2026-09-10 (exp35, issue #78): the port is `justfile`'s
+      # `demo_dashboard_port`, and `compose.demo.yml` /
+      # `VPAY_DASHBOARD_REDIRECT_URI` read `${VPAY_DEMO_DASHBOARD_PORT:-3000}`.
+      # This job deliberately sets NEITHER — it is one stack on a fresh
+      # runner with nothing to collide with, and the reason the variable
+      # exists is two stacks on one developer's machine. So every `3000`
+      # below is that default resolving, and the wait step's URL and this
+      # paragraph are correct precisely as long as this job keeps not setting
+      # it. If it ever does, both have to move with it.
       - name: generate throwaway OAuth keys — the OP's, and a registered merchant's
         run: just gen-demo-keys
       - name: build both images and bring up the real stack (rails stubbed by WireMock, not in-process)
