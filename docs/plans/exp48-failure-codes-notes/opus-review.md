@@ -245,20 +245,84 @@ in §6.
 | 1 | Swap the codes of `EXPIRED` and `PAYMENT_NOT_APPROVED` in `FAILURE_REASONS` (the implementer's, re-run) | conformance fails | **FAILED as required** — see §6 |
 | 2 | Promise `insufficient_funds` for Orange in **both** `README.md` and `test-numbers.ts` (the implementer's, re-run) | shop vitest fails | **FAILED as required** — see §6 |
 | 3 | **Mine:** delete `FailureCode::PayerDeclined` from MTN's `PRODUCED_FAILURE_CODES` while `…0f05`/`…0f06` still produce it | something must fail | **FAILED as required** — see §6 |
-| 4 | **Mine:** revert only the new conformance case's MSISDN row, keeping every document's promise | the gate hole reopens silently | **PASSED — which is the finding.** Before Finding 2's fix, nothing anywhere failed when `237600000103` was proven by no test |
+| 4 | **Mine:** delete the new conformance case's row, keeping every document's promise | the gate hole reopens silently | **PASSED — which is the finding.** conformance 53/53, shop vitest 108/108, MTN units 62/62, all green with five documents promising a number nothing ran |
+| 5 | **Mine:** make the demo stub answer `APPROVAL_REJECTED` instead of `PAYMENT_NOT_APPROVED` — a *different reason with the same taxonomy code* | only a reason-level assertion can catch it | **FAILED as required**: `case_4_payer_declined`, "expected \"PAYMENT_NOT_APPROVED\" inside \"APPROVAL_REJECTED: The payment was not approved by the payer\"". Under the old `!raw.is_empty()` this mutation was invisible |
 
 Mutation 4 is recorded because it is the one that says why Finding 2 mattered:
 the branch as delivered had a green suite and an unexecuted promise, and no
-gate could tell the difference.
+gate could tell the difference. Mutation 5 is why the new case asserts the
+reason and not only the code — `PAYMENT_NOT_APPROVED` and `APPROVAL_REJECTED`
+both map to `payer_declined`, so the code alone cannot tell the two stubs
+apart, and three documents name a specific one.
+
+All five were reverted and the suites re-run green. Mutations 1 and 3 were run
+against an uncommitted tree and `git checkout` on the mutated file silently
+took a review fix with it; the fix was re-applied and everything was committed
+before mutations 4 and 5. Recorded because it is the kind of scaffolding
+mistake that otherwise reaches a report as a claim.
 
 ---
 
 ## 6. Gates
 
-Recipe by recipe, exit codes read from a file, on the rebased head.
+Exit codes read from a file, not from a harness banner.
 
-See the tables in the review's final report; the numbers are reproduced in
-`docs/status.md`.
+**Baseline — the branch as delivered, rebased onto `524289b`, no review
+commits.** `just ci` **exit 0**: twelve gates ok, `cargo nextest run
+--workspace` 1691 tests / 1691 passed / **0 skipped**, doctests 111 passed /
+1 ignored, every web suite green, `cargo deny` ok. So exp48 did not ship a red
+gate; the hole Finding 2 names is one no gate could see.
+
+**Final — `0136bba`, both review commits in.** `just ci` **exit 0**:
+
+| Recipe | Result |
+|---|---|
+| `fmt-check` | ok |
+| `clippy` | ok, no warnings |
+| `verify` | ok — the twelve gates |
+| `test-rust` | **1692 run, 1692 passed, 0 skipped** (1691 baseline + the new case) |
+| `test-doc` | 111 passed, 1 ignored |
+| `verify-ignored` | ok |
+| `lint-web` | ok |
+| `test-web` | 63 + 8 + 146 + 208 + 4 + 74 + **108 (shop)** + 182 + 507, all passed |
+| `deny` | advisories / bans / licenses / sources ok |
+
+Suite-level, run separately: conformance **54 / 54, 0 skipped** (53 as
+delivered); MTN units **62 / 62**; Orange units **57 / 57**.
+
+`just demo-walk` on project `exp48-review` (ports 19400/19402/19403,
+14400/14401/14480): **exit 0**, and the six outcomes are unchanged —
+
+| # | Rail | Status | Code |
+|---|---|---|---|
+| 1 | `mtn_momo` | `succeeded` | — |
+| 2 | `mtn_momo` | `requires_payment_method` | `insufficient_funds` |
+| 3 | `mtn_momo` | `requires_payment_method` | `payer_timeout` |
+| 4 | `orange_money` | `succeeded` | — |
+| 5 | `orange_money` | `requires_payment_method` | `payer_timeout` |
+| 6 | `orange_money` | `requires_payment_method` | `provider_error` |
+
+— which is the walkthrough's own table, and which contains no
+`payer_declined`. That is now stated in the runbook rather than left to be
+noticed.
+
+**One extra measurement**, because the runbook makes a claim about a browser
+path no automated test drives: on the live demo stack, `POST
+/collection/v1_0/requesttopay` with `payer.partyId = 237600000103` answered
+`202`, and the following status query answered
+`{"status":"FAILED","reason":{"code":"PAYMENT_NOT_APPROVED",…}}`. So the
+mapping behaves the same way when mounted by `compose.yml` as it does in the
+conformance container.
+
+**Two `just ci` runs before that one failed** and are reported rather than
+dropped: both on `postgres:16-alpine` container-start timeouts, in
+`staff_sign_in::a_disabled_account_is_refused_at_the_stage_route` and
+`vpay-db::repositories::record_success_settles_a_delivery_once_…` — tests with
+no relationship to this branch. The host's rootless Docker daemon degrades as
+never-started containers accumulate (75 at the worst point). Clearing the
+abandoned `Created` containers fixed it both times. The daemon was **not**
+restarted: the user's `vpay-demo` stack and another agent's Postgres were live
+on it, and that is not this review's call to make.
 
 ---
 
