@@ -509,8 +509,9 @@ over a booted server — the TTL honoured on the wire and in the row, a live
 session minting a *different* token, and the leg refused for a disabled staff
 member, a staff member moved to another merchant, an idle session and a
 signed-out one, each with the same session restored afterwards as a control;
-`a_session_token_without_its_expiry_is_refused_by_the_database`; six
-`gateFor` cases in `gate.test.ts`; and the browser leg. Decisive mutations:
+`a_session_token_without_its_expiry_is_refused_by_the_database`; nine
+`gateFor` cases in `gate.test.ts`, five of them about the margin; and the
+browser leg. Decisive mutations:
 writing `crate::op::ACCESS_TOKEN_TTL_SECS` back into the OP config (`expires_in`
 reads 900 against a configured 10), `staleTokenFor` answering `false` for an
 absent or unparseable expiry, and dropping the margin — for which the browser

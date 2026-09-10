@@ -3,12 +3,14 @@
  *
  * # The fifteen minutes
  *
- * `vpay_api::op::ACCESS_TOKEN_TTL_SECS` is **900**. A staff session's bounds
- * are ADR-0017 decision 2's: thirty minutes idle, twelve hours absolute. So
- * the credential a page reads with dies a quarter of an hour into a session
- * that has eleven and three quarter hours left, and `requireStaff` mints a
- * token only when the row carries **none** — once one is there it is used
- * until sign-out.
+ * The `/dash/v1` access token lives `staff_auth.access_token_ttl_seconds`,
+ * **900** by default — `vpay_api::op::ACCESS_TOKEN_TTL_SECS` until 2026-09-10,
+ * when it became configuration so an end-to-end run could cross an expiry at
+ * all (issue #88 item 1). A staff session's bounds are ADR-0017 decision 2's:
+ * thirty minutes idle, twelve hours absolute. So the credential a page reads
+ * with dies a quarter of an hour into a session that has eleven and three
+ * quarter hours left, and `requireStaff` minted a token only when the row
+ * carried **none** — once one was there it was used until sign-out.
  *
  * Measured on the real stack (exp28 review): a session row holding a token
  * `/dash/v1` refuses renders `/payments` with
@@ -35,6 +37,13 @@
  * session would sign people out four times an hour. Both are the maintainer's
  * to take if they disagree; this is the option that changes no security
  * property.
+ *
+ * # This is the fallback now, not the whole answer
+ *
+ * Since 2026-09-10 `gate.ts` replaces the token **before** it expires, when a
+ * fifth of its life is left, so a render normally never reaches the `401`
+ * below. This path stays for what a margin cannot see: a clock that disagrees
+ * with vpay's, a token revoked mid-render, a render that arrives late.
  *
  * # Once, and then the failure is the answer
  *

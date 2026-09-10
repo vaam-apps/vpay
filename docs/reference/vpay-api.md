@@ -519,7 +519,7 @@ reach a handler at all.
 
 `crate::router` builds the `/dash/v1` nest as `dash::routes()` wrapped in
 `require_dashboard_token`, then `.merge(staff::routes())`. The merge is
-**after** the layer, so the seven staff routes are outside it — they have to
+**after** the layer, so the eight staff routes are outside it — they have to
 be, because they exist to produce the credential that layer checks, and a
 `/dash/v1/staff/login` behind a bearer-token requirement is a login nobody can
 reach.
