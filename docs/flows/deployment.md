@@ -192,11 +192,27 @@ here is a hard failure, not a degraded mode.
 | Every `${VAR}` in the config | Secret, `envFrom` (`rails.existingSecret`) | exit 78, **both** binaries |
 | The RS256 signing key | Secret, mounted file (`signingKey.existingSecret`) | exit 78, **server only** |
 | Postgres, reachable and migratable | outside the chart entirely | exit 69 |
+| `VPAY_WORKER_CONCURRENCY` ≤ 5, in `worker` mode | `worker.concurrency` in the chart | exit 78, **worker only** (new 2026-09-10, issue #63) |
 
 The signing key is a *file*, never an environment value: that is how a
 Kubernetes Secret reaches a pod, and migration `0010` dropped the column that
 used to hold private key material so that the file is the only place it
 exists.
+
+**Sizing the worker, and the one number that is not free.** Each worker pod
+opens one connection pool of `vpay_db::MAX_CONNECTIONS` (10) connections, and
+`--worker-concurrency` is how many claim loops share it. The ceiling is 5 —
+half the pool, because a webhook fan-out re-running after a crash holds two
+of those connections at once — and the binary refuses more at boot rather
+than CrashLoopBackOffing later; the chart's `worker-concurrency-pool` guard
+refuses it earlier still, at `helm upgrade`. **Throughput above that is
+`worker.replicaCount`, not concurrency**: jobs are leased with
+`FOR UPDATE SKIP LOCKED`, so N replicas is the supported way to scale, and
+each brings a pool of its own. N replicas also means N × 10 connections
+against a Postgres whose own `max_connections` is typically 100 — the number
+to watch when replicas go up. Nothing here has been profiled under load; what
+*has* been measured is the ceiling itself
+([crash-safety.md](crash-safety.md#worker-concurrency-and-the-pool)).
 
 ## 4. Boot, in order
 

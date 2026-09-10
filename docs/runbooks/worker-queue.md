@@ -34,7 +34,12 @@ dead_lettered=1 lost=0 queue_behind_seconds=4  "job loop gauge"
   from "zero seconds behind"), and parked rows (`run_at = 'infinity'`) are
   excluded so one dead letter cannot peg it at infinity. A value drifting
   steadily upwards is the backlog signal, and the knob for it is
-  `--worker-concurrency` or another replica.
+  `--worker-concurrency` — **up to 5, and no further** — or another replica.
+  Since 2026-09-10 (issue #63) a worker refuses a concurrency above
+  `vpay_db::MAX_CONNECTIONS / 2` at boot, as exit 78, so raising this past 5
+  during an incident does not scale the queue: it stops the pod that was
+  draining it. Above 5 the answer is `worker.replicaCount`. See
+  [../flows/crash-safety.md](../flows/crash-safety.md#worker-concurrency-and-the-pool).
 - `lost` counts jobs whose lease was reaped **while this worker was running
   them**, so its answer was discarded. Any non-zero value means a handler
   outran the lease (five minutes by default); it is a real defect, not noise.

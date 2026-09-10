@@ -21,6 +21,7 @@ on a flag's name, env var, or default.
 | `--log-filter` | `RUST_LOG` | `info` |
 | `--log-format` (`json`\|`text`) | `VPAY_LOG_FORMAT` | `json` |
 | `--shutdown-grace-seconds` | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25` |
+| `--worker-concurrency` (`worker` mode only) | `VPAY_WORKER_CONCURRENCY` | `4` |
 
 `--observability-bind` is on **both** binaries — the worker had no HTTP
 listener at all before it — and serves exactly two paths, `GET /livez` and
@@ -227,6 +228,7 @@ gateway that boots half-configured is worse than one that does not boot.
 | Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read |
 | `checkout_origins` without a `checkout.public_base_url` | There is no page for those origins to frame |
 | `merchant_clients[].display_name` is non-blank and at most 80 characters | It is painted into a heading on a phone-sized page; refused at boot rather than truncated at render time |
+| `--worker-concurrency` ≤ `vpay_db::MAX_CONNECTIONS / 2` (5), `worker` mode only | **The one row here that is not a YAML rule** — it joins a flag to a constant compiled into the image, so it is raised by `vpay-server`'s own `StartupError`, not by `vpay-config`. A webhook fan-out re-run holds two pooled connections, and a pool with nothing left makes crash recovery wait out the acquire timeout rather than fail fast (issue #63, [crash-safety.md](crash-safety.md#worker-concurrency-and-the-pool)) |
 
 The three `livemode` rules — `https`-only, no stub-labelled host, and
 `${}`-only secrets — are implemented and tested in `vpay-config`
