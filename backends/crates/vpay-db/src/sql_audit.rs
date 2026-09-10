@@ -255,7 +255,7 @@ mod tests {
     /// existing `payment_intents::list_page` site rather than adding one.
     /// **39 → 45 on 2026-09-06** with the six `customers` statements S4a
     /// added (`create`, `get_for_merchant`, `update`, `list_page`,
-    /// `idle_since`, `delete_idle`); `touch_last_used` and `delete` go
+    /// `idle_since`, `erase_idle`); `touch_last_used` and the hard delete go
     /// through CrateStack and build no string.
     /// **45 → 59 on 2026-09-07** with the fourteen `invoices` statements S4b
     /// added, which is the largest single jump this constant has taken and is

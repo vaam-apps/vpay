@@ -947,6 +947,204 @@ async fn the_cursor_pages_both_ways_without_skipping_a_row_under_concurrent_inse
     Ok(())
 }
 
+// ------------------------------------------------------------------ address
+
+/// **The address, end to end** — issue #67: created, read back as one nested
+/// object, replaced whole by an update, and cleared with `address=`.
+///
+/// # The three things this pins that a shape assertion would not
+///
+/// 1. **The country is stored upper case.** A merchant who typed `cm` and one
+///    who typed `CM` have one value between them, which is the same wire
+///    contract `phone`'s canonicalisation is. A "store what they sent"
+///    implementation passes every type check and leaves vpay holding two
+///    spellings of one country.
+/// 2. **An update replaces the address, it does not merge it.** The second
+///    request below names `line1` and `country` and not `city`, and the
+///    stored `city` must be gone. A component-wise merge would leave the old
+///    city beside the new street — an address that was never anybody's,
+///    assembled by vpay out of two requests, and visible only to whoever
+///    eventually posts something to it.
+/// 3. **`address=` clears it, and is different from not mentioning it.**
+///    Exactly `name=`'s three states, one level up. Collapsing the two is a
+///    one-word edit that compiles and makes an address unremovable.
+///
+/// The `customer.updated` body is asserted too, because that object is what a
+/// merchant's webhook handler reads and it is stored in `events` for ever: a
+/// render that was right on the response and wrong in the event is a real and
+/// silent split.
+#[tokio::test]
+async fn an_address_round_trips_is_replaced_whole_and_is_cleared_by_an_empty_value()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    let created = sdk
+        .customers()
+        .create(
+            CreateCustomerParams {
+                phone: Some(CANONICAL_PHONE.to_owned()),
+                address: Some(vpay_sdk::AddressParams {
+                    line1: Some("12 Rue Njo-Njo".to_owned()),
+                    city: Some("Douala".to_owned()),
+                    // Lower case on the way in, upper case on the way out.
+                    country: Some("cm".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("cus-address-1"),
+        )
+        .await
+        .expect("a customer with an address");
+
+    let address = created.address.clone().expect("the address round-trips");
+    assert_eq!(address.line1.as_deref(), Some("12 Rue Njo-Njo"));
+    assert_eq!(address.city.as_deref(), Some("Douala"));
+    assert_eq!(
+        address.country.as_deref(),
+        Some("CM"),
+        "`cm` and `CM` are one country and vpay must not hold two spellings of it"
+    );
+    assert_eq!(address.line2, None);
+    assert_eq!(address.postal_code, None);
+
+    // 2. Replaced whole: `city` was stored and this request does not name it.
+    let replaced = sdk
+        .customers()
+        .update(
+            &created.id,
+            UpdateCustomerParams {
+                address: Some(Some(vpay_sdk::AddressParams {
+                    line1: Some("9 Boulevard de la Liberté".to_owned()),
+                    country: Some("CM".to_owned()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("cus-address-2"),
+        )
+        .await
+        .expect("the update");
+    let address = replaced.address.clone().expect("still an address");
+    assert_eq!(address.line1.as_deref(), Some("9 Boulevard de la Liberté"));
+    assert_eq!(
+        address.city, None,
+        "an address is replaced whole: a component the request did not name is cleared, \\
+         never merged from the stored row"
+    );
+
+    // The event body agrees with the response, key for key.
+    let events = events_about(&h.pool, &created.id).await?;
+    let (kind, data) = events.last().expect("at least the create and the update");
+    assert_eq!(kind, "customer.updated");
+    assert_eq!(
+        data.pointer("/address/line1").and_then(Value::as_str),
+        Some("9 Boulevard de la Liberté")
+    );
+    assert_eq!(
+        data.pointer("/address/city"),
+        Some(&Value::Null),
+        "the event body is the object, not a projection of the request: every component is \\
+         rendered, `null` included"
+    );
+
+    // 3. `address=` clears it. Sent as the raw body rather than through the
+    //    SDK's `Some(None)` as well, so this is a statement about the WIRE
+    //    and not only about the SDK's encoding of it.
+    let cleared = raw_client()
+        .post(h.url(&format!("/v1/customers/{}", created.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "cus-address-3")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body("address=")
+        .send()
+        .await
+        .context("clearing an address")?;
+    assert_eq!(cleared.status().as_u16(), 200);
+    let body: Value = cleared.json().await.context("the cleared customer")?;
+    assert_eq!(
+        body.pointer("/address"),
+        Some(&Value::Null),
+        "`address=` removes the address entirely, and the object then renders `null` rather \\
+         than an object of six nulls"
+    );
+
+    // And the columns really are NULL — not the empty string, which
+    // `address_line1_length`'s floor of 1 would have refused as a 500.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT address_line1 FROM customers WHERE id = $1")
+            .bind(&created.id)
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the cleared address")?;
+    assert_eq!(stored, None);
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// A country that is not ISO 3166-1 alpha-2 is a `400` naming `address`, and
+/// **nothing is written**.
+///
+/// The `400` rather than the `500` migration `0041`'s
+/// `address_country_is_iso_3166_1_alpha_2` would otherwise produce:
+/// `vpay_db::classify_write` routes a CHECK violation to `Category::Storage`,
+/// which reaches a merchant as a `503` telling them to wait for a database
+/// that is perfectly healthy. `name_length`'s argument, applied to the one
+/// component of the address that has a shape rather than a bound.
+///
+/// **The decisive mutation:** delete `checked_country` and route `country`
+/// through `checked_text` like the other five. The create below answers `201`
+/// with `Cameroon` stored, and every other test in this file stays green.
+#[tokio::test]
+async fn a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503() -> anyhow::Result<()> {
+    let h = harness().await?;
+
+    for refused in ["CMR", "Cameroon", "237"] {
+        let response = raw_client()
+            .post(h.url("/v1/customers"))
+            .bearer_auth(h.bearer(CLIENT_A))
+            .header("Idempotency-Key", format!("bad-country-{refused}"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "phone={CANONICAL_PHONE}&address[country]={refused}"
+            ))
+            .send()
+            .await
+            .context("creating a customer with a bad country code")?;
+
+        assert_eq!(
+            response.status().as_u16(),
+            400,
+            "`{refused}` is not an alpha-2 code and must be refused above the statement"
+        );
+        let body: Value = response.json().await.context("the error body")?;
+        assert_eq!(
+            body.pointer("/error/param").and_then(Value::as_str),
+            Some("address"),
+            "the refusal names the top-level parameter a merchant's error handler can act \\
+             on: {body}"
+        );
+        assert_eq!(
+            body.pointer("/error/type").and_then(Value::as_str),
+            Some("invalid_request_error"),
+            "a 503 here would tell a merchant to retry against a database that is fine: \\
+             {body}"
+        );
+    }
+
+    // Nothing was written by any of the three.
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&h.pool)
+        .await
+        .context("counting customers after three refused creates")?;
+    assert_eq!(customers, 0);
+
+    h.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------------------------------- delete
 
 /// `DELETE` is a hard delete: the row is gone, a later retrieve is the same
@@ -999,20 +1197,53 @@ async fn a_delete_removes_the_row_and_answers_the_stripe_deleted_shape() -> anyh
     Ok(())
 }
 
-/// A customer an intent references cannot be deleted, and the refusal is a
-/// `409` that explains itself — not the `500` a raw foreign-key violation
-/// would produce.
+/// A customer an intent references is **anonymised**, not refused and not
+/// row-deleted — issues #68 and #96 item 2, migration `0041`.
+///
+/// # What this replaced, and why the replacement is not a softening
+///
+/// Until 2026-09-10 this route answered a `409` here, and the `409`'s advice
+/// was to clear `name`, `email` and `phone` instead — advice
+/// `at_least_one_identifier` refuses, so no merchant could follow it. The
+/// payer's identifiers therefore survived every "deletion" of exactly the
+/// customers vpay had taken money from. The foreign keys are unchanged and
+/// still `NO ACTION`: the payment record survives. What does not survive is
+/// the payer on it.
+///
+/// # Every assertion here is one of the four things that can go wrong
+///
+/// 1. the erasure does not happen at all (the `200` and the marker);
+/// 2. it takes the payment record with it (the intent still resolves, with
+///    its amount, its status and its `customer`);
+/// 3. it leaves the object unreadable, so a merchant's stored `cus_…` turns
+///    into a `404` (the `GET` and `deleted: true`);
+/// 4. it can be undone (the update and the attachment, both `409`).
+///
+/// The fifth — that some copy of the identifiers survives somewhere else — is
+/// [`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`], which
+/// is the only one of the five that can be proved without naming the places
+/// to look.
 #[tokio::test]
-async fn a_customer_with_payment_history_cannot_be_deleted() -> anyhow::Result<()> {
+async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> anyhow::Result<()> {
     let h = harness().await?;
     let sdk = h.a();
 
     let customer = sdk
         .customers()
-        .create(phone_only(), RequestOptions::new())
+        .create(
+            CreateCustomerParams {
+                name: Some("Ada Ngo".to_owned()),
+                email: Some("ada@example.cm".to_owned()),
+                phone: Some(CANONICAL_PHONE.to_owned()),
+                metadata: BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
         .await
         .expect("a customer");
-    sdk.payment_intents()
+    let intent = sdk
+        .payment_intents()
         .create(
             create_intent_params(Some(&customer.id)),
             RequestOptions::new(),
@@ -1020,30 +1251,361 @@ async fn a_customer_with_payment_history_cannot_be_deleted() -> anyhow::Result<(
         .await
         .expect("an intent that pins the customer");
 
-    let error = sdk
+    let deleted = sdk
         .customers()
         .del(&customer.id, RequestOptions::new())
         .await
-        .expect_err("a customer with payment history is not deletable");
-    match error {
-        vpay_sdk::Error::Api {
-            status, message, ..
-        } => {
-            assert_eq!(
-                status, 409,
-                "a fact about the object's state, not about the request's shape — and never a \
-                 500, which is what an unmapped 23503 would be"
-            );
-            assert!(
-                message.contains("PaymentIntent"),
-                "the message has to say what is in the way and what to do instead: {message}"
-            );
-        }
+        .expect("a customer with payment history is erased, not refused");
+    assert_eq!(deleted.id, customer.id);
+    assert!(deleted.deleted);
+
+    // 1. The row is still there and holds nothing of the payer's. Read from
+    //    the database rather than from the API, because the API rendering the
+    //    marker and the column holding it are two different claims.
+    let (name, email, phone, anonymized): (String, String, String, bool) = sqlx::query_as(
+        "SELECT name, email, phone, anonymized_at IS NOT NULL FROM customers WHERE id = $1",
+    )
+    .bind(&customer.id)
+    .fetch_one(&h.pool)
+    .await
+    .context("the anonymised customer's row must still exist")?;
+    assert!(
+        anonymized,
+        "`anonymized_at` is the evidence an erasure happened"
+    );
+    for (column, value) in [("name", &name), ("email", &email), ("phone", &phone)] {
+        assert_eq!(
+            value.as_str(),
+            vpay_db::REDACTED,
+            "`{column}` still holds the payer's own value after an erasure"
+        );
+    }
+
+    // 2. The payment record is intact, which is the whole reason the row
+    //    could not simply be deleted. Amount, status and the `customer`
+    //    pointer all survive — a merchant's ledger and any dispute still
+    //    resolve; what they resolve to is a customer with no payer in it.
+    let after = sdk
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .expect("the intent survives its customer's erasure");
+    assert_eq!(
+        after.amount, AMOUNT,
+        "the amount is the ledger, and it stays"
+    );
+    assert_eq!(after.status, intent.status);
+    assert_eq!(
+        after.customer.as_deref(),
+        Some(customer.id.as_str()),
+        "the intent still names the customer it was taken from — `ON DELETE SET NULL` was \
+         the alternative and it is worse: it detaches a payment from its payer"
+    );
+
+    // 3. The object still resolves, and says what happened. A `404` here
+    //    would make every merchant record naming this `cus_…` dangle.
+    let raw = raw_client()
+        .get(h.url(&format!("/v1/customers/{}", customer.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .send()
+        .await
+        .context("retrieving an anonymised customer")?;
+    assert_eq!(raw.status().as_u16(), 200);
+    let body: Value = raw.json().await.context("the anonymised customer object")?;
+    assert_eq!(body.pointer("/deleted"), Some(&Value::Bool(true)));
+    assert_eq!(
+        body.pointer("/metadata/order_id").and_then(Value::as_str),
+        Some("1234"),
+        "`metadata` is the MERCHANT's data, not the payer's, and destroying it would be vpay \
+         deleting a merchant's records to keep a promise made to somebody else"
+    );
+    assert_eq!(
+        body.pointer("/name").and_then(Value::as_str),
+        Some(vpay_db::REDACTED)
+    );
+
+    // 4a. It cannot be undone by an update. `at_least_one_identifier` would
+    //     not object — `[redacted]` is not NULL — so this has to be refused
+    //     above the statement or an erasure is reversible with one `POST`.
+    let refused = raw_client()
+        .post(h.url(&format!("/v1/customers/{}", customer.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "un-erase-a-customer")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body("name=Ada%20Ngo")
+        .send()
+        .await
+        .context("updating an anonymised customer")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        409,
+        "putting a name back on an erased customer must be refused; a 404 would be two \
+         routes disagreeing about whether this `cus_…` exists"
+    );
+
+    // 4b. And it cannot be attached to a new payment: that would put a fresh
+    //     `NO ACTION` reference on a record kept only because the last one
+    //     could not be removed, and restart its retention clock.
+    let attach = sdk
+        .payment_intents()
+        .create(
+            create_intent_params(Some(&customer.id)),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("an erased customer is not attachable");
+    match attach {
+        vpay_sdk::Error::Api { status, .. } => assert_eq!(status, 409),
         other => panic!("expected a 409, got {other:?}"),
     }
 
+    // 5. A second DELETE is idempotent on the object's own state — not on the
+    //    `Idempotency-Key`, which only covers a replay of the same request —
+    //    and writes no second event.
+    let again = raw_client()
+        .delete(h.url(&format!("/v1/customers/{}", customer.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "erase-again-different-key")
+        .send()
+        .await
+        .context("deleting an already-anonymised customer")?;
+    assert_eq!(again.status().as_u16(), 200);
+    let events: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events WHERE type = 'customer.deleted' AND object_id = $1",
+    )
+    .bind(&customer.id)
+    .fetch_one(&h.pool)
+    .await
+    .context("counting customer.deleted events")?;
+    assert_eq!(
+        events, 1,
+        "a second DELETE describes an erasure that already happened; emitting a second \
+         `customer.deleted` would tell a merchant a payer was erased twice"
+    );
+
     h.shutdown().await;
     Ok(())
+}
+
+/// **The decisive proof: after a `DELETE`, none of the payer's identifiers
+/// survives in any column of any table** — issue #68.
+///
+/// # Why it scans `information_schema` instead of naming the tables
+///
+/// Every other test in this file asserts about a place somebody thought of.
+/// This one asserts about the places nobody did, which is the only shape of
+/// assertion that could have caught what the reading behind migration `0041`
+/// found: issue #68 is written about "retained intents and sessions", and an
+/// intent has never carried a payer identifier. The identifiers were in
+/// `events.data` — every `customer.*` body vpay ever wrote, never pruned —
+/// in `charges.payer_ref`, reachable from a customer only through an intent,
+/// and in `idempotency_keys.response_body`. A test that named tables would
+/// have named the wrong ones.
+///
+/// So it reads every `text`, `varchar` and `jsonb` column the live database
+/// has and greps the lot. A fourth store added later fails here rather than
+/// waiting to be noticed.
+///
+/// # The before/after pair is what makes it an assertion
+///
+/// A scan that found nothing afterwards would pass just as well against a
+/// database where nothing was ever written, a typo in the literal, or a
+/// query that scanned no columns at all. So the same scan runs **first** and
+/// has to find each literal, and the column count is asserted non-trivial.
+///
+/// The fixture is the shape the whole erasure is about: three unique
+/// literals, an update that writes a second `customer.*` event body, a paid
+/// intent with a charge carrying the payer's MSISDN, and a stored idempotent
+/// response.
+#[tokio::test]
+async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    // Literals nothing else in this database can contain by accident. The
+    // phone must still be a canonical MSISDN — `phone_is_a_canonical_msisdn`
+    // — so it is unique by its digits rather than by being nonsense.
+    const NAME: &str = "Zzyzx Quibblewort";
+    const EMAIL: &str = "zzyzx.quibblewort@example.invalid";
+    const PHONE: &str = "237600000771";
+    const STREET: &str = "77 Rue Quibblewort";
+
+    let customer = sdk
+        .customers()
+        .create(
+            CreateCustomerParams {
+                name: Some(NAME.to_owned()),
+                email: Some(EMAIL.to_owned()),
+                phone: Some(PHONE.to_owned()),
+                address: Some(vpay_sdk::customers::AddressParams {
+                    line1: Some(STREET.to_owned()),
+                    city: Some("Douala".to_owned()),
+                    country: Some("CM".to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("the customer this test is about");
+
+    // An update, so there is a `customer.updated` body in `events` as well as
+    // a `customer.created` one. Both are stored for ever and neither is
+    // pruned; they are the copy the retention promise is actually about.
+    sdk.customers()
+        .update(
+            &customer.id,
+            UpdateCustomerParams {
+                name: Some(Some(NAME.to_owned())),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("an update writes a second stored body");
+
+    // A charge, so `charges.payer_ref` and `payer_ref_masked` hold the
+    // payer's MSISDN — the column reachable from a customer only through an
+    // intent, and the reason nothing looking at `customers` alone ever found
+    // it.
+    let intent = sdk
+        .payment_intents()
+        .create(
+            create_intent_params(Some(&customer.id)),
+            RequestOptions::new(),
+        )
+        .await
+        .expect("an intent for this customer");
+    sqlx::query(
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
+         state, amount, currency_code, payer_ref, payer_ref_masked) \
+         VALUES ('ch_scanner00000000000000', $1, $2, gen_random_uuid(), 'submitted', $3, \
+                 'XAF', $4, $5)",
+    )
+    .bind(&intent.id)
+    .bind(RAIL)
+    .bind(AMOUNT)
+    .bind(PHONE)
+    .bind(format!("*** *** {}", &PHONE[PHONE.len() - 3..]))
+    .execute(&h.pool)
+    .await
+    .context("seeding the charge that carries the payer reference")?;
+
+    let literals = [NAME, EMAIL, PHONE, STREET];
+
+    let (before, columns) = scan_for(&h.pool, &literals).await?;
+    assert!(
+        columns > 100,
+        "the scan looked at {columns} columns, which is not a database with vpay's schema in \
+         it — every assertion below would be vacuous"
+    );
+    for literal in literals {
+        assert!(
+            before.contains_key(literal),
+            "`{literal}` is nowhere in the database before the erasure, so its absence \
+             afterwards proves nothing. Found: {before:?}"
+        );
+    }
+    // And it really is in the places the reading said it would be, so a
+    // future change that stopped storing one of them makes this test say so
+    // instead of quietly getting easier.
+    for expected in [
+        "customers.name",
+        "customers.address_line1",
+        "events.data",
+        "charges.payer_ref",
+        "idempotency_keys.response_body",
+    ] {
+        assert!(
+            before
+                .values()
+                .any(|places| places.iter().any(|place| place == expected)),
+            "nothing was found in `{expected}` before the erasure; if that column stopped \
+             holding a payer identifier, say so here rather than leaving a scan that no \
+             longer covers it. Found: {before:?}"
+        );
+    }
+
+    sdk.customers()
+        .del(&customer.id, RequestOptions::new())
+        .await
+        .expect("the erasure");
+
+    let (after, _) = scan_for(&h.pool, &literals).await?;
+    assert!(
+        after.is_empty(),
+        "a payer identifier survived the erasure vpay promised: {after:?}"
+    );
+
+    // The payment record is untouched, which is the other half of the
+    // promise: erasing the payer must not erase the money.
+    let (amount, customer_id): (i64, Option<String>) =
+        sqlx::query_as("SELECT amount, customer_id FROM payment_intents WHERE id = $1")
+            .bind(&intent.id)
+            .fetch_one(&h.pool)
+            .await
+            .context("the intent after the erasure")?;
+    assert_eq!(amount, AMOUNT);
+    assert_eq!(customer_id.as_deref(), Some(customer.id.as_str()));
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Every `text`/`varchar`/`jsonb` column in the live database, searched for
+/// each literal.
+///
+/// Returns the literals that were found and, for each, the `table.column`
+/// places holding it — plus how many columns were actually looked at, which
+/// is what stops a scan that silently covered nothing from reading as a
+/// clean bill of health.
+///
+/// The column list comes from `information_schema` rather than from a list in
+/// this file for [`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`]'s
+/// whole reason. `_sqlx_migrations` is excluded: it holds the text of every
+/// migration, and migration `0041` contains the word `[redacted]` — not any
+/// payer's data, but a scan that matched it would be matching vpay's own
+/// source.
+async fn scan_for(
+    pool: &PgPool,
+    literals: &[&str],
+) -> anyhow::Result<(HashMap<String, Vec<String>>, usize)> {
+    let columns: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT table_name, column_name, data_type \
+         FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND table_name <> '_sqlx_migrations' \
+           AND data_type IN ('text', 'character varying', 'jsonb') \
+         ORDER BY table_name, column_name",
+    )
+    .fetch_all(pool)
+    .await
+    .context("listing every text and jsonb column in the database")?;
+
+    let mut found: HashMap<String, Vec<String>> = HashMap::new();
+    for (table, column, _) in &columns {
+        for literal in literals {
+            // `::TEXT` so one statement covers `jsonb` and the string types
+            // alike, and `position(... ) > 0` rather than `LIKE`, so a literal
+            // containing `%` or `_` would still be searched for literally.
+            let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table} WHERE position($1 in {column}::TEXT) > 0"
+            )))
+            .bind(*literal)
+            .fetch_one(pool)
+            .await
+            .with_context(|| format!("scanning {table}.{column}"))?;
+            if hits > 0 {
+                found
+                    .entry((*literal).to_owned())
+                    .or_default()
+                    .push(format!("{table}.{column}"));
+            }
+        }
+    }
+
+    Ok((found, columns.len()))
 }
 
 // ------------------------------------------------------- the retention sweep
@@ -1052,11 +1614,25 @@ async fn a_customer_with_payment_history_cannot_be_deleted() -> anyhow::Result<(
 ///
 /// Three customers, three answers, one pass:
 ///
-/// * idle thirteen months, referenced by nothing → **deleted**, with exactly
-///   one `customer.deleted` event;
+/// * idle thirteen months, referenced by nothing → **hard-deleted**, with
+///   exactly one `customer.deleted` event;
 /// * idle eleven months → **kept**; the horizon is twelve, not "a while";
-/// * idle thirteen months but referenced by a payment intent → **kept**,
-///   because vpay never detaches a payment from its payer.
+/// * idle thirteen months and referenced by a payment intent →
+///   **anonymised**, with its own `customer.deleted`: the intent keeps its
+///   amount, its status and its `customer`, and the payer's identifiers are
+///   gone.
+///
+/// # The third case is the one that changed, and it is why this test is here
+///
+/// It used to assert "**kept**, because vpay never detaches a payment from
+/// its payer" — and that was true of the row and false of the promise. The
+/// foreign keys made a referenced customer undeletable, so the sweep skipped
+/// it, so the twelve-month retention promise did not apply to exactly the
+/// payers vpay had taken money from. Migration `0041` splits the two:
+/// nothing is detached, and the payer is still erased. Deleting the
+/// `anonymized_at IS NULL` clause from `Customers::idle_since` is what makes
+/// the "second pass emits no second event" assertion below fail, because the
+/// sweep would offer the anonymised customer again on every pass, for ever.
 ///
 /// Run through `vpay_worker::run_once` rather than by calling `delete_idle`,
 /// so what is proved includes that the job kind is **dispatched** at all.
@@ -1069,7 +1645,7 @@ async fn a_customer_with_payment_history_cannot_be_deleted() -> anyhow::Result<(
 /// [`run_the_sweep`] now asserts the disposition rather than only the effect,
 /// because "the row survived" reports a dead letter only by accident.
 #[tokio::test]
-async fn the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two()
+async fn the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one()
 -> anyhow::Result<()> {
     let h = harness().await?;
     let sdk = h.a();
@@ -1145,46 +1721,93 @@ async fn the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two
     );
     assert!(
         survivors.contains(&referenced),
-        "a customer a payment intent references is never swept — vpay does not detach a \
-         payment from its payer"
+        "a customer a payment intent references keeps its ROW — vpay does not detach a \
+         payment from its payer — and is anonymised in place"
     );
 
-    // Exactly one event, for exactly the deleted customer, and its
-    // `data.object` is the customer as it stood — which is the only record of
-    // who was erased, since the row is gone.
-    let events: Vec<(String, String, Value)> = sqlx::query_as(
-        "SELECT id, object_id, data FROM events WHERE type = 'customer.deleted' ORDER BY seq",
+    // The referenced one really was erased and not merely spared. The row
+    // stays for the foreign key's sake; the payer does not.
+    let (name, anonymized): (String, bool) =
+        sqlx::query_as("SELECT name, anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+            .bind(&referenced)
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the anonymised customer")?;
+    assert!(anonymized);
+    assert_eq!(
+        name.as_str(),
+        vpay_db::REDACTED,
+        "a customer the sweep could not delete must be anonymised, not skipped: skipping is \
+         what exempted every paying customer from the retention promise"
+    );
+
+    // The intent it pins is untouched — the whole reason the row stays.
+    let (amount, customer_id): (i64, Option<String>) =
+        sqlx::query_as("SELECT amount, customer_id FROM payment_intents WHERE id = $1")
+            .bind(&intent)
+            .fetch_one(&h.pool)
+            .await
+            .context("the intent after its customer was anonymised")?;
+    assert_eq!(amount, AMOUNT);
+    assert_eq!(customer_id.as_deref(), Some(referenced.as_str()));
+
+    // Two erasures, two events — one per customer, and the eleven-month one
+    // has none. Both bodies are REDACTED: the merchant already received this
+    // payer's details in `customer.created`, and the copy vpay stores in
+    // `events` is never pruned, so it is the one the promise is about.
+    let events: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT object_id, data FROM events WHERE type = 'customer.deleted' ORDER BY seq",
     )
     .fetch_all(&h.pool)
     .await
     .context("reading the customer.deleted events")?;
-    assert_eq!(events.len(), 1, "one deletion, one event: {events:?}");
-    let (_, object_id, data) = events.into_iter().next().expect("one event");
-    assert_eq!(object_id, idle);
-    assert_eq!(
-        data.pointer("/id").and_then(Value::as_str),
-        Some(idle.as_str())
-    );
-    assert_eq!(
-        data.pointer("/object").and_then(Value::as_str),
-        Some("customer")
-    );
-    assert_eq!(
-        data.pointer("/name").and_then(Value::as_str),
-        Some("Thirteen months, unreferenced"),
-        "the body carries the payer's own details, because after the delete there is nothing \
-         left to read"
+    assert_eq!(events.len(), 2, "two erasures, two events: {events:?}");
+    let erased: Vec<&str> = events
+        .iter()
+        .map(|(object_id, _)| object_id.as_str())
+        .collect();
+    assert!(erased.contains(&idle.as_str()) && erased.contains(&referenced.as_str()));
+    assert!(
+        !erased.contains(&recent.as_str()),
+        "eleven months is inside the twelve-month horizon"
     );
 
-    // A second pass emits no second event — the guard is the statement, and
-    // a deleted row matches nothing.
+    for (object_id, data) in &events {
+        assert_eq!(
+            data.pointer("/object").and_then(Value::as_str),
+            Some("customer")
+        );
+        assert_eq!(
+            data.pointer("/id").and_then(Value::as_str),
+            Some(object_id.as_str())
+        );
+        assert_eq!(
+            data.pointer("/deleted"),
+            Some(&Value::Bool(true)),
+            "the body says what happened, on both branches: a merchant cannot tell from the \
+             webhook whether the row survived, and there is no reason they should"
+        );
+        assert_eq!(
+            data.pointer("/name").and_then(Value::as_str),
+            Some(vpay_db::REDACTED),
+            "the stored body carries no identifier of the payer's. This is the reverse of \
+             what this event carried until 2026-09-10 and the reversal is the point: \
+             `events` is never pruned, so an un-redacted body here is the largest surviving \
+             copy of a payer vpay was asked to forget. Body: {data}"
+        );
+    }
+
+    // A second pass emits no second event. For the deleted customer the row
+    // matches nothing; for the anonymised one the guard is
+    // `anonymized_at IS NULL`, and without it the sweep would offer that
+    // customer again on every pass for the life of the deployment.
     run_the_sweep(&h.repositories, &h.pool).await?;
     let after: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE type = 'customer.deleted'")
             .fetch_one(&h.pool)
             .await
             .context("counting customer.deleted events after a second pass")?;
-    assert_eq!(after, 1, "a second sweep must not emit a second event");
+    assert_eq!(after, 2, "a second sweep must not emit a second event");
 
     h.shutdown().await;
     Ok(())
@@ -1594,13 +2217,16 @@ async fn create_session(
 /// `checkout_sessions::validate`'s three-armed match is the only code that
 /// decides what happens then.
 ///
-/// # And the sweep's second table
+/// # And the erasure's second table
 ///
-/// `Customers::idle_since` and `delete_idle` guard on `NOT EXISTS` over
-/// **two** tables. `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two`
-/// exercises the `payment_intents` half only. The last assertion here is the
-/// `checkout_sessions` half: a customer that no intent names but a session
-/// does must be undeletable, or the sweep would erase a payer mid-checkout.
+/// `vpay_db::customers`' `UNREFERENCED` names **three** tables and decides,
+/// per customer, between a hard delete and an anonymisation.
+/// `the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one`
+/// exercises the `payment_intents` clause only. The last assertion here is
+/// the `checkout_sessions` one: a customer that no intent names but a session
+/// does must be *anonymised*, because hard-deleting it is what the `NO
+/// ACTION` foreign key would refuse — rolling the whole erasure back and
+/// leaving the payer un-erased with nobody told.
 #[tokio::test]
 async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() -> anyhow::Result<()>
 {
@@ -1748,8 +2374,8 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
          other tenant"
     );
 
-    // 5. THE SWEEP'S SECOND TABLE. Y is named by a session and by no intent
-    //    at all, and that alone must pin it.
+    // 5. THE ERASURE'S SECOND TABLE. Y is named by a session and by no intent
+    //    at all, and that alone must decide which branch the erasure takes.
     let referencing_intents: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM payment_intents WHERE customer_id = $1")
             .bind(&y)
@@ -1761,7 +2387,7 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
         "this assertion is only about `checkout_sessions` if no intent names Y"
     );
 
-    let refused = raw_client()
+    let erased = raw_client()
         .delete(h.url(&format!("/v1/customers/{y}")))
         .bearer_auth(h.bearer(CLIENT_A))
         .header("Idempotency-Key", "delete-a-session-customer")
@@ -1769,11 +2395,33 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
         .await
         .context("deleting a customer a session references")?;
     assert_eq!(
-        refused.status().as_u16(),
-        409,
-        "a customer a checkout session references cannot be deleted — the foreign key is \
-         `NO ACTION` on both tables, and a sweep that read only `payment_intents` would \
-         erase a payer mid-checkout"
+        erased.status().as_u16(),
+        200,
+        "since migration 0041 a `DELETE` always succeeds or is a 404; the 409 it used to \
+         answer here advised clearing name/email/phone, which `at_least_one_identifier` \
+         refuses"
+    );
+
+    // The session's row survives with its customer attached — the foreign key
+    // is still `NO ACTION` on both tables — and Y is anonymised rather than
+    // deleted. If `UNREFERENCED` lost its `checkout_sessions` clause the
+    // erasure would take the hard-delete branch, the FK would raise 23503,
+    // and the whole transaction would roll back: the payer would not be
+    // erased and the merchant would be told nothing.
+    let (still_there, marker): (i64, Option<String>) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM checkout_sessions WHERE customer_id = $1), \
+                (SELECT name FROM customers WHERE id = $1 AND anonymized_at IS NOT NULL)",
+    )
+    .bind(&y)
+    .fetch_one(&h.pool)
+    .await
+    .context("reading the session and the anonymised customer")?;
+    assert_eq!(still_there, 1, "the session keeps the customer it names");
+    assert_eq!(
+        marker.as_deref(),
+        Some(vpay_db::REDACTED),
+        "a customer a checkout session references is anonymised, never row-deleted: the \
+         payment record survives with no payer on it"
     );
 
     h.shutdown().await;

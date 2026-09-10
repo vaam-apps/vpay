@@ -1404,6 +1404,19 @@ pub struct CustomerObject {
     /// compare against `payer_ref`, so rendering the original spelling would
     /// make two systems that hold the same number disagree about it.
     pub phone: Option<String>,
+    /// The payer's postal address, or `null` (issue #67).
+    ///
+    /// **One nullable object, not six nullable keys**, which is Stripe's
+    /// shape and is also the shape that matches how vpay treats it: an
+    /// address is replaced whole by an update, and rendering the six
+    /// components at the top level would invite a merchant to patch one of
+    /// them and get an address assembled out of two.
+    ///
+    /// `null` when every component is absent — [`vpay_db::CustomerAddress::is_empty`].
+    /// A merchant reading `address` therefore never has to distinguish "no
+    /// address" from "an address with nothing in it", because vpay does not
+    /// store the second.
+    pub address: Option<AddressObject>,
     /// The merchant's own key/value pairs, echoed back.
     ///
     /// `Map<String, Value>` for [`PaymentIntentObject::metadata`]'s reason.
@@ -1414,6 +1427,75 @@ pub struct CustomerObject {
     /// from configuration read at render time, for
     /// [`PaymentIntentObject::livemode`]'s reason.
     pub livemode: bool,
+    /// `true` on an **anonymised** customer, and absent otherwise (migration
+    /// `0041`).
+    ///
+    /// # Why the key comes and goes rather than being `false`
+    ///
+    /// Stripe's shape, and this is the object where following it costs
+    /// nothing and diverging costs something: a merchant's Stripe-shaped code
+    /// tests `if (customer.deleted)`, which reads the same either way, but
+    /// this object is `customer.*`'s `data.object` and every key here is
+    /// signed into `events` for ever. A `deleted: false` on every live
+    /// customer would be a key vpay publishes on every create and every
+    /// update in order to say nothing.
+    ///
+    /// # What it means, which is not "this row is flagged"
+    ///
+    /// `DELETE /v1/customers/{id}` **anonymises** a customer an intent, a
+    /// session or an invoice references — the foreign keys are `NO ACTION`,
+    /// so the payment record survives, and the payer's identifiers do not.
+    /// Every identifier on an object rendering `deleted: true` is the literal
+    /// `[redacted]`; `metadata` is untouched, because that is the merchant's
+    /// own data and not the payer's. A customer with no payment history is
+    /// hard-deleted instead and a later `GET` is a `404`, so this key is
+    /// something a merchant sees only for the customers vpay *had* to keep.
+    /// `docs/flows/customers.md` carries the whole rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<DeletedTrue>,
+}
+
+/// A postal address on a [`CustomerObject`] — Stripe's six components
+/// (migration `0041`, [issue #67](https://github.com/vaam-apps/vpay/issues/67)).
+///
+/// Every component is nullable and rendered even when `null`, for
+/// [`CustomerObject::name`]'s reason: a key that appears and disappears is a
+/// shape change in a signed webhook body, and both SDKs decode all six as
+/// nullable. The object as a whole is `null` when there is no address at all,
+/// which is the one distinction worth making.
+///
+/// It is deliberately **not** a `Deserialize` type. The request side spells
+/// the same six fields in `vpay_api::v1::customers`, because the wire is
+/// form-encoded and every incoming value is text — the same split
+/// [`CustomerObject`] and `CreateParams` already make.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AddressObject {
+    /// Street address, line 1.
+    pub line1: Option<String>,
+    /// Street address, line 2 — apartment, suite, PO box.
+    pub line2: Option<String>,
+    /// City, district, suburb, town or village.
+    pub city: Option<String>,
+    /// State, county, province or region.
+    pub state: Option<String>,
+    /// ZIP or postal code.
+    pub postal_code: Option<String>,
+    /// ISO 3166-1 alpha-2, upper case — `CM`, `FR`, `NG`.
+    pub country: Option<String>,
+}
+
+impl From<&vpay_db::CustomerAddress> for AddressObject {
+    fn from(address: &vpay_db::CustomerAddress) -> Self {
+        Self {
+            line1: address.line1.clone(),
+            line2: address.line2.clone(),
+            city: address.city.clone(),
+            state: address.state.clone(),
+            postal_code: address.postal_code.clone(),
+            country: address.country.clone(),
+        }
+    }
 }
 
 /// What `DELETE /v1/customers/{id}` answers with.
@@ -1478,9 +1560,18 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
             name: row.name.clone(),
             email: row.email.clone(),
             phone: row.phone.clone(),
+            // `None` and not an object of six nulls: an address with nothing
+            // in it is not an address, and rendering one would make a
+            // merchant write `customer.address?.line1 ?? null` where
+            // `customer.address` already answers the question.
+            address: (!row.address.is_empty()).then(|| AddressObject::from(&row.address)),
             metadata: metadata_of(&row.metadata, "customers")?,
             created: row.created_at.unix_timestamp(),
             livemode: row.livemode,
+            // Derived from the row rather than passed in, so the one place
+            // that can say "this payer was erased" is the column migration
+            // `0041` will not let lie about it.
+            deleted: row.anonymized_at.is_some().then_some(DeletedTrue),
         })
     }
 }
@@ -2202,7 +2293,9 @@ mod tests {
             name: Some("Ada Ngo".to_owned()),
             email: Some("ada@example.cm".to_owned()),
             phone: Some("237600000200".to_owned()),
+            address: vpay_db::CustomerAddress::default(),
             metadata: json!({ "order_id": "1234" }),
+            anonymized_at: None,
             last_used_at: time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
                 .expect("a fixed, valid timestamp"),
             created_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_600)
@@ -2237,7 +2330,7 @@ mod tests {
     ///
     /// `last_used_at` is the retention sweep's clock. A leak of it is not a
     /// cosmetic extra key: this object is `customer.deleted`'s `data.object`,
-    /// so an eighth key is signed, delivered at-least-once and stored in
+    /// so an extra key is signed, delivered at-least-once and stored in
     /// `events` **forever** — the one place vpay cannot retract a field it
     /// published. `the_refund_object_is_the_documented_ten_keys`' device,
     /// applied to the object where the cost of being wrong is highest.
@@ -2246,8 +2339,17 @@ mod tests {
     /// about the *rendering* as well as the key set: `phone` canonical,
     /// `created` in unix **seconds**, and `metadata` a map rather than a
     /// string.
+    ///
+    /// # Eight -> nine on 2026-09-10 (issue #67)
+    ///
+    /// `address` is the ninth, and it is rendered `null` here rather than
+    /// omitted: the fixture has no address, and a key that appears and
+    /// disappears is a shape change in a signed body. `deleted` is the one
+    /// key that *is* conditional and it is absent from this object — a live
+    /// customer says nothing about being deleted. The erased shape is
+    /// [`an_anonymised_customer_renders_deleted_true_and_no_identifier`](self).
     #[test]
-    fn the_customer_object_is_the_documented_eight_keys() {
+    fn the_customer_object_is_the_documented_nine_keys() {
         let rendered = serde_json::to_value(
             CustomerObject::try_from(&customer_row()).expect("a well-formed row renders"),
         )
@@ -2255,12 +2357,18 @@ mod tests {
         let object = rendered.as_object().expect("an object");
 
         for key in [
-            "id", "object", "name", "email", "phone", "metadata", "created", "livemode",
+            "id", "object", "name", "email", "phone", "address", "metadata", "created", "livemode",
         ] {
             assert!(object.contains_key(key), "`{key}` is missing");
         }
 
-        for internal in ["last_used_at", "updated_at", "seq", "merchant_id"] {
+        for internal in [
+            "last_used_at",
+            "updated_at",
+            "seq",
+            "merchant_id",
+            "anonymized_at",
+        ] {
             assert!(
                 !object.contains_key(internal),
                 "`{internal}` is internal and must never reach the wire — it would be signed \
@@ -2268,9 +2376,16 @@ mod tests {
             );
         }
 
+        assert!(
+            !object.contains_key("deleted"),
+            "`deleted` is Stripe's conditional key and belongs on an erased customer only; \
+             rendering it `false` on every live one would publish a key that says nothing \
+             into every `customer.created` body vpay ever signs: {object:?}"
+        );
+
         assert_eq!(
             object.len(),
-            8,
+            9,
             "an undocumented key was added to the customer object: {object:?}"
         );
 
@@ -2282,10 +2397,118 @@ mod tests {
                 "name": "Ada Ngo",
                 "email": "ada@example.cm",
                 "phone": "237600000200",
+                "address": null,
                 "metadata": { "order_id": "1234" },
                 "created": 1_753_401_600,
                 "livemode": false,
             })
+        );
+    }
+
+    /// An address renders as **one nested object with all six components**,
+    /// nulls included, and never as six top-level keys.
+    ///
+    /// The six-key shape is what a merchant's Stripe-shaped code reads, and
+    /// the nulls are what stops the object's shape depending on which
+    /// components a payer happened to fill in — the same rule
+    /// [`a_phone_only_customer_renders_the_absent_identifiers_as_null`](self)
+    /// states for the identifiers, applied one level down.
+    #[test]
+    fn an_address_renders_as_one_nested_object_with_every_component() {
+        let mut row = customer_row();
+        row.address = vpay_db::CustomerAddress {
+            line1: Some("12 Rue Njo-Njo".to_owned()),
+            city: Some("Douala".to_owned()),
+            country: Some("CM".to_owned()),
+            ..vpay_db::CustomerAddress::default()
+        };
+
+        let rendered = serde_json::to_value(
+            CustomerObject::try_from(&row).expect("a row with an address renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered.get("address"),
+            Some(&json!({
+                "line1": "12 Rue Njo-Njo",
+                "line2": null,
+                "city": "Douala",
+                "state": null,
+                "postal_code": null,
+                "country": "CM",
+            })),
+            "the address is one object of six keys: {rendered:?}"
+        );
+    }
+
+    /// An anonymised customer renders `deleted: true`, the merchant's own
+    /// `metadata`, and **not one identifier of the payer's**.
+    ///
+    /// This is the object a merchant reads after `DELETE /v1/customers/{id}`
+    /// on a customer with payment history, and it is `customer.deleted`'s
+    /// `data.object` — signed and stored in `events` for ever. So the
+    /// assertion is not "the fields changed": it walks every value in the
+    /// rendered object and refuses to find any of the three literals the
+    /// fixture was built with, which is what catches a component this code
+    /// forgot to redact rather than only the ones it remembered.
+    #[test]
+    fn an_anonymised_customer_renders_deleted_true_and_no_identifier() {
+        let mut row = customer_row();
+        row.address = vpay_db::CustomerAddress {
+            line1: Some("12 Rue Njo-Njo".to_owned()),
+            city: Some("Douala".to_owned()),
+            country: Some("CM".to_owned()),
+            ..vpay_db::CustomerAddress::default()
+        };
+
+        let erased = row.redacted(
+            time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+        );
+        let rendered = serde_json::to_value(
+            CustomerObject::try_from(&erased).expect("an anonymised row renders"),
+        )
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        assert_eq!(object.get("deleted"), Some(&json!(true)));
+        assert_eq!(object.len(), 10, "nine keys plus `deleted`: {object:?}");
+
+        // `metadata` is the MERCHANT's data, not the payer's, and destroying
+        // it would be vpay deleting a merchant's records to keep a promise
+        // made to somebody else.
+        assert_eq!(object.get("metadata"), Some(&json!({ "order_id": "1234" })));
+        assert_eq!(object.get("id"), Some(&json!("cus_1")));
+        assert_eq!(object.get("created"), Some(&json!(1_753_401_600)));
+
+        let text = rendered.to_string();
+        for identifier in [
+            "Ada Ngo",
+            "ada@example.cm",
+            "237600000200",
+            "Njo-Njo",
+            "Douala",
+        ] {
+            assert!(
+                !text.contains(identifier),
+                "`{identifier}` survived the redaction into the body vpay signs and stores \
+                 for ever: {text}"
+            );
+        }
+        assert_eq!(object.get("name"), Some(&json!(vpay_db::REDACTED)));
+        assert_eq!(
+            object.get("address"),
+            Some(&json!({
+                "line1": vpay_db::REDACTED,
+                "line2": vpay_db::REDACTED,
+                "city": vpay_db::REDACTED,
+                "state": vpay_db::REDACTED,
+                "postal_code": vpay_db::REDACTED,
+                "country": vpay_db::REDACTED,
+            })),
+            "every component, including the ones this payer never filled in: which fields a \
+             record carried is itself information about the person"
         );
     }
 
@@ -2524,7 +2747,7 @@ mod tests {
                 .expect("serialises");
         let object = rendered.as_object().expect("an object");
 
-        assert_eq!(object.len(), 8, "still eight keys: {object:?}");
+        assert_eq!(object.len(), 9, "still nine keys: {object:?}");
         assert_eq!(object.get("name"), Some(&Value::Null));
         assert_eq!(object.get("email"), Some(&Value::Null));
         assert_eq!(

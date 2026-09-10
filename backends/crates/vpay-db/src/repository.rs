@@ -453,6 +453,39 @@ pub trait TxRepositories: Send {
         now: time::OffsetDateTime,
     ) -> Result<Option<crate::CustomerRow>, DbError>;
 
+    /// `customers`: erases one customer the caller has already read under
+    /// this transaction's row lock, and appends the `customer.deleted` that
+    /// says so.
+    ///
+    /// Hard-deletes a customer nothing references and **anonymises** one an
+    /// intent, a session or an invoice does — migration `0041`, issues #68
+    /// and #96 item 2. It also rewrites every copy of the payer's identifiers
+    /// vpay keeps outside `customers`: the stored `customer.*` event bodies
+    /// (including the one it just wrote), `charges.payer_ref` for this
+    /// customer's intents, and any stored `POST /v1/customers` response. All
+    /// of it in the caller's transaction, because "vpay erased this payer" is
+    /// not allowed to be true of one table and false of four.
+    ///
+    /// The transaction is opened by `vpay-api` rather than by `vpay-db` for
+    /// [`TxRepositories::insert_customer_in_tx`]'s reason and one more: the
+    /// caller has to take the row lock, decide the `404` and the already-
+    /// erased no-op, and render the redacted event body, all before this.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::UniqueViolation`] for a replayed `event_id`,
+    /// [`DbError::Persistence`] for a `model Customer` that lost its
+    /// `@@allow("delete", …)`, [`DbError::Query`] otherwise — including the
+    /// `23503` a foreign key inserted between the branch and the delete
+    /// raises, which rolls the whole erasure back.
+    async fn erase_customer_in_tx(
+        &mut self,
+        row: &crate::CustomerRow,
+        now: time::OffsetDateTime,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<crate::CustomerErasure, DbError>;
+
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
     ///
@@ -609,6 +642,17 @@ impl TxRepositories for PendingTransaction {
         now: time::OffsetDateTime,
     ) -> Result<Option<crate::CustomerRow>, DbError> {
         crate::customers::update_in_tx(self.conn(), merchant_id, id, patch, now).await
+    }
+
+    async fn erase_customer_in_tx(
+        &mut self,
+        row: &crate::CustomerRow,
+        now: time::OffsetDateTime,
+        event_id: &str,
+        event_data: &serde_json::Value,
+    ) -> Result<crate::CustomerErasure, DbError> {
+        let (cs, tx) = self.cratestack_tx();
+        crate::customers::erase_in_tx(cs, tx, row, now, event_id, event_data).await
     }
 
     async fn record_payment_error(
