@@ -857,10 +857,22 @@ demo_project=vpay-demo-b demo_port=18088 demo-staff`.
 
 ### Sign in
 
-The dashboard is on **http://localhost:3000**. That port is fixed, not a
-variable: `compose.e2e.yml` hard-codes `3000:3000` and the dashboard client's
-registered `redirect_uri` names it, so two demo stacks cannot both serve a
-dashboard (see [§7](#7-two-demos-on-one-machine)).
+The dashboard is on **http://localhost:3000** by default. Since 2026-09-10
+(issue #78) that is `demo_dashboard_port`, a variable like every other demo
+port, so a stack brought up as `just demo_dashboard_port=13000 demo` serves it
+on 13000 instead — and `just demo-dashboard`, or `just
+demo_dashboard_port=13000 demo-dashboard`, prints the origin for whichever
+stack you mean rather than making you remember.
+
+Moving it moves three other things with it, which is why it took until #78 to
+become a variable: the dashboard app's own `VPAY_DASHBOARD_REDIRECT_URI`, the
+`redirect_uris` the OP has registered in the generated overlay, and Cypress's
+`baseUrl`. authkestra matches a redirect URI byte for byte, so a stack whose
+overlay disagreed with its app would answer every sign-in with a 400 at
+`/authorize` naming `redirect_uri`. `just gen-demo-keys` writes the overlay
+from the same variable and regenerates one that names a different port, so
+they cannot drift — that is the whole reason a *generated* overlay makes this
+possible at all.
 
 1. **Work email and password.** `ada@example.test` and the contents of the
    file above.
@@ -985,8 +997,18 @@ publications to `127.0.0.1` later the same day**, which is why they read
 `0.0.0.0:`. They are kept verbatim rather than hand-edited — this page's rule
 is that pasted output is pasted output — and the ports and the absence of
 collisions are what they were captured to show. A `docker ps` today prints
-`127.0.0.1:` for every one of them except `dashboard`, which `just demo`
-never starts.
+`127.0.0.1:` for every one of them.
+
+**Neither block shows a `dashboard` container, and both are older than the two
+changes that would put one in them.** exp28 (2026-09-07) added `dashboard` to
+`demo_services`, so `just demo` starts it; issue #78 (2026-09-10) made its host
+port `demo_dashboard_port`, so a second stack can publish it somewhere else.
+Before #78 it was the one service that could not be moved — `compose.e2e.yml`
+published it on a literal `3000` and the OP had `http://localhost:3000/…`
+registered as the dashboard client's `redirect_uri`, matched byte for byte —
+so two stacks could not both serve a dashboard and the second `demo-up` died
+on the port bind. A stack B started today wants `demo_dashboard_port=13000`
+alongside its other overrides.
 
 **The Orange stub used to be the thing that made this impossible**, and it is
 worth knowing why because the fix is a file nobody looks at. The stub's

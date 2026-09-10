@@ -287,18 +287,36 @@ services:
   # `!override` for the reason `vpay-server`'s `ports:` gives: compose APPENDS
   # `ports:` across files, so a plain list would leave compose.e2e.yml's
   # `3000:3000` published as well and the loopback binding would buy nothing.
+  # It also means the variable below could not do its job — the container
+  # would still be reachable on 3000, and a second stack's `up` would die on
+  # "port is already allocated" whatever `demo_dashboard_port` said.
   #
-  # The port itself is NOT a `demo_*` variable and cannot become one: the
-  # dashboard client's registered `redirect_uri` names 3000 and authkestra
-  # matches a redirect URI byte for byte. Two demo stacks therefore cannot
-  # both serve a dashboard — the justfile's `demo_services` says so — and
-  # 3000 being spoken for in this file set is why `demo_shop_port` defaults
-  # to 3001 rather than to the 3000 the shop's container listens on.
+  # THE PORT, AND WHY IT COULD NOT BE A VARIABLE UNTIL 2026-09-10.
+  #
+  # This block used to say the port "is NOT a `demo_*` variable and cannot
+  # become one: the dashboard client's registered `redirect_uri` names 3000
+  # and authkestra matches a redirect URI byte for byte. Two demo stacks
+  # therefore cannot both serve a dashboard."
+  #
+  # The byte-for-byte matching is unchanged — that is authkestra behaving
+  # correctly, and it is still what makes this port different from the shop's
+  # or the checkout page's. What was wrong was the conclusion. A redirect URI
+  # has to be a FIXED string only if nothing writes it, and something does:
+  # `just gen-demo-keys` GENERATES the demo overlay, so exp35 (issue #78)
+  # templated the port into all three places that have to spell it the same —
+  # this publication, `VPAY_DASHBOARD_REDIRECT_URI` on the service in
+  # compose.e2e.yml, and `dashboard_client.redirect_uris` in the overlay — and
+  # keyed the recipe's staleness check on it, so moving the variable
+  # regenerates the registration rather than silently disagreeing with it.
+  # Two demo stacks can now each serve a dashboard.
+  #
+  # `3000` remains the default, so CI's e2e job and a plain `just demo` are
+  # byte-for-byte what they were.
   #
   # CI's e2e job drives every one of these ports as `http://localhost:…` from
   # the same host, so loopback costs it nothing.
   dashboard:
-    ports: !override ["127.0.0.1:3000:3000"]
+    ports: !override ["127.0.0.1:${VPAY_DEMO_DASHBOARD_PORT:-3000}:3000"]
 
   vpay-worker:
     environment:
