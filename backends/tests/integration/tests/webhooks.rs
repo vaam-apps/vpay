@@ -3777,7 +3777,10 @@ async fn an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lett
     let mut attempts = 0;
     loop {
         attempts += 1;
-        assert!(attempts <= 5, "the flaky receiver recovers within the ladder");
+        assert!(
+            attempts <= 5,
+            "the flaky receiver recovers within the ladder"
+        );
         let job = claim_delivery_job(&h.pool, delivery_id)
             .await
             .expect("the delivery job");

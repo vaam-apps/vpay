@@ -1510,7 +1510,9 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     .bind(AMOUNT)
     .bind(PHONE)
     .bind(format!("*** *** {}", &PHONE[PHONE.len() - 3..]))
-    .bind(format!("PAYER_NOT_FOUND: subscriber {PHONE} is not registered"))
+    .bind(format!(
+        "PAYER_NOT_FOUND: subscriber {PHONE} is not registered"
+    ))
     .execute(&h.pool)
     .await
     .context("seeding the charge that carries the payer reference")?;
@@ -1525,7 +1527,9 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     )
     .bind(&intent.id)
     .bind(AMOUNT)
-    .bind(format!("REFUND_REFUSED: subscriber {PHONE} is not registered"))
+    .bind(format!(
+        "REFUND_REFUSED: subscriber {PHONE} is not registered"
+    ))
     .execute(&h.pool)
     .await
     .context("seeding the refund that carries the rail's words about the payer")?;
