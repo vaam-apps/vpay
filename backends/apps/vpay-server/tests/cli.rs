@@ -2030,6 +2030,78 @@ mod worker {
         );
     }
 
+    /// The maximum safe concurrency is MAX_CONNECTIONS / 2, which is 5 with
+    /// MAX_CONNECTIONS = 10. Setting concurrency to exactly 5 must boot
+    /// successfully (though `with_live_postgres` times out waiting for the loop
+    /// to start, because the database is cold and nothing joins its listener).
+    ///
+    /// No database is needed: the check happens before the pool is opened. A
+    /// live database only makes the test slower without adding anything to
+    /// what is being proved — the refusal is a Configuration error at parse
+    /// time, not a database error at connect time.
+    #[test]
+    fn a_worker_concurrency_of_pool_max_divided_by_two_boots_and_logs_that_concurrency() {
+        let output = bin()
+            .env("VPAY_WORKER_CONCURRENCY", "5")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .env("VPAY_CONFIG", valid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        // The boot check passes (exit 78 would mean it fired), but the
+        // database is unreachable so we get exit 69 (EX_UNAVAILABLE).
+        assert_eq!(
+            output.status.code(),
+            Some(69),
+            "concurrency=5 must pass the concurrency check and fail on database; \
+             got exit {:?}; stderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("job loop concurrency") && stderr.contains("5"),
+            "the boot must log the concurrency as accepted, got: {stderr}"
+        );
+    }
+
+    /// The maximum safe concurrency is MAX_CONNECTIONS / 2. Setting it higher
+    /// — concurrency = 6 with MAX_CONNECTIONS = 10 — must refuse at boot with
+    /// exit 78, naming both the configured concurrency and the pool size, and
+    /// both spellings of the flag.
+    ///
+    /// Issue #63: one fan-out on the Existing branch holds two connections, so
+    /// 6 concurrent workers can hold 12, and with a pool of 10 they would queue
+    /// on ACQUIRE_TIMEOUT.
+    #[test]
+    fn a_worker_concurrency_above_pool_max_divided_by_two_is_refused_by_name_as_exit_78() {
+        let output = bin()
+            .env("VPAY_WORKER_CONCURRENCY", "6")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .env("VPAY_CONFIG", valid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "a concurrency that exceeds the pool limit is a deploy to fix (exit 78), not a vpay \
+             bug (exit 1); stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--worker-concurrency") && stderr.contains("VPAY_WORKER_CONCURRENCY"),
+            "the refusal must name both spellings of the knob, got: {stderr}"
+        );
+        assert!(
+            stderr.contains("6") && stderr.contains("10") && stderr.contains("5"),
+            "the refusal must name the concurrency (6), the pool size (10), and the maximum (5), got: {stderr}"
+        );
+    }
+
     /// `--config` / `VPAY_CONFIG` stays `Option<PathBuf>` at the `clap` level
     /// (`vpay_config::CommonArgs::config`) but the worker treats it as
     /// required — mirrors the parent module's test of the same name. No
