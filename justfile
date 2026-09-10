@@ -2255,7 +2255,12 @@ demo_staff_password_file := ".e2e/" + demo_project + "/staff-password.txt"
 # `gen-demo-keys` writes it into the overlay and its shape check is keyed on
 # the CURRENT value, so `just demo_staff_token_ttl=900 demo` regenerates rather
 # than silently keeping a file for the other number — the same job that check
-# does for `demo_dashboard_port`.
+# does for `demo_dashboard_port`. That check is an ANCHORED regex and not a
+# `grep -F`: every other value in this file that a freshness check keys on ends
+# in something (a path, a hostname) that cannot be a prefix of another legal
+# value, and a bare number is not — `grep -F '...: 10'` matches a line reading
+# `...: 100`, so `just demo_staff_token_ttl=10 demo` against an overlay written
+# for 100 kept the stale file and served a TTL ten times what was asked for.
 #
 # The bound `garde` enforces is 10..=3600; anything outside it stops the server
 # at boot with a validation error naming the field.
@@ -2477,7 +2482,7 @@ gen-demo-keys: gen-e2e-signing-key
         grep -q '^staff_auth:$' "$overlay" \
             && grep -qE '^  password_pepper: .+$' "$overlay" \
             && grep -qE '^  totp_encryption_key: .+$' "$overlay" \
-            && grep -qF "  access_token_ttl_seconds: {{demo_staff_token_ttl}}" "$overlay"
+            && grep -qE '^  access_token_ttl_seconds: {{demo_staff_token_ttl}}$' "$overlay"
     }
 
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
