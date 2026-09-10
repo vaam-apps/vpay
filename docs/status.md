@@ -510,48 +510,66 @@ network, a database or a binary this workspace does not build.
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
-Last verified: 2026-09-10, on branch `claude/exp45-worker-pool-bound` at the
-head of the **sabotage review** of issue #63's worker-concurrency bound (base
-`2c5ef8b`; the haiku draft's five commits are kept and the review adds six,
-and
-[plans/exp45-worker-pool-bound-notes/opus-review.md](plans/exp45-worker-pool-bound-notes/opus-review.md)
-says what each one is for).
+Last verified: 2026-09-11, on branch `claude/exp46-customer-address` at the
+head of the **sabotage review** of issues #67/#68/#96 item 2 — the Customer
+address and the erasure (rebased onto `5e3a004`, which is #108's `0040` and
+#109's repo-wide prettier gate; the draft's six commits are kept and the
+review adds nine (plus this row), and
+[plans/exp46-customer-address-notes/opus-review.md](plans/exp46-customer-address-notes/opus-review.md)
+says what each one is for and what it was found by).
 
-**`just ci` exit 0 on the review head**, recipe by recipe, exit code read from
-a file: `fmt-check`; `clippy` `-D warnings`; `verify`, all twelve gates
-(`verify-links` **1043 links in 199 tracked files**, `verify-status` 1
-declared unimplemented item, `verify-errors` 19 error types / 16 `#[from]`
-variants, `verify-sdk-parity` 450 proving tests / 33 dated gaps,
-`check-schema` 26 declarations at cratestack 0.12.0, `verify-serde` 85 types /
+**`just ci` exit 0 on the review head (`603fc7a`)**, recipe by recipe, exit
+code read from a file: `fmt-check` (both halves — `cargo fmt` and
+`pnpm exec prettier --check .`, the second a gate only since #109);
+`clippy` `-D warnings`; `verify`, all twelve gates (`verify-links` **1069
+links in 210 tracked files**, `verify-status` 1 declared unimplemented item,
+`verify-errors` 19 error types / 16 `#[from]` variants, `verify-sdk-parity`
+**459 proving tests / 33 dated gaps / 32 methods across 35 rows**,
+`check-schema` 26 declarations at cratestack 0.12.0, `verify-serde` 89 types /
 16 exemptions, `verify-repositories` 4 implementations, `verify-toolchain`
-1.98.0, `verify-migrations` 39 files); `test-rust` **1667 tests run, 1667
-passed, 0 skipped** across **45** binaries against a real Postgres and real
-WireMock rails (1376 s); `test-doc` **111 passed, 1 ignored** (`sdks/rust`'s
-README block, pre-existing); `verify-ignored` **0 ignored (expected 0), 45
-binaries (expected 45), 1667 total (floor 1080)**; `lint-web`; `test-web` (0
-skipped; `@vpay/checkout` 507 in 24 files, `@vpay/dashboard` 172 in 21,
-`examples/shop` 102 in 12); `deny`.
+1.98.0, `verify-migrations` **41 files**); `test-rust` **1698 tests run, 1698
+passed, 0 skipped** across **46** binaries against a real Postgres and real
+WireMock rails (1180 s); `test-doc` **112 passed, 1 ignored** (`sdks/rust`'s
+README block, pre-existing); `verify-ignored` **0 ignored (expected 0), 46
+binaries (expected 46), 1698 total (floor 1080)**; `lint-web`; `test-web` (0
+skipped; `@vpay/checkout` 507 in 24 files, `@vpay/dashboard` 182 in 21,
+`@vaam-apps/vpay-sdk` 210 in 9, `@vaam-apps/vpay-stripe-js` 146 in 9,
+`examples/shop` 102 in 12, `ui` 74 in 18, and the three small packages);
+`deny` — advisories, bans, licenses, sources all ok.
 
-**`test-rust` took two attempts on this head, and the first one is recorded
-rather than dropped.** It failed at
-`worker_kill9::a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`
-— "no webhook delivery was in flight within 50s" — on a machine running three
-other `cargo nextest run --workspace` suites and thirteen containers. The case
-passed on its own immediately afterwards (108 s, against the 50 s budget it
-polls for) and again in the full re-run. Nothing on this branch touches that
-path; it is a load flake in a case whose own history carries a race fix
-(`9f7307a`), and it is the reason its budget is worth re-reading if it recurs
-on an idle machine.
+**Three runs before that one failed, and all three are recorded rather than
+dropped**, because two of them were the environment and one was a real gate
+catching a real mistake:
 
-**1667 is master's 1664 plus this change's three, and 1664 was measured rather
-than subtracted** — `2c5ef8b`'s own `backends/apps/vpay-server/tests/cli.rs`
-and `backends/tests/integration/tests/webhooks.rs` were checked out over this
-branch's, `cargo nextest list --workspace` answered 1664 across 45 binaries,
-and both files were restored. The three are two subprocess cases in
-`vpay-server` (the ceiling boots against a real database; one past it is exit
-78 naming the flag, the variable and all three numbers) and one
-container-backed case in `webhooks` (the ceiling measured against a real pool,
-with a saturated pool as its control).
+1. `fmt-check-web` on `docs/plans/exp46-customer-address-notes/opus.md` — the
+   branch's notes predate #109's prettier gate. A real failure of a real gate;
+   fixed by running the formatter.
+2. `vpay-db config_reconcile::…` — "failed to create a container: Timeout
+   error", twice, on a machine running two other agents' suites and fourteen
+   containers. Not this branch: no code path in it touches
+   `config_reconcile`, and the run that followed a cleanup of two orphaned
+   scratch containers passed it.
+3. `vpay-sdk::token_exchange
+a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`
+   — a wiremock verification of a concurrency window. That file is
+   **untouched** by this branch (`git diff origin/master..HEAD` is empty for
+   it) and the binary passed 17/17 three times in a row immediately
+   afterwards, and again in the green run. A load flake, and it is worth
+   re-reading if it recurs on an idle machine.
+
+**1698 total, and master's own number was not re-measured on this head** —
+`cargo nextest list` against `5e3a004` needs a full rebuild of a tree this
+branch has already rebuilt over, and a subtracted number is not a measured
+one. What _is_ countable is what this branch adds: **seven new `#[test]` /
+`#[tokio::test]` functions** over `origin/master..HEAD`, of which one —
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`
+— is the review's, and the review's other additions are new assertions inside
+existing cases (the NULL half of the marker loop, and the two `failure_raw`
+places the scanner's `before` now names). The 46 binaries are master's 46.
+
+**`just helm-check` was NOT run on this head**, and nothing on this branch
+touches the chart — no template, no value, no guard. The last recorded run is
+exp45's, below.
 
 **`just helm-check` exit 0** on the same head — not part of `just ci`, and run
 separately for that reason: `19 guards, all fired by name (19 expected)`,
