@@ -87,6 +87,12 @@ sentence about connection pools in a public enum that is otherwise entirely
 about the YAML document and the flags. It is also worker-only, exactly like
 `StartupError::UnusableConcurrency` beside it.
 
+`docs/reference/vpay-config.md` says the same thing about this crate from the
+other side, and it was written before this change:
+
+> Which inputs a process requires is a property of *that process*, which is
+> why `StartupError` is defined in the binary rather than in this crate.
+
 Moved in `b8d7c90` to `StartupError::WorkerConcurrencyExceedsPoolSize`. Same
 `Category::Configuration`, same exit 78 — asserted by the same subprocess case
 — and one fewer public variant on a library crate. It also removes the
@@ -233,7 +239,47 @@ against the draft's version had that version run at all.
 
 ---
 
-## 4. What this review did not do
+## 4. The gate, on the reviewed head (`a7866d1` + this file's own commit)
+
+| Recipe | Exit | Wall |
+|---|---|---|
+| `fmt-check` | 0 | 1 s |
+| `clippy` | 0 | 8 s |
+| `verify` | 0 (twelve gates) | 8 s |
+| `test-rust` | 0 | 1376 s |
+| `test-doc` | 0 | 7 s |
+| `verify-ignored` | 0 | 1 s |
+| `lint-web` | 0 | 45 s |
+| `test-web` | 0 | 31 s |
+| `deny` | 0 | 2 s |
+| `just helm-check` (not in `just ci`) | 0 | — |
+
+`Summary [1376.055s] 1667 tests run: 1667 passed, 0 skipped`;
+`verify-ignored: 0 ignored (expected 0), 45 test binaries (expected 45), 1667
+total (minimum 1080)`; `test-doc` 111 passed, 1 ignored; `helm-check`
+`19 guards, all fired by name (19 expected)` and kubeconform `Valid: 23,
+Invalid: 0, Errors: 0, Skipped: 0`.
+
+**`test-rust` took two attempts, and the first is recorded rather than
+dropped.** It failed at
+`worker_kill9::a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`
+— "no webhook delivery was in flight within 50s (the receiver saw 0 POSTs on
+/slow-ack)" — after 89 s, on a machine running three other
+`cargo nextest run --workspace` suites and thirteen containers. Re-run alone
+on the same head it passed in 108 s, and the full re-run above is green. The
+case polls a 50 s budget for a delivery that normally arrives in seconds;
+nothing on this branch touches that path, and its own history carries a race
+fix (`9f7307a`). If it recurs on an *idle* machine, the budget is the thing to
+read, not the flake.
+
+The last commit on this branch is documentation only (`docs/status.md` and
+this file). `fmt-check`, `clippy` and `verify` were re-run on it — those are
+the recipes a markdown change can break, and `verify-links` is why — and all
+three exit 0. No Rust source differs from the head the table above measured.
+
+---
+
+## 5. What this review did not do
 
 * **Did not tighten the ceiling to 4**, and did not raise it to 10. Both are
   the maintainer's; §2 records what a decision would now be made on.
