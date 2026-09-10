@@ -119,12 +119,28 @@ snapshotted in `vpay_adapter_mtn_momo::mapping`'s tests as
 `PUBLISHED_ERROR_REASONS`, and a code that is neither mapped below nor
 deliberately unmapped fails `every_published_reason_is_mapped_or_deliberately_not`.
 
-**`ErrorReason` is the whole Collection API's error schema, not
-`requesttopay`'s.** MTN publishes no per-operation subset, so a row for a code
-vpay has never seen on a `requesttopay` is a deliberate assumption in the safe
-direction — the same one this document already records for the `404` on
-`basicuserinfo`. If MTN never sends it the row is dead code; if MTN does send
-it, a payer gets an accurate answer instead of `provider_error`.
+**MTN binds this enum to the response this adapter polls**, so the rows below
+are a citation and not an inference. In the same document
+`RequestToPayResult.reason` is `$ref: "#/components/schemas/ErrorReason"`, and
+the portal's `RequesttoPayTransactionStatus` operation
+(`GET /v1_0/requesttopay/{referenceId}`) answers `RequestToPayResult` on its
+`200`, described as "note that a failed request to pay will be returned with
+this status too … the 'reason' field can be used to retrieve a cause in case
+of failure". Two of that response's worked examples carry `PAYER_NOT_FOUND`
+and `PAYEE_NOT_FOUND` in `reason.code`.
+
+*(This paragraph said the reverse when the table was re-grounded on
+2026-09-10 — that `ErrorReason` was "the whole Collection API's error schema,
+not `requesttopay`'s", that MTN "publishes no per-operation subset", and that
+each new row was a deliberate assumption in the safe direction. Re-retrieved
+and corrected 2026-09-11: the schema and the operation document both say
+otherwise. The rows were right; the reason given for them understated the
+evidence, and understating it is what would let someone revert
+`PAYMENT_NOT_APPROVED` as a guess.)*
+
+What is **not** published, and remains the real caveat, is any statement that
+a given reason will ever actually arrive: MTN types the field, it does not
+promise the values. Nothing in this repository has called MTN.
 
 | MTN `reason` | → core code | Conformance case |
 |---|---|---|
@@ -152,7 +168,10 @@ nine rows had a case and the rest were transcription.
 **† Two rows are not in MTN's published enum**, and are kept because this
 document and these stubs have carried them since Step 3 — dropping them would
 turn two mapped declines back into `provider_error`. Nothing MTN publishes
-confirms either. They are declared in
+confirms either: they are absent from `ErrorReason` — the enum MTN types
+`RequestToPayResult.reason` with, i.e. the exact field this adapter reads —
+and from every schema the portal serves for the Collection and Remittance
+APIs (the Disbursements API publishes none). Re-checked 2026-09-11. They are declared in
 `vpay_adapter_mtn_momo::UNPUBLISHED_REASONS` rather than left to pass for
 documented, and `a_reason_mtn_does_not_publish_is_declared_as_such` fails if
 that list and this table disagree.
@@ -206,7 +225,14 @@ change that matters outside this crate: that code had buyer copy in
 codes** (`vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES`, pinned by
 `mtn_reaches_every_code_the_core_defines`), and every mapped reason has a
 conformance case where three of nine had one before. A new demo MSISDN,
-`237600000103`, reaches `payer_declined` from a browser.
+`237600000103`, reaches `payer_declined`: proven by
+`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, which drives it
+through `submit` and `query_status` against a real WireMock container. **No
+browser has typed it** — `checkout.cy.ts` drives the hex family, and
+`just demo-walk` does not send this number at all (see
+[../runbooks/demo.md](../runbooks/demo.md) § "The test numbers"). It is a
+number a payer *can* type that the adapter is proven to honour, which is not
+the same claim as an exercised browser path.
 
 **`refund` is not implemented** and returns
 `ProviderError::NotImplemented("mtn_momo::refund")` — see
@@ -336,10 +362,16 @@ inherits three refusals that are not MTN-specific:
   faithful to this document but not to MTN would pass**.
 * **Nothing has ever called MTN, and the new rows do not change that.**
   `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` and `EXPIRED` are real strings
-  from MTN's published enum, but the enum is the whole Collection API's and
-  says nothing about which operation returns which code. A stub answering a
-  string MTN may never send on a `requesttopay` proves the mapping row, not
-  the rail. The safe direction is argued under "Failure mapping".
+  from MTN's published enum, and that enum is the declared type of
+  `RequestToPayResult.reason` — so the shape and the vocabulary are cited, not
+  assumed. What no document can tell us is whether MTN's Cameroon deployment
+  ever *emits* a given one. A stub answering a string MTN may never send
+  proves the mapping row, not the rail.
+
+  *(This bullet said the enum "is the whole Collection API's and says nothing
+  about which operation returns which code" until 2026-09-11; see "Failure
+  mapping" for the correction. The conclusion — that only a real call settles
+  this — is unchanged, and is the reason "Real sandbox" is still ⛔.)*
 * The crate runs **62 tests, 62 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-10; 48 on
   2026-09-03, before exp48 added the enum-comparison tests).
@@ -356,15 +388,23 @@ proven by `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
 `frontends/apps/checkout`'s MSISDN validator and is kept only because it was
 already working; a number added since is digits-only, because that is the only
 form a payer can type. `237600000103` (2026-09-10) is such a row, as
-`237600000503` is — and neither is in the twin test, because there is no twin
-to agree with.
+`237600000503` is — and **both are in the twin test**, which despite its name
+is the case that drives each of these numbers against a real WireMock
+container and asserts the code and the rail's own reason that come back.
+
+*(This paragraph ended "and neither is in the twin test, because there is no
+twin to agree with" when `237600000103` was added on 2026-09-10. That was
+false of `237600000503`, which had had a case since exp22, and it was the
+stated reason `237600000103` was given none — leaving the only number that
+reaches `payer_declined` proven by nothing but this sentence. Corrected
+2026-09-11 with the missing case.)*
 
 | Outcome | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario | First status query | Second status query |
 |---|---|---|---|---|---|
 | The payer approves | `237600000ce0` | `237600000100` | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING` | `SUCCESSFUL` |
 | The payer has no balance | `237600000f01` | `237600000101` | `mtn-demo-decline` (`demo-outcomes.json`) | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds` | — (terminal on the first query) |
 | The prompt expires unanswered | `237600000f02` | `237600000102` | `mtn-demo-expiry` (`demo-outcomes.json`) | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
-| The payer refuses the prompt | — (digits only) | `237600000103` | `mtn-demo-declined` (`demo-outcomes.json`) | `FAILED` / `PAYMENT_NOT_APPROVED` → `payer_declined` | — (terminal on the first query) |
+| The payer refuses the prompt | — (digits only) | `237600000103` | `mtn-demo-refused` (`demo-outcomes.json`) | `FAILED` / `PAYMENT_NOT_APPROVED` → `payer_declined` | — (terminal on the first query) |
 
 The hex family is what `examples/merchant-demo` (`Steering::Msisdn`) and
 `frontends/tests/e2e/cypress/e2e/checkout.cy.ts` (`MTN_E2E_POLL_MSISDN`) send —

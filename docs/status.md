@@ -2514,7 +2514,11 @@ and in the adapter's module header). MTN publishes **seventeen** codes.
   `examples/shop` while **no adapter produced it**; the shop's README said so
   in as many words, and said it was a fact about MTN when it was a fact about
   this repository. MTN now reaches all eleven codes; a new demo MSISDN,
-  `237600000103`, reaches `payer_declined` from a browser.
+  `237600000103`, reaches `payer_declined` — proven over a socket by
+  `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, **not** by a
+  browser or by `just demo-walk`, neither of which sends this number
+  (corrected 2026-09-11 by the review; exp48 shipped the number with that
+  case missing and the sentence claiming a browser).
 - **Four stay `provider_error` deliberately**, each with a written reason
   (`vpay_adapter_mtn_momo::UNMAPPED_REASONS`). One of them,
   `TRANSACTION_CANCELED`, is **an open question for the maintainer**: it would

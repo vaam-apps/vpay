@@ -1872,24 +1872,44 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
 /// redirect rail whose submit body carries no MSISDN at all (`order_id`
 /// selects everything), so there is nothing on that rail for a payer's typed
 /// phone number to steer.
-/// `237600000503` (2026-09-06, exp22) has no hex twin and never will: it was
-/// added for `examples/shop`'s test-number panel, after the checkout page's
-/// validator existed, so the only spelling it has ever had is the one a payer
-/// can type. It arms `mtn-demo-unavailable`, whose status mapping answers a
-/// **200 with a `FAILED` body carrying MTN's documented `SERVICE_UNAVAILABLE`
-/// reason** — not an HTTP 503, which would be a transport failure the poll
-/// ladder retries for hours rather than an outcome. That distinction is the
-/// reason this case names `ProviderUnavailable` rather than expecting an
-/// `Err`.
+/// **Two of the cases have no hex twin, and are here anyway.** The name of
+/// this test is about where the numbers came from, not about what it is for:
+/// what it actually proves is that every MSISDN a payer can *type* reaches the
+/// outcome this repository promises for it. A digits-only number added after
+/// the checkout page's validator existed has no twin to agree with, and is
+/// exactly the kind of number that needs driving over a socket — it is the
+/// only spelling anything will ever send.
+///
+/// `237600000503` (2026-09-06, exp22) was the first such row: added for
+/// `examples/shop`'s test-number panel, it arms `mtn-demo-unavailable`, whose
+/// status mapping answers a **200 with a `FAILED` body carrying MTN's
+/// documented `SERVICE_UNAVAILABLE` reason** — not an HTTP 503, which would be
+/// a transport failure the poll ladder retries for hours rather than an
+/// outcome. That distinction is the reason this case names
+/// `ProviderUnavailable` rather than expecting an `Err`.
+///
+/// `237600000103` (2026-09-10, exp48, [issue
+/// #59](https://github.com/vaam-apps/vpay/issues/59)) is the second, and it
+/// was **added to this case list on 2026-09-11, by the review of that
+/// branch**. exp48 shipped the number, its `mtn-demo-refused` mapping and
+/// four documents promising that typing it reaches `payer_declined` — and no
+/// case here, on the stated grounds that a row with no hex twin does not
+/// belong in this test. `237600000503` had been sitting three lines below that
+/// sentence since exp22. So the one core failure code that had just stopped
+/// being unreachable was, for the length of that branch, reachable only
+/// according to prose: `examples/shop`'s vitest proved a mapping *mentions*
+/// the number, and nothing proved the mapping *answers*. That is the shape of
+/// issue #59 itself, one layer down.
 #[rstest]
 #[case::settles("237600000100", None)]
-#[case::insufficient_funds("237600000101", Some(FailureCode::InsufficientFunds))]
-#[case::payer_timeout("237600000102", Some(FailureCode::PayerTimeout))]
-#[case::provider_unavailable("237600000503", Some(FailureCode::ProviderUnavailable))]
+#[case::insufficient_funds("237600000101", Some((FailureCode::InsufficientFunds, "NOT_ENOUGH_FUNDS")))]
+#[case::payer_timeout("237600000102", Some((FailureCode::PayerTimeout, "COULD_NOT_PERFORM_TRANSACTION")))]
+#[case::payer_declined("237600000103", Some((FailureCode::PayerDeclined, "PAYMENT_NOT_APPROVED")))]
+#[case::provider_unavailable("237600000503", Some((FailureCode::ProviderUnavailable, "SERVICE_UNAVAILABLE")))]
 #[tokio::test]
 async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     #[case] msisdn: &str,
-    #[case] expected_decline: Option<FailureCode>,
+    #[case] expected_decline: Option<(FailureCode, &str)>,
 ) {
     let rail = start(
         RailUnderTest::MtnMomo,
@@ -1946,7 +1966,7 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
                 "msisdn {msisdn}: expected to settle on the second query, got {second:?}"
             );
         }
-        Some(expected) => {
+        Some((expected, expected_reason)) => {
             let status = rail
                 .adapter
                 .query_status(&charge, &rail.config)
@@ -1960,10 +1980,18 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
             match status {
                 ChargeStatus::Failed { code, raw } => {
                     assert_eq!(code, expected, "msisdn {msisdn} mapped to {code}");
+                    // Naming the reason rather than `!raw.is_empty()`, which is
+                    // what this asserted until 2026-09-11: the weak form passes
+                    // for a stub answering a *different* reason that happens to
+                    // share a taxonomy code, and `237600000103` and
+                    // `237600000102` are exactly such a pair — `payer_declined`
+                    // and `payer_timeout` are distinct, but `PAYMENT_NOT_APPROVED`
+                    // and `APPROVAL_REJECTED` are not, and the runbook, the shop
+                    // README and `demo-outcomes.json` all name a specific one.
                     assert!(
-                        !raw.is_empty(),
+                        raw.contains(expected_reason),
                         "msisdn {msisdn}: the rail's own reason must be carried through for an \
-                         operator, even though the taxonomy is what the merchant sees"
+                         operator; expected {expected_reason:?} inside {raw:?}"
                     );
                 }
                 other => panic!("msisdn {msisdn}: expected a decline, got {other:?}"),
