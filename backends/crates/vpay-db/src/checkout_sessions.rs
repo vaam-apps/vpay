@@ -699,7 +699,7 @@ pub trait CheckoutSessions: Send + Sync {
     ///
     /// # Why the live-charge check is a predicate of the `UPDATE`
     ///
-    /// Exactly [`crate::PaymentIntents::cancel`]'s argument, which
+    /// Exactly `payment_intents::cancel_in_tx`'s argument, which
     /// `docs/reference/vpay-db.md` §"`cancel` checks for a live charge inside
     /// the statement" spells out in full. `status = 'open'` is not on its own
     /// enough to make an expiry safe: a payer's page may have confirmed

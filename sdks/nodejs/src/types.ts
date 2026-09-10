@@ -172,6 +172,24 @@ export type KnownEventType =
   | "charge.refund.updated"
   | "checkout.session.expired"
   /**
+   * A Customer was created by `POST /v1/customers`. `data.object` is the
+   * {@link Customer} as the insert stored it — the canonical `phone`, and
+   * `metadata` as sent. Written in the same transaction as the row (vpay
+   * issue #66, 2026-09-10).
+   */
+  | "customer.created"
+  /**
+   * A Customer was changed by `POST /v1/customers/{id}`. `data.object` is the
+   * {@link Customer} **after** the change, including the key-wise `metadata`
+   * merge — which vpay computes under the row's lock, so two concurrent
+   * updates produce two events describing the two committed states rather
+   * than one describing a merge that was lost.
+   *
+   * A request that changes nothing — a bodiless `POST`, which is what "touch
+   * this object" is on the wire — emits **no** event.
+   */
+  | "customer.updated"
+  /**
    * A Customer was deleted — by `DELETE /v1/customers/{id}` or by vpay's
    * twelve-month retention sweep (S4a). `data.object` is a
    * {@link Customer} as it stood immediately before the delete, which is the

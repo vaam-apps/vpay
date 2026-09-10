@@ -182,10 +182,18 @@ polling — the object is gone, and a `GET` afterwards is byte-identical to a
 `GET` for an id that never existed — so this body is the only record of who
 was erased. It is emitted by the twelve-month retention sweep. **It is not
 emitted by `DELETE /v1/customers/{id}`**, for the reason
-`POST /v1/checkout/sessions/{id}/expire` emits nothing: you asked for it. And
-there is no `customer.created` or `customer.updated`; both are real Stripe
-types and neither is in the vocabulary, because nothing writes them — see
-[../flows/customers.md](../flows/customers.md), "What is not built".
+`POST /v1/checkout/sessions/{id}/expire` emits nothing: you asked for it.
+
+**`customer.created` and `customer.updated` joined the vocabulary on
+2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)); this
+paragraph said neither was in it, and that was true while nothing wrote them.
+Both carry the same seven-key `customer` object below. `customer.updated`
+carries the **merged** `metadata` as committed — vpay computes the key-wise
+merge under the row's lock, so two concurrent updates produce two events
+describing the two committed states rather than one describing a merge that
+was lost. A `POST /v1/customers/{id}` with **no body** is Stripe's no-op and
+emits nothing, because nothing changed. See
+[../flows/customers.md](../flows/customers.md), "Events".
 
 ### The `customer` object (S4a)
 
@@ -429,7 +437,7 @@ never by anything the handler knows about rails:
 |---|---|---|
 | Push rail accepted | `200`, intent **`processing`**, `next_action: null` | charge `submitted`; the payer's handset is prompting (`a_push_confirm_the_rail_accepts_moves_the_intent_to_processing`) |
 | Redirect rail accepted | `200`, intent **`requires_action`**, `next_action.redirect_to_url` | charge `submitted` with the rail's token **and** URL, committed before this response was built (`redirect_confirm_commits_the_rails_material_before_it_answers`) |
-| Rail declined | `409` `charge_declined` | charge **`failed`** with its `failure_code`; the intent keeps `requires_payment_method` and carries `last_payment_error`. A retry is a **new** PaymentIntent (`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`, `credentials_the_rail_refuses_are_a_page_and_a_terminal_charge`) |
+| Rail declined | `409` `charge_declined` | charge **`failed`** with its `failure_code`; the intent keeps `requires_payment_method` and carries `last_payment_error`; **one `payment_intent.payment_failed`**, in the same transaction (since 2026-09-10, [#57](https://github.com/vaam-apps/vpay/issues/57) — the same type the poll path emits, and you cannot receive both for one intent). A retry is a **new** PaymentIntent (`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`, `credentials_the_rail_refuses_are_a_page_and_a_terminal_charge`) |
 | Rail unreachable / unreadable | `502` `provider_unavailable` | **nothing.** The charge stays `submitting` because we do not know what the rail did (`an_unreachable_rail_leaves_the_charge_where_recovery_expects_it`) |
 
 **After a `502`, retry the same call under the same `Idempotency-Key`.** If

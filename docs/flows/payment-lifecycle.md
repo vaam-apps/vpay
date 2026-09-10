@@ -99,7 +99,43 @@ reaches a rail:**
   (`cancel_is_legal_only_from_requires_payment_method`,
   `a_confirmed_intent_cannot_be_canceled`, and
   `cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_terminal_charge`
-  in `backends/crates/vpay-db/tests/repositories.rs`).
+  in `backends/crates/vpay-db/tests/repositories.rs`). **Since 2026-09-10
+  ([issue #57](https://github.com/vaam-apps/vpay/issues/57)) it emits one
+  `payment_intent.canceled`, in the same transaction as the status flip.**
+  Before that it emitted nothing: the type had been in the vocabulary and in
+  both SDKs since they were written, and no code wrote it, so a merchant
+  driven by webhooks could not observe a cancellation at all. There is no
+  pooled cancel left to reach around it — `vpay_db::PaymentIntents` lost the
+  method, and `TxRepositories::cancel_in_tx` is the only one — and a cancel
+  the compare-and-swap **refuses** writes no event
+  (`a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver`,
+  `a_cancel_and_its_event_roll_back_together`).
+
+**A cancel racing a settlement leaves one terminal state and one terminal
+event — and the guard that decides it is the settlement's, not the cancel's.**
+Added by the sabotage review of 2026-09-10 because a merchant now receives
+`payment_intent.canceled`, which makes "exactly one terminal event" a claim
+someone builds dedupe logic on rather than an internal detail.
+
+The cancel's `NOT EXISTS` on a live charge closes the window in which a charge
+is already committed when the cancel's statement takes its snapshot. It cannot
+close the other one: a confirm may commit its charge **while** a cancel's
+transaction is open, which is a legal interleaving of two requests and not a
+defect in either. What stops that becoming a payment settled onto a withdrawn
+intent is `payment_intents::succeed_after_submission`'s own
+`WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in: the
+settlement blocks on the row the cancel holds, re-evaluates against the
+committed `canceled` row, matches nothing, and the whole settlement
+transaction rolls back with `DbError::WriteMatchedNoRow`.
+
+That is a **loud** outcome and not a safe one: the rail accepted a payment for
+an intent that was withdrawn, the charge is left where a retry expects it, and
+`vpay_db::settlement` classifies the answer as something that pages rather
+than as a merchant's problem. Reconciling it is an operator's job and vpay has
+no repair path for it. `a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event`
+in `backends/crates/vpay-db/tests/repositories.rs` forces the interleaving with
+a barrier and pins all four halves: one status, one event, the settlement's
+error, and the charge unchanged.
 
 **Updated 2026-09-03 (Step 3): `confirm` now moves the intent, because it
 now reaches a rail.** It commits a charge in `submitting`, records the

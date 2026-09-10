@@ -361,23 +361,22 @@ export async function retryOrder(
  * settled status only from a signed event — applied to a state the shop
  * itself asked for.
  *
- * **And it does not complete today, measured on the demo stack on
- * 2026-09-06.** The cancel reaches vpay and the intent really does become
- * `canceled` — the row was read out of vpay's own database — but **vpay
- * emits no `payment_intent.canceled` event**. It writes three types and only
- * three (`payment_intent.succeeded`, `payment_intent.payment_failed` and
- * `checkout.session.expired`; `docs/status.md`'s "Events written by the
- * worker" row says so, and the run confirmed it: the `events` table gained
- * nothing). So the order sits at `unpaid` for ever and the shop's
- * `cancelled` status is, in practice, unreachable.
+ * **It did not complete until 2026-09-10, and this comment said so.** The
+ * measurement behind that — the demo stack on 2026-09-06 — was right at the
+ * time: the cancel reached vpay, the intent really did become `canceled`,
+ * and vpay emitted no `payment_intent.canceled` event, so the order sat at
+ * `unpaid` for ever and the shop's `cancelled` status was in practice
+ * unreachable. vpay writes that event from 2026-09-10 (vpay issue #57), in
+ * the same transaction as the status flip, and the fan-out delivers it like
+ * every other type.
  *
- * This function is nonetheless what a merchant's code should look like, and
- * it is left as it is rather than made to write a status locally — which
- * would be this shop deciding an outcome from its own request instead of
- * from a signed event, the one thing the whole example exists to demonstrate
- * against. The gap is vpay's, it is written up in
- * `docs/plans/exp22-shop-demo-notes/opus.md`, and every piece of copy the
- * shop shows about cancelling says so.
+ * **Nothing in this function changed when it did**, which is the point worth
+ * keeping: it never wrote a status locally — that would be this shop
+ * deciding an outcome from its own request instead of from a signed event,
+ * the one thing the whole example exists to demonstrate against — so the
+ * server-side half of the gap closing was the only half there was.
+ * `SETTLING_EVENTS` in `src/server/webhook.ts` has mapped
+ * `payment_intent.canceled` to `cancelled` since it was written.
  *
  * A payer who clicked "cancel" on vpay's page has not done this either: that
  * is a navigation to `cancel_url`, the order stays `unpaid`, and the charge

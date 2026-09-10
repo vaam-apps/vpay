@@ -706,17 +706,22 @@ Two things to know before you drive them:
   MTN's numbers are unaffected — a push rail carries the number in the
   merchant's own submit, so there is no window to lose.
 
-The one outcome no number reaches is `cancelled` — and on today's vpay
-nothing else reaches it either. Clicking "cancel" on the rail's page is a
-navigation and leaves the order open. The order page's "Cancel this payment"
-button *does* reach `POST /v1/payment_intents/{id}/cancel` and the intent
-really does become `canceled` at vpay; **vpay then emits nothing**, because
-the worker writes three event types and `payment_intent.canceled` is not one
-of them. Measured 2026-09-06, with the intent's row read out of vpay's own
-database and the `events` table unchanged. The shop's `cancelled` status is
-therefore unreachable, and the shop says so on the button rather than writing
-the status from its own request. Written up in
-[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
+The one outcome no *number* reaches is `cancelled`, because it is not a rail
+outcome at all. Clicking "cancel" on the rail's page is a navigation and
+leaves the order open. The order page's "Cancel this payment" button reaches
+`POST /v1/payment_intents/{id}/cancel`, the intent becomes `canceled` at vpay,
+and **since 2026-09-10 vpay emits one `payment_intent.canceled` in that same
+transaction** ([issue #57](https://github.com/vaam-apps/vpay/issues/57)) — so
+the fan-out delivers it and the shop's webhook handler moves the order to
+`cancelled` from the signed event, exactly as it does for every other status.
+
+*(This paragraph said the opposite until 2026-09-10, and the measurement
+behind it was right at the time: on 2026-09-06 the intent's row really did
+become `canceled` with the `events` table unchanged, because the vocabulary
+carried `payment_intent.canceled` and nothing wrote it. The shop's code did
+not change when the event arrived — that is the point of settling from
+events. Written up in
+[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).)*
 
 ### One currency, and what it is not saying
 

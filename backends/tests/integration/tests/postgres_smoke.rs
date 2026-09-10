@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 38,
-        "all thirty-eight migrations under backends/migrations should be recorded as applied \
+        applied, 39,
+        "all thirty-nine migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -240,7 +240,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          table since 0034, and the first whose model carries NO @@allow arm \
          on purpose: the count is one INSERT ... ON CONFLICT DO UPDATE ... \
          RETURNING attempts, because the increment is an expression over the \
-         row's own column and a generated Update input carries values)"
+         row's own column and a generated Update input carries values, \
+         and issue #66's 0039, which reopens the events vocabulary for \
+         customer.created and customer.updated in the same change that \
+         writes them -- 0034 declined to add these two labels for exactly \
+         the reason 0023 states, that a value in a closed vocabulary no \
+         code can produce is what the mechanism exists to prevent, and \
+         POST /v1/customers and POST /v1/customers/{{id}} are transactional \
+         from this commit.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -1055,6 +1062,142 @@ async fn a_hand_written_provider_insert_must_now_name_every_capability_column() 
     .execute(&pool)
     .await
     .context("an INSERT naming all eight columns must still succeed")?;
+
+    Ok(())
+}
+
+/// Migration `0039` applied to an `events` table that already holds one row
+/// of **every** type it names — the deployment step, not a parse — and
+/// refused by a stored row it does not name.
+///
+/// # Why this is not covered by the vocabulary test
+///
+/// `customers::the_event_vocabulary_holds_exactly_the_customer_types_that_have_writers`
+/// asserts what the constraint *accepts* once it is in place, on an empty
+/// table. `ADD CONSTRAINT … CHECK` does something else as well: it **scans
+/// the existing rows** and fails the whole migration if one of them violates
+/// it. That is the half a deployment meets and a fresh test database never
+/// does — every suite in this repository migrates an empty database — and it
+/// is the half that decides whether an upgrade boots.
+///
+/// `0039` widens the list rather than narrowing it, so the scan is expected
+/// to pass; the case exists because that is a property of the *diff between
+/// two lists* and nothing was checking it. The next migration that reopens
+/// this vocabulary by removing a label — a real possibility, since the list
+/// is meant to shrink when a writer is retired — fails here with the reason
+/// named, instead of failing on a customer's database at boot.
+///
+/// The migration's own text is `include_str!`d, exactly as
+/// `migration_0033_changes_no_stored_capability_on_a_populated_table` does,
+/// so this cannot pass against a copy of the DDL the file no longer carries.
+/// It is applied a second time on top of itself, which its `DROP CONSTRAINT`
+/// / `ADD CONSTRAINT` pair makes well-defined.
+#[tokio::test]
+async fn migration_0039_validates_a_populated_events_table_in_both_directions() -> anyhow::Result<()>
+{
+    /// Migration 0039 itself, read from the file.
+    const MIGRATION_0039: &str =
+        include_str!("../../../migrations/0039_events-customer-created-updated.sql");
+
+    /// The fifteen labels `type_is_a_documented_event` names on this head.
+    /// Written out rather than parsed out of the migration, so a label
+    /// silently dropped from the file is a failure here and not a shorter
+    /// loop that still passes.
+    const EVERY_TYPE: [&str; 15] = [
+        "payment_intent.created",
+        "payment_intent.processing",
+        "payment_intent.succeeded",
+        "payment_intent.payment_failed",
+        "payment_intent.canceled",
+        "charge.refunded",
+        "charge.refund.updated",
+        "checkout.session.expired",
+        "customer.created",
+        "customer.updated",
+        "customer.deleted",
+        "invoice.created",
+        "invoice.finalized",
+        "invoice.paid",
+        "invoice.voided",
+    ];
+
+    let (_container, pool) = migrated_postgres().await?;
+
+    for kind in EVERY_TYPE {
+        sqlx::query(
+            "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+             VALUES ($1, 'merchant_a', false, $2, 'obj_1', '{}'::jsonb)",
+        )
+        .bind(format!("evt_{}", Uuid::new_v4().simple()))
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("`{kind}` must be storable before the re-apply means anything"))?;
+    }
+
+    sqlx::raw_sql(MIGRATION_0039).execute(&pool).await.context(
+        "0039 applied to a populated events table must succeed: ADD CONSTRAINT scans every \
+             stored row, and a deployment's events table is never empty",
+    )?;
+
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .context("counting the rows the migration validated")?;
+    assert_eq!(
+        kept,
+        i64::try_from(EVERY_TYPE.len()).expect("fifteen fits"),
+        "the migration changes no data: every row it validated is still there"
+    );
+
+    // The other direction, so "it applied" is not a thing this test can say
+    // about a constraint that validates nothing. A row the new list does not
+    // name has to stop the migration — which is exactly what would happen on
+    // a real database if a label were removed while rows carrying it existed.
+    //
+    // THE PERMISSIVE CONSTRAINT IS LOAD-BEARING, and the first version of this
+    // test did not have it. Dropping the constraint and leaving it dropped
+    // makes the migration's own first statement — `ALTER TABLE events DROP
+    // CONSTRAINT type_is_a_documented_event` — fail with "constraint does not
+    // exist", which is an error, and an error whose message happens to name
+    // the constraint. The assertion below passed on that, and the whole second
+    // direction proved nothing: measured 2026-09-10 by mutating the migration
+    // to `ADD CONSTRAINT … NOT VALID`, which skips the row scan entirely and
+    // left this case GREEN. Re-adding a `CHECK (true)` of the same name gives
+    // the migration something to drop, so the only thing that can fail is the
+    // scan.
+    sqlx::raw_sql(
+        "ALTER TABLE events DROP CONSTRAINT type_is_a_documented_event; \
+         ALTER TABLE events ADD CONSTRAINT type_is_a_documented_event CHECK (true)",
+    )
+    .execute(&pool)
+    .await
+    .context("standing in a permissive constraint of the same name")?;
+    sqlx::query(
+        "INSERT INTO events (id, merchant_id, livemode, type, object_id, data) \
+         VALUES ($1, 'merchant_a', false, 'customer.subscription.created', 'obj_1', '{}'::jsonb)",
+    )
+    .bind(format!("evt_{}", Uuid::new_v4().simple()))
+    .execute(&pool)
+    .await
+    .context("planting a row outside the vocabulary")?;
+
+    let refused = sqlx::raw_sql(MIGRATION_0039).execute(&pool).await;
+    let error = refused.expect_err(
+        "0039 must refuse to apply over a stored row its list does not name; if it applied, \
+         ADD CONSTRAINT is not validating and this migration proves nothing about the rows \
+         already in a deployment's database",
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("type_is_a_documented_event"),
+        "the failure must name the constraint an operator has to reconcile: {message}"
+    );
+    assert!(
+        message.contains("is violated by some row"),
+        "and it must be the ROW SCAN that refused, not a statement that could not run at all \
+         — the distinction this test exists for: {message}"
+    );
 
     Ok(())
 }

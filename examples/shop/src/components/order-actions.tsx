@@ -13,15 +13,19 @@ import type { OrderView } from "@/lib/order-view";
  * attempt is a second intent by construction. The button says so.
  *
  * **Cancel** asks vpay to cancel the PaymentIntent and then waits. It writes
- * nothing here — the `cancelled` status would arrive as a signed
+ * nothing here — the `cancelled` status arrives as a signed
  * `payment_intent.canceled` event, like every other settled status on this
- * page. Which is why the button's message says "asked", not "done".
+ * page. Which is why the button's message says "asked", not "done": the
+ * order moves when the webhook lands, not when this request returns.
  *
- * **It stays "asked" for ever on today's vpay**, and the button says so
- * rather than leaving a buyer refreshing: the cancel really does move the
- * intent to `canceled`, and vpay emits no event for that transition (it
- * writes three types, and this is not one of them). Measured on the demo
- * stack, 2026-09-06. `src/server/orders.ts` carries the full note.
+ * **It used to stay "asked" for ever, and this comment and the note below
+ * both said so.** That was measured on the demo stack on 2026-09-06 and was
+ * true then: the cancel moved the intent to `canceled` and vpay emitted no
+ * event for that transition. vpay emits one from 2026-09-10
+ * (vpay issue #57), in the cancel's own transaction, so the order really
+ * does reach `cancelled` — and not one line of this component had to change
+ * for it to, which is the argument the button exists to make.
+ * `src/server/orders.ts` carries the full note.
  */
 export function OrderActions({
   order,
@@ -66,8 +70,8 @@ export function OrderActions({
       await trpc.orders.cancel.mutate({ orderId: order.id });
       setNote(
         "vpay has been asked to cancel the payment, and its PaymentIntent is now cancelled at vpay. " +
-          "This order will nevertheless stay unpaid: vpay does not yet emit a payment_intent.canceled event, " +
-          "and this shop moves an order only from a signed one. Measured 2026-09-06 — see examples/shop/README.md.",
+          "This order is still unpaid until the signed payment_intent.canceled event arrives — this shop " +
+          "moves an order only from a signed event, never from its own request. Refresh in a moment.",
       );
       router.refresh();
     } catch (cause) {

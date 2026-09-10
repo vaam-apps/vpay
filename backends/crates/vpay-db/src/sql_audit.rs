@@ -287,7 +287,24 @@ mod tests {
     /// sentence above.
     /// **59 → 55 after the S5 rebase over S4b**: S4b's fourteen invoice sites
     /// stay, and S5's four `checkout_sessions` reads no longer build a string.
-    const EXPECTED_ASSERT_SITES: usize = 55;
+    ///
+    /// **55 → 56 on 2026-09-10** (issues #57 and #66), and the net of +1
+    /// hides four additions and three removals, which is the whole reason
+    /// this number is reviewed rather than counted. Four terminal writes
+    /// moved out of the pool and into the caller's transaction, because each
+    /// now commits with the `events` row that reports it:
+    /// `payment_intents::cancel` → `cancel_in_tx`, `customers::create` →
+    /// `insert_in_tx`, `customers::update` → `update_in_tx`, and the new
+    /// `customers::lock_for_update`, which is the `SELECT … FOR UPDATE` that
+    /// makes the update's `metadata` merge definite. The three pooled
+    /// originals were **deleted** rather than kept beside the transactional
+    /// ones, so the count moved by one rather than by four — and "write the
+    /// row without the event" stopped being expressible rather than merely
+    /// discouraged.
+    ///
+    /// All four interpolate crate constants only (`COLUMNS`,
+    /// `LIVE_CHARGE_STATES`), which is the audit the sibling test performs.
+    const EXPECTED_ASSERT_SITES: usize = 56;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

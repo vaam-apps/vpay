@@ -49,7 +49,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use vpay_core::ids;
-use vpay_db::{CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer, Repositories};
+use vpay_db::{
+    CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer, Repositories, TxOutcome,
+    UnitOfWork as _,
+};
 
 use crate::error::ApiError;
 use crate::form::VpayQuery;
@@ -163,9 +166,8 @@ pub(crate) async fn create(
         created_at: OffsetDateTime::now_utc(),
     };
 
-    let outcome = Customers::create(repositories.as_ref(), &new)
+    let outcome = create_with_event(repositories.as_ref(), &new)
         .await
-        .map_err(ApiError::from)
         .and_then(|row| customer_response(StatusCode::CREATED, &row));
 
     post.finish(repositories.as_ref(), &scope, claim_id, outcome)
@@ -251,31 +253,43 @@ struct UpdateParams {
 
 /// `POST /v1/customers/{id}`.
 ///
-/// # Why this reads before it writes, and what that costs
+/// # Why this reads before it writes, and why the read takes the row lock
 ///
 /// `metadata` is **merged** key-wise, not replaced: Stripe's contract is that
 /// `metadata[a]=1` on a customer that already has `b` leaves `b` alone, and
 /// `metadata[b]=` removes `b`. Merging needs the stored map, so this handler
-/// reads the customer first.
+/// reads the customer first — which makes the update a read-modify-write.
 ///
-/// That makes the update a read-modify-write, and the window is real: two
-/// concurrent updates that each add one key can lose one of them. It is not
-/// closed here, and the reason is that closing it in Rust is not possible —
-/// the merge is defined over the stored value, so the only fix is a
-/// `jsonb ||` in the statement, which would move Stripe's merge semantics
-/// into a migration and out of the layer that documents them. Stripe's own
-/// API has the same shape. What is **not** at risk is the three scalar
-/// fields: each is written from the request alone, so a concurrent update
-/// that touched a different field cannot be clobbered by this one — the
-/// statement assigns only the columns the request mentioned
-/// (`vpay_db::customers`' `CASE WHEN $n::BOOLEAN` form).
+/// **Until 2026-09-10 that window was open and documented** (issue #66): the
+/// read ran on the pool, two concurrent updates each adding one key could
+/// lose one of them, and this doc comment said so and left it. It could be
+/// left while nothing depended on the result being definite. It cannot be
+/// now, because the same transaction emits `customer.updated` and a merchant
+/// acting on that event would be acting on a `metadata` the database no
+/// longer holds.
 ///
-/// # An empty patch writes nothing
+/// So the read, the merge, the write and the event are one transaction, and
+/// the read is `SELECT … FOR UPDATE`. A second request blocks on the lock,
+/// re-reads the **committed** merge, and merges onto that; the two events
+/// then describe the two states in the order they happened. The merge itself
+/// stays in Rust rather than becoming a `jsonb ||` in the statement, for the
+/// reason this comment always gave: Stripe's semantics belong in the layer
+/// that documents them, not in a migration.
+///
+/// What was never at risk is the three scalar fields: each is written from
+/// the request alone, so a concurrent update that touched a different field
+/// cannot be clobbered by this one — the statement assigns only the columns
+/// the request mentioned (`vpay_db::customers`' `CASE WHEN $n::BOOLEAN`
+/// form).
+///
+/// # An empty patch writes nothing, and emits nothing
 ///
 /// A bodiless `POST` — which is what an SDK sends for "touch this object" —
 /// answers the customer unchanged rather than running an `UPDATE` that would
 /// move `updated_at`. Stripe behaves the same way, and a merchant diffing on
-/// timestamps depends on it.
+/// timestamps depends on it. No `customer.updated` is written either: an
+/// event about a change that did not happen is a webhook a merchant has to
+/// work out how to ignore.
 pub(crate) async fn update(
     State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
@@ -303,32 +317,158 @@ async fn update_once(
 ) -> Result<Response, ApiError> {
     let params: UpdateParams = post.form().await?;
 
-    // Scoped, so a foreign customer is indistinguishable from a missing one
-    // and this handler never compares two merchant ids in Rust.
-    let current = Customers::get_for_merchant(repositories, scope.merchant_id(), id)
-        .await?
-        .ok_or_else(|| not_found(id))?;
+    // The read, the merge, the write and the event are **one** transaction,
+    // and the read takes the row's lock. See [`update_with_event`].
+    let outcome: TxOutcome<UpdateOutcome> = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                // Scoped, so a foreign customer is indistinguishable from a
+                // missing one and this handler never compares two merchant
+                // ids in Rust. `FOR UPDATE`, so the merge below is computed
+                // over a value no concurrent update can be halfway through
+                // changing.
+                let Some(current) = tx.lock_customer_for_update(scope.merchant_id(), id).await?
+                else {
+                    return Ok::<_, ApiError>(TxOutcome::Abandon(UpdateOutcome::NotFound));
+                };
 
-    let patch = validate_update(params, &current)?;
-    if patch.is_empty() {
-        return customer_response(StatusCode::OK, &current);
+                let patch = validate_update(params, &current)?;
+                if patch.is_empty() {
+                    // Stripe's no-op: a bodiless `POST` answers the object
+                    // unchanged. Abandoned rather than committed, because
+                    // nothing was written — and **no event**, because
+                    // nothing changed. Manufacturing a `customer.updated`
+                    // here would be a webhook about a transition that did
+                    // not happen.
+                    return Ok(TxOutcome::Abandon(UpdateOutcome::Unchanged(Box::new(
+                        current,
+                    ))));
+                }
+
+                let Some(row) = tx
+                    .update_customer_in_tx(
+                        scope.merchant_id(),
+                        id,
+                        &patch,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await?
+                else {
+                    // Unreachable: the locked read above found the row and
+                    // holds it until this transaction ends, so nothing can
+                    // have deleted it in between. Spelled as an outcome
+                    // rather than an `expect` (ADR-0007), and it answers the
+                    // 404 a merchant retrying would get anyway.
+                    return Ok(TxOutcome::Abandon(UpdateOutcome::NotFound));
+                };
+
+                // The event's `data` is the row this transaction wrote —
+                // including the merged `metadata`, which is the value the
+                // lock exists to make definite.
+                let object = CustomerObject::try_from(&row)?;
+                let data =
+                    serde_json::to_value(&object).map_err(ApiError::internal_serialization)?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: ids::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: EVENT_UPDATED.to_owned(),
+                    object_id: row.id.clone(),
+                    data,
+                })
+                .await?;
+
+                Ok(TxOutcome::Commit(UpdateOutcome::Updated(Box::new(row))))
+            })
+        })
+        .await?;
+
+    match outcome.into_inner() {
+        UpdateOutcome::NotFound => Err(not_found(id)),
+        UpdateOutcome::Unchanged(row) | UpdateOutcome::Updated(row) => {
+            customer_response(StatusCode::OK, &row)
+        }
     }
+}
 
-    let row = Customers::update(
-        repositories,
-        scope.merchant_id(),
-        id,
-        &patch,
-        OffsetDateTime::now_utc(),
-    )
-    .await?
-    // The read above found it, so `None` here means it was deleted in
-    // between — by this merchant's own concurrent `DELETE`, or by the
-    // retention sweep. The same 404 either way, which is what a merchant
-    // would see if they retried.
-    .ok_or_else(|| not_found(id))?;
+/// The three endings [`update_once`]'s transaction has.
+///
+/// A named enum rather than an `Option<Option<CustomerRow>>`, because two of
+/// the three are `TxOutcome::Abandon` for *different* reasons and the caller
+/// answers them differently: one is a `404`, one is a `200` with the object
+/// unchanged, and only the third emits anything.
+///
+/// The row is boxed because `CustomerRow` is the largest value in this enum
+/// by a wide margin and `clippy::large_enum_variant` is right about it.
+enum UpdateOutcome {
+    /// No such customer for this merchant.
+    NotFound,
+    /// The patch would change nothing; the stored row, unwritten and
+    /// un-evented.
+    Unchanged(Box<CustomerRow>),
+    /// Written, with one `customer.updated` in the same transaction.
+    Updated(Box<CustomerRow>),
+}
 
-    customer_response(StatusCode::OK, &row)
+/// The `type` of the event a create emits.
+///
+/// Spelled as a constant for `vpay_db::settlement`'s reason: the type is a
+/// property of *which transition this is*, and a caller free to choose it
+/// could report a created customer as a deleted one. Both types entered
+/// `type_is_a_documented_event` in migration `0039`, in the same change that
+/// wrote them — migration `0023`'s lockstep rule, which
+/// `payment_intent.canceled` is the repository's one counter-example to.
+const EVENT_CREATED: &str = "customer.created";
+
+/// See [`EVENT_CREATED`]. A **bodiless** update emits nothing: the patch is
+/// empty, nothing is written, and an event about it would describe a
+/// transition that did not happen.
+const EVENT_UPDATED: &str = "customer.updated";
+
+/// Inserts a customer and appends `customer.created` beside it, in one
+/// transaction.
+///
+/// # Why the object is rendered from the returned row
+///
+/// `seq`, `created_at` and `updated_at` are the database's, so a projection
+/// of the request would be a second implementation of the insert — the
+/// mistake `vpay_api::v1::invoices::write_with_event` records at length. The
+/// row this returns is also what the `201` renders, so the body a merchant
+/// reads and the body their webhook carries are the same object by
+/// construction.
+///
+/// # Errors
+///
+/// Whatever the insert returns, or [`ApiError::Internal`] if the written row
+/// will not render — which migration `0034`'s CHECKs make impossible.
+async fn create_with_event(
+    repositories: &dyn Repositories,
+    new: &NewCustomer,
+) -> Result<CustomerRow, ApiError> {
+    let outcome: TxOutcome<CustomerRow> = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx.insert_customer_in_tx(new).await?;
+
+                let object = CustomerObject::try_from(&row)?;
+                let data =
+                    serde_json::to_value(&object).map_err(ApiError::internal_serialization)?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: ids::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: EVENT_CREATED.to_owned(),
+                    object_id: row.id.clone(),
+                    data,
+                })
+                .await?;
+
+                Ok::<_, ApiError>(TxOutcome::Commit(row))
+            })
+        })
+        .await?;
+
+    Ok(outcome.into_inner())
 }
 
 /// Turns the request into a patch, refusing anything the database would

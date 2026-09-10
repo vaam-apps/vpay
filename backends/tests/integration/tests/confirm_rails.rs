@@ -546,14 +546,59 @@ async fn stored_payment_error(
 ///
 /// Exists for the assertion in
 /// [`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`]:
-/// a decline at submit is a terminal transition that emits **nothing**, and
-/// "nothing" is only a fact if something counts it.
+/// a decline at submit is a terminal transition, and since 2026-09-10
+/// (issue #57) it emits exactly one `payment_intent.payment_failed`. The
+/// *count* is the point — a second one would be a duplicate a merchant would
+/// have to dedupe, and none at all is the bug this closed.
 async fn event_types_for(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
     sqlx::query_scalar::<_, String>("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
         .bind(object_id)
         .fetch_all(pool)
         .await
         .context("reading the events a decline did or did not write")
+}
+
+/// `payment_intents.updated_at` and the single event's `events.created_at`.
+///
+/// Both are written by `now()`, which in Postgres is
+/// `transaction_timestamp()` — so comparing them is a question about
+/// transactions, not about clocks. See the assertion that uses it.
+async fn decline_timestamps(
+    pool: &PgPool,
+    intent_id: &str,
+) -> anyhow::Result<(time::OffsetDateTime, time::OffsetDateTime)> {
+    let updated_at: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM payment_intents WHERE id = $1")
+            .bind(intent_id)
+            .fetch_one(pool)
+            .await
+            .context("reading the intent's updated_at")?;
+    let created_at: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT created_at FROM events WHERE object_id = $1")
+            .bind(intent_id)
+            .fetch_one(pool)
+            .await
+            .context("reading the event's created_at")?;
+    Ok((updated_at, created_at))
+}
+
+/// The `data` of the single `events` row about one object.
+///
+/// Errors rather than panics when there is not exactly one, so a caller's `?`
+/// reports the count instead of a bare `unwrap` on an empty vector — and so
+/// the "exactly one" claim is made by this helper as well as by the
+/// assertion above it.
+async fn event_data_for(pool: &PgPool, object_id: &str) -> anyhow::Result<serde_json::Value> {
+    let rows: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT data FROM events WHERE object_id = $1 ORDER BY seq")
+            .bind(object_id)
+            .fetch_all(pool)
+            .await
+            .context("reading the event body a decline wrote")?;
+    match rows.as_slice() {
+        [one] => Ok(one.clone()),
+        other => anyhow::bail!("expected exactly one event about {object_id}, found {other:?}"),
+    }
 }
 
 async fn charge_count(pool: &PgPool, payment_intent_id: &str) -> anyhow::Result<i64> {
@@ -1754,31 +1799,82 @@ async fn a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read() -> 
     );
     assert_eq!(charge_count(&harness.pool, &intent.id).await?, 1);
 
-    // NOTHING WAS EMITTED, and that is a gap rather than a design.
+    // ONE EVENT, AND EXACTLY ONE — the change of 2026-09-10 (issue #57).
     //
-    // The charge is terminal and the intent carries `last_payment_error` —
-    // but `persist_decline` writes both of those and no event, and
-    // `payment_intent.payment_failed` is written by
-    // `vpay_db::settlement::apply_failed`, which only the worker's poll path
-    // calls. So a decline the rail made *at submit* is the one terminal
-    // outcome a merchant cannot learn from a signed event; it can be seen
-    // only in this call's own `409`, or by polling
-    // `GET /v1/payment_intents/{id}`.
+    // This assertion read `Vec::<String>::new()` until then, and the comment
+    // above it said so at length: `persist_decline` wrote the charge and
+    // `last_payment_error` and no event, `payment_intent.payment_failed` was
+    // written only by `vpay_db::settlement::apply_failed` on the worker's
+    // poll path, and a decline the rail made *at submit* was the one terminal
+    // outcome no signed event reported. `examples/shop` advertised MTN
+    // `237600000400` as a test number whose order stays `unpaid` for ever
+    // because of it.
     //
-    // It matters beyond this test: `examples/shop` advertises MTN
-    // `237600000400` as a test number and used to promise it made an order
-    // `failed`, which a shop that settles only from webhooks cannot do
-    // (corrected 2026-09-06). This assertion is what will fail on the day
-    // vpay starts emitting for this transition, so the shop's table and
-    // docs/status.md get corrected with it rather than staying stale in the
-    // other direction.
+    // The event now commits in `persist_decline`'s own transaction, so the
+    // charge, the `last_payment_error` this test already asserted, and the
+    // event are one write. The assertion is inverted rather than deleted, and
+    // it is inverted to an **exact** list: the mutation it exists to catch is
+    // dropping the `insert_in_tx` (back to an empty vector), and the one
+    // beside it is emitting twice — once here and once from a later poll —
+    // which is a duplicate webhook rather than a missing one.
     assert_eq!(
         event_types_for(&harness.pool, &intent.id).await?,
-        Vec::<String>::new(),
-        "a decline at submit emits no event today (docs/status.md, 'Events written by the \
-         worker'). If this now fails, vpay has grown the event and every claim that it does \
-         not — this comment, examples/shop's test-number table and README, docs/status.md — \
-         must be corrected in the same change"
+        vec!["payment_intent.payment_failed".to_owned()],
+        "a decline at submit emits exactly one payment_intent.payment_failed, in the same \
+         transaction as the charge and the last_payment_error above (issue #57). An empty \
+         vector here means the insert_in_tx in `persist_decline` is gone and a \
+         webhook-driven merchant is once again never told"
+    );
+
+    // And the body is the intent **as committed** — back at
+    // `requires_payment_method` with the merchant-facing half of
+    // `last_payment_error` on it, which is the whole reason a merchant can
+    // act on this delivery without a second call. `data` is the wire object
+    // itself; the `data: { object: … }` envelope is put around it at
+    // delivery.
+    let data = event_data_for(&harness.pool, &intent.id).await?;
+    assert_eq!(data.get("id"), Some(&serde_json::json!(intent.id)));
+    assert_eq!(
+        data.get("status"),
+        Some(&serde_json::json!("requires_payment_method")),
+        "the lifecycle has no `failed` status; the event says what the object says: {data}"
+    );
+    assert_eq!(
+        data.pointer("/last_payment_error/code"),
+        Some(&serde_json::json!("invalid_payer")),
+        "the code a merchant branches on travels in the event, not only in the 409: {data}"
+    );
+    assert_eq!(
+        data.pointer("/last_payment_error/message"),
+        Some(&serde_json::json!(error_message.as_str())),
+        "the same public sentence the column holds — the rail's own words stay out: {data}"
+    );
+    assert_eq!(
+        data.get("client_secret"),
+        None,
+        "an event body is stored, signed and replayed; a payer credential must not be in \
+         one: {data}"
+    );
+
+    // AND THE THREE WRITES SHARE ONE TRANSACTION, observably.
+    //
+    // Postgres' `now()` is `transaction_timestamp()` — fixed at the start of
+    // the transaction, identical for every call inside one.
+    // `record_payment_error` sets `payment_intents.updated_at = now()` and
+    // the `events` row takes `created_at`'s `DEFAULT now()` (migration
+    // `0018`), so the two agree to the microsecond **iff** they were written
+    // together.
+    //
+    // This is the assertion that catches an event moved out of
+    // `persist_decline`'s unit of work: the merchant-visible result would be
+    // unchanged — same charge, same `last_payment_error`, same one event —
+    // and a crash between two commits would be a decline no webhook ever
+    // reported, which is the state this whole change exists to end.
+    let (stamped_at, emitted_at) = decline_timestamps(&harness.pool, &intent.id).await?;
+    assert_eq!(
+        stamped_at, emitted_at,
+        "the last_payment_error stamp and the event must carry one transaction's `now()` \
+         (issue #57)"
     );
 
     harness.shutdown().await;

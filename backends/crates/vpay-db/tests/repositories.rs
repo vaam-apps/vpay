@@ -122,6 +122,29 @@ mod one_tx {
             .map(TxOutcome::into_inner)
     }
 
+    /// The cancel, in a transaction of its own — the shape
+    /// `vpay_api::v1::payment_intents::cancel_with_event` runs it in, minus
+    /// the event, so the statement's own guards can be asserted without the
+    /// API layer.
+    ///
+    /// There is no pooled `PaymentIntents::cancel` to call instead, since
+    /// 2026-09-10 (issue #57): a cancel commits with its
+    /// `payment_intent.canceled` or not at all.
+    pub(super) async fn cancel_in_tx(
+        repositories: &dyn Repositories,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<vpay_db::PaymentIntentRow>, DbError> {
+        repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    Ok::<_, DbError>(TxOutcome::Commit(tx.cancel_in_tx(merchant_id, id).await?))
+                })
+            })
+            .await
+            .map(TxOutcome::into_inner)
+    }
+
     pub(super) async fn insert_in_tx(
         repositories: &dyn Repositories,
         new: &vpay_db::NewEvent,
@@ -1495,8 +1518,7 @@ async fn a_transition_from_a_stale_expected_status_changes_nothing() -> anyhow::
         .await
         .context("inserting the intent must succeed")?;
 
-    let cancelled = repositories
-        .cancel("merchant_a", "pi_cas")
+    let cancelled = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_cas")
         .await
         .context("cancelling a requires_payment_method intent must succeed")?
         .context("cancel must return the updated row")?;
@@ -1583,7 +1605,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     );
 
     assert_eq!(
-        repositories.cancel("merchant_a", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
         None,
         "an intent whose charge may be live must not be cancellable"
     );
@@ -1601,7 +1623,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
             .await
             .context("moving the charge must succeed")?;
         assert_eq!(
-            repositories.cancel("merchant_a", "pi_in_flight").await?,
+            one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
             None,
             "a charge in `{state}` is still one the rail may act on"
         );
@@ -1613,8 +1635,7 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
         .execute(&pool)
         .await
         .context("failing the charge must succeed")?;
-    let cancelled = repositories
-        .cancel("merchant_a", "pi_in_flight")
+    let cancelled = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight")
         .await?
         .context("an intent whose only charge has failed must still be cancellable")?;
     assert_eq!(cancelled.status, "canceled");
@@ -1623,15 +1644,683 @@ async fn cancel_refuses_an_intent_with_a_live_charge_and_allows_one_with_a_termi
     // status guard: neither may be reached from another merchant, and a
     // second cancel does nothing.
     assert_eq!(
-        repositories.cancel("merchant_b", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_b", "pi_in_flight").await?,
         None
     );
     assert_eq!(
-        repositories.cancel("merchant_a", "pi_in_flight").await?,
+        one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_in_flight").await?,
         None
     );
 
     Ok(())
+}
+
+/// The cancel and its `payment_intent.canceled` are **one** transaction: a
+/// rollback after the event insert leaves neither.
+///
+/// # Why this test exists and what mutation it catches
+///
+/// `vpay_api::v1::payment_intents::cancel_with_event` runs exactly the two
+/// statements below in one unit of work (issue #57). Nothing observable from
+/// outside that handler distinguishes "one transaction" from "two commits in
+/// a row" on the happy path — both end with a canceled intent and an event.
+/// The difference is only visible when the unit of work is abandoned, which
+/// is what a crash between two commits looks like.
+///
+/// So this drives the seam directly. `TxOutcome::Abandon` rolls back, and if
+/// `TxRepositories::insert_in_tx` ever ran on the pool instead of on the
+/// caller's connection — the mutation this is armed against — the event
+/// would survive the rollback and the first assertion would fail with a
+/// webhook for a cancel that did not happen.
+///
+/// The committed half is asserted afterwards on a second intent, so
+/// "everything rolled back" cannot pass by the statements simply never
+/// having worked.
+#[tokio::test]
+async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_abandoned_cancel", "XAF"))
+        .await
+        .context("inserting the intent to cancel")?;
+
+    let abandoned = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx
+                    .cancel_in_tx("merchant_a", "pi_abandoned_cancel")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_abandoned_cancel".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "payment_intent.canceled".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(row))
+            })
+        })
+        .await?
+        .into_inner();
+    assert_eq!(
+        abandoned.status, "canceled",
+        "the statement did run — the rollback below is a rollback of real work"
+    );
+
+    let after = PaymentIntents::get_for_merchant(
+        repositories.as_ref(),
+        "merchant_a",
+        "pi_abandoned_cancel",
+    )
+    .await?
+    .context("the intent must still exist")?;
+    assert_eq!(
+        after.status, "requires_payment_method",
+        "the abandoned transaction must leave the intent exactly as it was"
+    );
+    assert_eq!(
+        events_about(&pool, "pi_abandoned_cancel").await?,
+        Vec::<String>::new(),
+        "the event must roll back with the transition it describes; if it survived, \
+         `insert_in_tx` is no longer running on the caller's connection and a merchant can \
+         be told about a cancel that did not happen"
+    );
+
+    // The other direction, so "nothing happened" is not the only thing these
+    // statements can do.
+    repositories
+        .insert(&fixture_intent("pi_committed_cancel", "XAF"))
+        .await
+        .context("inserting the intent to cancel for real")?;
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx
+                    .cancel_in_tx("merchant_a", "pi_committed_cancel")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_committed_cancel".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "payment_intent.canceled".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+    assert_eq!(
+        events_about(&pool, "pi_committed_cancel").await?,
+        vec!["payment_intent.canceled".to_owned()]
+    );
+
+    Ok(())
+}
+
+/// A cancel and a settlement racing for one intent leave **one** terminal
+/// state and **one** terminal event, whichever of them commits first.
+///
+/// # The window this is about, and why the `NOT EXISTS` guard does not close it
+///
+/// `payment_intents::cancel_in_tx` refuses an intent that has a live charge,
+/// as a `NOT EXISTS` predicate of its own `UPDATE` rather than as a preceding
+/// `SELECT`. That closes the window in which a charge is already committed
+/// when the cancel's statement takes its snapshot. It cannot close the other
+/// one: a confirm commits its charge *while* a cancel's transaction is open,
+/// which is a legal interleaving of two requests and not a defect in either.
+/// What stops that from becoming a payment settled onto a withdrawn intent is
+/// the **settlement's own** status guard —
+/// `payment_intents::succeed_after_submission`'s
+/// `WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in.
+///
+/// Nothing asserted that before this case, and the cancel becoming an event
+/// writer (issue #57) is what makes it worth asserting: a merchant now
+/// receives `payment_intent.canceled`, so "exactly one terminal event" is a
+/// claim someone builds dedupe logic on rather than an internal detail.
+///
+/// # Direction 1 is a real interleaving, forced with a barrier
+///
+/// The cancel's transaction is held open after its `UPDATE` and its event.
+/// A charge is then committed on another connection — which no lock prevents,
+/// because a charge insert does not touch `payment_intents` — and
+/// `Settlement::apply_succeeded` is started against it. It updates `charges`,
+/// reaches `payment_intents`, and **blocks** on the row the cancel holds;
+/// the 750 ms assertion below is what proves it blocked rather than passed.
+/// Releasing the cancel then makes the settlement re-evaluate its guard
+/// against the committed `canceled` row and match nothing.
+///
+/// The settlement's answer is [`vpay_db::DbError::WriteMatchedNoRow`], and
+/// that is asserted rather than glossed: `vpay_db::settlement`'s own comment
+/// says such a case "pages rather than being reported as a merchant's
+/// problem". This is a rail-accepted payment on a withdrawn intent — money
+/// an operator has to reconcile by hand — and the property that matters is
+/// that it is **loud and rolled back**, not that it is impossible. The charge
+/// is asserted still `submitting` afterwards for exactly that reason: a
+/// settlement that half-committed would leave the charge succeeded with no
+/// event and no intent to match it.
+///
+/// # Direction 2 is the outcome, asserted sequentially
+///
+/// `Settlement::apply_succeeded` opens and commits its own transaction, so it
+/// cannot be held open from a test without a seam in shipping code
+/// (AGENTS.md rule 1). The state it leaves behind is what the cancel then
+/// meets, and the cancel's compare-and-swap is a single statement whose
+/// answer does not depend on how it got there: a `succeeded` intent is
+/// refused, and no `payment_intent.canceled` is written for it.
+#[tokio::test]
+async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // ---------------------------------------- direction 1: the cancel wins
+    repositories
+        .insert(&fixture_intent("pi_race_cancel_first", "XAF"))
+        .await
+        .context("inserting the intent both writers want")?;
+
+    let (canceled, cancel_is_in) = tokio::sync::oneshot::channel::<()>();
+    let (release, wait_for_release) = tokio::sync::oneshot::channel::<()>();
+    let canceller = Arc::clone(&repositories);
+    let cancel = tokio::spawn(async move {
+        canceller
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let row = tx
+                        .cancel_in_tx("merchant_a", "pi_race_cancel_first")
+                        .await?
+                        .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                            table: "payment_intents",
+                            key: "pi_race_cancel_first".to_owned(),
+                        })?;
+                    tx.insert_in_tx(&vpay_db::NewEvent {
+                        id: vpay_db::events::event_id(),
+                        merchant_id: row.merchant_id.clone(),
+                        livemode: row.livemode,
+                        event_type: "payment_intent.canceled".to_owned(),
+                        object_id: row.id.clone(),
+                        data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                    })
+                    .await?;
+                    let _ = canceled.send(());
+                    // The row lock is held for as long as this transaction
+                    // is open, which is the whole of the barrier.
+                    let _ = wait_for_release.await;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    });
+
+    cancel_is_in.await.context("the cancel took the row")?;
+
+    // The confirm's half of the interleaving: a charge committed on another
+    // connection while the cancel's transaction is open. Nothing refuses it
+    // — `charges` is a different table and the cancel's `NOT EXISTS` has
+    // already been evaluated.
+    let mut charge = fixture_charge("ch_race_cancel_first", "pi_race_cancel_first");
+    charge.state = "submitted".to_owned();
+    one_tx::insert_for_intent(repositories.as_ref(), &charge)
+        .await
+        .context("the charge a confirm commits before calling the rail")?;
+
+    let settler = Arc::clone(&repositories);
+    let settlement = tokio::spawn(async move {
+        settler
+            .apply_succeeded(
+                "ch_race_cancel_first",
+                Some("MTN-TXN-RACE"),
+                "evt_race_cancel_first",
+                &json!({"id": "pi_race_cancel_first", "object": "payment_intent", "status": "succeeded"}),
+                None,
+            )
+            .await
+    });
+
+    // It must not answer while the cancel holds the intent's row. 750 ms for
+    // `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value`'s
+    // reason: the passing direction cannot lose this race, because the
+    // cancel's transaction stays open until `release` fires below.
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    assert!(
+        !settlement.is_finished(),
+        "the settlement answered while the cancel still held the intent's row lock, so the \
+         two are not serialised and both terminal writes can land"
+    );
+
+    release.send(()).expect("the cancel is still waiting");
+    cancel
+        .await
+        .context("the cancel task did not panic")?
+        .context("the cancel commits")?;
+
+    let refused = settlement
+        .await
+        .context("the settlement task did not panic")?
+        .expect_err("a settlement onto a canceled intent must not succeed quietly");
+    assert!(
+        matches!(
+            refused,
+            vpay_db::DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                ..
+            }
+        ),
+        "the settlement must fail loudly on the intent, not skip it: {refused:?}"
+    );
+
+    let after = PaymentIntents::get_for_merchant(
+        repositories.as_ref(),
+        "merchant_a",
+        "pi_race_cancel_first",
+    )
+    .await?
+    .context("the intent survives")?;
+    assert_eq!(
+        after.status, "canceled",
+        "one terminal state, and it is the cancel's"
+    );
+    assert_eq!(
+        events_about(&pool, "pi_race_cancel_first").await?,
+        vec!["payment_intent.canceled".to_owned()],
+        "one terminal event: a merchant told a payment was withdrawn must not also be told \
+         it succeeded"
+    );
+    assert_eq!(
+        charge_state(&pool, "ch_race_cancel_first").await?,
+        "submitted",
+        "the refused settlement rolled back whole — a charge left `succeeded` with no event \
+         and no matching intent is the state an operator cannot reconcile"
+    );
+
+    // ------------------------------------ direction 2: the settlement wins
+    live_charge(
+        repositories.as_ref(),
+        "pi_race_settle_first",
+        "ch_race_settle_first",
+        "processing",
+        "submitted",
+    )
+    .await?;
+    repositories
+        .apply_succeeded(
+            "ch_race_settle_first",
+            Some("MTN-TXN-RACE-2"),
+            "evt_race_settle_first",
+            &json!({"id": "pi_race_settle_first", "object": "payment_intent", "status": "succeeded"}),
+            None,
+        )
+        .await
+        .context("the settlement commits")?
+        .context("a live charge settles")?;
+
+    let refused = one_tx::cancel_in_tx(repositories.as_ref(), "merchant_a", "pi_race_settle_first")
+        .await
+        .context("the cancel statement runs")?;
+    assert!(
+        refused.is_none(),
+        "a succeeded intent cannot be canceled: {refused:?}"
+    );
+    assert_eq!(
+        events_about(&pool, "pi_race_settle_first").await?,
+        vec!["payment_intent.succeeded".to_owned()],
+        "and the refusal writes no event — `cancel_with_event` abandons its transaction on \
+         exactly this answer"
+    );
+
+    Ok(())
+}
+
+/// A decline at submit writes the charge, the `last_payment_error` and the
+/// `payment_intent.payment_failed` in **one** transaction — and a rollback
+/// leaves all three undone.
+///
+/// The seam-level half of
+/// `confirm_rails::a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read`,
+/// which drives the real route and asserts the committed result. This one
+/// asserts the property that route cannot show: that the three writes are one
+/// unit. The mutation it is armed against is the same as
+/// [`a_cancel_and_its_event_roll_back_together`]'s — an `insert_in_tx` that
+/// stopped taking the caller's connection would leave an event behind here
+/// announcing a failure whose charge is still `submitting`.
+#[tokio::test]
+async fn a_submit_decline_writes_its_charge_error_and_event_in_one_transaction()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_declined", "XAF"))
+        .await
+        .context("inserting the intent")?;
+    one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_declined", "pi_declined"),
+    )
+    .await
+    .context("the charge a confirm commits before submitting")?;
+
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.mark_failed("ch_declined", "invalid_payer", "PAYER_NOT_FOUND")
+                    .await?;
+                let intent = tx
+                    .record_payment_error(
+                        "merchant_a",
+                        "pi_declined",
+                        "requires_payment_method",
+                        "invalid_payer",
+                        "The payment was declined (invalid_payer).",
+                    )
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "payment_intents",
+                        key: "pi_declined".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: intent.merchant_id.clone(),
+                    livemode: intent.livemode,
+                    event_type: "payment_intent.payment_failed".to_owned(),
+                    object_id: intent.id.clone(),
+                    data: json!({
+                        "id": intent.id,
+                        "object": "payment_intent",
+                        "status": "requires_payment_method",
+                    }),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let state: String = sqlx::query_scalar("SELECT state FROM charges WHERE id = 'ch_declined'")
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the charge")?;
+    assert_eq!(
+        state, "submitting",
+        "the abandoned transaction must leave the charge live"
+    );
+    let (code, message) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_payment_error_code, last_payment_error_message \
+             FROM payment_intents WHERE id = 'pi_declined'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("re-reading the intent")?;
+    assert_eq!((code, message), (None, None));
+    assert_eq!(
+        events_about(&pool, "pi_declined").await?,
+        Vec::<String>::new(),
+        "no charge, no error, and therefore no event: a webhook saying a payment failed \
+         while the charge is still in flight is the one this transaction exists to prevent"
+    );
+
+    Ok(())
+}
+
+/// A customer create and its `customer.created` are one transaction, and so
+/// are an update and its `customer.updated`: a rollback leaves neither.
+///
+/// The seam-level half of
+/// `customers::a_customer_create_and_update_each_emit_one_event_and_a_no_op_emits_none`,
+/// which drives the real routes and asserts the committed result. This one
+/// asserts what that route cannot show — that `TxRepositories::insert_in_tx`
+/// runs on the *caller's* connection, so an abandoned unit of work takes the
+/// event with it. Run the events insert on the pool instead and the first
+/// assertion fails with a webhook for a customer that does not exist.
+#[tokio::test]
+async fn a_customer_write_and_its_event_roll_back_together() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let new = fixture_customer("cus_abandoned00000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let row = tx.insert_customer_in_tx(&new).await?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "customer.created".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "customer"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let survivors: i64 = sqlx::query_scalar("SELECT count(*) FROM customers WHERE id = $1")
+        .bind("cus_abandoned00000000000")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(survivors, 0, "the abandoned insert must leave no customer");
+    assert_eq!(
+        events_about(&pool, "cus_abandoned00000000000").await?,
+        Vec::<String>::new(),
+        "the event must roll back with the row it describes"
+    );
+
+    // The update half, on a customer that really is committed.
+    let new = fixture_customer("cus_committed00000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_customer_in_tx(&new).await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let current = tx
+                    .lock_customer_for_update("merchant_a", "cus_committed00000000000")
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "customers",
+                        key: "cus_committed00000000000".to_owned(),
+                    })?;
+                assert_eq!(current.name.as_deref(), None);
+                let row = tx
+                    .update_customer_in_tx(
+                        "merchant_a",
+                        "cus_committed00000000000",
+                        &vpay_db::CustomerPatch {
+                            name: Some(Some("Ada".to_owned())),
+                            ..vpay_db::CustomerPatch::default()
+                        },
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await?
+                    .ok_or_else(|| vpay_db::DbError::WriteMatchedNoRow {
+                        table: "customers",
+                        key: "cus_committed00000000000".to_owned(),
+                    })?;
+                tx.insert_in_tx(&vpay_db::NewEvent {
+                    id: vpay_db::events::event_id(),
+                    merchant_id: row.merchant_id.clone(),
+                    livemode: row.livemode,
+                    event_type: "customer.updated".to_owned(),
+                    object_id: row.id.clone(),
+                    data: json!({"id": row.id, "object": "customer", "name": "Ada"}),
+                })
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(()))
+            })
+        })
+        .await?;
+
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM customers WHERE id = $1")
+        .bind("cus_committed00000000000")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(name, None, "the abandoned update must leave the row alone");
+    assert_eq!(
+        events_about(&pool, "cus_committed00000000000").await?,
+        Vec::<String>::new(),
+        "and no event may describe an update that did not commit"
+    );
+
+    Ok(())
+}
+
+/// `lock_customer_for_update` really takes the row lock: a second transaction
+/// asking for the same row **blocks** until the first commits, and then reads
+/// the first's committed value.
+///
+/// # Why this test and not only the concurrent-request one
+///
+/// `customers::two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the_committed_state`
+/// drives two real requests and is the case a merchant would recognise, but
+/// the interleaving it needs is a matter of timing — nothing outside the
+/// handler can force both reads to land before either write. This one forces
+/// it: transaction A holds the lock while B asks for it, so "B waited" and "B
+/// saw A's value" are observations rather than probabilities.
+///
+/// **The decisive mutation:** drop `FOR UPDATE` from
+/// `vpay_db::customers::lock_for_update`. B's read returns immediately, the
+/// timeout below does not fire, and B reads the value from *before* A's
+/// write.
+#[tokio::test]
+async fn a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value() -> anyhow::Result<()>
+{
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+
+    let new = fixture_customer("cus_locked0000000000000");
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.insert_customer_in_tx(&new).await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+
+    // A: lock, write, and hold the transaction open until told to commit.
+    let (release, wait_for_release) = tokio::sync::oneshot::channel::<()>();
+    let (locked, lock_taken) = tokio::sync::oneshot::channel::<()>();
+    let writer = Arc::clone(&repositories);
+    let a = tokio::spawn(async move {
+        writer
+            .transaction(|tx| {
+                Box::pin(async move {
+                    tx.lock_customer_for_update("merchant_a", "cus_locked0000000000000")
+                        .await?;
+                    tx.update_customer_in_tx(
+                        "merchant_a",
+                        "cus_locked0000000000000",
+                        &vpay_db::CustomerPatch {
+                            name: Some(Some("written by A".to_owned())),
+                            ..vpay_db::CustomerPatch::default()
+                        },
+                        time::OffsetDateTime::now_utc(),
+                    )
+                    .await?;
+                    let _ = locked.send(());
+                    // Hold the lock. The transaction is still open, so the
+                    // row lock is still held, which is the whole point.
+                    let _ = wait_for_release.await;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    });
+
+    lock_taken.await.expect("A took the lock");
+
+    // B: ask for the same lock. It must not answer while A holds it.
+    let reader = Arc::clone(&repositories);
+    let b = tokio::spawn(async move {
+        reader
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let row = tx
+                        .lock_customer_for_update("merchant_a", "cus_locked0000000000000")
+                        .await?;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(row))
+                })
+            })
+            .await
+    });
+
+    // Give B every chance to answer, then require that it has not. 750 ms is
+    // not a race this test can lose in the passing direction: A's transaction
+    // is open and stays open until `release` fires below, so a B that has
+    // answered by now answered *without* waiting for the lock — which is
+    // exactly the mutation. It is long enough that a slow container cannot
+    // make it fire spuriously, and it is a wait rather than a poll because
+    // polling `b` would consume the handle this needs afterwards.
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    assert!(
+        !b.is_finished(),
+        "B answered while A still held the row lock, so `FOR UPDATE` is not in the statement"
+    );
+
+    release.send(()).expect("A is still waiting");
+    a.await.expect("A did not panic")?;
+    let seen = b
+        .await
+        .expect("B did not panic")?
+        .into_inner()
+        .expect("the customer is still there");
+    assert_eq!(
+        seen.name.as_deref(),
+        Some("written by A"),
+        "B re-read under the lock and must see the value A committed, not the one it would \
+         have read before waiting"
+    );
+
+    Ok(())
+}
+
+/// A `customers` row for `merchant_a`, phone-only — the shape S4a's
+/// maintainer decision makes complete.
+fn fixture_customer(id: &str) -> vpay_db::NewCustomer {
+    vpay_db::NewCustomer {
+        id: id.to_owned(),
+        merchant_id: "merchant_a".to_owned(),
+        livemode: false,
+        name: None,
+        email: None,
+        phone: Some("237600000200".to_owned()),
+        metadata: json!({}),
+        created_at: time::OffsetDateTime::now_utc(),
+    }
+}
+
+/// Every `events.type` about one object, oldest first.
+///
+/// A free function rather than an inline query at each site because the two
+/// abandon tests above are about a **count** as much as a value, and
+/// "reading the events" is the step it would be easiest to write two
+/// slightly different ways.
+async fn events_about(pool: &sqlx::PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
+    sqlx::query_scalar::<_, String>("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
+        .bind(object_id)
+        .fetch_all(pool)
+        .await
+        .context("reading the events a transaction did or did not commit")
 }
 
 /// The `claim_id` a [`vpay_db::IdempotencyClaim::Fresh`] carries, or an

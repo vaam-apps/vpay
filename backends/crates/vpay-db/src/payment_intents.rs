@@ -329,6 +329,61 @@ pub(crate) async fn transition_in_tx(
     transition_with(&mut *tx, merchant_id, id, expected, new).await
 }
 
+/// Cancels an intent that is still `requires_payment_method` **and** has no
+/// charge the rail may still be acting on, **inside the caller's
+/// transaction**.
+///
+/// # Why there is no pooled variant, since 2026-09-10 (issue #57)
+///
+/// A cancel emits `payment_intent.canceled`, and that event has to commit
+/// with the status flip or not at all — the outbox rule this crate applies
+/// to every other terminal transition ([`crate::settlement`],
+/// [`crate::checkout_sessions::CheckoutSessions::expire_due`],
+/// [`crate::Customers::delete_idle`]). There *was* a pooled
+/// `PaymentIntents::cancel`, and it was the whole of the bug: the row moved
+/// to `canceled` on its own connection and no merchant was ever told, so a
+/// shop driven by webhooks could not reach a cancelled state at all. Deleting
+/// it rather than leaving it beside this one is what makes "cancel without an
+/// event" inexpressible instead of merely discouraged.
+///
+/// The live-charge check is a `NOT EXISTS` predicate of the `UPDATE` and not
+/// a preceding `SELECT`, because a status of `requires_payment_method` is not
+/// on its own enough to make a cancel safe and a check in the caller cannot
+/// close the window — `docs/reference/vpay-db.md` §"`cancel` checks for a
+/// live charge inside the statement". The four live labels are
+/// [`LIVE_CHARGE_STATES`], next to this function.
+///
+/// `Ok(None)` therefore carries three meanings — no such intent for this
+/// merchant, an illegal status, or a live charge — and the caller that must
+/// tell them apart re-reads. It is also the answer that must write **no
+/// event**: see `vpay_api::v1::payment_intents::cancel_once`.
+///
+/// # Errors
+///
+/// As [`PaymentIntents::transition`].
+pub(crate) async fn cancel_in_tx(
+    tx: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents SET status = 'canceled', updated_at = now() \
+         WHERE merchant_id = $1 AND id = $2 \
+           AND status = 'requires_payment_method' \
+           AND NOT EXISTS (SELECT 1 FROM charges \
+                           WHERE charges.payment_intent_id = payment_intents.id \
+                             AND charges.state IN ({LIVE_CHARGE_STATES})) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)
+}
+
 /// The one statement behind [`PaymentIntents::transition`] and [`crate::TxRepositories::transition_in_tx`], generic
 /// over where it runs so the two cannot drift on their guard.
 async fn transition_with<'e, E>(
@@ -547,7 +602,7 @@ pub(crate) async fn fail_after_submission(
 /// created as the `charge_state` enum and migration `0037` re-closed as
 /// `charges_state_enum_check`, and exactly the set the partial index
 /// `charges_live_idx` (migration 0014, rebuilt unchanged by `0037`) is built
-/// over, so the `NOT EXISTS` in [`PaymentIntents::cancel`] is an index lookup.
+/// over, so the `NOT EXISTS` in [`cancel_in_tx`] is an index lookup.
 ///
 /// Spelled as SQL text rather than built from `vpay_core::ChargeState`
 /// because this crate carries the vocabularies as `String` (D4) and the list
@@ -721,29 +776,6 @@ pub trait PaymentIntents: Send + Sync {
         expected: &str,
         new: &str,
     ) -> Result<Option<PaymentIntentRow>, DbError>;
-
-    /// Cancels an intent that is still `requires_payment_method` **and** has no
-    /// charge the rail may still be acting on.
-    ///
-    /// The live-charge check is a `NOT EXISTS` predicate of the `UPDATE` and not
-    /// a preceding `SELECT`, because a status of `requires_payment_method` is
-    /// not on its own enough to make a cancel safe and a check in the caller
-    /// cannot close the window — `docs/reference/vpay-db.md` §"`cancel` checks
-    /// for a live charge inside the statement". The four live labels are
-    /// `LIVE_CHARGE_STATES`, next to this function.
-    ///
-    /// `Ok(None)` therefore carries three meanings — no such intent for this
-    /// merchant, an illegal status, or a live charge — and the caller that must
-    /// tell them apart re-reads.
-    ///
-    /// # Errors
-    ///
-    /// As [`PaymentIntents::transition`].
-    async fn cancel(
-        &self,
-        merchant_id: &str,
-        id: &str,
-    ) -> Result<Option<PaymentIntentRow>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -881,29 +913,6 @@ impl PaymentIntents for crate::repository::PgRepositories {
         new: &str,
     ) -> Result<Option<PaymentIntentRow>, DbError> {
         transition_with(&self.pool, merchant_id, id, expected, new).await
-    }
-
-    async fn cancel(
-        &self,
-        merchant_id: &str,
-        id: &str,
-    ) -> Result<Option<PaymentIntentRow>, DbError> {
-        let sql = format!(
-            "UPDATE payment_intents SET status = 'canceled', updated_at = now() \
-         WHERE merchant_id = $1 AND id = $2 \
-           AND status = 'requires_payment_method' \
-           AND NOT EXISTS (SELECT 1 FROM charges \
-                           WHERE charges.payment_intent_id = payment_intents.id \
-                             AND charges.state IN ({LIVE_CHARGE_STATES})) \
-         RETURNING {COLUMNS}"
-        );
-
-        sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
-            .bind(merchant_id)
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(classify_write)
     }
 }
 

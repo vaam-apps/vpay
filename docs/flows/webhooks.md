@@ -11,25 +11,80 @@ Constant-time comparison; reject a timestamp older than 5 minutes.
 `payment_intent.created`, `payment_intent.processing`,
 `payment_intent.succeeded`, `payment_intent.payment_failed`,
 `payment_intent.canceled`, `charge.refunded`, `charge.refund.updated`,
-`checkout.session.expired`, `customer.deleted`, `invoice.created`,
-`invoice.finalized`, `invoice.paid`, `invoice.voided`.
+`checkout.session.expired`, `customer.created`, `customer.updated`,
+`customer.deleted`, `invoice.created`, `invoice.finalized`, `invoice.paid`,
+`invoice.voided`.
 
 A custom type is silently dropped by any merchant using `stripe-node`'s typed
 event union or an exhaustive `switch`. This is why a late success emits a plain
 `payment_intent.succeeded`: an event merchants structurally tend to ignore is
 the worst possible carrier for "money actually arrived".
 
-**Eight of the thirteen are written, and only eight.**
-`payment_intent.succeeded` and `payment_intent.payment_failed` come from the
-settlement transaction (TX 1 below); `checkout.session.expired` comes from the
-housekeeping sweep, since 2026-09-04; `customer.deleted` comes from the
-twelve-month customer retention sweep, since 2026-09-06 (S4a); and the four
-`invoice.*` types come from S4b, since 2026-09-07 —
-`invoice.created`/`invoice.finalized`/`invoice.voided` from the transitions
-that write them, each inside the transition's own transaction, and
-`invoice.paid` from TX 1 beside the `payment_intent.succeeded` that pays it.
-The other five are documented shapes nothing emits — events are written for
-terminal transitions only.
+### Which of them is written, and by what
+
+**Eleven of the fifteen are written, and only eleven.** Every writer below puts
+its `events` row in the *same transaction* as the transition it reports;
+there is no other shape in this repository, and TX 1 below is the reason.
+
+| Type | Written by | Since |
+|---|---|---|
+| `payment_intent.created` | — nothing | — |
+| `payment_intent.processing` | — nothing | — |
+| `payment_intent.succeeded` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-03 |
+| `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
+| `payment_intent.canceled` | `vpay_api::v1::payment_intents::cancel_with_event` | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
+| `charge.refunded` | — nothing | — |
+| `charge.refund.updated` | — nothing | — |
+| `checkout.session.expired` | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep | 2026-09-04 |
+| `customer.created` | `vpay_api::v1::customers::create_with_event` | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
+| `customer.updated` | `vpay_api::v1::customers::update_once`, under the row's lock | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
+| `customer.deleted` | `vpay_db::customers::delete_idle`, from the retention sweep | 2026-09-06 |
+| `invoice.created` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+| `invoice.finalized` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+| `invoice.paid` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-07 |
+| `invoice.voided` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+
+The four with no writer are documented shapes nothing emits — events are
+written for terminal transitions only, and `created`/`processing` are
+progress. The two refund types have no writer because no rail in this
+repository refunds anything (`../status.md`).
+
+**`payment_intent.payment_failed` has two writers, and that is deliberate.**
+A rail can refuse a charge in two places — at the submit, before the charge
+was ever polled (`persist_decline`, the `409 charge_declined` a merchant gets
+synchronously), and at a later status query (`apply_failed`, the worker's poll
+ladder). To a merchant they are one thing: this payment did not go through,
+the intent is back at `requires_payment_method`, `last_payment_error` says
+why. A second type would be a type a Stripe-shaped handler has no branch for,
+which is this document's standing rule. A merchant cannot receive both for one
+intent: there is one charge per intent, forever, and the submit path runs only
+when the rail refused it before anything polled it.
+
+Until 2026-09-10 only the poll path emitted, and the submit path was the one
+terminal outcome no signed event reported
+([#57](https://github.com/vaam-apps/vpay/issues/57)). The visible cost was in
+`examples/shop`: MTN's documented test number `237600000400` is refused at
+submit, so the shop's order stayed `unpaid` for ever and its README had to say
+so. **One case is fail-closed rather than emitting:** if the intent moved
+between the rail's refusal and the write — which `cancel`'s live-charge
+`NOT EXISTS` makes unreachable while a charge is `submitting` — the
+`last_payment_error` stamp matches no row, so there is no committed intent to
+render and no event is written. The alternative would be a body that is either
+stale or invented. It is a `WARN` naming both omissions.
+
+**`payment_intent.canceled` was in this vocabulary for seven days short of a
+week of releases with nothing writing it**, which is exactly the state
+migration `0023`'s lockstep rule exists to prevent and the one case that
+predates the rule. It came in with `0018`, both merchant SDKs carried the
+variant, this document listed it — and `POST /v1/payment_intents/{id}/cancel`
+was a single pooled statement that moved the row and told nobody. A merchant
+who settles from signed events could not reach a cancelled state at all
+(`examples/shop`'s order page was the visible half). Since 2026-09-10 the
+cancel runs in a transaction and the event is written inside it; the pooled
+`vpay_db::PaymentIntents::cancel` was **deleted** rather than left beside the
+transactional one, so "cancel without an event" is no longer expressible. A
+cancel the compare-and-swap refuses — a status that forbids it, or a charge
+the rail may still be acting on — writes no event, which is the other half.
 
 **The four `invoice.*` bodies carry `lines.data` EMPTY, and the `/v1` object
 does not.** The event's `data` is rendered inside the transaction that wrote
@@ -42,7 +97,8 @@ object, and it is stated here rather than discovered
 
 **Two Stripe invoice types are deliberately absent.**
 `invoice.marked_uncollectible` and `invoice.payment_failed` are not in the
-list, for `customer.created`'s reason immediately below: nothing writes them.
+list, for the reason `customer.created` was absent until 2026-09-10: nothing
+writes them.
 `POST /v1/invoices/{id}/mark_uncollectible` is a single statement with no
 transaction to put an event in, and a failed intent leaves the invoice `open`
 with the merchant already receiving `payment_intent.payment_failed`. A
@@ -60,21 +116,25 @@ is written inside the same transaction as the delete, so a crash cannot leave
 a customer erased with nobody told; see
 [customers.md](customers.md).
 
-**`customer.created` and `customer.updated` are NOT in the list above**, and
-that is deliberate rather than an omission. Both are real Stripe types and a
-Stripe-shaped handler has branches for them — but nothing in vpay writes
-either, and migration `0023`'s rule is that this vocabulary moves in lockstep
-with the code that writes it. `POST /v1/customers` and
-`POST /v1/customers/{id}` are single statements on the pool; emitting an event
-means putting the write and the event in one transaction, which is a change to
-the shape of two repository methods rather than a line in a `CHECK`. Adding
-the labels ahead of a writer would put two values in a closed vocabulary that
-no code can produce, which is what the mechanism exists to prevent. The five
-unwritten types above are the precedent for **not** doing it again: they came
-in together in `0018`, before the rule was written down, and have been listed
-as unwritten in this document's Status section ever since. Consequence for a
-merchant, stated plainly: **an external mirror of your customers has to
-poll.**
+**`customer.created` and `customer.updated` joined the list on 2026-09-10**
+([issue #66](https://github.com/vaam-apps/vpay/issues/66)), in migration
+`0039`, in the same change that wrote them — which is migration `0023`'s
+lockstep rule working as intended rather than an exception to it. This
+paragraph used to say the opposite and to explain why: `POST /v1/customers`
+and `POST /v1/customers/{id}` were single statements on the pool, emitting an
+event meant putting the write and the event in one transaction, and adding the
+labels ahead of a writer would have put two values in a closed vocabulary that
+no code could produce. The transaction is what changed; the labels followed
+it, not the other way round. **An external mirror of a merchant's customers no
+longer has to poll.**
+
+`customer.updated`'s transaction opens with `SELECT … FOR UPDATE` on the row,
+and that is load-bearing rather than cautious. `metadata` is merged key-wise,
+so the written value is a function of the stored one, and a pooled read left a
+window in which two concurrent updates each adding one key lost one of them. A
+merchant acting on an event describing the losing merge would be acting on a
+state the database does not hold — see [customers.md](customers.md). A
+**bodiless** update emits nothing: nothing was written.
 
 **`charge.refunded` and `charge.refund.updated` carry a `refund`**, which
 since 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)) is
@@ -148,6 +208,40 @@ stale event. `event.created` and the object's own `status` are what to reason
 from.
 
 ## Status
+
+**Updated 2026-09-10: three transitions that emitted nothing now emit, and the
+vocabulary is fifteen types of which eleven have a writer** (issues
+[#57](https://github.com/vaam-apps/vpay/issues/57) and
+[#66](https://github.com/vaam-apps/vpay/issues/66)). Nothing about the
+two-step outbox changed: each new event is one more row in `events`, written
+in the transaction of the transition it describes, and TX 2 fans it out with
+no branch on `type`. What changed is *which* transitions have a writer — see
+the table under "Only real Stripe event types" above, which is new and is the
+thing to read rather than counting by hand. The four pooled statements these
+replaced (`PaymentIntents::cancel`, `Customers::create`, `Customers::update`)
+were **deleted** rather than kept beside their transactional twins, because no
+gate in this repository objects to a `pub` method nobody calls.
+
+**Two of the three have been driven to a receiver, and the `customer.*` pair
+has not.** `a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver`
+and `a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver`
+(both in `backends/tests/integration/tests/webhooks.rs`) take their transition
+through the shipping route, the shipping fan-out and the shipping delivery
+handler, and read the bytes back out of the WireMock receiver's own journal —
+the second one against a real MTN stub answering `400 PAYER_NOT_FOUND`, which
+is the only way to reach `persist_decline` from the API without a test seam.
+The second was added by the sabotage review of 2026-09-10; until then this
+paragraph said "only one of the three", and the delivery of the submit-time
+`payment_intent.payment_failed` was an argument. It was worth measuring
+rather than arguing because that body is the only
+`payment_intent.payment_failed` in the system rendered by `vpay-api` instead
+of by `vpay_db::settlement`.
+
+`customer.created` and `customer.updated` are still asserted at the `events`
+row and no further. The fan-out is type-agnostic — it reads by `seq` and
+branches on nothing, and has now been observed carrying four types — so "they
+would deliver too" remains an argument for those two, and it is written here
+in those words.
 
 **Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
 `events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and
@@ -615,19 +709,29 @@ delivery has been observed reaching a receiver.**
   `a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan`); the runbook
   procedures for re-arming them have not been followed against a running
   system.
-- The three event types this document lists that nothing writes at all —
-  `payment_intent.created`, `payment_intent.processing`,
-  `payment_intent.canceled` — plus the two refund types, are unchanged: events
-  are written for terminal transitions only (decision 4 of
-  `docs/plans/2026-09-03-step4-worker.md`).
-- **`customer.created` and `customer.updated` are not in the vocabulary at
-  all** (2026-09-06, S4a), which is a different and stronger statement than
-  the five above: those are *listed and unwritten*, these are *absent*,
-  because the database refuses a type no code writes. A merchant mirroring
-  their customers externally has to poll `GET /v1/customers`. See the section
-  above for why the labels were not added ahead of a writer, and
-  [customers.md](customers.md) "What is not built" for what adding them would
-  cost.
+- The event types this document lists that nothing writes at all are
+  **two**, plus the two refund types: `payment_intent.created` and
+  `payment_intent.processing`. Events are written for terminal transitions
+  only (decision 4 of `docs/plans/2026-09-03-step4-worker.md`), and those two
+  are progress. *(This bullet named `payment_intent.canceled` as a third
+  until 2026-09-10; it has a writer now — see the table above and
+  [issue #57](https://github.com/vaam-apps/vpay/issues/57). It was the one
+  type in this vocabulary that predated migration `0023`'s lockstep rule and
+  never acquired a writer, which is why it sat here for a week of releases.)*
+- **`customer.created` and `customer.updated` were not in the vocabulary at
+  all** (2026-09-06, S4a) — a different and stronger statement than the four
+  above, because the database refuses a type no code writes. **Closed
+  2026-09-10** by migration `0039` and
+  [issue #66](https://github.com/vaam-apps/vpay/issues/66), in the same change
+  that made both routes transactional. A merchant mirroring their customers
+  externally no longer has to poll `GET /v1/customers`.
+- **No deployment has ever emitted a `customer.created` or a
+  `customer.updated` either.** Both are proven against a real Postgres through
+  the shipping router (`a_customer_create_and_update_each_emit_one_event_and_a_no_op_emits_none`,
+  `two_concurrent_metadata_merges_keep_both_keys_and_the_event_carries_the_committed_state`)
+  and neither has been fanned out to a receiver in any suite — the fan-out is
+  type-agnostic and has been observed for other types, which is an argument
+  and not a measurement.
 - **No deployment has ever emitted a `customer.deleted`.** The event, its
   fan-out and its delivery rows are proven against a real Postgres through the
   real worker loop by

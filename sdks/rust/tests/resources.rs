@@ -1945,8 +1945,47 @@ fn the_customer_deleted_event_type_is_known_and_its_payload_decodes() {
     );
     // A type this SDK version predates is still `None` rather than an error —
     // the property `KnownEventType` exists for, restated for the new variant.
-    assert_eq!(KnownEventType::from_wire("customer.created"), None);
+    // The needle used to be `customer.created`, which vpay started emitting
+    // on 2026-09-10 (issue #66) and this union now carries; it is a
+    // `customer.*` type vpay has no writer for and could not have one for,
+    // since it has no subscriptions.
+    assert_eq!(
+        KnownEventType::from_wire("customer.subscription.created"),
+        None
+    );
 
+    let payload: Value = support::customer_json("cus_1");
+    let customer: vpay_sdk::Customer =
+        serde_json::from_value(payload).expect("the event payload is a customer");
+    assert_eq!(customer.id, "cus_1");
+    assert_eq!(customer.phone.as_deref(), Some("237600000200"));
+}
+
+/// `customer.created` and `customer.updated` are known event types and their
+/// payloads decode as a customer.
+///
+/// Both were **absent** from this union until 2026-09-10, and the reason was
+/// recorded rather than left implicit: the server emitted neither, so a union
+/// entry would have been a claim about vpay that was false
+/// ([vpay issue #66](https://github.com/vaam-apps/vpay/issues/66),
+/// `docs/sdks/parity.md`). Migration `0039` and
+/// `vpay_api::v1::customers::{create_with_event, update_once}` are what made
+/// them true, and this case is what stops the union from silently losing them
+/// again — `verify-sdk-parity` requires the ✅ in the matrix to name a test
+/// that exists in *this* SDK's sources.
+#[test]
+fn the_customer_created_and_updated_event_types_are_known_and_their_payloads_decode() {
+    for (wire, expected) in [
+        ("customer.created", KnownEventType::CustomerCreated),
+        ("customer.updated", KnownEventType::CustomerUpdated),
+    ] {
+        assert_eq!(KnownEventType::from_wire(wire), Some(expected));
+        assert_eq!(expected.as_wire_str(), wire);
+    }
+
+    // The payload is the same object `customer.deleted` carries and the same
+    // one `GET /v1/customers/{id}` returns — one shape, so a merchant's
+    // handler and their read cannot disagree about a field.
     let payload: Value = support::customer_json("cus_1");
     let customer: vpay_sdk::Customer =
         serde_json::from_value(payload).expect("the event payload is a customer");
