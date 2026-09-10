@@ -82,14 +82,24 @@ pub fn adapters_by_code(
 ///
 /// # Errors
 ///
-/// [`ConfigError::ProviderWithoutAdapter`] for a configured rail the calling
-/// binary links no code for. That is now the *only* error this returns: it
-/// also returned [`ConfigError::Validation`] for "a currency exponent that
-/// does not fit the column" until migration 0032 widened
-/// `currencies.exponent` to `BIGINT` and `CurrencySeed::exponent` to `i64`.
-/// Every `u32` fits an `i64`, so that arm became unreachable *by type*
-/// rather than merely unreached, and a `try_from` kept for it would have
-/// been an error path no input could take — see the conversion below.
+/// Two, and both are [`Category::Configuration`] — exit **78**, "fix the
+/// deploy" — at every call site:
+///
+/// * [`ConfigError::ProviderWithoutAdapter`] for a configured rail the
+///   calling binary links no code for;
+/// * [`ConfigError::IncoherentCapabilities`] for a configured rail whose
+///   adapter declares `supports_partial_refunds` without `supports_refunds`
+///   (issue #61, 2026-09-10) — see the check itself for why boot is where
+///   that is caught.
+///
+/// **This paragraph said the first was "now the *only* error this returns"
+/// until the second one landed**, which is the drift a `# Errors` section
+/// exists to make visible. It also returned [`ConfigError::Validation`] for
+/// "a currency exponent that does not fit the column" until migration 0032
+/// widened `currencies.exponent` to `BIGINT` and `CurrencySeed::exponent` to
+/// `i64`. Every `u32` fits an `i64`, so that arm became unreachable *by
+/// type* rather than merely unreached, and a `try_from` kept for it would
+/// have been an error path no input could take — see the conversion below.
 pub fn boot_seeds(
     config: &Config,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
@@ -128,6 +138,20 @@ pub fn boot_seeds(
                 }
             })?;
             let capabilities = adapter.capabilities();
+            // Issue #61. Refused here, where it is a `ConfigError` and the
+            // process exits 78, rather than two steps later where migration
+            // 0002's `partial_refunds_imply_refunds` CHECK refuses the row
+            // and the process exits 1 — "page someone", about a database
+            // that is working perfectly. Both numbers are measured, in
+            // `main`'s order and against a real Postgres, by
+            // `backends/tests/integration/tests/boot_coherence.rs`.
+            //
+            // Every *configured* rail, `enabled` or not: `enabled` is a
+            // column on the row this seed becomes, not a reason to skip
+            // writing it. A rail this binary links but the YAML does not
+            // name writes no row at all, and `vpay-server`'s own
+            // `no_adapter_advertises_partial_without_full_refunds` covers
+            // the whole linked list.
             if !capabilities.is_coherent() {
                 return Err(ConfigError::IncoherentCapabilities {
                     code: provider.code.clone(),
