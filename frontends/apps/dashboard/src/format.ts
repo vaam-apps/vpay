@@ -6,7 +6,7 @@
  * off by a factor of a hundred is not a rendering bug, it is a wrong number
  * on an operator's screen.
  */
-import { PAYMENT_STATUS, type PaymentStatus } from '@vpay/tokens';
+import { PAYMENT_STATUS, type PaymentStatus } from "@vpay/tokens";
 
 /**
  * The em dash this app shows where a value is genuinely absent.
@@ -15,7 +15,7 @@ import { PAYMENT_STATUS, type PaymentStatus } from '@vpay/tokens';
  * can assert on it. It is never a substitute for a zero: a zero amount is
  * `0`, and a `null` payer reference is this.
  */
-export const ABSENT = '—';
+export const ABSENT = "—";
 
 /**
  * An amount in **integer minor units** plus its currency, as text.
@@ -41,10 +41,12 @@ export function formatAmount(minorUnits: number, currency: string): string {
   // Integer arithmetic only, then a string with the point inserted — the
   // major/minor split is done on the digits, not by dividing.
   const negative = minorUnits < 0;
-  const units = Math.abs(minorUnits).toString().padStart(digits + 1, '0');
+  const units = Math.abs(minorUnits)
+    .toString()
+    .padStart(digits + 1, "0");
   const major = units.slice(0, units.length - digits);
-  const minor = digits === 0 ? '' : `.${units.slice(units.length - digits)}`;
-  return `${negative ? '-' : ''}${group(major)}${minor} ${code}`;
+  const minor = digits === 0 ? "" : `.${units.slice(units.length - digits)}`;
+  return `${negative ? "-" : ""}${group(major)}${minor} ${code}`;
 }
 
 /**
@@ -59,7 +61,7 @@ export function formatAmount(minorUnits: number, currency: string): string {
  * avoid. The digits never stop being digits here.
  */
 function group(digits: string): string {
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /**
@@ -78,12 +80,17 @@ function group(digits: string): string {
  */
 function exponentOf(code: string): number | null {
   try {
-    if (typeof Intl.supportedValuesOf === 'function' && !Intl.supportedValuesOf('currency').includes(code)) {
+    if (
+      typeof Intl.supportedValuesOf === "function" &&
+      !Intl.supportedValuesOf("currency").includes(code)
+    ) {
       return null;
     }
     return (
-      new Intl.NumberFormat('en', { style: 'currency', currency: code }).resolvedOptions()
-        .maximumFractionDigits ?? 0
+      new Intl.NumberFormat("en", {
+        style: "currency",
+        currency: code,
+      }).resolvedOptions().maximumFractionDigits ?? 0
     );
   } catch {
     // A code that is not even well-formed — `Intl` throws a RangeError.
@@ -119,7 +126,9 @@ export function formatInstant(unixSeconds: number): string {
  * on a value that is not it.
  */
 export function asPaymentStatus(value: string): PaymentStatus | null {
-  return (PAYMENT_STATUS as readonly string[]).includes(value) ? (value as PaymentStatus) : null;
+  return (PAYMENT_STATUS as readonly string[]).includes(value)
+    ? (value as PaymentStatus)
+    : null;
 }
 
 /**
@@ -131,7 +140,7 @@ export function asPaymentStatus(value: string): PaymentStatus | null {
  * `payments-table.tsx`.
  */
 export function formatMethods(types: readonly string[]): string {
-  return types.length === 0 ? ABSENT : types.join(', ');
+  return types.length === 0 ? ABSENT : types.join(", ");
 }
 
 /**
@@ -180,5 +189,8 @@ function isPlainDate(value: string): boolean {
     return false;
   }
   const parsed = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  return (
+    !Number.isNaN(parsed.getTime()) &&
+    parsed.toISOString().slice(0, 10) === value
+  );
 }

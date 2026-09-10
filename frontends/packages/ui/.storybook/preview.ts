@@ -1,6 +1,6 @@
-import type { Preview } from '@storybook/react-vite';
+import type { Preview } from "@storybook/react-vite";
 
-import '../src/styles.css';
+import "../src/styles.css";
 
 /**
  * `bumblebee` is the only theme that ships (plan §4.2, §1) — the checkout
@@ -9,17 +9,17 @@ import '../src/styles.css';
  * global remains only so a future second theme has one place to add a
  * toolbar entry, rather than reinventing the decorator.
  */
-const THEME = 'bumblebee';
+const THEME = "bumblebee";
 
 const preview: Preview = {
   parameters: {
     controls: { matchers: { color: /(background|color)$/i, date: /Date$/i } },
     backgrounds: { disable: true },
-    a11y: { config: { rules: [{ id: 'color-contrast', enabled: true }] } },
+    a11y: { config: { rules: [{ id: "color-contrast", enabled: true }] } },
   },
   decorators: [
     (Story) => {
-      document.documentElement.setAttribute('data-theme', THEME);
+      document.documentElement.setAttribute("data-theme", THEME);
       return Story();
     },
   ],

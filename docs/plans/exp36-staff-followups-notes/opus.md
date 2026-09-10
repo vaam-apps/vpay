@@ -8,13 +8,13 @@ gate could not be run at all. Both are stated here before anything else.
 
 ## What is NOT done
 
-| Item | Why |
-|---|---|
-| **#88 item 1 — proactive token re-mint** | The *reactive* re-mint already exists (`server/dash-read.ts` runs the authorization-code leg once on a `401`, so a render at TTL+1 works today). Making it happen **before** the 900 s TTL needs a `staff_sessions.access_token_expires_at` column (a second migration), a field on `GET /staff/session`, a `gateFor` that treats a nearly-expired token as `needs-token`, and a configurable TTL so an e2e can use a short one. That is a second pass, and half of it would have been unprovable without the e2e run below |
-| **#79 item 4 — the payer mask** | Out of scope by the brief: it touches the `charges` write S5 owns |
-| **#88 item 3 — the pager's `has_more` Cypress case** | Not attempted; it needs the e2e run below |
-| **#88 item 5 — the `@vpay/ui` select flake** | Not attempted |
-| **`just test-e2e`** | **Could not be run.** See below |
+| Item                                                 | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **#88 item 1 — proactive token re-mint**             | The _reactive_ re-mint already exists (`server/dash-read.ts` runs the authorization-code leg once on a `401`, so a render at TTL+1 works today). Making it happen **before** the 900 s TTL needs a `staff_sessions.access_token_expires_at` column (a second migration), a field on `GET /staff/session`, a `gateFor` that treats a nearly-expired token as `needs-token`, and a configurable TTL so an e2e can use a short one. That is a second pass, and half of it would have been unprovable without the e2e run below |
+| **#79 item 4 — the payer mask**                      | Out of scope by the brief: it touches the `charges` write S5 owns                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **#88 item 3 — the pager's `has_more` Cypress case** | Not attempted; it needs the e2e run below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **#88 item 5 — the `@vpay/ui` select flake**         | Not attempted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **`just test-e2e`**                                  | **Could not be run.** See below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ### `just test-e2e` could not be run, and this is not a skip
 
@@ -60,7 +60,7 @@ caller-supplied string means the **more permissive** answer wins.
 **A bug the tests caught while being written**, recorded because it is the
 kind that ships: the absent-header branch was `let header = forwarded_for?;`,
 which compiles, reads identically to the right thing, and returns `None`
-*from the function* — so every trusted-proxy deployment would have counted
+_from the function_ — so every trusted-proxy deployment would have counted
 every request with no `X-Forwarded-For` under the limiter's one shared
 unknown-address key. `an_all_trusted_header_falls_back_to_the_peer` found it.
 
@@ -113,7 +113,7 @@ member. A **breaking change** to that endpoint and to the dashboard's form.
 
 The argument for the current password being absent was written down in three
 places — the handler, the repository method and the React component — and it
-missed one word: *when*. A session lives twelve hours and its two factors
+missed one word: _when_. A session lives twelve hours and its two factors
 were presented once, at its start, so the credential protecting an
 irreversible takeover (the change also clears `password_change_required`) was
 the session cookie alone.
@@ -129,7 +129,7 @@ not cost an argon2id verification.
 `refusalFor` in `server/gate.ts` — a pure function, so "a `503` signs
 everybody out" is a red test rather than something noticed during an
 incident. `401` is the only status that ends a session, which is exact rather
-than conservative because vpay answers `401` for *every* session refusal by
+than conservative because vpay answers `401` for _every_ session refusal by
 design.
 
 `server/api.ts` turns a rejected `fetch` into an `ApiFailure` with
@@ -158,18 +158,18 @@ and no helm value was touched by this branch.
 
 ## The mutations, each actually run
 
-| Mutation | Result |
-|---|---|
-| Drop `proxies.contains(peer)` in `client_address` | `a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` reads `401`, demands `429` |
-| Give each `SignInLimiter` instance its own counters (the in-process limiter this replaces) | `two_replicas_share_one_sign_in_budget` reads `[401, 401, 401, 401, 401, 401]` |
-| Delete the `verify_password` of `current_password` | `changing_a_password_…` reads `200` where it demands `401` |
-| Delete the `delete_others` call | the other browser's next render reads `200` where it demands `401` |
-| Widen `refusalFor` to `status >= 400` | four of five `gate.test.ts` cases red |
-| Prefer the caller-supplied host over the configured origin (what Next does) | the forwarded-host case in `csrf.test.ts` red |
+| Mutation                                                                                   | Result                                                                                          |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| Drop `proxies.contains(peer)` in `client_address`                                          | `a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` reads `401`, demands `429` |
+| Give each `SignInLimiter` instance its own counters (the in-process limiter this replaces) | `two_replicas_share_one_sign_in_budget` reads `[401, 401, 401, 401, 401, 401]`                  |
+| Delete the `verify_password` of `current_password`                                         | `changing_a_password_…` reads `200` where it demands `401`                                      |
+| Delete the `delete_others` call                                                            | the other browser's next render reads `200` where it demands `401`                              |
+| Widen `refusalFor` to `status >= 400`                                                      | four of five `gate.test.ts` cases red                                                           |
+| Prefer the caller-supplied host over the configured origin (what Next does)                | the forwarded-host case in `csrf.test.ts` red                                                   |
 
 **One mutation was wrong and is recorded as such.** The first attempt at the
 two-replica mutation salted the key with `std::process::id()` — and it
-*passed*, because both "replicas" are two `axum::serve` tasks in one test
+_passed_, because both "replicas" are two `axum::serve` tasks in one test
 process. That is a fact about the harness, not about the code, and it is now
 written into the test's own doc comment: what two OS processes would
 additionally catch is a counter in a process-global `static`, of which there
@@ -182,16 +182,16 @@ file rather than from a harness banner. (No SHA here on purpose: the commit
 that carries this document is the head, so a SHA written into it would name
 its own parent and read as a claim about a tree one commit older.)
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | clean (only the touched files were formatted, with `rustfmt` rather than `just fmt`) |
-| `clippy` | clean |
-| `verify` (12 gates) | all ok — `verify-migrations` 38 files, `check-schema` 26 declarations under cratestack **0.12.0** |
-| `test-rust` | **1619 passed, 0 skipped, 0 ignored** |
-| `test-doc` | 109 doctests passed |
-| `verify-ignored` | 0 ignored (expected 0), 45 binaries (expected 45), 1619 total (min 1080) |
-| `lint-web`, `test-web` | clean; dashboard **172** (from 151), checkout 507, shop 102 |
-| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+| Recipe                 | Result                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `fmt-check`            | clean (only the touched files were formatted, with `rustfmt` rather than `just fmt`)              |
+| `clippy`               | clean                                                                                             |
+| `verify` (12 gates)    | all ok — `verify-migrations` 38 files, `check-schema` 26 declarations under cratestack **0.12.0** |
+| `test-rust`            | **1619 passed, 0 skipped, 0 ignored**                                                             |
+| `test-doc`             | 109 doctests passed                                                                               |
+| `verify-ignored`       | 0 ignored (expected 0), 45 binaries (expected 45), 1619 total (min 1080)                          |
+| `lint-web`, `test-web` | clean; dashboard **172** (from 151), checkout 507, shop 102                                       |
+| `deny`                 | advisories ok, bans ok, licenses ok, sources ok                                                   |
 
 Drift: **167 → 172** changes over **23 → 24** relations, unmappable columns
 **unmoved at 19** — five lines, all of them a hand-named CHECK or an index,

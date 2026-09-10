@@ -1,4 +1,4 @@
-import axe from 'axe-core';
+import axe from "axe-core";
 
 /**
  * Structural accessibility checks only — plan §7 row 5.
@@ -15,21 +15,21 @@ import axe from 'axe-core';
  * a DOM-structure or ARIA-attribute check, not a rendered-pixel check.
  */
 const STRUCTURAL_RULES = [
-  'label',
-  'button-name',
-  'link-name',
-  'aria-required-attr',
-  'aria-required-children',
-  'aria-required-parent',
-  'aria-roles',
-  'aria-valid-attr',
-  'aria-valid-attr-value',
-  'aria-command-name',
-  'region',
-  'list',
-  'listitem',
-  'duplicate-id',
-  'duplicate-id-aria',
+  "label",
+  "button-name",
+  "link-name",
+  "aria-required-attr",
+  "aria-required-children",
+  "aria-required-parent",
+  "aria-roles",
+  "aria-valid-attr",
+  "aria-valid-attr-value",
+  "aria-command-name",
+  "region",
+  "list",
+  "listitem",
+  "duplicate-id",
+  "duplicate-id-aria",
 ];
 
 /**
@@ -39,6 +39,8 @@ const STRUCTURAL_RULES = [
  * node, not just that something failed.
  */
 export async function axeViolations(container: Element): Promise<axe.Result[]> {
-  const results = await axe.run(container, { runOnly: { type: 'rule', values: STRUCTURAL_RULES } });
+  const results = await axe.run(container, {
+    runOnly: { type: "rule", values: STRUCTURAL_RULES },
+  });
   return results.violations;
 }

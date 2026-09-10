@@ -53,15 +53,15 @@
  * of this file is that a caller must not be able to remove the check by
  * removing a header.
  */
-import { headers } from 'next/headers';
+import { headers } from "next/headers";
 
-import { dashboardConfig } from '../config/runtime';
-import type { FormState } from '../form-state';
+import { dashboardConfig } from "../config/runtime";
+import type { FormState } from "../form-state";
 
 /** The header naming the origin a request was issued from. */
-export const ORIGIN_HEADER = 'origin';
+export const ORIGIN_HEADER = "origin";
 /** The host a request was addressed to, as the client wrote it. */
-export const HOST_HEADER = 'host';
+export const HOST_HEADER = "host";
 
 /**
  * The sentence a refused action answers with.
@@ -73,7 +73,7 @@ export const HOST_HEADER = 'host';
  * forge.
  */
 export const CROSS_ORIGIN_REFUSED =
-  'This request did not come from this dashboard. Reload the page and try again.';
+  "This request did not come from this dashboard. Reload the page and try again.";
 
 /**
  * `scheme://host[:port]`, lower-cased, with no trailing slash and no path.
@@ -85,13 +85,15 @@ export const CROSS_ORIGIN_REFUSED =
  * `file://` document, some redirects) is therefore refused rather than
  * treated as absent.
  */
-export function normaliseOrigin(value: string | null | undefined): string | null {
-  if (typeof value !== 'string' || value.trim().length === 0) {
+export function normaliseOrigin(
+  value: string | null | undefined,
+): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) {
     return null;
   }
   try {
     const url = new URL(value.trim());
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
       return null;
     }
     return url.origin.toLowerCase();
@@ -137,10 +139,10 @@ export function originIsAllowed(
   // origin — which means this fallback cannot distinguish `http` from
   // `https` on one host. Stated rather than papered over; the configured
   // value is what a deployment that cares should set.
-  if (typeof host !== 'string' || host.trim().length === 0) {
+  if (typeof host !== "string" || host.trim().length === 0) {
     return false;
   }
-  return seen.slice(seen.indexOf('//') + 2) === host.trim().toLowerCase();
+  return seen.slice(seen.indexOf("//") + 2) === host.trim().toLowerCase();
 }
 
 /**
@@ -165,7 +167,7 @@ export async function originRefusal(): Promise<FormState | null> {
   }
   // eslint-disable-next-line no-console -- an operator whose proxy rewrites Host needs to see this, and it carries no credential: the Origin header of a request that was refused before anything was read from it.
   console.warn(
-    `[vpay-dashboard] a server action was refused: Origin ${store.get(ORIGIN_HEADER) ?? '(absent)'} is not this deployment's public origin. Set VPAY_DASHBOARD_PUBLIC_ORIGIN if this app is behind a proxy.`,
+    `[vpay-dashboard] a server action was refused: Origin ${store.get(ORIGIN_HEADER) ?? "(absent)"} is not this deployment's public origin. Set VPAY_DASHBOARD_PUBLIC_ORIGIN if this app is behind a proxy.`,
   );
   return { error: CROSS_ORIGIN_REFUSED, requestId: null };
 }

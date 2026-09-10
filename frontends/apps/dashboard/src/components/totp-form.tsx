@@ -1,11 +1,11 @@
-'use client';
+"use client";
 
-import { useActionState } from 'react';
+import { useActionState } from "react";
 
-import { Button, Field, FieldLabel, Input, Stack } from '@vpay/ui';
+import { Button, Field, FieldLabel, Input, Stack } from "@vpay/ui";
 
-import { NO_ERROR, type FormAction } from '../form-state';
-import { FormAlert } from './form-alert';
+import { NO_ERROR, type FormAction } from "../form-state";
+import { FormAlert } from "./form-alert";
 
 /** RFC 6238's digit count, and what the field is constrained to. */
 export const CODE_LENGTH = 6;
@@ -64,10 +64,10 @@ export function TotpForm({ action, enrolling = false }: TotpFormProps) {
 
         <Button type="submit" block disabled={pending}>
           {pending
-            ? 'Checking…'
+            ? "Checking…"
             : enrolling
-              ? 'Confirm and finish enrolment'
-              : 'Continue'}
+              ? "Confirm and finish enrolment"
+              : "Continue"}
         </Button>
       </Stack>
     </form>

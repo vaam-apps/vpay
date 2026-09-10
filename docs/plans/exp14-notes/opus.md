@@ -19,39 +19,39 @@ default-features = false, features = ["postgres"] }`.
 rather than chosen: `default = ["postgres", "decimal-rust-decimal",
 "codec-json"]`.
 
-| Feature | Taken? | Why |
-|---|---|---|
-| `postgres` | yes | `dep:cratestack-sqlx` + `cratestack-macros/postgres` — the entire data layer. `include_server_schema!(…, db = Postgres)` has no backend without it. |
-| `decimal-rust-decimal` | **no** | Exists to make `cratestack_core::Decimal` and the `sqlx-core/rust_decimal` bridge exist. `schemas/vpay.cstack` declares no `Decimal` field — vpay's money is integer minor units. |
-| `codec-json` | **no** | `cratestack-client-rust/codec-json`, the *generated client's* JSON codec. vpay generates no client. |
-| `crypto-aws-lc-rs` | **never** | `deny.toml` bans `aws-lc-rs`; and at 0.11.1 the feature is a `compile_error!`, not a working mode (`cratestack-pg-0.11.1/src/lib.rs:199-215`). |
-| `pgvector`, `postgis`, `rate_limit`, `decimal-bigdecimal` | no | Nothing here uses them. |
+| Feature                                                   | Taken?    | Why                                                                                                                                                                               |
+| --------------------------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`                                                | yes       | `dep:cratestack-sqlx` + `cratestack-macros/postgres` — the entire data layer. `include_server_schema!(…, db = Postgres)` has no backend without it.                               |
+| `decimal-rust-decimal`                                    | **no**    | Exists to make `cratestack_core::Decimal` and the `sqlx-core/rust_decimal` bridge exist. `schemas/vpay.cstack` declares no `Decimal` field — vpay's money is integer minor units. |
+| `codec-json`                                              | **no**    | `cratestack-client-rust/codec-json`, the _generated client's_ JSON codec. vpay generates no client.                                                                               |
+| `crypto-aws-lc-rs`                                        | **never** | `deny.toml` bans `aws-lc-rs`; and at 0.11.1 the feature is a `compile_error!`, not a working mode (`cratestack-pg-0.11.1/src/lib.rs:199-215`).                                    |
+| `pgvector`, `postgis`, `rate_limit`, `decimal-bigdecimal` | no        | Nothing here uses them.                                                                                                                                                           |
 
 **Graph delta, measured.** `Cargo.lock`: **469 → 497 packages (+28)**, plus
 one version bump (`syn 3.0.3 → 3.0.5`). Cargo's own resolve line:
 `Locking 29 packages to latest Rust 1.94 compatible versions`.
 
-**Corrected 2026-09-06 by review:** those 28 are Cargo.lock *entries*, and
+**Corrected 2026-09-06 by review:** those 28 are Cargo.lock _entries_, and
 only **25 are new crate names**. The other three — `const-oid` 0.9.6,
-`foldhash` 0.2.0 and `hashbrown` 0.15.5 — are additional *versions* of crates
+`foldhash` 0.2.0 and `hashbrown` 0.15.5 — are additional _versions_ of crates
 the graph already carried, which is why they appear both in the table below
 and in the duplicate-majors sentence after it. `comm -13` over the two
 lockfiles' unique name sets is the measurement.
 
-| Crate | Licence |
-|---|---|
-| `cratestack-{pg,axum,client-rust,codec-cbor,codec-json,core,exec,macros,parser,policy,sql,sqlx}` (12) | MIT |
-| `ariadne`, `chumsky` | MIT |
-| `const-oid`, `erased-serde`, `hashbrown`, `object`, `psm`, `stacker`, `typeid`, `unicode-segmentation`, `unicode-width`, `wasm-streams` | MIT OR Apache-2.0 |
-| `ar_archive_writer` | Apache-2.0 WITH LLVM-exception |
-| `foldhash` | Zlib |
-| **`minicbor` 2.3.0, `minicbor-serde` 0.7.1** | **BlueOak-1.0.0** |
+| Crate                                                                                                                                   | Licence                        |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `cratestack-{pg,axum,client-rust,codec-cbor,codec-json,core,exec,macros,parser,policy,sql,sqlx}` (12)                                   | MIT                            |
+| `ariadne`, `chumsky`                                                                                                                    | MIT                            |
+| `const-oid`, `erased-serde`, `hashbrown`, `object`, `psm`, `stacker`, `typeid`, `unicode-segmentation`, `unicode-width`, `wasm-streams` | MIT OR Apache-2.0              |
+| `ar_archive_writer`                                                                                                                     | Apache-2.0 WITH LLVM-exception |
+| `foldhash`                                                                                                                              | Zlib                           |
+| **`minicbor` 2.3.0, `minicbor-serde` 0.7.1**                                                                                            | **BlueOak-1.0.0**              |
 
 `cargo tree -i aws-lc-rs` → `error: package ID specification aws-lc-rs did
 not match any packages` (still empty). `cargo tree -i aws-lc-sys` the same.
 `cargo tree -d --depth 0`: 77 → 82 entries, and **no sqlx duplication** —
 `sqlx-core` appears only at `0.9.0` (it was already listed twice at that same
-version *before* this change, i.e. two feature-resolved units, not two
+version _before_ this change, i.e. two feature-resolved units, not two
 versions; measured by running the same command on the reverted tree). The
 genuinely new version duplicates are `const-oid` (0.9.6 / 0.10.2),
 `foldhash` (0.1.5 / 0.2.0) and — **added 2026-09-06 by review, the sentence
@@ -131,10 +131,10 @@ auth().isSystem())` and nothing else. `cratestack_min_declarations` 12 → 13.
 is the §6 item the design flagged as unverified, and it decides whether the
 drift count moves at all:
 
-| Spelling | Report line for `disabled_clients` | Header |
-|---|---|---|
+| Spelling                  | Report line for `disabled_clients`                                | Header                                                       |
+| ------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------ |
 | `@default(dbgenerated())` | `[safe] column disabled_at default value differs from the schema` | `drift detected in 17 table(s)/view(s) (86 change(s) total)` |
-| `@default(now())` | *(the table is absent from the report)* | `drift detected in 16 table(s)/view(s) (85 change(s) total)` |
+| `@default(now())`         | _(the table is absent from the report)_                           | `drift detected in 16 table(s)/view(s) (85 change(s) total)` |
 
 `migrate baseline` reads the live default through `parse_default("now()")` →
 `ColumnDefault::Function("now()")`; `@default(now())` converts to the same
@@ -259,15 +259,15 @@ exit=0
 
 - `a_cratestack_handle_is_a_handle_and_its_error_is_not` — a synthetic
   `struct CsChargeStore { cs: Cratestack }` and `struct RawRuntimeStore {
-  runtime: SqlxRuntime }` join the set; `struct PersistenceError { inner:
-  CratestackError }` and `struct Scoped { ctx: CratestackContext }` do not.
+runtime: SqlxRuntime }` join the set; `struct PersistenceError { inner:
+CratestackError }` and `struct Scoped { ctx: CratestackContext }` do not.
   Whole-identifier matching is what separates them, and both halves are
   asserted.
 - `publishing_the_generated_schema_module_fails_the_gate_itself` — the four
   cases above plus `pub(crate) mod schema;` (allowed: it leaves no crate) and
   "the module is not declared at all" (fails, rather than passing vacuously).
 - `a_similarly_named_module_is_not_the_generated_one` — `pub use
-  schema_helpers::Thing;` is not a hit; a private `use` is not a leak.
+schema_helpers::Thing;` is not a hit; a private `use` is not a leak.
 
 `cargo nextest run -p xtask`: **197 passed, 0 skipped** (194 before).
 
@@ -282,7 +282,7 @@ by naming the variant, which `verify-errors` requires.
 Unit tests in `persistence.rs`:
 
 - `a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx` —
-  a `23505` through `classify_cratestack` gives the *same* `category`, `code`
+  a `23505` through `classify_cratestack` gives the _same_ `category`, `code`
   and `retry` as `DbError::UniqueViolation` (`Conflict` / `resource_conflict`
   / `Never` / 409), and **`assert_ne!` against CrateStack's own answer**,
   which is `500` for a `DatabaseTyped`. A `23503` is checked against
@@ -298,7 +298,7 @@ Unit tests in `persistence.rs`:
 **Two honest limits**, both in the code's doc comments rather than glossed:
 `FindUnique::run` maps its `sqlx::Error` with
 `CratestackError::Database(error.to_string())` — **not** through
-`cratestack_error_from_sqlx` — so a CrateStack *read* never carries a
+`cratestack_error_from_sqlx` — so a CrateStack _read_ never carries a
 SQLSTATE and every failure of the one query vpay runs lands on `Backend` →
 `Storage`. And `Forbidden` is produced only on the write/batch paths
 (`query/write/*_exec.rs`, `query/batch/*`), never on a read, because a
@@ -318,21 +318,21 @@ over, and each unexecuted case is named below.
 
 ### Run, green
 
-| Gate | Result |
-|---|---|
-| `cargo build --workspace --all-targets` | clean, **zero warnings** — including the whole generated schema under `unreachable_pub`, `missing_debug_implementations` and the `unwrap`/`expect`/`panic` clippy denies |
-| `just fmt-check` (`cargo fmt --all -- --check`) | exit 0 |
-| `just clippy` (`--workspace --all-targets -- -D warnings`) | exit 0 |
-| `just verify` — the **ten** gates | all ok; `verify-repositories` now also prints "and no generated schema module is exported" |
-| `just check-schema` | `cratestack 0.11.1`, 13 model/enum declarations, `schema OK` |
-| `cargo nextest run -p vpay-db --lib` | **24 passed, 0 skipped** — including all five `persistence::tests` |
-| `cargo nextest run -p xtask` | **197 passed, 0 skipped** (194 on master) |
-| `just test-doc` | **90 passed, 0 failed, 1 ignored**. This branch adds **no** doctest fence (`git diff origin/master..HEAD -- '*.rs' \| grep -c '^+.*```'` = 0), so the count is master's. |
-| `just verify-ignored` | `0 ignored (expected 0), 41 test binaries (expected 41), 1288 total (minimum 1080)` — master was 1279, and +9 is exactly this branch's 1 parity + 5 persistence + 3 xtask tests. No new test binary, so `expected_suites` and `min_tests` do not move. |
-| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
-| `just docs-check` | ok (`verify-status`, `verify-links`) |
-| `just lint-web` | exit 0 |
-| `just test-web` | exit 0 |
+| Gate                                                       | Result                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cargo build --workspace --all-targets`                    | clean, **zero warnings** — including the whole generated schema under `unreachable_pub`, `missing_debug_implementations` and the `unwrap`/`expect`/`panic` clippy denies                                                                               |
+| `just fmt-check` (`cargo fmt --all -- --check`)            | exit 0                                                                                                                                                                                                                                                 |
+| `just clippy` (`--workspace --all-targets -- -D warnings`) | exit 0                                                                                                                                                                                                                                                 |
+| `just verify` — the **ten** gates                          | all ok; `verify-repositories` now also prints "and no generated schema module is exported"                                                                                                                                                             |
+| `just check-schema`                                        | `cratestack 0.11.1`, 13 model/enum declarations, `schema OK`                                                                                                                                                                                           |
+| `cargo nextest run -p vpay-db --lib`                       | **24 passed, 0 skipped** — including all five `persistence::tests`                                                                                                                                                                                     |
+| `cargo nextest run -p xtask`                               | **197 passed, 0 skipped** (194 on master)                                                                                                                                                                                                              |
+| `just test-doc`                                            | **90 passed, 0 failed, 1 ignored**. This branch adds **no** doctest fence (`git diff origin/master..HEAD -- '*.rs' \| grep -c '^+.*```'` = 0), so the count is master's.                                                                               |
+| `just verify-ignored`                                      | `0 ignored (expected 0), 41 test binaries (expected 41), 1288 total (minimum 1080)` — master was 1279, and +9 is exactly this branch's 1 parity + 5 persistence + 3 xtask tests. No new test binary, so `expected_suites` and `min_tests` do not move. |
+| `just deny`                                                | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                                                                                      |
+| `just docs-check`                                          | ok (`verify-status`, `verify-links`)                                                                                                                                                                                                                   |
+| `just lint-web`                                            | exit 0                                                                                                                                                                                                                                                 |
+| `just test-web`                                            | exit 0                                                                                                                                                                                                                                                 |
 
 ### Run before the outage, on this branch
 
@@ -361,7 +361,7 @@ of the 1288 above); none has been run:
    `context/system.rs`, and the schema's own comment records it — but it is
    an argument, not evidence, until the mutation has been run.
 3. **`just test-rust`** (`cargo nextest run --workspace`) — the workspace was
-   *listed* (1288 tests, 41 binaries, 0 ignored) but not run. Every
+   _listed_ (1288 tests, 41 binaries, 0 ignored) but not run. Every
    container-backed suite in `vpay-db`, `vpay-tests-integration`,
    `vpay-server` and `vpay-worker-bin` is therefore unexecuted on this
    branch, including the ones this change could plausibly disturb:
@@ -401,7 +401,7 @@ SDK-reading parity tests and this branch's `repository_tests` are present —
 the two `the_repositorys_own_tree_passes` functions that a duplicate-name scan
 flags are **not** a duplicate definition, one is `serde_tests`' and one is
 `repository_tests`'), `backends/crates/vpay-db/src/lib.rs` (#51's
-`pub mod refunds;` / `pub use refunds::{RefundRow, Refunds};` *and* this
+`pub mod refunds;` / `pub use refunds::{RefundRow, Refunds};` _and_ this
 branch's `mod persistence; mod schema;` both survived), `repository.rs`,
 `justfile` (#52's header text and this branch's `cratestack_min_declarations
 := "13"` are in different hunks), `CLAUDE.md` (master's "ten self-checks"
@@ -419,17 +419,17 @@ about the schema-versus-migrations delta moved.
 
 ### Re-measured on the rebased tree, not carried over
 
-| Gate | Before the rebase | On `c456f24` + this branch |
-|---|---|---|
-| `cargo nextest run -p xtask` | 198 passed | **215 passed, 0 skipped** |
-| `just verify-ignored` | 41 binaries, 1289 total | **43 binaries, 1361 total, 0 ignored** |
-| `just test-doc` | 90 passed, 1 ignored | **94 passed, 1 ignored** |
-| `cargo nextest run -p vpay-db --lib` | 24 passed | **24 passed, 0 skipped** |
-| `just verify` | ten gates ok | **ten gates ok**, incl. `verify-sdk-parity: 354 proving test(s), 28 dated gap(s), 14 SDK method(s) across 17 row(s)` |
+| Gate                                 | Before the rebase       | On `c456f24` + this branch                                                                                           |
+| ------------------------------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `cargo nextest run -p xtask`         | 198 passed              | **215 passed, 0 skipped**                                                                                            |
+| `just verify-ignored`                | 41 binaries, 1289 total | **43 binaries, 1361 total, 0 ignored**                                                                               |
+| `just test-doc`                      | 90 passed, 1 ignored    | **94 passed, 1 ignored**                                                                                             |
+| `cargo nextest run -p vpay-db --lib` | 24 passed               | **24 passed, 0 skipped**                                                                                             |
+| `just verify`                        | ten gates ok            | **ten gates ok**, incl. `verify-sdk-parity: 354 proving test(s), 28 dated gap(s), 14 SDK method(s) across 17 row(s)` |
 
 `expected_suites` was re-measured and **stays 43**: this branch adds ten tests
 and no test binary. `test-doc` is master's 94 — the only fence this branch adds
-is a ```` ```text ```` block, which compiles nothing. `just fmt-check`,
+is a ` ```text ` block, which compiles nothing. `just fmt-check`,
 `just clippy`, `just deny`, `just docs-check`, `just lint-web` and
 `just test-web` are all exit 0, and `cargo build --workspace --all-targets` is
 clean.
@@ -463,7 +463,7 @@ proves a conflict-free rebase did not silently drop a delimiter.
 
 **The drift constants do not move: still 85 changes over 16 relations, and 18
 unmappable columns.** Re-measured with the drift test itself on the rebased
-tree rather than reasoned about, because #50 *did* add a column.
+tree rather than reasoned about, because #50 _did_ add a column.
 `0031_refunds-fee.sql` puts `fee` on `refunds`, a table `schemas/vpay.cstack`
 does not declare at all, and an undeclared table contributes exactly one
 `table ... is not declared in the schema` line whatever its column count — so
@@ -475,17 +475,17 @@ own doc comments.
 ### The five formerly-owed items, measured 2026-09-06
 
 The authoring host's Docker daemon came back (the original daemon, cached
-images). Every item §7 and the section above listed as *written, compiled and
-listed but never executed* has now been executed on a machine. `just ci` ran
+images). Every item §7 and the section above listed as _written, compiled and
+listed but never executed_ has now been executed on a machine. `just ci` ran
 **end to end, exit 0**.
 
-| # | Owed | Measured 2026-09-06 |
-|---|---|---|
-| 1 | `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths` | **PASS — first execution ever.** 6.371 s standalone, and 1.627 s as case 1042/1369 inside the full `just ci` run. "The CrateStack read returns what the sqlx read returns" is now a measurement, not a reading of the generated query builder |
-| 2 | The decisive read-policy mutation | **FAILS as designed** — transcript below |
-| 3 | `just test-rust` (`cargo nextest run --workspace`) | **1369 tests run, 1369 passed, 0 skipped**, 722.977 s. Master is 1359 (this branch adds exactly ten test attributes and removes none), so 1359 + 10 = 1369 |
-| 4 | The drift test on the final tree | **PASS**, 13.919 s, `drift detected in 16 table(s)/view(s) (85 change(s) total)` |
-| 5 | The server image and its size delta | **Built, ran, and it found a defect** — see below. `vpay-server 0.1.0`, **16.9 MB** against master's **16.1 MB**: **+0.8 MB (+5.0%)** |
+| #   | Owed                                                                        | Measured 2026-09-06                                                                                                                                                                                                                           |
+| --- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `vpay-db::repositories a_disabled_client_reads_the_same_through_both_paths` | **PASS — first execution ever.** 6.371 s standalone, and 1.627 s as case 1042/1369 inside the full `just ci` run. "The CrateStack read returns what the sqlx read returns" is now a measurement, not a reading of the generated query builder |
+| 2   | The decisive read-policy mutation                                           | **FAILS as designed** — transcript below                                                                                                                                                                                                      |
+| 3   | `just test-rust` (`cargo nextest run --workspace`)                          | **1369 tests run, 1369 passed, 0 skipped**, 722.977 s. Master is 1359 (this branch adds exactly ten test attributes and removes none), so 1359 + 10 = 1369                                                                                    |
+| 4   | The drift test on the final tree                                            | **PASS**, 13.919 s, `drift detected in 16 table(s)/view(s) (85 change(s) total)`                                                                                                                                                              |
+| 5   | The server image and its size delta                                         | **Built, ran, and it found a defect** — see below. `vpay-server 0.1.0`, **16.9 MB** against master's **16.1 MB**: **+0.8 MB (+5.0%)**                                                                                                         |
 
 Item 3's three named suites, which §7 called out specifically because this
 change could plausibly disturb them, all pass:
@@ -554,11 +554,11 @@ different toolchain, so master was rebuilt from a `git archive` of `6978901`
 on the same host, the same builder and the same day rather than compared
 against it:
 
-| Image | Size |
-|---|---|
-| master `6978901`, `--target server` | **16.1 MB** |
-| this branch, `--target server` | **16.9 MB** |
-| delta | **+0.8 MB, +5.0%** |
+| Image                               | Size               |
+| ----------------------------------- | ------------------ |
+| master `6978901`, `--target server` | **16.1 MB**        |
+| this branch, `--target server`      | **16.9 MB**        |
+| delta                               | **+0.8 MB, +5.0%** |
 
 So CrateStack's twelve crates plus `minicbor`, `chumsky` and `ariadne` cost
 **0.8 MB** on the static musl link, for one read. That is the number §7 said

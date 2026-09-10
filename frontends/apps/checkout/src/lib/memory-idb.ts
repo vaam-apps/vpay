@@ -22,14 +22,14 @@
  * driven by `src/testing/idb-stub.ts` in a jsdom test, which has no
  * IndexedDB of its own.
  */
-import type { PageMemory, PageMemoryRecord } from './memory';
-import { parseMemoryRecord } from './memory';
+import type { PageMemory, PageMemoryRecord } from "./memory";
+import { parseMemoryRecord } from "./memory";
 
-export const MEMORY_DB_NAME = 'vpay-checkout';
+export const MEMORY_DB_NAME = "vpay-checkout";
 export const MEMORY_DB_VERSION = 1;
-export const MEMORY_STORE = 'page-memory';
+export const MEMORY_STORE = "page-memory";
 /** One record per device. There is no per-merchant or per-session key: the number is the payer's, not the payment's. */
-export const MEMORY_KEY = 'last';
+export const MEMORY_KEY = "last";
 
 /** An `IDBRequest` as a promise that resolves to `null` rather than rejecting. */
 function settle<T>(request: IDBRequest<T>): Promise<T | null> {
@@ -111,7 +111,7 @@ export function indexedDbPageMemory(
 ): PageMemory {
   return {
     async read(): Promise<PageMemoryRecord | null> {
-      const raw = await withStore(factory, 'readonly', (store) =>
+      const raw = await withStore(factory, "readonly", (store) =>
         settle<unknown>(store.get(MEMORY_KEY) as IDBRequest<unknown>),
       );
       return parseMemoryRecord(raw, now());
@@ -121,14 +121,23 @@ export function indexedDbPageMemory(
       // through: whatever the caller hands over, exactly three members are
       // stored, so a field added to the type upstream cannot reach the disk
       // without someone editing this line.
-      await withStore(factory, 'readwrite', (store) =>
+      await withStore(factory, "readwrite", (store) =>
         settle(
-          store.put({ msisdn: record.msisdn, rail: record.rail, savedAt: record.savedAt }, MEMORY_KEY),
+          store.put(
+            {
+              msisdn: record.msisdn,
+              rail: record.rail,
+              savedAt: record.savedAt,
+            },
+            MEMORY_KEY,
+          ),
         ),
       );
     },
     async clear(): Promise<void> {
-      await withStore(factory, 'readwrite', (store) => settle(store.delete(MEMORY_KEY)));
+      await withStore(factory, "readwrite", (store) =>
+        settle(store.delete(MEMORY_KEY)),
+      );
     },
   };
 }
@@ -140,7 +149,7 @@ export function indexedDbPageMemory(
  * caller pairs it with `NO_PAGE_MEMORY`.
  */
 export function browserPageMemory(): PageMemory | null {
-  if (typeof indexedDB === 'undefined') {
+  if (typeof indexedDB === "undefined") {
     return null;
   }
   return indexedDbPageMemory(indexedDB);

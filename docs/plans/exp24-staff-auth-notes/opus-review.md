@@ -10,7 +10,7 @@ what happened, and what was changed.
 
 The implementation is unusually good and its own notes
 ([opus.md](opus.md)) are unusually honest — the mutation table records two
-mutations as *not caught* and explains each, which is the opposite of the
+mutations as _not caught_ and explains each, which is the opposite of the
 failure mode this repository worries about. Eleven of the fourteen attacks
 below found nothing.
 
@@ -18,14 +18,14 @@ below found nothing.
 security property that was implemented, documented, tested at the unit level,
 and never actually wired to the request path.**
 
-| # | Finding | Severity |
-|---|---|---|
-| F1 | A **disabled** staff member's already-minted bearer token kept reading `/dash/v1` for the rest of its 15-minute TTL. `require_dashboard_token` never read `staff_members` at all. | gate-hole |
-| F2 | The **per-IP** half of the sign-in rate limit did not exist. `ConnectInfo` was never installed, so every attempt in the process shared one `ip:unknown` bucket — and ten unauthenticated requests locked the whole deployment out of the dashboard. | gate-hole |
-| F6 | A staff member **moved to another merchant** kept reading the old merchant's rows with the token they already held, for the same window. Same root cause as F1, found by asking the same question again. | gate-hole |
-| F3 | Mutation M17 (`Staff::create` → `upsert`), recorded as uncaught, was catchable at the repository layer. Now caught. | correctness |
-| F4 | ADR-0017 said deleting a session row "is a **revocation**"; its own Consequences and the suite say the JWT stays valid for its TTL. Overstated. | misleading-claim |
-| F5 | ADR-0017 decision 1 said `model Staff`; the model is `StaffMember`, which migration `0035`'s header explains at length. | nit |
+| #   | Finding                                                                                                                                                                                                                                             | Severity         |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| F1  | A **disabled** staff member's already-minted bearer token kept reading `/dash/v1` for the rest of its 15-minute TTL. `require_dashboard_token` never read `staff_members` at all.                                                                   | gate-hole        |
+| F2  | The **per-IP** half of the sign-in rate limit did not exist. `ConnectInfo` was never installed, so every attempt in the process shared one `ip:unknown` bucket — and ten unauthenticated requests locked the whole deployment out of the dashboard. | gate-hole        |
+| F6  | A staff member **moved to another merchant** kept reading the old merchant's rows with the token they already held, for the same window. Same root cause as F1, found by asking the same question again.                                            | gate-hole        |
+| F3  | Mutation M17 (`Staff::create` → `upsert`), recorded as uncaught, was catchable at the repository layer. Now caught.                                                                                                                                 | correctness      |
+| F4  | ADR-0017 said deleting a session row "is a **revocation**"; its own Consequences and the suite say the JWT stays valid for its TTL. Overstated.                                                                                                     | misleading-claim |
+| F5  | ADR-0017 decision 1 said `model Staff`; the model is `StaffMember`, which migration `0035`'s header explains at length.                                                                                                                             | nit              |
 
 All three gate-holes are fixed, with decisive regression tests. F3, F4 and F5
 are fixed. One thing is **surfaced and deliberately not taken** — see Maintainer
@@ -37,17 +37,17 @@ Run end to end on `f1aef74`, `CARGO_BUILD_JOBS=4`, Node 22.23.2 (`.nvmrc`),
 `pnpm install --frozen-lockfile` (the implementer skipped this; without it
 `lint-web` dies on `tsc: not found`), rootless Docker.
 
-| recipe | exit | measured |
-|---|---|---|
-| `fmt-check` | 0 | |
-| `clippy` | 0 | |
-| `verify` | 0 | ten gates; `verify-docs` advisory |
-| `test-rust` | 0 | **1546 run, 1546 passed, 0 skipped** (964 s) |
-| `test-doc` | 0 | |
-| `verify-ignored` | 0 | 0 ignored (expected 0), **46 binaries (expected 46)**, 1546 total (floor 1080) |
-| `lint-web` | 0 | |
-| `test-web` | 0 | vitest across eight packages; `apps/dashboard` reports "No test files found" — consistent with "the pages were not built" |
-| `deny` | 0 | advisories, bans, licenses, sources all ok |
+| recipe           | exit | measured                                                                                                                  |
+| ---------------- | ---- | ------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`      | 0    |                                                                                                                           |
+| `clippy`         | 0    |                                                                                                                           |
+| `verify`         | 0    | ten gates; `verify-docs` advisory                                                                                         |
+| `test-rust`      | 0    | **1546 run, 1546 passed, 0 skipped** (964 s)                                                                              |
+| `test-doc`       | 0    |                                                                                                                           |
+| `verify-ignored` | 0    | 0 ignored (expected 0), **46 binaries (expected 46)**, 1546 total (floor 1080)                                            |
+| `lint-web`       | 0    |                                                                                                                           |
+| `test-web`       | 0    | vitest across eight packages; `apps/dashboard` reports "No test files found" — consistent with "the pages were not built" |
+| `deny`           | 0    | advisories, bans, licenses, sources all ok                                                                                |
 
 Every number the implementer reported is confirmed. `verify-ignored` initially
 exited 101 on my run; that was **my own scratch attack file** failing to
@@ -58,23 +58,23 @@ compile, and it passed on the clean tree.
 Fourteen cases against a real `vpay_api::router` on a real socket over a real
 Postgres, plus one in-process timing case.
 
-| # | What was tried | What happened |
-|---|---|---|
-| A1 | Wrong password vs unknown address, 20 samples each over HTTP | **No oracle.** Medians 32 507 µs vs 30 553 µs, ratio **1.064** |
-| A1b | The same, in-process, no socket and no limiter | **No oracle.** 20 991 µs vs 20 019 µs, ratio **1.049** |
-| A2 | Disable the account, then use the bearer token it already holds | **BROKE IN — `200`** with the merchant's list envelope. **F1** |
-| A3 | PKCE `plain`; `code_challenge_method` absent; `code_challenge` absent | Refused, three times, no code issued. The refusal is an error *redirect* to the registered URI, which is RFC 6749 §4.1.2 and correct |
-| A4 | `state` echoed on the redirect | Echoed verbatim |
-| A5 | Four unregistered `redirect_uri`s, including a traversal, a query-string variant and a case variant | `400` each, **no `Location` at all** — not an open redirector, per RFC 6749 §4.1.2.1 |
-| A6 | Redeem a code with another `client_id`; `client_credentials` on `/dash/v1/oauth/token` | Both `400` |
-| A7 | 13 attempts on one address; then a *correct* password on another address; then back | `429` from the 11th; a success elsewhere does **not** reset the counter |
-| A8 | TOTP at offsets −2, −1, 0, +1, +2 | Exactly ±1. −2 and +2 refused |
-| A9 | Password of length 0 and 10 KB at `/login`; the same at `/staff/password` | `401` in 34.7 ms and 29.7 ms — argon2's cost is its parameters, not the input, and the nest carries a 64 KiB `RequestBodyLimitLayer`. `/staff/password` bounds 12–256 chars |
-| A10 | A code from the *previous* TOTP secret after the stored one was rotated | `401` |
-| A11 | An authorization code aged past `expires_at` | `401` |
-| A12 | Does the `302` or anything else leak the session token? | No. The `Location` carries `code` and `state` only |
-| A13 | Burn one source address's budget, then a first-ever attempt from another source with a fresh email | **BROKE IN — `429`.** **F2** |
-| A14 | Move the staff member to merchant B, then use the token minted for merchant A | **BROKE IN — `200`** with merchant A's intent in the body. **F6** |
+| #   | What was tried                                                                                      | What happened                                                                                                                                                               |
+| --- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | Wrong password vs unknown address, 20 samples each over HTTP                                        | **No oracle.** Medians 32 507 µs vs 30 553 µs, ratio **1.064**                                                                                                              |
+| A1b | The same, in-process, no socket and no limiter                                                      | **No oracle.** 20 991 µs vs 20 019 µs, ratio **1.049**                                                                                                                      |
+| A2  | Disable the account, then use the bearer token it already holds                                     | **BROKE IN — `200`** with the merchant's list envelope. **F1**                                                                                                              |
+| A3  | PKCE `plain`; `code_challenge_method` absent; `code_challenge` absent                               | Refused, three times, no code issued. The refusal is an error _redirect_ to the registered URI, which is RFC 6749 §4.1.2 and correct                                        |
+| A4  | `state` echoed on the redirect                                                                      | Echoed verbatim                                                                                                                                                             |
+| A5  | Four unregistered `redirect_uri`s, including a traversal, a query-string variant and a case variant | `400` each, **no `Location` at all** — not an open redirector, per RFC 6749 §4.1.2.1                                                                                        |
+| A6  | Redeem a code with another `client_id`; `client_credentials` on `/dash/v1/oauth/token`              | Both `400`                                                                                                                                                                  |
+| A7  | 13 attempts on one address; then a _correct_ password on another address; then back                 | `429` from the 11th; a success elsewhere does **not** reset the counter                                                                                                     |
+| A8  | TOTP at offsets −2, −1, 0, +1, +2                                                                   | Exactly ±1. −2 and +2 refused                                                                                                                                               |
+| A9  | Password of length 0 and 10 KB at `/login`; the same at `/staff/password`                           | `401` in 34.7 ms and 29.7 ms — argon2's cost is its parameters, not the input, and the nest carries a 64 KiB `RequestBodyLimitLayer`. `/staff/password` bounds 12–256 chars |
+| A10 | A code from the _previous_ TOTP secret after the stored one was rotated                             | `401`                                                                                                                                                                       |
+| A11 | An authorization code aged past `expires_at`                                                        | `401`                                                                                                                                                                       |
+| A12 | Does the `302` or anything else leak the session token?                                             | No. The `Location` carries `code` and `state` only                                                                                                                          |
+| A13 | Burn one source address's budget, then a first-ever attempt from another source with a fresh email  | **BROKE IN — `429`.** **F2**                                                                                                                                                |
+| A14 | Move the staff member to merchant B, then use the token minted for merchant A                       | **BROKE IN — `200`** with merchant A's intent in the body. **F6**                                                                                                           |
 
 ## F1 — a disabled staff member kept reading `/dash/v1`
 
@@ -113,9 +113,9 @@ arm gives `left: 200, right: 403`.
 
 ## F6 — a staff member moved to another merchant kept reading the old one
 
-Found by asking F1's question a second time: *everything*
+Found by asking F1's question a second time: _everything_
 `require_dashboard_token` checked was a statement about the **token**, and
-none of it was a statement about the **person**. The merchant *claim* says
+none of it was a statement about the **person**. The merchant _claim_ says
 which tenant the token was minted for; nothing said which tenant the person
 belongs to now.
 
@@ -173,7 +173,7 @@ new guard is end to end.
 that is the point of fixing both — `tests/support`'s own header says a harness
 that boots the router differently from `main` stops proving anything about
 `main`. `the_sign_in_rate_limit_is_per_source_address` burns one loopback
-source's budget across ten distinct addresses (so the *email* budget can never
+source's budget across ten distinct addresses (so the _email_ budget can never
 be what refuses the control), then makes a first-ever attempt from a second
 source, then an eleventh from the first so a limiter that had simply stopped
 working cannot pass either. Decisive: reverting the harness gives
@@ -204,7 +204,7 @@ implementer got the analysis exactly right — a second `staff add` for one
 address conflicts on `staff_members_email_key` whichever builder is used, so
 the duplicate-address test cannot see the difference — corrected the doc
 comment, and stopped there. But the doc then names the case the builder choice
-*does* refuse: a caller supplying an id already in the table. That case is
+_does_ refuse: a caller supplying an id already in the table. That case is
 expressible at the repository layer, and nothing asserted it.
 `a_second_create_for_one_staff_id_is_refused_rather_than_overwriting` writes
 twice with one id and two different addresses, so the email index cannot be
@@ -307,7 +307,7 @@ Two things were wrong and are corrected:
 - **F4.** ADR-0017 decision 2 said deleting the session row "is what makes
   deleting the row a **revocation**". Its own Consequences, the flow document
   and `signing_out_deletes_the_session_and_with_it_the_access_token` all say
-  the JWT stays valid for its TTL. It now reads as an *unobtainability* and
+  the JWT stays valid for its TTL. It now reads as an _unobtainability_ and
   points at the Consequences.
 - **F5.** Decision 1 said `model Staff`. The model is `StaffMember`, and the
   distinction is load-bearing — `model Staff` reads and writes a table called
@@ -316,14 +316,14 @@ Two things were wrong and are corrected:
 ## Maintainer decisions
 
 1. **Should a `/dash/v1` read be bound to a live `staff_sessions` row?** That
-   would make signing out *invalidate* the token rather than merely make it
+   would make signing out _invalidate_ the token rather than merely make it
    unobtainable, and would close the residual ADR-0017's Consequences accepts.
    It also makes the surface stateful — a session read on every dashboard
    request. ADR-0017 accepted the residual explicitly, so reversing it is not a
-   review's call. **Surfaced, not taken.** (F1's fix reads the *staff* row,
+   review's call. **Surfaced, not taken.** (F1's fix reads the _staff_ row,
    which the ADR's own text already required; it does not read the session.)
 2. **A trusted-proxy allow-list for the sign-in rate limit.** With F2 fixed,
-   the per-IP budget is per *transport peer*, so behind an Ingress every staff
+   the per-IP budget is per _transport peer_, so behind an Ingress every staff
    member shares one bucket. Honouring `X-Forwarded-For` needs a list of proxies
    whose header may be believed; without one it is worse than not honouring it.
 3. **A durable rate limiter.** Still per replica, still stated. Unchanged by
@@ -374,26 +374,26 @@ passed a peer address the router never supplied; the disabled-account test
 threw away the credential it was meant to check. Neither was a bad test of the
 thing it tested — which is the point. A test that constructs the thing under
 test cannot see a wiring bug, and the three cheapest questions that find this
-class are: *what supplies this argument in production?*, *which credential does
-this test actually exercise?*, and *is this a statement about the token or
-about the person?*
+class are: _what supplies this argument in production?_, _which credential does
+this test actually exercise?_, and _is this a statement about the token or
+about the person?_
 
 ## Gate on the review head
 
 `just ci` end to end on `1ad9cab` (the head before this section's own commit),
 same environment as the run on the delivered head.
 
-| recipe | exit | measured |
-|---|---|---|
-| `fmt-check` | 0 | |
-| `clippy` | 0 | `--workspace --all-targets -D warnings` |
-| `verify` | 0 | ten gates; `verify-docs` advisory |
-| `test-rust` | 0 | **1550 run, 1550 passed, 0 skipped** (1000 s) |
-| `test-doc` | 0 | |
-| `verify-ignored` | 0 | 0 ignored (expected 0), **46 binaries (expected 46)**, 1550 total (floor 1080) |
-| `lint-web` | 0 | |
-| `test-web` | 0 | unchanged |
-| `deny` | 0 | advisories, bans, licenses, sources all ok |
+| recipe           | exit | measured                                                                       |
+| ---------------- | ---- | ------------------------------------------------------------------------------ |
+| `fmt-check`      | 0    |                                                                                |
+| `clippy`         | 0    | `--workspace --all-targets -D warnings`                                        |
+| `verify`         | 0    | ten gates; `verify-docs` advisory                                              |
+| `test-rust`      | 0    | **1550 run, 1550 passed, 0 skipped** (1000 s)                                  |
+| `test-doc`       | 0    |                                                                                |
+| `verify-ignored` | 0    | 0 ignored (expected 0), **46 binaries (expected 46)**, 1550 total (floor 1080) |
+| `lint-web`       | 0    |                                                                                |
+| `test-web`       | 0    | unchanged                                                                      |
+| `deny`           | 0    | advisories, bans, licenses, sources all ok                                     |
 
 **1546 → 1550, and no new binary**: `expected_suites` does not move because
 every case added here went into a suite that already existed. The four are
@@ -409,10 +409,10 @@ grew assertions rather than a function),
 Every fix in this review has a decisive mutation recorded against it, run on a
 clean tree and reverted:
 
-| Fix | Mutation | Result |
-|---|---|---|
-| F1 | drop the `is_active()` arm | `left: 200, right: 403` |
-| F2 | drop `into_make_service_with_connect_info` from the harness | `left: 429, right: 401` |
-| F6 | drop `&& staff.merchant_id == binding.merchant_id` | `left: 200, right: 403`, `pi_moved_a` in the body |
-| F3 | `.create(...)` → `.upsert(...)` in `vpay_db::staff` | the `expect_err` fails |
-| — | add an `Ok(None) => {}` arm | the orphan-subject test reads `200` |
+| Fix | Mutation                                                    | Result                                            |
+| --- | ----------------------------------------------------------- | ------------------------------------------------- |
+| F1  | drop the `is_active()` arm                                  | `left: 200, right: 403`                           |
+| F2  | drop `into_make_service_with_connect_info` from the harness | `left: 429, right: 401`                           |
+| F6  | drop `&& staff.merchant_id == binding.merchant_id`          | `left: 200, right: 403`, `pi_moved_a` in the body |
+| F3  | `.create(...)` → `.upsert(...)` in `vpay_db::staff`         | the `expect_err` fails                            |
+| —   | add an `Ok(None) => {}` arm                                 | the orphan-subject test reads `200`               |

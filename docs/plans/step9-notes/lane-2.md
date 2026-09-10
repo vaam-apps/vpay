@@ -14,24 +14,24 @@ and the stub's hosted page), `6b12f21` (the two integration cases), `97b1eb3`
 
 ## 1. What landed
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | `ChargeRef::return_url: Option<String>`, with a doc comment naming who fills it and what it replaced | `backends/crates/vpay-provider/src/lib.rs:86` |
-| 2 | `vpay_api::v1::return_trip` — the `ReturnUrlSource` trait, its shipping impl over `dyn Repositories`, and `return_url_for_charge` | `backends/crates/vpay-api/src/v1/return_trip.rs` (new), registered at `v1/mod.rs` |
-| 3 | The confirm path resolves it between `open_attempt` and the rail call, from the **committed** charge row | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`confirm_once`, `submit_to_rail`) |
-| 4 | Orange sends it as `return_url` **and** `cancel_url`; the deployment `settings.return_url`/`settings.cancel_url` fallback is gone; a redirect charge without one is `ProviderError::Config` | `backends/crates/vpay-adapter-orange-money/src/lib.rs` (`submit`, new `return_url` helper) |
-| 5 | MTN ignores it, asserted | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` (`a_return_url_is_not_carried_on_a_push_rails_body`) |
-| 6 | The worker fills it from `charges.return_url` | `backends/crates/vpay-worker/src/handlers.rs` (`charge_ref`) |
-| 7 | `webpayment.json` **requires** an `http(s)` `return_url` and `cancel_url` on every accepted submit (catch-all and both duplicate-scenario mappings), and templates them into `payment_url` | `backends/tests/conformance/wiremock/orange/mappings/webpayment.json` |
-| 8 | `stub-hosted-page.json` — `GET /stub-hosted-page/{token}` as HTML with a Pay link and a Cancel link | `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json` (new) |
-| 9 | Conformance case `the_submit_tells_the_rail_where_to_send_the_payer_back` (×2 rails), plus `return_url_pattern` and `recorded_requests` | `backends/tests/conformance/tests/adapter_conformance.rs` |
-| 10 | Two `confirm_rails` cases and `Harness::orange_origin` | `backends/tests/integration/tests/confirm_rails.rs` |
-| 11 | `wiremock-orange` published on `${VPAY_DEMO_ORANGE_PORT:-8082}` in the demo stack, restated in the e2e stack, with a port-agreement guard | `compose.demo.yml`, `compose.e2e.yml`, `justfile` (`demo_orange_port`, `gen-demo-keys`) |
-| 12 | Reference docs | `docs/reference/rails.md` (new §"The payer's return URL is the *core's* answer, not a rail's" and §"The stub's hosted page, and where it is not the rail"), `docs/reference/vpay-api.md` (new §"Where the payer comes back to") |
+| #   | Thing                                                                                                                                                                                       | Where                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `ChargeRef::return_url: Option<String>`, with a doc comment naming who fills it and what it replaced                                                                                        | `backends/crates/vpay-provider/src/lib.rs:86`                                                                                                                                                                                   |
+| 2   | `vpay_api::v1::return_trip` — the `ReturnUrlSource` trait, its shipping impl over `dyn Repositories`, and `return_url_for_charge`                                                           | `backends/crates/vpay-api/src/v1/return_trip.rs` (new), registered at `v1/mod.rs`                                                                                                                                               |
+| 3   | The confirm path resolves it between `open_attempt` and the rail call, from the **committed** charge row                                                                                    | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`confirm_once`, `submit_to_rail`)                                                                                                                                         |
+| 4   | Orange sends it as `return_url` **and** `cancel_url`; the deployment `settings.return_url`/`settings.cancel_url` fallback is gone; a redirect charge without one is `ProviderError::Config` | `backends/crates/vpay-adapter-orange-money/src/lib.rs` (`submit`, new `return_url` helper)                                                                                                                                      |
+| 5   | MTN ignores it, asserted                                                                                                                                                                    | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` (`a_return_url_is_not_carried_on_a_push_rails_body`)                                                                                                                        |
+| 6   | The worker fills it from `charges.return_url`                                                                                                                                               | `backends/crates/vpay-worker/src/handlers.rs` (`charge_ref`)                                                                                                                                                                    |
+| 7   | `webpayment.json` **requires** an `http(s)` `return_url` and `cancel_url` on every accepted submit (catch-all and both duplicate-scenario mappings), and templates them into `payment_url`  | `backends/tests/conformance/wiremock/orange/mappings/webpayment.json`                                                                                                                                                           |
+| 8   | `stub-hosted-page.json` — `GET /stub-hosted-page/{token}` as HTML with a Pay link and a Cancel link                                                                                         | `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json` (new)                                                                                                                                               |
+| 9   | Conformance case `the_submit_tells_the_rail_where_to_send_the_payer_back` (×2 rails), plus `return_url_pattern` and `recorded_requests`                                                     | `backends/tests/conformance/tests/adapter_conformance.rs`                                                                                                                                                                       |
+| 10  | Two `confirm_rails` cases and `Harness::orange_origin`                                                                                                                                      | `backends/tests/integration/tests/confirm_rails.rs`                                                                                                                                                                             |
+| 11  | `wiremock-orange` published on `${VPAY_DEMO_ORANGE_PORT:-8082}` in the demo stack, restated in the e2e stack, with a port-agreement guard                                                   | `compose.demo.yml`, `compose.e2e.yml`, `justfile` (`demo_orange_port`, `gen-demo-keys`)                                                                                                                                         |
+| 12  | Reference docs                                                                                                                                                                              | `docs/reference/rails.md` (new §"The payer's return URL is the _core's_ answer, not a rail's" and §"The stub's hosted page, and where it is not the rail"), `docs/reference/vpay-api.md` (new §"Where the payer comes back to") |
 
-**What this lane closes of D4, and what it does not.** The *rail* half:
+**What this lane closes of D4, and what it does not.** The _rail_ half:
 Orange is now told, per charge, where to send the payer, and the stub's page
-links there. The *page* that receives the payer is lane 3's
+links there. The _page_ that receives the payer is lane 3's
 (`frontends/apps/checkout`); `vpay-server` still serves no HTML and no return
 route, and this lane added none.
 
@@ -43,7 +43,7 @@ route, and this lane added none.
   question, and a fallback that is never exercised is a fallback nobody knows
   is wrong. It is the exact twin of MTN's "payer_ref required on a push rail".
   Blast radius checked before taking it: `vpay_api::payer_instrument` already
-  *requires* a `return_url` on a redirect confirm, and the worker never
+  _requires_ a `return_url` on a redirect confirm, and the worker never
   resubmits a redirect charge (`recovery_step` answers `FailDeadOrder` for
   `ProviderFlow::Redirect` before looking at anything else), so no path in
   this repository can reach the refusal without a merchant having omitted a
@@ -55,7 +55,7 @@ route, and this lane added none.
   expires, so two different URLs would encode a distinction nothing checks.
   When lane 3's return page can tell the two apart, this is one line.
 - **The value is read from the committed charge row, not from the request.**
-  `confirm_once` resolves it *after* `open_attempt`. What the rail is told is
+  `confirm_once` resolves it _after_ `open_attempt`. What the rail is told is
   therefore what would survive a crash, and not a second read that could
   differ from what was made durable.
 - **`ReturnUrlSource`'s shipping impl answers `None`, and that is the truth
@@ -65,7 +65,7 @@ route, and this lane added none.
   1's method to replace it with **and the failure if lane 1 forgets**: a
   session-driven payer forwarded one step too early, with nothing reporting
   it. See §3.
-- **The conformance charge carries a `return_url` on the *push* rail too.**
+- **The conformance charge carries a `return_url` on the _push_ rail too.**
   Not what production does — and deliberate. "MTN sent no return URL" proves
   nothing when there was none to send.
 
@@ -77,7 +77,7 @@ route, and this lane added none.
   the correct value is the **merchant's own site** — that is precisely the
   case this lane exists to close — and a matcher demanding vpay's origin would
   refuse it, breaking `confirm_rails.rs` and every merchant-driven Orange
-  confirm. The mapping therefore requires `^https?://.+` and the *exact* value
+  confirm. The mapping therefore requires `^https?://.+` and the _exact_ value
   is pinned twice: by the conformance case over the request journal, and end
   to end by `a_direct_confirm_sends_the_merchants_return_url_to_the_rail`. The
   mapping's own `metadata` says all of this.
@@ -95,7 +95,7 @@ route, and this lane added none.
   that mapping. Before this lane they did not collide, and the demo's redirect
   URL also could not be opened.
 - **For lane 1.** `vpay_api::v1::return_trip`'s `impl ReturnUrlSource for dyn
-  Repositories` returns `Ok(None)` unconditionally. Landing migration `0028`
+Repositories` returns `Ok(None)` unconditionally. Landing migration `0028`
   and the `CheckoutSessions` repository **without changing that body** breaks
   nothing loudly: every session-driven payer goes to the merchant's URL
   instead of vpay's return page, the session never reaches `complete`, and the
@@ -114,16 +114,16 @@ route, and this lane added none.
 Run on the authoring host (rootless Docker, `DOCKER_HOST=unix:///run/user/1000/docker.sock`,
 `CARGO_BUILD_JOBS=4`), 2026-09-04.
 
-| Gate | Result |
-|---|---|
-| `cargo +nightly fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets --all-features --locked` | clean, no new `#[allow]`/`#[expect]` |
-| `cargo nextest run -p vpay-provider -p vpay-adapter-mtn-momo -p vpay-adapter-orange-money -p vpay-api -p vpay-tests-conformance --retries 2 -j 1` | **373 tests run, 373 passed, 0 skipped**, 1 flaky |
-| `cargo nextest run -p vpay-tests-conformance --retries 2 -j 1` (alone) | **30 tests run, 30 passed, 0 skipped** (was 28) |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(confirm_rails) \| binary(worker_e2e)' --retries 2 -j 1` | **12 tests run, 12 passed, 0 skipped** — `confirm_rails` 9 (was 7), `worker_e2e` 3 |
-| `just verify` | the four gates pass; `verify-docs` is advisory |
-| `just verify-ignored` | **0 ignored (expected 0), 41 test binaries (expected 41), 1068 total (minimum 1000)** — was 1059 |
-| `just test-doc` | **77 doctests passed, 1 ignored** (the ignored one is `vpay_sdk`'s and pre-existing) |
+| Gate                                                                                                                                              | Result                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `cargo +nightly fmt --all --check`                                                                                                                | clean                                                                                            |
+| `cargo clippy --workspace --all-targets --all-features --locked`                                                                                  | clean, no new `#[allow]`/`#[expect]`                                                             |
+| `cargo nextest run -p vpay-provider -p vpay-adapter-mtn-momo -p vpay-adapter-orange-money -p vpay-api -p vpay-tests-conformance --retries 2 -j 1` | **373 tests run, 373 passed, 0 skipped**, 1 flaky                                                |
+| `cargo nextest run -p vpay-tests-conformance --retries 2 -j 1` (alone)                                                                            | **30 tests run, 30 passed, 0 skipped** (was 28)                                                  |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(confirm_rails) \| binary(worker_e2e)' --retries 2 -j 1`                                   | **12 tests run, 12 passed, 0 skipped** — `confirm_rails` 9 (was 7), `worker_e2e` 3               |
+| `just verify`                                                                                                                                     | the four gates pass; `verify-docs` is advisory                                                   |
+| `just verify-ignored`                                                                                                                             | **0 ignored (expected 0), 41 test binaries (expected 41), 1068 total (minimum 1000)** — was 1059 |
+| `just test-doc`                                                                                                                                   | **77 doctests passed, 1 ignored** (the ignored one is `vpay_sdk`'s and pre-existing)             |
 
 **The flaky, reported as a flake and not as a pass.**
 `a_declined_charge_maps_to_the_documented_failure_code::case_1_mtn_momo`

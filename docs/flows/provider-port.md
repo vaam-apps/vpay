@@ -1,6 +1,6 @@
 # The provider port
 
-The core decides what a payment *means*. An adapter decides how to say it on the
+The core decides what a payment _means_. An adapter decides how to say it on the
 wire.
 
 > If `if provider == "mtn_momo"` appears anywhere outside `adapters/`, the port
@@ -10,13 +10,13 @@ wire.
 
 `backends/crates/vpay-provider/src/lib.rs`
 
-| Method | Contract |
-|---|---|
-| `async submit` | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge |
-| `async query_status` | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely |
-| `parse_callback` | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request |
-| `async refund` | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail *does* refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it |
-| `capabilities` | Static declaration the core reads instead of special-casing |
+| Method               | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `async submit`       | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge                                                                                                                                                                                                                                                                                          |
+| `async query_status` | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `parse_callback`     | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request                                                                                                                                                                                                                                                                                                                                           |
+| `async refund`       | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail _does_ refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it |
+| `capabilities`       | Static declaration the core reads instead of special-casing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 The three network methods are `async`, via `#[async_trait]` rather than a
 native `async fn`: a trait with a native `async fn` is not dyn-safe, and this
@@ -28,7 +28,7 @@ Implementors write `#[async_trait]` too.
 
 `ProviderConfig` carries `base_url`, `callback_url`, `currency`, `settings`,
 `credentials` and the two deadlines (`connect_timeout`, `request_timeout`).
-The deadlines are on the *config*, not on the client, because one
+The deadlines are on the _config_, not on the client, because one
 `reqwest::Client` is shared by every rail — a client-level timeout could only
 ever be one rail's. `vpay_config::ProviderHost::to_provider_config` is the
 only place a `ProviderConfig` is built from YAML.
@@ -44,14 +44,14 @@ ignore it.
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
 `requires_ip_allowlist`, `supports_account_holder_lookup`.
 
-| Capability | `mtn_momo` | `orange_money` | What the core does with it |
-|---|---|---|---|
-| `flow` | `Push` | `Redirect` | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url` |
-| `supports_refunds` | `true` | `false` | refuses a refund on a rail with no refund API, with no rail-specific branch |
-| `supports_partial_refunds` | `true` | `false` | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too |
-| `delivers_callbacks` | `true` | `true` | whether to expect a notification at all. Callbacks are hints either way |
-| `requires_ip_allowlist` | `true` | `false` | an operational fact for a deployment, not a code path |
-| `supports_account_holder_lookup` | `true` | `false` | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47) |
+| Capability                       | `mtn_momo` | `orange_money` | What the core does with it                                                                                                                                        |
+| -------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flow`                           | `Push`     | `Redirect`     | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url`                                                 |
+| `supports_refunds`               | `true`     | `false`        | refuses a refund on a rail with no refund API, with no rail-specific branch                                                                                       |
+| `supports_partial_refunds`       | `true`     | `false`        | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too                                                                                    |
+| `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                           |
+| `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                             |
+| `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47) |
 
 `orange_money` declares `supports_refunds: false`, and that flag — not a
 rail-specific branch — is what makes the core refuse a refund on that rail. The
@@ -61,15 +61,15 @@ capability system earns its keep on day one.
 five above it are columns on `providers` (migration `0002`), seeded at boot
 from the adapter's own declaration;
 `supports_account_holder_lookup` has no column and no `ProviderSeed` field,
-because nothing reads a capability *out of* that table — `vpay_api` resolves
+because nothing reads a capability _out of_ that table — `vpay_api` resolves
 an adapter in-process and asks it — so a column would be a second copy of an
 answer the linked code already owns. The flow doc records the decision.
 
-**A rail that *has* the API but has not written the call declares `true`
+**A rail that _has_ the API but has not written the call declares `true`
 anyway**, and overrides the port method with its own
 `ProviderError::NotImplemented` token, exactly as `mtn_momo::refund` does.
-`Unsupported` is a claim about the *rail*; a token is an admission about
-*us*, and `verify-status` only sees the second one.
+`Unsupported` is a claim about the _rail_; a token is an admission about
+_us_, and `verify-status` only sees the second one.
 
 ## Preconditions, per flow shape
 
@@ -88,7 +88,7 @@ Ask these **during commercial negotiation**, not after signing.
 
 1. Answer the preconditions above. If either fails for a push rail, **stop and
    renegotiate** before writing code.
-2. `INSERT INTO providers` with capability flags. *No schema migration.*
+2. `INSERT INTO providers` with capability flags. _No schema migration._
    **Corrected 2026-09-06:** in a running deployment nobody writes this table
    by hand — `providers` is reconciled from `config.yaml` at boot step 4 by
    `vpay_db::ConfigReconcile::reconcile`, which is the only writer, so the
@@ -102,7 +102,7 @@ Ask these **during commercial negotiation**, not after signing.
    **Corrected 2026-09-06: there is no `provider_hosts` table and there never
    has been** — no migration under `backends/migrations` creates one, and the
    only other mention in the tree is a `vpay-testkit` doc comment that
-   inherited the error from here. A rail's hosts are *configuration*:
+   inherited the error from here. A rail's hosts are _configuration_:
    `providers[].host.{url,label}` in the deployment's YAML
    (`vpay_config::ProviderHost`), one entry per deployment, which is what
    makes a sandbox, a production and a WireMock stub three profiles rather
@@ -194,7 +194,7 @@ would pass. The 401-after-a-good-token re-mint path has no mapping in the
 suite and is unproven on both rails. ~~No callback route exists, so
 `parse_callback`'s output is verified by tests and by nothing in production.~~
 **Corrected 2026-09-04 (Step 8, lane C): since Step 8 `parse_callback`'s output
-*is* consumed in production**, by `vpay_api::provider_callback` — but only to
+_is_ consumed in production**, by `vpay_api::provider_callback` — but only to
 name a charge and pull its poll job forward, and only from a body no rail has
 ever actually sent to this deployment. **The route is still a hint that never
 moves state**, and since 2026-09-04 (Step 8, lane H) what it costs is measured
@@ -210,7 +210,7 @@ the floor stays at ten, so a charge parked further out is still brought forward
 by every callback and a caller repeating against one live charge can hold it at
 roughly one authenticated `query_status` per worker claim. **There is no rate
 limit**, per charge or per source. **And the floor has a behavioural cost:** a
-rail calling back while the charge sits on the ladder's *first* rung no longer
+rail calling back while the charge sits on the ladder's _first_ rung no longer
 settles it early — it settles at that rung, up to ten seconds later than before
 (`a_callback_does_not_accelerate_a_poll_that_is_already_about_to_run`).
 See [../status.md](../status.md).

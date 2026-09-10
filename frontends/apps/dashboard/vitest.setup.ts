@@ -1,7 +1,7 @@
-import { cleanup } from '@testing-library/react';
-import { afterEach } from 'vitest';
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
 
-import '@testing-library/jest-dom/vitest';
+import "@testing-library/jest-dom/vitest";
 
 /**
  * Unmount between tests.
@@ -50,7 +50,7 @@ class PointerEventPolyfill extends MouseEvent implements PointerEvent {
     this.tiltX = params.tiltX ?? 0;
     this.tiltY = params.tiltY ?? 0;
     this.twist = params.twist ?? 0;
-    this.pointerType = params.pointerType ?? 'mouse';
+    this.pointerType = params.pointerType ?? "mouse";
     this.isPrimary = params.isPrimary ?? true;
     this.altitudeAngle = params.altitudeAngle ?? 0;
     this.azimuthAngle = params.azimuthAngle ?? 0;
@@ -65,11 +65,11 @@ class PointerEventPolyfill extends MouseEvent implements PointerEvent {
   }
 }
 
-if (typeof window !== 'undefined' && !window.PointerEvent) {
+if (typeof window !== "undefined" && !window.PointerEvent) {
   window.PointerEvent = PointerEventPolyfill;
 }
 
-if (typeof Element !== 'undefined') {
+if (typeof Element !== "undefined") {
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
   }
@@ -84,7 +84,7 @@ if (typeof Element !== 'undefined') {
   }
 }
 
-if (typeof window !== 'undefined' && !window.ResizeObserver) {
+if (typeof window !== "undefined" && !window.ResizeObserver) {
   class ResizeObserverPolyfill implements ResizeObserver {
     observe() {}
     unobserve() {}

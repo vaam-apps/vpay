@@ -36,9 +36,9 @@ deviation stated.
 
 `faa8f7a`'s message says, in its own words:
 
-> * The chain moves into `latest_by_intent_query`, so the test can preview
+> - The chain moves into `latest_by_intent_query`, so the test can preview
 >   **the same builder the query runs**. […]
-> * `the_latest_session_query_orders_by_seq_and_takes_one` asserts the
+> - `the_latest_session_query_orders_by_seq_and_takes_one` asserts the
 >   rendered SQL […] Red in ~1 ms under the mutation, no container.
 
 `git show --stat faa8f7a` lists five files and
@@ -54,7 +54,7 @@ That last one is the damaging one. The implementer measured that deleting
 DESC)`, so Postgres answers an unordered `LIMIT 1` in seq-descending order
 anyway), corrected the test's doc comment to say so, pointed it at the
 replacement — and did not write the replacement. Net effect: the branch
-*documented away* the only guard on the `ORDER BY` and shipped nothing in its
+_documented away_ the only guard on the `ORDER BY` and shipped nothing in its
 place. `find_latest_by_intent` is what the confirm path uses to decide which
 session is current.
 
@@ -106,9 +106,9 @@ populated database **in a test**"), and migration 0033 already had exactly
 that test to copy. All three were done by hand in `psql` and recorded in
 [opus.md](opus.md); none landed.
 
-* a populated database survives the conversion;
-* the six CHECKs that replace four dropped types actually refuse;
-* the dropped-and-rebuilt partial index is still the one the recovery sweep
+- a populated database survives the conversion;
+- the six CHECKs that replace four dropped types actually refuse;
+- the dropped-and-rebuilt partial index is still the one the recovery sweep
   plans against.
 
 Fixed in `0c7ca86`. The second test's first doc comment claimed to be the
@@ -233,7 +233,7 @@ through 0037's TEXT columns.
 failed`; the server logged `InvalidAudience`. Cause: a bare `just
 gen-demo-keys` regenerated `.e2e/application-demo.yml` with
 `public_base_url: http://localhost:8080` — the recipe bakes `demo_port` into
-the overlay and I had not passed the override to *that* invocation, only to
+the overlay and I had not passed the override to _that_ invocation, only to
 `demo-up`. Regenerated with `just demo_port=18080 … gen-demo-keys`, stack
 recreated, all four specs green. Recorded because a first-attempt failure on
 the money path that is silently dropped from a report is exactly the thing
@@ -252,13 +252,13 @@ afterwards.
 
 And from that stack's own database, which is the point:
 
-| | |
-|---|---|
-| `charges.state` | `succeeded` 2, `failed` 4 |
-| `payment_intents.status` | `succeeded` 2, `requires_payment_method` 6 |
-| `events.type` | `payment_intent.succeeded` 2, `payment_intent.payment_failed` 4 |
-| the four columns' `format_type` | `text`, `text`, `text`, `text` |
-| surviving enum types of the four | **0** |
+|                                  |                                                                 |
+| -------------------------------- | --------------------------------------------------------------- |
+| `charges.state`                  | `succeeded` 2, `failed` 4                                       |
+| `payment_intents.status`         | `succeeded` 2, `requires_payment_method` 6                      |
+| `events.type`                    | `payment_intent.succeeded` 2, `payment_intent.payment_failed` 4 |
+| the four columns' `format_type`  | `text`, `text`, `text`, `text`                                  |
+| surviving enum types of the four | **0**                                                           |
 
 Six payments settled through 0037's TEXT columns, against real rails over
 HTTP.
@@ -275,15 +275,15 @@ before/after snapshots empty; all four types gone; both indexes back.
 
 ## The money invariants after the conversion
 
-| Invariant | How it was checked | Result |
-|---|---|---|
-| No `sqlx::Type` derive or `type_name` for the four enums survives | `git grep` for `sqlx::Type` / `sqlx(type_name` across `backends/` | none exist, and none ever did — the vocabularies were always carried as `String` (D4) |
-| No statement still names a dropped type | `git grep` of every `::intent_status`/`::charge_state`/`::refund_status`/`::failure_code` | 32 removed, 0 remaining in any statement; the 10 remaining occurrences are prose describing the history |
-| Each dropped cast is semantics-preserving | every statement diffed before/after; suites that cover them re-run | the 32 enum casts and 10 `::TEXT` casts are no-ops on a `TEXT` column; `AS <col>` aliases dropped only where the bare column already carries the name |
-| **Ordering** did not change | `git grep` for `ORDER BY`/`MIN`/`MAX`/`<`/`>` on the six columns | none. A native enum orders by declaration order and `TEXT` orders alphabetically — nothing in vpay depends on either |
-| A value outside each CHECK is refused | `every_enum_check_0037_created_refuses_a_value_outside_it`, six columns, SQLSTATE **and** constraint name | all six `23514`, each by its own constraint |
-| Every label vpay writes is still accepted | same test, the other direction | all 6 + 5 + 11 + 4 accepted |
-| The partial index still filters what it filtered | `EXPLAIN` on `Settlement::live_charges_stale_since` with `enable_seqscan=off` | `Index Scan using charges_live_idx on charges` |
+| Invariant                                                         | How it was checked                                                                                        | Result                                                                                                                                                |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No `sqlx::Type` derive or `type_name` for the four enums survives | `git grep` for `sqlx::Type` / `sqlx(type_name` across `backends/`                                         | none exist, and none ever did — the vocabularies were always carried as `String` (D4)                                                                 |
+| No statement still names a dropped type                           | `git grep` of every `::intent_status`/`::charge_state`/`::refund_status`/`::failure_code`                 | 32 removed, 0 remaining in any statement; the 10 remaining occurrences are prose describing the history                                               |
+| Each dropped cast is semantics-preserving                         | every statement diffed before/after; suites that cover them re-run                                        | the 32 enum casts and 10 `::TEXT` casts are no-ops on a `TEXT` column; `AS <col>` aliases dropped only where the bare column already carries the name |
+| **Ordering** did not change                                       | `git grep` for `ORDER BY`/`MIN`/`MAX`/`<`/`>` on the six columns                                          | none. A native enum orders by declaration order and `TEXT` orders alphabetically — nothing in vpay depends on either                                  |
+| A value outside each CHECK is refused                             | `every_enum_check_0037_created_refuses_a_value_outside_it`, six columns, SQLSTATE **and** constraint name | all six `23514`, each by its own constraint                                                                                                           |
+| Every label vpay writes is still accepted                         | same test, the other direction                                                                            | all 6 + 5 + 11 + 4 accepted                                                                                                                           |
+| The partial index still filters what it filtered                  | `EXPLAIN` on `Settlement::live_charges_stale_since` with `enable_seqscan=off`                             | `Index Scan using charges_live_idx on charges`                                                                                                        |
 
 ---
 
@@ -292,11 +292,11 @@ before/after snapshots empty; all four types gone; both indexes back.
 Hand-run (no `_sqlx_migrations`, so one relation and one line below the
 container figures, exactly as [opus.md](opus.md) predicts):
 
-| schema | database | report |
-|---|---|---|
-| base `vpay.cstack` @`889d045` | migrated to 0035 | **129** / 19 |
+| schema                        | database                    | report       |
+| ----------------------------- | --------------------------- | ------------ |
+| base `vpay.cstack` @`889d045` | migrated to 0035            | **129** / 19 |
 | base `vpay.cstack` @`889d045` | migrated to 0035 **+ 0037** | **129** / 19 |
-| branch `vpay.cstack` | migrated to 0035 + 0037 | **140** / 19 |
+| branch `vpay.cstack`          | migrated to 0035 + 0037     | **140** / 19 |
 
 **"0037 alone moves drift by zero" is confirmed**, and more strongly than
 claimed: the two reports are identical but for the ordering of two lines. The
@@ -308,13 +308,13 @@ existed — the synthesised line [opus.md](opus.md) §2.4 describes.
 Per table, before and after, exactly as the notes and
 `EXPECTED_DRIFT_CHANGES`' comment claim:
 
-| table | before | after |
-|---|---|---|
-| `payment_intents` | 31 | 19 |
-| `charges` | 23 | 16 |
-| `checkout_sessions` | 1 | 21 |
-| `refunds` | 1 | 11 |
-| every other table | unchanged, line for line | |
+| table               | before                   | after |
+| ------------------- | ------------------------ | ----- |
+| `payment_intents`   | 31                       | 19    |
+| `charges`           | 23                       | 16    |
+| `checkout_sessions` | 1                        | 21    |
+| `refunds`           | 1                        | 11    |
+| every other table   | unchanged, line for line |       |
 
 The 67 lines on the four tables break down exactly as claimed: **37** CHECKs,
 **12** indexes, **6** `type differs`, **2** `seq` default differs, **10**
@@ -326,8 +326,8 @@ foreign keys.
 
 **Confirmed, twice over.** The tool documents it —
 `cratestack-migrate-0.12.0/src/introspect/postgres/mod.rs:22-27`, "Known
-gaps": *"Foreign keys are not introspected … `TableProjection::foreign_keys`
-is always empty here"* — and `mod.rs:109` is the literal
+gaps": _"Foreign keys are not introspected … `TableProjection::foreign_keys`
+is always empty here"_ — and `mod.rs:109` is the literal
 `foreign_keys: Vec::new()`. And the database disagrees with the report: all
 ten named constraints exist (`SELECT conname FROM pg_constraint WHERE
 contype = 'f'` returns all ten).
@@ -371,7 +371,7 @@ rendered statement under `system_context()`, not only of the descriptor.
 ## `@@audit`
 
 The implementer's reasoning is **accepted**: `descriptor.audit_enabled` is
-consulted by generated *writes*, there is no CrateStack write on any money
+consulted by generated _writes_, there is no CrateStack write on any money
 table, so the decisive test could not be made to fail for a reason that is
 about applicability rather than about effort. Enabling it would arm
 `ensure_audit_table` for a path that does not exist. Re-checked against
@@ -386,15 +386,15 @@ tree restored (`git diff --stat` checked empty afterwards, because a `git
 checkout --` during this review did once wipe an uncommitted fix — the lesson
 is to commit before mutating, and it is why every fix below is its own commit).
 
-| # | Mutation | Test | Result |
-|---|---|---|---|
-| M3 | `latest_by_intent_query` loses `.order_by(seq().desc())` | `the_latest_session_query_orders_by_seq_and_takes_one` | **RED**, no container, message names the confirm path |
-| M-A | 0037 loses `charges_state_enum_check` | `every_enum_check_0037_created_refuses_a_value_outside_it` | **RED** |
-| M-A′ | same | `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` | **RED** too — measured, and the reason the new test's doc comment does not claim to be the only net |
-| M-B | 0037 loses `DROP INDEX charges_live_idx` | `migration_0037_keeps_every_stored_label_on_a_populated_database` | **RED**: `operator does not exist: text = charge_state` |
-| M-C | one label mistyped inside `charges_state_enum_check` | both of the above | **RED** in both |
-| M-D | `model PaymentIntent` grows `@@allow("read", auth() != null)` | `the_three_money_models_answer_no_rows_to_every_action` | **RED** |
-| M-E | `model Refund` declares `metadata Json` | `no_generated_read_on_a_money_table_can_carry_its_jsonb_column` | **RED** |
+| #    | Mutation                                                      | Test                                                                | Result                                                                                              |
+| ---- | ------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| M3   | `latest_by_intent_query` loses `.order_by(seq().desc())`      | `the_latest_session_query_orders_by_seq_and_takes_one`              | **RED**, no container, message names the confirm path                                               |
+| M-A  | 0037 loses `charges_state_enum_check`                         | `every_enum_check_0037_created_refuses_a_value_outside_it`          | **RED**                                                                                             |
+| M-A′ | same                                                          | `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` | **RED** too — measured, and the reason the new test's doc comment does not claim to be the only net |
+| M-B  | 0037 loses `DROP INDEX charges_live_idx`                      | `migration_0037_keeps_every_stored_label_on_a_populated_database`   | **RED**: `operator does not exist: text = charge_state`                                             |
+| M-C  | one label mistyped inside `charges_state_enum_check`          | both of the above                                                   | **RED** in both                                                                                     |
+| M-D  | `model PaymentIntent` grows `@@allow("read", auth() != null)` | `the_three_money_models_answer_no_rows_to_every_action`             | **RED**                                                                                             |
+| M-E  | `model Refund` declares `metadata Json`                       | `no_generated_read_on_a_money_table_can_carry_its_jsonb_column`     | **RED**                                                                                             |
 
 The implementer's own M1, M2, M4 and M5 were not re-run: their subjects
 (`get_for_merchant`'s merchant predicate, `find_open_by_intent`'s status
@@ -407,5 +407,5 @@ be said rather than left as a silent omission: all four are reads, all four
 ran on `self.pool` before the swap and run on the CrateStack runtime's pool
 after it, and none is called while a `for_update` lock is held. There is no
 `run_in_tx` variant to lose, so the "run it on `runtime.pool()` instead" family
-of mutations has no subject here. It acquires one the day a *write* on a money
+of mutations has no subject here. It acquires one the day a _write_ on a money
 table moves.

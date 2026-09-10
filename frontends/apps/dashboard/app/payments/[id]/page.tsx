@@ -1,15 +1,15 @@
-import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import Link from "next/link";
+import { notFound } from "next/navigation";
 
-import { Heading, Stack } from '@vpay/ui';
+import { Heading, Stack } from "@vpay/ui";
 
-import { PaymentDetailView } from '../../../src/components/payment-detail';
-import { ReadFailure } from '../../../src/components/read-failure';
-import { SignedInBar } from '../../../src/components/signed-in-bar';
-import { type PaymentDetail } from '../../../src/server/api';
-import { readDash } from '../../../src/server/dash-read';
-import { signOut } from '../../../src/server/actions';
-import { requireStaff } from '../../../src/server/session';
+import { PaymentDetailView } from "../../../src/components/payment-detail";
+import { ReadFailure } from "../../../src/components/read-failure";
+import { SignedInBar } from "../../../src/components/signed-in-bar";
+import { type PaymentDetail } from "../../../src/server/api";
+import { readDash } from "../../../src/server/dash-read";
+import { signOut } from "../../../src/server/actions";
+import { requireStaff } from "../../../src/server/session";
 
 /**
  * `/payments/{id}` — everything `/dash/v1` knows about one payment.
@@ -21,7 +21,7 @@ import { requireStaff } from '../../../src/server/session';
  * this" for one and "no such payment" for the other would turn this page into
  * an oracle for which ids exist in other tenants.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function PaymentDetailPage({
   params,
@@ -29,7 +29,7 @@ export default async function PaymentDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const gate = await requireStaff();
-  if (gate.kind === 'outage') {
+  if (gate.kind === "outage") {
     // A vpay this page cannot reach is not a sign-out — see `payments/page.tsx`.
     return (
       <Stack direction="column" gap="lg">
@@ -55,7 +55,11 @@ export default async function PaymentDetailPage({
 
   return (
     <Stack direction="column" gap="lg">
-      <SignedInBar email={session.email} merchantId={session.merchant_id} signOut={signOut} />
+      <SignedInBar
+        email={session.email}
+        merchantId={session.merchant_id}
+        signOut={signOut}
+      />
 
       <Stack as="header" justify="between" align="center" gap="md" wrap>
         <Heading level={2}>Payment</Heading>

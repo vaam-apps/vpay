@@ -5,7 +5,7 @@ own account is [opus.md](opus.md); this file records what a second pass
 could and could not confirm, and what it changed.
 
 The review's own bias, stated first: it was looking for the failure mode
-[CLAUDE.md](../../../CLAUDE.md) names — a repository made to *look* more
+[CLAUDE.md](../../../CLAUDE.md) names — a repository made to _look_ more
 finished than it is. Two of the findings below are exactly that, and both are
 of the same shape as one the branch itself found and wrote up honestly (D5,
 `cancelled`).
@@ -55,7 +55,7 @@ order "becomes `cancelled` when the shop cancels its PaymentIntent … and vpay
 delivers `payment_intent.canceled`", full stop. So did the pre-click prose on
 `/orders/{id}/cancelled` ("the order becomes `cancelled` when the signed
 `payment_intent.canceled` event arrives") — the correction was only in the
-note shown *after* the button was pressed.
+note shown _after_ the button was pressed.
 
 Fixed in both places.
 
@@ -63,7 +63,7 @@ Fixed in both places.
 
 `openCheckoutPopup` navigated with `popup.location.assign(url)`. That is legal
 only while the window is still on the `about:blank` this side opened. The
-default `windowName` makes reuse the *documented* behaviour, and
+default `windowName` makes reuse the _documented_ behaviour, and
 `win.open('', name, …)` with an empty url returns an existing window
 **without navigating it** — so the second `openCheckoutPopup` of a session
 reached that line holding a window already on vpay's origin, where the only
@@ -88,13 +88,13 @@ address bar visible…" immediately above `"location=yes"`. Reworded.
 
 Neither is a security hole — both fail closed — and neither was written down:
 
-* **"Has an opener" is not "is a vpay popup."** `PopupReturnNotifier` calls
+- **"Has an opener" is not "is a vpay popup."** `PopupReturnNotifier` calls
   `notifyCheckoutOpener` on every `/return` load, and the default
-  `close: true` closes the window. A shop tab that some *other* page opened
+  `close: true` closes the window. A shop tab that some _other_ page opened
   with `window.open`, paying by ordinary redirect, therefore gets closed on
   the return page. The message itself is harmless there (it is pinned to
   `targetOrigin`, so a third-party opener receives nothing).
-* **A `success_url` on a different origin from the opener is a silent
+- **A `success_url` on a different origin from the opener is a silent
   no-op.** `targetOrigin` defaults to the return page's origin and
   `completionOrigin` to the opener's, so the browser drops the message —
   and `notifyCheckoutOpener` still answers `true`.
@@ -129,7 +129,7 @@ actually comes from — the table could name a number no mapping steers and
 both copies would still agree. Added a case that reads the rail stubs' own mapping
 files and asserts each failing number is keyed on by some mapping's
 `request` (never by its `metadata`, which is prose). Decisive: renumbering
-`…503` to `…504` in *both* the module and the README leaves the
+`…503` to `…504` in _both_ the module and the README leaves the
 README-agreement case green and fails this one.
 
 ## Maintainer decisions surfaced, not taken
@@ -164,17 +164,17 @@ half-emitted.
 Green end to end on the review's final head, 2026-09-06, 19:01:49 → 19:16:39,
 exit 0. Recipe by recipe:
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok (`cargo fmt --all -- --check`) |
-| `clippy` | ok |
-| `verify` | the ten gates. `verify-sdk-parity`: 385 named proving tests all exist, 29 dated gaps, 14 SDK methods over 17 rows. `verify-links`: 811 links in 147 markdown files resolve. `verify-status`: 1 unimplemented item, declared. `verify-toolchain`: 1.98.0 in both places |
-| `test-rust` | **1386 run, 1386 passed, 0 skipped** (838 s) |
-| `test-doc` | **96 passed, 1 ignored** — the ignored one is `sdks/rust/src/lib.rs - ReadmeDoctests (line 464)` and predates this branch |
-| `verify-ignored` | 0 ignored (expected 0), 43 test binaries (expected 43), 1386 total |
-| `lint-web` | ok, every package |
-| `test-web` | **797 passed, 0 skipped** over 8 packages: `frontends/apps/checkout` 302, `sdks/nodejs` 180, `sdks/stripe-js` 146, **`examples/shop` 96**, `frontends/packages/config` 63, `tokens` 3, `ui` 3, `api-client` 4 |
-| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+| Recipe           | Result                                                                                                                                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`      | ok (`cargo fmt --all -- --check`)                                                                                                                                                                                                                                      |
+| `clippy`         | ok                                                                                                                                                                                                                                                                     |
+| `verify`         | the ten gates. `verify-sdk-parity`: 385 named proving tests all exist, 29 dated gaps, 14 SDK methods over 17 rows. `verify-links`: 811 links in 147 markdown files resolve. `verify-status`: 1 unimplemented item, declared. `verify-toolchain`: 1.98.0 in both places |
+| `test-rust`      | **1386 run, 1386 passed, 0 skipped** (838 s)                                                                                                                                                                                                                           |
+| `test-doc`       | **96 passed, 1 ignored** — the ignored one is `sdks/rust/src/lib.rs - ReadmeDoctests (line 464)` and predates this branch                                                                                                                                              |
+| `verify-ignored` | 0 ignored (expected 0), 43 test binaries (expected 43), 1386 total                                                                                                                                                                                                     |
+| `lint-web`       | ok, every package                                                                                                                                                                                                                                                      |
+| `test-web`       | **797 passed, 0 skipped** over 8 packages: `frontends/apps/checkout` 302, `sdks/nodejs` 180, `sdks/stripe-js` 146, **`examples/shop` 96**, `frontends/packages/config` 63, `tokens` 3, `ui` 3, `api-client` 4                                                          |
+| `deny`           | advisories ok, bans ok, licenses ok, sources ok                                                                                                                                                                                                                        |
 
 The shop's 96 is 93 plus the three cases this review added; `sdks/stripe-js`'s
 146 is 145 plus one.
@@ -184,7 +184,7 @@ change:
 `just test-rust` failed twice on `ce88aae` with
 `failed to create a container: Timeout error` and
 `Client(CreateContainer(RequestTimeoutError))` — a 120 s bollard timeout, on
-two *different* tests, on a host carrying a load average of ~24 with other
+two _different_ tests, on a host carrying a load average of ~24 with other
 agents' suites and compose stacks running. Eight `Created` containers were
 left stranded by those timeouts and pruned. This is the same failure the
 implementer reported three times and it is environmental: nothing in this
@@ -195,13 +195,13 @@ later run.
 
 The claim that it could not be run here is R6. What actually happened:
 
-* `pnpm exec cypress install` → `Cypress 15.21.1 is installed in
-  ~/.cache/Cypress/15.21.1`; `pnpm exec cypress verify` → `Verified Cypress!`
-* `just demo_project=exp22-review demo_port=18280 demo_receiver_port=18283
-  demo_orange_port=18282 demo_checkout_port=18285 demo_shop_port=18286
-  test-e2e` — one compose stack of the review's own, on its own project and
+- `pnpm exec cypress install` → `Cypress 15.21.1 is installed in
+~/.cache/Cypress/15.21.1`; `pnpm exec cypress verify` → `Verified Cypress!`
+- `just demo_project=exp22-review demo_port=18280 demo_receiver_port=18283
+demo_orange_port=18282 demo_checkout_port=18285 demo_shop_port=18286
+test-e2e` — one compose stack of the review's own, on its own project and
   its own ports, torn down with `down -v` by the recipe.
-* **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped, exit 0.**
+- **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped, exit 0.**
   `checkout.cy.ts` 1, `dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3 (MTN → paid
   via the webhook; **Orange redirect → paid**, 64.6 s; a payment that does
   not succeed lands on `cancel_url` and never becomes `paid`),
@@ -219,12 +219,12 @@ the 🟡 on the popup row are untouched and remain accurate.
 Run against a throwaway `postgres:16-alpine` on a port of the review's own,
 removed afterwards. Every cell of the implementer's v2→v3 table reproduced:
 
-| Call | Result |
-|---|---|
-| `product.create` | throws `operation is rejected by access policies` |
-| `product.deleteMany({})` | `{count: 0}`; 5 catalogue rows before and after |
-| `order.deleteMany({})`, `orderItem.deleteMany({})`, `webhookEvent.updateMany`, `webhookEvent.deleteMany` | each `{count: 0}`; the order row survives and the event's `type` is unchanged |
-| one payer reading another's order by id | **allowed** — there is no principal, exactly as `schema.zmodel` and the README say |
+| Call                                                                                                     | Result                                                                             |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `product.create`                                                                                         | throws `operation is rejected by access policies`                                  |
+| `product.deleteMany({})`                                                                                 | `{count: 0}`; 5 catalogue rows before and after                                    |
+| `order.deleteMany({})`, `orderItem.deleteMany({})`, `webhookEvent.updateMany`, `webhookEvent.deleteMany` | each `{count: 0}`; the order row survives and the event's `type` is unchanged      |
+| one payer reading another's order by id                                                                  | **allowed** — there is no principal, exactly as `schema.zmodel` and the README say |
 
 `zen migrate deploy` applied all three migrations from empty, and
 `zen migrate dev --create-only` afterwards produced a 30-byte "This is an
@@ -245,7 +245,7 @@ shop cannot make.
 Confirmed by reading the code, not by re-measuring:
 `vpay_api::v1::payment_intents::insert_charge` enqueues `poll_charge` with
 `run_at = OffsetDateTime::now_utc()` in the same transaction as the charge —
-so `poll_delay(0)` really is the delay before the *second* attempt, and the
+so `poll_delay(0)` really is the delay before the _second_ attempt, and the
 implementer's corrected account of D1 (T+449 ms against ~12 s to type) is
 right. The stub was left alone, as the brief directs.
 
@@ -253,35 +253,35 @@ right. The stub was left alone, as the brief directs.
 
 Each was applied, the named suite run, and the mutation reverted.
 
-| # | Mutation | Suite | Result |
-|---|---|---|---|
-| M1 | delete the `event.origin !== completionOrigin` check in `popup.ts` | `sdks/stripe-js` `popup.test.ts` | **2 failed** / 24 passed |
-| M2 | delete the `event.source !== popup` check | same | **1 failed** / 25 passed |
-| M3 | drop `$use(new PolicyPlugin())` from `src/server/db.ts` | shop `policies.test.ts` | **1 failed** / 5 passed |
-| M4 | widen `Product` to `@@allow('all', true)` and regenerate | same | **1 failed** / 5 passed |
-| M5 | change the README's `…503` row to `provider_error` | shop `test-numbers.test.ts` | **1 failed** |
-| M6 | `provider_unavailable.retryable = false` | shop `failures.test.ts` | **1 failed** / 7 passed |
-| M7 | put `popup.location.assign(url)` back | `popup.test.ts` | **17 failed** / 10 passed — 0 before the fix |
-| M8 | renumber `…503` → `…504` in **both** the module and the README | shop `test-numbers.test.ts` | README-agreement case **passes**, the new stub cross-check **fails** — which is the whole reason R8 exists |
+| #   | Mutation                                                           | Suite                            | Result                                                                                                     |
+| --- | ------------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| M1  | delete the `event.origin !== completionOrigin` check in `popup.ts` | `sdks/stripe-js` `popup.test.ts` | **2 failed** / 24 passed                                                                                   |
+| M2  | delete the `event.source !== popup` check                          | same                             | **1 failed** / 25 passed                                                                                   |
+| M3  | drop `$use(new PolicyPlugin())` from `src/server/db.ts`            | shop `policies.test.ts`          | **1 failed** / 5 passed                                                                                    |
+| M4  | widen `Product` to `@@allow('all', true)` and regenerate           | same                             | **1 failed** / 5 passed                                                                                    |
+| M5  | change the README's `…503` row to `provider_error`                 | shop `test-numbers.test.ts`      | **1 failed**                                                                                               |
+| M6  | `provider_unavailable.retryable = false`                           | shop `failures.test.ts`          | **1 failed** / 7 passed                                                                                    |
+| M7  | put `popup.location.assign(url)` back                              | `popup.test.ts`                  | **17 failed** / 10 passed — 0 before the fix                                                               |
+| M8  | renumber `…503` → `…504` in **both** the module and the README     | shop `test-numbers.test.ts`      | README-agreement case **passes**, the new stub cross-check **fails** — which is the whole reason R8 exists |
 
 ## Not checked
 
-* **No popup was opened by a real browser**, by this review or by anything
+- **No popup was opened by a real browser**, by this review or by anything
   else. The parity ⛔ is accurate and stays.
-* **`ZenStackShopStore` still has no automated test of its own.** The review
+- **`ZenStackShopStore` still has no automated test of its own.** The review
   drove it indirectly through the Cypress specs and directly by hand through
   the policy probe above, and asserted nothing about the class itself. The 🟡
   in `docs/status.md` is unchanged and honest.
-* **The Orange test numbers still do not work from a browser**, and the
+- **The Orange test numbers still do not work from a browser**, and the
   review did not try to make them: fixing the stub is a maintainer decision
   (D1), and `shop-hosted.cy.ts`'s Orange case reaching `paid` in 64.6 s is
   exactly the race the branch documents, not evidence against it.
-  *(Taken and closed on 2026-09-10 — issue #58, notes in
+  _(Taken and closed on 2026-09-10 — issue #58, notes in
   [../exp43-orange-stub-race-notes/opus.md](../exp43-orange-stub-race-notes/opus.md)
   and [../exp43-orange-stub-race-notes/opus-review.md](../exp43-orange-stub-race-notes/opus-review.md).
   The stub grew a bounded payer's window and the page's links now route back
   through the container. The sentence above is left as written because it was
-  true when it was written.)*
-* **`payer_declined` is still emitted by no adapter** (the branch's D2);
+  true when it was written.)_
+- **`payer_declined` is still emitted by no adapter** (the branch's D2);
   nothing here changed that.
-* `frontends/apps/checkout` was not touched or reviewed — exp21 owns it.
+- `frontends/apps/checkout` was not touched or reviewed — exp21 owns it.

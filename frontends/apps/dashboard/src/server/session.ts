@@ -30,29 +30,29 @@
  * it, and this file redirects there. {@link clearSessionCookie} stays for the
  * server actions, where it is legal and where it is called.
  */
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-import { dashboardConfig } from '../config/runtime';
-import type { DashboardConfig } from '../config/settings';
+import { dashboardConfig } from "../config/runtime";
+import type { DashboardConfig } from "../config/settings";
 import {
   getJson,
   type ApiFailure,
   type SessionResponse,
   type SessionStageResponse,
-} from './api';
-import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from './cookies';
-import { gateFor, refusalFor } from './gate';
-import { completeAuthorizationCode } from './oauth';
+} from "./api";
+import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from "./cookies";
+import { gateFor, refusalFor } from "./gate";
+import { completeAuthorizationCode } from "./oauth";
 
 /** Where an unauthenticated visitor is sent. */
-export const LOGIN_PATH = '/login';
+export const LOGIN_PATH = "/login";
 /** Where a password that was accepted goes next: the second factor. */
-export const TOTP_PATH = '/login/totp';
+export const TOTP_PATH = "/login/totp";
 /** Where a session still carrying the printed password is sent. */
-export const PASSWORD_PATH = '/login/password';
+export const PASSWORD_PATH = "/login/password";
 /** The first page a signed-in staff member sees. */
-export const HOME_PATH = '/payments';
+export const HOME_PATH = "/payments";
 /**
  * Where a page sends a browser whose session vpay refused.
  *
@@ -60,7 +60,7 @@ export const HOME_PATH = '/payments';
  * server action where a cookie may be written — see this module's header. It
  * deletes the session cookie and redirects to {@link LOGIN_PATH}.
  */
-export const SIGNED_OUT_PATH = '/signed-out';
+export const SIGNED_OUT_PATH = "/signed-out";
 
 /**
  * What {@link requireStaff} answers when it did not redirect.
@@ -72,13 +72,13 @@ export const SIGNED_OUT_PATH = '/signed-out';
  */
 export type StaffGate =
   /** Signed in, with a token to read `/dash/v1` with. */
-  | { readonly kind: 'ready'; readonly staff: StaffContext }
+  | { readonly kind: "ready"; readonly staff: StaffContext }
   /**
    * vpay could not answer. **The cookie is untouched**: this browser may
    * still hold a perfectly good session, and the page renders the failure and
    * its request id instead of the data.
    */
-  | { readonly kind: 'outage'; readonly failure: ApiFailure };
+  | { readonly kind: "outage"; readonly failure: ApiFailure };
 
 /** Everything a protected page needs, once the gate has let it through. */
 export interface StaffContext {
@@ -103,11 +103,14 @@ export interface StaffContext {
 export async function sessionToken(): Promise<string | null> {
   const store = await cookies();
   const value = store.get(SESSION_COOKIE)?.value;
-  return typeof value === 'string' && value.length > 0 ? value : null;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Sets the session cookie with the attributes ADR-0017 decision 2 requires. */
-export async function setSessionCookie(token: string, maxAge: number): Promise<void> {
+export async function setSessionCookie(
+  token: string,
+  maxAge: number,
+): Promise<void> {
   const store = await cookies();
   store.set(SESSION_COOKIE, token, { ...COOKIE_ATTRIBUTES, maxAge });
 }
@@ -121,7 +124,7 @@ export async function setSessionCookie(token: string, maxAge: number): Promise<v
  */
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
-  store.set(SESSION_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+  store.set(SESSION_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
 }
 
 /**
@@ -135,9 +138,13 @@ export async function readSession(
   config: DashboardConfig,
   token: string,
 ): Promise<{ session: SessionResponse | null; failure: ApiFailure | null }> {
-  const result = await getJson<SessionResponse>(config.apiBaseUrl, '/dash/v1/staff/session', {
-    sessionToken: token,
-  });
+  const result = await getJson<SessionResponse>(
+    config.apiBaseUrl,
+    "/dash/v1/staff/session",
+    {
+      sessionToken: token,
+    },
+  );
   return result.ok
     ? { session: result.value, failure: null }
     : { session: null, failure: result.failure };
@@ -161,7 +168,7 @@ export async function readSessionStage(
 ): Promise<{ stage: SessionStageResponse | null; failure: ApiFailure | null }> {
   const result = await getJson<SessionStageResponse>(
     config.apiBaseUrl,
-    '/dash/v1/staff/session/stage',
+    "/dash/v1/staff/session/stage",
     { sessionToken: token },
   );
   return result.ok
@@ -214,20 +221,25 @@ export async function requireStaff(): Promise<StaffGate> {
     // rejected `fetch` into a failure rather than throwing — so a vpay that
     // was restarting signed every staff member out and told them nothing
     // (issue #88 item 2).
-    if (first.failure !== null && refusalFor(first.failure) === 'outage') {
-      return { kind: 'outage', failure: first.failure };
+    if (first.failure !== null && refusalFor(first.failure) === "outage") {
+      return { kind: "outage", failure: first.failure };
     }
     redirect(SIGNED_OUT_PATH);
   }
 
   const gate = gateFor(first.session, Date.now());
-  if (gate.kind === 'must-change-password') {
+  if (gate.kind === "must-change-password") {
     redirect(PASSWORD_PATH);
   }
-  if (gate.kind === 'ready') {
+  if (gate.kind === "ready") {
     return {
-      kind: 'ready',
-      staff: { session: gate.session, accessToken: gate.accessToken, sessionToken: token, config },
+      kind: "ready",
+      staff: {
+        session: gate.session,
+        accessToken: gate.accessToken,
+        sessionToken: token,
+        config,
+      },
     };
   }
 
@@ -237,7 +249,7 @@ export async function requireStaff(): Promise<StaffGate> {
     // not issue for with a `401`, so anything else here — a `502` from a
     // proxy, a connection that was reset — is vpay being unreachable while
     // this browser's session is very likely still good.
-    if (refusalFor(exchanged.failure) === 'outage') {
+    if (refusalFor(exchanged.failure) === "outage") {
       // A **stale** token is not a missing one, and this is the whole reason
       // `gateFor` tells them apart. The one in hand is still inside its TTL —
       // that is what the margin bought — so a vpay that could not be reached
@@ -245,9 +257,9 @@ export async function requireStaff(): Promise<StaffGate> {
       // replace a page that could have rendered with an error box. If it does
       // expire before vpay comes back, `dash-read.ts` answers the `401` with
       // its own attempt and then renders the refusal.
-      if (gate.kind === 'stale-token') {
+      if (gate.kind === "stale-token") {
         return {
-          kind: 'ready',
+          kind: "ready",
           staff: {
             session: gate.session,
             accessToken: gate.accessToken,
@@ -256,7 +268,7 @@ export async function requireStaff(): Promise<StaffGate> {
           },
         };
       }
-      return { kind: 'outage', failure: exchanged.failure };
+      return { kind: "outage", failure: exchanged.failure };
     }
     // A `401` is NOT fallen back on, deliberately, stale token or not: it
     // means `/oauth/authorize` refused this session on this request — signed
@@ -267,7 +279,7 @@ export async function requireStaff(): Promise<StaffGate> {
     redirect(SIGNED_OUT_PATH);
   }
   return {
-    kind: 'ready',
+    kind: "ready",
     staff: {
       session: gate.session,
       accessToken: exchanged.value.access_token,

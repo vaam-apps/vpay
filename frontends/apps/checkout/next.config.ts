@@ -1,6 +1,6 @@
-import { resolve } from 'node:path';
+import { resolve } from "node:path";
 
-import type { NextConfig } from 'next';
+import type { NextConfig } from "next";
 
 /**
  * The hosted checkout page.
@@ -30,8 +30,8 @@ const config: NextConfig = {
   // anything today. Keep it anyway — Next's own docs make transpiling a
   // source-shipping workspace package the supported arrangement, and the
   // alternative is relying on a resolution that happens to work.
-  transpilePackages: ['@vpay/tokens', '@vpay/ui'],
-  output: 'standalone',
+  transpilePackages: ["@vpay/tokens", "@vpay/ui"],
+  output: "standalone",
   /**
    * The monorepo root, so the standalone bundle is laid out relative to it.
    *
@@ -45,7 +45,7 @@ const config: NextConfig = {
    * `process.cwd()` is this app's directory during `next build` — pnpm runs
    * a package script there — and three levels up is the repository root.
    */
-  outputFileTracingRoot: resolve(process.cwd(), '../../..'),
+  outputFileTracingRoot: resolve(process.cwd(), "../../.."),
 };
 
 export default config;

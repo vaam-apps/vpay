@@ -52,23 +52,23 @@ that this lane changed.
 omitted the member — a merchant with no display name, a deployment where
 lane 1b's member has not landed, a `merchant_name` rename — turned a
 perfectly payable session into `error.unexpected`: a dead end for the payer
-and a support ticket for the merchant, over a *label*.
+and a support ticket for the merchant, over a _label_.
 
 **What landed.**
 
-| Where | Change |
-|---|---|
-| `src/lib/types.ts` | `merchant?: CheckoutMerchant \| undefined` on `CheckoutSessionView` and `CheckoutReturnView`. Where it is present it is still `{ name: string }` — the type for the present case is unchanged |
-| `src/lib/api.ts` | the envelope check names only what the page cannot proceed without: `object`, `id`, and an **expanded** `payment_intent`. Not `merchant` |
-| `src/lib/machine.ts` | new `merchantOf(value: unknown): CheckoutMerchant \| null`, and `CheckoutContext.merchant` is `CheckoutMerchant \| null`. `unknown` on purpose: the value has been through `JSON.parse` and nothing else |
-| `src/lib/return.ts` | the same on `ReturnContext`, read through the same `merchantOf` |
-| `src/i18n/{en,fr}.ts` | four `_unnamed` twins — `page.pay_to_unnamed`, `expired.body_unnamed`, `outcome.succeeded_body_unnamed`, `outcome.auto_forward_unnamed` — each written as its own sentence |
-| `src/components/screens.tsx` | `merchantLine(t, merchant, named, unnamed, values)`, the one place a name becomes a sentence; `PaymentSummary` and `OutcomePanel` take `merchant: string \| null` |
-| `src/testing/browser-stub.ts` | `merchant?: StubMerchant` — `{kind:'named'}`, `{kind:'absent'}` (no key in the body at all) or `{kind:'malformed', value}` |
+| Where                         | Change                                                                                                                                                                                                   |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/types.ts`            | `merchant?: CheckoutMerchant \| undefined` on `CheckoutSessionView` and `CheckoutReturnView`. Where it is present it is still `{ name: string }` — the type for the present case is unchanged            |
+| `src/lib/api.ts`              | the envelope check names only what the page cannot proceed without: `object`, `id`, and an **expanded** `payment_intent`. Not `merchant`                                                                 |
+| `src/lib/machine.ts`          | new `merchantOf(value: unknown): CheckoutMerchant \| null`, and `CheckoutContext.merchant` is `CheckoutMerchant \| null`. `unknown` on purpose: the value has been through `JSON.parse` and nothing else |
+| `src/lib/return.ts`           | the same on `ReturnContext`, read through the same `merchantOf`                                                                                                                                          |
+| `src/i18n/{en,fr}.ts`         | four `_unnamed` twins — `page.pay_to_unnamed`, `expired.body_unnamed`, `outcome.succeeded_body_unnamed`, `outcome.auto_forward_unnamed` — each written as its own sentence                               |
+| `src/components/screens.tsx`  | `merchantLine(t, merchant, named, unnamed, values)`, the one place a name becomes a sentence; `PaymentSummary` and `OutcomePanel` take `merchant: string \| null`                                        |
+| `src/testing/browser-stub.ts` | `merchant?: StubMerchant` — `{kind:'named'}`, `{kind:'absent'}` (no key in the body at all) or `{kind:'malformed', value}`                                                                               |
 
 **Why a second dictionary key rather than a stand-in for `{merchant}`.** A
 substituted placeholder — `—`, "the merchant", the session id — is rendered
-*inside a sentence written for a real name*, and reads like data the page
+_inside a sentence written for a real name_, and reads like data the page
 has. It does not have it. `Pay —` and `Pay cs_test_…` are both worse than
 `Payment`.
 
@@ -153,7 +153,7 @@ stub's own (`REDIRECT_RAILS`), deliberately not `RAIL_PAGE_FLOWS` from
 agree by construction instead of by contract.
 
 **Lane 1b / the server, please read.** This stub now asserts the exemption
-exists. If the server ends up requiring `return_url` on *every* redirect
+exists. If the server ends up requiring `return_url` on _every_ redirect
 confirm, this page breaks in production and the four tests below stay green,
 because they would then be pinning the wrong ruling. The decisive check is
 `§2`'s guard H: with the exemption removed, the page's whole Orange path
@@ -202,7 +202,7 @@ All three reverted; **287 passed (287)**, 0 skipped, after each.
 else. `startRedirect` — which posts a URL to the parent and navigates the top
 level — and the whole `ReturnController`, where the `t=` token lives, were
 untraced. And the console/navigate/`postMessage` spies could not see a
-credential *retained on rendered state* at all: the review's mutation F
+credential _retained on rendered state_ at all: the review's mutation F
 (`contextOf` keeping the session's `client_secret`) was caught only by
 `machine.test.ts`.
 
@@ -211,7 +211,7 @@ credential *retained on rendered state* at all: the review's mutation F
 - `traceARedirect(framed)` — the Orange path, both framed and not. Asserts
   the `vpay:redirect` payload and the top-level `assign` URL carry neither
   secret nor `_secret_` nor the return token, that the framed page does not
-  *also* navigate itself, and that the confirm's credential stays in the
+  _also_ navigate itself, and that the confirm's credential stays in the
   body.
 - `traceAReturn(framed)` — the return page as its own document. The rail is
   driven to its answer **before** the spies are installed, so the trace holds
@@ -280,14 +280,14 @@ Every mutation reverted; **299 passed (299)**, 0 skipped, after each.
 
 ## 4. Counts, measured after all three fixes
 
-| Gate | Result |
-|---|---|
-| `pnpm --filter @vpay/checkout test` | **299 passed (299)** in 16 files, **0 skipped, 0 ignored** — was 271 |
-| `just lint-web` (`build-sdk-node` then `pnpm -r typecheck`) | exit 0, 16 projects |
-| `pnpm -r typecheck` (bare) | exit 0 **once `@vpay/sdk` has been built**. On a clean tree it fails first with `cypress/tasks/checkoutTasks.ts(18,28): error TS2307: Cannot find module '@vpay/sdk'` — that package's `exports` resolve to a gitignored `dist/`, which is exactly why `just lint-web` depends on `build-sdk-node`. Pre-existing, untouched by this lane; **`just lint-web` is the command that matches CI** |
-| `pnpm --filter @vpay/checkout build` | exit 0 — `.next/standalone/frontends/apps/checkout/server.js` present |
-| `pnpm --filter @vpay/ui build-storybook` | exit 0, still 23 checkout entries in `storybook-static/index.json` (not a required gate here; run because §1 changed two component signatures) |
-| `pnpm install --frozen-lockfile` | exit 0 — after §0. It failed before it |
+| Gate                                                        | Result                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vpay/checkout test`                         | **299 passed (299)** in 16 files, **0 skipped, 0 ignored** — was 271                                                                                                                                                                                                                                                                                                                         |
+| `just lint-web` (`build-sdk-node` then `pnpm -r typecheck`) | exit 0, 16 projects                                                                                                                                                                                                                                                                                                                                                                          |
+| `pnpm -r typecheck` (bare)                                  | exit 0 **once `@vpay/sdk` has been built**. On a clean tree it fails first with `cypress/tasks/checkoutTasks.ts(18,28): error TS2307: Cannot find module '@vpay/sdk'` — that package's `exports` resolve to a gitignored `dist/`, which is exactly why `just lint-web` depends on `build-sdk-node`. Pre-existing, untouched by this lane; **`just lint-web` is the command that matches CI** |
+| `pnpm --filter @vpay/checkout build`                        | exit 0 — `.next/standalone/frontends/apps/checkout/server.js` present                                                                                                                                                                                                                                                                                                                        |
+| `pnpm --filter @vpay/ui build-storybook`                    | exit 0, still 23 checkout entries in `storybook-static/index.json` (not a required gate here; run because §1 changed two component signatures)                                                                                                                                                                                                                                               |
+| `pnpm install --frozen-lockfile`                            | exit 0 — after §0. It failed before it                                                                                                                                                                                                                                                                                                                                                       |
 
 Per-file counts: `secrets.test.ts` 8 → 20, `controller.test.ts` 17 → 24,
 `checkout-view.test.tsx` 90 → 96, `machine.test.ts` 33 → 36. No test was
@@ -323,7 +323,7 @@ browser has rendered this page.** This lane did not change that.
   CSP is enforced, that the Orange redirect works against a real rail, or
   that the return page renders.
 - **The server side of §2 is not verified.** This branch changed no Rust. The
-  stub now *asserts* the open-session exemption; whether `/v1` implements it
+  stub now _asserts_ the open-session exemption; whether `/v1` implements it
   is lane 1b's, and if it does not, these tests pin the wrong ruling — see
   the note in §2.
 - **`merchant` is still not sent by any real server.** §1 makes the page

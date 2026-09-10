@@ -7,7 +7,7 @@ Host: `selast-home-pc`, Docker 29.7.2 (rootless,
 the local cache, toolchain 1.98.0 as pinned. Base: `925fa72`.
 
 Everything below was executed. Nothing here is designed-and-not-run; where a
-thing was *not* measured, § 6 says so.
+thing was _not_ measured, § 6 says so.
 
 ## 1. What the grammar calls the write actions
 
@@ -35,7 +35,7 @@ that was wrong — corrected here on 2026-09-06 by
 [opus-review.md](opus-review.md) § 2 rather than left to be re-read as
 measured. It said `"all"` "would also grant `list` and `detail`, which nothing
 in vpay calls". It would not grant them additionally: `"read"` is a member of
-*both* action lists above, so `@@allow("read", auth().isSystem())` already
+_both_ action lists above, so `@@allow("read", auth().isSystem())` already
 fills `read_allow_policies` and `detail_allow_policies`, and the four arms and
 `@@allow("all", …)` populate an identical set of slots.
 
@@ -110,16 +110,16 @@ unit tests assert the upsert's rendering and not the delete's.
 Each: apply, run against a real Postgres, restore. Harness at
 `scratchpad/exp16-opus-mut.sh` (it refuses to run off the branch).
 
-| # | Mutation | Result |
-|---|---|---|
-| 1 | drop `@@allow("create", auth().isSystem())` | `a_client_disabled_through_cratestack_is_visible_to_both_paths` **FAILS** at the first `disable_client`: `DisabledClient: a model policy denied a system upsert: forbidden: create policy denied this upsert` |
-| 2 | drop `@@allow("update", …)` | the same test **FAILS at the second** `disable_client`, not the first: `… forbidden: update policy denied this upsert`. `disabled_client_lookup_reflects_disable_and_enable` also fails; the read parity test **passes** |
-| 3 | drop `@@allow("delete", …)` | the same test **FAILS** at the enable assertion — `enable_client` returned `Ok` and the row is still there. `disabled_client_lookup_reflects_disable_and_enable` fails too; the read parity test passes |
-| 4 | drop `@@allow("read", …)` | `a_disabled_client_reads_the_same_through_both_paths` **FAILS**: `CrateStack says false, sqlx says true`. Re-run after the seed change of § 5, which is the point of running it again |
-| 5 | replace the `upsert(..)` chain with `Ok(())` | `vpay-tests-integration::client_store find_client_reflects_the_disabled_clients_kill_switch` **FAILS**: "a disabled client must stop resolving immediately, with no restart and no config change" |
-| 6 | replace `delete_many(..)` with `update_many(..).set(reason)` | the enable assertion **FAILS** on the row still being there |
+| #   | Mutation                                                     | Result                                                                                                                                                                                                                   |
+| --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | drop `@@allow("create", auth().isSystem())`                  | `a_client_disabled_through_cratestack_is_visible_to_both_paths` **FAILS** at the first `disable_client`: `DisabledClient: a model policy denied a system upsert: forbidden: create policy denied this upsert`            |
+| 2   | drop `@@allow("update", …)`                                  | the same test **FAILS at the second** `disable_client`, not the first: `… forbidden: update policy denied this upsert`. `disabled_client_lookup_reflects_disable_and_enable` also fails; the read parity test **passes** |
+| 3   | drop `@@allow("delete", …)`                                  | the same test **FAILS** at the enable assertion — `enable_client` returned `Ok` and the row is still there. `disabled_client_lookup_reflects_disable_and_enable` fails too; the read parity test passes                  |
+| 4   | drop `@@allow("read", …)`                                    | `a_disabled_client_reads_the_same_through_both_paths` **FAILS**: `CrateStack says false, sqlx says true`. Re-run after the seed change of § 5, which is the point of running it again                                    |
+| 5   | replace the `upsert(..)` chain with `Ok(())`                 | `vpay-tests-integration::client_store find_client_reflects_the_disabled_clients_kill_switch` **FAILS**: "a disabled client must stop resolving immediately, with no restart and no config change"                        |
+| 6   | replace `delete_many(..)` with `update_many(..).set(reason)` | the enable assertion **FAILS** on the row still being there                                                                                                                                                              |
 
-A seventh was run and is recorded because its answer was *not* the expected
+A seventh was run and is recorded because its answer was _not_ the expected
 one: removing `@default(now())` from `disabled_at` does not reach the render
 unit test at all — it also adds `disabled_at` to `CreateDisabledClientInput`,
 and `disable_client`'s struct literal then fails to compile with
@@ -155,7 +155,7 @@ self-consistent". Once `disable_client` became an `upsert`, keeping the call
 would have made the test exactly what that sentence disclaimed. It seeds with
 an inline `INSERT` and removes with an inline `DELETE` now, deliberately not
 factored into a helper shared with the new write test — they exist to be
-*unlike* the code under test. Mutation 4 confirms it still catches a missing
+_unlike_ the code under test. Mutation 4 confirms it still catches a missing
 read policy afterwards.
 
 ## 6. What was not measured
@@ -182,7 +182,7 @@ read policy afterwards.
   read change still covers it — read, not measured.
 - **`just fmt`'s prettier half.** Failed on this host with
   `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "prettier" not found`, because
-  no node modules were installed in this worktree *at that point*. They were
+  no node modules were installed in this worktree _at that point_. They were
   installed later in the same session — the `tsc: not found` failure recorded
   in `docs/status.md` forced it — so `just ci`'s `lint-web` and `test-web`
   legs did run. `just fmt-check` (the Rust gate, and the one `just ci` runs)

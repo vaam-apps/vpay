@@ -23,9 +23,15 @@
  * what makes signing out a revocation — delete the row and there is nowhere
  * left to read it from (ADR-0017 decision 2).
  */
-import type { DashboardConfig } from '../config/settings';
-import { authorizeRedirect, postForm, type ApiFailure, type ApiResult, type TokenResponse } from './api';
-import { CODE_CHALLENGE_METHOD, createPkce, createState } from './pkce';
+import type { DashboardConfig } from "../config/settings";
+import {
+  authorizeRedirect,
+  postForm,
+  type ApiFailure,
+  type ApiResult,
+  type TokenResponse,
+} from "./api";
+import { CODE_CHALLENGE_METHOD, createPkce, createState } from "./pkce";
 
 /**
  * Turns an authenticated staff session into a `/dash/v1` access token, and
@@ -48,7 +54,7 @@ export async function completeAuthorizationCode(
     {
       client_id: config.clientId,
       redirect_uri: config.redirectUri,
-      response_type: 'code',
+      response_type: "code",
       scope: config.scope,
       state,
       code_challenge: pkce.challenge,
@@ -60,13 +66,17 @@ export async function completeAuthorizationCode(
     return redirect;
   }
 
-  const parsed = readAuthorizationResponse(redirect.value, config.redirectUri, state);
+  const parsed = readAuthorizationResponse(
+    redirect.value,
+    config.redirectUri,
+    state,
+  );
   if (!parsed.ok) {
     return parsed;
   }
 
-  return postForm<TokenResponse>(config.apiBaseUrl, '/dash/v1/oauth/token', {
-    grant_type: 'authorization_code',
+  return postForm<TokenResponse>(config.apiBaseUrl, "/dash/v1/oauth/token", {
+    grant_type: "authorization_code",
     code: parsed.value,
     // The **same** URI the authorization request named. RFC 6749 §4.1.3, and
     // `token`'s fifth check compares it byte for byte against the code's own
@@ -106,20 +116,25 @@ export function readAuthorizationResponse(
   try {
     url = new URL(location);
   } catch {
-    return { ok: false, failure: refusal('The authorization response was not a URL.') };
+    return {
+      ok: false,
+      failure: refusal("The authorization response was not a URL."),
+    };
   }
 
   const withoutQuery = `${url.origin}${url.pathname}`;
   if (withoutQuery !== stripQuery(expectedRedirectUri)) {
     return {
       ok: false,
-      failure: refusal('The authorization response redirected somewhere other than the registered URI.'),
+      failure: refusal(
+        "The authorization response redirected somewhere other than the registered URI.",
+      ),
     };
   }
 
-  const error = url.searchParams.get('error');
+  const error = url.searchParams.get("error");
   if (error !== null) {
-    const description = url.searchParams.get('error_description');
+    const description = url.searchParams.get("error_description");
     return {
       ok: false,
       failure: refusal(
@@ -130,13 +145,19 @@ export function readAuthorizationResponse(
     };
   }
 
-  if (url.searchParams.get('state') !== expectedState) {
-    return { ok: false, failure: refusal('The authorization response carried the wrong state.') };
+  if (url.searchParams.get("state") !== expectedState) {
+    return {
+      ok: false,
+      failure: refusal("The authorization response carried the wrong state."),
+    };
   }
 
-  const code = url.searchParams.get('code');
+  const code = url.searchParams.get("code");
   if (code === null || code.length === 0) {
-    return { ok: false, failure: refusal('The authorization response carried no code.') };
+    return {
+      ok: false,
+      failure: refusal("The authorization response carried no code."),
+    };
   }
   return { ok: true, value: code };
 }

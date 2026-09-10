@@ -14,18 +14,21 @@
  * whose intent {@link intentOutcome} judged terminal, and `intentOutcome`
  * reads the same two fields `@vaam-apps/vpay-stripe-js`'s poll ladder does.
  */
-import type { FailureCode, PaymentIntentStatus } from '@vaam-apps/vpay-stripe-js';
+import type {
+  FailureCode,
+  PaymentIntentStatus,
+} from "@vaam-apps/vpay-stripe-js";
 
-import type { MessageKey } from '../i18n/index';
-import { providerReason } from './failures';
-import { railChoices, type RailChoices, type SupportedRail } from './rails';
+import type { MessageKey } from "../i18n/index";
+import { providerReason } from "./failures";
+import { railChoices, type RailChoices, type SupportedRail } from "./rails";
 import type {
   CheckoutError,
   CheckoutMerchant,
   CheckoutSession,
   PaymentIntent,
   PublicPaymentIntent,
-} from './types';
+} from "./types";
 
 /**
  * What the page knows about this payment. Read from the API, never composed
@@ -55,7 +58,7 @@ export interface CheckoutContext {
   allowedMethods: readonly string[] | null;
 }
 
-export type OutcomeKind = 'succeeded' | 'failed' | 'canceled';
+export type OutcomeKind = "succeeded" | "failed" | "canceled";
 
 /**
  * How a payment ended: the kind, the closed-vocabulary code, and the rail's
@@ -120,11 +123,11 @@ export function contextOf(
  * heading.
  */
 export function merchantOf(value: unknown): CheckoutMerchant | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return null;
   }
   const name: unknown = (value as { name?: unknown }).name;
-  return typeof name === 'string' && name.trim().length > 0 ? { name } : null;
+  return typeof name === "string" && name.trim().length > 0 ? { name } : null;
 }
 
 /**
@@ -134,31 +137,31 @@ export function merchantOf(value: unknown): CheckoutMerchant | null {
  * registered (D4). `no_supported_rail` — the intent offers only rails this
  * page has no flow for (D9).
  */
-export type RefusalReason = 'embed_not_allowed' | 'no_supported_rail';
+export type RefusalReason = "embed_not_allowed" | "no_supported_rail";
 
 export type CheckoutState =
-  | { name: 'loading' }
-  | { name: 'error'; error: CheckoutError }
-  | { name: 'refused'; reason: RefusalReason; context: CheckoutContext | null }
-  | { name: 'expired'; context: CheckoutContext }
-  | { name: 'select_rail'; context: CheckoutContext; rails: RailChoices }
+  | { name: "loading" }
+  | { name: "error"; error: CheckoutError }
+  | { name: "refused"; reason: RefusalReason; context: CheckoutContext | null }
+  | { name: "expired"; context: CheckoutContext }
+  | { name: "select_rail"; context: CheckoutContext; rails: RailChoices }
   | {
-      name: 'collect_msisdn';
+      name: "collect_msisdn";
       context: CheckoutContext;
       rails: RailChoices;
       rail: SupportedRail;
       problem: MessageKey | null;
     }
   | {
-      name: 'ready_redirect';
+      name: "ready_redirect";
       context: CheckoutContext;
       rails: RailChoices;
       rail: SupportedRail;
       problem: MessageKey | null;
     }
-  | { name: 'confirming'; context: CheckoutContext; rail: SupportedRail }
+  | { name: "confirming"; context: CheckoutContext; rail: SupportedRail }
   | {
-      name: 'waiting';
+      name: "waiting";
       context: CheckoutContext;
       rail: SupportedRail | null;
       /**
@@ -168,31 +171,41 @@ export type CheckoutState =
        */
       notice: MessageKey | null;
     }
-  | { name: 'redirecting'; context: CheckoutContext; rail: SupportedRail; url: string }
   | {
-      name: 'outcome';
+      name: "redirecting";
+      context: CheckoutContext;
+      rail: SupportedRail;
+      url: string;
+    }
+  | {
+      name: "outcome";
       context: CheckoutContext;
       kind: OutcomeKind;
       failure: FailureCode | null;
       /** The rail's own words, cleaned by `providerReason`, or `null`. */
       reason: string | null;
     }
-  | { name: 'forwarding'; context: CheckoutContext; kind: OutcomeKind; url: string };
+  | {
+      name: "forwarding";
+      context: CheckoutContext;
+      kind: OutcomeKind;
+      url: string;
+    };
 
 export type CheckoutEvent =
-  | { type: 'loaded'; context: CheckoutContext }
-  | { type: 'load_failed'; error: CheckoutError }
-  | { type: 'refuse'; reason: RefusalReason }
-  | { type: 'choose_rail'; rail: SupportedRail }
-  | { type: 'back' }
-  | { type: 'problem'; problem: MessageKey }
-  | { type: 'confirm_started' }
-  | { type: 'intent_updated'; intent: PaymentIntent | PublicPaymentIntent }
-  | { type: 'redirect_required'; url: string }
-  | { type: 'session_refreshed'; session: CheckoutSession }
-  | { type: 'forward'; url: string };
+  | { type: "loaded"; context: CheckoutContext }
+  | { type: "load_failed"; error: CheckoutError }
+  | { type: "refuse"; reason: RefusalReason }
+  | { type: "choose_rail"; rail: SupportedRail }
+  | { type: "back" }
+  | { type: "problem"; problem: MessageKey }
+  | { type: "confirm_started" }
+  | { type: "intent_updated"; intent: PaymentIntent | PublicPaymentIntent }
+  | { type: "redirect_required"; url: string }
+  | { type: "session_refreshed"; session: CheckoutSession }
+  | { type: "forward"; url: string };
 
-export const INITIAL_STATE: CheckoutState = { name: 'loading' };
+export const INITIAL_STATE: CheckoutState = { name: "loading" };
 
 /**
  * Whether an intent has stopped moving, and how it ended.
@@ -203,17 +216,22 @@ export const INITIAL_STATE: CheckoutState = { name: 'loading' };
  * completed" on a page the payer just opened. Same reading as
  * `@vaam-apps/vpay-stripe-js`'s `hasStoppedMoving`, deliberately.
  */
-export function intentOutcome(intent: PaymentIntent | PublicPaymentIntent): Outcome | null {
+export function intentOutcome(
+  intent: PaymentIntent | PublicPaymentIntent,
+): Outcome | null {
   const status: PaymentIntentStatus = intent.status;
-  if (status === 'succeeded') {
-    return { kind: 'succeeded', failure: null, reason: null };
+  if (status === "succeeded") {
+    return { kind: "succeeded", failure: null, reason: null };
   }
-  if (status === 'canceled') {
-    return { kind: 'canceled', failure: null, reason: null };
+  if (status === "canceled") {
+    return { kind: "canceled", failure: null, reason: null };
   }
-  if (status === 'requires_payment_method' && intent.last_payment_error !== null) {
+  if (
+    status === "requires_payment_method" &&
+    intent.last_payment_error !== null
+  ) {
     return {
-      kind: 'failed',
+      kind: "failed",
       failure: intent.last_payment_error.code,
       reason: providerReason(intent.last_payment_error.message),
     };
@@ -233,27 +251,33 @@ export function intentOutcome(intent: PaymentIntent | PublicPaymentIntent): Outc
 export function stateForContext(context: CheckoutContext): CheckoutState {
   const { session, intent } = context;
 
-  if (session.status === 'complete') {
-    return { name: 'outcome', context, kind: 'succeeded', failure: null, reason: null };
+  if (session.status === "complete") {
+    return {
+      name: "outcome",
+      context,
+      kind: "succeeded",
+      failure: null,
+      reason: null,
+    };
   }
-  if (session.status === 'expired') {
-    if (session.payment_status === 'failed') {
+  if (session.status === "expired") {
+    if (session.payment_status === "failed") {
       const outcome = intentOutcome(intent);
       return {
-        name: 'outcome',
+        name: "outcome",
         context,
-        kind: outcome?.kind ?? 'failed',
+        kind: outcome?.kind ?? "failed",
         failure: outcome?.failure ?? null,
         reason: outcome?.reason ?? null,
       };
     }
-    return { name: 'expired', context };
+    return { name: "expired", context };
   }
 
   const outcome = intentOutcome(intent);
   if (outcome !== null) {
     return {
-      name: 'outcome',
+      name: "outcome",
       context,
       kind: outcome.kind,
       failure: outcome.failure,
@@ -263,21 +287,21 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
 
   const rails = railChoices(intent, context.allowedMethods);
 
-  if (intent.status === 'processing' || intent.status === 'requires_action') {
+  if (intent.status === "processing" || intent.status === "requires_action") {
     // Already confirmed — a reload, or a payer coming back to the tab. The
     // rail that was chosen is not recoverable from the intent (a confirmed
     // intent does not name it), so the waiting screen shows without one.
-    return { name: 'waiting', context, rail: null, notice: null };
+    return { name: "waiting", context, rail: null, notice: null };
   }
 
   if (rails.supported.length === 0) {
-    return { name: 'refused', reason: 'no_supported_rail', context };
+    return { name: "refused", reason: "no_supported_rail", context };
   }
   if (rails.supported.length === 1) {
     const only = rails.supported[0] as SupportedRail;
     return entryStateFor(context, rails, only);
   }
-  return { name: 'select_rail', context, rails };
+  return { name: "select_rail", context, rails };
 }
 
 /** The first screen for a chosen rail: a form for a push, a button for a redirect. */
@@ -286,15 +310,18 @@ function entryStateFor(
   rails: RailChoices,
   rail: SupportedRail,
 ): CheckoutState {
-  return rail.flow === 'mobile_money_push'
-    ? { name: 'collect_msisdn', context, rails, rail, problem: null }
-    : { name: 'ready_redirect', context, rails, rail, problem: null };
+  return rail.flow === "mobile_money_push"
+    ? { name: "collect_msisdn", context, rails, rail, problem: null }
+    : { name: "ready_redirect", context, rails, rail, problem: null };
 }
 
 /** The state a `back` from a rail's entry screen returns to. */
-function backStateFor(context: CheckoutContext, rails: RailChoices): CheckoutState {
+function backStateFor(
+  context: CheckoutContext,
+  rails: RailChoices,
+): CheckoutState {
   return rails.supported.length > 1
-    ? { name: 'select_rail', context, rails }
+    ? { name: "select_rail", context, rails }
     : stateForContext(context);
 }
 
@@ -308,41 +335,46 @@ function backStateFor(context: CheckoutContext, rails: RailChoices): CheckoutSta
  * `forward` from `waiting` does nothing; a second `intent_updated` after
  * `forwarding` does nothing).
  */
-export function reduce(state: CheckoutState, event: CheckoutEvent): CheckoutState {
+export function reduce(
+  state: CheckoutState,
+  event: CheckoutEvent,
+): CheckoutState {
   switch (event.type) {
-    case 'loaded':
-      return state.name === 'loading' ? stateForContext(event.context) : state;
+    case "loaded":
+      return state.name === "loading" ? stateForContext(event.context) : state;
 
-    case 'load_failed':
-      return state.name === 'loading' ? { name: 'error', error: event.error } : state;
+    case "load_failed":
+      return state.name === "loading"
+        ? { name: "error", error: event.error }
+        : state;
 
-    case 'refuse':
+    case "refuse":
       // Reachable from any state: the embed check runs before the session
       // read and can also be re-run when the parent changes.
       return {
-        name: 'refused',
+        name: "refused",
         reason: event.reason,
-        context: 'context' in state ? state.context : null,
+        context: "context" in state ? state.context : null,
       };
 
-    case 'choose_rail':
-      return state.name === 'select_rail'
+    case "choose_rail":
+      return state.name === "select_rail"
         ? entryStateFor(state.context, state.rails, event.rail)
         : state;
 
-    case 'back':
-      return state.name === 'collect_msisdn' || state.name === 'ready_redirect'
+    case "back":
+      return state.name === "collect_msisdn" || state.name === "ready_redirect"
         ? backStateFor(state.context, state.rails)
         : state;
 
-    case 'problem':
-      if (state.name === 'collect_msisdn' || state.name === 'ready_redirect') {
+    case "problem":
+      if (state.name === "collect_msisdn" || state.name === "ready_redirect") {
         return { ...state, problem: event.problem };
       }
-      if (state.name === 'waiting') {
+      if (state.name === "waiting") {
         return { ...state, notice: event.problem };
       }
-      if (state.name === 'confirming') {
+      if (state.name === "confirming") {
         // A confirm that never reached the rail returns the payer to the
         // screen they submitted from, with the reason shown there.
         return {
@@ -356,45 +388,58 @@ export function reduce(state: CheckoutState, event: CheckoutEvent): CheckoutStat
       }
       return state;
 
-    case 'confirm_started':
-      return state.name === 'collect_msisdn' || state.name === 'ready_redirect'
-        ? { name: 'confirming', context: state.context, rail: state.rail }
+    case "confirm_started":
+      return state.name === "collect_msisdn" || state.name === "ready_redirect"
+        ? { name: "confirming", context: state.context, rail: state.rail }
         : state;
 
-    case 'intent_updated': {
-      if (state.name !== 'confirming' && state.name !== 'waiting') {
+    case "intent_updated": {
+      if (state.name !== "confirming" && state.name !== "waiting") {
         return state;
       }
-      const context: CheckoutContext = { ...state.context, intent: event.intent };
+      const context: CheckoutContext = {
+        ...state.context,
+        intent: event.intent,
+      };
       const outcome = intentOutcome(event.intent);
       if (outcome !== null) {
         return {
-          name: 'outcome',
+          name: "outcome",
           context,
           kind: outcome.kind,
           failure: outcome.failure,
           reason: outcome.reason,
         };
       }
-      return { name: 'waiting', context, rail: state.rail, notice: null };
+      return { name: "waiting", context, rail: state.rail, notice: null };
     }
 
-    case 'redirect_required':
-      return state.name === 'confirming'
-        ? { name: 'redirecting', context: state.context, rail: state.rail, url: event.url }
+    case "redirect_required":
+      return state.name === "confirming"
+        ? {
+            name: "redirecting",
+            context: state.context,
+            rail: state.rail,
+            url: event.url,
+          }
         : state;
 
-    case 'session_refreshed':
+    case "session_refreshed":
       // Only where a fresher session changes nothing about what is on
       // screen. Re-deriving the state here would let a late read move a
       // payer off an outcome they are reading.
-      return state.name === 'outcome'
+      return state.name === "outcome"
         ? { ...state, context: { ...state.context, session: event.session } }
         : state;
 
-    case 'forward':
-      return state.name === 'outcome'
-        ? { name: 'forwarding', context: state.context, kind: state.kind, url: event.url }
+    case "forward":
+      return state.name === "outcome"
+        ? {
+            name: "forwarding",
+            context: state.context,
+            kind: state.kind,
+            url: event.url,
+          }
         : state;
 
     default: {

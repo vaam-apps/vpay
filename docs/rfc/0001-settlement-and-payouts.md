@@ -15,7 +15,7 @@ periodic settlement to them. That is money transmission.
 
 ## Proposal
 
-Not yet. This RFC exists to record why the schema is *ready* for it while the
+Not yet. This RFC exists to record why the schema is _ready_ for it while the
 product is not:
 
 - The ledger is already double-entry with a `platform_fee_revenue` account, so
@@ -36,5 +36,5 @@ that dies in year one dies here.
 
 1. Licence directly, or ride a sponsoring bank?
 2. Settlement cadence and currency.
-3. Does any target rail *force* aggregation by not supporting pass-through
+3. Does any target rail _force_ aggregation by not supporting pass-through
    settlement? (Open for Orange — see the adapter doc.)

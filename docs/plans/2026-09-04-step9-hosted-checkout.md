@@ -24,7 +24,7 @@ does **not** exist, each verified in the scoping pass:
   scaffold; `frontends/Dockerfile` copies only `frontends/` (so nothing in it
   can depend on `sdks/*`) and its `CMD` is the dashboard.
 - **No return trip for a redirect rail (D4 of browser-checkout).** Orange's
-  adapter reads `return_url` from *deployment* config
+  adapter reads `return_url` from _deployment_ config
   (`vpay-adapter-orange-money/src/lib.rs:359`); `ChargeRef` has no
   `return_url`; the merchant's `return_url` is stored on `charges` and echoed
   as a label; a payer sent back to `/provider/orange_money/callback` gets an
@@ -145,7 +145,7 @@ Taken by the orchestrator. Each names what is gained and what is lost.
   `postMessage` with `event.origin` checked on both sides against a pinned
   value (parent: `new URL(baseUrl).origin`; child: the allowed origin that
   framed it), messages `{type:'vpay:resize', height}`, `{type:'vpay:complete',
-  session, status}`, `{type:'vpay:redirect', url}` (the parent performs the
+session, status}`, `{type:'vpay:redirect', url}` (the parent performs the
   top-level navigation for a redirect rail, since an iframe may not), never
   `'*'` as a target. The README's "not compatible, ever" line is rewritten in
   the same PR, and `docs/sdks/parity.md` gains the rows.
@@ -193,22 +193,22 @@ Taken by the orchestrator. Each names what is gained and what is lost.
 Merchant surface, `/v1` (token-authenticated, `Idempotency-Key` required on
 POST, tenant-scoped, in `V1_ROUTES`):
 
-| Method | Path | Body / answer |
-|---|---|---|
-| POST | `/v1/checkout/sessions` | `payment_intent` (required, `pi_…` of this tenant, must be `requires_payment_method` with no charge), `ui_mode` (`hosted` \| `embedded`, default `hosted`), `success_url` + `cancel_url` (required for `hosted`, refused for `embedded`), `return_url` (required for `embedded`, refused for `hosted`), all http(s) ≤ 2048 chars, `https` only under livemode. Answers `201` with the session **with `client_secret`**, and `url` when hosted. |
-| GET | `/v1/checkout/sessions/{id}` | The session with `client_secret` (like `retrieve` on intents). |
-| GET | `/v1/checkout/sessions` | List, no secrets, `payment_intent` filter. |
-| POST | `/v1/checkout/sessions/{id}/expire` | `open` → `expired`; a session with a live charge is refused `409`. |
+| Method | Path                                | Body / answer                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/v1/checkout/sessions`             | `payment_intent` (required, `pi_…` of this tenant, must be `requires_payment_method` with no charge), `ui_mode` (`hosted` \| `embedded`, default `hosted`), `success_url` + `cancel_url` (required for `hosted`, refused for `embedded`), `return_url` (required for `embedded`, refused for `hosted`), all http(s) ≤ 2048 chars, `https` only under livemode. Answers `201` with the session **with `client_secret`**, and `url` when hosted. |
+| GET    | `/v1/checkout/sessions/{id}`        | The session with `client_secret` (like `retrieve` on intents).                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/v1/checkout/sessions`             | List, no secrets, `payment_intent` filter.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| POST   | `/v1/checkout/sessions/{id}/expire` | `open` → `expired`; a session with a live charge is refused `409`.                                                                                                                                                                                                                                                                                                                                                                             |
 
 Browser surface, `/v1/browser` (publishable key + session `client_secret`,
 CORS as today, uniform 404, in `BROWSER_ROUTES` — the test that pins that
 table to two entries is updated deliberately):
 
-| Method | Path | Answer |
-|---|---|---|
-| GET | `/v1/browser/checkout/sessions/{cs_id}?key&client_secret` | The session plus its intent **with the intent's `client_secret`** (the page needs it to confirm and poll through the existing routes) and the merchant's display name. |
-| GET | `/v1/browser/checkout/sessions/{cs_id}/return?key&t={return_token}` | The session plus its intent **without** the intent's secret; enough to render the outcome and forward. |
-| GET | `/v1/browser/checkout/origins?key` | `{ "origins": [...] }` for the key's tenant. |
+| Method | Path                                                                | Answer                                                                                                                                                                 |
+| ------ | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/browser/checkout/sessions/{cs_id}?key&client_secret`           | The session plus its intent **with the intent's `client_secret`** (the page needs it to confirm and poll through the existing routes) and the merchant's display name. |
+| GET    | `/v1/browser/checkout/sessions/{cs_id}/return?key&t={return_token}` | The session plus its intent **without** the intent's secret; enough to render the outcome and forward.                                                                 |
+| GET    | `/v1/browser/checkout/origins?key`                                  | `{ "origins": [...] }` for the key's tenant.                                                                                                                           |
 
 Session object (rendered by every route above; `client_secret` only where
 stated):
@@ -254,21 +254,22 @@ Owns: `backends/migrations/0028_create-checkout-sessions.sql`
 session per intent), ui_mode, status, payment_status, success_url,
 cancel_url, return_url, client_secret_suffix, return_token, expires_at,
 created_at, updated_at; CHECKs mirroring `0019`/`0026`), `vpay-db/src/checkout_sessions.rs`
-+ the `CheckoutSessions` repository trait + `PgRepositories`, `vpay-core/src/ids.rs`
-(`cs_` id, secret and token suffixes), `vpay-api/src/v1/checkout_sessions.rs`
-+ `V1_ROUTES`, `vpay-api/src/browser/checkout_sessions.rs` + `BROWSER_ROUTES`,
-`vpay-api/src/model.rs` (`CheckoutSessionObject`, `CheckoutSessionWithSecret`,
-redacting `Debug`), `vpay-config` (`checkout.public_base_url`,
-`checkout_origins`, validation, fixtures), the worker hook that flips
-`payment_status`/`status` when the intent settles (in the settlement
-transaction, `vpay-worker/src/handlers.rs` — one write, no new job), and the
-reference pages of those crates. Proof: `backends/tests/integration/tests/checkout_sessions.rs`
-(real Postgres; create → `url` shape; tenancy 404 byte-identical to the
-browser one; every URL rule; the intent's secret present on the session
-browser read and absent on the return read; the origins route needs no
-secret; settlement flips the session; expiry). `expected_suites` 41→42 and
-`min_tests` in the same commit. Must NOT: touch `PaymentIntentObject`'s 12
-keys, the CORS layer, or any adapter.
+
+- the `CheckoutSessions` repository trait + `PgRepositories`, `vpay-core/src/ids.rs`
+  (`cs_` id, secret and token suffixes), `vpay-api/src/v1/checkout_sessions.rs`
+- `V1_ROUTES`, `vpay-api/src/browser/checkout_sessions.rs` + `BROWSER_ROUTES`,
+  `vpay-api/src/model.rs` (`CheckoutSessionObject`, `CheckoutSessionWithSecret`,
+  redacting `Debug`), `vpay-config` (`checkout.public_base_url`,
+  `checkout_origins`, validation, fixtures), the worker hook that flips
+  `payment_status`/`status` when the intent settles (in the settlement
+  transaction, `vpay-worker/src/handlers.rs` — one write, no new job), and the
+  reference pages of those crates. Proof: `backends/tests/integration/tests/checkout_sessions.rs`
+  (real Postgres; create → `url` shape; tenancy 404 byte-identical to the
+  browser one; every URL rule; the intent's secret present on the session
+  browser read and absent on the return read; the origins route needs no
+  secret; settlement flips the session; expiry). `expected_suites` 41→42 and
+  `min_tests` in the same commit. Must NOT: touch `PaymentIntentObject`'s 12
+  keys, the CORS layer, or any adapter.
 
 ### Lane 2 — the return trip through the port (`vpay-provider`, both adapters, conformance, stubs, compose)
 
@@ -457,20 +458,20 @@ reasoned.
 
 ### What landed, per lane
 
-| Merge | Lane | What it delivered |
-|---|---|---|
-| `716184d` | **5 — the SDKs** | `initEmbeddedCheckout` and `retrieveCheckoutSession` in `@vpay/stripe-js`, `checkout.sessions.{create,retrieve,list,expire}` in both merchant SDKs in one PR (ADR-0015), the session routes on the browser stub, the README retraction, and the parity rows. The `url`'s fragment is redacted from `Debug`/`util.inspect` alongside `client_secret` — a leak the tests found, because a hosted session's `url` carries the same value |
-| `b6332c2` | **2 — the return trip through the port** | `ChargeRef::return_url`, Orange sending it as both `return_url` and `cancel_url`, MTN asserting it ignores it, the deployment-wide `settings.return_url` fallback deleted, the conformance case per rail, the Orange stub's hosted page (D7) and its published port |
-| `5c1950c` | **3 — the page** | `frontends/apps/checkout`: `/c/{id}`, `/e/{id}`, `/c/{id}/return`, fr/en from `Accept-Language`, the security headers, `frame-ancestors` resolved server-side by `middleware.ts`, the pure state machine, the child half of the `postMessage` protocol, 22 Storybook stories |
-| `8e6405f` | **2b — digits-only steering MSISDNs** | `237600000100/101/102`, twins of the hex family, joining the same WireMock scenarios by the same mappings — because the page's E.164 validator correctly refuses `237600000ce0` |
-| `d4b4ec2` | **1 — the session object and both surfaces** | Migration `0028`, `vpay_db::checkout_sessions`, `/v1/checkout/sessions` (four routes), the three `/v1/browser/checkout` reads, `CheckoutSessionObject`/`WithSecret`, `checkout.public_base_url` and `checkout_origins` with six `ConfigError` variants, and the settlement flip inside the settlement transaction |
-| `e49e503` | **7 — the shop** | `examples/shop`: a Next 16 App Router storefront on tRPC and ZenStack over Prisma, a seeded XAF catalogue, server-side vpay integration through `@vpay/sdk`, and an order that turns `paid` only from its own verified webhook |
-| `9a8a38d` | **3b — the page's three correctness fixes** | `merchant` tolerated as absent, the browser stub made to apply the open-session `return_url` exemption in both directions, the credential trace widened from one payer path to three; and the lockfile importer that made `pnpm install --frozen-lockfile` fail on the gate |
-| `08138d8` | **4 — build, image, deploy, demo** | `frontends/Dockerfile`'s `checkout` target, `/healthz`, a fourth image in `release.yml`, the `vpay-checkout` and `vpay-shop` compose services, the shop's own database, `gen-demo-keys`' second key pair and four staleness rules, the Helm `checkout.enabled` objects and two guards, demo step 5, and XAF on both rails in the demo overlay |
-| `d217173` | **1b — the integration seams and the review's server-side findings** | The return trip actually wired (`SessionReturnPage`), the expiry sweep, `merchant_clients[].display_name`, non-canonical origins refused, a session-driven confirm needing no `return_url`, and both browser reads ending at the horizon with the intent's secret gated on `open` |
-| `d29651e` | **5b — the client-assertion audience** | `assertionAudience` / `ClientBuilder::assertion_audience` in both SDKs, `VPAY_OAUTH_AUDIENCE` in the shop, and both compose files setting it — the fix for the defect lane 6 found |
-| `551ec80` | **r2 — the second review round** | Seven remediations: the README's currency wording, the shop store's coverage claims made honest, a no-runtime-imports guard for the checkout app, the XAF overlay check turned from a presence grep into a real assertion, five demo publications bound to `127.0.0.1`, and `.env.example` matched to the stack |
-| `e57e7ff` | **6 — the e2e proof** | `shop-hosted.cy.ts` and `shop-embedded.cy.ts`, the frame fixture on an unregistered origin, the two-pass runner configuration, and a `just test-e2e` that brings up a stack the specs can pass against |
+| Merge     | Lane                                                                 | What it delivered                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `716184d` | **5 — the SDKs**                                                     | `initEmbeddedCheckout` and `retrieveCheckoutSession` in `@vpay/stripe-js`, `checkout.sessions.{create,retrieve,list,expire}` in both merchant SDKs in one PR (ADR-0015), the session routes on the browser stub, the README retraction, and the parity rows. The `url`'s fragment is redacted from `Debug`/`util.inspect` alongside `client_secret` — a leak the tests found, because a hosted session's `url` carries the same value |
+| `b6332c2` | **2 — the return trip through the port**                             | `ChargeRef::return_url`, Orange sending it as both `return_url` and `cancel_url`, MTN asserting it ignores it, the deployment-wide `settings.return_url` fallback deleted, the conformance case per rail, the Orange stub's hosted page (D7) and its published port                                                                                                                                                                   |
+| `5c1950c` | **3 — the page**                                                     | `frontends/apps/checkout`: `/c/{id}`, `/e/{id}`, `/c/{id}/return`, fr/en from `Accept-Language`, the security headers, `frame-ancestors` resolved server-side by `middleware.ts`, the pure state machine, the child half of the `postMessage` protocol, 22 Storybook stories                                                                                                                                                          |
+| `8e6405f` | **2b — digits-only steering MSISDNs**                                | `237600000100/101/102`, twins of the hex family, joining the same WireMock scenarios by the same mappings — because the page's E.164 validator correctly refuses `237600000ce0`                                                                                                                                                                                                                                                       |
+| `d4b4ec2` | **1 — the session object and both surfaces**                         | Migration `0028`, `vpay_db::checkout_sessions`, `/v1/checkout/sessions` (four routes), the three `/v1/browser/checkout` reads, `CheckoutSessionObject`/`WithSecret`, `checkout.public_base_url` and `checkout_origins` with six `ConfigError` variants, and the settlement flip inside the settlement transaction                                                                                                                     |
+| `e49e503` | **7 — the shop**                                                     | `examples/shop`: a Next 16 App Router storefront on tRPC and ZenStack over Prisma, a seeded XAF catalogue, server-side vpay integration through `@vpay/sdk`, and an order that turns `paid` only from its own verified webhook                                                                                                                                                                                                        |
+| `9a8a38d` | **3b — the page's three correctness fixes**                          | `merchant` tolerated as absent, the browser stub made to apply the open-session `return_url` exemption in both directions, the credential trace widened from one payer path to three; and the lockfile importer that made `pnpm install --frozen-lockfile` fail on the gate                                                                                                                                                           |
+| `08138d8` | **4 — build, image, deploy, demo**                                   | `frontends/Dockerfile`'s `checkout` target, `/healthz`, a fourth image in `release.yml`, the `vpay-checkout` and `vpay-shop` compose services, the shop's own database, `gen-demo-keys`' second key pair and four staleness rules, the Helm `checkout.enabled` objects and two guards, demo step 5, and XAF on both rails in the demo overlay                                                                                         |
+| `d217173` | **1b — the integration seams and the review's server-side findings** | The return trip actually wired (`SessionReturnPage`), the expiry sweep, `merchant_clients[].display_name`, non-canonical origins refused, a session-driven confirm needing no `return_url`, and both browser reads ending at the horizon with the intent's secret gated on `open`                                                                                                                                                     |
+| `d29651e` | **5b — the client-assertion audience**                               | `assertionAudience` / `ClientBuilder::assertion_audience` in both SDKs, `VPAY_OAUTH_AUDIENCE` in the shop, and both compose files setting it — the fix for the defect lane 6 found                                                                                                                                                                                                                                                    |
+| `551ec80` | **r2 — the second review round**                                     | Seven remediations: the README's currency wording, the shop store's coverage claims made honest, a no-runtime-imports guard for the checkout app, the XAF overlay check turned from a presence grep into a real assertion, five demo publications bound to `127.0.0.1`, and `.env.example` matched to the stack                                                                                                                       |
+| `e57e7ff` | **6 — the e2e proof**                                                | `shop-hosted.cy.ts` and `shop-embedded.cy.ts`, the frame fixture on an unregistered origin, the two-pass runner configuration, and a `just test-e2e` that brings up a stack the specs can pass against                                                                                                                                                                                                                                |
 
 Two commits are the integrator's own and neither belongs to a lane:
 
@@ -502,7 +503,7 @@ Two commits are the integrator's own and neither belongs to a lane:
 - **Lane 3b was not in the plan** and came out of the correctness review. Its
   most consequential fix is that the page's envelope check no longer requires
   `merchant`: a server that omitted the member turned a payable session into
-  `error.unexpected` — a dead end for the payer over a *label*.
+  `error.unexpected` — a dead end for the payer over a _label_.
 - **Lane 1b was not in the plan** and came out of the same review. It found
   that lane 2's `ReturnUrlSource` still answered `None` for every intent, which
   would have forwarded every session-driven payer one step too early with
@@ -535,7 +536,7 @@ Two commits are the integrator's own and neither belongs to a lane:
   away: `retrieveCheckoutSession` returns a live **confirm** credential as well
   as a session-read one.
 - **The wire member is `merchant: { name }`, not `merchant.display_name`.** The
-  page is the consumer and its guard is the contract; the *configuration* key
+  page is the consumer and its guard is the contract; the _configuration_ key
   is `display_name` as briefed.
 - **The demo stack settles XAF on both rails**, decided by lane 4 out of the
   three options lane 7 raised. The shop prices its catalogue in XAF and offers
@@ -591,20 +592,20 @@ On the merged branch, by the integrator in the `vpay-ci` VM at `551ec80` (lane
 `.gitignore` line — no Rust and no workspace package), and re-measured by lane E
 at `e57e7ff`:
 
-| Gate | Result |
-|---|---|
-| `just ci` (VM, clean build) | **green** — 1137/1137 tests across 42 binaries, 0 ignored; 84 doctests passed, 1 ignored (pre-existing, `sdks/rust`'s README); `@vpay/stripe-js` 119, `@vpay/sdk` 168, `@vpay-examples/shop` 57, `@vpay/checkout` 302, `@vpay/tokens` 3, `@vpay/ui` 3, `@vpay/api-client` 4; `cargo deny` advisories/bans/licenses/sources ok |
-| `just verify` (lane E, `e57e7ff`) | ok — `verify-status` 1 unimplemented item; `verify-errors` 15 error types, 14 `#[from]` variants; **`verify-sdk-parity` 335 proving tests, 26 dated gaps** |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1137 total (minimum 1080)` |
-| Conformance | **33 cases** (28 after Step 8): lane 2's return-URL case ×2 rails, lane 2b's digits-only twin ×3 |
-| `just demo` from nothing (VM) | **three consecutive green runs**, six outcomes for six each, XAF on both rails, step 5 minting a hosted and an embedded session, `write_matched_no_row` in no run's logs. Step 8's bar of three from nothing is met **and consecutive** |
-| `just test-e2e` from nothing (VM, unpatched) | **exit 0 — 11 tests across four specs, 0 failing, 0 skipped.** Pass 1: `checkout.cy.ts` 13 s (1), `dashboard.cy.ts` 0.4 s (3), `shop-hosted.cy.ts` 1 m 18 s (3). Pass 2 (`VPAY_E2E_FRAMED=1`): `shop-embedded.cy.ts` 13 s (4) |
-| `just helm-check` (authoring host) | ok — 17 guards all fired by name, kubeconform 23/23 valid |
-| Worker-down proof (authoring host) | with `vpay-worker` stopped the hosted spec fails **3/3** on the settlement wait, intents left `processing`/`requires_action` and nine orders `unpaid` |
+| Gate                                         | Result                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just ci` (VM, clean build)                  | **green** — 1137/1137 tests across 42 binaries, 0 ignored; 84 doctests passed, 1 ignored (pre-existing, `sdks/rust`'s README); `@vpay/stripe-js` 119, `@vpay/sdk` 168, `@vpay-examples/shop` 57, `@vpay/checkout` 302, `@vpay/tokens` 3, `@vpay/ui` 3, `@vpay/api-client` 4; `cargo deny` advisories/bans/licenses/sources ok |
+| `just verify` (lane E, `e57e7ff`)            | ok — `verify-status` 1 unimplemented item; `verify-errors` 15 error types, 14 `#[from]` variants; **`verify-sdk-parity` 335 proving tests, 26 dated gaps**                                                                                                                                                                    |
+| `just verify-ignored`                        | `0 ignored (expected 0), 42 test binaries (expected 42), 1137 total (minimum 1080)`                                                                                                                                                                                                                                           |
+| Conformance                                  | **33 cases** (28 after Step 8): lane 2's return-URL case ×2 rails, lane 2b's digits-only twin ×3                                                                                                                                                                                                                              |
+| `just demo` from nothing (VM)                | **three consecutive green runs**, six outcomes for six each, XAF on both rails, step 5 minting a hosted and an embedded session, `write_matched_no_row` in no run's logs. Step 8's bar of three from nothing is met **and consecutive**                                                                                       |
+| `just test-e2e` from nothing (VM, unpatched) | **exit 0 — 11 tests across four specs, 0 failing, 0 skipped.** Pass 1: `checkout.cy.ts` 13 s (1), `dashboard.cy.ts` 0.4 s (3), `shop-hosted.cy.ts` 1 m 18 s (3). Pass 2 (`VPAY_E2E_FRAMED=1`): `shop-embedded.cy.ts` 13 s (4)                                                                                                 |
+| `just helm-check` (authoring host)           | ok — 17 guards all fired by name, kubeconform 23/23 valid                                                                                                                                                                                                                                                                     |
+| Worker-down proof (authoring host)           | with `vpay-worker` stopped the hosted spec fails **3/3** on the settlement wait, intents left `processing`/`requires_action` and nine orders `unpaid`                                                                                                                                                                         |
 
 **The definition of done is met except in one place, and the exception is
 counted rather than smoothed over:** this plan asks for both Cypress specs
-green *in CI*. They are green from nothing in the VM, once, unpatched; nothing
+green _in CI_. They are green from nothing in the VM, once, unpatched; nothing
 was measured about flakiness, and `retries: 2` is unchanged from before this
 step.
 
@@ -624,7 +625,7 @@ Docker Hub token fetch.
 - **No browser has been observed enforcing vpay's `frame-ancestors`.** Cypress
   strips `Content-Security-Policy` from every document it proxies, so the
   header is asserted **as the server sends it** with `cy.request`. What a
-  browser *was* observed refusing is the page's own origin check against
+  browser _was_ observed refusing is the page's own origin check against
   `document.referrer` — proven origin-driven by registering the fixture's
   origin and watching the same page render. The two are different mechanisms
   and no document in this step lets one stand in for the other.
@@ -728,7 +729,7 @@ checkout — it fixes `cargo xtask verify-status`, the AGENTS.md-rule-2 gate —
 but landed the same day through the same process, so it is recorded here
 rather than left to a commit message. The task brief's premise turned out
 half wrong: on this base `searchable` already stripped every comment that
-*began* a line (`//`, `///`, `//!`, `/* */`); only a **trailing** `//`
+_began_ a line (`//`, `///`, `//!`, `/* */`); only a **trailing** `//`
 comment and a **string literal** (typically a raw string) spelling the token
 out still got through. A hand-written lexer replaces the old block-comment
 stripper and leading-line filter, is shared by `verify-status`,
@@ -777,7 +778,7 @@ no image exists / nothing has been signed" family of claims across
 13 measured `release` runs on `master` (12 green, 1 failure already explained
 by the organisation-rename break), the four signed manifest lists and Rekor
 entries from the latest green run, and the GHCR-packages 403 that leaves
-package *visibility* unmeasured even though the run log establishes
+package _visibility_ unmeasured even though the run log establishes
 existence — but landed the same day through the same process, so it is
 recorded here rather than left to a commit message. The review found two
 accuracy defects (an under-counted `docs/status.md` edit, a misclassified

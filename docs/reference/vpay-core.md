@@ -15,40 +15,40 @@ Each module's rustdoc says what a thing is and links to the section here that
 says why. Where a decision already has a home — an ADR, a flow document — this
 page points at it rather than restating it.
 
-| Module | rustdoc says | This page says |
-|---|---|---|
-| `ids` | the four generators and the shape check | why Crockford base32, why the shape check is not an existence oracle, where a client secret's entropy comes from |
-| `money` | minor units, the two provider encodings | why there are two encodings, what the bounded echo protects |
-| `state` | the lifecycle enums and `next_status` | why the wire labels are written out twice, why `Transition` is only the merchant's three verbs |
-| `failure` | the closed taxonomy | why the policy lives on the code |
-| `settlement` | `settle` and `contradiction` | why this is a sibling of `state` and not part of it |
-| `error` | `Classify`, `Category`, `source_chain` | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md)) |
-| `metrics` | the thirteen names and their labels | why a library describes but does not install, and the caveats on four of the series |
+| Module       | rustdoc says                            | This page says                                                                                                   |
+| ------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `ids`        | the four generators and the shape check | why Crockford base32, why the shape check is not an existence oracle, where a client secret's entropy comes from |
+| `money`      | minor units, the two provider encodings | why there are two encodings, what the bounded echo protects                                                      |
+| `state`      | the lifecycle enums and `next_status`   | why the wire labels are written out twice, why `Transition` is only the merchant's three verbs                   |
+| `failure`    | the closed taxonomy                     | why the policy lives on the code                                                                                 |
+| `settlement` | `settle` and `contradiction`            | why this is a sibling of `state` and not part of it                                                              |
+| `error`      | `Classify`, `Category`, `source_chain`  | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md))                              |
+| `metrics`    | the thirteen names and their labels     | why a library describes but does not install, and the caveats on four of the series                              |
 
 ---
 
 ## ids
 
-An id is a *merchant-visible, permanent* name. It appears in URLs, in logs, in
+An id is a _merchant-visible, permanent_ name. It appears in URLs, in logs, in
 support tickets, in a merchant's own database, and — because
 [docs/api/README.md](../api/README.md) promises Stripe's shape — in code
 merchants wrote against Stripe. That fixes four properties, and each one is a
 test in `vpay_core::ids`:
 
-* **A prefix says what it names.** `pi_` on a charge id is a bug an operator
+- **A prefix says what it names.** `pi_` on a charge id is a bug an operator
   can see at a glance instead of one they have to look up.
-* **The body is `[a-z0-9]` only,** so the id survives a URL path segment, a
+- **The body is `[a-z0-9]` only,** so the id survives a URL path segment, a
   query string, a form body, a shell argument and a filename unchanged. The
   crate's own test proves `encodeURIComponent` (what both SDKs escape path
   segments with) is the identity on it. A `+` or a `/` from a base64 id would
   be re-encoded by one client and not another, and the two would then address
   different URLs.
-* **It carries no information.** Not a sequence, not a timestamp, not a
+- **It carries no information.** Not a sequence, not a timestamp, not a
   merchant id: an id that leaks how many payments a deployment has taken is a
   business fact given away to anyone holding one id, and a guessable id is an
   enumeration attack against a tenant-scoped API. This is why `Uuid::new_v4`
   (OS CSPRNG) rather than v7, which embeds a timestamp.
-* **It fits.** 3 or 4 prefix characters plus 24 body characters is 27–28
+- **It fits.** 3 or 4 prefix characters plus 24 body characters is 27–28
   characters, comfortably inside the `CHECK (char_length(id) BETWEEN 1 AND 64)`
   the schema puts on every id column, with room for a longer prefix later.
 
@@ -68,10 +68,10 @@ invites people to try to invert it. Base62 is mixed-case, and a mixed-case id in
 a case-insensitive place (a Windows filename, an email subject line someone
 lower-cased, a `LIKE` in a merchant's own database) becomes two different ids.
 Crockford's alphabet is lower-cased here and drops `i`, `l`, `o` and `u`, so an
-id read aloud or copied out of a screenshot cannot become a *different
-valid-looking* id — which matters because these end up in support tickets.
+id read aloud or copied out of a screenshot cannot become a _different
+valid-looking_ id — which matters because these end up in support tickets.
 
-The alphabet is Crockford's; the *encoding* deliberately is not. Crockford
+The alphabet is Crockford's; the _encoding_ deliberately is not. Crockford
 specifies check symbols and case-insensitive decoding with `i`/`l` → `1` and
 `o` → `0`; vpay decodes nothing (an id is an opaque key, looked up whole) so
 none of that applies. Only the character set is borrowed.
@@ -82,7 +82,7 @@ It says nothing about whether the object exists, belongs to the caller, or ever
 existed — the merchant-scoped query is what answers that, and it must stay the
 only thing that does.
 
-What it *is* for is the case where a malformed id would otherwise produce a
+What it _is_ for is the case where a malformed id would otherwise produce a
 silent wrong answer rather than an error. A caller-supplied id used as a list
 cursor is the live example: an id the shape check would have caught resolves to
 `NULL` in `vpay_db`'s cursor subquery and comes back as an empty page, so
@@ -102,7 +102,7 @@ arithmetic nobody could check by eye for a fraction of a bit of collision
 margin). 148 bits is far past the point where guessing is the attack anyone
 would choose.
 
-Deliberately more than an id's 120: an id names an object and is *meant* to be
+Deliberately more than an id's 120: an id names an object and is _meant_ to be
 quotable in a support ticket, while this is the credential that authorises a
 stranger's browser to confirm a payment, and the only thing standing between a
 guesser and a live intent is how many bits it holds. The floor is enforced in
@@ -133,7 +133,7 @@ by the same `client_secret` join. One generator and one join for two tables is
 what makes "both credentials are 160 bits and both survive a URL" one fact
 rather than two that could drift.
 
-### `return_token` is a second *capability*, not a second secret
+### `return_token` is a second _capability_, not a second secret
 
 `return_token` has the same 32 characters, the same generator body and the
 same CHECK. It is a separate function, a separate column and a separate
@@ -144,7 +144,7 @@ reason it has to exist at all.
 Every secret on a vpay-served page rides in a URL **fragment**, which the
 browser never sends to any server. A fragment does not survive a rail's
 redirect, though — a payer coming back from Orange's own checkout arrives at a
-URL the *rail* built — so the return page's credential has to be a query
+URL the _rail_ built — so the return page's credential has to be a query
 parameter. Query parameters are written to access logs, kept in browser
 history and sent as `Referer` by some clients.
 
@@ -154,8 +154,8 @@ less. `return_token` reads the session and its intent **without** the intent's
 is not enough to confirm anything. The session's own `client_secret` — the one
 in the fragment — is what buys the intent's credential.
 
-`secret_body` is shared so the *entropy* is one decision;
-`client_secret_suffix` and `return_token` stay two names so the *authority* is
+`secret_body` is shared so the _entropy_ is one decision;
+`client_secret_suffix` and `return_token` stay two names so the _authority_ is
 two. A call site that spelled the first while minting a return token would
 read as if they were interchangeable, which is precisely what D6 says they are
 not — and `a_return_token_is_thirty_two_characters_and_independent_of_the_secret_beside_it`
@@ -178,14 +178,14 @@ is zero-decimal, one conversion point. What follows is what the code adds to it.
 
 ### The two provider encodings
 
-`Money::to_provider_string` and `Money::to_provider_minor` are the *same*
+`Money::to_provider_string` and `Money::to_provider_minor` are the _same_
 conversion in two encodings, not two conversions: both read the exponent from
 the currency and neither scales anything. Orange Money's `webpayment` body sends
 `"amount": 5000` while MTN's sends `"amount": "5000"` — one exponent lookup, two
 renderings, which is what the flow document's "single conversion point" rule
 means now that a rail needs the other encoding.
 
-**The mistake `to_provider_minor` can be used to make.** It returns *minor*
+**The mistake `to_provider_minor` can be used to make.** It returns _minor_
 units. Handing `5000` to a rail that expects major units is 100× on a
 two-decimal currency and nothing can detect it downstream — the number is valid,
 the currency is right, and the charge succeeds. An adapter that reaches for it
@@ -229,7 +229,7 @@ lifecycle. Two things about how it is modelled are worth a paragraph.
 
 ### Two routes to one label
 
-Each status's wire label is written out in `as_wire_str` *beside* the `serde`
+Each status's wire label is written out in `as_wire_str` _beside_ the `serde`
 rename, and the duplication is deliberate: the two paths that need it do not go
 through `serde`. `payment_intents.status` is read and written as a `String`
 (`vpay-db` binds strings, this crate parses them — Step 2's D4) — as the
@@ -237,7 +237,7 @@ through `serde`. `payment_intents.status` is read and written as a `String`
 `TEXT` + `payment_intents_status_enum_check`, and as that CHECK's closed
 vocabulary since; the column's type changed and this paragraph did not need
 to, which is the point of D4. And
-`vpay-api`'s repository calls pass the *expected* and *new* label into a
+`vpay-api`'s repository calls pass the _expected_ and _new_ label into a
 compare-and-swap `UPDATE`.
 
 A hand-rolled spelling that disagreed with `serde`'s would mean a status that
@@ -259,7 +259,7 @@ edges of the lifecycle diagram (`requires_action → processing` once the payer
 has been redirected, `processing → succeeded|failed` when a status query
 answers) are moved by the reconciler from an authenticated status query, never
 by a request. Modelling them here would invite a handler to call `next_status`
-and move an intent on a *callback*, which is exactly what
+and move an intent on a _callback_, which is exactly what
 [docs/flows/provider-port.md](../flows/provider-port.md) forbids: `parse_callback`
 returns identifiers only, never a status, and the authenticated status query is
 the only thing that moves money. (The code comment this paragraph replaces cited
@@ -274,7 +274,7 @@ the rail already has the request and cannot be recalled. Both legal confirm
 answers route through `ProviderFlow::status_after_confirm` rather than repeating
 the push/redirect split, so the two cannot drift.
 
-And a legal answer is *not* permission to write it: the write itself is a
+And a legal answer is _not_ permission to write it: the write itself is a
 compare-and-swap on the row's current status, because between the call and the
 `UPDATE` another request may have moved the same row.
 
@@ -284,7 +284,7 @@ compare-and-swap on the row's current status, because between the call and the
 
 [docs/flows/failures.md](../flows/failures.md) is the taxonomy and how adapters
 map into it. The one thing the code adds: `payer_actionable` and
-`merchant_actionable` are *on the code*, not at a call site, so the answer to
+`merchant_actionable` are _on the code_, not at a call site, so the answer to
 "whose problem is this decline" is the same in the API response, the dashboard
 and any future retry heuristic. A code is at most one of the two, and one that
 is neither (`provider_account_blocked`) is the operator's own.
@@ -298,7 +298,7 @@ never branched on.
 
 ## settlement
 
-This is the reconciler's half of the state machine, and it is deliberately *not*
+This is the reconciler's half of the state machine, and it is deliberately _not_
 part of `state::Transition`. That enum is "one of the three verbs a **merchant**
 can apply", and `next_status` answers `None` for every rail-driven edge on
 purpose: adding a variant for `processing → succeeded` would make that edge
@@ -314,13 +314,13 @@ a silent default.
 
 `StatusKind` is a near-copy of `vpay_provider::ChargeStatus`, and that
 duplication is deliberate: this crate knows nothing about any payment rail
-(`vpay-provider` depends on *it*, never the other way round), so the port's type
+(`vpay-provider` depends on _it_, never the other way round), so the port's type
 cannot appear in the signature. The caller maps one onto the other — a four-arm
 `match` in `vpay_worker::handlers` — and drops the two payloads no state
 decision may read: the rail's transaction id (a reconciliation field, not an
 input to a state machine) and, for a decline, the rail's raw reason string
 (which belongs in `charges.failure_raw`, never in a branch). `Failed` keeps its
-`FailureCode` because the decision *result* carries it: the taxonomy code is
+`FailureCode` because the decision _result_ carries it: the taxonomy code is
 written to the charge in the same statement that fails it.
 
 `Settlement::Recover` exists so that "the rail has never heard of this" cannot
@@ -347,7 +347,7 @@ un-escalating it would drop the alert a human is working from.
 `settle` answers `None` for every terminal charge, which is right — no rail
 answer moves one — but `None` folds two very different situations into one word.
 Usually it means the charge settled a moment ago and this poll is simply late.
-Sometimes it means the rail is telling us the money went the *other* way from
+Sometimes it means the rail is telling us the money went the _other_ way from
 what we recorded and told the merchant.
 
 That second case has to reach a human. vpay must not act on it — a charge is
@@ -376,11 +376,11 @@ constantly is an alert nobody reads.
 row-for-row into `every_category_matches_the_policy_table_in_docs_flows_errors_md`
 so the document and the code fail together.
 
-vpay has many error *types* on purpose — `MoneyError`, `LedgerError`,
+vpay has many error _types_ on purpose — `MoneyError`, `LedgerError`,
 `ConfigError`, `DbError`, `ProviderError`, and the composites the API and worker
 layers build from them — because a caller that can `match` on a closed enum can
 react precisely, and a `String` cannot be matched on at all. What those types
-share is not a base class but a *classification*: whichever concrete error
+share is not a base class but a _classification_: whichever concrete error
 reaches a boundary, the boundary needs to answer the same five questions —
 
 1. whose fault is it (**category**),
@@ -391,21 +391,21 @@ reaches a boundary, the boundary needs to answer the same five questions —
 
 `Classify` is that seam. Every error enum in `backends/crates` implements it
 (machine-checked by `cargo xtask verify-errors`), so the HTTP envelope, the
-worker's retry decision and a binary's exit code are all *derived* from one
+worker's retry decision and a binary's exit code are all _derived_ from one
 classification instead of hand-rolled per call site — the same discipline
 `docs/flows/failures.md` already applies to the merchant-facing failure
 taxonomy, applied to the system's own errors.
 
 Three tiers:
 
-* **Leaf** errors: one `thiserror` enum per crate concern, closed, with
+- **Leaf** errors: one `thiserror` enum per crate concern, closed, with
   `#[source]` chains preserved and no secrets in `Display`.
-* **Composite** errors: a layer's own enum that `#[from]`s the leaves it depends
+- **Composite** errors: a layer's own enum that `#[from]`s the leaves it depends
   on and adds the layer's own variants (`vpay_api::ApiError`,
   `vpay_worker::JobError`). Its `Classify` impl delegates to the leaf; it never
   re-classifies, so a `DbError` is `Storage` whether it surfaces through the API
   or the worker.
-* **Boundary**: `anyhow` in `backends/apps/*` only, for `.context(..)` chains at
+- **Boundary**: `anyhow` in `backends/apps/*` only, for `.context(..)` chains at
   startup; the HTTP envelope; the worker's retry policy; the process exit code.
   Boundaries consume `Classify`, they never re-invent it.
 
@@ -446,14 +446,14 @@ compile error rather than a series that silently never appears.
 
 ### Why a library describes but does not install
 
-Installing a process-wide recorder is an *application* decision, the same one
+Installing a process-wide recorder is an _application_ decision, the same one
 `install_crypto_provider()` is in both `main.rs` files: a library that calls
 `metrics::set_global_recorder` takes it out of the binary's hands and makes two
 linked libraries a startup panic. So this module owns the vocabulary — the
 names, their units, their help text — and each binary owns the exporter it
 renders them through. `describe_all` is the one call that connects the two, and
 it is a no-op until a recorder exists, which is why every caller runs it
-immediately *after* installing one.
+immediately _after_ installing one.
 
 `describing_without_a_recorder_is_harmless` pins that: it is exactly what
 happens in every test binary in this workspace that links `vpay-core` and
@@ -472,7 +472,7 @@ because its four outcomes are **not four status codes**: `found` and
 `not_found` are both `200`, and telling them apart is the whole question an
 operator asks of `GET /v1/account_holders`. It is not a slice of
 `vpay_provider_requests_total` either, for the mirror-image reason — that one
-answers a question about the *rail*, and cannot see the difference between an
+answers a question about the _rail_, and cannot see the difference between an
 `Ok(Some)` and an `Ok(None)` without the port leaking a route's concern into
 a decorator every rail shares.
 
@@ -489,18 +489,18 @@ asserts it against a rendered scrape from the shipping exporter.
 A typo in a metric name is invisible: nothing fails, a dashboard is simply
 empty, and the gap is discovered during the incident the dashboard existed for.
 A `const` makes the typo a compile error. The same reasoning applies to
-`job_outcome`'s, `webhook_outcome`'s and `provider_operation`'s label *values*,
+`job_outcome`'s, `webhook_outcome`'s and `provider_operation`'s label _values_,
 which are closed vocabularies an alerting rule matches on exactly.
 
 The module doc's `text` block is the specification
 (`docs/plans/2026-09-03-step6-deployment.md` §3, transcribed verbatim), and
-`the_module_doc_list_and_the_all_constant_agree` reads *that file* to prove
+`the_module_doc_list_and_the_all_constant_agree` reads _that file_ to prove
 `ALL` matches it — so a metric added to the code without a line in the doc, or a
 line with no metric, fails the build.
 
 ### HTTP request labels
 
-`route` is the axum path *pattern* (`/v1/payment_intents/{id}`), never the
+`route` is the axum path _pattern_ (`/v1/payment_intents/{id}`), never the
 concrete path: a label whose cardinality grows with the number of payment
 intents would eventually be the largest thing in the metrics store. A request
 that matched no route carries `route="unmatched"`, which is a bounded label for
@@ -512,7 +512,7 @@ token in RFC 9110 §9.1 and `http::Method` parses an unknown one rather than
 rejecting it, so an unauthenticated caller sending `M12345` would otherwise mint
 a series per request — the route label's hole, on the next label along.
 
-The duration histogram is measured around the *inner* service, so it excludes
+The duration histogram is measured around the _inner_ service, so it excludes
 the request-id and trace layers above it and includes routing, authentication,
 the handler and the error renderer. That is the span an operator can act on.
 
@@ -536,13 +536,13 @@ does not depend on why a call failed.
 `vpay_db::charges::record_transition`, for the six statements that can move
 `charges.state` and for nothing else — three in `vpay_db::charges`, three in
 `vpay_db::settlement`. The database layer rather than the worker's settlement
-points, because *every* transition passes through these functions and only some
+points, because _every_ transition passes through these functions and only some
 of them pass through the worker: a confirm opens and submits a charge inside
 `vpay-api`, and a metric mounted on the worker would silently miss it.
 
 **Counted after the transition commits, never inside the transaction that made
 it.** `vpay_db::settlement`'s three own their transaction and record after their
-own `COMMIT`; `vpay_db::charges`' three run inside a *caller's* transaction, so
+own `COMMIT`; `vpay_db::charges`' three run inside a _caller's_ transaction, so
 they return their row and the caller records after `tx.commit()`. Nothing inside
 a transaction can know whether it will be committed, and a counter claiming a
 charge that a `ROLLBACK` erased is worse than one that is a moment late.
@@ -560,7 +560,7 @@ charge was on a moment earlier. `to` and `provider` are exact in every case.
 `vpay_jobs_oldest_claimable_age_seconds` is backed by
 `vpay_db::jobs::oldest_runnable_run_at`, which is `SELECT min(run_at) FROM jobs
 WHERE locked_at IS NULL AND run_at < 'infinity'` — every unleased, unparked row,
-*including ones scheduled in the future*. So on a healthy idle deployment, whose
+_including ones scheduled in the future_. So on a healthy idle deployment, whose
 only queued work is the hourly `sweep_expired`, this reads about `-3500`: the
 next job is nearly an hour away. Observed directly on `just demo`
 (`vpay_jobs_oldest_claimable_age_seconds -540.01`).
@@ -576,13 +576,13 @@ applied to make that look tidier would hide exactly the case the metric exists
 for.
 
 It is **zero** when the queue holds nothing runnable, which is deliberately
-*not* what the worker's `job loop gauge` log line does — that leaves the field
+_not_ what the worker's `job loop gauge` log line does — that leaves the field
 null, because "nothing to do" and "caught up to the second" are different facts.
 A Prometheus gauge has no null: it holds its last value until something writes
 another one. Leaving it unwritten on an empty queue would mean the value from the
 last backlog stays on the series forever, and an alert thresholded on it would
 page indefinitely after the backlog cleared. Zero is the lesser inaccuracy, and
-it is the one that cannot invent an incident. It is left *unwritten* only when
+it is the one that cannot invent an incident. It is left _unwritten_ only when
 the read itself failed, because then the answer is genuinely unknown; the worker
 logs a warning in that case.
 
@@ -601,7 +601,7 @@ value and this note rather than a quiet reconciliation.
 
 `option_env!` reads the environment **rustc was invoked with**, so
 `VPAY_GIT_SHA=<sha> cargo build` bakes the value in with no code generation at
-all. What that alone does not do is *rebuild*: cargo's fingerprint for the crate
+all. What that alone does not do is _rebuild_: cargo's fingerprint for the crate
 does not include an environment variable it has never been told about, so
 changing the sha and rebuilding would silently keep the old label.
 `vpay-core/build.rs` exists for exactly one line —
@@ -637,8 +637,8 @@ neither may disagree with the `alert = true` field an alerting rule reads out of
 the JSON logs. Written twice, they would drift the first time someone added a
 severity arm.
 
-Three call sites, each the point where an error is logged *at its own
-classification*: `vpay_api::ApiError::log`,
+Three call sites, each the point where an error is logged _at its own
+classification_: `vpay_api::ApiError::log`,
 `vpay_worker::handlers::log_failure`, and the job loop's "the job queue is not
 answering" arm.
 
@@ -646,15 +646,15 @@ Four other log lines in this workspace carry `alert = true` and do **not**
 increment these counters, which is a real gap and is recorded rather than
 papered over:
 
-* `vpay_worker::run_loop::log_disposition` — it re-reports a failure
-  `log_failure` has already counted, and at a *wider* severity net, so counting
+- `vpay_worker::run_loop::log_disposition` — it re-reports a failure
+  `log_failure` has already counted, and at a _wider_ severity net, so counting
   it would double some incidents and add others with no classification to label
   them with;
-* the seed-singletons, release-leases and settlement-contradiction lines, which
+- the seed-singletons, release-leases and settlement-contradiction lines, which
   flag `alert = true` unconditionally and carry no `Classify` value to derive
   `category`/`code` from.
 
-So `increase(vpay_alert_events_total)` is a *subset* of "log lines with
+So `increase(vpay_alert_events_total)` is a _subset_ of "log lines with
 `alert = true`", not the whole of it. Closing that gap means giving the worker's
 ad-hoc alerts a classified error to carry, which is a change to the worker's
 error model rather than to `record_error_event`.

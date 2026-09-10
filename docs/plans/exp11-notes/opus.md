@@ -71,17 +71,17 @@ clippy 0.1.98 (88d9e12ae1 2026-08-18)
 
 ## 3. What moved, and what deliberately did not
 
-| Place | Change |
-|---|---|
-| `rust-toolchain.toml` | `channel = "1.98.0"`; comment rewritten with the dated reason. `components`/`profile` untouched. |
-| `backends/Dockerfile` | `FROM rust:1.98.0-alpine3.22 AS chef`, plus the header's version paragraph. |
-| `.github/workflows/*.yml` | **nothing.** No literal to change — see below. |
-| `Cargo.toml` `rust-version` | **unchanged at `1.88`**, re-derived rather than assumed — see §4. Its comment was corrected. |
-| `Cargo.toml` `async-trait` note | said "not dyn-safe in Rust 1.95"; re-checked under 1.98 and rewritten. |
-| `backends/crates/vpay-core/build.rs` | header said "the workspace pins Rust 1.95". |
-| `justfile` `check-schema` | its failure message taught the `cd ~` workaround the bump removes. |
-| `.github/workflows/ci.yml` | the `self-checks` comment asserting `cargo install` *would fail* here. |
-| `docs/status.md`, `docs/roadmap.md`, `docs/runbooks/release.md` | dated corrections. |
+| Place                                                           | Change                                                                                           |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `rust-toolchain.toml`                                           | `channel = "1.98.0"`; comment rewritten with the dated reason. `components`/`profile` untouched. |
+| `backends/Dockerfile`                                           | `FROM rust:1.98.0-alpine3.22 AS chef`, plus the header's version paragraph.                      |
+| `.github/workflows/*.yml`                                       | **nothing.** No literal to change — see below.                                                   |
+| `Cargo.toml` `rust-version`                                     | **unchanged at `1.88`**, re-derived rather than assumed — see §4. Its comment was corrected.     |
+| `Cargo.toml` `async-trait` note                                 | said "not dyn-safe in Rust 1.95"; re-checked under 1.98 and rewritten.                           |
+| `backends/crates/vpay-core/build.rs`                            | header said "the workspace pins Rust 1.95".                                                      |
+| `justfile` `check-schema`                                       | its failure message taught the `cd ~` workaround the bump removes.                               |
+| `.github/workflows/ci.yml`                                      | the `self-checks` comment asserting `cargo install` _would fail_ here.                           |
+| `docs/status.md`, `docs/roadmap.md`, `docs/runbooks/release.md` | dated corrections.                                                                               |
 
 ### The workflows genuinely need no edit
 
@@ -120,7 +120,7 @@ entries each, checked 2026-09-05):
 
 `alpine3.22` was kept. An Alpine **major** bump changes musl and gcc under a
 static `+crt-static` build; that is its own decision with its own evidence,
-not a rider on a compiler bump. Worth recording that the alpine *patch* did
+not a rider on a compiler bump. Worth recording that the alpine _patch_ did
 move, because the two `rust:` images were built at different times:
 
 ```
@@ -214,8 +214,8 @@ because the lint is right.
 
 **A process note worth recording, because it nearly became a false green.**
 The first clippy run was backgrounded as `just clippy > log 2>&1; echo
-"EXIT=$?"`. The harness reported the background command as *"completed (exit
-code 0)"* — the exit code of the trailing `echo`, not of the recipe. The log
+"EXIT=$?"`. The harness reported the background command as _"completed (exit
+code 0)"_ — the exit code of the trailing `echo`, not of the recipe. The log
 said `error: Recipe 'clippy' failed on line 259 with exit code 101`. The
 finding above is the thing that self-report would have hidden. Every exit code
 in this file is read out of the log, not off a wrapper.
@@ -227,24 +227,24 @@ again on the tree exactly as committed (`79b04f2`), because the docs edits
 landed after the first run and `verify-links`/`verify-status` read them. Both
 exited 0. The numbers below are the second run's — the committed one.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | `cargo fmt --all -- --check`, clean |
-| `clippy` | clean over `--workspace --all-targets -- -D warnings` |
-| `verify` | `verify: ok — the seven gates above passed; the verify-docs report is advisory` |
-| ↳ `verify-no-mocks` | `ok — no test double reachable from a shipping binary` |
-| ↳ `verify-status` | `ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code` |
-| ↳ `verify-errors` | `ok — 15 error type(s), all classified; 14 #[from] variant(s) delegate every Classify method they match on; anyhow confined to binaries` |
-| ↳ `verify-sdk-parity` | `ok — 342 proving test(s) named in docs/sdks/parity.md all exist, 26 dated gap(s)` |
-| ↳ `verify-links` | `ok — 692 repository link(s) in 122 tracked markdown file(s) resolve to a tracked path` (691/121 on the first run, before this file was tracked) |
-| ↳ `verify-npm-scope` | `ok — 2 publishable package(s) under sdks/ ... and no retired package name outside docs/plans, docs/adr and docs/status.md` |
-| ↳ `check-schema` | `cratestack 0.11.1, schema schemas/vpay.cstack (12 model/enum declarations, datasource present)` then `ok — schemas/vpay.cstack type-checks under cratestack 0.11.1` |
-| `test-rust` | `Summary [971.509s] 1220 tests run: 1220 passed, 0 skipped` (1083.216 s on the first run) |
-| `test-doc` | 86 passed, 0 failed, **1 ignored**, across 14 doc-test binaries |
-| `verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1220 total (minimum 1080)` |
-| `lint-web` | `pnpm -r typecheck` + `pnpm -r lint`, 15 of 16 projects + `examples/shop`, exit 0 |
-| `test-web` | every vitest suite passed (checkout 17 files, nodejs 9, stripe-js 8, shop 7, four packages 1 each) |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| Recipe                | Result                                                                                                                                                               |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`           | `cargo fmt --all -- --check`, clean                                                                                                                                  |
+| `clippy`              | clean over `--workspace --all-targets -- -D warnings`                                                                                                                |
+| `verify`              | `verify: ok — the seven gates above passed; the verify-docs report is advisory`                                                                                      |
+| ↳ `verify-no-mocks`   | `ok — no test double reachable from a shipping binary`                                                                                                               |
+| ↳ `verify-status`     | `ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code`                                                                        |
+| ↳ `verify-errors`     | `ok — 15 error type(s), all classified; 14 #[from] variant(s) delegate every Classify method they match on; anyhow confined to binaries`                             |
+| ↳ `verify-sdk-parity` | `ok — 342 proving test(s) named in docs/sdks/parity.md all exist, 26 dated gap(s)`                                                                                   |
+| ↳ `verify-links`      | `ok — 692 repository link(s) in 122 tracked markdown file(s) resolve to a tracked path` (691/121 on the first run, before this file was tracked)                     |
+| ↳ `verify-npm-scope`  | `ok — 2 publishable package(s) under sdks/ ... and no retired package name outside docs/plans, docs/adr and docs/status.md`                                          |
+| ↳ `check-schema`      | `cratestack 0.11.1, schema schemas/vpay.cstack (12 model/enum declarations, datasource present)` then `ok — schemas/vpay.cstack type-checks under cratestack 0.11.1` |
+| `test-rust`           | `Summary [971.509s] 1220 tests run: 1220 passed, 0 skipped` (1083.216 s on the first run)                                                                            |
+| `test-doc`            | 86 passed, 0 failed, **1 ignored**, across 14 doc-test binaries                                                                                                      |
+| `verify-ignored`      | `0 ignored (expected 0), 42 test binaries (expected 42), 1220 total (minimum 1080)`                                                                                  |
+| `lint-web`            | `pnpm -r typecheck` + `pnpm -r lint`, 15 of 16 projects + `examples/shop`, exit 0                                                                                    |
+| `test-web`            | every vitest suite passed (checkout 17 files, nodejs 9, stripe-js 8, shop 7, four packages 1 each)                                                                   |
+| `deny`                | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                    |
 
 **`0 skipped`, not "skipped because Docker was missing":** the container-backed
 suites ran. `vpay-tests-integration::worker_e2e` and
@@ -272,13 +272,13 @@ $ docker buildx build --builder vpay-exp11-opus \
 AFTER_WORKER_EXIT=0 elapsed=5s          # builder stage already cached by the run above
 ```
 
-| | built on 1.95.0 | built on 1.98.0 |
-|---|---|---|
-| `docker images` SIZE | 15.9 MB | 15.7 MB |
-| `/vpay-server` in the image | 10,873,248 B | 10,783,136 B (−90,112 B, −0.83 %) |
-| layers | 2 | 2 |
-| `config/` layer | 28.7 kB | 28.7 kB |
-| `docker run --rm <img> --version` | `vpay-server 0.1.0`, exit 0 | `vpay-server 0.1.0`, exit 0 |
+|                                   | built on 1.95.0             | built on 1.98.0                   |
+| --------------------------------- | --------------------------- | --------------------------------- |
+| `docker images` SIZE              | 15.9 MB                     | 15.7 MB                           |
+| `/vpay-server` in the image       | 10,873,248 B                | 10,783,136 B (−90,112 B, −0.83 %) |
+| layers                            | 2                           | 2                                 |
+| `config/` layer                   | 28.7 kB                     | 28.7 kB                           |
+| `docker run --rm <img> --version` | `vpay-server 0.1.0`, exit 0 | `vpay-server 0.1.0`, exit 0       |
 
 `vpay-exp11-opus:worker-1980` is 12.6 MB and `docker run --rm ... --version`
 prints `vpay-worker-bin 0.1.0`, exit 0.
@@ -296,23 +296,23 @@ buildx builder was never touched or pruned.
 
 ## 8. What this pass did NOT do
 
-* **No `arm64` build.** Expected by the brief. The `aarch64-unknown-linux-musl`
+- **No `arm64` build.** Expected by the brief. The `aarch64-unknown-linux-musl`
   half of every published manifest list is still only evidenced by the release
   runs recorded in `docs/runbooks/release.md` §6, all of which were built on
   `rust:1.95.0-alpine3.22`.
-* **No CI run of this change exists.** Every number here is from one authoring
+- **No CI run of this change exists.** Every number here is from one authoring
   host. `actionlint` is not GitHub Actions.
-* **The 1.88 MSRV is still uncompiled.** Re-derived, not verified. A 1.88
+- **The 1.88 MSRV is still uncompiled.** Re-derived, not verified. A 1.88
   toolchain was never installed and never run.
-* **`CLAUDE.md` still says the pin is `1.95.0`** (its "Things that will waste
+- **`CLAUDE.md` still says the pin is `1.95.0`** (its "Things that will waste
   your time" section). This pass was not authorised to edit that file, so the
   stale line is recorded in `docs/status.md` and here instead of being
   silently fixed or silently dropped. It is the only place left in the tree
   that names the old pin as current.
-* **No CrateStack crate was added to the workspace**, per the brief. The bump
-  is what makes the *tooling* installable here; it is not what makes the
+- **No CrateStack crate was added to the workspace**, per the brief. The bump
+  is what makes the _tooling_ installable here; it is not what makes the
   workspace compile.
-* **`docs/plans/*-notes/` were not rewritten.** Their `1.95.0` strings are
+- **`docs/plans/*-notes/` were not rewritten.** Their `1.95.0` strings are
   dated records of runs that really happened on that compiler, and so is
   `docs/runbooks/release.md` §6's account of release run `33929374661`.
 
@@ -320,7 +320,7 @@ buildx builder was never touched or pruned.
 
 **Everything above was measured on base `046892a`. This branch was rebased
 onto `origin/master` `02ae5cc` — the merge of PR #42, ADR-0016's engineering
-standards — later the same day, and the numbers in §6 and §7 were *not*
+standards — later the same day, and the numbers in §6 and §7 were _not_
 re-measured by that rebase; §9 is what was.** The rebase is why
 `verify-toolchain` is described above as the eighth gate and is the **tenth**
 in the tree you are reading.
@@ -329,39 +329,39 @@ PR #42 added `verify-serde` and `verify-repositories` as the eighth and ninth
 gates, in the same five files this branch edits. Every conflict was resolved
 by **keeping both**, never by choosing a side:
 
-* `justfile` — `verify` now depends on all ten in master's order with
+- `justfile` — `verify` now depends on all ten in master's order with
   `verify-toolchain` appended after `verify-repositories`, before the advisory
   `verify-docs`. The recipe bodies were reordered to match the gate order.
   Appending rather than inserting is deliberate: it keeps every ordinal
   already written down elsewhere true, `check-schema` included, which four
   other files call the seventh gate.
-* `.github/workflows/ci.yml` — `self-checks` carries master's two new steps
+- `.github/workflows/ci.yml` — `self-checks` carries master's two new steps
   **and** this branch's. The `verify-toolchain` step was changed from
   `cargo xtask verify-toolchain` to `just verify-toolchain`, matching what
   ADR-0016's two steps and `check-schema` do; the paragraph justifying the
   `cargo xtask` spelling was rewritten rather than left to contradict the
   step beneath it.
-* `.xtask/src/main.rs` — both sides' new functions and both sides' test
+- `.xtask/src/main.rs` — both sides' new functions and both sides' test
   modules coexist. The end-of-file conflict was the dangerous one: git had
   unified the trailing `}` of master's last test and this branch's, so
   neither marker-delimited block was a whole module. Both were reconstructed
   and then checked byte-for-byte against `origin/master` and `a30fff8`.
-* `AGENTS.md`, `docs/status.md`, `rust-toolchain.toml`, `backends/Dockerfile`
+- `AGENTS.md`, `docs/status.md`, `rust-toolchain.toml`, `backends/Dockerfile`
   — every "nine gates"/"ninth" from either side became ten/tenth.
 
 Re-run on the rebased tree, not carried over:
 
-* `just ci` — **exit 0**. `cargo nextest run --workspace`:
+- `just ci` — **exit 0**. `cargo nextest run --workspace`:
   **1270 tests run, 1270 passed, 0 skipped** in 761.5 s. `just test-doc`: 86
   passed, 1 ignored. `just verify-ignored`: 0 ignored (expected 0), 42 test
   binaries (expected 42), 1270 total (minimum 1080). `cargo deny`:
   advisories ok, bans ok, licenses ok, sources ok.
-* `cargo test -p xtask` — **194 passed, 0 failed, 0 ignored**: master's 184
+- `cargo test -p xtask` — **194 passed, 0 failed, 0 ignored**: master's 184
   plus this branch's 10, which is the arithmetic that shows no test of either
   side was lost in the merge.
-* `just verify` — the ten gates in order, then the advisory report.
-* `actionlint .github/workflows/ci.yml` — exit 0.
-* Both decisive mutations, re-run on this tree; see §9.1.
+- `just verify` — the ten gates in order, then the advisory report.
+- `actionlint .github/workflows/ci.yml` — exit 0.
+- Both decisive mutations, re-run on this tree; see §9.1.
 
 ### 9.1 The two mutations, re-run after the rebase
 

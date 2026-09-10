@@ -20,7 +20,7 @@ import type {
   CheckoutReturnView,
   CheckoutSessionView,
   Result,
-} from './types';
+} from "./types";
 
 /** `"/".charCodeAt(0)` — see {@link stripTrailingSlashes}. */
 const SLASH_CHAR_CODE = 47;
@@ -33,7 +33,10 @@ function stripTrailingSlashes(value: string): string {
   return value.slice(0, end);
 }
 
-function failure(code: CheckoutErrorCode, serverCode?: string): { ok: false; error: CheckoutError } {
+function failure(
+  code: CheckoutErrorCode,
+  serverCode?: string,
+): { ok: false; error: CheckoutError } {
   const error: CheckoutError = { code };
   if (serverCode !== undefined) {
     error.serverCode = serverCode;
@@ -43,19 +46,19 @@ function failure(code: CheckoutErrorCode, serverCode?: string): { ok: false; err
 
 /** Reads `{ "error": { "code": … } }` — `vpay_api::error_envelope_with_param`. */
 function serverErrorCode(body: unknown): string | undefined {
-  if (typeof body !== 'object' || body === null || !('error' in body)) {
+  if (typeof body !== "object" || body === null || !("error" in body)) {
     return undefined;
   }
-  const raw: unknown = (body).error;
-  if (typeof raw !== 'object' || raw === null) {
+  const raw: unknown = body.error;
+  if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
   const code: unknown = (raw as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
+  return typeof code === "string" ? code : undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === "object" && value !== null;
 }
 
 /**
@@ -81,16 +84,16 @@ function isSessionEnvelope(body: unknown): body is CheckoutSessionView {
   if (!isObject(body)) {
     return false;
   }
-  const intent: unknown = body['payment_intent'];
+  const intent: unknown = body["payment_intent"];
   return (
-    body['object'] === 'checkout.session' &&
-    typeof body['id'] === 'string' &&
+    body["object"] === "checkout.session" &&
+    typeof body["id"] === "string" &&
     // Expanded, not an id string. A server that answered with the id would
     // leave this page with an amount it never read, so it is reported as an
     // unexpected response rather than rendered.
     isObject(intent) &&
-    intent['object'] === 'payment_intent' &&
-    typeof intent['id'] === 'string'
+    intent["object"] === "payment_intent" &&
+    typeof intent["id"] === "string"
   );
 }
 
@@ -124,12 +127,14 @@ export class BrowserCheckoutApi {
     const injected = options.fetch;
     this.#fetchImpl =
       injected ??
-      (typeof globalThis.fetch === 'function'
+      (typeof globalThis.fetch === "function"
         ? // Bound: an unbound native `fetch` called as a method of anything
           // but the global throws `Illegal invocation` in a browser.
           globalThis.fetch.bind(globalThis)
         : (() => {
-            throw new TypeError('BrowserCheckoutApi: no global fetch is available');
+            throw new TypeError(
+              "BrowserCheckoutApi: no global fetch is available",
+            );
           })());
   }
 
@@ -142,7 +147,9 @@ export class BrowserCheckoutApi {
       key: credentials.key,
       client_secret: credentials.clientSecret,
     });
-    return this.#readEnvelope(`${this.#sessionUrl(sessionId)}?${query.toString()}`);
+    return this.#readEnvelope(
+      `${this.#sessionUrl(sessionId)}?${query.toString()}`,
+    );
   }
 
   /**
@@ -157,8 +164,13 @@ export class BrowserCheckoutApi {
     sessionId: string,
     credentials: ReturnCredentials,
   ): Promise<Result<CheckoutReturnView>> {
-    const query = new URLSearchParams({ key: credentials.key, t: credentials.returnToken });
-    return this.#readEnvelope(`${this.#sessionUrl(sessionId)}/return?${query.toString()}`);
+    const query = new URLSearchParams({
+      key: credentials.key,
+      t: credentials.returnToken,
+    });
+    return this.#readEnvelope(
+      `${this.#sessionUrl(sessionId)}/return?${query.toString()}`,
+    );
   }
 
   #sessionUrl(sessionId: string): string {
@@ -172,13 +184,13 @@ export class BrowserCheckoutApi {
     let text: string;
     try {
       const response = await this.#fetchImpl(url, {
-        method: 'GET',
+        method: "GET",
         // Never a cookie and never an `Authorization` header: the query
         // string is the whole credential on this surface, and a same-origin
         // default would start attaching more the day vpay's API and this
         // page share an origin.
-        credentials: 'omit',
-        mode: 'cors',
+        credentials: "omit",
+        mode: "cors",
       });
       ok = response.ok;
       text = await response.text();
@@ -186,7 +198,7 @@ export class BrowserCheckoutApi {
       // The thrown value is not read. In a browser a `fetch` rejection's
       // `cause` can carry the request URL, and that URL holds the session
       // credential.
-      return failure('error.network');
+      return failure("error.network");
     }
 
     let parsed: unknown;
@@ -202,13 +214,13 @@ export class BrowserCheckoutApi {
       // (`resource_missing`), by design — see docs/flows/browser-checkout.md.
       // This page repeats that: it does not tell a guesser which half of the
       // link was wrong.
-      return code === 'resource_missing'
-        ? failure('error.session_not_found', code)
-        : failure('error.unexpected', code);
+      return code === "resource_missing"
+        ? failure("error.session_not_found", code)
+        : failure("error.unexpected", code);
     }
     return isSessionEnvelope(parsed)
       ? { ok: true, value: parsed as T }
-      : failure('error.unexpected');
+      : failure("error.unexpected");
   }
 }
 
@@ -266,8 +278,8 @@ export async function fetchCheckoutOrigins(
   }, timeoutMs);
   try {
     const response = await fetchImpl(url, {
-      method: 'GET',
-      credentials: 'omit',
+      method: "GET",
+      credentials: "omit",
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -277,10 +289,12 @@ export async function fetchCheckoutOrigins(
     // arrives one byte at a time is the same denial as a request that never
     // answers, and the abort reaches this read too.
     const body: unknown = await response.json();
-    if (!isObject(body) || !Array.isArray(body['origins'])) {
+    if (!isObject(body) || !Array.isArray(body["origins"])) {
       return [];
     }
-    return (body['origins'] as unknown[]).filter((o): o is string => typeof o === 'string');
+    return (body["origins"] as unknown[]).filter(
+      (o): o is string => typeof o === "string",
+    );
   } catch {
     // An `AbortError` from the timeout arrives here with everything else, and
     // answers what everything else answers.

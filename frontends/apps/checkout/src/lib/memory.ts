@@ -30,8 +30,7 @@
  * This module is pure. {@link PageMemory} is the port; `memory-idb.ts` is
  * the IndexedDB adapter behind it.
  */
-import { normalizeCameroonMsisdn } from './msisdn';
-
+import { normalizeCameroonMsisdn } from "./msisdn";
 
 /** What the page may remember. Every member is optional in meaning, `null` in shape. */
 export interface PageMemoryRecord {
@@ -97,24 +96,28 @@ const STORED_RAIL = /^[a-z0-9_]{1,64}$/;
  * `now` is a parameter rather than a `Date.now()` call so the horizon is a
  * test rather than a wait.
  */
-export function parseMemoryRecord(value: unknown, now: number): PageMemoryRecord | null {
-  if (typeof value !== 'object' || value === null) {
+export function parseMemoryRecord(
+  value: unknown,
+  now: number,
+): PageMemoryRecord | null {
+  if (typeof value !== "object" || value === null) {
     return null;
   }
   const raw = value as Record<string, unknown>;
-  const savedAt = raw['savedAt'];
-  if (typeof savedAt !== 'number' || !Number.isFinite(savedAt)) {
+  const savedAt = raw["savedAt"];
+  if (typeof savedAt !== "number" || !Number.isFinite(savedAt)) {
     return null;
   }
   // A record from the future is a clock that moved, not a record to trust.
   if (savedAt > now || now - savedAt > MEMORY_MAX_AGE_MS) {
     return null;
   }
-  const msisdn = raw['msisdn'];
-  const rail = raw['rail'];
+  const msisdn = raw["msisdn"];
+  const rail = raw["rail"];
   const record: PageMemoryRecord = {
-    msisdn: typeof msisdn === 'string' && isStoredMsisdn(msisdn) ? msisdn : null,
-    rail: typeof rail === 'string' && STORED_RAIL.test(rail) ? rail : null,
+    msisdn:
+      typeof msisdn === "string" && isStoredMsisdn(msisdn) ? msisdn : null,
+    rail: typeof rail === "string" && STORED_RAIL.test(rail) ? rail : null,
     savedAt,
   };
   // A record that remembers nothing is the same as no record, and answering
@@ -134,8 +137,13 @@ export function memoryRecordFor(
   now: number,
 ): PageMemoryRecord | null {
   const msisdn =
-    typeof input.msisdn === 'string' && isStoredMsisdn(input.msisdn) ? input.msisdn : null;
-  const rail = typeof input.rail === 'string' && STORED_RAIL.test(input.rail) ? input.rail : null;
+    typeof input.msisdn === "string" && isStoredMsisdn(input.msisdn)
+      ? input.msisdn
+      : null;
+  const rail =
+    typeof input.rail === "string" && STORED_RAIL.test(input.rail)
+      ? input.rail
+      : null;
   if (msisdn === null && rail === null) {
     return null;
   }

@@ -11,7 +11,7 @@ different moments.
 ## Push rails (MTN MoMo)
 
 MTN acknowledges `requesttopay` with **202 and an empty body**. There is no
-transaction id in the response — *the id is the `X-Reference-Id` you sent*.
+transaction id in the response — _the id is the `X-Reference-Id` you sent_.
 
 So the payer's handset starts buzzing before you learn whether your request
 succeeded. Generate the reference in memory, call the rail, crash before writing
@@ -41,18 +41,18 @@ fresh reference on retry is how you double-charge a customer.
 `submitting` covers two physically different situations. Disambiguate with
 `provider_requests`:
 
-| Evidence | What happened | Action |
-|---|---|---|
-| Charge younger than 60 s | A confirm may still be running | **Wait.** Reschedule once, for the rest of the window, and touch nothing |
-| No `provider_requests` row | Crashed before the POST | **Resubmit**, same reference |
-| Row exists, `status_code IS NULL` | POST issued, response lost | **Poll**. On `NotFound`, retry the poll; only after 3 consecutive `NotFound` over ≥60s treat it as never-received and resubmit with the same reference |
-| Row has a status code | Normal path | Advance state from the code |
+| Evidence                          | What happened                  | Action                                                                                                                                                 |
+| --------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Charge younger than 60 s          | A confirm may still be running | **Wait.** Reschedule once, for the rest of the window, and touch nothing                                                                               |
+| No `provider_requests` row        | Crashed before the POST        | **Resubmit**, same reference                                                                                                                           |
+| Row exists, `status_code IS NULL` | POST issued, response lost     | **Poll**. On `NotFound`, retry the poll; only after 3 consecutive `NotFound` over ≥60s treat it as never-received and resubmit with the same reference |
+| Row has a status code             | Normal path                    | Advance state from the code                                                                                                                            |
 
 **Added 2026-09-04 (Step 8, lane G). The table applies only to a charge that
 has been `submitting` for at least `not_found_window` (60 s).** That state is
 not only what a crash leaves: it is also the ordinary state of a confirm that is
 still inside its rail call, because the charge and its poll job are committed
-*before* the network call and the `submitting → submitted` compare-and-swap
+_before_ the network call and the `submitting → submitted` compare-and-swap
 happens after it. Younger than the window, nothing on disk distinguishes the
 two, and every row above would move a charge out from under a live confirm —
 which is what Step 8's demo observed four times in six runs. The age is read
@@ -101,7 +101,7 @@ create a new PaymentIntent. This is the one place where "the response was lost"
 is genuinely benign, and it is benign only because the payer's route in is a URL
 you must hand them.
 
-What is *not* safe is emitting `redirect_to_url` before `ref_extra` is
+What is _not_ safe is emitting `redirect_to_url` before `ref_extra` is
 committed. Do that and a crash strands a payer mid-payment on the rail's page
 against a charge you cannot query.
 
@@ -111,7 +111,7 @@ against a charge you cannot query.
 after it: the charge's `return_url`.** When a Checkout Session drives the
 charge, `charges.return_url` holds vpay's own return page —
 `{checkout.public_base_url}/c/{cs_id}/return?t={return_token}&key={pk}` — and
-it is written *before* the charge is committed and read back from that row at
+it is written _before_ the charge is committed and read back from that row at
 submit. So what the rail is told, what `next_action.redirect_to_url.return_url`
 renders on every later read, and what a resubmit would send are **one column**
 rather than three reads that could differ. The alternative — resolving it
@@ -137,7 +137,7 @@ response and before the state update. Each must resolve without
 double-charging.
 
 **They are exercised by writing the state a crash leaves, not by killing a
-process — and since 2026-09-04 (Step 8, lane D) two of the three are *also*
+process — and since 2026-09-04 (Step 8, lane D) two of the three are _also_
 exercised by killing one.** `backends/tests/integration/tests/worker_recovery.rs` builds each of
 the three states directly against a real Postgres — commit the charge and no
 attempt row; add an attempt row with `status_code IS NULL`; add one carrying a
@@ -185,12 +185,12 @@ that was killed.
   worker recovers by polling and never resubmits: **one** submit in the journal,
   which is what the retry rule is actually about.
 - **`a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once`**
-  — the third scenario, added 2026-09-10 for issue #85, and about the *other*
+  — the third scenario, added 2026-09-10 for issue #85, and about the _other_
   signal. It is described under "The graceful stop" below.
 - **`a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`**
   — the fourth, added by that change's review the same day: the same staging
   with the drain budget below the receiver's delay instead of above it, so the
-  *other* arm of `Drain` runs. Also described below.
+  _other_ arm of `Drain` runs. Also described below.
 
 **Two clocks are simulated in that file, and nothing else is.**
 `age_the_dead_workers_lease` moves `jobs.locked_at` ten minutes back, guarded on
@@ -205,7 +205,7 @@ failed there with the worker correctly waiting. The processes, the signal, the
 reap, the claim and the re-run are all the shipping binaries' own.
 
 **Kill point 1 is still written rather than caused**, and for a reason rather
-than for want of trying: it is the moment *before* the reference is minted, so
+than for want of trying: it is the moment _before_ the reference is minted, so
 there is no network call for a signal to land during. `worker_recovery.rs`
 remains the only proof of that case. Neither kill case exercises Orange, and the
 rail is a WireMock container in both.
@@ -222,7 +222,7 @@ migration is the reason to say so explicitly.** It converted
 `charges.state`, `charges.failure_code`, `payment_intents.status`,
 `payment_intents.last_payment_error_code`, `refunds.status` and
 `refunds.failure_code` from native Postgres enums to `TEXT` plus a membership
-CHECK carrying exactly the same labels — a change to the *type* of the columns
+CHECK carrying exactly the same labels — a change to the _type_ of the columns
 every rule on this page is written in terms of. Every write-before-network
 ordering, every compare-and-swap and the settlement statement itself are
 byte-for-byte what they were apart from dropped casts; **no write on any money
@@ -259,8 +259,8 @@ the claim the update is here to make. Issue #77 folded `vpay-worker-bin` into
 drain and the recovery table — was not touched, and neither was the boot order
 the loop runs behind. What was re-run to say so rather than assume it:
 `worker_kill9`'s two scenarios (both green through `vpay-server worker`),
-`worker_recovery`'s 23 (green, and green *even against a `worker` subcommand
-mutated to do nothing at all* — it drives `run_loop`/`run_once` in-process and
+`worker_recovery`'s 23 (green, and green _even against a `worker` subcommand
+mutated to do nothing at all_ — it drives `run_loop`/`run_once` in-process and
 never spawns a binary, so it is `worker_kill9` and the ten
 `vpay-server::cli worker::*` cases that hold the subcommand honest, not this
 suite).
@@ -305,7 +305,7 @@ while proving nothing.
 
 **Why two workers rather than a restart.** The hand measurement restarted the
 container; the test cannot, and the reason is the property it is trying to
-prove. A worker spawned *after* the signal has connected, migrated and
+prove. A worker spawned _after_ the signal has connected, migrated and
 reconciled by the time the drain is over, so the job it must not steal no
 longer exists and the lease would be respected vacuously — on some runs and
 not others, with nothing able to tell which. A worker already running when the
@@ -314,9 +314,9 @@ decisive mutation bite: **remove `locked_at IS NULL` from `Jobs::claim`** and
 the surviving worker claims the delivery the draining one still holds, sending
 the merchant a second identical signed POST. Measured: `left: 2  right: 1` on
 the receiver's journal. **Remove the drain** (return `Drain::Clean` the
-instant the signal is seen) and the same case fails with *the worker never
-logged `webhook delivered`* — the send was cut off after the receiver had
-already *received* it (WireMock journals a request when it matches it and
+instant the signal is seen) and the same case fails with _the worker never
+logged `webhook delivered`_ — the send was cut off after the receiver had
+already _received_ it (WireMock journals a request when it matches it and
 answers `slow-ack.json`'s 200 six seconds later, so "received" is the exact
 word and "accepted" would not be), which is the lost delivery that becomes a
 double send as soon as anything retries.
@@ -331,12 +331,12 @@ same container restarted. Details in
 ### The other arm: a drain that runs out, and the restart that finishes the job
 
 `a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`
-is the same staging with the drain budget moved to the *other* side of the
+is the same staging with the drain budget moved to the _other_ side of the
 receiver's delay — `--shutdown-grace-seconds 2` against a 6 s
 acknowledgement, a third `const` assertion keeping the factor of two — and
 **both** workers signalled at once, the way stopping a Deployment does it. It
 was written by the review of the case above (2026-09-10), out of the gap that
-case's notes disclosed: until it existed, no *signalled shipping process*
+case's notes disclosed: until it existed, no _signalled shipping process_
 reached the `Drain::TimedOut` branch anywhere. `worker_e2e.rs`'s
 `a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds` drives
 `run_loop` in-process, which proves the function and cannot show an exit code.
@@ -383,7 +383,7 @@ ordering this document requires, and in this order:
 
 1. mint the `provider_reference_id`;
 2. **commit** the charge row in `submitting` carrying that reference — and,
-   since Step 4, **the `poll_charge` job that will drive it**, in the *same*
+   since Step 4, **the `poll_charge` job that will drive it**, in the _same_
    transaction — before any network call;
 3. insert a `provider_requests` row with `status_code IS NULL` (migration
    `0016`);
@@ -416,7 +416,7 @@ the committed row rather than from the adapter's return value
   (Step 8, lane H): those ages are `Duration`s, not instants**, and they are
   computed from `Charges::get_by_id_as_of`, which selects `now()` on the same
   statement that reads the row. `recovery_step` and `past_the_horizon` used to
-  subtract `charges.created_at` from the *worker host's* clock, so a worker a
+  subtract `charges.created_at` from the _worker host's_ clock, so a worker a
   minute fast measured every charge as a minute older than it was and the guard
   above became a silent no-op; taking durations leaves no parameter for a
   caller to read off the wrong clock
@@ -428,8 +428,8 @@ the committed row rather than from the adapter's return value
   about the order was in the response that was lost, so that `order_id` is dead
   — this document's own conclusion, now executed
   (`a_redirect_charge_with_no_token_is_failed_without_ever_asking_the_rail`).
-  The branch is on `Capabilities::flow`, a capability *value*, never a rail code
-  (ADR-0002). **The redirect branch is unconditional *within* the table but no
+  The branch is on `Capabilities::flow`, a capability _value_, never a rail code
+  (ADR-0002). **The redirect branch is unconditional _within_ the table but no
   longer unconditional overall (2026-09-04, lane G):** a redirect charge younger
   than the window is left alone, because `FailDeadOrder` is correct only for a
   submit response that was genuinely lost and catastrophic for one that is about
@@ -448,7 +448,7 @@ the committed row rather than from the adapter's return value
   (`an_answered_submit_advances_the_bookkeeping_rather_than_submitting_again`):
   kill point 3 is a bookkeeping repair, not a rail call.
 - **A settlement lands on the intent a crashed confirm left behind.** Because
-  the confirm moves the intent only *after* the rail answers, all three kill
+  the confirm moves the intent only _after_ the rail answers, all three kill
   points leave a live charge against an intent still reading
   `requires_payment_method` — so the settlement transaction's intent guard
   accepts that status alongside `processing` and `requires_action`
@@ -470,7 +470,7 @@ either way — so the failure changes nothing about the database and only about
 what the caller may say, and the two abandoning call sites are exactly the ones
 whose answer matters most here: the confirm path's duplicate-charge recovery
 owes the merchant its `409`, and `persist_submitted` owes an operator the
-`Internal` alert saying *the rail may hold a live payment*. Losing either to a
+`Internal` alert saying _the rail may hold a live payment_. Losing either to a
 storage error would lose the only report of it
 (`an_abandoned_transaction_survives_a_rollback_it_cannot_send`, `vpay-db/tests/
 postgres.rs`, which stages it by terminating the backend that holds the open
@@ -520,10 +520,10 @@ reaper, which is what frees jobs a killed worker left behind.
 a cliff measured at 5, and the difference is worth stating because the next
 person to move either number will read this paragraph:
 
-| simultaneous fan-outs on the re-run branch | 4 | 5 | 6 | 8 | 10 |
-|---|---|---|---|---|---|
-| slowest second acquire | 10 ms | 7 ms | 0.8 ms | 1.8 ms | **5.002 s, timed out** |
-| lease reaper, running alongside | ok | ok | ok | ok | **timed out** |
+| simultaneous fan-outs on the re-run branch | 4     | 5    | 6      | 8      | 10                     |
+| ------------------------------------------ | ----- | ---- | ------ | ------ | ---------------------- |
+| slowest second acquire                     | 10 ms | 7 ms | 0.8 ms | 1.8 ms | **5.002 s, timed out** |
+| lease reaper, running alongside            | ok    | ok   | ok     | ok     | **timed out**          |
 
 Measured 2026-09-10 against a real Postgres by
 `the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper`

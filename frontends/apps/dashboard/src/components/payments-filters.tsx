@@ -1,7 +1,7 @@
-'use client';
+"use client";
 
-import { PAYMENT_STATUS } from '@vpay/tokens';
-import { Button, Field, FieldLabel, Input, Select, Stack } from '@vpay/ui';
+import { PAYMENT_STATUS } from "@vpay/tokens";
+import { Button, Field, FieldLabel, Input, Select, Stack } from "@vpay/ui";
 
 /** What the URL currently asks for. */
 export interface PaymentsFilterValues {
@@ -18,7 +18,7 @@ export interface PaymentsFiltersProps {
 }
 
 /** The "every status" choice. An empty value, so it drops out of the query. */
-const ANY_STATUS = '';
+const ANY_STATUS = "";
 
 /**
  * The status and date-range filters, as a plain `GET` form.
@@ -53,20 +53,33 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
             defaultValue={values.status}
             placeholder="Any status"
             items={[
-              { value: ANY_STATUS, label: 'Any status' },
-              ...PAYMENT_STATUS.map((status) => ({ value: status, label: status })),
+              { value: ANY_STATUS, label: "Any status" },
+              ...PAYMENT_STATUS.map((status) => ({
+                value: status,
+                label: status,
+              })),
             ]}
           />
         </Field>
 
         <Field>
           <FieldLabel htmlFor="payments-filter-from">Created from</FieldLabel>
-          <Input id="payments-filter-from" name="created_from" type="date" defaultValue={values.createdFrom} />
+          <Input
+            id="payments-filter-from"
+            name="created_from"
+            type="date"
+            defaultValue={values.createdFrom}
+          />
         </Field>
 
         <Field>
           <FieldLabel htmlFor="payments-filter-to">Created to</FieldLabel>
-          <Input id="payments-filter-to" name="created_to" type="date" defaultValue={values.createdTo} />
+          <Input
+            id="payments-filter-to"
+            name="created_to"
+            type="date"
+            defaultValue={values.createdTo}
+          />
         </Field>
 
         <Button type="submit" variant="outline">

@@ -1,7 +1,7 @@
 # `vpay-db` reference
 
 Why the code in `backends/crates/vpay-db` looks the way it does. The crate's
-own doc comments say *what* each item is and link here; this page carries the
+own doc comments say _what_ each item is and link here; this page carries the
 reasoning, the invariants and the history that a reader needs once — not on
 every `cargo doc` build.
 
@@ -94,7 +94,7 @@ anyway.
 
 `TxOutcome` exists because a successful closure has two endings, not one:
 `vpay_worker::webhooks`' fan-out loses a race to another drain and must roll
-back *without* that being an error, and the confirm path's duplicate-charge
+back _without_ that being an error, and the confirm path's duplicate-charge
 recovery abandons its transaction and re-reads outside it. Encoding either as an
 `Err` would push "not a failure" through the error channel, which is the shape
 ADR-0011 exists to prevent.
@@ -108,7 +108,7 @@ alert). It is staged in `tests/postgres.rs` by terminating the backend that
 holds the open transaction, with the commit path as the control.
 
 The closure is generic over its error type rather than pinned to `DbError`.
-Three call sites raise their *own* layer's error from inside the unit of work —
+Three call sites raise their _own_ layer's error from inside the unit of work —
 the confirm path's "the rail accepted a charge whose intent moved" invariant
 (`ApiError`) and two worker sites whose payload will not encode (`JobError`).
 Pinning the closure to `DbError` would have forced each of them either to
@@ -142,7 +142,7 @@ They hold no `pub fn` any more — a query is reached through `Repositories`,
 never through a free function that would need a `PgPool` to call.
 
 `lock_keys` is `pub` for one reason of its own: a test that wants to prove a
-writer actually takes its lock has to be able to *hold* that lock from outside
+writer actually takes its lock has to be able to _hold_ that lock from outside
 (`reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`), and an
 operator reading `pg_locks` needs the values to be findable from a crate doc
 rather than by grepping for a hex literal.
@@ -162,7 +162,7 @@ why nothing in ADR-0006's dependency rules would object to a binary using it.
 `cargo xtask verify-no-mocks` nonetheless fails the build if it appears in
 non-test code anywhere under `backends/apps`.
 
-`client_assertion_store` is the one place a *foreign* trait
+`client_assertion_store` is the one place a _foreign_ trait
 (`authkestra_op::client_assertion::ClientAssertionStore`) is implemented over
 the database, and it was the precedent this seam followed.
 
@@ -193,20 +193,20 @@ existence oracle.
 carries the expected status into the `UPDATE`'s own `WHERE`, so two concurrent
 requests cannot both observe `requires_payment_method` and both act on it. A
 validation function that is not part of the write statement enforces nothing
-under concurrency; this one *is* the write statement.
+under concurrency; this one _is_ the write statement.
 
 ### `cancel` checks for a live charge inside the statement
 
 `requires_payment_method` is not on its own enough to make a cancel safe. A
 `confirm` commits its charge row — carrying the `provider_reference_id` it is
-about to submit under — *before* it calls the rail, and leaves the intent's
+about to submit under — _before_ it calls the rail, and leaves the intent's
 status alone until it knows what happened
 ([crash-safety.md](../flows/crash-safety.md)). So there is a real, reachable
 window in which the status still says `requires_payment_method` while a live
 charge exists.
 
 Cancelling there would tell a merchant the payment was withdrawn while the rail
-may hold it. A check in the *caller* would not fix it: between reading "no
+may hold it. A check in the _caller_ would not fix it: between reading "no
 charge" and writing `canceled`, a concurrent confirm can commit one. Only the
 write statement can decide this, which is why the `NOT EXISTS` is a predicate of
 the `UPDATE` and not a preceding `SELECT`.
@@ -238,20 +238,20 @@ that neither survived.
 
 The recovery table keeps per-job state in the payload — the `not_found_streak`
 and `first_not_found_at` that decide when a charge the rail claims never to have
-seen is resubmitted. That state has to survive the *current* attempt even when
+seen is resubmitted. That state has to survive the _current_ attempt even when
 the job is not being rescheduled at all (it is being finished, or it is about to
 fail), so it cannot ride along on the rescheduling statement.
 
 The two writes are therefore not atomic with each other, deliberately: the worst
 a crash between them can do is lose one increment of a counter whose only effect
-is *when* a resubmit happens. Making them one statement would mean either a
+is _when_ a resubmit happens. Making them one statement would mean either a
 `reschedule` that silently rewrites a payload its caller did not mean to touch,
 or a payload update that cannot happen without also moving the schedule. Neither
 trade is worth the atomicity of a retry heuristic.
 
 ## `checkout_sessions`
 
-Migration `0028`. One *checkout attempt* driven through a page vpay serves —
+Migration `0028`. One _checkout attempt_ driven through a page vpay serves —
 `cs_…`, referencing an existing `pi_…`, carrying the merchant's forward URLs
 and **two** payer credentials of its own. The three rules the module keeps are
 `payment_intents`' two (merchant-scoped in SQL; compare-and-swap on status)
@@ -260,9 +260,9 @@ handler that reaches for it has to type the word.
 
 **Two credentials, not one, and that is the whole of D6.**
 `client_secret_suffix` joins with the row's `id` into `cs_…_secret_…` and
-rides in a URL *fragment*, which never leaves the browser; presenting it buys
+rides in a URL _fragment_, which never leaves the browser; presenting it buys
 the intent's own `client_secret`, and therefore the ability to confirm.
-`return_token` rides in a *query string* — it has to, because a fragment does
+`return_token` rides in a _query string_ — it has to, because a fragment does
 not survive a rail's redirect back to vpay — and buys strictly less: the
 session and its intent without that credential. Both are 160 bits from the
 same generator and both are redacted in `CheckoutSessionRow`'s hand-written
@@ -327,7 +327,7 @@ whose `WHERE` says `status = 'open'` cannot tell "no session was ever created"
 from "the session that was created is finished", and those two need opposite
 answers.
 
-`ORDER BY seq DESC LIMIT 1`, and one row is enough because an *open* session
+`ORDER BY seq DESC LIMIT 1`, and one row is enough because an _open_ session
 is always the newest one. That is a property of the schema and not a hope:
 `checkout_sessions_one_open_per_intent` refuses a second insert while one is
 open, so nothing can be newer than an open session. The direction that matters
@@ -341,7 +341,7 @@ instant; `seq` is the table's own insertion order, and a tie here would decide
 whether a payer can pay.
 
 Served by `checkout_sessions_intent_seq_idx` (migration `0030`), which had to
-be added for it: 0028's only lookup by intent is *partial*
+be added for it: 0028's only lookup by intent is _partial_
 (`WHERE status = 'open'`), and this query cannot use it, because dropping that
 predicate is the whole point. Without it the plan is a scan — of the table, or
 of `checkout_sessions_seq_key` with `payment_intent_id` demoted to a filter —
@@ -360,7 +360,7 @@ not less: the call now says which table it reads.
 `SessionListPage` is a separate type from `ListPage` rather than that one with
 a `payment_intent` field added, because `ListPage` is the payment-intent
 list's contract and a filter on it would be a parameter that resource
-silently ignores. The filter is applied *in the statement*, beside the tenant
+silently ignores. The filter is applied _in the statement_, beside the tenant
 filter: applied after `LIMIT` it would return short pages and a `has_more`
 describing the wrong set.
 
@@ -369,7 +369,7 @@ describing the wrong set.
 `checkout_sessions.payment_status` denormalises what the intent says, so a
 payer's page can render an outcome from one read. That is only safe while the
 two cannot disagree — and they cannot only if the session's write lands in the
-*same transaction* as the intent's.
+_same transaction_ as the intent's.
 
 So `checkout_sessions::settle_for_intent(tx, intent_id, paid)` takes a
 `&mut PgConnection` and is `pub(crate)`, reachable from `settlement` and
@@ -380,7 +380,7 @@ the argument has to be re-made. Same device, same reasoning, as
 `payment_intents::succeed_after_submission`.
 
 The Step 9 plan calls this "the worker hook" and locates it in
-`vpay-worker/src/handlers.rs`. The *decision* is indeed the worker's —
+`vpay-worker/src/handlers.rs`. The _decision_ is indeed the worker's —
 `settle_succeeded` or `settle_failed` — but the write is not: a second write
 after the commit would leave a window in which the intent is `succeeded` and
 the session still `open`/`unpaid`, and a crash in that window would make it
@@ -399,7 +399,7 @@ The same argument [`cancel`](#cancel-checks-for-a-live-charge-inside-the-stateme
 makes, over the same `LIVE_CHARGE_STATES` constant, and worth repeating
 because the consequence is different. `status = 'open'` is not on its own
 enough to make an expiry safe: a payer's page may have confirmed seconds ago,
-and a `confirm` commits its charge *before* it calls the rail. Expiring there
+and a `confirm` commits its charge _before_ it calls the rail. Expiring there
 would tell a merchant the checkout was abandoned while the rail may still take
 the payment — and would then be contradicted by the settlement transaction
 flipping the same row to `complete`/`paid`.
@@ -439,7 +439,7 @@ paying session `expired`.
 emitting `checkout.session.expired` (migration `0029`). The read is
 `due_for_expiry(now, limit)` and the write is
 `expire_due(id, now, event_id, event_data)`, and the split is forced by what
-an event *is*: `events.data` holds the **rendered wire object**, which only
+an event _is_: `events.data` holds the **rendered wire object**, which only
 `vpay-api` knows how to shape, so the row has to be read and rendered before
 the write that describes it. That is the same order
 `Settlement::apply_succeeded` and `vpay_worker::handlers::intent_snapshot`
@@ -459,13 +459,13 @@ the insert — was measured failing it on 2026-09-04.
 
 The `type` is this module's own `EVENT_SESSION_EXPIRED` constant, not the
 caller's, for the reason `settlement::EVENT_SUCCEEDED` is a constant: the type
-is a property of *which transition this is*, and a caller free to choose it
+is a property of _which transition this is_, and a caller free to choose it
 could report an abandoned checkout as a settled payment.
 
 **The guard is evaluated twice, on purpose.** `due_for_expiry` carries the
 same `status`/horizon/`NOT EXISTS` predicate the write does. The write needs
 its own copy because the read's answer is stale the moment it returns — a
-payer can confirm in between, and `Ok(None)` on that path is the *normal*
+payer can confirm in between, and `Ok(None)` on that path is the _normal_
 answer rather than an error. The read needs one because rendering a session a
 rail is still holding would mint an `evt_…` and build an object claiming the
 checkout was abandoned, for a write that would then correctly refuse it: work
@@ -496,7 +496,7 @@ session credential, so every URL vpay mints has to carry one as `?key=`: the
 hosted page, the embedded iframe, and the return page.
 
 **Why a column rather than a lookup at render time.** The return page is
-reached from a URL the *rail* holds — built once at submit, stored, and
+reached from a URL the _rail_ holds — built once at submit, stored, and
 replayed when the payer finishes. The documented key rotation is "add the new
 one, deploy, remove the old", and a return URL derived from `merchant_id`
 would stop resolving the moment the old key came out, stranding every payer
@@ -509,8 +509,8 @@ are redacted. The column's CHECK is a shape backstop (`pk_` plus 1–124
 characters) and deliberately looser than `vpay_config`'s
 `pk_(test|live)_[A-Za-z0-9]{16,64}`: that rule includes a livemode agreement
 this table cannot see, and a constraint restating two thirds of a rule is a
-second copy that can drift. The real rule — *the key belongs to this session's
-merchant* — is the registration list, which no constraint can see either
+second copy that can drift. The real rule — _the key belongs to this session's
+merchant_ — is the registration list, which no constraint can see either
 (there is no merchants table; ADR-0003), so
 `vpay_api::v1::checkout_sessions::chosen_publishable_key` is what enforces it.
 
@@ -518,7 +518,7 @@ merchant* — is the registration list, which no constraint can see either
 `{base}/c/{id}/return?t={return_token}&key={publishable_key}`. It is a method
 on the row rather than a `format!` in `vpay-api` because two callers construct
 it — the confirm path, when a session drives the charge, and the return trip —
-and every character has to be identical between them, since the *rail* holds
+and every character has to be identical between them, since the _rail_ holds
 the copy that matters. Both values are URL-safe by construction (`vpay_core`'s
 base32 alphabet, and `pk_` plus `[A-Za-z0-9]`), so it is a `format!` and not
 an escaping routine; a future alphabet that needed escaping would break
@@ -535,28 +535,28 @@ product document; this section is why the code is shaped the way it is.
 
 ### Two of eight methods go through CrateStack, and one column decides which
 
-| Method | |
-|---|---|
-| `touch_last_used` | **CrateStack** — `update_many(..).set(..)` |
-| `delete` | **CrateStack** — `delete_many(..)` |
-| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx` |
+| Method                                                                                                          |                                            |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `touch_last_used`                                                                                               | **CrateStack** — `update_many(..).set(..)` |
+| `delete`                                                                                                        | **CrateStack** — `delete_many(..)`         |
+| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx`                        |
 
-*(The table read `create`, `update` and "two of seven" until 2026-09-10. The
+_(The table read `create`, `update` and "two of seven" until 2026-09-10. The
 two pooled writers are gone: `POST /v1/customers` and
 `POST /v1/customers/{id}` each emit an event that must commit with the row, so
 the statements moved behind `TxRepositories` and a third joined them —
 `lock_for_update`, the `SELECT … FOR UPDATE` the update's `metadata` merge is
-computed under. See "The customer writes are transactional" below.)*
+computed under. See "The customer writes are transactional" below.)_
 
 The column is `metadata JSONB NOT NULL`, undeclared on `model Customer` for
 the two costs that model's GAP note measures: `map_scalar` does not read
 `jsonb` back, so declaring `metadata Json` would make the live column stay
-invisible while the *declared* one became a `[blocking]` drift line; and
+invisible while the _declared_ one became a `[blocking]` drift line; and
 `Value::from_plain_json` demotes any JSON number outside `i64` to `f64`,
 silently, on a column that is merchant-authored and echoed back verbatim.
 
 The consequence is not obvious and is worth stating: because the model does
-not declare the column, the generated model *struct* has no field for it
+not declare the column, the generated model _struct_ has no field for it
 either, so a CrateStack **read** could not render the wire object at all.
 Every operation that touches `metadata` in either direction — create, update,
 and every read — is therefore a hand-written statement, which is five of the
@@ -569,28 +569,28 @@ policy failures are **silent** — `update_many` and `delete_many` compile the
 `@@allow` into the statement's own `WHERE`, so a deleted arm matches zero rows
 and returns `Ok` — which is why `every_action_this_module_calls_has_an_allow_arm`
 asserts the compiled descriptor with no container, and why it also asserts the
-*absence* of the three arms this model deliberately does not grant.
+_absence_ of the three arms this model deliberately does not grant.
 
 ### `list_page` and the sweep stay raw SQL, and it is the query shape
 
 `list_page`'s cursor is `seq < (SELECT seq FROM customers WHERE id = $2 AND
 merchant_id = $1)` — a correlated subquery, which `cratestack::Filter` has no
 constructor for. The two-statement alternative (resolve the cursor id to a
-`seq`, then filter on the literal) is a *different* query with a race in it:
+`seq`, then filter on the literal) is a _different_ query with a race in it:
 between the two reads the cursor row can be deleted, and this table's rows
 **are** deleted, by both `DELETE /v1/customers/{id}` and the retention sweep.
 The one-statement form degrades to an empty page there.
 
 `idle_since` and `delete_idle` share a `NOT EXISTS` pair over
 `payment_intents` and `checkout_sessions` — correlated subqueries over
-*different* tables, which `Filter` compares nothing of, and for which there is
+_different_ tables, which `Filter` compares nothing of, and for which there is
 no `@relation` to side-load because neither of those tables is modelled.
 
 The pair is one `const UNREFERENCED`, and it is a constant because
 `sql_audit` made it one: it was first written as a function taking the outer
 query's alias, and the gate failed on the computed `{guard}`. Both call sites
 spell the table `customers`, so there was no alias to parameterise. The
-duplication that matters is the *other* direction — a table in the read's
+duplication that matters is the _other_ direction — a table in the read's
 guard and not the write's would render a `customer.deleted` object for a
 customer the write then refuses to delete — and
 `the_sweep_guard_names_every_table_that_can_reference_a_customer` pins the
@@ -628,7 +628,7 @@ The merge itself stays in Rust rather than becoming a `jsonb ||` in the
 statement, deliberately: that would move Stripe's semantics into a migration
 and out of the layer that documents them.
 
-### `touch_last_used` is monotonic by *filter*, not by `GREATEST`
+### `touch_last_used` is monotonic by _filter_, not by `GREATEST`
 
 The method's contract is "a stamp never moves a customer's clock backwards",
 and the obvious statement for that is `SET last_used_at = GREATEST(last_used_at,
@@ -639,7 +639,7 @@ means a stale stamp matches zero rows and is a no-op, which is the same
 observable behaviour. `Ok(false)` therefore covers one more normal case —
 "already stamped at or after this instant" — and the method's doc says so.
 
-Why it matters at all: `now` is the *calling process's* instant, two vpay
+Why it matters at all: `now` is the _calling process's_ instant, two vpay
 processes do not share a clock, and the horizon is twelve months. A rewind is
 not a rounding error; it is the difference between a customer surviving a
 sweep and not. It is also why migration `0034` carries **no**
@@ -663,7 +663,7 @@ at both extremes rather than asserting it in prose, so a future `time` with
 `large-dates` enabled turns the branch red instead of silently clamping.
 
 ADR-0007 denies `expect`, so the unreachable branch still answers something,
-and *which* answer is not arbitrary: `MAX_UTC` means "freshly used" in both
+and _which_ answer is not arbitrary: `MAX_UTC` means "freshly used" in both
 slots this function feeds, so the branch fails in the direction that **keeps**
 a merchant's personal-data record. `UNIX_EPOCH` would do the opposite — stamp
 a live customer as maximally idle and hand it to the next sweep.
@@ -685,7 +685,7 @@ collapsing them into "CrateStack cannot do it" would be false for two thirds
 of the surface:
 
 1. **`invoices.metadata` is `JSONB NOT NULL` and undeclared.** `model
-   Customer`'s two measured costs, unchanged — `map_scalar` does not read
+Customer`'s two measured costs, unchanged — `map_scalar` does not read
    `jsonb` back, so declaring it would be a `[blocking]` drift line; and
    `Value::from_plain_json` demotes any JSON number outside `i64` to `f64`, on
    a column that is merchant-authored and echoed back inside every `invoice.*`
@@ -696,7 +696,7 @@ of the surface:
    the one write that did not move").
 3. **Every `invoice_items` write guards on a different table's column** —
    `EXISTS (SELECT 1 FROM invoices WHERE id = invoice_items.invoice_id AND
-   status = 'draft')`, which is what freezes an issued document.
+status = 'draft')`, which is what freezes an issued document.
    `cratestack::Filter` compares columns of the model's own table, and there
    is no relation that side-loads a parent's status into a child's `WHERE`.
 
@@ -720,7 +720,7 @@ gets the written row back, renders the wire object **from that row**, and
 appends the event with `insert_in_tx`.
 
 The reason is specific rather than stylistic. Those two describe an object
-whose post-write shape the caller can *project* exactly — an intent that is
+whose post-write shape the caller can _project_ exactly — an intent that is
 about to be `succeeded`, a customer that is about to be deleted. **A finalized
 invoice cannot be projected**: its `number` comes out of a sequence the
 statement itself advances and its `amount_due` is summed by the statement from
@@ -753,7 +753,7 @@ oversight: `nextval` is non-transactional, so a rolled-back finalize would
 burn a number. Migration `0036` argues why a hole matters more here than it
 does for Stripe.
 
-### `invoice.paid` in TX1, and why *this* one is projected
+### `invoice.paid` in TX1, and why _this_ one is projected
 
 `invoices::mark_paid_for_intent_in_tx` is `pub(crate)` and reached only from
 `settlement::flip_invoice` — `checkout_sessions::settle_for_intent`'s
@@ -772,7 +772,7 @@ the fail-closed direction, pinned by
 
 ### `NO_LIVE_INTENT` is one rule with three call sites, and one of them cannot carry it
 
-Voiding an invoice somebody is paying, writing it off, and minting a *second*
+Voiding an invoice somebody is paying, writing it off, and minting a _second_
 intent for it are three ways to end up with money moved against a document
 that says nothing is owed. All three refuse on the same condition — the
 attached intent is `canceled` — spelled once as a `const` so they cannot drift.
@@ -798,7 +798,7 @@ undeclared index, a `seq` identity default, or the one permanent `status` type
 line.
 
 **`invoices_status_enum_check` costs nothing, and it is the first enum column
-in this repository that does.** Migration 0032 had to *rename*
+in this repository that does.** Migration 0032 had to _rename_
 `providers.flow`'s hand-named CHECK after the fact, because `diff/checks.rs`
 matches by name first; 0036 creates the constraint under
 `naming.rs::check_name(table, column, "enum")`'s own spelling from the start,
@@ -821,7 +821,7 @@ the rail answered, and both are compare-and-swaps out of `submitting` rather
 than blind updates, so a recovery pass and a live confirm cannot overwrite each
 other's answer.
 
-The writes that take a charge to a *terminal* state from anywhere in the live
+The writes that take a charge to a _terminal_ state from anywhere in the live
 set — what the worker's poll ladder decides — are not here. They move the
 charge, the intent and an `events` row together and therefore belong to the one
 transaction that does all three (see [`settlement`](#settlement)); splitting
@@ -830,7 +830,7 @@ others, which is the specific thing that transaction exists to prevent.
 
 `insert_for_intent` takes a connection and not a pool because
 [crash-safety.md](../flows/crash-safety.md) requires the charge row — carrying
-the `provider_reference_id` the rail will be given — to be committed *before*
+the `provider_reference_id` the rail will be given — to be committed _before_
 any network call. The confirm path therefore owns a transaction, and the insert
 has to run inside it rather than on a second connection from the pool that would
 commit independently.
@@ -847,7 +847,7 @@ What this module adds is that the resulting `23505` arrives as
 `DbError::UniqueViolation` naming `one_charge_per_intent`, so a handler can
 answer `409` instead of the `503`-with-retry-advice an unclassified storage
 error would produce. A handler may still read first (`get_for_intent`) to answer
-a *friendly* `409` without attempting the write — but that read is an
+a _friendly_ `409` without attempting the write — but that read is an
 optimisation, never the guard.
 
 ### The charge read carries Postgres' clock
@@ -897,7 +897,7 @@ the rail has already settled.
 argument leaves the column alone. The column is rail key material, and on a
 redirect rail the `pay_token` in it is the only thing that can ever query the
 charge again. `vpay_worker`'s `resubmit_charge` calls this with whatever the
-rail answered the *second* submit with, and a push rail answers with an empty
+rail answered the _second_ submit with, and a push rail answers with an empty
 map; a plain assignment would overwrite key material with `{}` and leave a
 charge nobody can ask about. Merging cannot lose a key; assigning can, and the
 loss is silent and permanent.
@@ -932,7 +932,7 @@ three are always `None`, and the call site would stop saying which happened.
 `record_transition` — private, because the only correct callers are the six
 statements' own modules — backs the three writes above and the three in
 `settlement`, and nothing else. It lives in the database layer rather than in
-the caller because *every* transition passes through those six statements and
+the caller because _every_ transition passes through those six statements and
 only some of them pass through the worker: a confirm opens and submits a charge
 inside `vpay-api`, so a counter mounted on the worker's settlement points would
 be silently blind to the busiest half of the state machine.
@@ -945,19 +945,19 @@ compare-and-swap that matched nothing is a transition that did not happen.
 
 **A transition is counted after it is committed, never before.** The three
 writes in `settlement` own their own transaction, so they record after their own
-`COMMIT`. The three in `charges` run inside a *caller's* transaction — that is
+`COMMIT`. The three in `charges` run inside a _caller's_ transaction — that is
 the whole point of taking a connection — so they cannot record at all: a
 `ROLLBACK` after the insert, from a later statement in the same transaction
 failing, would leave a counter claiming a charge that does not exist. Instead
 each returns its row and the caller calls `record_opened` or
 `record_left_submitting` **after** the commit. The seam is still this module —
 the label vocabulary and the metric name are here and the callers pass no
-strings — but the *timing* has to belong to whoever owns the commit, because
+strings — but the _timing_ has to belong to whoever owns the commit, because
 nothing inside a transaction can know whether it will be committed.
 
 Until 2026-09-03 all three recorded inline, and the module claimed the metric
 "cannot claim a transition the database refused" while a rolled-back insert was
-counted. What that timing costs now: a caller can *forget* to record, which an
+counted. What that timing costs now: a caller can _forget_ to record, which an
 inline call could not, and a process that dies between the commit and the
 recorder loses that transition for good — so the counter is at-most-once against
 `charges`, never exactly-once, and drift after a crash is expected. Both
@@ -982,7 +982,7 @@ never fires and nothing retries it, because nothing knows it was missed; an
 event without the rows is a webhook for a payment that did not settle.
 
 **Idempotent by compare-and-swap, not by a flag.** Both guard the charge
-`UPDATE` on the charge still being in a *live* state. A re-run after a commit —
+`UPDATE` on the charge still being in a _live_ state. A re-run after a commit —
 the poll job was rescheduled because the worker died between committing and
 deleting the job, which is a normal outcome and not an error — matches zero rows
 and returns `Ok(None)`; the caller finishes the job. Nothing is written twice,
@@ -993,7 +993,7 @@ window in which two workers — one holding a stale lease, one that just claimed
 the reaped job — both see a live charge and both settle it.
 
 **The charge is the record of a confirm; the intent may lag it.** A confirm
-commits the charge (and its poll job) in one transaction *before* calling the
+commits the charge (and its poll job) in one transaction _before_ calling the
 rail, and moves the intent only afterwards, in a second transaction, once the
 rail has answered. All three of [crash-safety.md](../flows/crash-safety.md)'s
 kill points therefore leave a live charge against an intent still reading
@@ -1002,16 +1002,16 @@ crashed confirm leaves and the one the recovery pass exists to resolve. So the
 question these functions answer is never "does the intent's status agree that a
 confirm happened": the charge answers that, because the compare-and-swap has
 already matched a row in the live set and only a confirm writes one. The intent
-write follows over a *wider* set — the two confirmed statuses **and**
+write follows over a _wider_ set — the two confirmed statuses **and**
 `requires_payment_method` — so a settlement lands whether or not the confirm
 survived long enough to move the intent.
 
 **Where the settlement's `from` label comes from.** The two settlement
 statements need a `from` label their `WHERE` clause cannot supply, since it
-matches a *set* of live states rather than one, so each `RETURNING` carries an
+matches a _set_ of live states rather than one, so each `RETURNING` carries an
 extra `(SELECT prev.state FROM charges prev WHERE prev.id = charges.id)`. That
 sub-select reads the statement's own snapshot — an `UPDATE` never sees its own
-writes — so it yields the state the charge was in *before* this statement. It
+writes — so it yields the state the charge was in _before_ this statement. It
 changes nothing about the compare-and-swap: the `WHERE` clause is unchanged, the
 row lock is unchanged, and a statement that matches no row still returns no row.
 The one honest caveat is that the snapshot is taken at statement start while the
@@ -1036,11 +1036,11 @@ merchant's intent permanently out of step with the money.
 `requires_payment_method`. The first two are the confirmed statuses — a push
 rail leaves the intent `processing`, a redirect rail leaves it
 `requires_action` until the payer comes back. Both settlement writers guard on
-the *set* rather than on a single expected status supplied by the caller,
+the _set_ rather than on a single expected status supplied by the caller,
 because the worker settling a charge does not know, and must not have to know,
 which rail's flow put the intent where it is: branching on that in the caller
 would be exactly the rail-shaped branch ADR-0002 forbids, while naming the legal
-*values* is not.
+_values_ is not.
 
 `requires_payment_method` is in the set because a crash puts it there.
 Excluding it made the settlement of a crashed confirm unreachable: the charge
@@ -1049,17 +1049,17 @@ transaction became `DbError::WriteMatchedNoRow` → `Category::Internal` →
 `Retry::Never` → a dead-lettered poll job, with the charge left live and nothing
 ever driving it again. A charge the rail may have collected is exactly what must
 not be parked. It is safe because the settlement writers are never called on
-their own — they run inside `settlement`'s transaction, *after* a charge
+their own — they run inside `settlement`'s transaction, _after_ a charge
 compare-and-swap over the live states has already matched a row, and a live
 charge is proof a confirm happened whatever the intent's status says. That is
 also why they are `pub(crate)`.
 
 `fail_after_submission` therefore performs a real
 `requires_payment_method` → `requires_payment_method` write: the status does not
-move and the write is the error pair alone, and counting that as *applied* is
+move and the write is the error pair alone, and counting that as _applied_ is
 the point. It sits next to `record_payment_error` because the two are different
 moments — that one is for a rail that declined at submit, where the intent never
-left `requires_payment_method`; this one is for a decline the *poll* discovered
+left `requires_payment_method`; this one is for a decline the _poll_ discovered
 after the intent had already moved, and
 [payment-lifecycle.md](../flows/payment-lifecycle.md) is explicit that such a
 failure returns the intent to `requires_payment_method` with
@@ -1067,17 +1067,17 @@ failure returns the intent to `requires_payment_method` with
 in the same statement: an intent back at `requires_payment_method` carrying no
 error reads to a merchant as one that was never attempted.
 
-A merchant polling `GET` then sees a resolved intent that *looks* confirmable
+A merchant polling `GET` then sees a resolved intent that _looks_ confirmable
 again. It is not — "one charge per intent, forever" means the failed charge
 still blocks a second `confirm`, which answers `already_charged` and tells the
 merchant a retry is a new intent. That guard is what makes this transition safe.
 
 `succeed_after_submission` sets `amount_received = amount` rather than taking a
-parameter. Neither rail vpay speaks to can settle *part* of a submitted amount —
+parameter. Neither rail vpay speaks to can settle _part_ of a submitted amount —
 `ChargeStatus::Succeeded` carries a transaction identifier and no amount at all
 — and taking one here would invite a caller to derive it from the charge, which
 is already required to equal the intent's amount. When a rail that can partially
-collect arrives, this becomes a parameter *and* `succeeded` stops being the
+collect arrives, this becomes a parameter _and_ `succeeded` stops being the
 right status; that is a change to the state machine, not a missing argument
 today.
 
@@ -1085,7 +1085,7 @@ Neither writer is merchant-scoped, unlike every other query in
 `payment_intents`. The caller is the worker settling a charge, not a merchant
 addressing their own object, and there is no request whose authorisation could
 be checked. Taking a `merchant_id` the worker would have to look up from the
-intent it is already holding would *look* like an authorisation check while
+intent it is already holding would _look_ like an authorisation check while
 checking that the intent belongs to itself. The `id` comes from
 `charges.payment_intent_id`, which is a foreign key.
 
@@ -1165,7 +1165,7 @@ SELECT … FROM refunds r
 ```
 
 A denormalised `merchant_id` column was the alternative and was rejected: it
-would be a *second* answer to "whose refund is this?", and two answers to a
+would be a _second_ answer to "whose refund is this?", and two answers to a
 tenancy question is how one of them ends up stale — for the cost of one
 primary-key lookup per read. It would also have collided with the migration
 numbering of two other branches in flight the same day, which is a reason to
@@ -1203,7 +1203,7 @@ there is deliberately no pooled variant of either.
 
 **Why the `events` write lives in this module.** `mark_fanned_out_in_tx`
 updates `events`, not `webhook_deliveries`. It is here rather than in `events`
-because it is the *fan-out's* closing write and is meaningless without the
+because it is the _fan-out's_ closing write and is meaningless without the
 inserts it commits beside: a caller that could reach it from the events module
 could mark a backlog fanned out without creating a single delivery, which is
 precisely the failure the shared transaction exists to make unreachable.
@@ -1211,7 +1211,7 @@ precisely the failure the shared transaction exists to make unreachable.
 **Every column but `created_at` describes the most recent attempt.** `attempt`,
 `state`, `status_code`, `response_excerpt`, `sent_at`, `responded_at` and
 `next_attempt_at` are all rewritten by `record_attempt` and `record_success`.
-This is a *state* row with the latest attempt's outcome on it, not an
+This is a _state_ row with the latest attempt's outcome on it, not an
 append-only attempt log — the per-attempt forensic trail is the worker's
 structured log — and `payload_sha256` is the one column that deliberately does
 not move.
@@ -1243,12 +1243,12 @@ anything, and `None` leaves `payload_sha256` exactly as it was — including
 `NULL`. The column records the digest of the bytes that were **rendered and
 signed**, so an attempt abandoned before rendering must not stamp a digest for a
 body that was never produced; the next attempt's mismatch check would then be
-comparing against a body that never existed. *Rendered and signed*, not
-*received*: a transport failure passes `Some`, because the signature was
+comparing against a body that never existed. _Rendered and signed_, not
+_received_: a transport failure passes `Some`, because the signature was
 computed over those exact bytes before the socket was ever opened.
 
 When `sha` is `Some` it is `COALESCE`d rather than assigned, so the digest of
-the *first* attempt that rendered and signed a body survives — which is not
+the _first_ attempt that rendered and signed a body survives — which is not
 necessarily attempt 1. The handler compares its freshly rendered body against
 the stored digest before sending and treats a mismatch as poisoned, so in every
 non-buggy path the two are equal; keeping the earlier value means that if that
@@ -1268,7 +1268,7 @@ Two shapes qualify, and the second is why it takes a `lease`:
 **never** been attempted and whose job is not simply young. That second clause
 was deliberately absent before migration `0023`, on the argument that a
 never-attempted row's job was written in its own transaction so the two cannot
-disagree. They can: the transaction makes the job *exist*, and nothing makes it
+disagree. They can: the transaction makes the job _exist_, and nothing makes it
 survive an operator's `DELETE` or a `jobs` truncation. Such a row was
 unrecoverable, and the merchant is never told.
 
@@ -1286,7 +1286,7 @@ recovered by re-enqueuing — see
 
 ### The lease is the whole design
 
-A job is *claimed* by an `UPDATE` that stamps `locked_at`/`locked_by` on exactly
+A job is _claimed_ by an `UPDATE` that stamps `locked_at`/`locked_by` on exactly
 one runnable row, and it is only ever finished or rescheduled by a statement
 that also names the same `locked_by`. That guard is not decoration: without it, a
 worker whose lease was reaped mid-run (it hung, the reaper freed the row,
@@ -1299,7 +1299,7 @@ middle of executing, or reschedule it out from under them. This is ABA, and
 The queue's one hard requirement is that the job and the write that creates the
 work commit together. `confirm` opens its charge row before calling the rail
 ([crash-safety.md](../flows/crash-safety.md)); enqueueing the poll in that same
-transaction is what makes *all three* of that document's kill points leave a job
+transaction is what makes _all three_ of that document's kill points leave a job
 behind. A pooled `enqueue(pool, …)` would let a caller write the job on a second
 connection that commits independently, which reintroduces both halves of the
 failure it exists to prevent — a job for a charge that rolled back, and a
@@ -1313,11 +1313,11 @@ re-enqueue after a crash, not an error.
 
 ### `pull_forward_in_tx` is the exception, and it has to be asked for
 
-Step 8 lane C added one write that *does* move a scheduled job back to now:
+Step 8 lane C added one write that _does_ move a scheduled job back to now:
 `UPDATE jobs SET run_at = now() WHERE dedupe_key = $1 AND locked_at IS NULL
 AND run_at > now() + $2 AND run_at < 'infinity'`. Its only caller is
 `vpay_api::provider_callback` — a rail said something happened, and the point
-of a callback is to ask the rail *now* instead of at the ladder's next rung,
+of a callback is to ask the rail _now_ instead of at the ladder's next rung,
 which is ten seconds away at best and fifteen minutes away after half an hour.
 
 It is a separate method rather than the `DO UPDATE` the section above rules
@@ -1338,14 +1338,14 @@ The three guards are each refusing a different thing:
   `$2` is the **floor**, added by Step 8's review: a job due within it is
   about to run, so moving it buys the rail nothing and costs an
   unauthenticated caller one rail request. The value is the poll ladder's
-  fastest rung, and it is a *parameter* because the ladder is
+  fastest rung, and it is a _parameter_ because the ladder is
   `vpay_worker::poll_delay` — a policy about how often a rail is asked
   anything, which this crate must not hold (ADR-0002). The caller passes
   `vpay_api::provider_callback::PULL_FORWARD_FLOOR`, and
   [vpay-api.md](vpay-api.md#what-an-anonymous-caller-can-and-cannot-get-out-of-it)
   states what it does and does not bound.
 - `run_at < 'infinity'` — a dead letter stays parked. The section below states
-  that the occupied `dedupe_key` is what keeps a scan *or a callback* from
+  that the occupied `dedupe_key` is what keeps a scan _or a callback_ from
   re-creating work a human has to look at first; this is the clause that makes
   the "or a callback" half true.
 
@@ -1356,21 +1356,21 @@ a job it just inserted at `now()` is the ordinary `false`.
 ### Why claiming does not consider lease expiry
 
 `claim`'s predicate is `locked_at IS NULL`, full stop, so it matches
-`jobs_claimable_idx` exactly. "Unlocked *or* the lease has expired" depends on
+`jobs_claimable_idx` exactly. "Unlocked _or_ the lease has expired" depends on
 `now()` and cannot be an index predicate, so it would turn every claim into a
 scan over every leased row. Expiry is therefore a separate, periodic pass —
-`reap_expired_leases` — which frees a stale lease *once* and lets the ordinary
+`reap_expired_leases` — which frees a stale lease _once_ and lets the ordinary
 claim path pick the row up on its next turn. Its callers are described in
 [vpay-worker.md](vpay-worker.md#two-lease-reapers-on-purpose).
 
 ### Why a dead letter is parked and not deleted
 
 A job that is done is deleted (`finish`); a job that is not done is rescheduled
-with its error recorded (`reschedule`). A job that *cannot* be done —
+with its error recorded (`reschedule`). A job that _cannot_ be done —
 `JobError::Poisoned`, or anything else `Classify::retry` answers `Retry::Never`
 for — is neither, and `dead_letter` is the third write.
 
-It exists because deleting one is not safe for a *payment* queue. `poll_charge`
+It exists because deleting one is not safe for a _payment_ queue. `poll_charge`
 is the only thing driving a live charge to a terminal state; delete its row and
 the charge is unattended, with nothing in the database saying why. The backstop
 scan would then re-enqueue the same `dedupe_key` at its next pass and the same
@@ -1388,7 +1388,7 @@ would carry no fact these do not, and every reader of the table would have to
 learn to exclude it.
 
 The cost, stated plainly: a parked job is invisible to `oldest_runnable_run_at`
-and to every other `run_at`-ordered query, so the *only* way an operator learns
+and to every other `run_at`-ordered query, so the _only_ way an operator learns
 one exists is the alert the loop raises when it parks it, and
 `SELECT * FROM jobs WHERE run_at = 'infinity'`. Requeuing one is an
 `UPDATE jobs SET run_at = now()` by hand, which is deliberate: it should follow
@@ -1435,7 +1435,7 @@ audit, re-done on 2026-09-05 from the source rather than inherited:
 All 45 statements interpolate exactly two kinds of value. Re-done on
 2026-09-06 for the six `customers` statements S4a added.
 
-* **A `const … : &str` declared in this crate.** Thirteen of them:
+- **A `const … : &str` declared in this crate.** Thirteen of them:
   `charges::COLUMNS`, `checkout_sessions::COLUMNS`, `customers::COLUMNS`,
   `events::COLUMNS`,
   `payment_intents::COLUMNS`, `refunds::COLUMNS`,
@@ -1445,14 +1445,15 @@ All 45 statements interpolate exactly two kinds of value. Re-done on
   `payment_intents::SETTLEABLE_STATUSES`, `jobs::CLAIM_RETURNING` and
   `settlement::PREVIOUS_STATE`. A `const` cannot carry a caller's value.
 
-  `customers::UNREFERENCED` is the one that had to *become* a constant: it is
+  `customers::UNREFERENCED` is the one that had to _become_ a constant: it is
   the `NOT EXISTS` pair the retention sweep's read and its write must both
   carry, and it was first written as `fn unreferenced(alias: &str) -> String`
   so the two call sites could name the table differently. They do not — both
   spell it `customers` — and the audit is what said so, by failing on
   `{guard}`. A computed fragment fails this gate by construction however fixed
   its inputs are, which is the rule working rather than an inconvenience.
-* **`direction`**, which is
+
+- **`direction`**, which is
   `let direction = if backwards { "ASC" } else { "DESC" };` — a `bool`
   choosing between two literals written in the same function
   (`events.rs`, `payment_intents.rs`, `checkout_sessions.rs`, in each case
@@ -1465,7 +1466,7 @@ did not.** `refunds::list_for_intent` and `events::list_for_objects` are each
 caller value bound — `merchant_id`, `payment_intent_id`, and, in the events
 read, a whole `&[String]` of object ids passed to `= ANY($2)` as one bound
 array rather than a generated `IN (…)` list, precisely so the statement's
-*text* does not depend on the number of arguments. `payment_intents::list_page_filtered`
+_text_ does not depend on the number of arguments. `payment_intents::list_page_filtered`
 adds three predicates and **no** site: it is the existing `list_page`
 statement with `($5::TEXT IS NULL OR status::TEXT = $5)` and two timestamp
 bounds written the same way, so an absent filter sends the byte-identical
@@ -1497,7 +1498,7 @@ named exceptions. It was proven to fire by three mutations on 2026-09-05, each
 reverted — and it fired **unprompted** on 2026-09-06, twice, against S4a's
 first draft of `customers.rs`: once correctly, on the computed `{guard}`
 described above, and once as a false positive on a `format!("{column} = ")`
-*inside a `#[cfg(test)]` assertion*, which the scanner read as a statement
+_inside a `#[cfg(test)]` assertion_, which the scanner read as a statement
 because it looks for the word `sql` in the forty characters before a `format!`
 and the assertion's own message printed `{sql}`. The test now builds that
 needle with `concat` and says why. Worth recording rather than quietly working
@@ -1507,12 +1508,12 @@ allowlist.
 
 The three 2026-09-05 mutations:
 
-* interpolating `{payment_intent_id}` into `charges::get_for_intent` →
+- interpolating `{payment_intent_id}` into `charges::get_for_intent` →
   `every_interpolation_into_a_statement_is_a_crate_constant` fails, naming the
   file and the capture;
-* redefining `direction` as anything other than the two-literal `if` →
+- redefining `direction` as anything other than the two-literal `if` →
   `the_audited_non_constants_are_still_what_the_audit_says_they_are` fails;
-* wrapping a fresh `format!` in `AssertSqlSafe` instead of the audited `sql`
+- wrapping a fresh `format!` in `AssertSqlSafe` instead of the audited `sql`
   variable → `every_assert_sql_safe_wraps_the_variable_the_audit_covers`
   fails.
 
@@ -1520,7 +1521,7 @@ The third is the one that matters most: without it the audit could be bypassed
 by not using the variable the audit looks at.
 
 **A fourth mutation, added by review on 2026-09-05, is why the list above was
-not enough.** All three mutations above spell the interpolation by *name*.
+not enough.** All three mutations above spell the interpolation by _name_.
 Written positionally —
 
 ```rust
@@ -1541,10 +1542,10 @@ is what makes a blanket refusal the correct rule rather than a heuristic.
 sqlx's own suggested alternative. It was considered and rejected: it would
 rewrite 45 working, reviewed statements to remove a risk the audit above shows
 is not present, and it would replace SQL that reads as SQL with SQL assembled
-by method calls — in a crate where the statement text *is* the design
+by method calls — in a crate where the statement text _is_ the design
 (`FOR UPDATE SKIP LOCKED`, `UPDATE … WHERE state = $2 RETURNING`, the
 `NOT EXISTS` guards that make cancellation atomic). `QueryBuilder` earns its
-place where the *shape* of a statement varies with input. Nothing here has
+place where the _shape_ of a statement varies with input. Nothing here has
 that shape: the only variability is a sort direction and a fixed column list.
 
 ### The two interpolations that are not constants
@@ -1552,8 +1553,8 @@ that shape: the only variability is a sort direction and a fixed column list.
 `sql_audit`'s allowlist has exactly two entries and both are checked rather
 than merely permitted:
 
-* `direction` — the file must still contain the literal two-branch `if`.
-* `columns` — `settlement.rs` writes `columns = crate::charges::COLUMNS` as a
+- `direction` — the file must still contain the literal two-branch `if`.
+- `columns` — `settlement.rs` writes `columns = crate::charges::COLUMNS` as a
   named argument, because it interpolates another module's constant and the
   implicit-capture form cannot name a path.
 
@@ -1564,7 +1565,7 @@ arrangement exists to force.
 
 The root `Cargo.toml`'s comment on the `authkestra-*` dependencies documents a
 real requirement: those crates build `reqwest` clients with `rustls-no-provider`,
-so the *first* one constructed panics unless a process-wide default
+so the _first_ one constructed panics unless a process-wide default
 `CryptoProvider` was already installed. `sqlx` looks like the same hazard and is
 not.
 
@@ -1613,12 +1614,12 @@ the schema's side.
 
 **Corrected 2026-09-10 (issue #87), and the correction is two things.** These
 two lines read ~~"**twenty-two** queries … over ten"~~ and ~~"**twenty-four**
-queries … over nine"~~ *one after the other*, contradicting each other in
+queries … over nine"~~ _one after the other_, contradicting each other in
 consecutive sentences — a conflict resolved by keeping both halves — and
 neither was right. **Thirty-two over twelve** is measured, by the rule the
 registry below states, and the running totals in the paragraphs that follow
 were never re-derived after S4b, S5 or ADR-0017: read them as the history of
-what each change *said*, not as arithmetic that adds up to today's number.
+what each change _said_, not as arithmetic that adds up to today's number.
 
 It said "**one** query" until 2026-09-06, when the two `disabled_clients`
 writes followed the read; "**three**" until later the same day, when migration
@@ -1668,7 +1669,7 @@ problem), and no `seq` cursor (whose correlated sub-select no delegate
 expresses). The cost is stated where it is paid: the encrypted TOTP secret is
 base64url `TEXT` rather than `BYTEA`, and `staff_members.last_totp_step` is
 `NOT NULL` seeded to 0 because `NULL < step` is NULL in SQL and a nullable
-column would refuse every staff member's *first* TOTP code forever.
+column would refuse every staff member's _first_ TOTP code forever.
 
 **The measured drift is the evidence.** The three tables cost 17 lines
 (`EXPECTED_DRIFT_CHANGES` 113 -> 130) and every one of them is a hand-named
@@ -1710,15 +1711,15 @@ whole of `cratestack-core`, `cratestack-sqlx`, `cratestack-sql`,
 fifth gap needs no such argument: it is documented by the tool itself, in the
 module that would implement it.
 
-| Gap | Where it lives at 0.12.0 | State |
-|---|---|---|
-| `@default(...)` fields are in neither `Create{Model}Input` nor `upsert_update_columns` | `cratestack-macros-0.12.0/src/model/inputs.rs:20-23` (`create_input_fields` filters `is_generated_on_create`), which is `has_default` at `src/shared/attrs.rs:91-93`; `model/descriptor/columns.rs:85-91` | **open** — both files md5-identical to 0.11.1 |
-| `upsert(..)` gates the update policy on a *second* pooled connection | `cratestack-sqlx-0.12.0/src/query/write/upsert_exec.rs:45` and `upsert_resolve.rs:161-169` (`row_passes_update_policy(runtime.pool(), …)`) | **open** — whole crate's `src/` unchanged |
-| `Value::from_plain_json` demotes any non-`i64` number to `f64` | `cratestack-core-0.12.0/src/value.rs:95-106` | **open** — whole crate's `src/` unchanged |
-| `jsonb`, `bytea`, `int2`/`int4` have no read-back mapping, so introspection excludes those columns | `cratestack-migrate-0.12.0/src/introspect/postgres/types.rs:16-36`, with the tool's own test asserting `map_scalar("int4", …) == None` at line 57 | **open** — file md5-identical |
-| Foreign keys are not introspected at all, so every `.cstack`-declared relation reports as a missing constraint | `cratestack-migrate-0.12.0/src/introspect/postgres/mod.rs:21-26` ("Known gaps"), `TableProjection::foreign_keys` set to `Vec::new()` at `:109` | **open** — found 2026-09-07 by S5 |
+| Gap                                                                                                            | Where it lives at 0.12.0                                                                                                                                                                                  | State                                         |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `@default(...)` fields are in neither `Create{Model}Input` nor `upsert_update_columns`                         | `cratestack-macros-0.12.0/src/model/inputs.rs:20-23` (`create_input_fields` filters `is_generated_on_create`), which is `has_default` at `src/shared/attrs.rs:91-93`; `model/descriptor/columns.rs:85-91` | **open** — both files md5-identical to 0.11.1 |
+| `upsert(..)` gates the update policy on a _second_ pooled connection                                           | `cratestack-sqlx-0.12.0/src/query/write/upsert_exec.rs:45` and `upsert_resolve.rs:161-169` (`row_passes_update_policy(runtime.pool(), …)`)                                                                | **open** — whole crate's `src/` unchanged     |
+| `Value::from_plain_json` demotes any non-`i64` number to `f64`                                                 | `cratestack-core-0.12.0/src/value.rs:95-106`                                                                                                                                                              | **open** — whole crate's `src/` unchanged     |
+| `jsonb`, `bytea`, `int2`/`int4` have no read-back mapping, so introspection excludes those columns             | `cratestack-migrate-0.12.0/src/introspect/postgres/types.rs:16-36`, with the tool's own test asserting `map_scalar("int4", …) == None` at line 57                                                         | **open** — file md5-identical                 |
+| Foreign keys are not introspected at all, so every `.cstack`-declared relation reports as a missing constraint | `cratestack-migrate-0.12.0/src/introspect/postgres/mod.rs:21-26` ("Known gaps"), `TableProjection::foreign_keys` set to `Vec::new()` at `:109`                                                            | **open** — found 2026-09-07 by S5             |
 
-What 0.12.0 *did* change, and why none of it reaches this document: the
+What 0.12.0 _did_ change, and why none of it reaches this document: the
 breaking change gives `SchemaError` file identity, so `render()` takes no
 arguments (`cratestack-macros-0.12.0/src/include/parse.rs:30-36`,
 `cratestack-cli-0.12.0/src/migrate/baseline_cmd.rs:56-60`) — internal to the
@@ -1747,44 +1748,44 @@ the three tables the section above calls wholly generated, sixteen statements
 between them, exactly half the total. It carried `get_for_merchant` twice,
 once without its `run(ctx)`. And a blank line sat between the twelfth and
 thirteenth rows, which ends a GitHub-flavoured table: the five
-`checkout_sessions` rows rendered as a second table whose *header* was the
+`checkout_sessions` rows rendered as a second table whose _header_ was the
 first of them, so the column titles a reader used to read those rows were
 never on screen. Every row below was re-read off the source.
 
-| Method | Table | CrateStack builder | Policy slot it needs |
-|---|---|---|---|
-| `is_client_disabled` | `disabled_clients` | `find_unique(client_id).run(ctx)` | `read` |
-| `disable_client` | `disabled_clients` | `upsert(CreateDisabledClientInput).run(ctx)` | `create` **and** `update` |
-| `enable_client` | `disabled_clients` | `delete_many().where_(client_id.eq(..)).run(ctx)` | `delete` |
-| `reconcile`, per currency | `currencies` | `find_unique(code).for_update().run_in_tx(tx, ctx)` | `read` |
-| `reconcile`, per currency | `currencies` | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `reconcile`, per provider | `providers` | `upsert(CreateProviderInput).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `create_in_tx` (the outbox) | `webhook_deliveries` | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)` | `create` **and** `update` |
-| `mark_fanned_out_in_tx` | `events` | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)` | `update` |
-| `touch_last_used` | `customers` | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)` | `update` |
-| `delete` | `customers` | `delete_many().where_(id).where_(merchant_id).run(ctx)` | `delete` |
-| `mark_uncollectible` | `invoices` | `update_many().where_(id).where_(merchant_id).where_(status.eq(open)).set(UpdateInvoiceInput).run(ctx)` | `update` |
-| `items_for_invoice` | `invoice_items` | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)` | `read` |
-| `get_for_merchant` | `checkout_sessions` | `find_many().where_(id).where_(merchant_id).limit(1).run(ctx)` | `read` |
-| `get_by_id_unscoped` | `checkout_sessions` | `find_unique(id).run(ctx)` | `read` |
-| `find_open_by_intent` | `checkout_sessions` | `find_many().where_(payment_intent_id).where_(status).limit(1).run(ctx)` | `read` |
-| `find_latest_by_intent` | `checkout_sessions` | `latest_by_intent_query(..).run(ctx)` — `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)`, extracted so `the_latest_session_query_orders_by_seq_and_takes_one` previews the builder the method runs | `read` |
-| `create` | `staff_members` | `create(CreateStaffMemberInput).run(ctx)` | `create` |
-| `find_by_email` | `staff_members` | `find_many().where_(email).limit(1).run(ctx)` — `find_many`, not `find_unique`, because `email` is not the primary key | `read` |
-| `find` | `staff_members` | `find_unique(id).run(ctx)` | `read` |
-| `enrol_totp` | `staff_members` | `update_many().where_(id).where_(totp_enrolled_at.is_null()).set(UpdateStaffMemberInput).run(ctx)` — the second filter is the compare-and-swap that makes a re-enrolment lose | `update` |
-| `record_totp_step` | `staff_members` | `update_many().where_(id).where_(last_totp_step.lt(step)).set(UpdateStaffMemberInput).run(ctx)` — monotonic by filter, which is what refuses a replayed code | `update` |
-| `set_password` | `staff_members` | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)` | `update` |
-| `record_sign_in` | `staff_members` | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)` | `update` |
-| `create` | `staff_sessions` | `create(CreateStaffSessionInput).run(ctx)` | `create` |
-| `load` | `staff_sessions` | `find_unique(id).run(ctx)` | `read` |
-| `touch` | `staff_sessions` | `update_many().where_(id).where_(last_seen_at.lt(now)).set(UpdateStaffSessionInput).run(ctx)` | `update` |
-| `mark_authenticated` | `staff_sessions` | `update_many().where_(id).where_(state.eq(pending_totp)).set(UpdateStaffSessionInput).run(ctx)` — the state filter is the swap | `update` |
-| `record_access_token` | `staff_sessions` | `update_many().where_(id).set(UpdateStaffSessionInput).run(ctx)` — writes `access_token`, `access_token_expires_at` (migration `0040`) and `last_seen_at` in **one** statement, which is what makes `staff_sessions_token_expiry_is_paired` a property rather than a convention: there is no instant at which the token is stored and its expiry is not | `update` |
-| `delete` | `staff_sessions` | `delete_many().where_(id).run(ctx)` | `delete` |
-| `store_code` | `oauth_authorization_codes` | `create(CreateOauthAuthorizationCodeInput).run(ctx)` | `create` |
-| `consume_code` | `oauth_authorization_codes` | `find_unique(code_hash).run(ctx)` | `read` |
-| `consume_code` | `oauth_authorization_codes` | `update_many().where_(code_hash).where_(consumed_at.is_null()).set(UpdateOauthAuthorizationCodeInput).run(ctx)` — the swap: exactly one concurrent caller sees one row | `update` |
+| Method                      | Table                       | CrateStack builder                                                                                                                                                                                                                                                                                                                                      | Policy slot it needs      |
+| --------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `is_client_disabled`        | `disabled_clients`          | `find_unique(client_id).run(ctx)`                                                                                                                                                                                                                                                                                                                       | `read`                    |
+| `disable_client`            | `disabled_clients`          | `upsert(CreateDisabledClientInput).run(ctx)`                                                                                                                                                                                                                                                                                                            | `create` **and** `update` |
+| `enable_client`             | `disabled_clients`          | `delete_many().where_(client_id.eq(..)).run(ctx)`                                                                                                                                                                                                                                                                                                       | `delete`                  |
+| `reconcile`, per currency   | `currencies`                | `find_unique(code).for_update().run_in_tx(tx, ctx)`                                                                                                                                                                                                                                                                                                     | `read`                    |
+| `reconcile`, per currency   | `currencies`                | `upsert(CreateCurrencyInput).run_in_tx(tx, ctx)`                                                                                                                                                                                                                                                                                                        | `create` **and** `update` |
+| `reconcile`, per provider   | `providers`                 | `upsert(CreateProviderInput).run_in_tx(tx, ctx)`                                                                                                                                                                                                                                                                                                        | `create` **and** `update` |
+| `create_in_tx` (the outbox) | `webhook_deliveries`        | `upsert(CreateWebhookDeliveryInput).do_nothing().on_conflict(&["event_id","endpoint_id"]).run_in_tx(tx, ctx)`                                                                                                                                                                                                                                           | `create` **and** `update` |
+| `mark_fanned_out_in_tx`     | `events`                    | `update_many().where_(id).where_(fanout_state).set(UpdateEventInput).run_in_tx(tx, ctx)`                                                                                                                                                                                                                                                                | `update`                  |
+| `touch_last_used`           | `customers`                 | `update_many().where_(id).where_(last_used_at.lt(now)).set(UpdateCustomerInput).run(ctx)`                                                                                                                                                                                                                                                               | `update`                  |
+| `delete`                    | `customers`                 | `delete_many().where_(id).where_(merchant_id).run(ctx)`                                                                                                                                                                                                                                                                                                 | `delete`                  |
+| `mark_uncollectible`        | `invoices`                  | `update_many().where_(id).where_(merchant_id).where_(status.eq(open)).set(UpdateInvoiceInput).run(ctx)`                                                                                                                                                                                                                                                 | `update`                  |
+| `items_for_invoice`         | `invoice_items`             | `find_many().where_(invoice_id).order_by(seq.asc()).run(ctx)`                                                                                                                                                                                                                                                                                           | `read`                    |
+| `get_for_merchant`          | `checkout_sessions`         | `find_many().where_(id).where_(merchant_id).limit(1).run(ctx)`                                                                                                                                                                                                                                                                                          | `read`                    |
+| `get_by_id_unscoped`        | `checkout_sessions`         | `find_unique(id).run(ctx)`                                                                                                                                                                                                                                                                                                                              | `read`                    |
+| `find_open_by_intent`       | `checkout_sessions`         | `find_many().where_(payment_intent_id).where_(status).limit(1).run(ctx)`                                                                                                                                                                                                                                                                                | `read`                    |
+| `find_latest_by_intent`     | `checkout_sessions`         | `latest_by_intent_query(..).run(ctx)` — `find_many().where_(payment_intent_id).order_by(seq.desc()).limit(1)`, extracted so `the_latest_session_query_orders_by_seq_and_takes_one` previews the builder the method runs                                                                                                                                 | `read`                    |
+| `create`                    | `staff_members`             | `create(CreateStaffMemberInput).run(ctx)`                                                                                                                                                                                                                                                                                                               | `create`                  |
+| `find_by_email`             | `staff_members`             | `find_many().where_(email).limit(1).run(ctx)` — `find_many`, not `find_unique`, because `email` is not the primary key                                                                                                                                                                                                                                  | `read`                    |
+| `find`                      | `staff_members`             | `find_unique(id).run(ctx)`                                                                                                                                                                                                                                                                                                                              | `read`                    |
+| `enrol_totp`                | `staff_members`             | `update_many().where_(id).where_(totp_enrolled_at.is_null()).set(UpdateStaffMemberInput).run(ctx)` — the second filter is the compare-and-swap that makes a re-enrolment lose                                                                                                                                                                           | `update`                  |
+| `record_totp_step`          | `staff_members`             | `update_many().where_(id).where_(last_totp_step.lt(step)).set(UpdateStaffMemberInput).run(ctx)` — monotonic by filter, which is what refuses a replayed code                                                                                                                                                                                            | `update`                  |
+| `set_password`              | `staff_members`             | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)`                                                                                                                                                                                                                                                                                         | `update`                  |
+| `record_sign_in`            | `staff_members`             | `update_many().where_(id).set(UpdateStaffMemberInput).run(ctx)`                                                                                                                                                                                                                                                                                         | `update`                  |
+| `create`                    | `staff_sessions`            | `create(CreateStaffSessionInput).run(ctx)`                                                                                                                                                                                                                                                                                                              | `create`                  |
+| `load`                      | `staff_sessions`            | `find_unique(id).run(ctx)`                                                                                                                                                                                                                                                                                                                              | `read`                    |
+| `touch`                     | `staff_sessions`            | `update_many().where_(id).where_(last_seen_at.lt(now)).set(UpdateStaffSessionInput).run(ctx)`                                                                                                                                                                                                                                                           | `update`                  |
+| `mark_authenticated`        | `staff_sessions`            | `update_many().where_(id).where_(state.eq(pending_totp)).set(UpdateStaffSessionInput).run(ctx)` — the state filter is the swap                                                                                                                                                                                                                          | `update`                  |
+| `record_access_token`       | `staff_sessions`            | `update_many().where_(id).set(UpdateStaffSessionInput).run(ctx)` — writes `access_token`, `access_token_expires_at` (migration `0040`) and `last_seen_at` in **one** statement, which is what makes `staff_sessions_token_expiry_is_paired` a property rather than a convention: there is no instant at which the token is stored and its expiry is not | `update`                  |
+| `delete`                    | `staff_sessions`            | `delete_many().where_(id).run(ctx)`                                                                                                                                                                                                                                                                                                                     | `delete`                  |
+| `store_code`                | `oauth_authorization_codes` | `create(CreateOauthAuthorizationCodeInput).run(ctx)`                                                                                                                                                                                                                                                                                                    | `create`                  |
+| `consume_code`              | `oauth_authorization_codes` | `find_unique(code_hash).run(ctx)`                                                                                                                                                                                                                                                                                                                       | `read`                    |
+| `consume_code`              | `oauth_authorization_codes` | `update_many().where_(code_hash).where_(consumed_at.is_null()).set(UpdateOauthAuthorizationCodeInput).run(ctx)` — the swap: exactly one concurrent caller sees one row                                                                                                                                                                                  | `update`                  |
 
 **Twelve tables, and therefore twelve of the file's seventeen models.** The
 five with no statement at all are `PaymentIntent`, `Charge`, `Refund`,
@@ -1798,7 +1799,7 @@ same position with no test watching them.
 
 Plus one that is **test-only and says so**: `vpay-db`'s own
 `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` reads a
-`providers` row through `find_unique`. No production path *reads* `providers`
+`providers` row through `find_unique`. No production path _reads_ `providers`
 through CrateStack — `model Provider`'s `read` arm is there for that test, and
 migration 0033 changed the write, not the read. The test exists because
 migration 0032's native-enum conversion has no other witness — see "The enum
@@ -1838,9 +1839,9 @@ performs both writes inside a transaction that then returns
 `TxOutcome::Abandon`, and reads the database back. Swapping either call to
 `.run(&ctx)` makes it red in about a second, naming which one:
 
-| Mutation | Measured |
-|---|---|
-| `create_in_tx` -> `.run(&ctx)` | the delivery row **survives** the abandoned transaction |
+| Mutation                                | Measured                                                                                                                                         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `create_in_tx` -> `.run(&ctx)`          | the delivery row **survives** the abandoned transaction                                                                                          |
 | `mark_fanned_out_in_tx` -> `.run(&ctx)` | `fanout_state` is `done` on an event whose deliveries were rolled back — an event no drain will pick up again and no merchant is ever told about |
 
 Neither mutation **hangs**, unlike the currency upsert's equivalent
@@ -1854,9 +1855,9 @@ non-key `UPDATE` wants.
 
 **"On the branch these mutations take" is a correction the review made, and
 the general claim it replaces was wrong.** `.do_nothing()` locks nothing only
-on the `Inserted` branch. On the `Existing` branch `resolve_pre_probe` *is* a
+on the `Inserted` branch. On the `Existing` branch `resolve_pre_probe` _is_ a
 `SELECT … FOR UPDATE` on the caller's transaction, and `authorize_existing_row`
-*does* then ask a second, pooled connection about that same row. It still does
+_does_ then ask a second, pooled connection about that same row. It still does
 not hang, because a plain `SELECT 1` does not block on a `FOR UPDATE` row lock
 in Postgres — the conclusion survives, its stated reason did not.
 
@@ -1883,7 +1884,7 @@ in `backends/tests/integration/tests/webhooks.rs`.
 What that measurement says, and it is not what the arithmetic above assumes:
 five simultaneous fan-outs on the `Existing` branch fit the pool with the
 lease reaper still running alongside, and the reaper only starves when all ten
-connections are pinned. Two connections per fan-out is a *peak*, held for the
+connections are pinned. Two connections per fan-out is a _peak_, held for the
 width of the policy probe rather than the width of the transaction, and
 `fan_out_events` is a **singleton** job — one row, claimed under a lease — so
 a worker process has at most one fan-out in flight however high the
@@ -1902,7 +1903,7 @@ signature.
 `create_in_tx`'s contract is that a repeat creation for one
 `(event_id, endpoint_id)` answers `Ok(None)` — the quiet answer an
 at-least-once drain needs. Through CrateStack that holds only when the
-earlier row was **committed**. A second call inside the *same, still-open*
+earlier row was **committed**. A second call inside the _same, still-open_
 transaction is refused with `PersistenceError::Denied`:
 
 ```
@@ -1929,7 +1930,7 @@ call this twice for one pair. That is a real dependency the fan-out did not
 have before — config validation in one crate now keeps a persistence call
 correct in another — so it is stated in both places and pinned by
 `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
-which asserts the refusal *and* the unchanged committed-row `None`. It is
+which asserts the refusal _and_ the unchanged committed-row `None`. It is
 reported upstream rather than worked around here.
 
 #### `events.data`: the one write that did not move, and why
@@ -1944,12 +1945,12 @@ reversible half of this change and it is worth being precise about, because
 measured costs are why `model Event` still does not declare `data`:
 
 1. **The drift is worse, not better.** `introspect/postgres/types.rs::map_scalar`
-   does not map `jsonb` back onto any scalar. An *undeclared* `jsonb` column is
+   does not map `jsonb` back onto any scalar. An _undeclared_ `jsonb` column is
    therefore invisible to the comparison in both directions — declaring the two
    models moved `EXPECTED_UNMAPPABLE_COLUMNS` not at all and produced no
    `column data exists in the live database` line. Declaring `data Json` would
    leave the live column invisible while adding a `[blocking] column data is
-   declared in the schema but does not exist in the live database` line, which
+declared in the schema but does not exist in the live database` line, which
    is what `currencies.exponent` did before migration 0032.
 2. **The conversion is lossy, and this is the column it must not be lossy on.**
    `cratestack::Value` is not `serde_json::Value`. `Value::from_plain_json`
@@ -2001,7 +2002,7 @@ right and reproduces — a lost CHECK removes one `[safe] ... is not declared`
 line, so the count goes **down**, 101 to 100 — but the conclusion drawn from
 it was wrong. `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor,
 so `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` fails
-on a *lower* count exactly as loudly as on a higher one (`left: 100,
+on a _lower_ count exactly as loudly as on a higher one (`left: 100,
 right: 101`), and its own assertion message already names the diagnosis: "If
 it shrank without an edit to the schema, find out what the report stopped
 seeing before moving anything." That is the general defence for every
@@ -2009,9 +2010,9 @@ undeclared-CHECK line above, and it was already there.
 
 Two signals, saying different things, which is why
 `an_undocumented_event_type_is_refused_by_the_database` is still worth having
-and is not a duplicate. The count says *a constraint the database had is
-gone*, without saying which or whether it mattered. The test says *the
-vocabulary is still closed*, which is the property four documents actually
+and is not a duplicate. The count says _a constraint the database had is
+gone_, without saying which or whether it mattered. The test says _the
+vocabulary is still closed_, which is the property four documents actually
 rest on — and it is the signal that survives someone re-pinning the constant,
 which is the cheapest way to make a red drift assertion go away. It was
 written here because the constraint was cited by four documents and asserted
@@ -2021,7 +2022,7 @@ Nothing about the trait changed for any of them — the signatures, the
 deliberate absence of a cache, and `enable_client`'s "a no-op, not an error"
 contract are all as they were. What did change is the `# Errors` contract:
 all three now return `DbError::Persistence` rather than `DbError::Query`. A
-caller branching on the *classification* sees nothing (a `23505` is still a
+caller branching on the _classification_ sees nothing (a `23505` is still a
 `409 resource_conflict`); a caller matching the variant would have silently
 stopped matching, which is why both trait doc comments say so.
 
@@ -2078,7 +2079,7 @@ is CrateStack's fixed shape for `upsert` and it is accepted rather than worked
 around: an operator disabling a client is not a hot path. `is_client_disabled`
 is — it is on the token-issuance path — and it stayed a single `find_unique`.
 
-**On the conflict branch the cost is a round trip on a *second* pooled
+**On the conflict branch the cost is a round trip on a _second_ pooled
 connection**, which is a different kind of cost and was not written down until
 the review of 2026-09-06 measured it out of the source.
 `UpsertRecord::run` begins its transaction on `runtime.pool()` and holds that
@@ -2092,7 +2093,7 @@ would then fail as `PersistenceError::Backend` → `Category::Storage`.
 
 Not reachable today and recorded rather than worked around: `disable_client`
 has no shipping caller at all yet (see [roadmap.md](../roadmap.md)), and the
-*insert* branch takes only one connection, because `auth().isSystem()` is not
+_insert_ branch takes only one connection, because `auth().isSystem()` is not
 a relation predicate and `evaluate_create_policies` therefore issues no query
 for it. It is the first thing to re-check if a route or an admin surface ever
 calls this method concurrently, and it is on the list of things worth sending
@@ -2136,12 +2137,12 @@ useful thing this adoption has measured. All six rows were produced by
 deleting the named line and running the named test against a real Postgres on
 2026-09-06.
 
-| Missing `@@allow` | What happens at runtime | What goes red |
-|---|---|---|
-| `read` | Read returns `Ok(None)` for every client — **kill switch silently OFF** | `a_disabled_client_reads_the_same_through_both_paths`: `CrateStack says false, sqlx says true` |
-| `create` | `disable_client` **errors** on the insert branch: `Forbidden` → `PersistenceError::Denied` → `Category::Internal` | the write parity test, at the first `disable_client` |
-| `update` | `disable_client` **errors** on the *conflict* branch only — the first disable of a client succeeds and the second fails | the write parity test, at the *second* `disable_client`; a test that disabled once and stopped would have passed |
-| `delete` | `enable_client` removes nothing and returns `Ok` — **silent** | the write parity test's enable assertion, which reads the row back through a plain `SELECT` rather than trusting the return |
+| Missing `@@allow` | What happens at runtime                                                                                                 | What goes red                                                                                                               |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `read`            | Read returns `Ok(None)` for every client — **kill switch silently OFF**                                                 | `a_disabled_client_reads_the_same_through_both_paths`: `CrateStack says false, sqlx says true`                              |
+| `create`          | `disable_client` **errors** on the insert branch: `Forbidden` → `PersistenceError::Denied` → `Category::Internal`       | the write parity test, at the first `disable_client`                                                                        |
+| `update`          | `disable_client` **errors** on the _conflict_ branch only — the first disable of a client succeeds and the second fails | the write parity test, at the _second_ `disable_client`; a test that disabled once and stopped would have passed            |
+| `delete`          | `enable_client` removes nothing and returns `Ok` — **silent**                                                           | the write parity test's enable assertion, which reads the row back through a plain `SELECT` rather than trusting the return |
 
 The `create` and `update` rows are loud because `upsert_exec.rs` evaluates
 `create_allow_policies` in Rust, before it builds any SQL, and
@@ -2154,8 +2155,8 @@ indistinguishable from an absent one.
 
 **Both silent failures are fail-safe in direction**, which is worth stating
 but is not why they are acceptable: a missing `read` policy leaves every
-client *admitted* (dangerous, and the reason the read parity test exists), and
-a missing `delete` policy leaves a client *revoked* (safe). The reason both
+client _admitted_ (dangerous, and the reason the read parity test exists), and
+a missing `delete` policy leaves a client _revoked_ (safe). The reason both
 are acceptable is that a container-backed test makes each red, and neither is
 detectable by `just check-schema`, `cargo build`, `just clippy` or any of the
 ten `just verify` gates.
@@ -2170,7 +2171,7 @@ database-free half of the gate was blind to every policy hole.
 `disabled_clients::tests::every_action_this_crate_calls_has_an_allow_arm`
 asserts all four are occupied and no `@@deny` has appeared, and is red under
 each of the four mutations in about 4 ms. It is not a substitute for the
-container tests — a non-empty slot does not say the policy admits *this*
+container tests — a non-empty slot does not say the policy admits _this_
 caller, which is the thing `auth().isSystem()` has to get right — it removes
 the wait to learn that a slot is empty. Any second model this crate reaches
 through CrateStack should copy it.
@@ -2185,7 +2186,7 @@ Two other things that follow from the same mechanism and are not obvious:
   `"all"` as matching every action, so one line would compile and work. This
   section claimed until the review of 2026-09-06 that `"all"` "would also
   grant `list` and `detail`, which nothing in vpay calls" — it would not grant
-  them *additionally*. `model/descriptor.rs:45-47` compiles a `read` arm into
+  them _additionally_. `model/descriptor.rs:45-47` compiles a `read` arm into
   **both** `&["list", "read"]` and `&["detail", "read"]`, so the four arms and
   `@@allow("all", …)` populate an identical set of slots. The genuine and
   sufficient reason for four lines is that each is separately droppable, which
@@ -2202,11 +2203,11 @@ All three numbers below were measured with
 2026-09-06, before and after; `docs/plans/exp17-notes/opus.md` has both
 reports in full.
 
-| Change | Drift effect | Why it was made |
-|---|---|---|
-| `currencies.exponent` `INT` → `BIGINT` | **-1 change, -1 unmappable column** | `Int` emits `int8` and the introspector refuses to map `int4` back onto it, so the column was excluded from the comparison entirely |
-| The two `currencies` CHECKs renamed to `<table>_<column>_<validator>_check` | **0** | The names are the half that *can* converge at 0.12.0; the kinds cannot (below) |
-| `providers.flow` native enum → `TEXT` + `providers_flow_enum_check` | **0** | Nothing to do with drift: CrateStack cannot *decode* a native enum column |
+| Change                                                                      | Drift effect                        | Why it was made                                                                                                                     |
+| --------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `currencies.exponent` `INT` → `BIGINT`                                      | **-1 change, -1 unmappable column** | `Int` emits `int8` and the introspector refuses to map `int4` back onto it, so the column was excluded from the comparison entirely |
+| The two `currencies` CHECKs renamed to `<table>_<column>_<validator>_check` | **0**                               | The names are the half that _can_ converge at 0.12.0; the kinds cannot (below)                                                      |
+| `providers.flow` native enum → `TEXT` + `providers_flow_enum_check`         | **0**                               | Nothing to do with drift: CrateStack cannot _decode_ a native enum column                                                           |
 
 #### The rename that buys nothing, and why it is still right
 
@@ -2220,7 +2221,7 @@ the predicates the generator emits, `code ~ '^[A-Z]{3}$'` byte for byte and
 name half and **moves the count by zero**.
 
 The reason is a deliberate upstream decision, not a bug and not something a
-better rename could avoid. Introspection reports *every* validator-derived
+better rename could avoid. Introspection reports _every_ validator-derived
 CHECK as `CheckKind::Raw(<deparsed text>)`; it reconstructs only
 `CheckKind::Enum`, and never `Iso4217`, `Range` or `Length`. `ir/checks.rs`
 says why: "design doc §2.2 notes the compiled SQL for e.g. `@range(0, 150)` is
@@ -2238,7 +2239,7 @@ will already be in place and the count will fall on its own — whereas leaving
 them hand-named would mean doing this rename later, on a table with rows.
 
 **The general lesson for anyone moving the next table:** do not expect a
-CHECK rename to move `EXPECTED_DRIFT_CHANGES`. Only a *type* fix or a whole
+CHECK rename to move `EXPECTED_DRIFT_CHANGES`. Only a _type_ fix or a whole
 table entering the schema does.
 
 `providers.code_length` and `providers.display_name_length` were deliberately
@@ -2246,7 +2247,7 @@ table entering the schema does.
 `display_name` carries no `@db_enforce` so its CHECK has no authored
 counterpart to converge on at all; and `postgres_smoke.rs` asserts the report
 still carries ``CHECK `code_length` ...`` as its proof that the report says
-*something* about `providers` beside the invisible cross-column CHECK.
+_something_ about `providers` beside the invisible cross-column CHECK.
 
 #### Migration 0033: dropping a default moves no drift, and skipping it moves five
 
@@ -2254,11 +2255,11 @@ The mirror of the rename finding above, and the reason migration 0033 and the
 `schemas/vpay.cstack` edit are one commit. Measured on 2026-09-06 with the same
 test:
 
-| Variant | Report |
-|---|---|
-| Five `@default(...)` in the schema, five `DEFAULT`s in the database (before) | **84 / 16 / 17** |
-| Neither (after 0033) | **84 / 16 / 17**, `providers` block byte-identical |
-| Schema half only — the five `@default(...)` removed, 0033 absent | **89 / 16 / 17**, five `column … default value differs` lines on `providers` |
+| Variant                                                                      | Report                                                                       |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Five `@default(...)` in the schema, five `DEFAULT`s in the database (before) | **84 / 16 / 17**                                                             |
+| Neither (after 0033)                                                         | **84 / 16 / 17**, `providers` block byte-identical                           |
+| Schema half only — the five `@default(...)` removed, 0033 absent             | **89 / 16 / 17**, five `column … default value differs` lines on `providers` |
 
 So a `DEFAULT` costs drift only when the two sides disagree, and the general
 lesson is the one the CHECK rename taught in the other direction: **do not
@@ -2281,17 +2282,17 @@ enum column with `try_get::<String>()` and `.parse()`, so a native enum column
 And the drift report is structurally blind to the whole thing, which is the
 finding worth carrying:
 
-- `introspect/postgres/enums.rs` *already synthesised* an
+- `introspect/postgres/enums.rs` _already synthesised_ an
   `AddCheck { name: "providers_flow_enum_check", kind: Enum { .. } }` out of
   `pg_enum` for the native column, so the CHECK matched before and matches
   after.
 - `introspect/postgres/columns.rs::resolve_column` maps a native enum and a
-  `TEXT` column onto the *same* `ColumnType::Scalar("String")`.
+  `TEXT` column onto the _same_ `ColumnType::Scalar("String")`.
 
 So `providers` reports exactly the same four lines before and after. One of
 those four, `column flow type differs (live: Scalar("String"), schema:
 Enum("ProviderFlow"))`, is **permanent at 0.12.0** and is not a defect in
-`schemas/vpay.cstack`: the enum's *name* has no catalog representation to
+`schemas/vpay.cstack`: the enum's _name_ has no catalog representation to
 recover it from, which `enums.rs`'s own doc comment calls documented
 lossiness. Every enum-typed column in the schema carries one such line
 (`charges.state`, `charges.failure_code`, `payment_intents.status`,
@@ -2328,12 +2329,12 @@ RETURNING exponent
 ```
 
 `SET exponent = currencies.exponent` is a deliberate **no-op** write: it locks
-the row and makes `RETURNING` yield the *stored* value, so the comparison
+the row and makes `RETURNING` yield the _stored_ value, so the comparison
 behind `DbError::CurrencyExponentConflict` could happen in Rust. CrateStack's
 `upsert` renders `SET exponent = EXCLUDED.exponent` — measured with
 `preview_sql` and pinned by
 `the_currency_upsert_would_overwrite_a_stored_exponent_on_its_own` — which is
-the *overwrite* that error exists to refuse. Letting it land would reinterpret
+the _overwrite_ that error exists to refuse. Letting it land would reinterpret
 every amount already stored in that currency, silently, with no write to any
 of those rows.
 
@@ -2355,12 +2356,12 @@ of `run_in_tx` anywhere in vpay.
 `reconcile` against every other `reconcile` — that is what
 `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released` proves,
 and it still passes with `.for_update()` deleted. The row lock binds a writer
-that does *not* go through this function. Measured on 2026-09-06: with
+that does _not_ go through this function. Measured on 2026-09-06: with
 `.for_update()` deleted, **every test in the repository stayed green**, which
 is why this change adds
 `reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer`
 — an outside transaction updates the row uncommitted, `reconcile` blocks on
-the read, and the assertion is that the outside writer's value *survives*.
+the read, and the assertion is that the outside writer's value _survives_.
 Without the row lock the plain `SELECT` returns the pre-commit value, the
 comparison passes, and the upsert writes over a committed change. See
 `docs/plans/exp17-notes/opus.md` § 2.
@@ -2405,7 +2406,7 @@ took the first: remove the five `@default(...)` from `model Provider` **and**
 is not that a code generator should get to shape vpay's DDL — it is that the
 default was never doing anything for the only writer there is. `reconcile` is
 the sole writer of those five columns and always writes all five from
-configuration; a default cannot help it. What a default *can* do is invent a
+configuration; a default cannot help it. What a default _can_ do is invent a
 capability for some other writer that forgot one, and a rail silently recorded
 as "does not refund", or silently recorded as enabled, is worse than an
 `INSERT` that refuses. The second way out — upstream growing a way to include
@@ -2434,10 +2435,9 @@ is what renders now, pinned by
 `the_provider_upsert_carries_all_eight_columns`.
 
 **Two things notice a regression, and the compiler is the first.** The five
-columns are `CreateProviderInput` *fields*, not merely SQL: restore a
+columns are `CreateProviderInput` _fields_, not merely SQL: restore a
 `@default(...)` in `schemas/vpay.cstack` and `vpay-db` stops building with
-`error[E0560]: struct `inputs::CreateProviderInput` has no field named
-`supports_refunds`` at `reconcile`'s struct literal (measured). Delete the
+`error[E0560]: struct `inputs::CreateProviderInput`has no field named`supports_refunds`` at `reconcile`'s struct literal (measured). Delete the
 migration instead and the failure is at test time, three ways: the drift test
 at 89 vs 84, the migration-count test at 32 vs 33, and
 `a_hand_written_provider_insert_must_now_name_every_capability_column`, which
@@ -2452,7 +2452,7 @@ had to name the columns in the same commit.
 
 **No `find_unique(...).for_update()` ahead of the provider upsert.** This is
 the asymmetry with the currency pass and it is deliberate. The currency read is
-the *guard*: `upsert` renders `SET exponent = EXCLUDED.exponent`, a stored
+the _guard_: `upsert` renders `SET exponent = EXCLUDED.exponent`, a stored
 exponent must never be overwritten, so the value has to be read under a row
 lock and compared before the write. A provider has no such value — every one of
 the eight columns is owned by configuration and overwriting it is the point, so
@@ -2490,7 +2490,7 @@ to reach `providers_flow_enum_check` and come back as `DbError::Query` →
 database that was working perfectly. The CHECK is untouched and still refuses
 a writer that is not `reconcile`. The parse is a `match` rather than
 `unwrap_or_default()`, because `cratestack-macros` derives `Default` on every
-generated enum with the *first* variant as the default
+generated enum with the _first_ variant as the default
 (`types/enums.rs::variant_tokens`) and the first variant of `ProviderFlow` is
 `push` — so `unwrap_or_default()` would have stored a typo'd rail as a push
 rail and returned `Ok`.
@@ -2499,7 +2499,7 @@ rail and returned `Ok`.
 moved the write and not before it, and has no `delete` arm: `reconcile`
 disables a dropped rail and never removes one, and every `charges` and
 `provider_requests` row references this table. Deleting the `update` arm is
-loud but only from the *second* boot — the first boot of a fresh database
+loud but only from the _second_ boot — the first boot of a fresh database
 takes the insert branch — which is why
 `every_action_this_module_calls_has_an_allow_arm` asserts the slot without a
 database.
@@ -2519,11 +2519,11 @@ Every read and every write in `vpay_db::payment_intents`, `vpay_db::charges`
 and `vpay_db::refunds` returns a row struct — `PaymentIntentRow`,
 `ChargeRow`, `RefundRow` — and each of those carries a `jsonb` column:
 
-| Table | Column(s) | What is in them |
-|---|---|---|
+| Table             | Column(s)                          | What is in them                                                       |
+| ----------------- | ---------------------------------- | --------------------------------------------------------------------- |
 | `payment_intents` | `payment_method_types`, `metadata` | a JSON array of rail codes, and **merchant-authored** key/value pairs |
-| `charges` | `provider_ref_extra` | rail key material (Orange's `pay_token`) |
-| `refunds` | `metadata` | merchant-authored, as above |
+| `charges`         | `provider_ref_extra`               | rail key material (Orange's `pay_token`)                              |
+| `refunds`         | `metadata`                         | merchant-authored, as above                                           |
 
 `Value::from_plain_json` routes every JSON number through `Number::as_i64()`
 with an `as_f64().unwrap_or_default()` fallback
@@ -2540,10 +2540,10 @@ that were both considered and both rejected:
 - **A second statement for the `jsonb` columns.** Two round trips and a
   consistency window, on the money path, to replace one statement that works.
 - **Declaring `metadata Json`.** Strictly worse for drift, in the direction
-  the report cannot help with: an *undeclared* `jsonb` column is invisible to
-  the comparison in both directions, so it costs nothing; a *declared* one
+  the report cannot help with: an _undeclared_ `jsonb` column is invisible to
+  the comparison in both directions, so it costs nothing; a _declared_ one
   adds a `[blocking] column metadata is declared in the schema but does not
-  exist in the live database` line while leaving the live column just as
+exist in the live database` line while leaving the live column just as
   invisible. `EXPECTED_UNMAPPABLE_COLUMNS` did not move at all across S5,
   which is that prediction tested.
 
@@ -2568,11 +2568,11 @@ are now `find_unique`/`find_many` calls, and `EXPECTED_ASSERT_SITES` in
 `sql_audit.rs` falls 45 → 41 for the first time in its history. The other five
 did not move, and each has its own reason:
 
-| Statement | Why it stays raw |
-|---|---|
-| `list_page` | the cursor is a correlated sub-select (`seq < (SELECT seq FROM checkout_sessions WHERE id = $2 AND merchant_id = $1)`); no delegate expresses it, exactly as for `Events::list_page` |
+| Statement                                                     | Why it stays raw                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_page`                                                   | the cursor is a correlated sub-select (`seq < (SELECT seq FROM checkout_sessions WHERE id = $2 AND merchant_id = $1)`); no delegate expresses it, exactly as for `Events::list_page`                                                                              |
 | `expire`, `due_for_expiry`, `expire_due`, `settle_for_intent` | each carries `NOT EXISTS (SELECT 1 FROM charges …)` over a **second** table, and a generated builder filters columns of one. That guard is the statement's whole point: it is what stops a session being expired out from under a payer who has already confirmed |
-| `create` | expressible, and deliberately deferred — see below |
+| `create`                                                      | expressible, and deliberately deferred — see below                                                                                                                                                                                                                |
 
 **`create` is the one that could have moved and did not.** Moving it needs
 migration 0037 to `DROP DEFAULT` on `created_at` and `updated_at`, because
@@ -2591,7 +2591,7 @@ that forgets. `model CheckoutSession` has no `@@allow("create", …)` arm, and
 **One of the four reads is pinned on its rendered SQL rather than on its
 behaviour, and the reason is a measurement.** `find_latest_by_intent` asks for
 `ORDER BY seq DESC LIMIT 1`. Deleting that `order_by` left a container test
-that seeds two sessions and asserts *which* one comes back **green**: the live
+that seeds two sessions and asserts _which_ one comes back **green**: the live
 `checkout_sessions_intent_seq_idx` is `(payment_intent_id, seq DESC)`, so
 Postgres answers an unordered `LIMIT 1` out of that index in seq-descending
 order anyway. The behaviour was right by accident — dependent on a planner
@@ -2622,13 +2622,13 @@ Three measurements from writing it, none of them guessable from the source:
    what "The enum conversion no report can see" predicts, and this is the
    second table set to confirm it. `introspect/postgres/enums.rs` had already
    been synthesising an `AddCheck { name:
-   "payment_intents_last_payment_error_code_enum_check", kind: Enum }` out of
-   `pg_enum` for the native column — the *same name* migration 0037 then
+"payment_intents_last_payment_error_code_enum_check", kind: Enum }` out of
+   `pg_enum` for the native column — the _same name_ migration 0037 then
    created for real, which is visible in the before-report as a `[safe] CHECK
-   … exists in the live database but is not declared` line on a database where
+… exists in the live database but is not declared` line on a database where
    no such constraint existed.
 3. **A nullable enum column takes a bare `IN (...)`, not `IS NULL OR … IN
-   (...)`.** `NULL IN (…)` is NULL and a CHECK fails only on FALSE, so the
+(...)`.** `NULL IN (…)` is NULL and a CHECK fails only on FALSE, so the
    NULL case needs no spelling out — and spelling it out would deparse to
    something `reconstruct_enum` cannot read back (it matches
    `<column> = ANY (ARRAY[…])` and nothing else), turning a `CheckKind::Enum`
@@ -2724,7 +2724,7 @@ same words, so that neither list reads as a gap:
   delegate equivalent, and three of its columns (`request_hash` `bytea`,
   `response_status` `int2`, `response_body` `jsonb`) are unmapped types.
 - **`provider_requests`** — `latest_submit_attempt` orders `sent_at DESC, id
-  DESC` and pairs `status_code`/`responded_at`; both `attempt` and
+DESC` and pairs `status_code`/`responded_at`; both `attempt` and
   `status_code` are `int4`.
 
 ### Why the generated module is private, and what keeps it that way
@@ -2756,7 +2756,7 @@ clause stopped tracking after S4b, S5 and ADR-0017; the registry above is the
 list** — plus one statement on a table that has otherwise moved.
 That statement is `reconcile`'s disable pass, `UPDATE providers SET enabled =
 false WHERE code <> ALL($1) AND enabled`: it addresses rows by their
-*absence* from a list, which no generated builder expresses, and it is the
+_absence_ from a list, which no generated builder expresses, and it is the
 statement that makes "configuration is the authority" true for a rail the
 deployment dropped. Three properties of 0.12.0 decide where it
 falls, and none of them is a matter of taste:
@@ -2781,7 +2781,7 @@ falls, and none of them is a matter of taste:
   seventeen live columns are excluded from the drift comparison outright — the
   number `EXPECTED_UNMAPPABLE_COLUMNS` pins in `postgres_smoke.rs`. Since
   2026-09-06 four of those seventeen sit inside tables the schema models
-  *fully* (`events.data`, `events.fanout_attempts`,
+  _fully_ (`events.data`, `events.fanout_attempts`,
   `webhook_deliveries.attempt`, `webhook_deliveries.status_code`), which is a
   sharper version of the same point: unmeasured drift can hide inside a table
   the report otherwise compares column by column, and only that constant says
@@ -2795,7 +2795,7 @@ falls, and none of them is a matter of taste:
 
 A fourth reason used to be recorded here — that moving a read and a write
 together produces a parity test that cannot say which of the two it is
-testing. That was an argument for *sequencing*, not for staying, and it was
+testing. That was an argument for _sequencing_, not for staying, and it was
 honoured: the read landed on 2026-09-06 and the writes a change later, with
 the read's test re-seeded from an inline `INSERT` so it kept testing the read.
 See "What runs through it today" above.
@@ -2818,7 +2818,7 @@ because "it compiles" reads like more than it is. Both measured on
 - **A missing `@@allow` is invisible to every one of them.** Delete any of
   the four on `DisabledClient` and the same list stays green — including the
   three added on 2026-09-06 for the writes, re-measured then. That is true
-  even for the two whose absence *does* raise an error at runtime
+  even for the two whose absence _does_ raise an error at runtime
   (`create`, `update`): the check happens in `cratestack-sqlx` at query time,
   not at macro-expansion time, so nothing a compiler or the CLI can see is
   different.
@@ -2837,7 +2837,7 @@ one; `delete_many` opens one). `UnitOfWork::transaction` and
 `TxOutcome::Abandon` survive — `UnitOfWork::transaction` and `TxOutcome::Abandon` survive —
 CrateStack's own `transaction` combinator commits on `Ok` and rolls back on
 `Err` with no third ending, and `Abandon` is what the confirm path's
-duplicate-charge `409` is built on. The first write that *does* need to be in
+duplicate-charge `409` is built on. The first write that _does_ need to be in
 a vpay transaction is where `run_in_tx` gets exercised; nothing exercises it
 today. This is also why the root `Cargo.toml`
 pins `sqlx = "=0.9.0"` exactly rather than `"0.9"`: `run_in_tx` only accepts
@@ -2857,7 +2857,7 @@ would reach a merchant as an outage. Here a `23505` is a `409` with
 `error.code = "resource_conflict"` and `Retry::Never`, exactly as the sqlx
 path already made it —
 `a_duplicate_key_classifies_the_same_through_cratestack_as_through_sqlx`
-asserts the two agree *and* that neither matches what CrateStack would have
+asserts the two agree _and_ that neither matches what CrateStack would have
 said.
 
 Two honest limits on that mapping:
@@ -2952,7 +2952,7 @@ decided **inside** it — whether the window has elapsed, what the answer resets
 to, and which rows the sweep takes. As delivered, nothing exercised any of
 them against a database. `vpay_api::staff::rate_limit`'s unit tests cover
 `Verdict::of`'s arithmetic over an integer the statement hands back, the
-statement's own test asserts the *text* of six fragments, and every case over
+statement's own test asserts the _text_ of six fragments, and every case over
 a booted server runs inside one 300-second window. **A `CASE` that never reset
 would have passed all of them** — and its symptom in production is a staff
 member locked out of the dashboard for good by ten wrong passwords, which is
@@ -2961,11 +2961,11 @@ the durable lockout ADR-0017 refuses by name.
 Three cases in `vpay-db/tests/repositories.rs` now run it, each with a
 measured mutation:
 
-| Case | Mutation | As mutated |
-|---|---|---|
-| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended` | `attempts = attempts + 1`, dropping the reset arm | reads `5` where it demands `1` |
-| `the_rate_limit_table_grows_by_one_window_and_is_then_swept` | the sweep takes nothing | 1040 rows where it demands ≤ 60 |
-| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | — | pins that `scope` separates nothing, so a caller that stopped hashing it into the `id` would merge two budgets |
+| Case                                                                   | Mutation                                          | As mutated                                                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended`        | `attempts = attempts + 1`, dropping the reset arm | reads `5` where it demands `1`                                                                                 |
+| `the_rate_limit_table_grows_by_one_window_and_is_then_swept`           | the sweep takes nothing                           | 1040 rows where it demands ≤ 60                                                                                |
+| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | —                                                 | pins that `scope` separates nothing, so a caller that stopped hashing it into the `id` would merge two budgets |
 
 ### The bound, stated as it actually is
 
@@ -2976,10 +2976,9 @@ Measured — 1000 fresh keys inside one window leave **1000 rows**, and 40
 attempts past the boundary take the table back down.
 
 So the honest bound is **two rows per attempt for the width of one window,
-then flat**: at *r* attempts per second and a 300-second window, roughly
+then flat**: at _r_ attempts per second and a 300-second window, roughly
 `2 × r × 300` rows at steady state. It is a bound, which is what the objection
 ADR-0017 raised needed answering; it is not "the table never grows".
-
 
 **172 changes over 24 relations, unmappable 19** (from 167 / 23 / 19). The +5
 is four hand-named CHECKs and one index, and **not one column-level line** —
@@ -3032,12 +3031,12 @@ They are asserted by name in
 `the_statement_keeps_the_three_properties_that_make_it_safe`, because none of
 them is obvious from the text and each is a plausible tidy-up:
 
-| Fragment | Deleting it |
-|---|---|
-| `id <> $1` | lets the in-statement sweep name the row the `INSERT` is about, through one snapshot |
+| Fragment                 | Deleting it                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `id <> $1`               | lets the in-statement sweep name the row the `INSERT` is about, through one snapshot                                                      |
 | `FOR UPDATE SKIP LOCKED` | lets two concurrent sign-in attempts take the same row locks in different orders — a deadlock, and a `500` for somebody typing a password |
-| `LIMIT $5` | makes the first attempt after an idle period pay for every row that accumulated during it |
-| `attempts + 1` | makes the limiter count to one forever and admit everything |
+| `LIMIT $5`               | makes the first attempt after an idle period pay for every row that accumulated during it                                                 |
+| `attempts + 1`           | makes the limiter count to one forever and admit everything                                                                               |
 
 The sweep removes up to 32 elapsed rows per call against the two one attempt
 adds, which is what bounds a table an attacker fills by choosing fresh keys.

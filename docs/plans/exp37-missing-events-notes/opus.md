@@ -18,21 +18,21 @@ transition itself — the shape `vpay_db::settlement`,
 `vpay_api::v1::invoices::write_with_event` already had, and the only shape
 this repository has for an outbox write.
 
-| Transition | Event | Where it is written now |
-|---|---|---|
-| `POST /v1/payment_intents/{id}/cancel` | `payment_intent.canceled` | `vpay_api::v1::payment_intents::cancel_with_event` |
-| A rail decline at **submit** | `payment_intent.payment_failed` | `vpay_api::v1::payment_intents::persist_decline` |
-| `POST /v1/customers` | `customer.created` | `vpay_api::v1::customers::create_with_event` |
-| `POST /v1/customers/{id}`, when something changes | `customer.updated` | `vpay_api::v1::customers::update_once` |
+| Transition                                        | Event                           | Where it is written now                            |
+| ------------------------------------------------- | ------------------------------- | -------------------------------------------------- |
+| `POST /v1/payment_intents/{id}/cancel`            | `payment_intent.canceled`       | `vpay_api::v1::payment_intents::cancel_with_event` |
+| A rail decline at **submit**                      | `payment_intent.payment_failed` | `vpay_api::v1::payment_intents::persist_decline`   |
+| `POST /v1/customers`                              | `customer.created`              | `vpay_api::v1::customers::create_with_event`       |
+| `POST /v1/customers/{id}`, when something changes | `customer.updated`              | `vpay_api::v1::customers::update_once`             |
 
 ### The design decision that is not in the brief, and why it was taken
 
 Every one of the four pooled statements these replaced was **deleted**, not
 kept beside its transactional twin:
 
-* `vpay_db::PaymentIntents::cancel` — gone; `payment_intents::cancel_in_tx`
+- `vpay_db::PaymentIntents::cancel` — gone; `payment_intents::cancel_in_tx`
   is `pub(crate)` and reachable only through `TxRepositories`.
-* `vpay_db::Customers::create` and `::update` — gone; `customers::insert_in_tx`
+- `vpay_db::Customers::create` and `::update` — gone; `customers::insert_in_tx`
   and `::update_in_tx` likewise.
 
 The brief did not ask for the deletions and they are the reason the diff
@@ -40,7 +40,7 @@ touches `vpay-db`'s public trait surface at all. The argument: no gate in this
 repository objects to a `pub` method nobody happens to call, so leaving the
 pooled variant beside the transactional one keeps "write the row and tell
 nobody" exactly one call away, and the next writer has no reason to prefer the
-longer form. Deleting it makes the wrong shape *not compile*. It cost three
+longer form. Deleting it makes the wrong shape _not compile_. It cost three
 call-site rewrites in `vpay-db`'s own tests and nothing else.
 
 `persist_decline` did not need this: the charge and the intent stamp were
@@ -145,7 +145,7 @@ The **customer update** path cannot use equality, and that limit is stated in
 the test rather than glossed: `customers::update_in_tx` binds `updated_at`
 from the calling process's clock, not from `now()` (it is the same instant
 `last_used_at`'s `GREATEST` needs, and that one must be the caller's). What
-holds instead is an *ordering* — the transaction starts, Rust then reads its
+holds instead is an _ordering_ — the transaction starts, Rust then reads its
 clock — so `events.created_at <= customers.updated_at`, and an event written
 in a transaction opened after the update committed is strictly later. It
 relies on the wall clock not jumping backwards between two statements
@@ -180,24 +180,24 @@ stopped running on the caller's connection.
 
 Every one was applied to this tree, measured, and reverted.
 
-| # | Mutation | Expected to fail | Measured |
-|---|---|---|---|
-| M1 | delete the events insert from `cancel_with_event` | the cancel case | **FAIL** — `a cancel must emit exactly one event, got []` |
-| M2 | move the canceled event into a **second** transaction after the cancel commits | the cancel case | **FAIL** — the `now()` equality, `8:47:18.651176` vs `8:47:18.652493` (1.3 ms) |
-| M3 | delete the events insert from `persist_decline` | the decline case | **FAIL** — `left: [], right: ["payment_intent.payment_failed"]` |
-| M4 | move the decline event into a second transaction **that also re-runs `record_payment_error`** | the decline case | **PASS — not caught.** The re-stamp moved `updated_at` into the second transaction, so the ordering assertion held. Recorded rather than dropped: see below |
-| M4b | the same, carrying the row out of the first transaction and **not** re-stamping | the decline case | **FAIL** — `8:48:31.773123` vs `8:48:31.774844` (1.7 ms) |
-| M5 | remove `FOR UPDATE` from `customers::lock_for_update` | the concurrency case | **FAIL** — round 2, `{"right":"2"}`, the `left` key clobbered |
-| M6 | the same mutation, against the seam case | `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value` | **FAIL** — `B answered while A still held the row lock` |
-| M7 | drop `'customer.updated'` from migration `0039` | the vocabulary case and the create/update case | **FAIL** — both; `23514` naming `type_is_a_documented_event` |
-| M8 | rename the Node parity test away | `verify-sdk-parity` | **FAIL**, naming the `sdks/nodejs` column |
-| M9 | delete the `"customer.updated"` literal from `sdks/nodejs/src/types.ts` | — | `verify-sdk-parity` **passes**; `pnpm typecheck` **FAILS** (`TS2820` on the annotation in `types.test.ts`) |
-| M10 | put the shop README's `237600000400` row back to `unpaid` | the README/module cross-check | **FAIL** — `agrees with the README for mtn_momo, row for row` |
+| #   | Mutation                                                                                      | Expected to fail                                                      | Measured                                                                                                                                                    |
+| --- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | delete the events insert from `cancel_with_event`                                             | the cancel case                                                       | **FAIL** — `a cancel must emit exactly one event, got []`                                                                                                   |
+| M2  | move the canceled event into a **second** transaction after the cancel commits                | the cancel case                                                       | **FAIL** — the `now()` equality, `8:47:18.651176` vs `8:47:18.652493` (1.3 ms)                                                                              |
+| M3  | delete the events insert from `persist_decline`                                               | the decline case                                                      | **FAIL** — `left: [], right: ["payment_intent.payment_failed"]`                                                                                             |
+| M4  | move the decline event into a second transaction **that also re-runs `record_payment_error`** | the decline case                                                      | **PASS — not caught.** The re-stamp moved `updated_at` into the second transaction, so the ordering assertion held. Recorded rather than dropped: see below |
+| M4b | the same, carrying the row out of the first transaction and **not** re-stamping               | the decline case                                                      | **FAIL** — `8:48:31.773123` vs `8:48:31.774844` (1.7 ms)                                                                                                    |
+| M5  | remove `FOR UPDATE` from `customers::lock_for_update`                                         | the concurrency case                                                  | **FAIL** — round 2, `{"right":"2"}`, the `left` key clobbered                                                                                               |
+| M6  | the same mutation, against the seam case                                                      | `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value` | **FAIL** — `B answered while A still held the row lock`                                                                                                     |
+| M7  | drop `'customer.updated'` from migration `0039`                                               | the vocabulary case and the create/update case                        | **FAIL** — both; `23514` naming `type_is_a_documented_event`                                                                                                |
+| M8  | rename the Node parity test away                                                              | `verify-sdk-parity`                                                   | **FAIL**, naming the `sdks/nodejs` column                                                                                                                   |
+| M9  | delete the `"customer.updated"` literal from `sdks/nodejs/src/types.ts`                       | —                                                                     | `verify-sdk-parity` **passes**; `pnpm typecheck` **FAILS** (`TS2820` on the annotation in `types.test.ts`)                                                  |
+| M10 | put the shop README's `237600000400` row back to `unpaid`                                     | the README/module cross-check                                         | **FAIL** — `agrees with the README for mtn_momo, row for row`                                                                                               |
 
 ### M4 is the finding worth keeping
 
 The brief's decisive mutation for the decline was "move the event out of the
-transaction". The first attempt at writing that mutation *also* re-ran the
+transaction". The first attempt at writing that mutation _also_ re-ran the
 `last_payment_error` stamp inside the second transaction, which put both
 `now()` values in the same transaction again and the assertion held. The
 mutation was rewritten (M4b) to carry the committed row out of the first
@@ -215,7 +215,7 @@ describes. The abandon case at the seam is what covers the general shape.
 
 Measured, and it is **not** what happens (M8/M9). `verify_sdk_parity` checks,
 per column, that a `✅` cell names a test that exists in that SDK's sources —
-so *renaming the test* fails it, and removing a union *entry* does not,
+so _renaming the test_ fails it, and removing a union _entry_ does not,
 because the test's name is still there. What catches a missing union entry is
 the language: `pnpm -r typecheck` for TypeScript (the `const … : KnownEventType
 = "customer.updated"` annotation in `types.test.ts`), and `cargo build` for
@@ -238,17 +238,17 @@ run recorded `git rev-parse HEAD` to a file before starting and each recipe's
 exit code to a file after it, so the numbers below are read from
 `exp37-opus-gate-summary.tsv` rather than from a harness banner.
 
-| Recipe | Exit (`b1bd971`) | Wall | Exit (`bd8001e`) | Wall |
-|---|---|---|---|---|
-| `fmt-check` | 0 | 1 s | 0 | 0 s |
-| `clippy` | 0 | 0 s (warm) | 0 | 12 s |
-| `verify` | 0 | 7 s | 0 | 8 s |
-| `test-rust` | 0 | 1054 s | 0 | 997 s |
-| `test-doc` | 0 | 6 s | 0 | 5 s |
-| `verify-ignored` | 0 | 1 s | 0 | 1 s |
-| `lint-web` | 0 | 32 s | 0 | 21 s |
-| `test-web` | 0 | 11 s | 0 | 10 s |
-| `deny` | 0 | 1 s | 0 | 1 s |
+| Recipe           | Exit (`b1bd971`) | Wall       | Exit (`bd8001e`) | Wall  |
+| ---------------- | ---------------- | ---------- | ---------------- | ----- |
+| `fmt-check`      | 0                | 1 s        | 0                | 0 s   |
+| `clippy`         | 0                | 0 s (warm) | 0                | 12 s  |
+| `verify`         | 0                | 7 s        | 0                | 8 s   |
+| `test-rust`      | 0                | 1054 s     | 0                | 997 s |
+| `test-doc`       | 0                | 6 s        | 0                | 5 s   |
+| `verify-ignored` | 0                | 1 s        | 0                | 1 s   |
+| `lint-web`       | 0                | 32 s       | 0                | 21 s  |
+| `test-web`       | 0                | 11 s       | 0                | 10 s  |
+| `deny`           | 0                | 1 s        | 0                | 1 s   |
 
 `Summary [996.979s] 1614 tests run: 1614 passed, 0 skipped` on the second run,
 identical to the first. The **branch head this report describes is the amend
@@ -259,15 +259,15 @@ re-run on it and both exit 0; nothing else can see it. Saying that is
 preferable to a third full run whose only new input is the sentence recording
 the third full run.
 
-* `Summary [979.856s] 1614 tests run: 1614 passed, 0 skipped`
-* `verify-ignored: 0 ignored (expected 0), 45 test binaries (expected 45), 1614 total (minimum 1080)`
-* `test-doc`: **107 passed, 1 ignored** — a separate runner and a separate
+- `Summary [979.856s] 1614 tests run: 1614 passed, 0 skipped`
+- `verify-ignored: 0 ignored (expected 0), 45 test binaries (expected 45), 1614 total (minimum 1080)`
+- `test-doc`: **107 passed, 1 ignored** — a separate runner and a separate
   count; `cargo nextest` runs none of them.
-* `test-web`: **1245** vitest cases across nine packages, 0 skipped
+- `test-web`: **1245** vitest cases across nine packages, 0 skipped
   (`examples/shop` 102, `sdks/nodejs` 191, `frontends/apps/checkout` 507,
   `frontends/apps/dashboard` 150, `sdks/stripe-js` 146, `@vpay/ui` 74,
   `@vpay/config` 63, `@vpay/tokens` 8, `@vpay/api-client` 4).
-* `verify`'s twelve gates, each with its own number:
+- `verify`'s twelve gates, each with its own number:
   `verify-status` 1 unimplemented item; `verify-errors` 18 error types, 16
   `#[from]` variants; `verify-sdk-parity` **409 proving tests, 39 dated gaps,
   19 SDK methods across 22 rows**; `verify-links` 1002 links in 188 files;
@@ -290,7 +290,7 @@ was applied with `just ci` green, which is the point of running them.
 
 ## What was NOT done
 
-* **`just test-e2e` was not run, and it is blocked on this host by something
+- **`just test-e2e` was not run, and it is blocked on this host by something
   the repository already decided.** `compose.demo.yml` publishes the dashboard
   on a hard-coded `127.0.0.1:3000:3000` — the only one of the six published
   ports with no `VPAY_DEMO_*` variable — and the machine this ran on has the
@@ -316,7 +316,7 @@ was applied with `just ci` green, which is the point of running them.
   because a reconstruction of a recipe tests the reconstruction rather than
   the gate.
 
-  What is *not* missing as a result: the shop's own 102 vitest cases cover the
+  What is _not_ missing as a result: the shop's own 102 vitest cases cover the
   webhook handler's mapping of both new types, `examples/shop/README.md`'s
   table and the panel are cross-checked in both directions by
   `test-numbers.test.ts` (measured failing when the row was put back), and the
@@ -324,25 +324,26 @@ was applied with `just ci` green, which is the point of running them.
   delivered. What is missing is one composition step: a real browser watching
   an order reach `failed` from the submit-time number, and `cancelled` from
   the cancel button.
-* **No `customer.created`, `customer.updated` or `payment_intent.payment_failed`
+
+- **No `customer.created`, `customer.updated` or `payment_intent.payment_failed`
   from the submit path has been fanned out to a receiver in any suite.** Only
   the cancel is driven all the way to the WireMock receiver. The fan-out is
   type-agnostic — it reads `events` by `seq` and branches on nothing — so this
   is an argument rather than a measurement, and `docs/flows/webhooks.md` and
   `docs/status.md` say so in those words.
-* **No merchant endpoint outside this repository has received any of them**,
+- **No merchant endpoint outside this repository has received any of them**,
   which is the standing limit on every event type here.
-* **The `customer.updated` "one transaction" claim rests on an ordering, not
+- **The `customer.updated` "one transaction" claim rests on an ordering, not
   an equality** (see above), plus the seam's abandon case. The cancel's and
   the decline's rest on an equality.
-* **`docs/status.md`'s "Database schema / migrations (core)" row still says
+- **`docs/status.md`'s "Database schema / migrations (core)" row still says
   "This repository now has thirty-one migrations in total (`0001`–`0031`)".**
   That was already stale on `master` at 37 files and is 38 now. It was left
   alone deliberately: the sentence sits inside a two-thousand-word narrative
   cell that chains every migration's history, and rewriting the count without
   rewriting the chain would make the cell disagree with itself. Surfaced here
   rather than half-fixed.
-* **Nothing was done about `invoice.marked_uncollectible` or
+- **Nothing was done about `invoice.marked_uncollectible` or
   `invoice.payment_failed`**, the two remaining "real Stripe type, no writer"
   cases, or about the four listed-and-unwritten types
   (`payment_intent.created`, `payment_intent.processing`, both refund types).
@@ -350,13 +351,13 @@ was applied with `just ci` green, which is the point of running them.
 
 ## Maintainer decisions surfaced, not taken
 
-* **Should `DELETE /v1/customers/{id}` emit `customer.deleted`?** It does not:
+- **Should `DELETE /v1/customers/{id}` emit `customer.deleted`?** It does not:
   only the retention sweep does. The existing argument — "you asked for it" —
   is the same one `POST /v1/checkout/sessions/{id}/expire` uses, and
   `docs/flows/webhooks.md` already records that one as left to the maintainer.
   This change did not widen either, because "one transition, one event" is a
   contract merchants build dedupe logic on and widening later is cheaper than
   narrowing.
-* **Should a bodiless `POST /v1/customers/{id}` emit?** It does not, on the
+- **Should a bodiless `POST /v1/customers/{id}` emit?** It does not, on the
   ground that nothing was written. Stripe behaves the same way. If a merchant
   ever wants a "touched" signal, that is a different type, not this one.

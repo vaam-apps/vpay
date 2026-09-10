@@ -22,17 +22,17 @@ I have what I need. Here is the design.
 
 ## 0. Five things that are not what the ticket implies
 
-**S1 — Phase 6 has an undecided dependency question reserved for the maintainer.** `docs/roadmap.md:742-746`: *"Candidate, not decided (2026-09-02): `cratestack-outbox` implements exactly this shape — `OutboxClient::persist_in_tx` inside the caller's transaction, `drain` in insertion order… Whether to take the dependency or write the ~200-line outbox by hand is for whoever builds this phase."* Step 4 has already written the `persist_in_tx` half by hand (`vpay_db::events::insert_in_tx`). Writing the drain half by hand silently closes this. **Do not start until Q1 is answered.**
+**S1 — Phase 6 has an undecided dependency question reserved for the maintainer.** `docs/roadmap.md:742-746`: _"Candidate, not decided (2026-09-02): `cratestack-outbox` implements exactly this shape — `OutboxClient::persist_in_tx` inside the caller's transaction, `drain` in insertion order… Whether to take the dependency or write the ~200-line outbox by hand is for whoever builds this phase."_ Step 4 has already written the `persist_in_tx` half by hand (`vpay_db::events::insert_in_tx`). Writing the drain half by hand silently closes this. **Do not start until Q1 is answered.**
 
-**S2 — nothing renders an `Event` envelope, and `events.data` is not one.** `events.data` holds the *inner* wire object: `backends/crates/vpay-db/src/events.rs:78-80`, and `settlement.rs:132-134` ("`event_data` is the wire object as it was at settlement time (`vpay-api`'s shape — this crate does not know it)"). The SDK envelope (`sdks/rust/src/model.rs:215-235`) needs `id`, `object:"event"`, `type`, `created`, `livemode`, `data.object`. `vpay_api::model` has `PaymentIntentObject`, `ListObject`, tags — **no `EventObject`** (grep of `backends/crates/vpay-api/src/model.rs`). It must be written, and `GET /v1/events` and the delivered body must be the *same* renderer or the two surfaces disagree about what an event is.
+**S2 — nothing renders an `Event` envelope, and `events.data` is not one.** `events.data` holds the _inner_ wire object: `backends/crates/vpay-db/src/events.rs:78-80`, and `settlement.rs:132-134` ("`event_data` is the wire object as it was at settlement time (`vpay-api`'s shape — this crate does not know it)"). The SDK envelope (`sdks/rust/src/model.rs:215-235`) needs `id`, `object:"event"`, `type`, `created`, `livemode`, `data.object`. `vpay_api::model` has `PaymentIntentObject`, `ListObject`, tags — **no `EventObject`** (grep of `backends/crates/vpay-api/src/model.rs`). It must be written, and `GET /v1/events` and the delivered body must be the _same_ renderer or the two surfaces disagree about what an event is.
 
 **S3 — the livemode literal-secret guard will not see a webhook secret.** `RawProviderSecrets` "Walks the merged, **unresolved** document for `providers[].credentials`" (`backends/crates/vpay-config/src/config.rs:585-595`), and `validate_all` (`:497-505`) only iterates `provider.credentials`. A livemode config with `secrets: [whsec_literal]` boots clean today. Extending the walk to `merchant_clients[].webhooks[].secrets` is required work in block C, not a nicety.
 
-**S4 — `vpay-worker` cannot make an HTTP request or an HMAC.** `backends/crates/vpay-worker/Cargo.toml` has no `reqwest`, `hmac`, `sha2` or `hex`; `hex` is not a workspace dependency at all — it exists only at `sdks/rust/Cargo.toml:56`. Block B promotes `hex = "0.4"` into `[workspace.dependencies]` (`Cargo.toml`, beside `sha2`/`hmac`/`subtle` at `:214-216`) and adds `reqwest.workspace = true` to the worker. `subtle` is *not* needed — signing has nothing to compare.
+**S4 — `vpay-worker` cannot make an HTTP request or an HMAC.** `backends/crates/vpay-worker/Cargo.toml` has no `reqwest`, `hmac`, `sha2` or `hex`; `hex` is not a workspace dependency at all — it exists only at `sdks/rust/Cargo.toml:56`. Block B promotes `hex = "0.4"` into `[workspace.dependencies]` (`Cargo.toml`, beside `sha2`/`hmac`/`subtle` at `:214-216`) and adds `reqwest.workspace = true` to the worker. `subtle` is _not_ needed — signing has nothing to compare.
 
 **S5 — the fan-out handler has no way to see endpoints.** Step 4's handler signature takes `&ResourceConfig` (`docs/plans/2026-09-03-step4-worker.md:76`), and `ResourceConfig` (`backends/crates/vpay-api/src/v1/mod.rs:297-302`) keys merchants by **`client_id`**, not `merchant_id`, and carries no endpoints. `events.merchant_id` is the fan-out key. Adding `endpoints_by_merchant_id` to `ResourceConfig` keeps every Step 4 signature intact — but that struct also lives in the server's `AppState`, so its `Debug` must redact secrets (verify it is not `#[derive(Debug)]` before shipping).
 
-Documented and *supporting* the YAML default: `docs/flows/configuration.md:277` lists "webhook endpoints" among values *safe to mutate* in config; ADR-0008 puts anything the dashboard cannot administer into YAML. **No document anywhere proposes a `/v1/webhook_endpoints` resource** — searched `docs/`, `docs/api/README.md:174-180`, `sdks/`. The orchestrator's default stands.
+Documented and _supporting_ the YAML default: `docs/flows/configuration.md:277` lists "webhook endpoints" among values _safe to mutate_ in config; ADR-0008 puts anything the dashboard cannot administer into YAML. **No document anywhere proposes a `/v1/webhook_endpoints` resource** — searched `docs/`, `docs/api/README.md:174-180`, `sdks/`. The orchestrator's default stands.
 
 ## 1. Schema — `0022_create-webhook-deliveries.sql`
 
@@ -143,7 +143,7 @@ All under `backends/tests/integration/tests/`, real Postgres + a WireMock contai
 
 - **Signature parity, Rust:** deliver one event; pull the journal entry; feed `body` + `Vpay-Signature` to `vpay_sdk::webhooks::verify_at` with the configured secret. Must return `Ok(Event)` with the right `id`. Decisive negative: flip one byte of the recorded body and assert `SignatureMismatch`.
 - **Signature parity, Node:** the journal entry's `body`/header are written to a temp file and verified by `node -e` against the built `sdks/nodejs` verifier, asserting exit 0. **This is the honest option** — reusing the Node SDK's own fixture bytes would test the fixture, not the server. Gate it on `node` being on `PATH` and **fail, not skip**, if it is missing when `VPAY_REQUIRE_NODE=1` (CI sets it). Cypress-style skipping is how this suite would go green without proving parity.
-- **Rotation:** two secrets configured → exactly two `v1=` values in the header, and `verify_at` succeeds with *each* secret independently.
+- **Rotation:** two secrets configured → exactly two `v1=` values in the header, and `verify_at` succeeds with _each_ secret independently.
 - **Ladder:** a WireMock scenario returning `500` three times then `200`. Assert `attempt` and successive `next_attempt_at` deltas equal `delivery_delay(0..2)`, and that the delivery ends `succeeded`. **Exhausted:** drive the handler directly with attempt pre-set to 6 and assert `state='exhausted'` with no reschedule.
 - **Fan-out idempotency:** run `fan_out_events` twice over one event; assert exactly one delivery row and one job. Assert a `fanout_state='done'` event never produces a delivery.
 - **End-to-end:** the Step 4 `worker_e2e` confirm→settle path, extended — assert the WireMock receiver's journal holds one POST whose `Vpay-Event-Id` matches the `events` row.
@@ -178,11 +178,11 @@ pub async fn handle_deliver(pool: &PgPool, http: &reqwest::Client, endpoints: &E
 
 **C — config, API routes, tests, demo.** `vpay_config::oauth::WebhookEndpoint` + `MerchantClient::webhooks`; the `validate_all` extension **and** the `RawProviderSecrets` extension (S3); `EventObject` in `vpay-api/src/model.rs`; the two `V1_ROUTES` entries and `v1/events.rs`; `ResourceConfig::endpoints_by_merchant_id`; all of §7; demo step 6.
 
-**Demo receiver: a third WireMock service** in `compose.demo.yml` (`wiremock-webhook`, mounting `backends/tests/webhook-receiver/wiremock`), with `examples/merchant-demo` step 6 polling that container's `/__admin/requests` for a POST naming its intent. `examples/webhook-receiver/index.mjs` is a *documentation* example and is not a compose service; ADR-0006 does not forbid it, but wiring it in would make the demo depend on a hand-rolled verifier the SDK already supersedes.
+**Demo receiver: a third WireMock service** in `compose.demo.yml` (`wiremock-webhook`, mounting `backends/tests/webhook-receiver/wiremock`), with `examples/merchant-demo` step 6 polling that container's `/__admin/requests` for a POST naming its intent. `examples/webhook-receiver/index.mjs` is a _documentation_ example and is not a compose service; ADR-0006 does not forbid it, but wiring it in would make the demo depend on a hand-rolled verifier the SDK already supersedes.
 
 ## 9. Docs and status
 
-`docs/status.md`: row 490 (`Webhooks (signing, outbox, delivery)`) ⛔ → 🟡/✅ with the exact WireMock evidence; row 460 (`JobError`) — drop "nothing calls `decision()`" *only* if Step 4 already did, and add that delivery does **not** use it; row 475 (Poll ladder) — name `delivery_delay` as a separate ladder; row 480 — migration `0022`; the `/v1/events` ⛔ claims at `docs/api/README.md:177` and `v1/mod.rs:124-126` ("Deliberately **not** including `/v1/balance` or `/v1/events`") must both be corrected or they become lies the moment the route mounts. `docs/flows/webhooks.md` Status; `docs/flows/reconciler.md` Status (the `decision()` note); `docs/roadmap.md` Phase 6 Status and the `cratestack-outbox` paragraph. New runbook `docs/runbooks/webhook-delivery-failures.md` (reading `webhook_deliveries`, replaying an exhausted delivery, rotating a secret).
+`docs/status.md`: row 490 (`Webhooks (signing, outbox, delivery)`) ⛔ → 🟡/✅ with the exact WireMock evidence; row 460 (`JobError`) — drop "nothing calls `decision()`" _only_ if Step 4 already did, and add that delivery does **not** use it; row 475 (Poll ladder) — name `delivery_delay` as a separate ladder; row 480 — migration `0022`; the `/v1/events` ⛔ claims at `docs/api/README.md:177` and `v1/mod.rs:124-126` ("Deliberately **not** including `/v1/balance` or `/v1/events`") must both be corrected or they become lies the moment the route mounts. `docs/flows/webhooks.md` Status; `docs/flows/reconciler.md` Status (the `decision()` note); `docs/roadmap.md` Phase 6 Status and the `cratestack-outbox` paragraph. New runbook `docs/runbooks/webhook-delivery-failures.md` (reading `webhook_deliveries`, replaying an exhausted delivery, rotating a secret).
 
 Step 4's `events` claims to re-verify before trusting: that `apply_succeeded`/`apply_failed` actually write `fanout_state='pending'` rows in the settlement transaction, and that `events::pending_page` returns `seq`-ordered rows — both are Step 4 code that has not landed on master.
 
@@ -190,25 +190,26 @@ Step 4's `events` claims to re-verify before trusting: that `apply_succeeded`/`a
 
 # Decisions needed from a human
 
-1. **`cratestack-outbox`, or hand-write the drain?** *Default: hand-write it — Step 4 already hand-wrote `insert_in_tx`, and this design is ~250 lines against tables that exist.* Gained: no new dependency in the money path, and the fan-out shares the `jobs` table (so lease reaping, drain and metrics are one mechanism, not two). Lost: the maintainer explicitly reserved this at `docs/roadmap.md:742-746` and a hand-rolled outbox is code vpay now owns forever. **This is marked as a maintainer choice in the roadmap; do not let implementation decide it by default.**
+1. **`cratestack-outbox`, or hand-write the drain?** _Default: hand-write it — Step 4 already hand-wrote `insert_in_tx`, and this design is ~250 lines against tables that exist._ Gained: no new dependency in the money path, and the fan-out shares the `jobs` table (so lease reaping, drain and metrics are one mechanism, not two). Lost: the maintainer explicitly reserved this at `docs/roadmap.md:742-746` and a hand-rolled outbox is code vpay now owns forever. **This is marked as a maintainer choice in the roadmap; do not let implementation decide it by default.**
 
-2. **Endpoint identity: an operator-authored `id`, or a hash of the URL?** *Default: a required `id` string per endpoint, unique within a merchant, refused at boot.* Gained: an operator can fix a typo'd URL without orphaning the delivery history, and runbooks name something readable. Lost: one more required YAML field, and a duplicated `id` across two merchants is legal (deliberately — the unique index is `(event_id, endpoint_id)` and events are already merchant-scoped).
+2. **Endpoint identity: an operator-authored `id`, or a hash of the URL?** _Default: a required `id` string per endpoint, unique within a merchant, refused at boot._ Gained: an operator can fix a typo'd URL without orphaning the delivery history, and runbooks name something readable. Lost: one more required YAML field, and a duplicated `id` across two merchants is legal (deliberately — the unique index is `(event_id, endpoint_id)` and events are already merchant-scoped).
 
-3. **Store the signed body on the delivery row, or re-render per attempt and store only its SHA-256?** *Default: re-render, store `payload_sha256`, treat a mismatch as `Poisoned`.* Gained: the invariant that matters ("we sent exactly what we signed") holds by construction within an attempt, without duplicating every event body once per endpoint. Lost: if the renderer changes mid-flight, the delivery dead-ends as `Poisoned` instead of continuing with the original bytes; storing the body would let it continue. Storing costs a `TEXT` column of unbounded-ish size times endpoints.
+3. **Store the signed body on the delivery row, or re-render per attempt and store only its SHA-256?** _Default: re-render, store `payload_sha256`, treat a mismatch as `Poisoned`._ Gained: the invariant that matters ("we sent exactly what we signed") holds by construction within an attempt, without duplicating every event body once per endpoint. Lost: if the renderer changes mid-flight, the delivery dead-ends as `Poisoned` instead of continuing with the original bytes; storing the body would let it continue. Storing costs a `TEXT` column of unbounded-ish size times endpoints.
 
-4. **Runtime SSRF filtering (block private/link-local ranges in livemode)?** *Default: no — boot-time `validate_host` only (https + no stub markers under livemode).* Gained: reuses a tested, familiar mechanism; keeps the WireMock receiver on a private compose address, which ADR-0006 *requires* the proof to run against. Lost: a livemode operator can point an endpoint at `https://169.254.169.254/…` and use vpay as an SSRF relay. Mitigating truth: a resolve-then-connect check is TOCTOU unless reqwest gets a custom connector, so the honest options are "nothing" or "a custom connector", not "a cheap check". If the answer is "block it", that is a separate, larger piece of work and should be scoped as such.
+4. **Runtime SSRF filtering (block private/link-local ranges in livemode)?** _Default: no — boot-time `validate_host` only (https + no stub markers under livemode)._ Gained: reuses a tested, familiar mechanism; keeps the WireMock receiver on a private compose address, which ADR-0006 _requires_ the proof to run against. Lost: a livemode operator can point an endpoint at `https://169.254.169.254/…` and use vpay as an SSRF relay. Mitigating truth: a resolve-then-connect check is TOCTOU unless reqwest gets a custom connector, so the honest options are "nothing" or "a custom connector", not "a cheap check". If the answer is "block it", that is a separate, larger piece of work and should be scoped as such.
 
-5. **`GET /v1/events` in this step, and with `?type=`?** *Default: build both routes, defer `?type=`.* Gained: the merchant's documented fallback for a missed webhook exists the same day webhooks do, and the renderer is shared with the deliverer so they cannot disagree. Lost: `docs/api/README.md:177` documents `type` and will keep documenting a parameter that 400s or is ignored — which must be stated in status.md, not left implicit. Deciding "ignore unknown query params" vs "400" is itself a choice; the existing handlers ignore them.
+5. **`GET /v1/events` in this step, and with `?type=`?** _Default: build both routes, defer `?type=`._ Gained: the merchant's documented fallback for a missed webhook exists the same day webhooks do, and the renderer is shared with the deliverer so they cannot disagree. Lost: `docs/api/README.md:177` documents `type` and will keep documenting a parameter that 400s or is ignored — which must be stated in status.md, not left implicit. Deciding "ignore unknown query params" vs "400" is itself a choice; the existing handlers ignore them.
 
-6. **Node parity test: `node -e` subprocess, or drop it?** *Default: subprocess, gated on `VPAY_REQUIRE_NODE=1` in CI so a missing `node` fails rather than skips.* Gained: the only real proof that the header the server emits is accepted by the SDK a merchant actually installs — the two verifiers have subtly different parse paths and the Rust one alone cannot prove Node's. Lost: an integration test that shells out and depends on the Node build being present; without the env gate it degrades into a silent skip, which is worse than not having it.
+6. **Node parity test: `node -e` subprocess, or drop it?** _Default: subprocess, gated on `VPAY_REQUIRE_NODE=1` in CI so a missing `node` fails rather than skips._ Gained: the only real proof that the header the server emits is accepted by the SDK a merchant actually installs — the two verifiers have subtly different parse paths and the Rust one alone cannot prove Node's. Lost: an integration test that shells out and depends on the Node build being present; without the env gate it degrades into a silent skip, which is worse than not having it.
+
 ---
 
 # Outcome (2026-09-03)
 
-*Appended after the step landed. From here on `docs/status.md`,
+_Appended after the step landed. From here on `docs/status.md`,
 [`docs/flows/webhooks.md`](../flows/webhooks.md) and
 [`docs/runbooks/webhook-delivery-failures.md`](../runbooks/webhook-delivery-failures.md)
-are the record; everything above this line is history.*
+are the record; everything above this line is history._
 
 ## What landed
 
@@ -307,7 +308,7 @@ are the record; everything above this line is history.*
 7. **A second remediation (2026-09-03) closed four review findings, and the
    heaviest of them was a documentation claim rather than a code defect.**
 
-   - **The backstop cannot recover a *dead-lettered* delivery job**, and six
+   - **The backstop cannot recover a _dead-lettered_ delivery job**, and six
      places said it could (`webhooks.rs`, `jobs.rs`, migration `0023`,
      `docs/status.md`, `docs/flows/webhooks.md`, and the backstop test's own
      doc comment). `jobs::dead_letter` parks the row and keeps its
@@ -354,7 +355,7 @@ are the record; everything above this line is history.*
 - **No `?type=` filter** on `GET /v1/events` (decision 5, deferred deliberately).
   It is ignored, not refused.
 - **No replay path beyond a hand-written transaction** and no operator CLI. The
-  `scan:deliveries` backstop recovers a *deleted or lost* job within ten
+  `scan:deliveries` backstop recovers a _deleted or lost_ job within ten
   minutes; it cannot resurrect an `exhausted` delivery (not `pending`), and it
   deliberately does not resurrect one whose job was **dead-lettered** (the
   parked row still holds the `dedupe_key`, so the re-enqueue is a no-op — see

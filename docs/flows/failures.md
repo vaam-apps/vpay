@@ -4,19 +4,19 @@
 their rail's error strings into it. Merchants integrate against this list once
 and it does not grow when a rail is added.
 
-| Code | Meaning | Payer can retry? | Whose problem |
-|---|---|---|---|
-| `insufficient_funds` | Not enough balance | Yes, new intent | Payer |
-| `payer_timeout` | Never approved in time | Yes, new intent | Payer |
-| `payer_declined` | Actively rejected the prompt | Yes, new intent | Payer |
-| `invalid_payer` | Identifier not valid on this rail | No — fix the number | Payer/merchant |
-| `payer_limit_reached` | Wallet or KYC-tier limit | Later | Payer |
-| `payer_account_blocked` | Payer account not active | No | Payer |
-| `invalid_payee` | Merchant's receiving account invalid | No | Merchant config |
-| `payee_account_blocked` | Merchant's receiving account not active | No | Merchant config |
-| `provider_account_blocked` | **Your** partner account is blocked | No | **Page yourself** |
-| `provider_unavailable` | Rail down or timing out | Yes, later | You |
-| `provider_error` | Unmapped; carries the raw reason | Unknown | Investigate |
+| Code                       | Meaning                                 | Payer can retry?    | Whose problem     |
+| -------------------------- | --------------------------------------- | ------------------- | ----------------- |
+| `insufficient_funds`       | Not enough balance                      | Yes, new intent     | Payer             |
+| `payer_timeout`            | Never approved in time                  | Yes, new intent     | Payer             |
+| `payer_declined`           | Actively rejected the prompt            | Yes, new intent     | Payer             |
+| `invalid_payer`            | Identifier not valid on this rail       | No — fix the number | Payer/merchant    |
+| `payer_limit_reached`      | Wallet or KYC-tier limit                | Later               | Payer             |
+| `payer_account_blocked`    | Payer account not active                | No                  | Payer             |
+| `invalid_payee`            | Merchant's receiving account invalid    | No                  | Merchant config   |
+| `payee_account_blocked`    | Merchant's receiving account not active | No                  | Merchant config   |
+| `provider_account_blocked` | **Your** partner account is blocked     | No                  | **Page yourself** |
+| `provider_unavailable`     | Rail down or timing out                 | Yes, later          | You               |
+| `provider_error`           | Unmapped; carries the raw reason        | Unknown             | Investigate       |
 
 ## `provider_error` is an alert, not a resting place
 
@@ -64,7 +64,7 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
   generic message are public. **Since 2026-09-10 it also emits one
   `payment_intent.payment_failed`, inside that same transaction**
   ([issue #57](https://github.com/vaam-apps/vpay/issues/57)), so a merchant
-  who only listens to webhooks hears about a decline made at *submit* and not
+  who only listens to webhooks hears about a decline made at _submit_ and not
   only about one the poll ladder found. Both paths use the same type on
   purpose — see [webhooks.md](webhooks.md).
 
@@ -72,7 +72,7 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
 real response path** — an unmapped string arrives as `provider_error`
 carrying the raw reason rather than being guessed at
 ([runbooks/provider-error-rate.md](../runbooks/provider-error-rate.md)).
-**What none of this proves** is that the tables are faithful to the *rails*:
+**What none of this proves** is that the tables are faithful to the _rails_:
 every decline above came from WireMock, and neither rail's real sandbox has
 ever been called. Orange in particular documents no error vocabulary for
 `webpayment` and no sub-reasons for `FAILED`, so both land in the

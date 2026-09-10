@@ -69,21 +69,21 @@ records why rather than leaving the gap unexplained.
 
 ## Gates, recipe by recipe
 
-| recipe | result | evidence |
-|---|---|---|
-| `pnpm install` (real) | ✅ | 0 peer-dependency errors, 0 new advisories |
-| `pnpm install --frozen-lockfile` | ✅ | exits 0, "Lockfile is up to date" |
-| `just audit-web` | ✅ | "No known vulnerabilities found" on both `--prod` and the whole workspace, after 5 majors and 2 override deletions |
-| `pnpm --filter @vpay/ui test` | ✅ | 46 tests, 16 files |
-| `pnpm --filter @vpay/ui build` (`tsc --noEmit`) | ✅ | clean |
-| `pnpm --filter @vpay/ui build-storybook` | ✅ | Vite build succeeds; includes checkout's still-unmigrated stories (shared install, plan §6.8) |
-| `just lint-web` | ✅ | clean across all 15 buildable workspace packages |
-| `just test-web` | ✅ | `@vpay/checkout` 448/448 (unchanged from `docs/status.md`'s recorded figure), `@vpay-examples/shop` 96/96, `@vpay/tokens` 8/8, `@vpay/ui` 46/46, `@vpay/dashboard` 0 (`--passWithNoTests`) |
-| `just verify-npm-scope` | ✅ | |
-| `just verify-links` | ✅ | 894 links, 160 files |
-| `just verify-ui` | 🔴 (expected) | fails on `frontends/apps/checkout/src/components/screens.tsx`'s `form-control`/`label-text` — daisyUI 4 classes daisyUI 5 removed. **This is Lane B's migration, not a Lane A defect** — the gate is doing its job on a tree only one of four lanes has touched. All four of its checks were proven with a real, staged mutation (a colour utility, a `cva` call, a bare `!important`, confirmed to fail the gate and then reverted) rather than only read. |
-| `just verify` (whole list) | not run to completion | blocked on the same `verify-ui` finding above; every other gate in the list that does not depend on frontend state (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`, `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`) is untouched by this lane and was not re-run here since nothing in Rust or the schema changed |
-| `just ci` | not run | it is the whole-revamp gate (plan §7), meant for the final merged head after all four lanes land, not one lane's own report |
+| recipe                                          | result                | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install` (real)                           | ✅                    | 0 peer-dependency errors, 0 new advisories                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `pnpm install --frozen-lockfile`                | ✅                    | exits 0, "Lockfile is up to date"                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `just audit-web`                                | ✅                    | "No known vulnerabilities found" on both `--prod` and the whole workspace, after 5 majors and 2 override deletions                                                                                                                                                                                                                                                                                                                                          |
+| `pnpm --filter @vpay/ui test`                   | ✅                    | 46 tests, 16 files                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `pnpm --filter @vpay/ui build` (`tsc --noEmit`) | ✅                    | clean                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `pnpm --filter @vpay/ui build-storybook`        | ✅                    | Vite build succeeds; includes checkout's still-unmigrated stories (shared install, plan §6.8)                                                                                                                                                                                                                                                                                                                                                               |
+| `just lint-web`                                 | ✅                    | clean across all 15 buildable workspace packages                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `just test-web`                                 | ✅                    | `@vpay/checkout` 448/448 (unchanged from `docs/status.md`'s recorded figure), `@vpay-examples/shop` 96/96, `@vpay/tokens` 8/8, `@vpay/ui` 46/46, `@vpay/dashboard` 0 (`--passWithNoTests`)                                                                                                                                                                                                                                                                  |
+| `just verify-npm-scope`                         | ✅                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `just verify-links`                             | ✅                    | 894 links, 160 files                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `just verify-ui`                                | 🔴 (expected)         | fails on `frontends/apps/checkout/src/components/screens.tsx`'s `form-control`/`label-text` — daisyUI 4 classes daisyUI 5 removed. **This is Lane B's migration, not a Lane A defect** — the gate is doing its job on a tree only one of four lanes has touched. All four of its checks were proven with a real, staged mutation (a colour utility, a `cva` call, a bare `!important`, confirmed to fail the gate and then reverted) rather than only read. |
+| `just verify` (whole list)                      | not run to completion | blocked on the same `verify-ui` finding above; every other gate in the list that does not depend on frontend state (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`, `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`) is untouched by this lane and was not re-run here since nothing in Rust or the schema changed                                                                                      |
+| `just ci`                                       | not run               | it is the whole-revamp gate (plan §7), meant for the final merged head after all four lanes land, not one lane's own report                                                                                                                                                                                                                                                                                                                                 |
 
 Axe (structural, plan §7 row 5): `axe-core@4.13.0` run directly (no wrapper —
 none is pinned in plan §1) against a kitchen-sink render of every `@vpay/ui`
@@ -111,7 +111,7 @@ has built the `cypress-axe` real-browser check yet.
   new to screenshot).
 - **The `@base-ui/react/button` API question** (plan §9, "not determined")
   — read and used directly (`import { Button as BaseButton } from
-  '@base-ui/react/button'`), rather than the plan's own hand-rolled
+'@base-ui/react/button'`), rather than the plan's own hand-rolled
   `useRender`+`mergeProps` sketch. It already carries `render` composition
   and `nativeButton`, so the sketch was unnecessary; simpler code, same
   behaviour.
@@ -140,7 +140,7 @@ has built the `cypress-axe` real-browser check yet.
    uses the word "`!important`" in prose to explain the code avoids needing
    one, and `examples/checkout-browser/index.html` — explicitly out of scope
    per §4.1 — has a pre-existing, legitimate `[hidden]{display:none
-   !important}` rule. Both are now named exemptions with the reason inline
+!important}` rule. Both are now named exemptions with the reason inline
    in the `justfile` recipe.
 3. **§0.1's D2 note undersold daisyUI 5's checkbox support.** It frames
    `nativeButton` + `render={<button/>}` as merely "an escape hatch" from
@@ -160,7 +160,7 @@ has built the `cypress-axe` real-browser check yet.
    either build them itself (as its own `styling_files`, working against
    its own budget) or leave checkout's layout markup unmigrated.
 5. **D4 (§9) touches `frontends/apps/checkout/src/components/
-   checkout-view.test.tsx`'s pinned assertion, and the plan's lane split
+checkout-view.test.tsx`'s pinned assertion, and the plan's lane split
    does not say who owns that.** `frontends/packages/tokens/src/index.ts` is
    not listed under any lane's "Owns" — only `tokens/package.json` is, under
    Lane A. Taking D4 here (rather than leaving it for whichever lane

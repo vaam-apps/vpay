@@ -21,7 +21,7 @@ the recipe disagree, the recipe is right: read it, and fix this paragraph in
 the same commit. The report
 (`verify-docs`) never does — it prints doc-comment volume per crate, in-file
 comment volume per crate, the number of `#[doc = include_str!]` modules, the
-production functions of 80 lines or more, every ```` ```ignore ```` doctest
+production functions of 80 lines or more, every ` ```ignore ` doctest
 fence and every `#[allow]`/`#[expect]`, and nothing more. Read it; it is not
 a gate you can pass or fail.
 
@@ -73,7 +73,7 @@ structurally possible.
 - Every such token must appear in `docs/status.md`. `cargo xtask verify-status`
   fails the build otherwise — and it fails in both directions.
 - Tests for unbuilt behaviour are `#[ignore = "not implemented: … — see
-  docs/status.md"]`, so a green run never overstates coverage.
+docs/status.md"]`, so a green run never overstates coverage.
 - When you finish something, update `docs/status.md` in the same commit. A
   status page that lags is worse than none, because people trust it.
 
@@ -95,13 +95,13 @@ are the parts you apply on **every** change:
    `backends/apps/*` `main()` and `[dev-dependencies]`.
    ([ADR-0011](docs/adr/0011-error-modelling.md), `verify-errors`)
 2. **Adapters** — a rail is reached only through `ProviderAdapter`, and its
-   failures are *mapped* into `FailureCode`/`ProviderError`, never flattened
+   failures are _mapped_ into `FailureCode`/`ProviderError`, never flattened
    into a `String`. ([ADR-0002](docs/adr/0002-provider-port.md))
 3. **serde** — every type deriving `Serialize`/`Deserialize` under
    `backends/crates/*/src` carries `#[serde(rename_all = "snake_case")]`, or
    renames every field/variant itself, or gets a row with a reason in
    ADR-0016's exemption table. Visibility is not part of the rule. `rename_all`
-   is a statement about *our* wire — a rail's casing is the rail's.
+   is a statement about _our_ wire — a rail's casing is the rail's.
    (`verify-serde`; the table is checked in both directions, so a stale
    exemption fails too)
 4. **SOLID and DRY** — no gate, and the ADR says so. Ask what would have to
@@ -111,9 +111,9 @@ are the parts you apply on **every** change:
    `impl Trait`. Name the trait, never `PgRepositories` or a `Sql…Store`.
    (`verify-repositories`)
 6. **Docs** — an example in a doc comment is compiled (`just test-doc`); never
-   reach for ```` ```ignore ```` to make one build. Long reasoning goes in
+   reach for ` ```ignore ` to make one build. Long reasoning goes in
    `docs/reference/<crate>.md`, not in an 80-line module header; a module doc
-   that *is* a document uses `#[doc = include_str!("…md")]`. Prefer one more
+   that _is_ a document uses `#[doc = include_str!("…md")]`. Prefer one more
    `///` explaining why over one more `//` restating what.
 
 **The migration rule: existing code is migrated as it is touched; a new crate
@@ -125,11 +125,11 @@ add an exemption row to make a gate pass on code you did not have to touch.
 ## Architecture rules
 
 **Rails live behind the port.** `if provider == "mtn_momo"` outside
-`backends/crates/vpay-adapter-*` is a defect. Branch on capability *values*
+`backends/crates/vpay-adapter-*` is a defect. Branch on capability _values_
 (`flow`, `supports_refunds`), never on a provider code. ([ADR-0002](docs/adr/0002-provider-port.md))
 
 **No environment branching.** No `if (sandbox)`, no `NODE_ENV` check, no
-profile-selected bean. A profile selects a *config file*, never a *code path*.
+profile-selected bean. A profile selects a _config file_, never a _code path_.
 Sandbox and production are two deployments of the same image.
 ([ADR-0003](docs/adr/0003-yaml-configuration.md))
 
@@ -161,7 +161,7 @@ status. The authenticated status query is the only thing that moves money.
   [docs/flows/errors.md](docs/flows/errors.md)). A library crate defines closed
   `thiserror` enums for its own concerns and each one implements
   `vpay_core::error::Classify`; a layer that consumes several crates defines a
-  composite that `#[from]`s the leaves and *delegates* its classification
+  composite that `#[from]`s the leaves and _delegates_ its classification
   rather than re-deciding it; `anyhow` appears only at the boundary — in
   `backends/apps/*` `main()`, and in `[dev-dependencies]`. Status, retry
   policy, log severity and exit code are all derived from `Category`, never
@@ -170,13 +170,13 @@ status. The authenticated status query is the only thing that moves money.
   a library crate lists `anyhow` under `[dependencies]`.
 - TLS: rustls only. `openssl`, `openssl-sys` and `native-tls` are banned in
   `deny.toml`; do not add a dependency that needs them without a new ADR.
-- Doc comments on every public item, explaining *why*, not restating the name.
+- Doc comments on every public item, explaining _why_, not restating the name.
   An example in one is compiled and run — `just test-doc` (`cargo test --doc
-  --workspace`) is part of `just ci` and of CI's `rust` job, because
+--workspace`) is part of `just ci` and of CI's `rust` job, because
   `cargo nextest` runs no doctests, so until 2026-09-03 not one of them had
-  ever been compiled by CI. Do not reach for ```` ```ignore ```` or ```` ```no_run ````
+  ever been compiled by CI. Do not reach for ` ```ignore ` or ` ```no_run `
   to make an example compile: an example nothing runs is a claim nothing
-  checks. Use ```` ```text ```` if it is not Rust, and otherwise make it real.
+  checks. Use ` ```text ` if it is not Rust, and otherwise make it real.
 - The reasoning behind a piece of code goes in `docs/reference/<crate>.md`, not
   in an 80-line module header. One paragraph of what and why plus a link;
   `# Errors`, `# Panics` and `# Examples` stay in the source.
@@ -198,14 +198,14 @@ status. The authenticated status query is the only thing that moves money.
 
 ## Testing
 
-| Layer | Tool | Where |
-|---|---|---|
-| Rust unit | `cargo nextest` | alongside the code |
-| Rust doctests | `cargo test --doc` (`just test-doc`) | in `///` examples |
-| Rust integration | testcontainers | `backends/tests/integration` |
-| Adapter conformance | shared suite | `backends/tests/conformance` |
-| TS unit | vitest | alongside the code |
-| Browser e2e | Cypress against `compose.e2e.yml` | `frontends/tests/e2e` |
+| Layer               | Tool                                 | Where                        |
+| ------------------- | ------------------------------------ | ---------------------------- |
+| Rust unit           | `cargo nextest`                      | alongside the code           |
+| Rust doctests       | `cargo test --doc` (`just test-doc`) | in `///` examples            |
+| Rust integration    | testcontainers                       | `backends/tests/integration` |
+| Adapter conformance | shared suite                         | `backends/tests/conformance` |
+| TS unit             | vitest                               | alongside the code           |
+| Browser e2e         | Cypress against `compose.e2e.yml`    | `frontends/tests/e2e`        |
 
 **The conformance suite is one suite, parameterised over every adapter.** Adding
 a rail means making it pass — not writing a new suite. If you find yourself

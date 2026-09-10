@@ -56,8 +56,10 @@ export function encodePendingEnrolment(pending: PendingEnrolment): string {
  * to `null` is to send the staff member back to `/login`, which is right for
  * all of them and is one branch instead of a `try` at every call site.
  */
-export function decodePendingEnrolment(value: string | undefined): PendingEnrolment | null {
-  if (typeof value !== 'string' || value.length === 0) {
+export function decodePendingEnrolment(
+  value: string | undefined,
+): PendingEnrolment | null {
+  if (typeof value !== "string" || value.length === 0) {
     return null;
   }
   let parsed: unknown;
@@ -66,14 +68,14 @@ export function decodePendingEnrolment(value: string | undefined): PendingEnrolm
   } catch {
     return null;
   }
-  if (typeof parsed !== 'object' || parsed === null) {
+  if (typeof parsed !== "object" || parsed === null) {
     return null;
   }
   const { sealed, otpauth } = parsed as { sealed?: unknown; otpauth?: unknown };
-  if (typeof sealed !== 'string' || sealed.length === 0) {
+  if (typeof sealed !== "string" || sealed.length === 0) {
     return null;
   }
-  if (typeof otpauth !== 'string' || !otpauth.startsWith('otpauth://')) {
+  if (typeof otpauth !== "string" || !otpauth.startsWith("otpauth://")) {
     return null;
   }
   return { sealed, otpauth };
@@ -91,10 +93,10 @@ export function decodePendingEnrolment(value: string | undefined): PendingEnrolm
  * answered something `otpauth_uri`'s own test says it cannot.
  */
 export function secretFrom(otpauth: string): string | null {
-  const query = otpauth.indexOf('?');
+  const query = otpauth.indexOf("?");
   if (query < 0) {
     return null;
   }
-  const secret = new URLSearchParams(otpauth.slice(query + 1)).get('secret');
+  const secret = new URLSearchParams(otpauth.slice(query + 1)).get("secret");
   return secret === null || secret.length === 0 ? null : secret;
 }

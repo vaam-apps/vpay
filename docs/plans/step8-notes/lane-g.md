@@ -23,19 +23,19 @@ recovered".
 
 ## 2. What landed
 
-| Change | Where |
-|---|---|
-| `RecoveryAction::Wait` — the only action that touches neither the charge nor the rail | `backends/crates/vpay-worker/src/recovery.rs:139-147` |
-| The guard itself: one predicate, above the flow-shape branch, so `Answered`→`Advance`, `Redirect`→`FailDeadOrder`, `Never`→`Resubmit` and `Unanswered`→`Poll` are all gated by it | `recovery.rs:324-326` |
-| `recovery_step` gained a `charge_created_at` parameter (7th) | `recovery.rs:306-316` |
-| `window()`, one `Duration` conversion for the guard and the `NotFound` streak, so they cannot drift on saturation | `recovery.rs:364` |
-| Both callers reach it through the **one** existing shared helper, which now passes `charges.created_at` | `handlers.rs:309-327` (`recovery_action`) |
-| `Wait` at the top-of-poll block: reschedule at `poll_delay(0)`, no rail call, no write | `handlers.rs:407-417` (`act_on_recovery`) |
-| `Wait` in `recover`, joined to the `Poll` arm and documented as unreachable (same `now`, same `created_at` as the block that already returned) | `handlers.rs:601` |
+| Change                                                                                                                                                                            | Where                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `RecoveryAction::Wait` — the only action that touches neither the charge nor the rail                                                                                             | `backends/crates/vpay-worker/src/recovery.rs:139-147` |
+| The guard itself: one predicate, above the flow-shape branch, so `Answered`→`Advance`, `Redirect`→`FailDeadOrder`, `Never`→`Resubmit` and `Unanswered`→`Poll` are all gated by it | `recovery.rs:324-326`                                 |
+| `recovery_step` gained a `charge_created_at` parameter (7th)                                                                                                                      | `recovery.rs:306-316`                                 |
+| `window()`, one `Duration` conversion for the guard and the `NotFound` streak, so they cannot drift on saturation                                                                 | `recovery.rs:364`                                     |
+| Both callers reach it through the **one** existing shared helper, which now passes `charges.created_at`                                                                           | `handlers.rs:309-327` (`recovery_action`)             |
+| `Wait` at the top-of-poll block: reschedule at `poll_delay(0)`, no rail call, no write                                                                                            | `handlers.rs:407-417` (`act_on_recovery`)             |
+| `Wait` in `recover`, joined to the `Poll` arm and documented as unreachable (same `now`, same `created_at` as the block that already returned)                                    | `handlers.rs:601`                                     |
 
 **The clock is `charges.created_at`, not the first `provider_requests.sent_at`,**
 and the argument is in the `recovery_step` doc comment: the branch the guard
-most has to protect is `SubmitAttempt::Never`, where there is *no* attempt row,
+most has to protect is `SubmitAttempt::Never`, where there is _no_ attempt row,
 so a clock read from `provider_requests` is `None` exactly when it is needed.
 `created_at` is written by Postgres' `now()` inside the confirm's first
 transaction — before any network call by construction (`vpay_db::NewCharge`) —
@@ -69,7 +69,7 @@ passed, 0 skipped**, up from 60):
 **Integration** (`worker_recovery.rs`):
 
 - `a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window`
-  (`:734`) — kill point 3's fixture, *unaged*: the job is
+  (`:734`) — kill point 3's fixture, _unaged_: the job is
   `Rescheduled(poll_delay(0))`, the charge is still `submitting`, the intent
   still `requires_payment_method`, `status_queries` is 0, no event, no
   resubmit job. Then aged 90 s and re-run: advanced and settled `succeeded`.
@@ -81,14 +81,14 @@ passed, 0 skipped**, up from 60):
 - `a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_poll_job`
   (`:949`) — **the race, run.** The shipping `vpay_worker::run_loop`, one
   worker, the poll job at `run_at = now()` as `insert_charge` writes it; the
-  test waits until the loop has claimed *and settled* that job
+  test waits until the loop has claimed _and settled_ that job
   (`wait_for_the_poll_job_to_run`, `:2297` — polls `jobs.attempts`/`locked_by`
   rather than sleeping, so the ordering is guaranteed, not hoped for), and only
   then performs the confirm's own compare-and-swap,
   `TxRepositories::mark_submitted` with a redirect confirm's arguments. The
   final state must be the confirm's.
 
-  **No seam was needed**, and one thing is staged: the HTTP confirm *handler*
+  **No seam was needed**, and one thing is staged: the HTTP confirm _handler_
   is not in this suite (it has no router; `confirm_rails.rs` owns that half),
   so what runs is the compare-and-swap `persist_submitted` makes, at the instant
   the race occurs. Everything else — claim, recovery decision, reschedule — is
@@ -154,7 +154,7 @@ try".
 ## 5. Existing tests: what changed and why
 
 **No existing test was weakened, and none encoded immediate recovery of a fresh
-`submitting` charge as a property.** What they encoded is the recovery *table*,
+`submitting` charge as a property.** What they encoded is the recovery _table_,
 staged by `support::crashed_charge`, which inserts the charge milliseconds
 before the assertion — and a charge that young is now indistinguishable from a
 live confirm, which is the whole point of the guard. That is a **fixture**
@@ -187,7 +187,7 @@ problem, so the fixtures were aged:
   (which gained a `pool` parameter and serves the two lease-reaping cases).
 - **That the ageing is load-bearing rather than cosmetic is measured, not
   argued:** `a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window`
-  stages `an_answered_submit_advances_…`'s fixture *without* the ageing and
+  stages `an_answered_submit_advances_…`'s fixture _without_ the ageing and
   asserts the charge is **not** advanced.
 - `worker_e2e.rs`'s single `crashed_charge` call is untouched: it moves the
   charge to `submitted` immediately, so the recovery block never applies to it.
@@ -199,8 +199,8 @@ first poll") with:
 
 > \| Confirm vs. the worker's first poll (`write_matched_no_row`) \| ✅ \| **Found 2026-09-04 by Step 8's demo, fixed the same day (lane G).** `insert_charge` commits the `submitting` charge and its `poll_charge` job in one transaction with `run_at = now()` (`vpay-api/src/v1/payment_intents.rs:1505`), and the worker may claim that job before the confirm finishes its own `submitting → submitted` compare-and-swap (`vpay-db/src/charges.rs:265`; `IDLE_SLEEP` is 1 s, `vpay-worker/src/run_loop.rs:52`). It then applied the **crash-recovery** table to a charge whose process had not crashed, and either branch moved the charge out from under the confirm — observed four times in six walkthrough runs on a loaded machine (confirm latency 3.7 s): on a push rail the merchant was told the confirm failed and was then delivered a `payment_intent.succeeded` webhook; on a redirect rail `FailDeadOrder` killed a live order as `provider_unavailable` while the confirm held the very redirect URL its `failure_raw` said the payer had never been given. **The fix is a minimum charge age**: `recovery_step` answers `RecoveryAction::Wait` — reschedule on the ladder's first rung, write nothing, ask nothing — for any `submitting` charge younger than `RecoveryPolicy::not_found_window` (60 s, three times the 20 s rail request timeout), measured from `charges.created_at` because the `SubmitAttempt::Never` branch has no `provider_requests` row to measure from. One predicate in the pure function (`vpay-worker/src/recovery.rs:324`), reached by both callers through the `recovery_action` helper they already shared. **The cost is stated:** a charge orphaned by a genuine crash waits up to a minute for its first recovery pass; it stays live and queued throughout, and 60 s is not the 24-hour horizon. Proven by a unit table over all five branches at four ages, and by three cases in `worker_recovery.rs` — the young push charge is not advanced and the aged one is, the young redirect charge is not dead-lettered and the aged one is, and `a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_poll_job` runs the shipping `run_loop` against the confirm's own `mark_submitted` and asserts the confirm wins. Deleting the guard fails all three, the last with the merchant's own error text. What is **not** proven end-to-end: the HTTP confirm handler is not in that suite, so the racing write is `persist_submitted`'s compare-and-swap called directly; and `just demo` has not been re-run against the fix (lane A's harness, not this lane's) \|
 
-**Also change** the "Local demo" row's sentence *"Still 🟡, and for a new
-reason: `just demo` from nothing has never been observed green"* — the defect
+**Also change** the "Local demo" row's sentence _"Still 🟡, and for a new
+reason: `just demo` from nothing has never been observed green"_ — the defect
 behind those four failures is fixed, but **the demo has not been re-run here**,
 so the row must not claim a green walkthrough. Suggested addition:
 
@@ -216,7 +216,7 @@ directly beneath it, plus the paragraph:
 > **The table applies only to a charge that has been `submitting` for at least
 > `not_found_window` (60 s).** That state is not only what a crash leaves: it
 > is also the ordinary state of a confirm that is still inside its rail call,
-> because the charge and its poll job are committed *before* the network call
+> because the charge and its poll job are committed _before_ the network call
 > and the `submitting → submitted` compare-and-swap happens after it. Younger
 > than the window, nothing on disk distinguishes the two, and every row above
 > would move a charge out from under a live confirm — which is what Step 8's
@@ -233,7 +233,7 @@ window)".
 **Amend** "**The flow shape decides first.**" (line 161) to "**The charge's age
 decides first, then the flow shape.**", and append to that bullet:
 
-> The redirect branch is unconditional *within* the table but no longer
+> The redirect branch is unconditional _within_ the table but no longer
 > unconditional overall: a redirect charge younger than the window is left
 > alone, because `FailDeadOrder` is correct only for a submit response that was
 > genuinely lost and catastrophic for one that is about to arrive

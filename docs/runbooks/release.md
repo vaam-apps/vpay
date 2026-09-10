@@ -12,12 +12,12 @@ been signed.~~
 `33d6c25`), all 13 jobs succeeded, and its log records the four manifest lists
 being pushed and then signed:
 
-| Image | Index digest pushed to `:edge` and `:sha-33d6c25…` | Rekor tlog index |
-|---|---|---|
-| `ghcr.io/vaam-apps/vpay-server` | `sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` | 2717616118 |
-| `ghcr.io/vaam-apps/vpay-worker` (**retired 2026-09-07, issue #77 — this is its last build**) | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767 |
-| `ghcr.io/vaam-apps/vpay-dashboard` | `sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7` | 2717616040 |
-| `ghcr.io/vaam-apps/vpay-checkout` | `sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e` | 2717615975 |
+| Image                                                                                        | Index digest pushed to `:edge` and `:sha-33d6c25…`                        | Rekor tlog index |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------- |
+| `ghcr.io/vaam-apps/vpay-server`                                                              | `sha256:5485db5e397edd8e672737e676756ca4e9eb56a23fb117a6bc762e0532b50537` | 2717616118       |
+| `ghcr.io/vaam-apps/vpay-worker` (**retired 2026-09-07, issue #77 — this is its last build**) | `sha256:08667b03bae210802d04d59dba92820be9bccb4052f8337c74f0ea0a80d68a78` | 2717617767       |
+| `ghcr.io/vaam-apps/vpay-dashboard`                                                           | `sha256:ba6d6712dc143598c66c34300dffa3e38cdd5a21de98dfc9b43a13103b21a7a7` | 2717616040       |
+| `ghcr.io/vaam-apps/vpay-checkout`                                                            | `sha256:5214e408be6062123b51374d99988ef20e28081fa96e7bcb0eb4ac2b5b12e51e` | 2717615975       |
 
 Digests come from the `create the manifest list` step's `pushing <digest> to
 <image>:edge` lines; tlog indices from each `cosign sign (keyless, GitHub
@@ -36,7 +36,7 @@ from "absent", and the run log above is what establishes that they exist.
 **What is still true, and it is the fourth clause:** **no `v*` tag has been
 pushed.** Every run above took the `type=raw,value=edge` branch, so §2's semver
 table is still unexercised, and §3's `cosign verify` has never been run by
-anyone — see "What is unproven" (§6). This runbook's *tag-cutting* half is
+anyone — see "What is unproven" (§6). This runbook's _tag-cutting_ half is
 therefore still written from the workflow file rather than from a procedure
 anyone has followed. Read [../status.md](../status.md) before you trust a step
 here.
@@ -50,10 +50,10 @@ A `v*` tag on `master`. Pushing it runs
 on two architectures, merges each pair into a manifest list, applies the tags,
 and signs each manifest-list digest with cosign.
 
-| Trigger | Tags produced (per image) |
-|---|---|
+| Trigger                  | Tags produced (per image)      |
+| ------------------------ | ------------------------------ |
 | `git push origin v1.2.3` | `1.2.3`, `1.2`, `sha-<40 hex>` |
-| a merge to `master` | `edge`, `sha-<40 hex>` |
+| a merge to `master`      | `edge`, `sha-<40 hex>`         |
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
@@ -68,7 +68,7 @@ always and `-checkout` behind `checkout.enabled` (default false);
 ## 2. Cutting a tag
 
 Before you tag, the thing worth checking is the one CI cannot: that `master` is
-green *and* that the chart's `appVersion` and the tag agree, because
+green _and_ that the chart's `appVersion` and the tag agree, because
 `values.yaml`'s `images.*.tag` defaults to `.Chart.AppVersion`.
 
 ```bash
@@ -91,13 +91,13 @@ there is no local rehearsal for it that is not QEMU.
 
 ### If the run fails
 
-| Symptom | Almost certainly |
-|---|---|
-| `failed to load manifest for workspace member` in the backend build | a new `[workspace] members` entry that `backends/Dockerfile` does not `COPY`. Add the `COPY`; see the Dockerfile's header |
-| `denied: permission_denied` on push | `packages: write` missing, or the package's visibility/permissions in GHCR do not let this repository push |
-| the run is green but nobody can pull the image | **the first push creates the GHCR package as private.** `GITHUB_TOKEN` can create and push it; making it public is a one-time change in the package's settings, done by a human, and no workflow here does it |
-| `imagetools create` says a digest is not found | one architecture's `build` job failed; `fail-fast: false` means the other still uploaded its digest |
-| cosign asks for a key or fails on the OIDC token | `id-token: write` missing at the job or workflow level |
+| Symptom                                                             | Almost certainly                                                                                                                                                                                              |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `failed to load manifest for workspace member` in the backend build | a new `[workspace] members` entry that `backends/Dockerfile` does not `COPY`. Add the `COPY`; see the Dockerfile's header                                                                                     |
+| `denied: permission_denied` on push                                 | `packages: write` missing, or the package's visibility/permissions in GHCR do not let this repository push                                                                                                    |
+| the run is green but nobody can pull the image                      | **the first push creates the GHCR package as private.** `GITHUB_TOKEN` can create and push it; making it public is a one-time change in the package's settings, done by a human, and no workflow here does it |
+| `imagetools create` says a digest is not found                      | one architecture's `build` job failed; `fail-fast: false` means the other still uploaded its digest                                                                                                           |
+| cosign asks for a key or fails on the OIDC token                    | `id-token: write` missing at the job or workflow level                                                                                                                                                        |
 
 A failed run publishes nothing usable: the per-architecture manifests are
 pushed by digest and untagged, so no tag moves until `imagetools create`
@@ -107,7 +107,7 @@ pushed once is public history.
 ## 3. Verifying a signature
 
 Signing is keyless (step-6 decision (3)): there is no public key. The
-certificate binds the image to *this workflow file at this ref*, so
+certificate binds the image to _this workflow file at this ref_, so
 verification names the workflow, not a key.
 
 ```bash
@@ -130,10 +130,10 @@ builds from `master`. A policy that should only admit tagged releases uses
 
 Two things this verification does **not** establish:
 
-* **Only the manifest-list (index) digest is signed**, not the per-architecture
+- **Only the manifest-list (index) digest is signed**, not the per-architecture
   child manifests. Verifying a tag or the index digest is covered; pinning a
   child manifest's own digest is not.
-* Renaming or moving `release.yml` changes the certificate identity and breaks
+- Renaming or moving `release.yml` changes the certificate identity and breaks
   every command in this section. That is the cost decision (3) accepted. **So
   does renaming the GitHub organisation**, because the identity is a full URL
   including the owner: `https://github.com/<owner>/vpay/...`. The regexp
@@ -191,7 +191,7 @@ sharing a database schema and a migration set, and running two versions
 against one database is not a supported configuration. There is one image now
 and both Deployments resolve `images.server`, so that particular hazard is
 gone by construction rather than by an instruction you have to follow. It is
-*not* gone for a rolling upgrade that spans a migration, which is §5's
+_not_ gone for a rolling upgrade that spans a migration, which is §5's
 subject.
 
 ## 5. Rolling back
@@ -204,9 +204,9 @@ helm upgrade vpay deploy/helm/vpay -f your-values.yaml   # with the older digest
 
 Two rollbacks are **not** safe and are documented where they bite:
 
-* **A migration that has run is not rolled back by an older image.** There is no
+- **A migration that has run is not rolled back by an older image.** There is no
   down-migration path in this repository.
-* **Rolling back to a retired signing-key `kid` crash-loops the server with
+- **Rolling back to a retired signing-key `kid` crash-loops the server with
   exit 78** (`DbError::SigningKeyRetired`), not 69. Roll forward. See
   [../flows/deployment.md](../flows/deployment.md) §7.
 
@@ -214,11 +214,11 @@ Two rollbacks are **not** safe and are documented where they bite:
 
 Everything above. Specifically:
 
-* ~~No `release.yml` run exists. Not one image has been built by it, pushed,
+- ~~No `release.yml` run exists. Not one image has been built by it, pushed,
   merged into a manifest list or signed.~~ **Retired 2026-09-05: 13 runs
   exist, 12 green, the latest `33929374661` — see the correction at the top of
   this page for the digests and tlog indices.**
-* ~~`aarch64-unknown-linux-musl` has never been compiled — not in CI, not
+- ~~`aarch64-unknown-linux-musl` has never been compiled — not in CI, not
   locally. The arm64 half of every manifest list is unbuilt code paths in a
   workflow file.~~ **Retired 2026-09-05:** in `33929374661` all four
   `build … (arm64)` jobs ran on `ubuntu-24.04-arm` and succeeded — including
@@ -231,23 +231,23 @@ Everything above. Specifically:
   builder's own host triple (see its header), the builder resolves to
   `docker.io/library/rust:1.95.0-alpine3.22` on `linux/arm64` in that job, and
   the job logs `Compiling vpay-server v0.1.0` then ``Finished `dist` profile
-  [optimized] target(s) in 4m 32s`` — an alpine (musl) rust image on an arm64
+[optimized] target(s) in 4m 32s`` — an alpine (musl) rust image on an arm64
   host has exactly one host triple. Nobody has run `rustc -vV` in that image
   and read the triple back
   ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why the
   `+crt-static` entry is needed).
-* **No `v*` tag has ever been pushed.** Every run took the
+- **No `v*` tag has ever been pushed.** Every run took the
   `type=raw,value=edge` branch, so the semver tag path (`{{version}}`,
   `{{major}}.{{minor}}`) in §1's table has never produced a tag.
-* **No image from any run has been pulled or executed anywhere**, and GHCR
+- **No image from any run has been pulled or executed anywhere**, and GHCR
   package visibility is unmeasured (the token lacks `read:packages`;
   anonymous pull is refused). A green push is not a reachable image.
-* `cosign verify` has never been run against anything from this repository, so
+- `cosign verify` has never been run against anything from this repository, so
   the regexp in §3 is derived from the workflow's `on:` block and Fulcio's
   documented identity format, not from a certificate anyone has read.
-* `just release-dry-run` exercises the Dockerfiles and the chart. It exercises
+- `just release-dry-run` exercises the Dockerfiles and the chart. It exercises
   neither the registry, nor the attestations, nor the signature.
-* **No GitHub Actions cache-hit rate has ever been read for either
+- **No GitHub Actions cache-hit rate has ever been read for either
   Dockerfile**, before or after the 2026-09-05 cargo-chef change (§7). What
   §7 reports was measured on an authoring host with a local
   `docker-container` builder. `type=gha` behaves differently — it is a
@@ -259,20 +259,20 @@ Everything above. Specifically:
 
 Added 2026-09-05, when `backends/Dockerfile` gained
 [cargo-chef](https://github.com/LukeMathWalker/cargo-chef). Read this before
-changing that file, because the *order* of its instructions is now part of
+changing that file, because the _order_ of its instructions is now part of
 its behaviour.
 
 The Rust image is built in four stages:
 
-| Stage | What it does | When it re-runs |
-|---|---|---|
-| `chef` | `rust:1.98.0-alpine3.22` (was `1.95.0-alpine3.22` until 2026-09-05; the Alpine base deliberately did not move with the compiler), `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes |
-| `planner` | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**) | every build; it compiles nothing and takes ~0.1 s |
-| `builder` (cook) | `cargo chef cook --profile dist --target <host triple> -p vpay-server` (it named `-p vpay-worker-bin` too until issue #77) — compiles the ~317-package dependency graph into `target/` | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
-| `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out` | any source edit, or a different `VPAY_GIT_SHA` |
+| Stage             | What it does                                                                                                                                                                                                         | When it re-runs                                                                           |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `chef`            | `rust:1.98.0-alpine3.22` (was `1.95.0-alpine3.22` until 2026-09-05; the Alpine base deliberately did not move with the compiler), `apk add musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` | the base image tag or the cargo-chef pin changes                                          |
+| `planner`         | copies the workspace, runs `cargo chef prepare` → `recipe.json` (manifests + `Cargo.lock`, **no source**)                                                                                                            | every build; it compiles nothing and takes ~0.1 s                                         |
+| `builder` (cook)  | `cargo chef cook --profile dist --target <host triple> -p vpay-server` (it named `-p vpay-worker-bin` too until issue #77) — compiles the ~317-package dependency graph into `target/`                               | `recipe.json` changes (a manifest or the lockfile moved), or `.cargo/config.toml` changes |
+| `builder` (build) | `ARG VPAY_GIT_SHA`, copy the real source, `cargo build`, `cp` to `/out`                                                                                                                                              | any source edit, or a different `VPAY_GIT_SHA`                                            |
 
 Three properties this shape depends on. Two of the ways to break them are
-silent — the build stays *correct*, it just stops caching — and one is loud;
+silent — the build stays _correct_, it just stops caching — and one is loud;
 each entry says which, because they were established by mutation:
 
 1. **The cook's flags must match the build's.** Same `--profile dist`, same
@@ -282,8 +282,8 @@ each entry says which, because they were established by mutation:
    cook under different rustflags writes fingerprints the real build rejects.
    The two halves fail differently, and only one of them is visible: dropping
    `--target` kills the cook in under a second (`cannot produce proc-macro
-   for async-trait ... x86_64-unknown-linux-musl does not support these crate
-   types`), while dropping `--profile dist` **succeeds**, cooks the `dev`
+for async-trait ... x86_64-unknown-linux-musl does not support these crate
+types`), while dropping `--profile dist` **succeeds**, cooks the `dev`
    profile, and leaves the next `cargo build` to recompile everything — 305 s
    for a rebuild that costs 105 s when the flags match.
 2. **`ARG VPAY_GIT_SHA` must stay below the cook.** `release.yml` passes a
@@ -302,12 +302,12 @@ Measured on the authoring host on 2026-09-05, `linux/amd64`, on a dedicated
 `docker-container` buildx builder pruned before the cold run — see
 [../plans/exp8-notes/opus.md](../plans/exp8-notes/opus.md) for the logs:
 
-| Build | Before (one-stage) | After (cargo-chef) |
-|---|---|---|
-| cold, empty builder cache | 254 s | 238 s |
-| one comment line added to `vpay-server/src/main.rs` | 260 s | **125 s** (cook `CACHED`) |
-| `--build-arg VPAY_GIT_SHA` changed, nothing else | — | **116 s** (cook `CACHED`) |
-| the same, with rule 2 violated (`ARG` moved above the cook) | — | 251 s (cook re-ran) |
+| Build                                                       | Before (one-stage) | After (cargo-chef)        |
+| ----------------------------------------------------------- | ------------------ | ------------------------- |
+| cold, empty builder cache                                   | 254 s              | 238 s                     |
+| one comment line added to `vpay-server/src/main.rs`         | 260 s              | **125 s** (cook `CACHED`) |
+| `--build-arg VPAY_GIT_SHA` changed, nothing else            | —                  | **116 s** (cook `CACHED`) |
+| the same, with rule 2 violated (`ARG` moved above the cook) | —                  | 251 s (cook re-ran)       |
 
 **The cold row above is the one number that did not survive review, and the
 direction matters.** It was a single unpaired sample. Re-measured the same
@@ -315,10 +315,10 @@ day as two matched pairs — the same isolated builder pruned between the two
 runs of each pair, the two runs back to back, and the second pair in the
 reverse order to control for a host that several agents were building on:
 
-| Pair | one-stage | cargo-chef |
-|---|---|---|
-| 1 (one-stage first) | 193 s | 256 s |
-| 2 (cargo-chef first) | 212 s | 248 s |
+| Pair                 | one-stage | cargo-chef |
+| -------------------- | --------- | ---------- |
+| 1 (one-stage first)  | 193 s     | 256 s      |
+| 2 (cargo-chef first) | 212 s     | 248 s      |
 
 **A cold build is 36-63 s slower than it was**, which is `cargo install
 cargo-chef` (32-58 s here) plus the cook's own pass over the graph. The warm

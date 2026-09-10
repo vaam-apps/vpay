@@ -12,16 +12,16 @@ three paragraphs; the rules around it are the rest of the document.
 
 ## What it is
 
-| Field | | |
-|---|---|---|
-| `id` | `cus_…` | |
-| `object` | `"customer"` | |
-| `name` | string or `null` | |
-| `email` | string or `null` | |
-| `phone` | string or `null` | canonicalised — see below |
-| `metadata` | ≤ 50 keys, ≤ 40-char key, ≤ 500-char value | |
-| `created` | unix **seconds** | |
-| `livemode` | boolean | |
+| Field      |                                            |                           |
+| ---------- | ------------------------------------------ | ------------------------- |
+| `id`       | `cus_…`                                    |                           |
+| `object`   | `"customer"`                               |                           |
+| `name`     | string or `null`                           |                           |
+| `email`    | string or `null`                           |                           |
+| `phone`    | string or `null`                           | canonicalised — see below |
+| `metadata` | ≤ 50 keys, ≤ 40-char key, ≤ 500-char value |                           |
+| `created`  | unix **seconds**                           |                           |
+| `livemode` | boolean                                    |                           |
 
 Eight keys and no more. **At least one of `name`, `email` and `phone` is
 always present**: a customer with none of them names nobody, can never be
@@ -61,17 +61,17 @@ specific place:
 **1. Phone is the customer identity, and is stored by default.**
 There is no opt-in, no configuration flag and no `store_phone` parameter. A
 merchant who sends `phone` gets it stored and echoed back. On a mobile money
-rail the phone number *is* the payer, so an object that treated it as optional
+rail the phone number _is_ the payer, so an object that treated it as optional
 extra data would be modelling a different market.
 
 **2. Phone-only customers are allowed.**
-`at_least_one_identifier` (migration `0034`) requires *one* of the three, not
+`at_least_one_identifier` (migration `0034`) requires _one_ of the three, not
 a name and not an email. A `cus_…` whose only content is a phone number is a
 complete customer. `backends/tests/integration/tests/customers.rs`'s
 `a_customer_with_only_a_phone_number_is_created_and_reads_back_canonical` is
 the proof at the wire, and `postgres_smoke.rs`'s
 `a_customer_with_no_name_email_or_phone_is_refused_by_the_database` proves
-both halves at the database — the refusal *and* that a phone-only insert is
+both halves at the database — the refusal _and_ that a phone-only insert is
 accepted, which is the direction a "require all three" constraint would break
 silently.
 
@@ -84,7 +84,7 @@ job below.
 `237600000200` — twelve digits, no `+` — whatever the merchant typed.
 `+237 6 00 00 02 00`, `237600000200` and `600000200` all store and read back
 as the same string, through
-`vpay_api::v1::account_holders::canonical_msisdn`, which is the *same*
+`vpay_api::v1::account_holders::canonical_msisdn`, which is the _same_
 function that canonicalises an account-holder lookup.
 
 That is a wire contract rather than an implementation detail, and it is the
@@ -98,7 +98,7 @@ market rule refuses offline a number a later server accepts.
 ### …but the phone number is **not** a key, and does not deduplicate
 
 "Phone is the customer identity" (decision 1) is a statement about what a
-`cus_…` *means*, not about uniqueness, and the difference is worth spelling
+`cus_…` _means_, not about uniqueness, and the difference is worth spelling
 out because the natural reading is the wrong one. Two `POST /v1/customers`
 with the same phone number, under the same merchant, create **two customers**
 with two ids. vpay does not look for an existing row and does not answer with
@@ -113,12 +113,12 @@ the only party that can — vpay has no view of which of two rows is the "real"
 payer.
 
 What canonicalisation buys, then, is narrower than deduplication and is still
-worth having: `+237 6 00 00 02 00` and `600000200` sent as *one* customer's
+worth having: `+237 6 00 00 02 00` and `600000200` sent as _one_ customer's
 phone across a create and a later update do not leave two spellings in the
 column, and a merchant comparing a customer's `phone` against a charge's payer
 reference is comparing the same string. It does not stop a merchant creating
 the same payer twice. The `Idempotency-Key` on `POST /v1/customers` is what
-stops a *retry* doing so
+stops a _retry_ doing so
 (`a_replayed_create_answers_the_stored_customer_and_a_reused_key_is_refused`);
 two deliberate creates are two customers.
 
@@ -157,10 +157,10 @@ sweep.
 
 **This is a trade, and it is stated rather than implied: "delete this
 customer" is therefore not a complete erasure of the payer.** The payment
-record survives, with the payer's identifiers *on the intent's own history*
+record survives, with the payer's identifiers _on the intent's own history_
 rather than on the customer. What a merchant can do instead is clear `name`,
 `email` and `phone` with an update — which is why an update can clear a field
-at all, and why clearing the *last* one is refused rather than silently
+at all, and why clearing the _last_ one is refused rather than silently
 leaving a nameless row.
 
 `ON DELETE SET NULL` was the alternative and is worse: it would let the delete
@@ -169,14 +169,14 @@ is the record a dispute is settled with.
 
 ### What is logged, and by whom
 
-| | redacts | why |
-|---|---|---|
-| `vpay_db::CustomerRow`'s `Debug` | `name`, `email`, `phone` (lengths only) | vpay's logs are not the merchant's. This struct reaches `tracing` fields, `anyhow` chains and every failing assertion. |
-| `vpay_sdk::Customer`'s `Debug` | nothing (derived) | the merchant collected this data, already holds it, and is responsible for it. Redacting it would hide their own data from them and do nothing about the copy in their database. |
-| `@vaam-apps/vpay-sdk`'s `Customer` | nothing | same. |
+|                                    | redacts                                 | why                                                                                                                                                                              |
+| ---------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vpay_db::CustomerRow`'s `Debug`   | `name`, `email`, `phone` (lengths only) | vpay's logs are not the merchant's. This struct reaches `tracing` fields, `anyhow` chains and every failing assertion.                                                           |
+| `vpay_sdk::Customer`'s `Debug`     | nothing (derived)                       | the merchant collected this data, already holds it, and is responsible for it. Redacting it would hide their own data from them and do nothing about the copy in their database. |
+| `@vaam-apps/vpay-sdk`'s `Customer` | nothing                                 | same.                                                                                                                                                                            |
 
 The asymmetry is deliberate and is the opposite of `CheckoutSession`'s, where
-both SDKs *do* redact: that object carries a **credential**, and printing one
+both SDKs _do_ redact: that object carries a **credential**, and printing one
 is a compromise the merchant who logged it cannot undo.
 
 ### The hosted page's local memory is not this
@@ -197,13 +197,13 @@ itself hourly.
 
 Each pass deletes every customer that is **both**:
 
-* idle for more than `CUSTOMER_IDLE_AFTER` (365 days), and
-* referenced by no payment intent and no checkout session.
+- idle for more than `CUSTOMER_IDLE_AFTER` (365 days), and
+- referenced by no payment intent and no checkout session.
 
 "Idle" is measured by `customers.last_used_at`, and **"used" means**: created,
 updated, or named by a payment intent, a checkout session or an invoice. Every one of
 those paths calls `vpay_db::Customers::touch_last_used`. A path that is
-*missing* does not fail — it makes a live customer look idle, and the sweep
+_missing_ does not fail — it makes a live customer look idle, and the sweep
 deletes it twelve months later with nothing in any log saying anything unusual
 happened. That is why the confirm path stamps as well as the create path, and
 why `a_confirm_stamps_the_customers_clock_and_keeps_it_out_of_the_sweep`
@@ -223,7 +223,7 @@ build one, because the row that would prove it is gone.
 ### Why it is its own job kind
 
 It runs on `sweep_expired`'s schedule and its healthy answer is zero too,
-which is the argument that put checkout-session expiry *inside* that job. What
+which is the argument that put checkout-session expiry _inside_ that job. What
 separates this one is what a failure means: `sweep_expired`'s three statements
 are bounded deletes of vpay's own bookkeeping, and this one erases a
 merchant's personal-data records and tells them about it. Sharing a job would
@@ -246,12 +246,12 @@ they configured, and after the delete there is nothing else to read.
 
 ## The API
 
-| Method | Path | |
-|---|---|---|
-| `POST` | `/v1/customers` | `name`, `email`, `phone`, `metadata[…]` |
-| `GET` | `/v1/customers/{id}` | |
-| `POST` | `/v1/customers/{id}` | the update — Stripe has no `PUT`/`PATCH` |
-| `GET` | `/v1/customers` | `limit`, `starting_after`, `ending_before` |
+| Method   | Path                 |                                                    |
+| -------- | -------------------- | -------------------------------------------------- |
+| `POST`   | `/v1/customers`      | `name`, `email`, `phone`, `metadata[…]`            |
+| `GET`    | `/v1/customers/{id}` |                                                    |
+| `POST`   | `/v1/customers/{id}` | the update — Stripe has no `PUT`/`PATCH`           |
+| `GET`    | `/v1/customers`      | `limit`, `starting_after`, `ending_before`         |
 | `DELETE` | `/v1/customers/{id}` | `{"id": …, "object": "customer", "deleted": true}` |
 
 Every write carries an `Idempotency-Key`, `DELETE` included — and that verb is
@@ -273,7 +273,7 @@ three is a one-word edit that compiles.
 
 `metadata` has two states rather than three, and that is also the contract: it
 is **merged key-wise**, and a key sent empty is removed. The merge bounds the
-*result* at fifty keys, not the request — otherwise a merchant could add one
+_result_ at fifty keys, not the request — otherwise a merchant could add one
 key fifty times.
 
 Clearing the **last** identifier is refused with a `400` naming all three
@@ -301,7 +301,7 @@ from Step 5b until migration `0034` gave it somewhere to point
 why both SDKs model it as optional.
 
 A session inherits its intent's customer when the request omits one. A session
-whose `customer` *disagrees* with its intent's is refused: a session and the
+whose `customer` _disagrees_ with its intent's is refused: a session and the
 intent it drives naming two different payers is a contradiction, not a
 preference between two answers, and the merchant is the only one who knows
 which they meant.
@@ -320,21 +320,21 @@ the contradiction check left the whole thirty-one-case
 `CreateCheckoutSessionParams` has no such field in either language and neither
 `CheckoutSession` type carries the key the server returns, so this paragraph
 describes the HTTP API and not what a merchant using `@vaam-apps/vpay-sdk` or
-`vpay-sdk` can reach. The intent's `customer` *is* in both. Dated ⛔/⛔ rows in
+`vpay-sdk` can reach. The intent's `customer` _is_ in both. Dated ⛔/⛔ rows in
 [../sdks/parity.md](../sdks/parity.md), owned by the SDK maintainers.
 
 ---
 
 ## Where it lives
 
-| | |
-|---|---|
-| Table | `backends/migrations/0034_create-customers.sql` |
-| Model | `schemas/vpay.cstack`, `model Customer` |
-| Repository | `backends/crates/vpay-db/src/customers.rs` |
-| API | `backends/crates/vpay-api/src/v1/customers.rs` |
-| Sweep | `backends/crates/vpay-worker/src/handlers.rs`, `sweep_idle_customers` |
-| SDKs | `sdks/rust/src/resources.rs`, `sdks/nodejs/src/resources/customers.ts` |
+|            |                                                                        |
+| ---------- | ---------------------------------------------------------------------- |
+| Table      | `backends/migrations/0034_create-customers.sql`                        |
+| Model      | `schemas/vpay.cstack`, `model Customer`                                |
+| Repository | `backends/crates/vpay-db/src/customers.rs`                             |
+| API        | `backends/crates/vpay-api/src/v1/customers.rs`                         |
+| Sweep      | `backends/crates/vpay-worker/src/handlers.rs`, `sweep_idle_customers`  |
+| SDKs       | `sdks/rust/src/resources.rs`, `sdks/nodejs/src/resources/customers.ts` |
 
 `customers` is the first vpay table **born** with a `schemas/vpay.cstack`
 model rather than acquiring one afterwards, and that is what lets every column
@@ -353,12 +353,12 @@ full.
 Three of this resource's four writes emit, and each writes its `events` row in
 the transaction of the write it describes.
 
-| Write | Event | Where |
-|---|---|---|
-| `POST /v1/customers` | `customer.created` | `vpay_api::v1::customers::create_with_event` |
-| `POST /v1/customers/{id}`, when something changes | `customer.updated` | `vpay_api::v1::customers::update_once` |
-| `POST /v1/customers/{id}` with no body | — nothing | Stripe's no-op; nothing is written, so there is nothing to report |
-| `DELETE /v1/customers/{id}` and the retention sweep | `customer.deleted` | `vpay_db::customers::delete_idle` (2026-09-06) |
+| Write                                               | Event              | Where                                                             |
+| --------------------------------------------------- | ------------------ | ----------------------------------------------------------------- |
+| `POST /v1/customers`                                | `customer.created` | `vpay_api::v1::customers::create_with_event`                      |
+| `POST /v1/customers/{id}`, when something changes   | `customer.updated` | `vpay_api::v1::customers::update_once`                            |
+| `POST /v1/customers/{id}` with no body              | — nothing          | Stripe's no-op; nothing is written, so there is nothing to report |
+| `DELETE /v1/customers/{id}` and the retention sweep | `customer.deleted` | `vpay_db::customers::delete_idle` (2026-09-06)                    |
 
 `customer.created` and `customer.updated` were **not** in
 `type_is_a_documented_event` until migration `0039`, and this document's
@@ -452,7 +452,7 @@ creating an intent or a session does, so a merchant who bills a payer monthly
 never has that payer swept.
 
 Without the third clause nothing would have broken loudly: the foreign key
-would still refuse the delete, and the sweep would simply *offer* a customer it
+would still refuse the delete, and the sweep would simply _offer_ a customer it
 can never remove — minting an `evt_…` and building a `customer.deleted` object
 for a payer whose record is not going anywhere, once an hour, forever.
 `an_invoiced_customer_is_never_offered_to_the_sweep` is the test, and deleting

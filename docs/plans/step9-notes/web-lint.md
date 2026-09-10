@@ -42,14 +42,14 @@ package's `eslint.config.js` is a three-line call into it.
 
 **Versions pinned exactly** (in `@vpay/config`; `eslint` also as a peer):
 
-| package | version |
-|---|---|
-| `eslint` | `9.39.5` |
-| `@eslint/js` | `9.39.5` |
-| `typescript-eslint` | `8.69.0` |
-| `eslint-plugin-react-hooks` | `7.1.1` |
-| `@next/eslint-plugin-next` | `16.3.4` |
-| `globals` | `17.12.0` |
+| package                     | version   |
+| --------------------------- | --------- |
+| `eslint`                    | `9.39.5`  |
+| `@eslint/js`                | `9.39.5`  |
+| `typescript-eslint`         | `8.69.0`  |
+| `eslint-plugin-react-hooks` | `7.1.1`   |
+| `@next/eslint-plugin-next`  | `16.3.4`  |
+| `globals`                   | `17.12.0` |
 
 **ESLint 9, not 10, and that is a deliberate refusal.** 10.10.0 is the current
 stable and every one of the four plugins accepts it (`typescript-eslint@8.69.0`
@@ -63,7 +63,7 @@ Node baseline as a side effect of a lint pass. 9.39.5's engines are
 
 > **Retracted later the same day (2026-09-05).** This paragraph is wrong and
 > CI proved it: ESLint
-> 9.39.5's *own* `engines` are permissive, but its dependency tree is not —
+> 9.39.5's _own_ `engines` are permissive, but its dependency tree is not —
 > `eslint-visitor-keys@5.0.1` declares `^20.19.0 || ^22.13.0 || >=24`, so
 > pinning 9 moved the Node baseline just as pinning 10 would have. It is kept
 > above rather than edited away, because the argument as written is what the
@@ -104,16 +104,16 @@ exits **1**. No finding of any severity is reported on the tree as it stands.
 
 **Files actually linted, per package** (`eslint . --format json | length`):
 
-| package | files | | package | files |
-|---|---:|---|---|---:|
-| `frontends/apps/checkout` | 58 | | `sdks/nodejs` | 30 |
-| `examples/shop` | 48 | | `sdks/stripe-js` | 17 |
-| `frontends/packages/ui` | 13 | | `frontends/tests/e2e` | 11 |
-| `sdks/stripe-compat` | 10 | | `frontends/apps/dashboard` | 6 |
-| `frontends/packages/tokens` | 4 | | `frontends/packages/api-client` | 4 |
-| `examples/checkout-browser` | 4 | | `frontends/packages/config` | 3 |
-| `examples/merchant-node` | 2 | | `examples/merchant-stripe-node` | 2 |
-| `examples/webhook-receiver` | 2 | | **total** | **214** |
+| package                     | files |     | package                         |   files |
+| --------------------------- | ----: | --- | ------------------------------- | ------: |
+| `frontends/apps/checkout`   |    58 |     | `sdks/nodejs`                   |      30 |
+| `examples/shop`             |    48 |     | `sdks/stripe-js`                |      17 |
+| `frontends/packages/ui`     |    13 |     | `frontends/tests/e2e`           |      11 |
+| `sdks/stripe-compat`        |    10 |     | `frontends/apps/dashboard`      |       6 |
+| `frontends/packages/tokens` |     4 |     | `frontends/packages/api-client` |       4 |
+| `examples/checkout-browser` |     4 |     | `frontends/packages/config`     |       3 |
+| `examples/merchant-node`    |     2 |     | `examples/merchant-stripe-node` |       2 |
+| `examples/webhook-receiver` |     2 |     | **total**                       | **214** |
 
 **`just lint-web`** is now `build-sdk-node`, `pnpm -r typecheck`, `pnpm -r lint`.
 CI's `web` job keeps its name and now runs `just lint-web` rather than a copy
@@ -181,13 +181,13 @@ Counted after the workspace is built as the gate builds it.
 
 No blanket disable file, no `.eslintignore`, no rule removed.
 
-| n | rule | where |
-|---:|---|---|
-| 12 | `@typescript-eslint/require-await` | `async` demanded by a contract with nothing to await: 7 `MemoryShopStore` methods implementing `ShopStore` (whose `PrismaShopStore` sibling does await), `api-client`'s `listPayments` (a `NotImplementedError` stub), `stripe-js`'s `loadStripe` (async purely for `@stripe/stripe-js` source compatibility — its own doc comment says so), `stripe-compat`'s bad-credential `authenticator` (stripe-node's `Authenticator` type is promise-returning), and two `fetch` stand-ins in tests |
-| 6 | `react-hooks/set-state-in-effect` | `checkout-client.tsx` ×2, `return-client.tsx` ×2, shop's `cart-table.tsx`, `checkout-form.tsx` |
-| 1 | `react-hooks/refs` | shop's `order-poller.tsx` |
-| 1 | `no-console` | shop's `/api/vpay/webhook` route — one deliberate `console.info` of an event id and type, in a demo merchant with no logger |
-| 1 | `@typescript-eslint/no-base-to-string` | `shop-embedded.cy.ts` — `.should('have.attr', 'src')` yields the attribute string at runtime; Cypress's types leave the subject typed as the element |
+|   n | rule                                   | where                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --: | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|  12 | `@typescript-eslint/require-await`     | `async` demanded by a contract with nothing to await: 7 `MemoryShopStore` methods implementing `ShopStore` (whose `PrismaShopStore` sibling does await), `api-client`'s `listPayments` (a `NotImplementedError` stub), `stripe-js`'s `loadStripe` (async purely for `@stripe/stripe-js` source compatibility — its own doc comment says so), `stripe-compat`'s bad-credential `authenticator` (stripe-node's `Authenticator` type is promise-returning), and two `fetch` stand-ins in tests |
+|   6 | `react-hooks/set-state-in-effect`      | `checkout-client.tsx` ×2, `return-client.tsx` ×2, shop's `cart-table.tsx`, `checkout-form.tsx`                                                                                                                                                                                                                                                                                                                                                                                              |
+|   1 | `react-hooks/refs`                     | shop's `order-poller.tsx`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+|   1 | `no-console`                           | shop's `/api/vpay/webhook` route — one deliberate `console.info` of an event id and type, in a demo merchant with no logger                                                                                                                                                                                                                                                                                                                                                                 |
+|   1 | `@typescript-eslint/no-base-to-string` | `shop-embedded.cy.ts` — `.should('have.attr', 'src')` yields the attribute string at runtime; Cypress's types leave the subject typed as the element                                                                                                                                                                                                                                                                                                                                        |
 
 **The 7 react-hooks suppressions are real findings I did not fix, and the
 comments in the source say so in those words.** `eslint-plugin-react-hooks` v7
@@ -234,14 +234,14 @@ CLAUDE.md's failure mode for this task is a lint config that reports nothing.
 Each family was given a deliberate violation and each caught it; every file
 restored from the index afterwards, tree clean.
 
-| family | planted in | reported |
-|---|---|---|
-| `@eslint/js` recommended | `examples/webhook-receiver/index.mjs` | `Duplicate key 'a'` — `no-dupe-keys` |
-| typescript-eslint **type-aware** | `sdks/nodejs/src/version.ts` | `Promises must be awaited …` — `@typescript-eslint/no-floating-promises` |
-| react-hooks | `frontends/packages/ui/src/cn.ts` | `React Hook "useState" is called in function "notAHook" …` — `react-hooks/rules-of-hooks` |
-| `@next/next` | `frontends/apps/dashboard/app/page.tsx` | `Using <img> could result in slower LCP …` — `@next/next/no-img-element` |
-| `no-console` | a Next app, an SDK, the payer page `checkout.js` | `Unexpected console statement` |
-| `no-restricted-imports` | the shop and the checkout app, `@/` and `../` forms | the AGENTS.md message |
+| family                           | planted in                                          | reported                                                                                  |
+| -------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `@eslint/js` recommended         | `examples/webhook-receiver/index.mjs`               | `Duplicate key 'a'` — `no-dupe-keys`                                                      |
+| typescript-eslint **type-aware** | `sdks/nodejs/src/version.ts`                        | `Promises must be awaited …` — `@typescript-eslint/no-floating-promises`                  |
+| react-hooks                      | `frontends/packages/ui/src/cn.ts`                   | `React Hook "useState" is called in function "notAHook" …` — `react-hooks/rules-of-hooks` |
+| `@next/next`                     | `frontends/apps/dashboard/app/page.tsx`             | `Using <img> could result in slower LCP …` — `@next/next/no-img-element`                  |
+| `no-console`                     | a Next app, an SDK, the payer page `checkout.js`    | `Unexpected console statement`                                                            |
+| `no-restricted-imports`          | the shop and the checkout app, `@/` and `../` forms | the AGENTS.md message                                                                     |
 
 The `no-floating-promises` case is the one that matters most: it is a rule
 that cannot fire without a real type checker, so it is the evidence that
@@ -259,22 +259,22 @@ page, not exempt) exits 1.
 All on the authoring machine, 2026-09-05, `CYPRESS_INSTALL_BINARY=0`, from a
 `rm -rf node_modules sdks/*/dist` + `pnpm install --frozen-lockfile`.
 
-| gate | exit | what it reported |
-|---|---:|---|
-| `pnpm install --frozen-lockfile` | 0 | lockfile up to date; committed |
-| `pnpm -r lint` | **0** | 15 of 15 `Done`, **from a tree with no `dist/` at all** — the lint scripts build what they need |
-| `just lint-web` | 0 | `build-sdk-node` → typecheck → lint |
-| `pnpm -r typecheck` | 0 | 11 projects |
-| `just test-web` | 0 | **660 passed, 0 skipped, 0 todo** — checkout 302, sdk 172, stripe-js 119, shop 57, api-client 4, tokens 3, ui 3 (dashboard `--passWithNoTests`). Test-case counts in the two suites this pass edited are unchanged from `HEAD` (`client.test.ts` 78, `stripe-auth.test.ts` 21, both before and after) |
-| `just audit-web` | 0 | `No known vulnerabilities found` on both runs; the 79 packages added introduce no advisory. Not a registry-unreachable result — both attempts answered on attempt 1 of 4 |
-| `just verify` | 0 | no-mocks ok; **verify-status ok, both directions** — 1 unimplemented item, declared and still in shipping code; verify-errors ok (15 types); verify-sdk-parity ok (342 proving tests, 26 dated gaps) |
-| `actionlint .github/workflows/ci.yml` | 0 | clean |
-| `just fmt-check` | 0 | (as part of `just ci`) |
-| `just clippy` | 0 | `--workspace --all-targets -D warnings` |
-| `just test-doc` | 0 | workspace doctests |
-| `just verify-ignored` | 0 | `0 ignored (expected 0), 42 test binaries (expected 42), 1159 total` |
-| `just deny` | 0 | `advisories ok, bans ok, licenses ok, sources ok` |
-| `just test-rust` | **100 — NOT PASSED** | see below |
+| gate                                  |                 exit | what it reported                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | -------------------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`      |                    0 | lockfile up to date; committed                                                                                                                                                                                                                                                                        |
+| `pnpm -r lint`                        |                **0** | 15 of 15 `Done`, **from a tree with no `dist/` at all** — the lint scripts build what they need                                                                                                                                                                                                       |
+| `just lint-web`                       |                    0 | `build-sdk-node` → typecheck → lint                                                                                                                                                                                                                                                                   |
+| `pnpm -r typecheck`                   |                    0 | 11 projects                                                                                                                                                                                                                                                                                           |
+| `just test-web`                       |                    0 | **660 passed, 0 skipped, 0 todo** — checkout 302, sdk 172, stripe-js 119, shop 57, api-client 4, tokens 3, ui 3 (dashboard `--passWithNoTests`). Test-case counts in the two suites this pass edited are unchanged from `HEAD` (`client.test.ts` 78, `stripe-auth.test.ts` 21, both before and after) |
+| `just audit-web`                      |                    0 | `No known vulnerabilities found` on both runs; the 79 packages added introduce no advisory. Not a registry-unreachable result — both attempts answered on attempt 1 of 4                                                                                                                              |
+| `just verify`                         |                    0 | no-mocks ok; **verify-status ok, both directions** — 1 unimplemented item, declared and still in shipping code; verify-errors ok (15 types); verify-sdk-parity ok (342 proving tests, 26 dated gaps)                                                                                                  |
+| `actionlint .github/workflows/ci.yml` |                    0 | clean                                                                                                                                                                                                                                                                                                 |
+| `just fmt-check`                      |                    0 | (as part of `just ci`)                                                                                                                                                                                                                                                                                |
+| `just clippy`                         |                    0 | `--workspace --all-targets -D warnings`                                                                                                                                                                                                                                                               |
+| `just test-doc`                       |                    0 | workspace doctests                                                                                                                                                                                                                                                                                    |
+| `just verify-ignored`                 |                    0 | `0 ignored (expected 0), 42 test binaries (expected 42), 1159 total`                                                                                                                                                                                                                                  |
+| `just deny`                           |                    0 | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                                                                                                                                     |
+| `just test-rust`                      | **100 — NOT PASSED** | see below                                                                                                                                                                                                                                                                                             |
 
 **`just test-rust` did not complete, and this pass cannot claim it.** It failed
 on `vpay-db::postgres an_abandoned_transaction_survives_a_rollback_it_cannot_send`
@@ -394,7 +394,7 @@ reasoned about the wrong thing. It checked the `engines` field of `eslint` and
 which `22.11.0` satisfies — and concluded that staying on 9 kept the Node
 baseline where it was. It did not check the **dependency tree**.
 `eslint@9.39.5` depends on `eslint-visitor-keys@5.0.1`, which declares
-`^20.19.0 || ^22.13.0 || >=24`, the *same* floor ESLint 10 declares. Under
+`^20.19.0 || ^22.13.0 || >=24`, the _same_ floor ESLint 10 declares. Under
 `engine-strict=true` pnpm enforces the engines of every package it installs,
 not only the ones named in `package.json`. The refusal therefore bought
 nothing: the pass moved the Node baseline as a side effect of a lint pass
@@ -414,12 +414,12 @@ with.
 
 - **`.nvmrc`: `22.11.0` → `22.23.2`** — the current Node 22 LTS release
   (`curl -s https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts and
-  (.version|startswith("v22")))][0].version'` on 2026-09-05).
+(.version|startswith("v22")))][0].version'` on 2026-09-05).
 - **`.npmrc`'s `engine-strict=true` is kept.** It is the reason this was a
   loud failure at install rather than a mystery at runtime.
 - **Root `package.json` `engines.node`: `>=22.11.0` → `>=22.13.0`.** So the
   floor is stated where the repository states its own toolchain, and a stale
-  Node fails naming *this repository* instead of a transitive package the
+  Node fails naming _this repository_ instead of a transitive package the
   reader has never heard of. `22.13.0` and not `22.23.2`, because `22.13.0` is
   the actual floor the dependency tree imposes; `.nvmrc` says which release to
   use, `engines` says what will work.
@@ -442,10 +442,10 @@ Node installed with `nvm`; `pnpm@9.15.0` from `corepack`, as
 `packageManager` pins it. Run on the rebased tree with every change above
 applied.
 
-| Node | command | exit | what it printed |
-|---|---|---|---|
-| `v22.23.2` | `pnpm install --frozen-lockfile` | **0** | `Done in 9s`; `pnpm-lock.yaml` unmodified afterwards (`git status --short` empty) |
-| `v22.11.0` | `pnpm install --frozen-lockfile` | **1** | `ERR_PNPM_UNSUPPORTED_ENGINE … incompatible with "/…/exp4-opus". Expected version: >=22.13.0. Got: v22.11.0` |
+| Node                                                    | command                          | exit  | what it printed                                                                                                                                  |
+| ------------------------------------------------------- | -------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `v22.23.2`                                              | `pnpm install --frozen-lockfile` | **0** | `Done in 9s`; `pnpm-lock.yaml` unmodified afterwards (`git status --short` empty)                                                                |
+| `v22.11.0`                                              | `pnpm install --frozen-lockfile` | **1** | `ERR_PNPM_UNSUPPORTED_ENGINE … incompatible with "/…/exp4-opus". Expected version: >=22.13.0. Got: v22.11.0`                                     |
 | `v22.11.0`, root `engines.node` reverted to `>=22.11.0` | `pnpm install --frozen-lockfile` | **1** | `ERR_PNPM_UNSUPPORTED_ENGINE … incompatible with "eslint-visitor-keys@5.0.1". Expected version: ^20.19.0 \|\| ^22.13.0 \|\| >=24. Got: v22.11.0` |
 
 The third row is the one that matters for honesty: it shows the raised root
@@ -471,12 +471,12 @@ Run `33935680386` on `9cf3df0`, 2026-09-05 — **all six jobs green**. That is
 the same tree as the commit this file ships in, apart from the documentation
 lines below that record the result:
 
-| job | result |
-|---|---|
-| `web` | success. `actions/setup-node@v4` → `Found in cache @ /opt/hostedtoolcache/node/22.23.2/x64`, `node: v22.23.2` — the release `.nvmrc` now names. `pnpm install --frozen-lockfile`, `audit-web`, `lint-web`, `pnpm -r test`, `build-storybook` all pass |
-| `rust` | success. `1166 tests run: 1166 passed, 0 skipped` in 765 s; `verify-ignored: 0 ignored (expected 0), 42 test binaries (expected 42), 1166 total` |
-| `e2e (compose)` | success. `All specs passed!` on both spec files — 7 tests and 4 tests |
-| `supply chain`, `deploy (helm chart)`, `self-checks (no-mocks, status)` | success |
+| job                                                                     | result                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web`                                                                   | success. `actions/setup-node@v4` → `Found in cache @ /opt/hostedtoolcache/node/22.23.2/x64`, `node: v22.23.2` — the release `.nvmrc` now names. `pnpm install --frozen-lockfile`, `audit-web`, `lint-web`, `pnpm -r test`, `build-storybook` all pass |
+| `rust`                                                                  | success. `1166 tests run: 1166 passed, 0 skipped` in 765 s; `verify-ignored: 0 ignored (expected 0), 42 test binaries (expected 42), 1166 total`                                                                                                      |
+| `e2e (compose)`                                                         | success. `All specs passed!` on both spec files — 7 tests and 4 tests                                                                                                                                                                                 |
+| `supply chain`, `deploy (helm chart)`, `self-checks (no-mocks, status)` | success                                                                                                                                                                                                                                               |
 
 For contrast, the run this section is about — `33934371223` on the
 pre-baseline commit — failed `web`, `rust` **and** `e2e`, each at
@@ -484,4 +484,3 @@ pre-baseline commit — failed `web`, `rust` **and** `e2e`, each at
 `Your Node version is incompatible with "eslint-visitor-keys@5.0.1". Expected
 version: ^20.19.0 || ^22.13.0 || >=24. Got: v22.11.0`. That is the guard
 failure and its repair, measured on the same machine CI runs on.
-

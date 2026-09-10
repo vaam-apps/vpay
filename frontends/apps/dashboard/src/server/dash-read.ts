@@ -56,9 +56,9 @@
  * and not allowed (wrong scope, wrong merchant claim), which a new token from
  * the same registration would answer identically.
  */
-import { getJson, type ApiResult } from './api';
-import type { DashboardConfig } from '../config/settings';
-import { completeAuthorizationCode } from './oauth';
+import { getJson, type ApiResult } from "./api";
+import type { DashboardConfig } from "../config/settings";
+import { completeAuthorizationCode } from "./oauth";
 
 /**
  * `GET` a `/dash/v1` document, minting a fresh access token once if the one
@@ -93,5 +93,7 @@ export async function readDash<T>(
     return first;
   }
 
-  return getJson<T>(config.apiBaseUrl, path, { bearer: exchanged.value.access_token });
+  return getJson<T>(config.apiBaseUrl, path, {
+    bearer: exchanged.value.access_token,
+  });
 }

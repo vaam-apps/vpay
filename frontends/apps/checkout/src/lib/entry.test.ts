@@ -1,67 +1,71 @@
 /**
  * The decision every page makes before it reads anything.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
-import { decideEntry, decideReturnEntry } from './entry';
+import { decideEntry, decideReturnEntry } from "./entry";
 
-const SECRET = 'cs_test_1_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-const ALLOWED = ['https://shop.example'];
+const SECRET = "cs_test_1_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const ALLOWED = ["https://shop.example"];
 
 function embedded(overrides: Partial<Parameters<typeof decideEntry>[0]> = {}) {
   return decideEntry({
-    mode: 'embedded',
-    search: '?key=pk_test_1',
+    mode: "embedded",
+    search: "?key=pk_test_1",
     hash: `#${SECRET}`,
-    referrer: 'https://shop.example/cart',
+    referrer: "https://shop.example/cart",
     allowedOrigins: ALLOWED,
     framed: true,
     ...overrides,
   });
 }
 
-describe('an embedded page', () => {
-  it('is ready when the framer is on the merchant’s list', () => {
+describe("an embedded page", () => {
+  it("is ready when the framer is on the merchant’s list", () => {
     expect(embedded()).toEqual({
-      kind: 'ready',
-      key: 'pk_test_1',
+      kind: "ready",
+      key: "pk_test_1",
       clientSecret: SECRET,
-      parentOrigin: 'https://shop.example',
+      parentOrigin: "https://shop.example",
       openerOrigin: null,
     });
   });
 
-  it('refuses a framer that is not on the list', () => {
-    expect(embedded({ referrer: 'https://evil.example/' })).toEqual({ kind: 'refused' });
-  });
-
-  it('refuses when the origins lookup produced nothing — fail-closed', () => {
-    expect(embedded({ allowedOrigins: [] })).toEqual({ kind: 'refused' });
-  });
-
-  it('refuses when no referrer reached it, rather than guessing a parent', () => {
-    expect(embedded({ referrer: '' })).toEqual({ kind: 'refused' });
-  });
-
-  it('refuses before it looks at the credential, so a hostile framer learns nothing', () => {
-    // No key and no secret in the URL, and the answer is still `refused`
-    // rather than `missing_key` — the refusal cannot be used to probe which
-    // half of a link is wrong.
-    expect(embedded({ referrer: 'https://evil.example/', search: '', hash: '' })).toEqual({
-      kind: 'refused',
+  it("refuses a framer that is not on the list", () => {
+    expect(embedded({ referrer: "https://evil.example/" })).toEqual({
+      kind: "refused",
     });
   });
 
-  it('refuses when opened top-level, where there is no parent to report to', () => {
-    expect(embedded({ framed: false })).toEqual({ kind: 'refused' });
+  it("refuses when the origins lookup produced nothing — fail-closed", () => {
+    expect(embedded({ allowedOrigins: [] })).toEqual({ kind: "refused" });
+  });
+
+  it("refuses when no referrer reached it, rather than guessing a parent", () => {
+    expect(embedded({ referrer: "" })).toEqual({ kind: "refused" });
+  });
+
+  it("refuses before it looks at the credential, so a hostile framer learns nothing", () => {
+    // No key and no secret in the URL, and the answer is still `refused`
+    // rather than `missing_key` — the refusal cannot be used to probe which
+    // half of a link is wrong.
+    expect(
+      embedded({ referrer: "https://evil.example/", search: "", hash: "" }),
+    ).toEqual({
+      kind: "refused",
+    });
+  });
+
+  it("refuses when opened top-level, where there is no parent to report to", () => {
+    expect(embedded({ framed: false })).toEqual({ kind: "refused" });
   });
 });
 
-describe('a hosted page', () => {
+describe("a hosted page", () => {
   const hosted = (overrides: Partial<Parameters<typeof decideEntry>[0]> = {}) =>
     decideEntry({
-      mode: 'hosted',
-      search: '?key=pk_test_1',
+      mode: "hosted",
+      search: "?key=pk_test_1",
       hash: `#${SECRET}`,
       referrer: null,
       allowedOrigins: [],
@@ -69,160 +73,219 @@ describe('a hosted page', () => {
       ...overrides,
     });
 
-  it('is ready with no parent origin', () => {
+  it("is ready with no parent origin", () => {
     expect(hosted()).toEqual({
-      kind: 'ready',
-      key: 'pk_test_1',
+      kind: "ready",
+      key: "pk_test_1",
       clientSecret: SECRET,
       parentOrigin: null,
       openerOrigin: null,
     });
   });
 
-  it('refuses to render inside a frame, as the second lock behind frame-ancestors none', () => {
-    expect(hosted({ framed: true })).toEqual({ kind: 'refused' });
+  it("refuses to render inside a frame, as the second lock behind frame-ancestors none", () => {
+    expect(hosted({ framed: true })).toEqual({ kind: "refused" });
   });
 
-  it('names the missing half of a broken link', () => {
-    expect(hosted({ search: '' })).toEqual({ kind: 'error', code: 'error.missing_key' });
-    expect(hosted({ hash: '' })).toEqual({ kind: 'error', code: 'error.missing_secret' });
+  it("names the missing half of a broken link", () => {
+    expect(hosted({ search: "" })).toEqual({
+      kind: "error",
+      code: "error.missing_key",
+    });
+    expect(hosted({ hash: "" })).toEqual({
+      kind: "error",
+      code: "error.missing_secret",
+    });
   });
 });
 
-describe('the return page', () => {
-  it('takes the key from the query when the link carries one', () => {
-    expect(decideReturnEntry({ search: '?t=tok&key=pk_query', rememberedKey: 'pk_stored' })).toEqual(
-      { kind: 'ready', key: 'pk_query', returnToken: 'tok', openerOrigin: null },
-    );
-  });
-
-  it('falls back to the key this tab remembered, since the plan’s return URL carries none', () => {
-    expect(decideReturnEntry({ search: '?t=tok', rememberedKey: 'pk_stored' })).toEqual({
-      kind: 'ready',
-      key: 'pk_stored',
-      returnToken: 'tok',
+describe("the return page", () => {
+  it("takes the key from the query when the link carries one", () => {
+    expect(
+      decideReturnEntry({
+        search: "?t=tok&key=pk_query",
+        rememberedKey: "pk_stored",
+      }),
+    ).toEqual({
+      kind: "ready",
+      key: "pk_query",
+      returnToken: "tok",
       openerOrigin: null,
     });
   });
 
-  it('names what is missing rather than rendering an outcome it did not read', () => {
-    expect(decideReturnEntry({ search: '?t=tok', rememberedKey: null })).toEqual({
-      kind: 'error',
-      code: 'error.missing_key',
+  it("falls back to the key this tab remembered, since the plan’s return URL carries none", () => {
+    expect(
+      decideReturnEntry({ search: "?t=tok", rememberedKey: "pk_stored" }),
+    ).toEqual({
+      kind: "ready",
+      key: "pk_stored",
+      returnToken: "tok",
+      openerOrigin: null,
     });
-    expect(decideReturnEntry({ search: '?key=pk', rememberedKey: null })).toEqual({
-      kind: 'error',
-      code: 'error.missing_return_token',
+  });
+
+  it("names what is missing rather than rendering an outcome it did not read", () => {
+    expect(
+      decideReturnEntry({ search: "?t=tok", rememberedKey: null }),
+    ).toEqual({
+      kind: "error",
+      code: "error.missing_key",
+    });
+    expect(
+      decideReturnEntry({ search: "?key=pk", rememberedKey: null }),
+    ).toEqual({
+      kind: "error",
+      code: "error.missing_return_token",
     });
   });
 });
 
-describe('a hosted page in a popup', () => {
+describe("a hosted page in a popup", () => {
   const popup = (overrides: Partial<Parameters<typeof decideEntry>[0]> = {}) =>
     decideEntry({
-      mode: 'hosted',
-      search: '?key=pk_test_1',
+      mode: "hosted",
+      search: "?key=pk_test_1",
       hash: `#${SECRET}`,
-      referrer: 'https://shop.example/cart',
+      referrer: "https://shop.example/cart",
       allowedOrigins: ALLOWED,
       framed: false,
       hasOpener: true,
       ...overrides,
     });
 
-  it('resolves the opener when it is on the merchant’s list', () => {
+  it("resolves the opener when it is on the merchant’s list", () => {
     expect(popup()).toMatchObject({
-      kind: 'ready',
+      kind: "ready",
       parentOrigin: null,
-      openerOrigin: 'https://shop.example',
+      openerOrigin: "https://shop.example",
     });
   });
 
-  it('never sets both origins, so there is one peer or none', () => {
+  it("never sets both origins, so there is one peer or none", () => {
     const decision = popup();
-    expect(decision.kind === 'ready' && decision.parentOrigin).toBeNull();
+    expect(decision.kind === "ready" && decision.parentOrigin).toBeNull();
   });
 
-  it('renders anyway, with no channel, when the opener is not on the list', () => {
+  it("renders anyway, with no channel, when the opener is not on the list", () => {
     // A hosted page is a complete page on its own: it takes the payment and
     // sends the payer to `success_url` in this window. What it loses is the
     // ability to tell the opener anything. That is the OPPOSITE of the
     // embedded case, where a page with no parent has no way to finish.
-    expect(popup({ referrer: 'https://evil.example/' })).toMatchObject({
-      kind: 'ready',
+    expect(popup({ referrer: "https://evil.example/" })).toMatchObject({
+      kind: "ready",
       openerOrigin: null,
     });
-    expect(popup({ allowedOrigins: [] })).toMatchObject({ kind: 'ready', openerOrigin: null });
+    expect(popup({ allowedOrigins: [] })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
   });
 
-  it('refuses to resolve an opener from an empty referrer rather than guessing', () => {
+  it("refuses to resolve an opener from an empty referrer rather than guessing", () => {
     // The merchant's own `Referrer-Policy: no-referrer` produces this, and
     // guessing would mean posting to an origin nothing named.
-    expect(popup({ referrer: null })).toMatchObject({ kind: 'ready', openerOrigin: null });
-    expect(popup({ referrer: '' })).toMatchObject({ kind: 'ready', openerOrigin: null });
+    expect(popup({ referrer: null })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
+    expect(popup({ referrer: "" })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
   });
 
-  it('resolves no opener when there is none — an ordinary hosted page', () => {
-    expect(popup({ hasOpener: false })).toMatchObject({ kind: 'ready', openerOrigin: null });
-    expect(popup({ hasOpener: undefined })).toMatchObject({ kind: 'ready', openerOrigin: null });
+  it("resolves no opener when there is none — an ordinary hosted page", () => {
+    expect(popup({ hasOpener: false })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
+    expect(popup({ hasOpener: undefined })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
   });
 
-  it('still refuses a hosted page inside a frame, opener or not', () => {
-    expect(popup({ framed: true })).toEqual({ kind: 'refused' });
+  it("still refuses a hosted page inside a frame, opener or not", () => {
+    expect(popup({ framed: true })).toEqual({ kind: "refused" });
   });
 
-  it('still reports a missing credential before anything else', () => {
-    expect(popup({ hash: '' })).toEqual({ kind: 'error', code: 'error.missing_secret' });
+  it("still reports a missing credential before anything else", () => {
+    expect(popup({ hash: "" })).toEqual({
+      kind: "error",
+      code: "error.missing_secret",
+    });
   });
 });
 
-describe('the return page in a popup', () => {
-  const ret = (overrides: Partial<Parameters<typeof decideReturnEntry>[0]> = {}) =>
+describe("the return page in a popup", () => {
+  const ret = (
+    overrides: Partial<Parameters<typeof decideReturnEntry>[0]> = {},
+  ) =>
     decideReturnEntry({
-      search: '?t=tok&key=pk_test_1',
+      search: "?t=tok&key=pk_test_1",
       rememberedKey: null,
       hasOpener: true,
       allowedOrigins: ALLOWED,
       ...overrides,
     });
 
-  it('pins the opener to the merchant’s single registered origin', () => {
+  it("pins the opener to the merchant’s single registered origin", () => {
     // The referrer here is the RAIL's, so `resolveParentOrigin` has nothing
     // to match. One registered origin is unambiguous: it is the only party
     // that could ever have been the recipient.
-    expect(ret()).toMatchObject({ kind: 'ready', openerOrigin: 'https://shop.example' });
+    expect(ret()).toMatchObject({
+      kind: "ready",
+      openerOrigin: "https://shop.example",
+    });
   });
 
-  it('pins nothing when the merchant has registered several', () => {
+  it("pins nothing when the merchant has registered several", () => {
     // Picking one of several would be choosing a `postMessage` target by
     // guess, on a page that has just come back from a third party.
     expect(
-      ret({ allowedOrigins: ['https://shop.example', 'https://www.shop.example'] }),
-    ).toMatchObject({ kind: 'ready', openerOrigin: null });
+      ret({
+        allowedOrigins: ["https://shop.example", "https://www.shop.example"],
+      }),
+    ).toMatchObject({ kind: "ready", openerOrigin: null });
   });
 
-  it('pins nothing when the merchant has registered none', () => {
-    expect(ret({ allowedOrigins: [] })).toMatchObject({ kind: 'ready', openerOrigin: null });
-    expect(ret({ allowedOrigins: undefined })).toMatchObject({ kind: 'ready', openerOrigin: null });
-  });
-
-  it('pins nothing when there is no opener — an ordinary return trip', () => {
-    expect(ret({ hasOpener: false })).toMatchObject({ kind: 'ready', openerOrigin: null });
-    expect(ret({ hasOpener: undefined })).toMatchObject({ kind: 'ready', openerOrigin: null });
-  });
-
-  it('drops a registered origin that is not canonical before counting', () => {
-    // `normalizeOrigins` refuses a value carrying a path, so a list of one
-    // malformed entry is a list of none — not a list of one to pin to.
-    expect(ret({ allowedOrigins: ['https://shop.example/pay'] })).toMatchObject({
+  it("pins nothing when the merchant has registered none", () => {
+    expect(ret({ allowedOrigins: [] })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
+    expect(ret({ allowedOrigins: undefined })).toMatchObject({
+      kind: "ready",
       openerOrigin: null,
     });
   });
 
-  it('still reports a missing token before looking at any opener', () => {
-    expect(ret({ search: '?key=pk_test_1' })).toEqual({
-      kind: 'error',
-      code: 'error.missing_return_token',
+  it("pins nothing when there is no opener — an ordinary return trip", () => {
+    expect(ret({ hasOpener: false })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
+    expect(ret({ hasOpener: undefined })).toMatchObject({
+      kind: "ready",
+      openerOrigin: null,
+    });
+  });
+
+  it("drops a registered origin that is not canonical before counting", () => {
+    // `normalizeOrigins` refuses a value carrying a path, so a list of one
+    // malformed entry is a list of none — not a list of one to pin to.
+    expect(ret({ allowedOrigins: ["https://shop.example/pay"] })).toMatchObject(
+      {
+        openerOrigin: null,
+      },
+    );
+  });
+
+  it("still reports a missing token before looking at any opener", () => {
+    expect(ret({ search: "?key=pk_test_1" })).toEqual({
+      kind: "error",
+      code: "error.missing_return_token",
     });
   });
 });

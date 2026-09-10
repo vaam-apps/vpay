@@ -1,6 +1,6 @@
-import { Alert, Text } from '@vpay/ui';
+import { Alert, Text } from "@vpay/ui";
 
-import type { ApiFailure } from '../server/api';
+import type { ApiFailure } from "../server/api";
 
 /** What {@link ReadFailure} renders. */
 export interface ReadFailureProps {

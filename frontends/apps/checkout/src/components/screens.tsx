@@ -52,7 +52,7 @@
  * so the test still asserts the role, the tab index, the accessible name
  * and `aria-checked` explicitly rather than assuming the platform.
  */
-import { useEffect } from 'react';
+import { useEffect } from "react";
 import {
   Alert,
   Badge,
@@ -73,13 +73,13 @@ import {
   Stack,
   Text,
   VisuallyHidden,
-} from '@vpay/ui';
-import { checkoutOutcomeTone } from '@vpay/tokens';
+} from "@vpay/ui";
+import { checkoutOutcomeTone } from "@vpay/tokens";
 
-import type { MessageKey, Translate } from '../i18n/index';
-import type { Branding } from '../config/settings';
-import type { OutcomeKind } from '../lib/machine';
-import type { RailChoices, SupportedRail } from '../lib/rails';
+import type { MessageKey, Translate } from "../i18n/index";
+import type { Branding } from "../config/settings";
+import type { OutcomeKind } from "../lib/machine";
+import type { RailChoices, SupportedRail } from "../lib/rails";
 
 /**
  * The heading every screen starts with.
@@ -129,7 +129,9 @@ export function merchantLine(
   unnamed: MessageKey,
   values: Record<string, string | number> = {},
 ): string {
-  return merchant === null ? t(unnamed, values) : t(named, { ...values, merchant });
+  return merchant === null
+    ? t(unnamed, values)
+    : t(named, { ...values, merchant });
 }
 
 /**
@@ -145,31 +147,43 @@ export function merchantLine(
  * image is then the only place that name appears; where there is none the
  * image is captioned by nothing else, so it still needs a word.
  */
-export function BrandHeader({ t, branding }: { t: Translate; branding: Branding }) {
+export function BrandHeader({
+  t,
+  branding,
+}: {
+  t: Translate;
+  branding: Branding;
+}) {
   return (
     <Stack gap="md">
       {branding.logoUrl === null ? null : (
         <Logo
           src={branding.logoUrl}
-          alt={branding.displayName ?? t('page.operator_logo_alt')}
+          alt={branding.displayName ?? t("page.operator_logo_alt")}
           data-testid="brand-logo"
         />
       )}
       <Heading level={1} data-testid="brand-name">
-        {branding.displayName ?? t('page.title')}
+        {branding.displayName ?? t("page.title")}
       </Heading>
     </Stack>
   );
 }
 
 /** `branding.yaml`'s `support_contact`, as text. Never a `mailto:` or a `tel:` this page composed. */
-export function SupportLine({ t, branding }: { t: Translate; branding: Branding }) {
+export function SupportLine({
+  t,
+  branding,
+}: {
+  t: Translate;
+  branding: Branding;
+}) {
   if (branding.supportContact === null) {
     return null;
   }
   return (
     <Text tone="muted" size="xs" data-testid="support-contact">
-      {t('page.support', { contact: branding.supportContact })}
+      {t("page.support", { contact: branding.supportContact })}
     </Text>
   );
 }
@@ -205,18 +219,18 @@ export function PaymentSummary({
         */}
         {!livemode ? (
           <Text size="xs" weight="semibold" data-testid="testmode">
-            {t('page.testmode')}
+            {t("page.testmode")}
           </Text>
         ) : null}
         <Text size="sm" tone="muted" data-testid="pay-to">
-          {merchantLine(t, merchant, 'page.pay_to', 'page.pay_to_unnamed')}
+          {merchantLine(t, merchant, "page.pay_to", "page.pay_to_unnamed")}
         </Text>
         <Text size="3xl" weight="semibold" numeric data-testid="amount">
-          <VisuallyHidden>{t('page.amount_label')}: </VisuallyHidden>
+          <VisuallyHidden>{t("page.amount_label")}: </VisuallyHidden>
           {amount}
         </Text>
         <Text size="xs" tone="muted" wrap="anywhere" data-testid="reference">
-          {t('page.reference_label')}: {reference}
+          {t("page.reference_label")}: {reference}
         </Text>
       </CardBody>
     </Card>
@@ -224,14 +238,20 @@ export function PaymentSummary({
 }
 
 /** D9: rails the intent offers that this page has no flow for, or the operator's `config.yaml` excludes. */
-export function UnsupportedRails({ t, codes }: { t: Translate; codes: readonly string[] }) {
+export function UnsupportedRails({
+  t,
+  codes,
+}: {
+  t: Translate;
+  codes: readonly string[];
+}) {
   if (codes.length === 0) {
     return null;
   }
   return (
     <List data-testid="unsupported-rails">
       {codes.map((code) => (
-        <li key={code}>{t('rail.unsupported', { rail: code })}</li>
+        <li key={code}>{t("rail.unsupported", { rail: code })}</li>
       ))}
     </List>
   );
@@ -262,7 +282,7 @@ export function RailSelector({
   return (
     <section>
       <Stack direction="column" align="stretch" gap="md">
-        <ScreenHeading screen="select_rail">{t('rail.legend')}</ScreenHeading>
+        <ScreenHeading screen="select_rail">{t("rail.legend")}</ScreenHeading>
         <Stack direction="column" align="stretch" gap="sm">
           {rails.supported.map((rail) => (
             <Button
@@ -275,7 +295,7 @@ export function RailSelector({
               {t(rail.label)}
               {rail.code === lastRail ? (
                 <Badge tone="ghost" size="sm" data-testid="last-used">
-                  {t('memory.last_used')}
+                  {t("memory.last_used")}
                 </Badge>
               ) : null}
             </Button>
@@ -321,8 +341,8 @@ export function MemoryOptIn({
   controls: MemoryControls;
   label: string;
 }) {
-  const labelId = 'vpay-remember-label';
-  const warningId = 'vpay-remember-warning';
+  const labelId = "vpay-remember-label";
+  const warningId = "vpay-remember-warning";
   if (!controls.offered) {
     return null;
   }
@@ -358,20 +378,32 @@ export function MemoryOptIn({
             <Text as="span" id={labelId}>
               {label}
             </Text>
-            <Text as="span" id={warningId} tone="muted" size="xs" data-testid="remember-warning">
-              {t('memory.warning')}
+            <Text
+              as="span"
+              id={warningId}
+              tone="muted"
+              size="xs"
+              data-testid="remember-warning"
+            >
+              {t("memory.warning")}
             </Text>
           </Stack>
         </Stack>
       </CheckboxLabel>
       {controls.hasRecord ? (
-        <Button type="button" variant="ghost" size="xs" data-testid="forget" onClick={controls.onForget}>
-          {t('memory.forget')}
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          data-testid="forget"
+          onClick={controls.onForget}
+        >
+          {t("memory.forget")}
         </Button>
       ) : null}
       {controls.forgotten ? (
         <Text size="xs" tone="muted" role="status" data-testid="forgotten">
-          {t('memory.forgotten')}
+          {t("memory.forgotten")}
         </Text>
       ) : null}
     </Stack>
@@ -413,7 +445,7 @@ export function MsisdnForm({
   onSubmit: (msisdn: string) => void;
   onBack: () => void;
 }) {
-  const inputId = 'vpay-msisdn';
+  const inputId = "vpay-msisdn";
   return (
     <section>
       <Stack direction="column" align="stretch" gap="md">
@@ -426,35 +458,39 @@ export function MsisdnForm({
             // is not something this form can produce, but stringifying one
             // would hand the MSISDN validator the text "[object File]"
             // rather than an empty field.
-            const raw = data.get('msisdn');
-            onSubmit(typeof raw === 'string' ? raw : '');
+            const raw = data.get("msisdn");
+            onSubmit(typeof raw === "string" ? raw : "");
           }}
         >
           <Stack direction="column" align="stretch" gap="sm">
             <Field invalid={problem !== null}>
-              <FieldLabel htmlFor={inputId}>{t('msisdn.label')}</FieldLabel>
+              <FieldLabel htmlFor={inputId}>{t("msisdn.label")}</FieldLabel>
               <Input
                 id={inputId}
                 name="msisdn"
                 type="tel"
                 inputMode="tel"
                 autoComplete="tel"
-                defaultValue={defaultMsisdn ?? ''}
+                defaultValue={defaultMsisdn ?? ""}
               />
-              <FieldDescription>{t('msisdn.hint')}</FieldDescription>
+              <FieldDescription>{t("msisdn.hint")}</FieldDescription>
               {problem === null ? null : (
                 <FieldError match role="alert" data-testid="msisdn-problem">
                   {t(problem)}
                 </FieldError>
               )}
             </Field>
-            <MemoryOptIn t={t} controls={memory} label={t('memory.remember_number')} />
+            <MemoryOptIn
+              t={t}
+              controls={memory}
+              label={t("memory.remember_number")}
+            />
             <Button type="submit" block>
-              {t('msisdn.submit', { amount })}
+              {t("msisdn.submit", { amount })}
             </Button>
             {canGoBack ? (
               <Button type="button" variant="ghost" size="sm" onClick={onBack}>
-                {t('msisdn.back')}
+                {t("msisdn.back")}
               </Button>
             ) : null}
           </Stack>
@@ -488,19 +524,23 @@ export function RedirectPrompt({
     <section>
       <Stack direction="column" align="stretch" gap="md">
         <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
-        <Text tone="muted">{t('state.redirecting_body')}</Text>
+        <Text tone="muted">{t("state.redirecting_body")}</Text>
         {problem === null ? null : (
           <Alert tone="error" role="alert" data-testid="redirect-problem">
             {t(problem)}
           </Alert>
         )}
-        <MemoryOptIn t={t} controls={memory} label={t('memory.remember_method', { rail: t(rail.label) })} />
+        <MemoryOptIn
+          t={t}
+          controls={memory}
+          label={t("memory.remember_method", { rail: t(rail.label) })}
+        />
         <Button type="button" block data-testid="continue" onClick={onContinue}>
-          {t('msisdn.submit', { amount })}
+          {t("msisdn.submit", { amount })}
         </Button>
         {canGoBack ? (
           <Button type="button" variant="ghost" size="sm" onClick={onBack}>
-            {t('msisdn.back')}
+            {t("msisdn.back")}
           </Button>
         ) : null}
       </Stack>
@@ -536,8 +576,13 @@ export function StatusPanel({
               {t(notice)}
             </Text>
             {onRetry === undefined ? null : (
-              <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-                {t('error.retry')}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetry}
+              >
+                {t("error.retry")}
               </Button>
             )}
           </Stack>
@@ -591,19 +636,25 @@ export function OutcomePanel({
   onBack: () => void;
 }) {
   const title =
-    kind === 'succeeded'
-      ? t('outcome.succeeded_title')
-      : kind === 'canceled'
-        ? t('outcome.canceled_title')
-        : t('outcome.failed_title');
+    kind === "succeeded"
+      ? t("outcome.succeeded_title")
+      : kind === "canceled"
+        ? t("outcome.canceled_title")
+        : t("outcome.failed_title");
   const body =
-    kind === 'succeeded'
-      ? merchantLine(t, merchant, 'outcome.succeeded_body', 'outcome.succeeded_body_unnamed', {
-          amount,
-        })
-      : kind === 'canceled'
-        ? t('outcome.canceled_body')
-        : t(failure ?? 'failure.unknown');
+    kind === "succeeded"
+      ? merchantLine(
+          t,
+          merchant,
+          "outcome.succeeded_body",
+          "outcome.succeeded_body_unnamed",
+          {
+            amount,
+          },
+        )
+      : kind === "canceled"
+        ? t("outcome.canceled_body")
+        : t(failure ?? "failure.unknown");
   return (
     <section data-outcome={kind}>
       <Stack direction="column" align="stretch" gap="md">
@@ -614,18 +665,23 @@ export function OutcomePanel({
         {reason === null ? null : (
           <Text size="sm" tone="muted" data-testid="provider-reason">
             <Text as="span" weight="semibold">
-              {t('outcome.provider_said')}:{' '}
+              {t("outcome.provider_said")}:{" "}
             </Text>
             {reason}
           </Text>
         )}
         {destination === null ? (
           <Text tone="muted" data-testid="no-destination">
-            {t('outcome.no_destination')}
+            {t("outcome.no_destination")}
           </Text>
         ) : (
           <Button type="button" block onClick={onBack}>
-            {merchantLine(t, merchant, 'outcome.back_to', 'outcome.back_to_unnamed')}
+            {merchantLine(
+              t,
+              merchant,
+              "outcome.back_to",
+              "outcome.back_to_unnamed",
+            )}
           </Button>
         )}
       </Stack>
@@ -655,7 +711,7 @@ export function NoticePanel({
         <Alert tone="warning">
           <span data-testid="notice-body">{body}</span>
         </Alert>
-        <VisuallyHidden>{t('error.title')}</VisuallyHidden>
+        <VisuallyHidden>{t("error.title")}</VisuallyHidden>
       </Stack>
     </section>
   );

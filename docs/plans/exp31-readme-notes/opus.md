@@ -2,8 +2,8 @@
 
 **Date: 2026-09-07. Branch `claude/exp31-readme-truth`, base `05ae51a`.**
 
-The maintainer asked whether the README's banner — *"vpay cannot take a payment
-yet … no HTTP call to any payment rail has ever been made by this code"* — was
+The maintainer asked whether the README's banner — _"vpay cannot take a payment
+yet … no HTTP call to any payment rail has ever been made by this code"_ — was
 still true. It was not, and it had not been since Step 3 (2026-09-03). This
 page lists every claim that changed, what it changed to, and the artefact in
 this tree that decided it. A claim removed with no replacement is listed too,
@@ -16,30 +16,30 @@ Nothing in `docs/status.md` moved except one dated row recording this pass.
 
 ## 1. The banner
 
-| | |
-|---|---|
-| **Was** | "⚠️ **vpay cannot take a payment yet.** This repository is a **scaffold**. It compiles, lints clean and its tests pass, but **no HTTP call to any payment rail has ever been made by this code**." |
-| **Is** | "⚠️ **vpay has never taken a real payment.**" — plus what works against stub rails, and what has never run. |
-| **Evidence** | `docs/status.md` § Overall retired the "no HTTP call to any rail" sentence on 2026-09-03 (Step 3) and replaced it with the narrower **"no HTTP call to a *real* rail has ever been made"**, which every step since has restated unchanged. Step 4 made an intent reach `succeeded` with nobody touching it; Step 5 delivered a signed webhook; Step 9 put a real browser through the hosted and embedded page. |
+|              |                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Was**      | "⚠️ **vpay cannot take a payment yet.** This repository is a **scaffold**. It compiles, lints clean and its tests pass, but **no HTTP call to any payment rail has ever been made by this code**."                                                                                                                                                                                                             |
+| **Is**       | "⚠️ **vpay has never taken a real payment.**" — plus what works against stub rails, and what has never run.                                                                                                                                                                                                                                                                                                    |
+| **Evidence** | `docs/status.md` § Overall retired the "no HTTP call to any rail" sentence on 2026-09-03 (Step 3) and replaced it with the narrower **"no HTTP call to a _real_ rail has ever been made"**, which every step since has restated unchanged. Step 4 made an intent reach `succeeded` with nobody touching it; Step 5 delivered a signed webhook; Step 9 put a real browser through the hosted and embedded page. |
 
 The word **scaffold** is gone from the banner for the same reason: it now
 understates the repository as badly as the old sentence overstated the rails.
-It survives in one place only — the Layout block's note that the *dashboard app*
+It survives in one place only — the Layout block's note that the _dashboard app_
 is a scaffold, which `docs/status.md`'s "Dashboard app" row still says verbatim
 ("Renders a scaffold notice and a status-badge reference. **No data, no auth,
 no routes**", unchanged as of 2026-09-07).
 
 **What the new banner claims, and what proves it:**
 
-| Claim | Proof |
-|---|---|
-| a payment goes end to end against stub rails | `docs/status.md` § Overall (Step 4); `backends/tests/integration/tests/worker_e2e.rs`, `worker_recovery.rs` |
-| `just demo` walks six payments on both rails | `examples/merchant-demo/src/main.rs` (`run_outcomes`, the `[4/6]` step); `docs/runbooks/demo.md` §4–5 |
+| Claim                                                  | Proof                                                                                                                                                                  |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a payment goes end to end against stub rails           | `docs/status.md` § Overall (Step 4); `backends/tests/integration/tests/worker_e2e.rs`, `worker_recovery.rs`                                                            |
+| `just demo` walks six payments on both rails           | `examples/merchant-demo/src/main.rs` (`run_outcomes`, the `[4/6]` step); `docs/runbooks/demo.md` §4–5                                                                  |
 | a real browser has driven the hosted and embedded page | `frontends/tests/e2e/cypress/e2e/shop-hosted.cy.ts` (3), `shop-embedded.cy.ts` (4); `docs/status.md` MVP item 6 — `just test-e2e` exit 0, 11 tests, 4 specs, 0 skipped |
-| no HTTP call to MTN's or Orange's own endpoints | `docs/status.md` § Overall, every step's load-bearing sentence; `docs/runbooks/demo.md` "Status, stated before anything else" |
-| no cluster has ever run vpay | `docs/flows/deployment.md` § Status — "**No cluster has ever run this — not a real one, not kind**" |
-| no dashboard a person can use | `docs/status.md` "Dashboard app" row; `docs/flows/dashboard.md` § Status ("Not built: login, of any kind; … every page") |
-| `/dash/v1` reads and staff sign-in answer over HTTP | `backends/tests/integration/tests/dashboard_read_surface.rs` (13 cases); `.../staff_sign_in.rs` (13 cases, ADR-0017); `vpay_api::dash::DASH_ROUTES` (two entries) |
+| no HTTP call to MTN's or Orange's own endpoints        | `docs/status.md` § Overall, every step's load-bearing sentence; `docs/runbooks/demo.md` "Status, stated before anything else"                                          |
+| no cluster has ever run vpay                           | `docs/flows/deployment.md` § Status — "**No cluster has ever run this — not a real one, not kind**"                                                                    |
+| no dashboard a person can use                          | `docs/status.md` "Dashboard app" row; `docs/flows/dashboard.md` § Status ("Not built: login, of any kind; … every page")                                               |
+| `/dash/v1` reads and staff sign-in answer over HTTP    | `backends/tests/integration/tests/dashboard_read_surface.rs` (13 cases); `.../staff_sign_in.rs` (13 cases, ADR-0017); `vpay_api::dash::DASH_ROUTES` (two entries)      |
 
 ---
 
@@ -57,7 +57,7 @@ paragraph and by the "Both binaries call a payment rail" paragraph.
 ### 2.2 "`vpay-worker-bin` calls none, because it has no job loop" / "its job loop is not implemented, and it says so in a startup banner and a repeating heartbeat log line"
 
 **Removed, both sentences.** `docs/status.md`'s "Worker job loop" row is
-explicitly "the row that used to say *there is no job loop*". Replaced by a
+explicitly "the row that used to say _there is no job loop_". Replaced by a
 paragraph naming `vpay_worker::run_loop`, the lease reaping at boot and on its
 own timer, and the one-a-minute `job loop gauge` line — each of which that row
 states.
@@ -83,7 +83,7 @@ correction ledger lives, and `docs/status.md` and `vpay-api`'s own module docs
 both carry it.
 
 **Added, and it is the sharper claim:** `GET /v1/refunds/{id}` is a read with
-no writer — *nothing in this repository creates a `refunds` row*. Source: the
+no writer — _nothing in this repository creates a `refunds` row_. Source: the
 `GET /v1/refunds/{id}` row in `docs/status.md` ("🟡, and it will stay 🟡 until
 a refund can exist … Every row the four cases read is `INSERT`ed by the suite
 itself"). The old README said only that creating one 404s, which let a reader
@@ -91,12 +91,12 @@ infer the read had something to read.
 
 ### 2.4 The SDK sentences
 
-| Was | Is | Why |
-|---|---|---|
-| the Rust SDK "confirmed one and watched the intent move to `processing`. **It has still never taken a payment:** the rail behind that confirm is a WireMock container, nothing polls the charge, and no intent has ever reached `succeeded`" | the Rust SDK "is what `examples/merchant-demo` and `just demo` drive against a running `vpay-server`" | the two trailing clauses are 2.1; the blow-by-blow of which method landed on which day belongs in `docs/status.md` § Merchant SDKs |
-| "The Node SDK is still tested only against stubs of the contract" | "**No test inside `sdks/nodejs` itself has ever spoken to a vpay** — every server in that package's own tests is a `node:http` stub; what has driven a live stack from Node is `sdks/stripe-compat` and `examples/shop`" | `docs/status.md` § Merchant SDKs states exactly this distinction, and the old wording contradicted the README's own preceding paragraph about `sdks/stripe-compat` driving a real stack in CI |
-| the SDK matrix is "checked on every `just verify`" | "machine-checked **in both directions** on every `just verify`" | `docs/status.md`, "Updated 2026-09-06: that gate was one-directional, and now is not" |
-| — (absent) | `sdks/stripe-js` (`@vaam-apps/vpay-stripe-js`) named | it is a shipped SDK directory the old README's Layout and prose both omitted |
+| Was                                                                                                                                                                                                                                          | Is                                                                                                                                                                                                                       | Why                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the Rust SDK "confirmed one and watched the intent move to `processing`. **It has still never taken a payment:** the rail behind that confirm is a WireMock container, nothing polls the charge, and no intent has ever reached `succeeded`" | the Rust SDK "is what `examples/merchant-demo` and `just demo` drive against a running `vpay-server`"                                                                                                                    | the two trailing clauses are 2.1; the blow-by-blow of which method landed on which day belongs in `docs/status.md` § Merchant SDKs                                                            |
+| "The Node SDK is still tested only against stubs of the contract"                                                                                                                                                                            | "**No test inside `sdks/nodejs` itself has ever spoken to a vpay** — every server in that package's own tests is a `node:http` stub; what has driven a live stack from Node is `sdks/stripe-compat` and `examples/shop`" | `docs/status.md` § Merchant SDKs states exactly this distinction, and the old wording contradicted the README's own preceding paragraph about `sdks/stripe-compat` driving a real stack in CI |
+| the SDK matrix is "checked on every `just verify`"                                                                                                                                                                                           | "machine-checked **in both directions** on every `just verify`"                                                                                                                                                          | `docs/status.md`, "Updated 2026-09-06: that gate was one-directional, and now is not"                                                                                                         |
+| — (absent)                                                                                                                                                                                                                                   | `sdks/stripe-js` (`@vaam-apps/vpay-stripe-js`) named                                                                                                                                                                     | it is a shipped SDK directory the old README's Layout and prose both omitted                                                                                                                  |
 
 The parenthetical correcting "no Stripe SDK can authenticate against vpay" is
 **dropped** — it corrected a claim this README has not made since 2026-09-03,
@@ -116,10 +116,10 @@ table families whose statements run through it named, and the honest remainder
 ("the rest is a design sketch a compiler now type-checks, and
 `backends/migrations` remains the authoritative schema").
 
-**Evidence:** the `schemas/*.cstack` row in `docs/status.md` — *"~~Content
+**Evidence:** the `schemas/*.cstack` row in `docs/status.md` — _"~~Content
 remains a design sketch, excluded from the build graph~~ — corrected
 2026-09-06: `vpay-db` compiles this file now (`mod schema` →
-`include_server_schema!(…)`)"* — plus `justfile:673` (`check-schema`, in
+`include_server_schema!(…)`)"_ — plus `justfile:673` (`check-schema`, in
 `verify` since 2026-09-05, pinned at `cratestack_version := "0.12.0"`) and
 `docs/flows/dashboard-auth.md` § Status for `staff_members`,
 `staff_sessions`, `oauth_authorization_codes`.
@@ -134,7 +134,7 @@ Half of that is still exactly right and is kept. What was **stale by omission**
 is the reason: `docs/runbooks/demo.md` §6 gives it as "`/dash/v1` does not
 exist (Phase 2b, not started)", and `/dash/v1` has existed since 2026-09-06 and
 staff sign-in since 2026-09-07. The README now says the app has no pages and no
-login while the two `/dash/v1` reads and the sign-in routes *do* answer, naming
+login while the two `/dash/v1` reads and the sign-in routes _do_ answer, naming
 the two integration suites that prove them. It also says "the one service of
 the demo file set that stays down" rather than "not started", because `just
 demo-up` now brings up **eight** services and the dashboard is the single
@@ -142,22 +142,22 @@ exclusion (`justfile`'s `demo-up` comment; `demo_services`).
 
 ### 2.7 The demo walkthrough
 
-| Was | Is | Source |
-|---|---|---|
-| "brings up Postgres + both WireMock rail stubs + the merchant webhook receiver + `vpay-server` + `vpay-worker`" (five) | eight services, `vpay-checkout` and `vpay-shop` added | `justfile` `demo_services` and `demo-up`'s own comment ("It said six until 2026-09-04") |
-| "four steps, the last of which is a table" | six steps, the **fourth** of which is the table | `examples/merchant-demo/src/main.rs` prints `[1/6]`…`[6/6]`; steps 5 (checkout sessions) and 6 (`/v1/account_holders`) were absent from the README |
-| three `just` variables | six — `demo_project`, `demo_port`, `demo_receiver_port`, `demo_orange_port`, `demo_checkout_port`, `demo_shop_port` | `justfile` variable block, 1761–1890 |
-| "two demos can run on one machine at once" (three paragraphs) | one paragraph, same claim | length; `docs/runbooks/demo.md` §7 carries the measured detail |
+| Was                                                                                                                    | Is                                                                                                                  | Source                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "brings up Postgres + both WireMock rail stubs + the merchant webhook receiver + `vpay-server` + `vpay-worker`" (five) | eight services, `vpay-checkout` and `vpay-shop` added                                                               | `justfile` `demo_services` and `demo-up`'s own comment ("It said six until 2026-09-04")                                                            |
+| "four steps, the last of which is a table"                                                                             | six steps, the **fourth** of which is the table                                                                     | `examples/merchant-demo/src/main.rs` prints `[1/6]`…`[6/6]`; steps 5 (checkout sessions) and 6 (`/v1/account_holders`) were absent from the README |
+| three `just` variables                                                                                                 | six — `demo_project`, `demo_port`, `demo_receiver_port`, `demo_orange_port`, `demo_checkout_port`, `demo_shop_port` | `justfile` variable block, 1761–1890                                                                                                               |
+| "two demos can run on one machine at once" (three paragraphs)                                                          | one paragraph, same claim                                                                                           | length; `docs/runbooks/demo.md` §7 carries the measured detail                                                                                     |
 
 ### 2.8 The testing table
 
-| Was | Is | Source |
-|---|---|---|
-| `just verify` runs "the three self-checks" and needs "nothing but Rust" | **eleven gates and one advisory report**, and it needs the pinned `cratestack` CLI on `PATH` as well as Rust | `justfile:502` (`verify:` lists eleven prerequisites and echoes "the eleven gates above passed"); AGENTS.md says ten and predates `verify-ui`; `justfile:673` `check-schema` **fails** rather than skips without the CLI |
-| `just test` runs "`cargo nextest run --workspace` + `pnpm -r test`" | those two plus `cargo test --doc --workspace` | `justfile:89` — `test: test-rust test-doc test-web` |
-| `just test-e2e` boots "`compose.yml` + `compose.e2e.yml`" | those two **plus `compose.demo.yml`** | `justfile:197` `test-e2e` — it depends on `gen-demo-keys` and uses `demo_compose`; MVP item 6 records why (without the demo overlay no merchant is registered and every spec answered `invalid_client`) |
-| `just ci` "runs everything CI runs, in CI's order" | CI's self-checks, `rust`, `web` and supply-chain steps, in CI's order — **not** `e2e (compose)` or `deploy (helm chart)` | `justfile:1437` against `.github/workflows/ci.yml`'s six jobs. The justfile's own comment makes the same overstatement and was left alone; it is out of this pass's scope |
-| — (absent) | `just verify-ignored`: **0 ignored, 46 test binaries, 1550 tests listed** | **measured on this tree**, `just verify-ignored`, 2026-09-07. The old README asserted the 0 without the other two numbers the recipe also pins |
+| Was                                                                     | Is                                                                                                                       | Source                                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `just verify` runs "the three self-checks" and needs "nothing but Rust" | **eleven gates and one advisory report**, and it needs the pinned `cratestack` CLI on `PATH` as well as Rust             | `justfile:502` (`verify:` lists eleven prerequisites and echoes "the eleven gates above passed"); AGENTS.md says ten and predates `verify-ui`; `justfile:673` `check-schema` **fails** rather than skips without the CLI |
+| `just test` runs "`cargo nextest run --workspace` + `pnpm -r test`"     | those two plus `cargo test --doc --workspace`                                                                            | `justfile:89` — `test: test-rust test-doc test-web`                                                                                                                                                                      |
+| `just test-e2e` boots "`compose.yml` + `compose.e2e.yml`"               | those two **plus `compose.demo.yml`**                                                                                    | `justfile:197` `test-e2e` — it depends on `gen-demo-keys` and uses `demo_compose`; MVP item 6 records why (without the demo overlay no merchant is registered and every spec answered `invalid_client`)                  |
+| `just ci` "runs everything CI runs, in CI's order"                      | CI's self-checks, `rust`, `web` and supply-chain steps, in CI's order — **not** `e2e (compose)` or `deploy (helm chart)` | `justfile:1437` against `.github/workflows/ci.yml`'s six jobs. The justfile's own comment makes the same overstatement and was left alone; it is out of this pass's scope                                                |
+| — (absent)                                                              | `just verify-ignored`: **0 ignored, 46 test binaries, 1550 tests listed**                                                | **measured on this tree**, `just verify-ignored`, 2026-09-07. The old README asserted the 0 without the other two numbers the recipe also pins                                                                           |
 
 ### 2.9 The Stack section
 
@@ -258,16 +258,16 @@ was corrected, so that this pass's diff is one file plus its record.
 Run on this branch, on the final head, with `CARGO_BUILD_JOBS=4` and the
 `.nvmrc` Node (`v22.23.2`):
 
-| Gate | Result |
-|---|---|
-| `just verify` | **ok** — "the eleven gates above passed; the verify-docs report is advisory" |
-| `cargo xtask verify-links` | ok — 946 repository link(s) in 174 tracked markdown file(s) resolve to a tracked path |
-| `cargo xtask verify-status` | ok — 1 unimplemented item(s), all declared and all still in shipping code |
-| `cargo xtask verify-no-mocks` | ok — no test double reachable from a shipping binary |
-| `just verify-ignored` | 0 ignored (expected 0), 46 test binaries (expected 46), 1550 total (minimum 1080) |
+| Gate                           | Result                                                                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                  | **ok** — "the eleven gates above passed; the verify-docs report is advisory"                                                       |
+| `cargo xtask verify-links`     | ok — 946 repository link(s) in 174 tracked markdown file(s) resolve to a tracked path                                              |
+| `cargo xtask verify-status`    | ok — 1 unimplemented item(s), all declared and all still in shipping code                                                          |
+| `cargo xtask verify-no-mocks`  | ok — no test double reachable from a shipping binary                                                                               |
+| `just verify-ignored`          | 0 ignored (expected 0), 46 test binaries (expected 46), 1550 total (minimum 1080)                                                  |
 | `cargo xtask verify-citations` | **not run** — it needs the network and a GitHub token, and this pass added no CI-run, PR or issue citation to any tracked document |
 
 `just verify` was green on the base commit before any edit, so its green here
-is a *no regression* result and not evidence about the README's content. What
+is a _no regression_ result and not evidence about the README's content. What
 is evidence about the content is §2's table of sources, every row of which
 names a file in this tree.

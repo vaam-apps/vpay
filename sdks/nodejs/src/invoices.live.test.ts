@@ -97,7 +97,10 @@ describe("invoices against a running vpay", () => {
 
     const read = await client.invoices.retrieve(draft.id);
     expect(read.lines.data).toHaveLength(2);
-    const summed = read.lines.data.reduce((total, line) => total + line.amount, 0);
+    const summed = read.lines.data.reduce(
+      (total, line) => total + line.amount,
+      0,
+    );
     expect(summed).toBe(read.amount_due);
     expect(read.number).toBe(open.number);
 

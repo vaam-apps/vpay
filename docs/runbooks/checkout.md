@@ -88,7 +88,7 @@ Four things in that snippet are decisions, not incidental:
   computed from the catalogue server-side. A browser cannot send a wrong amount
   because it cannot send an amount.
 - **`Idempotency-Key`s are derived from the order id**, not random, so every
-  retry of the *same* order sends the same key and cannot leave vpay holding two
+  retry of the _same_ order sends the same key and cannot leave vpay holding two
   intents or two sessions for one order. It does **not** deduplicate two
   separate checkout submissions: pressing "Pay" twice creates two orders with
   two ids, and vpay is right to create both.
@@ -112,7 +112,7 @@ Do not move it into the query string, and do not log the `url`.
 ## 2. Embedded: vpay's page in an iframe on yours
 
 **The shape.** Your server creates the PaymentIntent as above but stops there;
-your *page* asks your server for a session `client_secret` and hands it to
+your _page_ asks your server for a session `client_secret` and hands it to
 `@vaam-apps/vpay-stripe-js`, which frames vpay's page.
 
 **Your server** — `examples/shop/src/server/orders.ts`, `embeddedClientSecret`:
@@ -179,7 +179,7 @@ Three things worth knowing before you debug this at 2 a.m.:
 **Do not mark an order paid from the return page.** The payer arriving back at
 your `success_url` means the payer's browser was pointed at it — nothing more.
 vpay's own page reads the outcome from an authenticated status query, and the
-thing that tells *you* is a signed webhook.
+thing that tells _you_ is a signed webhook.
 
 `examples/shop/src/server/webhook.ts`:
 
@@ -231,6 +231,7 @@ With `just demo` green ([demo.md](demo.md)) and the default ports:
    a payer-actionable one — a "Try again" that places a **new** order.
    Orange's own numbers are listed there too and **do not work from a
    browser**; the panel says why, above the table.
+
 5. **You land on `/orders/{id}/return`.** It says "we are confirming your
    payment" and polls every two seconds — the **shop's** database, not vpay.
 6. **Within a few seconds it turns to "Paid"**, because vpay's worker delivered
@@ -286,7 +287,7 @@ it**, and it is worth knowing which one you are looking at:
    link is wrong. This is what you see rendered: "This page will not load here."
 
 **Which of the two you have actually observed matters.** Everything this
-repository has *measured* is the second one: Cypress strips
+repository has _measured_ is the second one: Cypress strips
 `Content-Security-Policy` from every document it proxies, so
 `shop-embedded.cy.ts` asserts the header **as the server sends it** (with
 `cy.request`) and then watches the page's own origin check refuse an
@@ -306,16 +307,16 @@ unable to embed with nothing to read.
 
 ## 6. When something goes wrong
 
-| Symptom | Cause |
-|---|---|
-| `POST /v1/checkout/sessions` answers `checkout_not_configured` | The deployment has no `checkout.public_base_url`. It answers **500**, not 503 — see [../flows/hosted-checkout.md](../flows/hosted-checkout.md)'s last section for why that is a maintainer's decision and not an oversight |
-| `create` is a `400` naming `payment_intent` | The intent must be `requires_payment_method`, have no charge, and have no other open session. One open session per intent is a database index, not just a check |
-| The payer's page says "invalid link" | The `url` lost its `#fragment` — something copied it through a redirect, a logger, or a link with a `?query` and no fragment |
-| The embedded iframe is an empty box | The page never painted, so no `vpay:resize` arrived. Browser console, not server log |
-| The framed page says "This page will not load here" | The framing origin is not in that merchant's `checkout_origins`. §5 |
-| `session.url` resolves to nothing | `checkout.public_base_url` and the page's actual origin disagree. Nothing logs a port; compare the two by hand |
-| The order never turns `paid` although vpay says `succeeded` | Your webhook endpoint. Check the signature secret on both sides, and that you are verifying the **raw** bytes |
-| Every token request is `invalid_client` and everything else is right | Your assertion's `aud`. It must be vpay's own token endpoint, not the URL you POST to, if your server reaches vpay by an internal name — [../flows/merchant-auth.md](../flows/merchant-auth.md) |
+| Symptom                                                              | Cause                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/checkout/sessions` answers `checkout_not_configured`       | The deployment has no `checkout.public_base_url`. It answers **500**, not 503 — see [../flows/hosted-checkout.md](../flows/hosted-checkout.md)'s last section for why that is a maintainer's decision and not an oversight |
+| `create` is a `400` naming `payment_intent`                          | The intent must be `requires_payment_method`, have no charge, and have no other open session. One open session per intent is a database index, not just a check                                                            |
+| The payer's page says "invalid link"                                 | The `url` lost its `#fragment` — something copied it through a redirect, a logger, or a link with a `?query` and no fragment                                                                                               |
+| The embedded iframe is an empty box                                  | The page never painted, so no `vpay:resize` arrived. Browser console, not server log                                                                                                                                       |
+| The framed page says "This page will not load here"                  | The framing origin is not in that merchant's `checkout_origins`. §5                                                                                                                                                        |
+| `session.url` resolves to nothing                                    | `checkout.public_base_url` and the page's actual origin disagree. Nothing logs a port; compare the two by hand                                                                                                             |
+| The order never turns `paid` although vpay says `succeeded`          | Your webhook endpoint. Check the signature secret on both sides, and that you are verifying the **raw** bytes                                                                                                              |
+| Every token request is `invalid_client` and everything else is right | Your assertion's `aud`. It must be vpay's own token endpoint, not the URL you POST to, if your server reaches vpay by an internal name — [../flows/merchant-auth.md](../flows/merchant-auth.md)                            |
 
 ## Status
 

@@ -3,20 +3,20 @@
 Operational procedures. Each answers: how do I know this is happening, what do I
 do, and how do I know it is fixed.
 
-| Runbook | Trigger | Alert |
-|---|---|---|
-| [unresolved-charges.md](unresolved-charges.md) | A charge passed 24h with no terminal answer | `VpayUnresolvedChargesRising` |
-| [provider-error-rate.md](provider-error-rate.md) | Failed rail calls rising as a share of all calls (any `error_kind`) | `VpayProviderErrorRateHigh` |
-| [worker-queue.md](worker-queue.md) | A dead-lettered job, a stranded lease, or a rail contradicting a settled charge | `VpayJobQueueBehind`, `VpayJobsDeadLettered` |
-| [webhook-delivery-failures.md](webhook-delivery-failures.md) | A delivery in `exhausted`, an endpoint with no signing secret, or a secret rotation | — |
-| [migrations.md](migrations.md) | A binary exiting 78 with `migration <n> was previously applied but has been modified` | — |
-| [release.md](release.md) | Cutting a `v*` tag, verifying an image signature, pinning a digest in Helm values | — |
-| [deploy-and-rollback.md](deploy-and-rollback.md) | A `helm upgrade`, a rollback, or a pod exiting 78/69/1 during a rollout | — |
-| [rotate-signing-key.md](rotate-signing-key.md) | Rotating the OAuth signing key; a server crash-looping on a retired `kid` | — |
-| [rotate-rail-credentials.md](rotate-rail-credentials.md) | Rotating an MTN or Orange credential; revoking a merchant client (ADR-0010's dual-authority check) | — |
-| [restore-from-backup.md](restore-from-backup.md) | Restoring a database, and the quarterly drill [ADR-0013](../adr/0013-database-backups-and-retention.md) proposes | — |
-| [demo.md](demo.md) | Bringing vpay up from nothing and walking six payments through both rails — the one page here whose output is a real run | — |
-| [checkout.md](checkout.md) | Integrating vpay's own payment page, hosted and embedded — and seeing an unregistered origin refused | — |
+| Runbook                                                      | Trigger                                                                                                                  | Alert                                        |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| [unresolved-charges.md](unresolved-charges.md)               | A charge passed 24h with no terminal answer                                                                              | `VpayUnresolvedChargesRising`                |
+| [provider-error-rate.md](provider-error-rate.md)             | Failed rail calls rising as a share of all calls (any `error_kind`)                                                      | `VpayProviderErrorRateHigh`                  |
+| [worker-queue.md](worker-queue.md)                           | A dead-lettered job, a stranded lease, or a rail contradicting a settled charge                                          | `VpayJobQueueBehind`, `VpayJobsDeadLettered` |
+| [webhook-delivery-failures.md](webhook-delivery-failures.md) | A delivery in `exhausted`, an endpoint with no signing secret, or a secret rotation                                      | —                                            |
+| [migrations.md](migrations.md)                               | A binary exiting 78 with `migration <n> was previously applied but has been modified`                                    | —                                            |
+| [release.md](release.md)                                     | Cutting a `v*` tag, verifying an image signature, pinning a digest in Helm values                                        | —                                            |
+| [deploy-and-rollback.md](deploy-and-rollback.md)             | A `helm upgrade`, a rollback, or a pod exiting 78/69/1 during a rollout                                                  | —                                            |
+| [rotate-signing-key.md](rotate-signing-key.md)               | Rotating the OAuth signing key; a server crash-looping on a retired `kid`                                                | —                                            |
+| [rotate-rail-credentials.md](rotate-rail-credentials.md)     | Rotating an MTN or Orange credential; revoking a merchant client (ADR-0010's dual-authority check)                       | —                                            |
+| [restore-from-backup.md](restore-from-backup.md)             | Restoring a database, and the quarterly drill [ADR-0013](../adr/0013-database-backups-and-retention.md) proposes         | —                                            |
+| [demo.md](demo.md)                                           | Bringing vpay up from nothing and walking six payments through both rails — the one page here whose output is a real run | —                                            |
+| [checkout.md](checkout.md)                                   | Integrating vpay's own payment page, hosted and embedded — and seeing an unregistered origin refused                     | —                                            |
 
 The `Alert` column names the rule in
 `deploy/helm/vpay/templates/prometheusrule.yaml` whose `runbook_url` points at
@@ -32,7 +32,7 @@ trusted on its own:
   the seam for each). What is still untrue is the other half: no Prometheus
   has ever polled a vpay process, the chart's `ServiceMonitor` is off by
   default, and `metrics.prometheusRule.enabled` is `false`. So these rules
-  have never been *evaluated* against real series — the metric existing and
+  have never been _evaluated_ against real series — the metric existing and
   the alert working are two claims, and only the first has evidence.
 - **Every threshold is proposed, not derived** (step-6 decision (5)). The two
   runbooks that predate the chart contained no numbers to transcribe
@@ -45,7 +45,7 @@ trusted on its own:
 
 `VpayPageableErrorEvents` has no runbook of its own and points here: it fires
 on any error [ADR-0011](../adr/0011-error-modelling.md) classifies
-`Severity::Page`, and the classification *is* the alert — there is no
+`Severity::Page`, and the classification _is_ the alert — there is no
 threshold to tune.
 
 **Status:** written from the design, never exercised against a running system.
@@ -55,7 +55,7 @@ exists. See [../status.md](../status.md).
 **[migrations.md](migrations.md) is a third kind of page** (new 2026-09-07,
 issue #76). It describes no alert — there is no metric for "a migration file
 was edited", and the symptom is a process that will not start — and it is the
-only page here whose central `UPDATE` is *executed by the test suite*:
+only page here whose central `UPDATE` is _executed by the test suite_:
 `the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
 parses the SQL out of that markdown file, runs it against a real Postgres put
 into the broken state, and fails if the migrator does not then run clean. What
@@ -88,7 +88,7 @@ between `vpay-api`'s confirm and `vpay-worker`'s first poll (its §9). ~~`just
 demo` end to end has not been observed green~~ **— corrected 2026-09-04: that
 race was fixed the same day (`docs/status.md`'s confirm/worker race row).** What
 exists is this: **one green run from nothing (lane A's rebased branch,
-2026-09-04, *without* lane G; the race is timing-dependent and did not fire),
+2026-09-04, _without_ lane G; the race is timing-dependent and did not fire),
 lane A's own earlier count was two greens in six attempts and zero for three
 from nothing, lane G did not re-run the demo. Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in): `just demo` from nothing six times, **four green** (six outcomes for six each, exit 0); the two failures were the VM's Postgres answering single statements in 14–36 s under host I/O pressure, with the settlement and the webhook both landing in the worker's log after the demo's budgets; `write_matched_no_row` appeared in no run. Three from nothing is met in count, not consecutively.** **Updated 2026-09-04
 (Step 9): `just demo` from nothing ran green three times in a row in the
@@ -121,5 +121,5 @@ that page is evidence about MTN or Orange.
   `.github/workflows/release.yml` had never run, and no image existed to
   verify a signature on. **Updated 2026-09-05: the workflow has since run 13
   times on `master`, 12 green, and the latest (`33929374661`) published and
-  cosign-signed all four images** — so only the *tag-cutting* half of that
+  cosign-signed all four images** — so only the _tag-cutting_ half of that
   runbook is still unfollowed; see its header for the digests.

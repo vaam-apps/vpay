@@ -1,17 +1,17 @@
-import type { Metadata } from 'next';
-import { headers } from 'next/headers';
+import type { Metadata } from "next";
+import { headers } from "next/headers";
 
-import { runtimeConfig } from '../src/config/runtime';
-import { THEME, themeStyleSheet } from '../src/config/theme';
-import { pickLocale } from '../src/i18n/index';
+import { runtimeConfig } from "../src/config/runtime";
+import { THEME, themeStyleSheet } from "../src/config/theme";
+import { pickLocale } from "../src/i18n/index";
 
-import './globals.css';
+import "./globals.css";
 
 /**
  * React 19 dedupes a hoisted `<style>` by this key and never renders two.
  * It is not a URL and nothing fetches it.
  */
-export const THEME_OVERRIDE_HREF = 'vpay-checkout-theme-override';
+export const THEME_OVERRIDE_HREF = "vpay-checkout-theme-override";
 
 /**
  * React orders hoisted styles by the order their precedences were first seen,
@@ -19,11 +19,11 @@ export const THEME_OVERRIDE_HREF = 'vpay-checkout-theme-override';
  * after it. Specificity would win anyway (`:root[data-theme=…]` beats
  * daisyUI's `[data-theme=…]`); the order is belt as well as braces.
  */
-export const THEME_OVERRIDE_PRECEDENCE = 'vpay-theme';
+export const THEME_OVERRIDE_PRECEDENCE = "vpay-theme";
 
 export const metadata: Metadata = {
-  title: 'vpay checkout',
-  description: 'Pay by mobile money.',
+  title: "vpay checkout",
+  description: "Pay by mobile money.",
 };
 
 /**
@@ -56,9 +56,13 @@ export const metadata: Metadata = {
  * resource rather than as a child of a host element, so nothing else in the
  * head has to match. `precedence` also puts it after Next's own stylesheet.
  */
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const requestHeaders = await headers();
-  const locale = pickLocale(requestHeaders.get('accept-language'));
+  const locale = pickLocale(requestHeaders.get("accept-language"));
   const { branding } = runtimeConfig();
   const themeOverride = themeStyleSheet(branding.primaryColor);
   return (
@@ -68,7 +72,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           // No `data-testid`: React strips every prop but its own from a
           // hoisted style, so one here would be a selector nothing could ever
           // match. `layout.test.tsx` asserts the rendered element instead.
-          <style href={THEME_OVERRIDE_HREF} precedence={THEME_OVERRIDE_PRECEDENCE}>
+          <style
+            href={THEME_OVERRIDE_HREF}
+            precedence={THEME_OVERRIDE_PRECEDENCE}
+          >
             {themeOverride}
           </style>
         )}

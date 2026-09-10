@@ -2,12 +2,12 @@
 
 Why the code in `backends/crates/vpay-config` looks the way it does, and the
 boot sequence the one binary in `backends/apps` follows, in both of its
-long-running modes. The crates' own doc comments say *what* each item is and
+long-running modes. The crates' own doc comments say _what_ each item is and
 link here.
 
 Tier: an [ADR](../adr/) records a decision, a [flow](../flows/) describes a
 process, and a reference page like this one explains why a particular piece of
-code is shaped the way it is. The *process* this page's boot section supports is
+code is shaped the way it is. The _process_ this page's boot section supports is
 [configuration.md](../flows/configuration.md); what follows is the code's side
 of it.
 
@@ -29,24 +29,24 @@ named function, so "what happens before what" is answerable by reading a dozen
 lines.
 
 They were two binaries, `vpay-server` and `vpay-worker-bin`, until 2026-09-07
-(issue #77). "The same steps in the same order" was then a *convention* held up
+(issue #77). "The same steps in the same order" was then a _convention_ held up
 by two near-identical `main`s and by the tests below; it is now a fact of the
 code — steps 1-3 run once in `main`'s `run`, before the subcommand is even
 dispatched, and steps 4 onward are `vpay_api::boot` calls both modes make.
 
-| # | Step | Where |
-|---|---|---|
-| 1 | Install SIGINT/SIGTERM handlers | `vpay_config::ShutdownSignals::install` |
-| 2 | Install the rustls `CryptoProvider` | each binary's `install_crypto_provider` |
-| 3 | Install the Prometheus recorder | each binary's `install_recorder` |
-| 4 | Initialise tracing per `--log-format` | each binary's `init_tracing` |
-| 5 | Build the one outbound HTTP client the rails share | `vpay_provider::http::client_with_timeouts` |
-| 6 | Key this binary's linked adapters by `providers.code` | `vpay_api::boot::adapters_by_code` |
-| 7 | Load, resolve `${ENV}` in, and validate the YAML | `vpay_api::boot::load_config` → `vpay_config::Config::load` |
-| 8 | Join the YAML's rails against the linked adapters, and refuse an incoherent one | `vpay_api::boot::boot_seeds` |
-| 9 | Connect to Postgres and run migrations | `vpay_api::boot::open_migrated_database` |
-| 10 | Reconcile `currencies` and `providers` (boot step 4 of the flow doc) | `vpay_api::boot::reconcile_reference_tables` |
-| 11 | Everything binary-specific (signing key, listeners, the job loop) | each `main.rs` |
+| #   | Step                                                                            | Where                                                       |
+| --- | ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 1   | Install SIGINT/SIGTERM handlers                                                 | `vpay_config::ShutdownSignals::install`                     |
+| 2   | Install the rustls `CryptoProvider`                                             | each binary's `install_crypto_provider`                     |
+| 3   | Install the Prometheus recorder                                                 | each binary's `install_recorder`                            |
+| 4   | Initialise tracing per `--log-format`                                           | each binary's `init_tracing`                                |
+| 5   | Build the one outbound HTTP client the rails share                              | `vpay_provider::http::client_with_timeouts`                 |
+| 6   | Key this binary's linked adapters by `providers.code`                           | `vpay_api::boot::adapters_by_code`                          |
+| 7   | Load, resolve `${ENV}` in, and validate the YAML                                | `vpay_api::boot::load_config` → `vpay_config::Config::load` |
+| 8   | Join the YAML's rails against the linked adapters, and refuse an incoherent one | `vpay_api::boot::boot_seeds`                                |
+| 9   | Connect to Postgres and run migrations                                          | `vpay_api::boot::open_migrated_database`                    |
+| 10  | Reconcile `currencies` and `providers` (boot step 4 of the flow doc)            | `vpay_api::boot::reconcile_reference_tables`                |
+| 11  | Everything binary-specific (signing key, listeners, the job loop)               | each `main.rs`                                              |
 
 ### Why this order
 
@@ -93,18 +93,18 @@ deployment that would keep taking charges on it.
 
 Two things make it safe to run the reconcile from **both** binaries rather than
 nominating one as the writer, and neither is "idempotence". Idempotence covers
-*repeating* a reconcile, which is not what happens during a rollout — there, two
-of them *overlap*:
+_repeating_ a reconcile, which is not what happens during a rollout — there, two
+of them _overlap_:
 
-* they cannot interleave, because the reconcile's transaction opens by taking
+- they cannot interleave, because the reconcile's transaction opens by taking
   `vpay_db::lock_keys::CONFIG_RECONCILE` (proven taken by
   `reconcile_waits_for_the_boot_lock_and_proceeds_once_it_is_released`);
-* they cannot disagree about *what* to write, because the seeds come from one
+- they cannot disagree about _what_ to write, because the seeds come from one
   shared derivation — `vpay_api::boot::boot_seeds`, over each binary's own
   linked rails.
 
 What is still true and worth stating plainly: two processes configured with
-*different* YAML will each write their own view, last commit winning. Nothing
+_different_ YAML will each write their own view, last commit winning. Nothing
 detects that, and nothing should — the lock makes the outcome one of the two
 inputs rather than a mixture of both.
 
@@ -140,7 +140,7 @@ were, and where each one went:
   second shipping binary is a plausible future.
 - **`install_crypto_provider`, `init_tracing`, `install_recorder`,
   `exit_code_for`.** One of each, in `main.rs`. The `anyhow`-at-the-boundary
-  argument that made a *library* helper impossible is unaffected and still
+  argument that made a _library_ helper impossible is unaffected and still
   holds: `exit_code_for` still takes an `&anyhow::Error` and still lives in the
   binary, where ADR-0011 puts it. What changed is only that there is one binary
   to put it in. `StartupError`'s two variants — `MissingSigningKeyFile` and
@@ -185,7 +185,7 @@ the `Termination` impl for `Result` prints the error with `Debug` and always
 exits `1`, which is exactly the "a supervisor cannot tell 'fix the YAML' from
 'Postgres is down'" problem ADR-0011 was written to fix. The message goes to
 stderr with `eprintln!` rather than `tracing::error!`, because the earliest
-failures happen *before* a subscriber is installed and a `tracing` event would be
+failures happen _before_ a subscriber is installed and a `tracing` event would be
 dropped on the floor; `{error:#}` renders the whole context chain on one line, so
 the `.context(..)` calls actually reach an operator.
 
@@ -200,7 +200,7 @@ the `.context(..)` calls actually reach an operator.
 The split is deliberate. clap's own "required" would make the flag mandatory for
 `--help` and for every subcommand a binary might grow, and it would report a
 missing value as a usage error with clap's exit code rather than as a classified
-startup failure. Requiring them *at the point of use* means each one produces a
+startup failure. Requiring them _at the point of use_ means each one produces a
 typed leaf — `ConfigError::MissingPath`, or the binary's own `StartupError` —
 that `exit_code_for` classifies as `Category::Configuration` and turns into exit
 `78`, "fix the deploy".
@@ -217,31 +217,31 @@ and the one place in this CLI where the `VPAY_` prefix does not apply, which
 is worth knowing because a message that gets it wrong sends an operator to
 export a variable nothing reads.
 
-Which inputs a process requires is a property of *that process*, which is why
+Which inputs a process requires is a property of _that process_, which is why
 `StartupError` is defined in the binary rather than in this crate. Which inputs
-a *mode* requires is likewise a property of that mode, and the CLI still says
+a _mode_ requires is likewise a property of that mode, and the CLI still says
 so: `vpay-server worker --oauth-signing-key-file …` is a parse error, and
 `vpay-server --worker-concurrency …` with no subcommand is too.
 
 ### serve-only flags are refused beside `worker`, in both positions
 
-`vpay-worker-bin` could not be handed the signing key *at all* — the flag did
+`vpay-worker-bin` could not be handed the signing key _at all_ — the flag did
 not exist on that binary. `vpay-server` accepts `--oauth-signing-key-file`
 because it must, so folding the two binaries into one (issue #77) put the
 flag within reach of the worker's command line. Two positions, two
 mechanisms, one outcome:
 
-| Command line | Refused by |
-|---|---|
+| Command line                                    | Refused by                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `vpay-server worker --oauth-signing-key-file …` | clap — the flag is on `ServerArgs`, is not `global`, and so is not on the subcommand |
-| `vpay-server --oauth-signing-key-file … worker` | `vpay_config::cli`'s `SERVE_ONLY_FLAGS`, checked in `ServerArgs::parse_checked` |
+| `vpay-server --oauth-signing-key-file … worker` | `vpay_config::cli`'s `SERVE_ONLY_FLAGS`, checked in `ServerArgs::parse_checked`      |
 
 `--bind` is the second entry in that table and behaves identically: the job
 loop routes no traffic, so a `--bind` on its command line would open a port
 nothing serves.
 
 The second row is not clap's doing and cannot be. `args_conflicts_with_subcommands`
-would express it declaratively and is unusable here — it conflicts *every*
+would express it declaratively and is unusable here — it conflicts _every_
 top-level argument with every subcommand, and `--config` working on either
 side of `worker` is precisely what `CommonArgs`' `global = true` exists for.
 So the check reads `ArgMatches::value_source` after the parse and refuses
@@ -257,7 +257,7 @@ confused and is told; a deployment that hands both containers one env block
 is not, and must not become a `CrashLoopBackOff`.
 
 **None of this is the guarantee, and the CLI is the wrong place to look for
-one.** What keeps the key away from the worker is where it is *mounted*: the
+one.** What keeps the key away from the worker is where it is _mounted_: the
 worker Deployment templates no `signingKey` volume and sets no
 `VPAY_OAUTH_SIGNING_KEY_FILE` (`deploy/helm/vpay/templates/deployment-worker.yaml`,
 verified on the rendered output — its `volumes` list is empty where the
@@ -292,25 +292,25 @@ the `ClientStore` that converts these types into a real `ClientRegistration`,
 belong to the auth-wiring work that owns `backends/crates/vpay-api/**`, not to
 config loading. These types are shaped to make that conversion mechanical:
 
-| This type | `ClientRegistration` field | Fixed by client kind, not YAML |
-|---|---|---|
-| `MerchantClient::client_id` / `DashboardClient::client_id` | `client_id` | |
-| `MerchantClient::jwks` | `jwks` (wrapped in `Some`) | |
-| `MerchantClient::grant_types` | `grant_types` | |
-| `MerchantClient::scopes` | `scopes` | |
-| `MerchantClient::allowed_audiences` | `allowed_audiences` | |
-| `DashboardClient::redirect_uris` | `redirect_uris` | |
-| `DashboardClient::scope` | `scopes` (wrapped in a single-element `vec![]`) | |
-| — | `client_secret_hash` | always `None` — see "No secret, ever" below |
-| — | `token_endpoint_auth_method` | `PrivateKeyJwt` for merchants, `NoAuth` for the dashboard (RFC 7523 / public client) |
-| — | `require_pkce` | always `false` for merchants (server-to-server, no browser step), always `true` for the dashboard |
+| This type                                                  | `ClientRegistration` field                      | Fixed by client kind, not YAML                                                                    |
+| ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `MerchantClient::client_id` / `DashboardClient::client_id` | `client_id`                                     |                                                                                                   |
+| `MerchantClient::jwks`                                     | `jwks` (wrapped in `Some`)                      |                                                                                                   |
+| `MerchantClient::grant_types`                              | `grant_types`                                   |                                                                                                   |
+| `MerchantClient::scopes`                                   | `scopes`                                        |                                                                                                   |
+| `MerchantClient::allowed_audiences`                        | `allowed_audiences`                             |                                                                                                   |
+| `DashboardClient::redirect_uris`                           | `redirect_uris`                                 |                                                                                                   |
+| `DashboardClient::scope`                                   | `scopes` (wrapped in a single-element `vec![]`) |                                                                                                   |
+| —                                                          | `client_secret_hash`                            | always `None` — see "No secret, ever" below                                                       |
+| —                                                          | `token_endpoint_auth_method`                    | `PrivateKeyJwt` for merchants, `NoAuth` for the dashboard (RFC 7523 / public client)              |
+| —                                                          | `require_pkce`                                  | always `false` for merchants (server-to-server, no browser step), always `true` for the dashboard |
 
 `token_endpoint_auth_method` and `require_pkce` are not YAML fields on purpose:
-they are invariants of *being* a merchant client or *being* the dashboard
+they are invariants of _being_ a merchant client or _being_ the dashboard
 client, never a per-deployment choice, so there is nothing for an operator to
 configure — or misconfigure — there. `grant_types` stays a real YAML field on
 `MerchantClient` specifically because ADR-0010 needs something to enforce
-*against*: "declares any grant other than `client_credentials` is fatal" is a
+_against_: "declares any grant other than `client_credentials` is fatal" is a
 validation rule over a value an operator could actually type, not a tautology
 over a hardcoded constant.
 
@@ -330,7 +330,7 @@ feature.
 
 Step 9. Two additions, one deployment-wide and one per merchant, and the
 reason they are separate is that they answer different questions:
-*where is vpay's own checkout page*, and *who may frame it*.
+_where is vpay's own checkout page_, and _who may frame it_.
 
 ### `checkout.public_base_url`
 
@@ -369,7 +369,7 @@ app on its own host (`https://checkout.example`) or under a path on the API
 host (`https://api.example/checkout`) is a decision the Step 9 plan reserves
 for the maintainer, and the chart templates both — so refusing a path here
 would be this crate taking a decision that was reserved. A query or a fragment
-*is* refused, because vpay appends path segments to this value and there is no
+_is_ refused, because vpay appends path segments to this value and there is no
 correct way to append a path to a URL that already has one.
 
 A trailing slash is accepted and normalised away once, in
@@ -379,7 +379,7 @@ otherwise produce `//c/…`, which is a protocol-relative URL naming a
 different host entirely.
 
 Stub markers (`localhost`, `wiremock`) are **not** refused, unlike
-`validate_host`. Those markers describe a *rail* host that a livemode
+`validate_host`. Those markers describe a _rail_ host that a livemode
 deployment must never talk to; this is a page a developer's own browser opens,
 and the livemode `https` rule already refuses `http://localhost:3001`.
 
@@ -411,11 +411,11 @@ logs.
 should have.** It means no site may embed; the page answers `frame-ancestors
 'none'`, and hosted checkout is unaffected because it is never framed.
 
-Uniqueness is checked across *every* merchant, before any single origin's
+Uniqueness is checked across _every_ merchant, before any single origin's
 shape, for the reason the publishable-key walk runs in that order — and the
 consequence is sharper here than for a key. The checkout app looks the list up
 **by publishable key**, so two merchants sharing an origin means whichever of
-them a payer's key names decides whether the *other* merchant's site may frame
+them a payer's key names decides whether the _other_ merchant's site may frame
 the page: a security answer with two values depending on iteration order.
 
 Origins with **no** `checkout.public_base_url` are refused
@@ -427,7 +427,7 @@ hosted-checkout-only deployment.
 ### An origin must be spelled the way a browser spells it
 
 Every rule above is about a value that is not an origin. This one is about a
-value that *is* one, spelled a way the thing that consumes it does not
+value that _is_ one, spelled a way the thing that consumes it does not
 recognise: `https://Shop.example`, `https://shop.example:443` and
 `https://shöp.example` all parse, name a host, are `https`, and carry no path,
 query, fragment or credentials.
@@ -436,7 +436,7 @@ The checkout app filters its `frame-ancestors` list by comparing each entry
 against the browser's `URL.origin`
 (`frontends/apps/checkout/src/lib/origins.ts`) — lower-cased host, IDNA-encoded
 to ASCII, default port elided. An entry that differs from that is an entry the
-browser never sees, and the symptom is *silence*: the list loads, the route
+browser never sees, and the symptom is _silence_: the list loads, the route
 answers `200`, and the merchant's site simply cannot frame the page.
 
 So the raw text must equal `parsed.origin().ascii_serialization()`, and
@@ -481,7 +481,7 @@ and every other scheme is refused a line earlier. The branch is kept anyway —
 a total expression rather than an assumption about a third-party parser's
 exhaustiveness, the same posture `vpay_core::ids::push_base32`'s
 `.unwrap_or(b'0')` takes — and
-`a_hostless_http_url_never_reaches_the_host_branch` is what *proves* it
+`a_hostless_http_url_never_reaches_the_host_branch` is what _proves_ it
 unreachable rather than merely asserting it. It is a tripwire on a dependency:
 if a future `url` release started accepting an empty host, that test says so
 before the branch quietly becomes the only thing between a config file and a
@@ -491,7 +491,7 @@ payer link with no host in it.
 
 ## Shutdown and drain
 
-`axum::serve(..).with_graceful_shutdown(..)` waits *indefinitely* for in-flight
+`axum::serve(..).with_graceful_shutdown(..)` waits _indefinitely_ for in-flight
 connections once its signal future resolves — there is no built-in bound on that
 wait. `vpay-server` adds one by observing the shutdown signal twice through a
 oneshot: axum's graceful-shutdown future uses it to start draining, and a second
@@ -518,7 +518,7 @@ A container orchestrator (docker compose, k8s) already treats the container as
 retry or block shutdown on a non-zero exit here, so this changes nothing about
 the orchestration outcome. But unlike the clean path, this exit means real
 in-flight work was cut off rather than finished, which is not "successful" from
-the process's own point of view. A non-zero exit lets anything that *does* watch
+the process's own point of view. A non-zero exit lets anything that _does_ watch
 the exit code — a supervisor, `docker inspect --format
 '{{.State.ExitCode}}'`, a monitoring rule on container restarts — tell a forced
 cutoff apart from a clean drain without parsing logs. `1` rather than a
@@ -532,7 +532,7 @@ so another worker re-runs it at once, and every handler is a compare-and-swap so
 the re-run is a no-op if the first pass committed — but repeated timeouts mean
 the grace period is below what a poll actually takes.
 
-Failures of the *observability* listener on the way out are logged and never
+Failures of the _observability_ listener on the way out are logged and never
 propagated: the observability port is not a payment path, and letting it change
 the exit code would make the forced-cutoff `1` ambiguous. The timed-out path
 calls `std::process::exit(1)` and takes that task with it, which is correct
@@ -556,7 +556,7 @@ process default" row tracks it as a documented landmine.
 The one ordering constraint is "before the first `reqwest::Client` is built", so
 the install sits at the top of each binary's boot, above tracing init, where no
 future edit can slip a client construction in ahead of it. It is deliberately
-*not* done in a library: installing a process-wide default from a library takes
+_not_ done in a library: installing a process-wide default from a library takes
 the decision out of the application's hands (the reasoning `sdks/rust` records
 for why it hands reqwest a pre-built `ClientConfig` instead).
 
@@ -569,7 +569,7 @@ stays because the hazard it guards is one `use` away, not gone:
 device/client-credentials flows, and tomorrow's first HTTPS-speaking rail adapter
 is another candidate. Note that this call is **not** sufficient protection for
 either: inside the `FROM scratch` runtime image a bare `reqwest::Client::new()`
-panics on the *trust store* ("No CA certificates were loaded from the system")
+panics on the _trust store_ ("No CA certificates were loaded from the system")
 whether or not a provider is installed. `vpay_provider::http::client` is the only
 client constructor that works there, and any new outbound HTTP in either binary
 should use it.
@@ -586,7 +586,7 @@ startup crash.
 
 `vpay_core::metrics::record_build_info` stamps the gauge from
 `vpay_core::metrics::git_sha`, which is `option_env!("VPAY_GIT_SHA")` resolved
-when *`vpay-core`* was compiled (that crate's `build.rs` puts the variable in
+when _`vpay-core`_ was compiled (that crate's `build.rs` puts the variable in
 cargo's fingerprint, so changing it rebuilds rather than silently reusing the
 previous label). `backends/Dockerfile` declares `ARG VPAY_GIT_SHA` and exports it
 into the builder stage, and `.github/workflows/release.yml` passes
@@ -595,7 +595,7 @@ into the builder stage, and `.github/workflows/release.yml` passes
 Every build that nobody passed one to — every local `cargo build`, every
 `just demo`, every `docker build` without `--build-arg` — reads `unknown`, and
 that is the honest value rather than a placeholder: deriving one from
-`git rev-parse` at runtime would report the sha of whatever tree the *process* is
+`git rev-parse` at runtime would report the sha of whatever tree the _process_ is
 standing in, which for a `FROM scratch` image is nothing at all.
 
 The recorder is installed by the application, never by a library:
@@ -603,7 +603,7 @@ The recorder is installed by the application, never by a library:
 recorder from a library takes the decision out of the application's hands and
 makes two linked libraries a startup failure. The exporter's configuration —
 which quantiles, which buckets, which idle timeout — is a property of what a
-process measures. The two *modes* measure different things — only `worker`
+process measures. The two _modes_ measure different things — only `worker`
 emits the three `vpay_jobs_*` names — but they are one process with one
 recorder, installed once in `install_recorder` ahead of the subcommand
 dispatch. This paragraph ended "which is why neither binary shares the other's
@@ -615,20 +615,20 @@ proves the recorder is installed on the worker path too.
 
 ## Why the `/v1` validator fetches its JWKS over loopback
 
-The public URL is what a *merchant* uses and what the discovery document
+The public URL is what a _merchant_ uses and what the discovery document
 advertises, but a pod is not guaranteed to be able to reach its own public
 hostname: split-horizon DNS may not resolve it inside the cluster, an ingress may
 terminate somewhere the process cannot route back through, an egress
 `NetworkPolicy` may forbid the hairpin, and a deployment behind a not-yet-warm
 DNS record would fail its first validation. All of those turn "verify a token"
-into a network dependency on infrastructure that exists to serve *inbound*
+into a network dependency on infrastructure that exists to serve _inbound_
 traffic. Loopback has none of those failure modes and reaches the same handler,
 backed by the same database rows, that a merchant's fetch would.
 
 The port comes from `TcpListener::local_addr`, not from `--bind`, because `:0` is
 a real configuration. An unspecified bind address (`0.0.0.0`, `[::]`) is mapped
 to the corresponding loopback address rather than used as-is: `0.0.0.0` means
-"listen on every interface" and is not a *destination* — connecting to it is
+"listen on every interface" and is not a _destination_ — connecting to it is
 platform-dependent, and that is not something to rely on in a payment binary. The
 address family is preserved, so an IPv6-only deployment dials `[::1]` and not
 `127.0.0.1`. A specific bind address is used verbatim: an operator who bound one
@@ -636,7 +636,7 @@ interface on purpose gets a URL on that interface.
 
 The whole round trip is an HTTP call to ourselves and could later be replaced by
 an in-process key source, which would remove a socket from the path entirely. It
-is not done because the alternative — publishing the one key *this* process holds
+is not done because the alternative — publishing the one key _this_ process holds
 — is exactly the mistake `vpay_api::op::jwks` rejects: during a rotation the JWKS
 must carry every key still inside its overlap window, which is a property of the
 database and not of this process's memory. An in-process source would have to read

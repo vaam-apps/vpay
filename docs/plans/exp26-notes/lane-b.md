@@ -67,7 +67,7 @@ pasted SHA in this file over that command.
 8. `vitest.setup.ts`: gained the same jsdom polyfills (`PointerEvent`,
    `hasPointerCapture`/`setPointerCapture`/`releasePointerCapture`,
    `ResizeObserver`) `@vpay/ui`'s own suite carries, guarded behind
-   `typeof window !== 'undefined'` — this app's *default* test environment
+   `typeof window !== 'undefined'` — this app's _default_ test environment
    is `node` (most of its suite talks to `node:http`), with individual
    files opting into `jsdom`, so the unguarded class-declaration-time
    `extends MouseEvent` in `@vpay/ui`'s copy would throw in every
@@ -91,9 +91,9 @@ target   styling_files≤1  (plan §5 and this lane's brief agree)         class
 ```
 
 **`class_tokens_distinct` target met (9 ≤ 14). `styling_files` target missed
-by one (2, not ≤1).** — *superseded 2026-09-07: both targets are met on the
+by one (2, not ≤1).** — _superseded 2026-09-07: both targets are met on the
 reviewed head, `styling_files` 1 and `class_tokens_distinct` 2. The paragraph
-below is kept as the reasoning that was wrong; see review finding 4.* The two remaining files and exactly what each keeps:
+below is kept as the reasoning that was wrong; see review finding 4._ The two remaining files and exactly what each keeps:
 
 - `app/layout.tsx` — `bg-base-100 min-h-screen` on `<body>`, which plan
   §4.1's own per-screen table lists as "unchanged (2 tokens, app chrome)".
@@ -127,19 +127,19 @@ all four lanes land.
 
 ## Gates, recipe by recipe
 
-| recipe | result | evidence |
-|---|---|---|
-| `pnpm install` | ✅ | lockfile up to date after `package.json` changes |
-| `pnpm --filter @vpay/checkout typecheck` | ✅ | clean |
-| `pnpm --filter @vpay/checkout lint` | ✅ | clean, including the six `eslint-plugin-better-tailwindcss` rules `tailwind: true` turns on |
-| `pnpm --filter @vpay/checkout test` | ✅ | **459/459, 23 files, 0 skipped** (was 448) |
-| `pnpm --filter @vpay/checkout build` | ✅ | a real `next build` — Lane A review finding 3. Compiled `.next/static/css/*.css` read directly: `.btn-primary` (1), `.badge-ghost` (1), `.alert-error` (1), `.checkbox` (35), `.card{` (1), `.select{` (8), `.fieldset` (17), `--color-primary` (8) all present |
-| `just verify-ui` | ✅ | all four checks, including the stricter colour/`className=`-scoping check Lane A's review added |
-| `just verify` | ✅ | all eleven gates, on the rebased tree; nothing under `backends/`/`schemas/` touched (`git status` confirmed empty there before running) |
-| `just test-web` | ✅ | `@vpay/checkout` 459/459; every other package's count unaffected |
-| `just lint-web` | 🔴 — **and the "pre-existing" attribution is WRONG, review finding 3** | `pnpm -r typecheck` fails on `frontends/apps/dashboard/tailwind.config.ts` (Tailwind 3's `PluginAPI` type against the now-workspace-wide `tailwindcss@4.3.3`). Reproduced identically on Lane A's unmodified reviewed head (`08d9b8e`) with zero Lane B changes applied — this lane did not cause it and cannot fix it without editing `frontends/apps/dashboard`, which is out of scope. Lane D's job (`tailwind.config.ts` deletion, plan §4.2) |
-| `just ci` | not run | the whole-revamp gate (plan §7), meant for the final merged head, same reasoning Lane A gave |
-| `just test-e2e` | 🔴 as written — **wrong, review finding 8: it completes, 11/11** | see below |
+| recipe                                   | result                                                                 | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`                           | ✅                                                                     | lockfile up to date after `package.json` changes                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `pnpm --filter @vpay/checkout typecheck` | ✅                                                                     | clean                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `pnpm --filter @vpay/checkout lint`      | ✅                                                                     | clean, including the six `eslint-plugin-better-tailwindcss` rules `tailwind: true` turns on                                                                                                                                                                                                                                                                                                                                                       |
+| `pnpm --filter @vpay/checkout test`      | ✅                                                                     | **459/459, 23 files, 0 skipped** (was 448)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `pnpm --filter @vpay/checkout build`     | ✅                                                                     | a real `next build` — Lane A review finding 3. Compiled `.next/static/css/*.css` read directly: `.btn-primary` (1), `.badge-ghost` (1), `.alert-error` (1), `.checkbox` (35), `.card{` (1), `.select{` (8), `.fieldset` (17), `--color-primary` (8) all present                                                                                                                                                                                   |
+| `just verify-ui`                         | ✅                                                                     | all four checks, including the stricter colour/`className=`-scoping check Lane A's review added                                                                                                                                                                                                                                                                                                                                                   |
+| `just verify`                            | ✅                                                                     | all eleven gates, on the rebased tree; nothing under `backends/`/`schemas/` touched (`git status` confirmed empty there before running)                                                                                                                                                                                                                                                                                                           |
+| `just test-web`                          | ✅                                                                     | `@vpay/checkout` 459/459; every other package's count unaffected                                                                                                                                                                                                                                                                                                                                                                                  |
+| `just lint-web`                          | 🔴 — **and the "pre-existing" attribution is WRONG, review finding 3** | `pnpm -r typecheck` fails on `frontends/apps/dashboard/tailwind.config.ts` (Tailwind 3's `PluginAPI` type against the now-workspace-wide `tailwindcss@4.3.3`). Reproduced identically on Lane A's unmodified reviewed head (`08d9b8e`) with zero Lane B changes applied — this lane did not cause it and cannot fix it without editing `frontends/apps/dashboard`, which is out of scope. Lane D's job (`tailwind.config.ts` deletion, plan §4.2) |
+| `just ci`                                | not run                                                                | the whole-revamp gate (plan §7), meant for the final merged head, same reasoning Lane A gave                                                                                                                                                                                                                                                                                                                                                      |
+| `just test-e2e`                          | 🔴 as written — **wrong, review finding 8: it completes, 11/11**       | see below                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ### `just test-e2e`
 
@@ -185,11 +185,11 @@ without retry.
 
 ### Decisive mutations run and confirmed (staged, tested, reverted)
 
-| mutation | result |
-|---|---|
-| `OutcomePanel` hard-codes `tone="neutral"` instead of `checkoutOutcomeTone[kind]` | **fails** — `checkout-view.test.tsx`: `AssertionError: a failure must carry a tone: expected 'mt-4 alert' to contain 'alert-error'` |
-| `MsisdnForm`'s submit button loses `type="submit"` | **fails** — `checkout-view.test.tsx`'s "leaves the MSISDN form's only submit button the submit button": `expected +0 to be 1` |
-| `theme.ts`'s `themeStyleSheet` skips the `linearRgb` null-check (an unvalidated colour reaches the output) | **fails** — 10 of `theme.test.ts`'s cases, including both XSS strings (`javascript:alert(1)`, `</style><script>`) |
+| mutation                                                                                                   | result                                                                                                                              |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `OutcomePanel` hard-codes `tone="neutral"` instead of `checkoutOutcomeTone[kind]`                          | **fails** — `checkout-view.test.tsx`: `AssertionError: a failure must carry a tone: expected 'mt-4 alert' to contain 'alert-error'` |
+| `MsisdnForm`'s submit button loses `type="submit"`                                                         | **fails** — `checkout-view.test.tsx`'s "leaves the MSISDN form's only submit button the submit button": `expected +0 to be 1`       |
+| `theme.ts`'s `themeStyleSheet` skips the `linearRgb` null-check (an unvalidated colour reaches the output) | **fails** — 10 of `theme.test.ts`'s cases, including both XSS strings (`javascript:alert(1)`, `</style><script>`)                   |
 
 Not re-run here (Lane A's own decisive-mutation table covers them, and
 nothing in this lane touches the mechanism): `ScreenHeading` dropping
@@ -254,14 +254,14 @@ nothing in this lane touches the mechanism): `ScreenHeading` dropping
    by Lane A) already established.
 4. **jsdom does not simulate a native `<button>`'s Space/Enter default
    action**, so a test written against decision D2's rc.0-era `<span
-   role="checkbox">` (which Base UI's own JS handled keyboard activation
+role="checkbox">` (which Base UI's own JS handled keyboard activation
    for) does not carry over unchanged to the native-button rendering:
    `fireEvent.keyDown`/`keyUp` with `key: ' '` on the new `<button>` fires
    nothing. Lane A's own review independently measured and documented the
    identical limitation for `@vpay/ui`'s `checkbox.test.tsx` ("the Space
    key... jsdom does not translate it to a click on a `<button>`,
    measured") — this lane's fix (assert the native-button property and the
-   click directly, and — *corrected 2026-09-07, review finding 6* — leave real
+   click directly, and — _corrected 2026-09-07, review finding 6_ — leave real
    keyboard activation covered by NOTHING; no Cypress spec touches this
    control. The deferral named in the original sentence does not exist) is
    the same shape independently arrived at.

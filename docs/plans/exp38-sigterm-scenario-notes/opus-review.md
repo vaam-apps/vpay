@@ -16,22 +16,22 @@ Every number the implementation notes claim was re-measured on the rebased
 head. Two of them came out differently, and both differences are the rebase's
 (`master` moved from 1626 tests to 1648).
 
-| Claim in `opus.md` | Re-measured here |
-|---|---|
-| ten consecutive runs of the new case, 30.4–99.8 s, 10 passed | **10 passed**, 30.1–53.3 s, on `e3a2782` |
-| remove the drain → *the worker never logged `webhook delivered`* | reproduced, byte for byte |
-| remove `locked_at IS NULL` from `Jobs::claim` → double send | reproduced: `left: 2  right: 1`, two byte-identical signed POSTs of one `evt_…`, both carrying the same `t=` |
-| `just ci` 1626/1626 | **1650/1650** on the review's final head (`master` moved to 1648, and this review adds two cases); the entry in `docs/status.md` was written against the pre-rebase count and is corrected |
+| Claim in `opus.md`                                               | Re-measured here                                                                                                                                                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ten consecutive runs of the new case, 30.4–99.8 s, 10 passed     | **10 passed**, 30.1–53.3 s, on `e3a2782`                                                                                                                                                   |
+| remove the drain → _the worker never logged `webhook delivered`_ | reproduced, byte for byte                                                                                                                                                                  |
+| remove `locked_at IS NULL` from `Jobs::claim` → double send      | reproduced: `left: 2  right: 1`, two byte-identical signed POSTs of one `evt_…`, both carrying the same `t=`                                                                               |
+| `just ci` 1626/1626                                              | **1650/1650** on the review's final head (`master` moved to 1648, and this review adds two cases); the entry in `docs/status.md` was written against the pre-rebase count and is corrected |
 
 ## The attacks, and what each proved
 
-| # | Attack | Result |
-|---|---|---|
-| A1 | `slow-ack.json`'s delay to **11 s**, over `WEBHOOK_REQUEST_TIMEOUT` (10 s), constants untouched | **FAIL** in 20 s: *the worker never logged `webhook delivered`*. It does not pass by another path — but the message reads as a drain regression and is not one. **Finding F1** |
-| A2a | `SHUTDOWN_GRACE_SECONDS` to **5 s**, under the 6 s delay | **BUILD FAILURE**, `error[E0080]: evaluation panicked: the drain must outlast the receiver, or the exit code under test changes`. The `const` assertion is real and fires at compile time exactly as claimed |
-| A2b | the same, with that `const` assertion deleted | exit **1**, `released=1`, `the shutdown grace period elapsed …`; the case fails `left: Some(1)  right: Some(0)`. This is the `Drain::TimedOut` the notes list as *not covered* — and it is reachable, deterministically. **Finding F2** |
-| A3 | every `request` block of every mapping in the receiver tree, read for overlap with `/slow-ack` | none. `any-post-200.json` is `urlPattern: ".*"` at priority **10**, `flaky-500-then-200.json` is `/flaky` at 1, `slow-ack.json` is `/slow-ack` at 1. `tests/webhooks.rs` delivers to `/webhooks` and `/flaky`, and each test starts its own receiver container. The claim that the new mapping cannot affect the other two scenarios or `webhooks.rs` holds — **but nothing enforced it**. **Finding F1** |
-| A4 | the tree and the scratchpad, read for a pattern kill after the implementer's disclosed `pkill -f "just ci"` | nothing. `git grep -E "pkill|killall"` over the worktree is empty; the only scratchpad hits are two busybox applet lists from an unrelated experiment. The one signal this suite sends is `kill -TERM <pid>` on a pid it spawned |
+| #   | Attack                                                                                                      | Result                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | `slow-ack.json`'s delay to **11 s**, over `WEBHOOK_REQUEST_TIMEOUT` (10 s), constants untouched             | **FAIL** in 20 s: _the worker never logged `webhook delivered`_. It does not pass by another path — but the message reads as a drain regression and is not one. **Finding F1**                                                                                                                                                                                                                            |
+| A2a | `SHUTDOWN_GRACE_SECONDS` to **5 s**, under the 6 s delay                                                    | **BUILD FAILURE**, `error[E0080]: evaluation panicked: the drain must outlast the receiver, or the exit code under test changes`. The `const` assertion is real and fires at compile time exactly as claimed                                                                                                                                                                                              |
+| A2b | the same, with that `const` assertion deleted                                                               | exit **1**, `released=1`, `the shutdown grace period elapsed …`; the case fails `left: Some(1)  right: Some(0)`. This is the `Drain::TimedOut` the notes list as _not covered_ — and it is reachable, deterministically. **Finding F2**                                                                                                                                                                   |
+| A3  | every `request` block of every mapping in the receiver tree, read for overlap with `/slow-ack`              | none. `any-post-200.json` is `urlPattern: ".*"` at priority **10**, `flaky-500-then-200.json` is `/flaky` at 1, `slow-ack.json` is `/slow-ack` at 1. `tests/webhooks.rs` delivers to `/webhooks` and `/flaky`, and each test starts its own receiver container. The claim that the new mapping cannot affect the other two scenarios or `webhooks.rs` holds — **but nothing enforced it**. **Finding F1** |
+| A4  | the tree and the scratchpad, read for a pattern kill after the implementer's disclosed `pkill -f "just ci"` | nothing. `git grep -E "pkill                                                                                                                                                                                                                                                                                                                                                                              | killall"`over the worktree is empty; the only scratchpad hits are two busybox applet lists from an unrelated experiment. The one signal this suite sends is`kill -TERM <pid>` on a pid it spawned |
 
 ## The findings
 
@@ -58,7 +58,7 @@ is now
 the same case with `--shutdown-grace-seconds 2` against the 6 s
 acknowledgement, and both workers signalled at once.
 
-It closes the notes' *second* disclosed gap in the same run. A restart after a
+It closes the notes' _second_ disclosed gap in the same run. A restart after a
 **clean** drain is vacuous — there is nothing left to claim — which is why the
 implementer was right not to stage one; after a **timed-out** drain there is,
 so the restarted worker is the only thing that can finish the delivery, and
@@ -79,10 +79,10 @@ exit `0` → fails `left: Some(0)  right: Some(1)`.
 
 The double-send assertion's message, the module header and
 `crash-safety.md` all said the receiver had **accepted** the in-flight POST
-before the signal. It had not. WireMock journals a request when it *matches*
+before the signal. It had not. WireMock journals a request when it _matches_
 it and answers `slow-ack.json`'s 200 six seconds later, so at the moment of
 the signal the merchant holds the bytes and no acknowledgement — which is
-exactly why a cut-off send is a *duplicate* rather than a nothing. The
+exactly why a cut-off send is a _duplicate_ rather than a nothing. The
 distinction is the case's whole subject. Corrected to "received", in all
 three.
 
@@ -140,8 +140,8 @@ another ~30 s of gate.
 
 ## One flake, and what it actually was
 
-The clean case failed once in this review's runs, at *"no webhook delivery was
-in flight within 50s … the receiver saw 0 POSTs"*. It was not a defect in the
+The clean case failed once in this review's runs, at _"no webhook delivery was
+in flight within 50s … the receiver saw 0 POSTs"_. It was not a defect in the
 case: the victim's own transcript in the failure message carries
 `WARN sqlx::query: slow statement: execution time exceeded alert threshold
 summary="UPDATE jobs SET run_at …"`, on a host at load average 15 running two
@@ -151,7 +151,7 @@ is the property that matters. `DELIVERY_IN_FLIGHT_TIMEOUT` is left at 50 s:
 raising it to survive a thrashing host trades a clear failure for a longer
 hang, and CI runs on a dedicated VM.
 
-A one-worker staging of the *timed-out* case was tried first and abandoned:
+A one-worker staging of the _timed-out_ case was tried first and abandoned:
 it failed to reach the in-flight state within the same bound on four attempts
 out of six on this host, with the settlement poll waiting tens of seconds
 behind the singleton jobs the single `--worker-concurrency 1` task also has to
@@ -162,7 +162,7 @@ case's own, does not have it: 10 runs, 10 passed.
 ## The review's own case failed the gate once, and why that is in here
 
 The first full `just ci` on the head carrying the fourth scenario failed it —
-*"a succeeded delivery's job must be deleted"* — after ten green runs of the
+_"a succeeded delivery's job must be deleted"_ — after ten green runs of the
 case on its own. The race is the review's, not the shipping code's:
 `vpay_worker::webhooks` records the receiver's answer and then finishes the
 job, two statements, so a delivery row reads `succeeded` a moment before its

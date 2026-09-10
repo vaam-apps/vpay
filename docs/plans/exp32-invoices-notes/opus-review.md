@@ -25,24 +25,24 @@ hosted checkout URLs for one bill.** The implementer knew the API's own read
 masks the statement — that is exactly why
 `attaching_a_second_intent_to_an_invoice_is_refused_by_the_statement` exists at
 the repository seam — but the suite never put two `pay` requests in flight
-*together*, which is the shape a real double-charge arrives in.
+_together_, which is the shape a real double-charge arrives in.
 
 ---
 
 ## Findings
 
-| # | Severity | Finding | State |
-|---|---|---|---|
-| F1 | gate-hole | Two concurrent `pay` requests were never raced. With `NO_LIVE_INTENT` deleted from `attach_intent`, twelve of twelve wire cases pass while one invoice acquires two live intents and two hosted URLs | fixed — `two_concurrent_pays_attach_exactly_one_intent` |
-| F2 | gate-hole | Neither list cursor's tenancy predicate was pinned. Unscoping either sub-select in `list_page` leaves every case green while another merchant's `in_…` pages the caller's own rows | fixed — `a_foreign_cursor_is_an_empty_page_and_never_an_oracle` |
-| F3 | gate-hole | Nothing pinned that a settlement flips **its own** invoice. Keying `mark_paid_for_intent_in_tx` on anything but the intent leaves all seven delivered invoice/settlement cases green while one intent's settlement pays an invoice it was never bound to | fixed — `a_settlement_pays_only_the_invoice_its_own_intent_is_bound_to` |
-| F4 | correctness | `pay` mints its intent through `PaymentIntents::insert`, not `parse_amount`, so `MAX_AMOUNT` (`2^53 - 1`) did not apply. Ninety-one lines at both `invoice_items` ceilings finalized `200` at 9,100,000,000,000,000 — an `amount` `POST /v1/payment_intents` refuses, on an object every JSON client silently rounds | fixed — refused at `finalize`, `an_invoice_over_the_representable_ceiling_is_refused_at_finalize` |
-| F5 | misleading-claim | `docs/api/README.md` said the invoice object has **seventeen** keys. It has eighteen, and no test of any name held the number — the customer object's own review found this exact shape the day before and the invoice inherited the habit without the tripwire | fixed — count corrected, `the_invoice_object_is_the_documented_eighteen_keys` |
-| F6 | misleading-claim | `invoices.rs`' module header and one case doc said a reused idempotency key with a different body is a `422`. The case has always asserted the `400` `idempotency_key_in_use` envelope, which is this API's documented answer | fixed — both comments corrected |
-| F7 | misleading-claim | Migration `0036`'s first line cites `docs/plans/2026-09-06-data-layer.md`, which is neither tracked nor on disk. `docs/flows/invoices.md` corrects `0034`'s identical citation and says it "is not repeated here" — while the same commit repeated it | fixed — the correction now names both; the `.sql` is immutable |
-| F8 | misleading-claim | The brief asked that the payer see the invoice number. The intent carries `Invoice {number}` in `description` and the browser read expands it, but `frontends/apps/checkout` renders the amount and the merchant name only — and this was not in the NOT-built list | recorded as a dated gap, not closed |
-| F9 | nit | `docs/flows/invoices.md` says nothing about what a refund does to a paid invoice | recorded as a dated gap **and a maintainer decision**; unreachable today |
-| F10 | nit | `invoices.rs`' `form_body` encoded a space as `+`, which `vpay_api::form` treats as a literal plus by design, so every description the suite sent was stored as `One+month+of+hosting`. No assertion read one back | fixed — `%20`, and the round-trip is now asserted |
+| #   | Severity         | Finding                                                                                                                                                                                                                                                                                                              | State                                                                                             |
+| --- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| F1  | gate-hole        | Two concurrent `pay` requests were never raced. With `NO_LIVE_INTENT` deleted from `attach_intent`, twelve of twelve wire cases pass while one invoice acquires two live intents and two hosted URLs                                                                                                                 | fixed — `two_concurrent_pays_attach_exactly_one_intent`                                           |
+| F2  | gate-hole        | Neither list cursor's tenancy predicate was pinned. Unscoping either sub-select in `list_page` leaves every case green while another merchant's `in_…` pages the caller's own rows                                                                                                                                   | fixed — `a_foreign_cursor_is_an_empty_page_and_never_an_oracle`                                   |
+| F3  | gate-hole        | Nothing pinned that a settlement flips **its own** invoice. Keying `mark_paid_for_intent_in_tx` on anything but the intent leaves all seven delivered invoice/settlement cases green while one intent's settlement pays an invoice it was never bound to                                                             | fixed — `a_settlement_pays_only_the_invoice_its_own_intent_is_bound_to`                           |
+| F4  | correctness      | `pay` mints its intent through `PaymentIntents::insert`, not `parse_amount`, so `MAX_AMOUNT` (`2^53 - 1`) did not apply. Ninety-one lines at both `invoice_items` ceilings finalized `200` at 9,100,000,000,000,000 — an `amount` `POST /v1/payment_intents` refuses, on an object every JSON client silently rounds | fixed — refused at `finalize`, `an_invoice_over_the_representable_ceiling_is_refused_at_finalize` |
+| F5  | misleading-claim | `docs/api/README.md` said the invoice object has **seventeen** keys. It has eighteen, and no test of any name held the number — the customer object's own review found this exact shape the day before and the invoice inherited the habit without the tripwire                                                      | fixed — count corrected, `the_invoice_object_is_the_documented_eighteen_keys`                     |
+| F6  | misleading-claim | `invoices.rs`' module header and one case doc said a reused idempotency key with a different body is a `422`. The case has always asserted the `400` `idempotency_key_in_use` envelope, which is this API's documented answer                                                                                        | fixed — both comments corrected                                                                   |
+| F7  | misleading-claim | Migration `0036`'s first line cites `docs/plans/2026-09-06-data-layer.md`, which is neither tracked nor on disk. `docs/flows/invoices.md` corrects `0034`'s identical citation and says it "is not repeated here" — while the same commit repeated it                                                                | fixed — the correction now names both; the `.sql` is immutable                                    |
+| F8  | misleading-claim | The brief asked that the payer see the invoice number. The intent carries `Invoice {number}` in `description` and the browser read expands it, but `frontends/apps/checkout` renders the amount and the merchant name only — and this was not in the NOT-built list                                                  | recorded as a dated gap, not closed                                                               |
+| F9  | nit              | `docs/flows/invoices.md` says nothing about what a refund does to a paid invoice                                                                                                                                                                                                                                     | recorded as a dated gap **and a maintainer decision**; unreachable today                          |
+| F10 | nit              | `invoices.rs`' `form_body` encoded a space as `+`, which `vpay_api::form` treats as a literal plus by design, so every description the suite sent was stored as `One+month+of+hosting`. No assertion read one back                                                                                                   | fixed — `%20`, and the round-trip is now asserted                                                 |
 
 ### Not findings, checked and cleared
 
@@ -64,17 +64,17 @@ the repository seam — but the suite never put two `pay` requests in flight
   at all needs the `NO_LIVE_INTENT` guard to have been bypassed, because a
   live intent cannot be voided around.
 - **Overflow of `quantity × unit_amount`.** `QUANTITY_MAX × UNIT_AMOUNT_MAX =
-  10^14`, four orders inside `i64`, and a unit test asserts the product of the
+10^14`, four orders inside `i64`, and a unit test asserts the product of the
   two constants is `checked_mul`-safe so they cannot be raised independently.
   The DB computes the product in `BIGINT` and would raise `22003`; nothing
-  the API accepts reaches it. The *invoice total* was the unbounded one — F4.
+  the API accepts reaches it. The _invoice total_ was the unbounded one — F4.
 - **Zero and negative `quantity`, decimal `unit_amount`, XAF's zero exponent.**
   `parse_quantity`/`parse_unit_amount` are the only path, both refuse with a
   `400` naming the parameter, and both are unit-tested at the boundary.
   `1500.50` is refused by the parse rather than rounded, which is the right
   answer for a zero-decimal currency.
 - **Tenancy on every route.** `another_merchants_invoice_is_byte_identical_to_
-  one_that_never_existed` compares **bytes** across nine routes including both
+one_that_never_existed` compares **bytes** across nine routes including both
   `invoice_items` paths, and pins that `invoice=` on a line create is the same
   `400` for a foreign invoice as for a missing one. The cursor was the only
   hole (F2).
@@ -82,11 +82,11 @@ the repository seam — but the suite never put two `pay` requests in flight
   `TxOutcome::Abandon` on a refused compare-and-swap, so no event and no
   burnt number; the delivered suite asserts the count after every refusal.
   `invoice.paid` is inside TX1 and `an_aborted_settlement_leaves_the_invoice_
-  open_and_emits_nothing` is the proof.
+open_and_emits_nothing` is the proof.
 - **`@@allow` arms.** Both actions this module calls through CrateStack have
   one, and `every_action_this_module_calls_has_an_allow_arm` fails in
   milliseconds without a container. `model Invoice`'s `update` arm fails
-  *silently* if deleted, which is why the assertion exists at all.
+  _silently_ if deleted, which is why the assertion exists at all.
 
 ---
 
@@ -95,17 +95,17 @@ the repository seam — but the suite never put two `pay` requests in flight
 Each was applied to the source, the named tests were run, and the source was
 restored and verified clean with `git diff --quiet`.
 
-| # | Mutation | Result | Caught by |
-|---|---|---|---|
-| M1 | drop `AND {NO_LIVE_INTENT}` from `attach_intent` | **12/12 delivered wire cases PASS**; the new case FAILS with `[200, 200]` — two intents, two hosted URLs, one invoice | F1's case only |
-| M2 | drop `AND merchant_id = $1` from `list_page`'s `starting_after` sub-select | FAIL — merchant B's own older invoice comes back for a cursor naming merchant A's | F2's case only |
-| M3 | the same on `ending_before` | FAIL — merchant B's own newer invoice comes back | F2's case only |
-| M4 | key `mark_paid_for_intent_in_tx` on `status = 'open'` instead of the intent | **7/8 delivered invoice+settlement cases PASS**; the new case FAILS — an invoice is paid by an intent never bound to it | F3's case only |
-| M5 | render `merchant_id` on `InvoiceObject` | FAIL, naming the column and why an `events` row cannot be retracted | F5's case only |
-| M6 | delete the `amount_due` ceiling from `transition_once` | FAIL — finalize answers `200` at 9,100,000,000,000,000 | F4's case only |
+| #   | Mutation                                                                    | Result                                                                                                                  | Caught by      |
+| --- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------- |
+| M1  | drop `AND {NO_LIVE_INTENT}` from `attach_intent`                            | **12/12 delivered wire cases PASS**; the new case FAILS with `[200, 200]` — two intents, two hosted URLs, one invoice   | F1's case only |
+| M2  | drop `AND merchant_id = $1` from `list_page`'s `starting_after` sub-select  | FAIL — merchant B's own older invoice comes back for a cursor naming merchant A's                                       | F2's case only |
+| M3  | the same on `ending_before`                                                 | FAIL — merchant B's own newer invoice comes back                                                                        | F2's case only |
+| M4  | key `mark_paid_for_intent_in_tx` on `status = 'open'` instead of the intent | **7/8 delivered invoice+settlement cases PASS**; the new case FAILS — an invoice is paid by an intent never bound to it | F3's case only |
+| M5  | render `merchant_id` on `InvoiceObject`                                     | FAIL, naming the column and why an `events` row cannot be retracted                                                     | F5's case only |
+| M6  | delete the `amount_due` ceiling from `transition_once`                      | FAIL — finalize answers `200` at 9,100,000,000,000,000                                                                  | F4's case only |
 
 **M2 was measured twice, and the first measurement is the one worth keeping.**
-The first version of F2's case gave merchant B a single invoice *newer* than
+The first version of F2's case gave merchant B a single invoice _newer_ than
 merchant A's, and M2 **passed** it: `seq < seq(theirs)` excludes B's only row
 whether or not the sub-select is scoped. The fixtures now straddle the foreign
 invoice — one of B's older, one newer — so each cursor has a row it would leak.
@@ -122,17 +122,17 @@ Run twice: once on the delivered `e1206e3`, once on this review's head. Node
 `22.23.2` (`.nvmrc`) after `pnpm install --frozen-lockfile`; `cratestack`
 0.12.0 in a private `--root`, never in the shared `~/.cargo/bin`.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy` | ok |
-| `verify` | the twelve gates ok — including `check-schema` under cratestack **0.12.0** (22 declarations, datasource present), `verify-sdk-parity` (407 proving tests, 41 dated gaps, 19 methods over 23 rows) and `verify-migrations` (36 files match the manifest) |
-| `test-rust` | **1589 passed, 0 skipped** on `e1206e3`; **1593 passed, 0 skipped** with this review's four new cases |
-| `test-doc` | ok |
-| `verify-ignored` | ok |
-| `lint-web` | ok |
-| `test-web` | ok — 1,116 tests across nine packages |
-| `deny` | ok |
+| Recipe           | Result                                                                                                                                                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`      | ok                                                                                                                                                                                                                                                      |
+| `clippy`         | ok                                                                                                                                                                                                                                                      |
+| `verify`         | the twelve gates ok — including `check-schema` under cratestack **0.12.0** (22 declarations, datasource present), `verify-sdk-parity` (407 proving tests, 41 dated gaps, 19 methods over 23 rows) and `verify-migrations` (36 files match the manifest) |
+| `test-rust`      | **1589 passed, 0 skipped** on `e1206e3`; **1593 passed, 0 skipped** with this review's four new cases                                                                                                                                                   |
+| `test-doc`       | ok                                                                                                                                                                                                                                                      |
+| `verify-ignored` | ok                                                                                                                                                                                                                                                      |
+| `lint-web`       | ok                                                                                                                                                                                                                                                      |
+| `test-web`       | ok — 1,116 tests across nine packages                                                                                                                                                                                                                   |
+| `deny`           | ok                                                                                                                                                                                                                                                      |
 
 **One honest correction about my own run.** The first `just ci` failed in
 `test-web` (`@vpay/ui`'s `select.test.tsx`), and it was my environment, not the

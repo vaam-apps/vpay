@@ -17,18 +17,18 @@
  * fragment before the payer left is gone; the token in the query string is
  * all there is.
  */
-import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
+import type { FailureCode } from "@vaam-apps/vpay-stripe-js";
 
-import type { MessageKey } from '../i18n/index';
-import type { BrowserCheckoutApi, ReturnCredentials } from './api';
-import type { FrameChannel } from './frame';
-import { intentOutcome, merchantOf, type OutcomeKind } from './machine';
+import type { MessageKey } from "../i18n/index";
+import type { BrowserCheckoutApi, ReturnCredentials } from "./api";
+import type { FrameChannel } from "./frame";
+import { intentOutcome, merchantOf, type OutcomeKind } from "./machine";
 import type {
   CheckoutError,
   CheckoutMerchant,
   CheckoutSession,
   PublicPaymentIntent,
-} from './types';
+} from "./types";
 
 export interface ReturnContext {
   session: CheckoutSession;
@@ -38,27 +38,32 @@ export interface ReturnContext {
 }
 
 export type ReturnState =
-  | { name: 'loading' }
-  | { name: 'error'; error: CheckoutError }
-  | { name: 'expired'; context: ReturnContext }
-  | { name: 'polling'; context: ReturnContext; notice: MessageKey | null }
+  | { name: "loading" }
+  | { name: "error"; error: CheckoutError }
+  | { name: "expired"; context: ReturnContext }
+  | { name: "polling"; context: ReturnContext; notice: MessageKey | null }
   | {
-      name: 'outcome';
+      name: "outcome";
       context: ReturnContext;
       kind: OutcomeKind;
       failure: FailureCode | null;
       /** The rail's own words, cleaned by `providerReason`, or `null`. */
       reason: string | null;
     }
-  | { name: 'forwarding'; context: ReturnContext; kind: OutcomeKind; url: string };
+  | {
+      name: "forwarding";
+      context: ReturnContext;
+      kind: OutcomeKind;
+      url: string;
+    };
 
 export type ReturnEvent =
-  | { type: 'read'; context: ReturnContext }
-  | { type: 'read_failed'; error: CheckoutError }
-  | { type: 'poll_failed'; problem: MessageKey }
-  | { type: 'forward'; url: string };
+  | { type: "read"; context: ReturnContext }
+  | { type: "read_failed"; error: CheckoutError }
+  | { type: "poll_failed"; problem: MessageKey }
+  | { type: "forward"; url: string };
 
-export const RETURN_INITIAL_STATE: ReturnState = { name: 'loading' };
+export const RETURN_INITIAL_STATE: ReturnState = { name: "loading" };
 
 /**
  * The state a read of the return view implies.
@@ -69,50 +74,74 @@ export const RETURN_INITIAL_STATE: ReturnState = { name: 'loading' };
  * so "I am back" and "it is decided" are different moments and this page
  * must not conflate them.
  */
-export function stateForReturn(context: ReturnContext, previousNotice: MessageKey | null = null): ReturnState {
+export function stateForReturn(
+  context: ReturnContext,
+  previousNotice: MessageKey | null = null,
+): ReturnState {
   const { session, intent } = context;
-  if (session.status === 'complete') {
-    return { name: 'outcome', context, kind: 'succeeded', failure: null, reason: null };
+  if (session.status === "complete") {
+    return {
+      name: "outcome",
+      context,
+      kind: "succeeded",
+      failure: null,
+      reason: null,
+    };
   }
-  if (session.status === 'expired') {
-    if (session.payment_status === 'failed') {
+  if (session.status === "expired") {
+    if (session.payment_status === "failed") {
       const outcome = intentOutcome(intent);
       return {
-        name: 'outcome',
+        name: "outcome",
         context,
-        kind: outcome?.kind ?? 'failed',
+        kind: outcome?.kind ?? "failed",
         failure: outcome?.failure ?? null,
         reason: outcome?.reason ?? null,
       };
     }
-    return { name: 'expired', context };
+    return { name: "expired", context };
   }
   const outcome = intentOutcome(intent);
   if (outcome !== null) {
     return {
-      name: 'outcome',
+      name: "outcome",
       context,
       kind: outcome.kind,
       failure: outcome.failure,
       reason: outcome.reason,
     };
   }
-  return { name: 'polling', context, notice: previousNotice };
+  return { name: "polling", context, notice: previousNotice };
 }
 
-export function reduceReturn(state: ReturnState, event: ReturnEvent): ReturnState {
+export function reduceReturn(
+  state: ReturnState,
+  event: ReturnEvent,
+): ReturnState {
   switch (event.type) {
-    case 'read':
-      return state.name === 'loading' || state.name === 'polling'
-        ? stateForReturn(event.context, state.name === 'polling' ? state.notice : null)
+    case "read":
+      return state.name === "loading" || state.name === "polling"
+        ? stateForReturn(
+            event.context,
+            state.name === "polling" ? state.notice : null,
+          )
         : state;
-    case 'read_failed':
-      return state.name === 'loading' ? { name: 'error', error: event.error } : state;
-    case 'poll_failed':
-      return state.name === 'polling' ? { ...state, notice: event.problem } : state;
-    case 'forward':
-      return state.name === 'outcome'
-        ? { name: 'forwarding', context: state.context, kind: state.kind, url: event.url }
+    case "read_failed":
+      return state.name === "loading"
+        ? { name: "error", error: event.error }
+        : state;
+    case "poll_failed":
+      return state.name === "polling"
+        ? { ...state, notice: event.problem }
+        : state;
+    case "forward":
+      return state.name === "outcome"
+        ? {
+            name: "forwarding",
+            context: state.context,
+            kind: state.kind,
+            url: event.url,
+          }
         : state;
     default: {
       const unreachable: never = event;
@@ -177,7 +206,8 @@ export class ReturnController {
     const now = this.#options.now ?? (() => Date.now());
     const sleep = this.#options.sleep ?? defaultSleep;
     const interval = this.#options.intervalMs ?? DEFAULT_RETURN_INTERVAL_MS;
-    const deadline = now() + (this.#options.timeoutMs ?? DEFAULT_RETURN_TIMEOUT_MS);
+    const deadline =
+      now() + (this.#options.timeoutMs ?? DEFAULT_RETURN_TIMEOUT_MS);
 
     for (;;) {
       const result = await this.#options.api.readReturn(
@@ -185,26 +215,30 @@ export class ReturnController {
         this.#options.credentials,
       );
       if (result.ok) {
-        const { payment_intent: intent, merchant: rawMerchant, ...session } = result.value;
+        const {
+          payment_intent: intent,
+          merchant: rawMerchant,
+          ...session
+        } = result.value;
         this.#dispatch({
-          type: 'read',
+          type: "read",
           context: { session, intent, merchant: merchantOf(rawMerchant) },
         });
-      } else if (this.#state.name === 'loading') {
-        this.#dispatch({ type: 'read_failed', error: result.error });
+      } else if (this.#state.name === "loading") {
+        this.#dispatch({ type: "read_failed", error: result.error });
         return;
       } else {
         // Already showing something. A failed poll leaves the payer where
         // they are, with the reason beside the spinner.
-        this.#dispatch({ type: 'poll_failed', problem: result.error.code });
+        this.#dispatch({ type: "poll_failed", problem: result.error.code });
       }
 
-      if (this.#state.name !== 'polling') {
+      if (this.#state.name !== "polling") {
         break;
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
-        this.#dispatch({ type: 'poll_failed', problem: 'error.network' });
+        this.#dispatch({ type: "poll_failed", problem: "error.network" });
         return;
       }
       await sleep(Math.min(interval, remaining));
@@ -222,12 +256,12 @@ export class ReturnController {
    * top-level page, navigates itself.
    */
   forward(url: string): void {
-    this.#dispatch({ type: 'forward', url });
-    if (this.#state.name !== 'forwarding') {
+    this.#dispatch({ type: "forward", url });
+    if (this.#state.name !== "forwarding") {
       return;
     }
     const channel = this.#options.channel;
-    if (channel !== null && channel.peer === 'opener') {
+    if (channel !== null && channel.peer === "opener") {
       this.#announceComplete();
       const opener = this.#options.opener?.() ?? undefined;
       if (opener === null || opener === undefined || opener.closed) {
@@ -246,12 +280,12 @@ export class ReturnController {
       return;
     }
     const state = this.#state;
-    if (state.name !== 'outcome' && state.name !== 'forwarding') {
+    if (state.name !== "outcome" && state.name !== "forwarding") {
       return;
     }
     this.#announced = true;
     this.#options.channel?.post({
-      type: 'vpay:complete',
+      type: "vpay:complete",
       session: state.context.session.id,
       status: state.context.session.status,
     });

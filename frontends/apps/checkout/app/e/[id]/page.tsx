@@ -1,10 +1,13 @@
-import { headers } from 'next/headers';
+import { headers } from "next/headers";
 
-import { CheckoutClient } from '../../../src/components/checkout-client';
-import { runtimeConfig } from '../../../src/config/runtime';
-import { pickLocale } from '../../../src/i18n/index';
-import { EMBED_ORIGINS_HEADER, decodeOriginsHeader } from '../../../src/lib/csp';
-import { browserApiBaseUrl } from '../../../src/lib/env';
+import { CheckoutClient } from "../../../src/components/checkout-client";
+import { runtimeConfig } from "../../../src/config/runtime";
+import { pickLocale } from "../../../src/i18n/index";
+import {
+  EMBED_ORIGINS_HEADER,
+  decodeOriginsHeader,
+} from "../../../src/lib/csp";
+import { browserApiBaseUrl } from "../../../src/lib/env";
 
 /**
  * The embedded page, `/e/{cs_id}?key={pk}#{client_secret}`.
@@ -19,7 +22,7 @@ import { browserApiBaseUrl } from '../../../src/lib/env';
  * `decideEntry` refuses. That is the fail-closed path for an unknown key, a
  * lookup that failed and a merchant with no registered origins alike.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function EmbeddedCheckoutPage({
   params,
@@ -34,8 +37,10 @@ export default async function EmbeddedCheckoutPage({
       sessionId={id}
       apiBaseUrl={browserApiBaseUrl()}
       mode="embedded"
-      allowedOrigins={decodeOriginsHeader(requestHeaders.get(EMBED_ORIGINS_HEADER))}
-      initialLocale={pickLocale(requestHeaders.get('accept-language'))}
+      allowedOrigins={decodeOriginsHeader(
+        requestHeaders.get(EMBED_ORIGINS_HEADER),
+      )}
+      initialLocale={pickLocale(requestHeaders.get("accept-language"))}
       branding={branding}
       settings={checkout}
     />

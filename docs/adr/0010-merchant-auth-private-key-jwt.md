@@ -58,8 +58,8 @@ using `private_key_jwt` client authentication (RFC 7523). Concretely:
   kill switch: an operator flips a client to disabled and it takes effect
   immediately, no deploy required. It stores a `client_id` and a
   disabled flag/reason — never a credential. YAML stays authoritative for
-  *identity* (does this client exist, what is its key); the table only ever
-  *subtracts* access, never grants it. Its migration and any code that reads
+  _identity_ (does this client exist, what is its key); the table only ever
+  _subtracts_ access, never grants it. Its migration and any code that reads
   or writes it are outside this document's scope (`docs/adr/**`, not
   `backends/migrations/**`) — see `docs/status.md` for whether either
   exists yet.
@@ -89,7 +89,7 @@ See "Amendment" at the end of this document. The decision itself is
 unchanged.]**
 
 **Revocation via config is a deploy**, which is why the `disabled_clients`
-kill switch exists above. But that switch means YAML is no longer the *sole*
+kill switch exists above. But that switch means YAML is no longer the _sole_
 authority on "is this client allowed right now" — a correct answer needs
 both: does the client exist in YAML, and has it since been disabled in the
 database. Any future revocation runbook must say so explicitly and check
@@ -129,7 +129,7 @@ document's scope (`docs/adr/**`, not `backends/migrations/**`), but a reader
 must not infer from its continued presence in the repository that `/v1`
 will ever read it.
 
-## Amendment, 2026-09-03: an official Stripe SDK *can* authenticate, with glue this repository now ships
+## Amendment, 2026-09-03: an official Stripe SDK _can_ authenticate, with glue this repository now ships
 
 **What this amendment does not change.** Every decision in this ADR stands:
 `/v1` accepts no API key, merchants are statically registered OAuth2 clients
@@ -144,13 +144,13 @@ implement RFC 7523 — and reached a conclusion one step too far. `stripe-node`
 also accepts `config.authenticator`: arbitrary async code, invoked once per
 request attempt, handed the whole outbound request. That is a seam this ADR's
 author did not account for, and it is enough. The accurate sentence is the
-one the same paragraph goes on to make: *a merchant using an official Stripe
-SDK needs custom glue code around it to authenticate.* As of 2026-09-03 that
+one the same paragraph goes on to make: _a merchant using an official Stripe
+SDK needs custom glue code around it to authenticate._ As of 2026-09-03 that
 glue is not something each merchant writes — `@vpay/sdk/stripe` exports
 `createStripeAuthenticator`, and `sdks/stripe-compat` drives the real
 `stripe` package through it against a real vpay stack.
 
-**Scope of the correction.** It is about *authentication only*. The object
+**Scope of the correction.** It is about _authentication only_. The object
 model, the form encoding and the idempotency semantics were always
 Stripe-shaped and are unaffected; the divergences that remain — no API keys,
 no dated API version, no Connect, no `client_secret`, `payment_method_data`

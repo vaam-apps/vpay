@@ -1,13 +1,18 @@
-import { redirect } from 'next/navigation';
+import { redirect } from "next/navigation";
 
-import { Alert, Heading, Stack, Text } from '@vpay/ui';
+import { Alert, Heading, Stack, Text } from "@vpay/ui";
 
-import { dashboardConfig } from '../../../src/config/runtime';
-import { PasswordForm } from '../../../src/components/password-form';
-import { changePassword } from '../../../src/server/actions';
-import { ReadFailure } from '../../../src/components/read-failure';
-import { refusalFor } from '../../../src/server/gate';
-import { HOME_PATH, LOGIN_PATH, readSession, sessionToken } from '../../../src/server/session';
+import { dashboardConfig } from "../../../src/config/runtime";
+import { PasswordForm } from "../../../src/components/password-form";
+import { changePassword } from "../../../src/server/actions";
+import { ReadFailure } from "../../../src/components/read-failure";
+import { refusalFor } from "../../../src/server/gate";
+import {
+  HOME_PATH,
+  LOGIN_PATH,
+  readSession,
+  sessionToken,
+} from "../../../src/server/session";
 
 /**
  * `/login/password` — replacing the one-time password the operator printed.
@@ -24,7 +29,7 @@ import { HOME_PATH, LOGIN_PATH, readSession, sessionToken } from '../../../src/s
  * and this app has no password-change screen for someone who already
  * replaced theirs.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function PasswordPage() {
   const { config } = dashboardConfig();
@@ -43,7 +48,7 @@ export default async function PasswordPage() {
     // `server/gate.ts` carries the argument. A vpay that could not be reached
     // renders here rather than bouncing somebody who is mid-sign-in back to
     // the form with their one-time password already spent.
-    if (failure !== null && refusalFor(failure) === 'outage') {
+    if (failure !== null && refusalFor(failure) === "outage") {
       return (
         <Stack direction="column" gap="md">
           <Heading level={2}>Choose a password</Heading>
@@ -61,8 +66,8 @@ export default async function PasswordPage() {
     <Stack direction="column" gap="md">
       <Heading level={2}>Choose a password</Heading>
       <Alert tone="warning" role="status">
-        You signed in with the one-time password an operator printed. Replace
-        it before going any further — nothing else is reachable until you do.
+        You signed in with the one-time password an operator printed. Replace it
+        before going any further — nothing else is reachable until you do.
       </Alert>
       <Text tone="muted" size="sm">
         Signed in as <strong>{session.email}</strong>.

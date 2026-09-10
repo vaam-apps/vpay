@@ -16,11 +16,11 @@ and what stops a bad configuration before it becomes an outage.
 `ghcr.io/vaam-apps/vpay-{server,dashboard,checkout}` (step-6 decision (1),
 extended by Step 9, reduced by issue #77).
 
-| Image | Base | Contents |
-|---|---|---|
-| `vpay-server` | `scratch` | one static musl binary, plus `config/` baked at `/config`. Runs **both** backend workloads |
-| `vpay-dashboard` | `node:22-alpine` | the Next standalone server |
-| `vpay-checkout` | `node:22-alpine` | vpay's own hosted/embedded payment page |
+| Image            | Base             | Contents                                                                                   |
+| ---------------- | ---------------- | ------------------------------------------------------------------------------------------ |
+| `vpay-server`    | `scratch`        | one static musl binary, plus `config/` baked at `/config`. Runs **both** backend workloads |
+| `vpay-dashboard` | `node:22-alpine` | the Next standalone server                                                                 |
+| `vpay-checkout`  | `node:22-alpine` | vpay's own hosted/embedded payment page                                                    |
 
 ### `ghcr.io/vaam-apps/vpay-worker` is retired, as of 2026-09-07
 
@@ -34,22 +34,22 @@ second image bought a second pull and a second signature for the same code.
 What runs the worker now is **this** image with `worker` as its argument —
 `command: ["worker"]` in compose (compose's `command:` is the Docker CMD, and
 the image's `ENTRYPOINT` is `["/vpay-server"]`), `args: ["worker"]` in the
-chart (Kubernetes `args` is the CMD; its `command` would *replace* the
+chart (Kubernetes `args` is the CMD; its `command` would _replace_ the
 entrypoint, so the chart must not use it and does not).
 
 What an operator has to do about it:
 
-* **A values file that sets `images.worker` now fails `helm lint`** rather
+- **A values file that sets `images.worker` now fails `helm lint`** rather
   than being ignored — `values.schema.json` is `additionalProperties: false`
   and the key was removed, deliberately, so that a pinned-but-unused digest
   cannot sit in a values file looking load-bearing.
-* **The GHCR package still exists** and is frozen at the last `:edge` and
+- **The GHCR package still exists** and is frozen at the last `:edge` and
   `sha-<40 hex>` `release.yml` pushed to it (the digest recorded in that
   workflow's header, `sha256:08667b03…`, from run `33929374661` on
   2026-09-04). Nothing publishes to it any more.
 
   > **Maintainer action, open since 2026-09-07 — delete or archive
-  > `ghcr.io/vaam-apps/vpay-worker`.** It has *not* been deleted and nobody
+  > `ghcr.io/vaam-apps/vpay-worker`.** It has _not_ been deleted and nobody
   > has checked whether it can be: deleting a GHCR package needs a
   > `delete:packages` scope this repository has never held, the same 403 the
   > "GHCR visibility was attempted and could not be measured" note in the
@@ -61,7 +61,8 @@ What an operator has to do about it:
   > newer server image and a newer schema. Whoever holds the token decides
   > between deleting it, marking it deprecated, or leaving it and accepting
   > that. Nothing in this repository can make that call.
-* **A cluster running the old two-image release keeps working**; nothing
+
+- **A cluster running the old two-image release keeps working**; nothing
   removes an already-pulled image. The next `helm upgrade` moves the worker
   Deployment onto the server image.
 
@@ -101,11 +102,11 @@ The **backend** image has no shell, no package manager and no writable
 path ([ADR-0004](../adr/0004-musl-mimalloc.md)). Three consequences follow
 from that and they show up everywhere below:
 
-* there is no `HEALTHCHECK` and no `kubectl exec` debugging — everything is
+- there is no `HEALTHCHECK` and no `kubectl exec` debugging — everything is
   observed from outside the container;
-* the deployment configuration is *baked in*, so a config change is a rebuild
+- the deployment configuration is _baked in_, so a config change is a rebuild
   or an overlay mount, never an edit in place ([ADR-0003](../adr/0003-yaml-configuration.md));
-* `USER 65532:65532` is a raw UID, because `scratch` has no `/etc/passwd`.
+- `USER 65532:65532` is a raw UID, because `scratch` has no `/etc/passwd`.
 
 ## 2. Images: how they are published, tagged and signed
 
@@ -113,10 +114,10 @@ from that and they show up everywhere below:
 pushes an image; `ci.yml` builds both backend images for the e2e stack and
 throws them away.
 
-| Trigger | Tags applied to every image |
-|---|---|
+| Trigger              | Tags applied to every image    |
+| -------------------- | ------------------------------ |
 | `push` of a `v*` tag | `1.2.3`, `1.2`, `sha-<40 hex>` |
-| `push` to `master` | `edge`, `sha-<40 hex>` |
+| `push` to `master`   | `edge`, `sha-<40 hex>`         |
 
 No `latest`, deliberately: a real deployment pins a digest (§8), and a floating
 `latest` invites the one deployment shape this documentation argues against.
@@ -125,8 +126,8 @@ No `latest`, deliberately: a real deployment pins a digest (§8), and a floating
 `ubuntu-24.04-arm` (step-6 decision (8)) — one job per (image, architecture),
 each pushing an untagged manifest **by digest**, and a `merge` job assembling
 the manifest list with `docker buildx imagetools create` and applying the tags
-above once. The reason is `backends/Dockerfile`: it compiles the *builder's own
-host triple*, read from `rustc -vV`, so it is never a cross-compile. QEMU would
+above once. The reason is `backends/Dockerfile`: it compiles the _builder's own
+host triple_, read from `rustc -vV`, so it is never a cross-compile. QEMU would
 preserve that too, and pay for `ring`'s asm and mimalloc's C build emulated.
 [ADR-0014](../adr/0014-builder-host-musl-triple.md) records the consequence for
 `.cargo/config.toml`: `-C target-feature=+crt-static` is now stated for
@@ -185,16 +186,16 @@ architecture. [../runbooks/release.md](../runbooks/release.md) is the procedure.
 Both binaries refuse to start rather than start half-configured. Every item
 here is a hard failure, not a degraded mode.
 
-| Needed | Supplied as | Missing ⇒ |
-|---|---|---|
-| `VPAY_CONFIG` | baked `ENV` in the image | exit 78 |
-| `DATABASE_URL` | Secret (`database.existingSecret`) | exit 78, **both** modes (it was a bare non-zero — `1` — until 2026-09-10, issue #87) |
-| Every `${VAR}` in the config | Secret, `envFrom` (`rails.existingSecret`) | exit 78, **both** binaries |
-| The RS256 signing key | Secret, mounted file (`signingKey.existingSecret`) | exit 78, **server only** |
-| Postgres, reachable and migratable | outside the chart entirely | exit 69 |
-| `VPAY_WORKER_CONCURRENCY` ≤ 5, in `worker` mode | `worker.concurrency` in the chart | exit 78, **worker only** (new 2026-09-10, issue #63) |
+| Needed                                          | Supplied as                                        | Missing ⇒                                                                            |
+| ----------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `VPAY_CONFIG`                                   | baked `ENV` in the image                           | exit 78                                                                              |
+| `DATABASE_URL`                                  | Secret (`database.existingSecret`)                 | exit 78, **both** modes (it was a bare non-zero — `1` — until 2026-09-10, issue #87) |
+| Every `${VAR}` in the config                    | Secret, `envFrom` (`rails.existingSecret`)         | exit 78, **both** binaries                                                           |
+| The RS256 signing key                           | Secret, mounted file (`signingKey.existingSecret`) | exit 78, **server only**                                                             |
+| Postgres, reachable and migratable              | outside the chart entirely                         | exit 69                                                                              |
+| `VPAY_WORKER_CONCURRENCY` ≤ 5, in `worker` mode | `worker.concurrency` in the chart                  | exit 78, **worker only** (new 2026-09-10, issue #63)                                 |
 
-The signing key is a *file*, never an environment value: that is how a
+The signing key is a _file_, never an environment value: that is how a
 Kubernetes Secret reaches a pod, and migration `0010` dropped the column that
 used to hold private key material so that the file is the only place it
 exists.
@@ -211,7 +212,7 @@ refuses it earlier still, at `helm upgrade`. **Throughput above that is
 each brings a pool of its own. N replicas also means N × 10 connections
 against a Postgres whose own `max_connections` is typically 100 — the number
 to watch when replicas go up. Nothing here has been profiled under load; what
-*has* been measured is the ceiling itself
+_has_ been measured is the ceiling itself
 ([crash-safety.md](crash-safety.md#worker-concurrency-and-the-pool)).
 
 ## 4. Boot, in order
@@ -228,13 +229,13 @@ to watch when replicas go up. Nothing here has been profiled under load; what
 5. The database connects and migrations run.
 6. With no subcommand the process binds `VPAY_BIND` and starts serving; with
    `worker` it starts its claim loop. The shutdown signal handler is installed
-   *first*, before any of the above **and before the subcommand is
+   _first_, before any of the above **and before the subcommand is
    dispatched**, so a SIGTERM during boot is never lost — in either mode, and
    now by construction rather than by two `main`s agreeing.
 7. **Last**, both bind `VPAY_OBSERVABILITY_BIND` and serve `/livez` +
    `/metrics` on it. The ordering is the entire meaning of `/livez`: a probe
    against a process that is still in steps 1–5, or about to exit 78, is
-   *refused* rather than answered `ok`. See §7a.
+   _refused_ rather than answered `ok`. See §7a.
 
 ## 5. Shutdown
 
@@ -271,7 +272,7 @@ rolling restart rather than a change nothing picks up.
 
 **What can still go wrong, and nothing catches it:** the process treats a
 missing overlay as success. A typo in `VPAY_PROFILE` produces a pod that boots
-cleanly on the image's baked *sandbox* configuration — placeholder merchant
+cleanly on the image's baked _sandbox_ configuration — placeholder merchant
 keys, WireMock rail hosts — and reports itself healthy. There is no diagnostic
 because, from the process's point of view, nothing went wrong.
 
@@ -281,16 +282,16 @@ because, from the process's point of view, nothing went wrong.
 default `0.0.0.0:9090`, on **both** binaries — the worker had no HTTP
 listener of any kind before it. It serves exactly two paths and nothing else:
 
-| Path | Answers | Probe role |
-|---|---|---|
-| `GET /livez` | a static `ok`, no state, no database | **liveness**, both binaries |
-| `GET /metrics` | Prometheus text exposition (`text/plain; version=0.0.4`) | — |
-| `GET /healthz` (on `--bind`, port 8080) | `SELECT 1` against Postgres | **readiness**, server only |
+| Path                                    | Answers                                                  | Probe role                  |
+| --------------------------------------- | -------------------------------------------------------- | --------------------------- |
+| `GET /livez`                            | a static `ok`, no state, no database                     | **liveness**, both binaries |
+| `GET /metrics`                          | Prometheus text exposition (`text/plain; version=0.0.4`) | —                           |
+| `GET /healthz` (on `--bind`, port 8080) | `SELECT 1` against Postgres                              | **readiness**, server only  |
 
 Why the split is exactly this way round: a liveness probe that fails on a
 database outage restarts every pod in the deployment, repeatedly, and a
 restart cannot fix a database. A readiness probe that fails on one correctly
-takes the pod out of service. Why a second *port* rather than two more
+takes the pod out of service. Why a second _port_ rather than two more
 routes: `/metrics` names every rail this deployment talks to, every route
 pattern it serves and every error code it has produced, and `--bind` is the
 port an Ingress fronts. The NetworkPolicy admits 9090 from the monitoring
@@ -304,11 +305,11 @@ rule ordering staying correct forever.
 binary installs exactly one, beside its rustls provider. All thirteen have a
 live seam:
 `vpay_build_info`; `vpay_http_requests_total` and
-`vpay_http_request_duration_seconds` (labelled by matched route *pattern*,
+`vpay_http_request_duration_seconds` (labelled by matched route _pattern_,
 never a concrete path, and by one of nine methods or `other` — both label
 sets are closed, because an unauthenticated caller controls both the path
 and the method); `vpay_provider_requests_total` and
-`vpay_provider_request_duration_seconds` (per *port call*, not per HTTP
+`vpay_provider_request_duration_seconds` (per _port call_, not per HTTP
 request); `vpay_charge_transitions_total`; the three `vpay_jobs_*`; and
 `vpay_error_events_total` / `vpay_alert_events_total`, incremented in the
 same statements that write `alert = true` to the log so the two cannot
@@ -326,21 +327,21 @@ names the seam for each.
 
 **What an operator should know before trusting a dashboard.**
 
-* `vpay_jobs_oldest_claimable_age_seconds` **goes negative on a healthy idle
-  queue** — it is `now - min(run_at)` over unleased rows *including future
-  ones*, so a deployment whose only queued work is the hourly sweep reports
+- `vpay_jobs_oldest_claimable_age_seconds` **goes negative on a healthy idle
+  queue** — it is `now - min(run_at)` over unleased rows _including future
+  ones_, so a deployment whose only queued work is the hourly sweep reports
   around `-3500`. Read it as "seconds until (negative) or since (positive)
   the next queued work was due". A `> 300` alert is unaffected; an `abs()`
   applied to make the graph tidy would hide the case it exists for.
-* `vpay_build_info{git_sha}` is `unknown` unless the image was built with
+- `vpay_build_info{git_sha}` is `unknown` unless the image was built with
   `--build-arg VPAY_GIT_SHA=…`. `release.yml` passes `github.sha`; every
   local build and `compose*.yml` do not, and nothing ever shells out to
   `git`.
-* **Nothing has ever scraped any of this.** The chart's `ServiceMonitor` and
+- **Nothing has ever scraped any of this.** The chart's `ServiceMonitor` and
   `PrometheusRule` are both off by default, no cluster has run the chart, and
   no Prometheus has polled a vpay process. The series exist; the alerts on
   them have never been evaluated.
-* `VpayProviderErrorRateHigh` counts **every** non-successful port call
+- `VpayProviderErrorRateHigh` counts **every** non-successful port call
   (`error_kind!=""`), which is what lets it fire during a rail outage
   (`provider_unavailable`) — and which also means an ordinary decline
   (`charge_declined`) counts against it. On mobile money that is a large,
@@ -357,17 +358,17 @@ correlation mechanism until an OTLP decision is made.
 
 ## 7. What guards the deployment
 
-| Guard | Where | Catches |
-|---|---|---|
-| 19 named `fail` guards | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README. *Said 15 until 2026-09-10; the count is the `expected_guards` list in the `helm-check` recipe, which is the copy `just helm-check` actually enforces* |
-| `helm lint` + `helm template` + `kubeconform -strict` | CI `deploy` job / `just helm-check` | Malformed templates, objects that do not match their schema |
-| `limit-rps` assertion on the rendered Ingress | same | The rate limit [ADR-0009](../adr/0009-dashboard-oidc-provider.md) assumes exists silently disappearing |
-| `Config::validate_all` | the process | Configuration that would fail at runtime |
+| Guard                                                 | Where                                      | Catches                                                                                                                                                                                                                              |
+| ----------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 19 named `fail` guards                                | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README. _Said 15 until 2026-09-10; the count is the `expected_guards` list in the `helm-check` recipe, which is the copy `just helm-check` actually enforces_ |
+| `helm lint` + `helm template` + `kubeconform -strict` | CI `deploy` job / `just helm-check`        | Malformed templates, objects that do not match their schema                                                                                                                                                                          |
+| `limit-rps` assertion on the rendered Ingress         | same                                       | The rate limit [ADR-0009](../adr/0009-dashboard-oidc-provider.md) assumes exists silently disappearing                                                                                                                               |
+| `Config::validate_all`                                | the process                                | Configuration that would fail at runtime                                                                                                                                                                                             |
 
 The rate limit deserves its own sentence. ingress-nginx applies `limit-rps`
 per Ingress object, so the chart renders two: `/v1`, and a tighter one for
 `/v1/oauth/token` (an RSA verification plus a database write per request). The
-limit is enforced per controller *replica*, so the effective global limit is
+limit is enforced per controller _replica_, so the effective global limit is
 approximately `limit-rps × replicas` — an approximation, stated rather than
 hidden.
 
@@ -387,7 +388,7 @@ reads the same configuration as the server and will fail the same way if a
 placeholder stops resolving.
 → [../runbooks/rotate-rail-credentials.md](../runbooks/rotate-rail-credentials.md),
 which also carries [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)'s
-dual-authority check for revoking a *merchant* client (YAML `merchant_clients`
+dual-authority check for revoking a _merchant_ client (YAML `merchant_clients`
 **and** `disabled_clients`).
 
 **Deploys and rollbacks.** `helm upgrade --atomic`, the `grace-period` guard,
@@ -408,16 +409,16 @@ rather than at pull time.
 
 ## 9. What the deployment cannot do yet
 
-* ~~**Serve `/livez` or `/metrics`.**~~ Built on 2026-09-03 — see §6a. The
+- ~~**Serve `/livez` or `/metrics`.**~~ Built on 2026-09-03 — see §6a. The
   chart's liveness probes now point at a listener that exists.
-* **Be scraped.** The endpoint is real and no Prometheus has ever collected a
+- **Be scraped.** The endpoint is real and no Prometheus has ever collected a
   sample from it: the `ServiceMonitor` is off by default and no cluster has
   run this chart. Every alert in the `PrometheusRule` is therefore still
   unevaluated, which is a different statement from "the metric is missing"
   and is the one that is now true.
-* **Deploy the dashboard.** The chart templates no dashboard workload; see the
+- **Deploy the dashboard.** The chart templates no dashboard workload; see the
   chart README for why.
-* **Be pulled from anywhere.** ~~§2 describes a workflow that has never run.
+- **Be pulled from anywhere.** ~~§2 describes a workflow that has never run.
   There is no image at `ghcr.io/vaam-apps/vpay-server`, none at `-worker`,
   none at `-dashboard`, and no signature to verify on any of them. Every
   `images.*.digest` a values file could pin today would be invented.~~
@@ -425,7 +426,7 @@ rather than at pull time.
   green, most recently `33929374661` (2026-09-04, head `33d6c25`), which
   pushed a signed manifest list for all four images of the time — `vpay-server`,
   `vpay-worker` (retired 2026-09-07, §1), `vpay-dashboard` and
-  `vpay-checkout`. The bullet's *heading*
+  `vpay-checkout`. The bullet's _heading_
   survives its body: the images exist and nothing has pulled one. GHCR package
   visibility is unmeasured — `gh api "orgs/vaam-apps/packages"` needs a
   `read:packages` scope the available token lacks, and an anonymous
@@ -433,7 +434,7 @@ rather than at pull time.
   whether a cluster could pull these is still unknown, and no `cosign verify`
   has read a certificate. A pinned digest is now measured rather than
   invented; that it resolves for someone else is not.
-* **Prove any of the above in a cluster.** No cluster has run any of it.
+- **Prove any of the above in a cluster.** No cluster has run any of it.
 
 ---
 
@@ -443,25 +444,25 @@ rather than at pull time.
 2026-09-03 (Step 6, block B). **Updated 2026-09-07 (issue #77): three images,
 not four.**
 
-The 2026-09-07 change is described in §1 and is a change to *what ships*, not
+The 2026-09-07 change is described in §1 and is a change to _what ships_, not
 to what has been proven. Its evidence is `just helm-check` (chart lint, both
 value sets rendered, every named guard firing, kubeconform over every rendered
 object) and `just test-e2e` against a compose stack whose worker container runs
 the `worker` subcommand of the server image.
 
 **`args: ["worker"]` has still never been applied to a cluster**, exactly like
-every other line of this chart. What *has* been measured, in the review of the
+every other line of this chart. What _has_ been measured, in the review of the
 same day, is the half that is the container runtime's rather than the
 kubelet's — the ENTRYPOINT/CMD composition a rendered `args:` reduces to. On
 the real `FROM scratch` image `just test-e2e` built (`Entrypoint =
 ["/vpay-server"]`, `Cmd = null`, `User = 65532:65532`), with one config file
 mounted and `DATABASE_URL` pointed at a closed port:
 
-| Rendered spec | `docker` equivalent | Result |
-|---|---|---|
-| worker Deployment: `command: null`, `args: ["worker"]` | `docker run IMG worker` | exit **69**, having logged `provider adapters linked` and `job loop concurrency` — the job loop's own boot lines — then failing on Postgres |
-| server Deployment: `command: null`, `args: null` | `docker run IMG` | exit **78**, `--oauth-signing-key-file … is required` — the *serve* path, from the same image and the same environment |
-| the spelling the chart must **not** use: `command: ["worker"]` | `docker run --entrypoint worker IMG` | exit **127**, `exec: "worker": executable file not found in $PATH` |
+| Rendered spec                                                  | `docker` equivalent                  | Result                                                                                                                                      |
+| -------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| worker Deployment: `command: null`, `args: ["worker"]`         | `docker run IMG worker`              | exit **69**, having logged `provider adapters linked` and `job loop concurrency` — the job loop's own boot lines — then failing on Postgres |
+| server Deployment: `command: null`, `args: null`               | `docker run IMG`                     | exit **78**, `--oauth-signing-key-file … is required` — the _serve_ path, from the same image and the same environment                      |
+| the spelling the chart must **not** use: `command: ["worker"]` | `docker run --entrypoint worker IMG` | exit **127**, `exec: "worker": executable file not found in $PATH`                                                                          |
 
 Two different exit codes and two different failure messages out of one image
 and one env block is the argument selecting the mode, measured rather than
@@ -473,7 +474,7 @@ deleted: a kubelet, a `securityContext` with `readOnlyRootFilesystem`, a
 `ServiceAccount`, the liveness and startup probes against the observability
 port, and the `Recreate` strategy. The compose and Kubernetes spellings also
 still differ (`command:` there, `args:` here, because Docker's `command` is
-the CMD and Kubernetes' `command` is the ENTRYPOINT), so the *key* that will
+the CMD and Kubernetes' `command` is the ENTRYPOINT), so the _key_ that will
 run in a cluster is one nothing has parsed but `helm template` and
 `kubeconform`.
 
@@ -503,7 +504,7 @@ What exists:
   silently shadows one the chart sets — Kubernetes keeps the last entry, and
   for `DATABASE_URL` that means replacing a `secretKeyRef` with a literal).
   `just helm-check` now also asserts that the fifteen names it expects are
-  exactly the fifteen files under `ci/guards/`, so deleting a guard *and* its
+  exactly the fifteen files under `ci/guards/`, so deleting a guard _and_ its
   values file fails instead of passing quietly.
 
 What does not exist, stated plainly:
@@ -527,7 +528,7 @@ What does not exist, stated plainly:
   query now names a series a scrape would find, with the label sets the
   queries select on. What has not happened is a scrape: no Prometheus has
   polled a vpay process, so no rule has ever fired, failed to fire, or been
-  tested against real data. Every threshold is still *proposed* rather than
+  tested against real data. Every threshold is still _proposed_ rather than
   derived from traffic (step-6 decision (5)), and each rule carries a
   `provisional: "true"` label so this is visible in Alertmanager.
 - ~~**The `release.yml` workflow now exists and has never run**~~ (Step 6,
@@ -536,14 +537,14 @@ What does not exist, stated plainly:
   nine jobs each, all green.** That is the `type=raw,value=edge` path §2
   describes: three images × two native runner pools, the `imagetools create`
   merge, and the keyless `cosign sign` step, each of which ran and exited 0 on
-  a GitHub runner. `aarch64-unknown-linux-musl` therefore *has* been compiled,
+  a GitHub runner. `aarch64-unknown-linux-musl` therefore _has_ been compiled,
   on `ubuntu-24.04-arm` — this bullet used to say it never had anywhere, and
   that sentence is gone rather than struck because it is simply no longer
   true ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why
   the `+crt-static` entry is needed). **What has still not happened:** no `v*` tag
   has been pushed, so the semver tag path is unexercised; nobody has pulled
   any of these images or checked GHCR package visibility, so this repository
-  has never observed an image at those names *from the outside*; and no
+  has never observed an image at those names _from the outside_; and no
   `cosign verify` has been run, so no Fulcio certificate or Rekor entry has
   been read — see the "Image signing" row in
   [../status.md](../status.md). **Updated 2026-09-05: the count is now 13 runs,
@@ -605,6 +606,6 @@ VPAY_GIT_SHA=33d6c253a232958604801518a08a2f34accb689c …`, so the published
 `vpay_build_info{git_sha="33d6c25…"}` rather than `unknown`. (`vpay-worker` is
 retired as of 2026-09-07 — §1 — so that is the last build of it there will
 be.) `unknown` remains
-correct for every *local* build, which is what `just release-dry-run` and
+correct for every _local_ build, which is what `just release-dry-run` and
 `compose` produce — and nobody has run a published image to read the series
 off it, so this is read from the build command rather than from a scrape.

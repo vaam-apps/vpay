@@ -1,6 +1,6 @@
-import { cva, type VariantProps } from 'class-variance-authority';
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
 /**
  * Layout and typography primitives with no Base UI primitive and no daisyUI
@@ -13,28 +13,35 @@ import { cn } from '../cn';
  * per screen.
  */
 
-const stack = cva('flex', {
+const stack = cva("flex", {
   variants: {
-    direction: { row: 'flex-row', column: 'flex-col' },
+    direction: { row: "flex-row", column: "flex-col" },
     align: {
-      start: 'items-start',
-      center: 'items-center',
-      end: 'items-end',
-      stretch: 'items-stretch',
+      start: "items-start",
+      center: "items-center",
+      end: "items-end",
+      stretch: "items-stretch",
     },
     justify: {
-      start: 'justify-start',
-      center: 'justify-center',
-      end: 'justify-end',
-      between: 'justify-between',
+      start: "justify-start",
+      center: "justify-center",
+      end: "justify-end",
+      between: "justify-between",
     },
-    gap: { xs: 'gap-1', sm: 'gap-2', md: 'gap-4', lg: 'gap-6' },
-    wrap: { true: 'flex-wrap', false: '' },
+    gap: { xs: "gap-1", sm: "gap-2", md: "gap-4", lg: "gap-6" },
+    wrap: { true: "flex-wrap", false: "" },
   },
-  defaultVariants: { direction: 'row', align: 'center', justify: 'start', gap: 'sm', wrap: false },
+  defaultVariants: {
+    direction: "row",
+    align: "center",
+    justify: "start",
+    gap: "sm",
+    wrap: false,
+  },
 });
 
-export interface StackProps extends React.ComponentPropsWithoutRef<'div'>, VariantProps<typeof stack> {
+export interface StackProps
+  extends React.ComponentPropsWithoutRef<"div">, VariantProps<typeof stack> {
   /**
    * The element to render. A `<div>` by default, because most stacks are
    * grouping and nothing else — but a stack that IS the page header or a
@@ -42,12 +49,12 @@ export interface StackProps extends React.ComponentPropsWithoutRef<'div'>, Varia
    * that landmark from the accessibility tree. `checkout-view.tsx` and
    * `return-view.tsx` each lost their `<header>` that way.
    */
-  as?: 'div' | 'header' | 'footer' | 'section' | 'nav' | 'aside';
+  as?: "div" | "header" | "footer" | "section" | "nav" | "aside";
 }
 
 /** A flex row or column. Replaces `flex items-center gap-*` written inline per screen. */
 export function Stack({
-  as: Tag = 'div',
+  as: Tag = "div",
   direction,
   align,
   justify,
@@ -56,39 +63,51 @@ export function Stack({
   className,
   ...rest
 }: StackProps) {
-  return <Tag className={cn(stack({ direction, align, justify, gap, wrap }), className)} {...rest} />;
+  return (
+    <Tag
+      className={cn(stack({ direction, align, justify, gap, wrap }), className)}
+      {...rest}
+    />
+  );
 }
 
-const text = cva('', {
+const text = cva("", {
   variants: {
-    tone: { default: '', muted: 'opacity-60', error: 'text-error' },
+    tone: { default: "", muted: "opacity-60", error: "text-error" },
     // `3xl` is the payment amount on the checkout page — the single number a
     // payer checks before approving. It is a size the product needs, so it
     // is a variant here rather than a `text-3xl` written at the call site.
-    size: { xs: 'text-xs', sm: 'text-sm', md: 'text-base', lg: 'text-lg', '3xl': 'text-3xl' },
-    weight: { normal: '', medium: 'font-medium', semibold: 'font-semibold' },
+    size: {
+      xs: "text-xs",
+      sm: "text-sm",
+      md: "text-base",
+      lg: "text-lg",
+      "3xl": "text-3xl",
+    },
+    weight: { normal: "", medium: "font-medium", semibold: "font-semibold" },
     // Lining figures, for amounts and any other column of digits.
-    numeric: { true: 'tabular-nums', false: '' },
+    numeric: { true: "tabular-nums", false: "" },
     // `anywhere` lets a long unbroken id (a session reference) wrap inside
     // its card instead of overflowing it.
-    wrap: { normal: '', anywhere: 'break-all' },
+    wrap: { normal: "", anywhere: "break-all" },
   },
   defaultVariants: {
-    tone: 'default',
-    size: 'md',
-    weight: 'normal',
+    tone: "default",
+    size: "md",
+    weight: "normal",
     numeric: false,
-    wrap: 'normal',
+    wrap: "normal",
   },
 });
 
-export interface TextProps extends React.ComponentPropsWithoutRef<'p'>, VariantProps<typeof text> {
-  as?: 'p' | 'span';
+export interface TextProps
+  extends React.ComponentPropsWithoutRef<"p">, VariantProps<typeof text> {
+  as?: "p" | "span";
 }
 
 /** Inline or block copy. `tone="muted"` / `tone="error"` replace ad hoc `opacity-*` / `text-error`. */
 export function Text({
-  as: Tag = 'p',
+  as: Tag = "p",
   tone,
   size,
   weight,
@@ -98,11 +117,14 @@ export function Text({
   ...rest
 }: TextProps) {
   return (
-    <Tag className={cn(text({ tone, size, weight, numeric, wrap }), className)} {...rest} />
+    <Tag
+      className={cn(text({ tone, size, weight, numeric, wrap }), className)}
+      {...rest}
+    />
   );
 }
 
-export type VisuallyHiddenProps = React.ComponentPropsWithoutRef<'span'>;
+export type VisuallyHiddenProps = React.ComponentPropsWithoutRef<"span">;
 
 /**
  * Text for a screen reader and not for the eye.
@@ -112,10 +134,13 @@ export type VisuallyHiddenProps = React.ComponentPropsWithoutRef<'span'>;
  * hidden label on the checkout page goes through here.
  */
 export function VisuallyHidden({ className, ...rest }: VisuallyHiddenProps) {
-  return <span className={cn('sr-only', className)} {...rest} />;
+  return <span className={cn("sr-only", className)} {...rest} />;
 }
 
-export interface LogoProps extends Omit<React.ComponentPropsWithoutRef<'img'>, 'src' | 'alt'> {
+export interface LogoProps extends Omit<
+  React.ComponentPropsWithoutRef<"img">,
+  "src" | "alt"
+> {
   src: string;
   /** Required: the operator's mark is often the only place their name appears. */
   alt: string;
@@ -136,10 +161,10 @@ export interface LogoProps extends Omit<React.ComponentPropsWithoutRef<'img'>, '
 export function Logo({ className, ...rest }: LogoProps) {
   // `alt` is a REQUIRED prop on `LogoProps`, so a caller cannot omit it; it
   // arrives through the spread rather than being written out here.
-  return <img className={cn('h-8 w-auto', className)} {...rest} />;
+  return <img className={cn("h-8 w-auto", className)} {...rest} />;
 }
 
-export interface HeadingProps extends React.ComponentPropsWithoutRef<'h1'> {
+export interface HeadingProps extends React.ComponentPropsWithoutRef<"h1"> {
   level?: 1 | 2 | 3;
 }
 
@@ -150,21 +175,31 @@ export interface HeadingProps extends React.ComponentPropsWithoutRef<'h1'> {
  * a screen transition needs stay in the app (plan §4.1, `ScreenHeading`),
  * because they are screen navigation logic, not a look.
  */
-const HEADING_TAGS = { 1: 'h1', 2: 'h2', 3: 'h3' } as const;
+const HEADING_TAGS = { 1: "h1", 2: "h2", 3: "h3" } as const;
 
 export function Heading({ level = 1, className, ...rest }: HeadingProps) {
   const Tag = HEADING_TAGS[level];
-  return <Tag className={cn('text-xl font-semibold outline-none', className)} {...rest} />;
+  return (
+    <Tag
+      className={cn("text-xl font-semibold outline-none", className)}
+      {...rest}
+    />
+  );
 }
 
-export type ListProps = React.ComponentPropsWithoutRef<'ul'>;
+export type ListProps = React.ComponentPropsWithoutRef<"ul">;
 
 /** A plain vertical list. Replaces `mt-3 space-y-1 text-sm opacity-70` written inline. */
 export function List({ className, ...rest }: ListProps) {
-  return <ul className={cn('mt-3 space-y-1 text-sm opacity-70', className)} {...rest} />;
+  return (
+    <ul
+      className={cn("mt-3 space-y-1 text-sm opacity-70", className)}
+      {...rest}
+    />
+  );
 }
 
-export type PageShellProps = React.ComponentPropsWithoutRef<'div'>;
+export type PageShellProps = React.ComponentPropsWithoutRef<"div">;
 
 /**
  * The one-column page frame every checkout and dashboard screen sits in.
@@ -174,5 +209,13 @@ export type PageShellProps = React.ComponentPropsWithoutRef<'div'>;
  * `return-view.tsx`.
  */
 export function PageShell({ className, ...rest }: PageShellProps) {
-  return <div className={cn('mx-auto flex w-full max-w-md flex-col gap-6 p-6', className)} {...rest} />;
+  return (
+    <div
+      className={cn(
+        "mx-auto flex w-full max-w-md flex-col gap-6 p-6",
+        className,
+      )}
+      {...rest}
+    />
+  );
 }

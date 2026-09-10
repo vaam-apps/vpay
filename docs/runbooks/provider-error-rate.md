@@ -31,7 +31,7 @@ below are talking about the same thing.
 > about one classification of its answers.
 >
 > **⚠ That includes declines, and on mobile money that matters.**
-> `error_kind="charge_declined"` is a rail *decision*
+> `error_kind="charge_declined"` is a rail _decision_
 > (`vpay_provider::ProviderError::Rejected` — an insufficient balance, a payer
 > timeout), not a rail failure, and it is routinely a large share of all
 > calls. Against real traffic this rule will fire on an ordinary decline rate.
@@ -47,7 +47,7 @@ below are talking about the same thing.
 > **1. `vpay_provider_requests_total` is emitted, and has never been
 > scraped.** As of 2026-09-03 (step 6, block C) it is recorded by
 > `vpay_provider::Measured`, the port decorator every rail adapter is wrapped
-> in — so it counts *port calls* rather than HTTP requests: an Orange
+> in — so it counts _port calls_ rather than HTTP requests: an Orange
 > `submit` that mints an access token first is two requests on the wire and
 > one increment here, and a call refused before the socket opens is counted
 > with that refusal's `error_kind`. Both binaries serve it on
@@ -73,13 +73,13 @@ that is step 0:
 sum by (error_kind) (rate(vpay_provider_requests_total{provider="<rail>"}[15m]))
 ```
 
-| Dominant `error_kind` | What it is | Where to go |
-|---|---|---|
-| `provider_unavailable` | Transport: the rail was unreachable, or did not answer. Not a mapping problem and not something to fix in an adapter. | [unresolved-charges.md](unresolved-charges.md) — charges the poll ladder cannot resolve are the consequence. Check the rail's own status page first. |
-| `charge_declined` | The rail decided. Ordinary business on a push rail, and the reason this alert can fire on a perfectly healthy system — see the ⚠ above. | Nothing operational, unless the decline *mix* changed: group `charges.failure_code`. A jump in `provider_account_blocked` is a page, not a decline. |
-| `provider_error` | The adapter saw a rail error string it does not recognise. | The rest of this runbook. |
-| `misconfigured` | Our YAML or our credentials — a missing `${VAR}`, a rejected key. | [rotate-rail-credentials.md](rotate-rail-credentials.md). Fix the deployment, not the mapping. |
-| `operation_unsupported_by_rail` / `not_implemented` | vpay called something this rail cannot do, or something nobody has built. Both are bugs here, not rail problems. | `docs/status.md`, then a code fix. |
+| Dominant `error_kind`                               | What it is                                                                                                                              | Where to go                                                                                                                                          |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider_unavailable`                              | Transport: the rail was unreachable, or did not answer. Not a mapping problem and not something to fix in an adapter.                   | [unresolved-charges.md](unresolved-charges.md) — charges the poll ladder cannot resolve are the consequence. Check the rail's own status page first. |
+| `charge_declined`                                   | The rail decided. Ordinary business on a push rail, and the reason this alert can fire on a perfectly healthy system — see the ⚠ above. | Nothing operational, unless the decline _mix_ changed: group `charges.failure_code`. A jump in `provider_account_blocked` is a page, not a decline.  |
+| `provider_error`                                    | The adapter saw a rail error string it does not recognise.                                                                              | The rest of this runbook.                                                                                                                            |
+| `misconfigured`                                     | Our YAML or our credentials — a missing `${VAR}`, a rejected key.                                                                       | [rotate-rail-credentials.md](rotate-rail-credentials.md). Fix the deployment, not the mapping.                                                       |
+| `operation_unsupported_by_rail` / `not_implemented` | vpay called something this rail cannot do, or something nobody has built. Both are bugs here, not rail problems.                        | `docs/status.md`, then a code fix.                                                                                                                   |
 
 The rest of this runbook is the `provider_error` case.
 
@@ -87,7 +87,7 @@ The rest of this runbook is the `provider_error` case.
 rail error string it does not recognise. A rising rate almost always means the
 rail changed its error vocabulary and the adapter's mapping table has drifted.
 
-It is **not** a payment problem in itself. It is a *visibility* problem, and it
+It is **not** a payment problem in itself. It is a _visibility_ problem, and it
 degrades every downstream decision — merchants cannot tell a retryable failure
 from a permanent one.
 
@@ -105,7 +105,7 @@ from a permanent one.
    response shape. **`provider_requests` will not show you the body — it
    stores none**, by design: only the charge, the operation, the reference,
    the attempt, `status_code`, `error_kind`, `sent_at` and `responded_at`.
-   Use it to establish *whether and how* the rail answered, then go to the
+   Use it to establish _whether and how_ the rail answered, then go to the
    application logs for the (truncated) body.
 
    Reading `provider_requests` for that: `status_code IS NULL` means no
@@ -124,7 +124,7 @@ from a permanent one.
    rising rate with `status_code IS NULL` and
    `error_kind = 'provider_unavailable'` is not — that is the rail being
    unreachable, and it belongs to the unresolved-charges runbook. Both now
-   fire the *same* alert, which is why the `error_kind` split above is step 0
+   fire the _same_ alert, which is why the `error_kind` split above is step 0
    rather than a footnote.
 
 ## Do not

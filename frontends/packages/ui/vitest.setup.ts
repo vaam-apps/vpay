@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom/vitest';
+import "@testing-library/jest-dom/vitest";
 
 /**
  * jsdom does not implement a handful of browser APIs Base UI's interactive
@@ -33,7 +33,7 @@ class PointerEventPolyfill extends MouseEvent implements PointerEvent {
     this.tiltX = params.tiltX ?? 0;
     this.tiltY = params.tiltY ?? 0;
     this.twist = params.twist ?? 0;
-    this.pointerType = params.pointerType ?? 'mouse';
+    this.pointerType = params.pointerType ?? "mouse";
     this.isPrimary = params.isPrimary ?? true;
     this.altitudeAngle = params.altitudeAngle ?? 0;
     this.azimuthAngle = params.azimuthAngle ?? 0;
@@ -48,11 +48,11 @@ class PointerEventPolyfill extends MouseEvent implements PointerEvent {
   }
 }
 
-if (typeof window !== 'undefined' && !window.PointerEvent) {
+if (typeof window !== "undefined" && !window.PointerEvent) {
   window.PointerEvent = PointerEventPolyfill as unknown as typeof PointerEvent;
 }
 
-if (typeof Element !== 'undefined') {
+if (typeof Element !== "undefined") {
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
   }
@@ -67,7 +67,7 @@ if (typeof Element !== 'undefined') {
   }
 }
 
-if (typeof window !== 'undefined' && !window.ResizeObserver) {
+if (typeof window !== "undefined" && !window.ResizeObserver) {
   class ResizeObserverPolyfill implements ResizeObserver {
     observe() {}
     unobserve() {}

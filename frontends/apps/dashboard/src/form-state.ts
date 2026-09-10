@@ -27,4 +27,7 @@ export interface FormState {
 export const NO_ERROR: FormState = { error: null, requestId: null };
 
 /** A `useActionState` action: previous state plus the submitted form. */
-export type FormAction = (previous: FormState, form: FormData) => Promise<FormState>;
+export type FormAction = (
+  previous: FormState,
+  form: FormData,
+) => Promise<FormState>;

@@ -31,7 +31,7 @@ providers:
 
 The expectation of −5 reads the earlier measurement backwards. exp17's own
 note is explicit that while the five `@default(...)` were in the schema **and**
-the five `DEFAULT`s were in the table, the two agreed and *cost zero drift*;
+the five `DEFAULT`s were in the table, the two agreed and _cost zero drift_;
 what its review measured was that removing the schema half alone takes the
 report to **89**, five `column … default value differs` lines. A default is
 only ever drift when the two sides disagree. Removing both halves leaves them
@@ -40,12 +40,12 @@ agreeing, so the count cannot fall — there was nothing there to remove.
 Four variants, all with this branch's `the_cstack_schema_drifts_from_the_
 migrations_by_a_measured_amount`:
 
-| Variant | Report |
-|---|---|
-| **A** — as delivered (no `@default(...)`, no `DEFAULT`) | **84 / 16 / 17** |
-| **B** — master (five `@default(...)`, five `DEFAULT`) | **84 / 16 / 17** |
-| **C** — schema half only (no `@default(...)`, migration 0033 deleted) | **89 / 16 / 17**, five `default value differs` on `providers` |
-| **D** — DDL half only (`@default(false)` restored on one field, 0033 kept) | **does not compile** — see § 3 mutation 4 |
+| Variant                                                                    | Report                                                        |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **A** — as delivered (no `@default(...)`, no `DEFAULT`)                    | **84 / 16 / 17**                                              |
+| **B** — master (five `@default(...)`, five `DEFAULT`)                      | **84 / 16 / 17**                                              |
+| **C** — schema half only (no `@default(...)`, migration 0033 deleted)      | **89 / 16 / 17**, five `default value differs` on `providers` |
+| **D** — DDL half only (`@default(false)` restored on one field, 0033 kept) | **does not compile** — see § 3 mutation 4                     |
 
 C is the one that matters: it is why the migration and the schema edit are one
 commit, and it reproduces exp17's review pass from the opposite side.
@@ -58,6 +58,7 @@ expect the count to move.** Only a type fix, or a whole table entering the
 schema, does.
 
 ## 2. The one place the brief was not followed: there is no
+
 `find_unique(...).for_update()` ahead of the provider upsert
 
 The brief asked for "`find_unique().for_update()` + `upsert`, both `run_in_tx`".
@@ -182,7 +183,7 @@ error: could not compile `vpay-db` (lib) due to 1 previous error
 ```
 
 This is exp17's review finding 6 reproduced in the opposite direction: the five
-columns are `CreateProviderInput` *fields*, not merely SQL, so the schema half
+columns are `CreateProviderInput` _fields_, not merely SQL, so the schema half
 of D7 cannot regress quietly. `the_provider_upsert_carries_all_eight_columns`
 is the second thing that would notice, not the first.
 
@@ -195,7 +196,7 @@ is the second thing that would notice, not the first.
   ("Postgres enums are `String` in vpay-db; vpay-core parses") is a recorded
   decision and reversing it was not this task's to make.
 
-  The *classification* deliberately changed. The label used to reach
+  The _classification_ deliberately changed. The label used to reach
   `providers_flow_enum_check` and come back as `DbError::Query` →
   `Category::Storage` → exit `69`, i.e. "wait for Postgres" for a typo in a
   YAML file. That was wrong about who has to act. The CHECK is untouched and
@@ -234,7 +235,7 @@ is the second thing that would notice, not the first.
 ## 5. Not done
 
 - No table other than `currencies`, `providers` and `disabled_clients` runs
-  through CrateStack, and nothing new *reads* `providers` through it — 0033
+  through CrateStack, and nothing new _reads_ `providers` through it — 0033
   changed the write. `model Provider`'s `read` arm is still there for one test.
 - `reconcile`'s **disable pass** is still raw sqlx. It addresses rows by their
   absence from a list (`WHERE code <> ALL($1)`), which no generated builder

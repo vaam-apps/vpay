@@ -18,13 +18,13 @@
  * statically rendered 200 would be served by the filesystem and would keep
  * answering after the server had stopped doing anything else useful.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export function GET(): Response {
   // `no-store` and the other security headers are added by `middleware.ts`,
   // whose matcher is every path; this body is all that is needed here.
-  return new Response('ok\n', {
+  return new Response("ok\n", {
     status: 200,
-    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }

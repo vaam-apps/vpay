@@ -7,13 +7,13 @@
  * key, deliberately — a fallback would let a half-translated dictionary ship
  * and read as finished.
  */
-import { en, type MessageKey } from './en';
-import { fr } from './fr';
+import { en, type MessageKey } from "./en";
+import { fr } from "./fr";
 
 export type { MessageKey };
 
 /** The locales this page serves. Order is meaningful: the first is the default. */
-export const LOCALES = ['fr', 'en'] as const;
+export const LOCALES = ["fr", "en"] as const;
 
 export type Locale = (typeof LOCALES)[number];
 
@@ -22,9 +22,12 @@ export type Locale = (typeof LOCALES)[number];
  * locales this page has, it gets French — the language of the deployment
  * this repository is written for, and the one Orange's own hosted page uses.
  */
-export const DEFAULT_LOCALE: Locale = 'fr';
+export const DEFAULT_LOCALE: Locale = "fr";
 
-export const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = { fr, en };
+export const DICTIONARIES: Record<Locale, Record<MessageKey, string>> = {
+  fr,
+  en,
+};
 
 export function isLocale(value: string): value is Locale {
   return (LOCALES as readonly string[]).includes(value);
@@ -45,17 +48,17 @@ interface LanguageRange {
  */
 function parseAcceptLanguage(header: string): LanguageRange[] {
   const ranges: LanguageRange[] = [];
-  for (const part of header.split(',')) {
-    const [rawTag, ...parameters] = part.trim().split(';');
-    const tag = (rawTag ?? '').trim().toLowerCase();
+  for (const part of header.split(",")) {
+    const [rawTag, ...parameters] = part.trim().split(";");
+    const tag = (rawTag ?? "").trim().toLowerCase();
     if (tag.length === 0) {
       continue;
     }
     let quality = 1;
     for (const parameter of parameters) {
-      const [name, value] = parameter.trim().split('=');
-      if (name?.trim().toLowerCase() === 'q') {
-        const parsed = Number.parseFloat(value ?? '');
+      const [name, value] = parameter.trim().split("=");
+      if (name?.trim().toLowerCase() === "q") {
+        const parsed = Number.parseFloat(value ?? "");
         // A malformed q is treated as "unstated", i.e. 1 — RFC 9110's own
         // reading. Treating it as 0 would silently drop the payer's first
         // choice because of a stray character.
@@ -78,17 +81,17 @@ function parseAcceptLanguage(header: string): LanguageRange[] {
  * range is an explicit refusal and is skipped.
  */
 export function pickLocale(header: string | null | undefined): Locale {
-  if (typeof header !== 'string' || header.trim().length === 0) {
+  if (typeof header !== "string" || header.trim().length === 0) {
     return DEFAULT_LOCALE;
   }
   for (const range of parseAcceptLanguage(header)) {
     if (range.quality <= 0) {
       continue;
     }
-    if (range.tag === '*') {
+    if (range.tag === "*") {
       return DEFAULT_LOCALE;
     }
-    const primary = range.tag.split('-')[0] ?? '';
+    const primary = range.tag.split("-")[0] ?? "";
     if (isLocale(primary)) {
       return primary;
     }
@@ -103,16 +106,19 @@ export function pickLocale(header: string | null | undefined): Locale {
  * empty string: `Pay {merchant}` on screen is a visible bug report, whereas
  * `Pay ` reads like finished copy with a missing name.
  */
-export function format(template: string, values: Record<string, string | number> = {}): string {
-  let out = '';
+export function format(
+  template: string,
+  values: Record<string, string | number> = {},
+): string {
+  let out = "";
   let index = 0;
   for (;;) {
-    const open = template.indexOf('{', index);
+    const open = template.indexOf("{", index);
     if (open === -1) {
       out += template.slice(index);
       return out;
     }
-    const close = template.indexOf('}', open);
+    const close = template.indexOf("}", open);
     if (close === -1) {
       out += template.slice(index);
       return out;
@@ -120,13 +126,17 @@ export function format(template: string, values: Record<string, string | number>
     const name = template.slice(open + 1, close);
     const value = values[name];
     out += template.slice(index, open);
-    out += value === undefined ? template.slice(open, close + 1) : String(value);
+    out +=
+      value === undefined ? template.slice(open, close + 1) : String(value);
     index = close + 1;
   }
 }
 
 /** The message lookup a component receives. Bound to one locale. */
-export type Translate = (key: MessageKey, values?: Record<string, string | number>) => string;
+export type Translate = (
+  key: MessageKey,
+  values?: Record<string, string | number>,
+) => string;
 
 export function translator(locale: Locale): Translate {
   const dictionary = DICTIONARIES[locale];
@@ -138,11 +148,11 @@ export function placeholdersOf(template: string): string[] {
   const names: string[] = [];
   let index = 0;
   for (;;) {
-    const open = template.indexOf('{', index);
+    const open = template.indexOf("{", index);
     if (open === -1) {
       return names;
     }
-    const close = template.indexOf('}', open);
+    const close = template.indexOf("}", open);
     if (close === -1) {
       return names;
     }

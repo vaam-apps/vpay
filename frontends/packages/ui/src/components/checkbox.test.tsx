@@ -1,23 +1,23 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { Checkbox, CheckboxLabel } from './checkbox';
+import { Checkbox, CheckboxLabel } from "./checkbox";
 
-describe('Checkbox', () => {
-  it('renders a native button (decision D2), not a span', () => {
+describe("Checkbox", () => {
+  it("renders a native button (decision D2), not a span", () => {
     const { unmount } = render(<Checkbox aria-label="Remember this number" />);
-    const el = screen.getByRole('checkbox', { name: 'Remember this number' });
-    expect(el.tagName).toBe('BUTTON');
-    expect(el.className).toContain('checkbox');
+    const el = screen.getByRole("checkbox", { name: "Remember this number" });
+    expect(el.tagName).toBe("BUTTON");
+    expect(el.className).toContain("checkbox");
     unmount();
   });
 
-  it('toggles aria-checked on click, which daisyUI 5 styles directly', () => {
+  it("toggles aria-checked on click, which daisyUI 5 styles directly", () => {
     const { unmount } = render(<Checkbox aria-label="Remember this number" />);
-    const el = screen.getByRole('checkbox', { name: 'Remember this number' });
-    expect(el.getAttribute('aria-checked')).toBe('false');
+    const el = screen.getByRole("checkbox", { name: "Remember this number" });
+    expect(el.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(el);
-    expect(el.getAttribute('aria-checked')).toBe('true');
+    expect(el.getAttribute("aria-checked")).toBe("true");
     unmount();
   });
 
@@ -29,30 +29,30 @@ describe('Checkbox', () => {
    * it the way it does with an `<input>`, and nothing about a `<span>` would
    * have given the browser's own Space/Enter activation back.
    */
-  it('toggles when its wrapping label is clicked', () => {
+  it("toggles when its wrapping label is clicked", () => {
     const { unmount } = render(
       <label>
         <Checkbox aria-label="Remember this number" /> Remember this number
       </label>,
     );
-    const el = screen.getByRole('checkbox', { name: 'Remember this number' });
-    expect(el.getAttribute('aria-checked')).toBe('false');
-    fireEvent.click(screen.getByText('Remember this number'));
-    expect(el.getAttribute('aria-checked')).toBe('true');
+    const el = screen.getByRole("checkbox", { name: "Remember this number" });
+    expect(el.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(screen.getByText("Remember this number"));
+    expect(el.getAttribute("aria-checked")).toBe("true");
     unmount();
   });
 
-  it('toggles when a label associated by htmlFor is clicked', () => {
+  it("toggles when a label associated by htmlFor is clicked", () => {
     const { unmount } = render(
       <>
         <Checkbox id="vpay-remember" />
         <label htmlFor="vpay-remember">Remember this number</label>
       </>,
     );
-    const el = screen.getByRole('checkbox', { name: 'Remember this number' });
-    expect(el.id).toBe('vpay-remember');
-    fireEvent.click(screen.getByText('Remember this number'));
-    expect(el.getAttribute('aria-checked')).toBe('true');
+    const el = screen.getByRole("checkbox", { name: "Remember this number" });
+    expect(el.id).toBe("vpay-remember");
+    fireEvent.click(screen.getByText("Remember this number"));
+    expect(el.getAttribute("aria-checked")).toBe("true");
     unmount();
   });
 
@@ -71,20 +71,20 @@ describe('Checkbox', () => {
    * form — this fails. The keystroke itself belongs to the real-browser
    * check plan §7 row 6 still owes.
    */
-  it('is a native button, which is what makes Space and Enter work in a browser', () => {
+  it("is a native button, which is what makes Space and Enter work in a browser", () => {
     const { unmount } = render(<Checkbox aria-label="Remember this number" />);
-    const el = screen.getByRole('checkbox', { name: 'Remember this number' });
-    expect(el.tagName).toBe('BUTTON');
-    expect(el.getAttribute('type')).toBe('button');
-    expect(el.getAttribute('tabindex')).toBe('0');
+    const el = screen.getByRole("checkbox", { name: "Remember this number" });
+    expect(el.tagName).toBe("BUTTON");
+    expect(el.getAttribute("type")).toBe("button");
+    expect(el.getAttribute("tabindex")).toBe("0");
     fireEvent.click(el);
-    expect(el.getAttribute('aria-checked')).toBe('true');
+    expect(el.getAttribute("aria-checked")).toBe("true");
     unmount();
   });
 });
 
-describe('CheckboxLabel', () => {
-  it('forwards a click on the sentence to the checkbox it wraps', () => {
+describe("CheckboxLabel", () => {
+  it("forwards a click on the sentence to the checkbox it wraps", () => {
     // The box is a 16-pixel target on a phone; the sentence is most of what
     // a thumb can hit. A `<button>` is a labelable element, so the wrapping
     // `<label>` is the association — measured here rather than assumed.
@@ -95,10 +95,10 @@ describe('CheckboxLabel', () => {
         <span>Remember this number on this device</span>
       </CheckboxLabel>,
     );
-    const wrap = screen.getByTestId('wrap');
-    expect(wrap.tagName).toBe('LABEL');
-    expect(wrap.className).toContain('cursor-pointer');
-    fireEvent.click(screen.getByText('Remember this number on this device'));
+    const wrap = screen.getByTestId("wrap");
+    expect(wrap.tagName).toBe("LABEL");
+    expect(wrap.className).toContain("cursor-pointer");
+    fireEvent.click(screen.getByText("Remember this number on this device"));
     expect(onCheckedChange).toHaveBeenCalledTimes(1);
     unmount();
   });

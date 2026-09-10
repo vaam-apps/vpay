@@ -12,7 +12,7 @@ Lane C commits replayed unchanged. Two consequences, both material to Lane
 C's report:
 
 - The `@vpay/ui` `./cn.js` resolution defect that stopped `frontends/apps/
-  dashboard`'s `next build` — the reason Lane C could not run `just test-e2e`
+dashboard`'s `next build` — the reason Lane C could not run `just test-e2e`
   — **is fixed on `08d9b8e`** (`e2a0a09`, plus a `verify-ui` check that
   re-runs the original failure). `just test-e2e` therefore runs here, and did.
 - `just lint-web`'s failure on `frontends/apps/checkout/tailwind.config.ts`,
@@ -31,19 +31,19 @@ rule-break / misleading-claim / nit.
 base and on the branch head. **Every figure in `lane-c.md` reproduces
 exactly**:
 
-| `@vpay-examples/shop` | `177645e` (base) | Lane C head `892f521` | after this review |
-|---|---|---|---|
-| `styling_files` | 11 | 16 | 16 |
-| `classname_sites` | 41 | 128 | 130 |
-| `class_tokens_distinct` | 15 | 93 | 90 |
-| `class_tokens_total` | 46 | 300 | 295 |
-| `css_lines` | **229** | **5** | **5** |
-| `inline_styles` | **24** | **0** | **0** |
+| `@vpay-examples/shop`   | `177645e` (base) | Lane C head `892f521` | after this review |
+| ----------------------- | ---------------- | --------------------- | ----------------- |
+| `styling_files`         | 11               | 16                    | 16                |
+| `classname_sites`       | 41               | 128                   | 130               |
+| `class_tokens_distinct` | 15               | 93                    | 90                |
+| `class_tokens_total`    | 46               | 300                   | 295               |
+| `css_lines`             | **229**          | **5**                 | **5**             |
+| `inline_styles`         | **24**           | **0**                 | **0**             |
 
 `class_tokens_distinct` drops 93 → 90 across this review because the three
 `badge-{tone}` strings moved out of a `className` template literal and into a
 plain lookup object, which is the script's own documented blind spot (plan
-§2). That is a *smaller* number for a *better* file, and it is stated here
+§2). That is a _smaller_ number for a _better_ file, and it is stated here
 rather than claimed as a reduction.
 
 ### The `styling_files` argument — Lane C is right on the text, and it is still not the whole answer
@@ -52,7 +52,7 @@ Lane C argues that the brief's per-lane target (`styling files 11 → ≤ 2`) is
 not in the plan and is a misapplication of an aggregate. **Checked against
 the plan, and the argument holds on the text:**
 
-- Plan §5 Lane C's *Acceptance* paragraph names `css_lines 229 → ≤ 8` and
+- Plan §5 Lane C's _Acceptance_ paragraph names `css_lines 229 → ≤ 8` and
   `inline_styles 24 → 0`, plus the `data-testid`s and `lint`. There is no
   `styling_files` figure in it. Lanes A, B and D each get one; Lane C does
   not.
@@ -70,7 +70,7 @@ whole-revamp gate as written cannot pass with this lane as designed.
 
 That is not a defect in Lane C's code. It is a genuine conflict between two
 things the plan decides in different sections — D1 forbids the shop the
-`@vpay/ui` layer that is *how* checkout and the dashboard will concentrate
+`@vpay/ui` layer that is _how_ checkout and the dashboard will concentrate
 their class decisions, and §2 then measures the shop as if it had one. It is
 **surfaced here, not resolved**: the choice between (a) restating §2's
 `styling_files` target as "outside `@vpay/ui` and outside `examples/shop`",
@@ -95,11 +95,11 @@ shipped image inherited the same accident.
 
 Measured, twice, the same way:
 
-| build | `.badge` | `.badge-success` | `.badge-warning` | `.badge-error` |
-|---|---|---|---|---|
-| Lane C head, as delivered | 5 | 1 | 1 | 1 |
-| Lane C head, `order-summary.test.tsx` moved aside | 2 | **0** | **0** | **0** |
-| after the fix, `order-summary.test.tsx` moved aside | 5 | 1 | 1 | 1 |
+| build                                               | `.badge` | `.badge-success` | `.badge-warning` | `.badge-error` |
+| --------------------------------------------------- | -------- | ---------------- | ---------------- | -------------- |
+| Lane C head, as delivered                           | 5        | 1                | 1                | 1              |
+| Lane C head, `order-summary.test.tsx` moved aside   | 2        | **0**            | **0**            | **0**          |
+| after the fix, `order-summary.test.tsx` moved aside | 5        | 1                | 1                | 1              |
 
 (`pnpm --filter @vpay-examples/shop build`, then `grep -oF` over
 `.next/static/chunks/*.css`.)
@@ -108,7 +108,7 @@ This is exactly the silent failure plan §6.3 calls "the highest-risk item in
 the plan, because it does not error" and §6.4 says must be checked **on the
 built CSS**. Lane C did check the built CSS — its notes record the classes as
 present — and drew the wrong conclusion from a true observation, because it
-never asked *why* they were present. Recorded as a misleading claim in
+never asked _why_ they were present. Recorded as a misleading claim in
 `docs/status.md` and `docs/flows/hosted-checkout.md` as well, both corrected.
 
 **Fixed** (`3b91737`): both maps hold the complete class string per case.
@@ -135,7 +135,7 @@ errors it surfaced were fixed by the rule's own autofix; no class added or
 removed.
 
 The rules read `@vpay/ui`'s `styles.css` as their class universe. That does
-not reopen D1 — D1 governs what the shop *ships*, `src/` still imports neither
+not reopen D1 — D1 governs what the shop _ships_, `src/` still imports neither
 `@vpay/ui` nor `@vpay/tokens`, and this is a dev-only lint preset in the same
 config file that has taken this package's ESLint rules from `@vpay/config`
 since before the revamp. Said so beside the flag.
@@ -146,14 +146,14 @@ Found by opening the shop under `bumblebee` and measuring boxes. Fixed in
 `ddec874`; the commit message carries the before/after geometry.
 
 - **The e-mail label sat beside its input.** daisyUI 5's `.label` is an
-  `inline-flex` for a label *inside* a `.fieldset`; bare above an `<input>` it
+  `inline-flex` for a label _inside_ a `.fieldset`; bare above an `<input>` it
   shares the line and the `mb-1` on it is inert. Before: label `x=16 y=347`,
   input `x=178.7 y=341`. The field is now in a `fieldset`, which is the shape
   daisyUI's own upgrade guide gives as the replacement for `form-control` +
   `label-text`. After: label `y=278`, input `y=302`.
 - **`OrderFailureNotice` put its heading and its detail side by side.**
   `.alert` is `display: grid; grid-auto-flow: column`, so the `flex-col
-  items-start` on it did nothing: both children on one row, in a 290px and a
+items-start` on it did nothing: both children on one row, in a 290px and a
   498px column. One wrapping `<div>` is one grid cell; they stack, left
   aligned, which `alert-vertical` would not be (it centres).
 - **The test-numbers Orange caveat did the same**, squeezing "Read this before
@@ -173,7 +173,7 @@ the payer's own action.
 The two are not obviously the same thing — D4 is scoped to
 `checkoutOutcomeTone`, the shop imports it (or anything else from that
 package) nowhere by design, and the shop's `cancelled` is reached by the
-*merchant* cancelling its PaymentIntent, not by the payer, and is unreachable
+_merchant_ cancelling its PaymentIntent, not by the payer, and is unreachable
 today at all (`payment_intent.canceled` is emitted by nothing; the panel says
 so). So D4's rationale does not transfer cleanly.
 
@@ -225,10 +225,10 @@ not have produced any other answer.
 Reproduced properly here — revert the two manifest files this lane changes,
 reinstall, run the gate:
 
-| tree | `node_modules/.pnpm/node_modules/tailwindcss` | `pnpm --filter @vpay/checkout typecheck` |
-|---|---|---|
-| `08d9b8e` + Lane C's `examples/shop/package.json` and `pnpm-lock.yaml` | **4.3.3** | **exit 2**, the TS2322 above |
-| `08d9b8e`'s own `examples/shop/package.json` and `pnpm-lock.yaml`, reinstalled with `--frozen-lockfile` | **3.4.19** | **exit 0** |
+| tree                                                                                                    | `node_modules/.pnpm/node_modules/tailwindcss` | `pnpm --filter @vpay/checkout typecheck` |
+| ------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------- |
+| `08d9b8e` + Lane C's `examples/shop/package.json` and `pnpm-lock.yaml`                                  | **4.3.3**                                     | **exit 2**, the TS2322 above             |
+| `08d9b8e`'s own `examples/shop/package.json` and `pnpm-lock.yaml`, reinstalled with `--frozen-lockfile` | **3.4.19**                                    | **exit 0**                               |
 
 The mechanism, since "a dependency change broke a typecheck two packages
 away" deserves better than a shrug. `daisyui@4.12.24`'s own type
@@ -277,7 +277,7 @@ Lane C did run is green.
 - **`role`/`aria`**: `role="alert"` 4 → 10, `role="status"` 3 → 3,
   `aria-live` and `aria-describedby` unchanged. Nothing lost.
 - **The image**: `docker build` green, and the entrypoint's `zen migrate
-  deploy` applied all three migrations from empty in the container
+deploy` applied all three migrations from empty in the container
   (`20260904091557_init`, `20260904091600_seed_catalogue`,
   `20260906120000_optional_email_and_failure_columns`), which is what the
   shop reporting `Healthy` on `/healthz` rests on.
@@ -289,14 +289,14 @@ Lane C did run is green.
 
 ## Mutations, all four run by this review
 
-| mutation | expected | observed |
-|---|---|---|
-| `OrderStatusBadge` renders one tone for every status (`badge badge-neutral`) | fail | **fails** — `expected 'badge-neutral' to be 'badge-warning'` |
-| `TestNumbersPanel`'s caveat loses `role="alert"` | fail | **fails** — `Expected the element to have attribute: role="alert" / Received: null` |
-| a `data-testid` is dropped from the cart table (`cart-table`) | fail `just test-e2e` | **fails** — image rebuilt with it removed, `shop-hosted.cy.ts` `0 passing, 3 failing`, `Expected to find element: [data-testid="cart-table"], but never found it` |
-| `className` goes back to `` `badge badge-${TONE[status]}` `` | fail | **fails** — `no-dynamic-class-names.test.ts`, `expected [ Array(1) ] to deeply equal []` (new gate, finding 1) |
-| a class attribute wrapped over two lines | fail `lint` | **fails** — `enforce-consistent-line-wrapping` (new gate, finding 2) |
-| an unknown class (`form-controlx`) | fail `lint` | **fails** — `no-unknown-classes` (new gate, finding 2) |
+| mutation                                                                     | expected             | observed                                                                                                                                                          |
+| ---------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OrderStatusBadge` renders one tone for every status (`badge badge-neutral`) | fail                 | **fails** — `expected 'badge-neutral' to be 'badge-warning'`                                                                                                      |
+| `TestNumbersPanel`'s caveat loses `role="alert"`                             | fail                 | **fails** — `Expected the element to have attribute: role="alert" / Received: null`                                                                               |
+| a `data-testid` is dropped from the cart table (`cart-table`)                | fail `just test-e2e` | **fails** — image rebuilt with it removed, `shop-hosted.cy.ts` `0 passing, 3 failing`, `Expected to find element: [data-testid="cart-table"], but never found it` |
+| `className` goes back to `` `badge badge-${TONE[status]}` ``                 | fail                 | **fails** — `no-dynamic-class-names.test.ts`, `expected [ Array(1) ] to deeply equal []` (new gate, finding 1)                                                    |
+| a class attribute wrapped over two lines                                     | fail `lint`          | **fails** — `enforce-consistent-line-wrapping` (new gate, finding 2)                                                                                              |
+| an unknown class (`form-controlx`)                                           | fail `lint`          | **fails** — `no-unknown-classes` (new gate, finding 2)                                                                                                            |
 
 The third was rebuilt into a real image and driven through a real browser, not
 reasoned about: Lane C left it for the reviewer because its own `just
@@ -309,20 +309,20 @@ test-e2e` was blocked, and it is no longer blocked.
 Run on `08d9b8e..HEAD` under the `.nvmrc` Node (22.23.2), `pnpm install
 --frozen-lockfile` first. Exit codes read from a file.
 
-| recipe | result | evidence |
-|---|---|---|
-| `pnpm install --frozen-lockfile` | ✅ | exit 0 |
-| `pnpm --filter @vpay-examples/shop typecheck` | ✅ | exit 0 |
-| `pnpm --filter @vpay-examples/shop lint` | ✅ | exit 0, ESLint (now including the class-string rules) + `prettier --check` |
-| `pnpm --filter @vpay-examples/shop test` | ✅ | **102 cases, 12 files, 0 skipped** (Lane C left 100; this review adds the 2-case dynamic-class guard) |
-| `just lint-web` | 🔴 | exit 1 — **caused by this lane**, see finding 6. Exactly one error, `frontends/apps/checkout/tailwind.config.ts(12,13): TS2322` |
-| `just test-web` | ✅ | exit 0, every package: `@vpay/ui` 60, `@vpay/checkout` 448, `examples/shop` **102**, the two SDKs 190 and 146, `api-client` 4 — 0 failed, 0 skipped |
-| `just verify-ui` | 🔴 | exit 1, on `frontends/apps/checkout/src/components/screens.tsx`'s `form-control`/`label-text` — Lane B's unmigrated file, the same two lines Lane A's own review records. Green scoped to `examples/shop`: all five checks, zero matches. One own goal found and fixed here: a JSX comment this review added *named* those two classes in prose, and `verify-ui` is a grep that reads comments, so the comment was reworded rather than a path exemption added |
-| `just verify-npm-scope` | ✅ | exit 0 |
-| `just verify-links` | ✅ | exit 0 — 899 links across 163 tracked markdown files |
-| `just verify-status` | ✅ | exit 0 — 1 declared unimplemented item, unchanged |
-| `docker build` of the shop | ✅ | built four times over this review (three source changes plus the mutation), every one green |
-| **`just test-e2e`** | ✅ | the plan's own §7 row 3 recipe, run to completion on the final head, `demo_project=exp26c-review`, ports 18501–18505: **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4 (framed pass). Exit code read from a file, `TEST_E2E2=0`. Run twice, and **the first attempt failed** — recorded rather than dropped: `wiremock-orange is unhealthy`, a container this review had left up from an earlier stack while `gen-demo-keys` rewrote the mappings directory under it, alongside `EAI_AGAIN` registry timeouts during the image builds. `docker compose down -v` first, then the recipe from nothing, green. An environment fault, and the reason it can be called one is that it moved when the environment did and not when the code did |
+| recipe                                        | result | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`              | ✅     | exit 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `pnpm --filter @vpay-examples/shop typecheck` | ✅     | exit 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `pnpm --filter @vpay-examples/shop lint`      | ✅     | exit 0, ESLint (now including the class-string rules) + `prettier --check`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `pnpm --filter @vpay-examples/shop test`      | ✅     | **102 cases, 12 files, 0 skipped** (Lane C left 100; this review adds the 2-case dynamic-class guard)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `just lint-web`                               | 🔴     | exit 1 — **caused by this lane**, see finding 6. Exactly one error, `frontends/apps/checkout/tailwind.config.ts(12,13): TS2322`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `just test-web`                               | ✅     | exit 0, every package: `@vpay/ui` 60, `@vpay/checkout` 448, `examples/shop` **102**, the two SDKs 190 and 146, `api-client` 4 — 0 failed, 0 skipped                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `just verify-ui`                              | 🔴     | exit 1, on `frontends/apps/checkout/src/components/screens.tsx`'s `form-control`/`label-text` — Lane B's unmigrated file, the same two lines Lane A's own review records. Green scoped to `examples/shop`: all five checks, zero matches. One own goal found and fixed here: a JSX comment this review added _named_ those two classes in prose, and `verify-ui` is a grep that reads comments, so the comment was reworded rather than a path exemption added                                                                                                                                                                                                                                                                                                                                                                                       |
+| `just verify-npm-scope`                       | ✅     | exit 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `just verify-links`                           | ✅     | exit 0 — 899 links across 163 tracked markdown files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `just verify-status`                          | ✅     | exit 0 — 1 declared unimplemented item, unchanged                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `docker build` of the shop                    | ✅     | built four times over this review (three source changes plus the mutation), every one green                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **`just test-e2e`**                           | ✅     | the plan's own §7 row 3 recipe, run to completion on the final head, `demo_project=exp26c-review`, ports 18501–18505: **11 tests, 11 passing, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4 (framed pass). Exit code read from a file, `TEST_E2E2=0`. Run twice, and **the first attempt failed** — recorded rather than dropped: `wiremock-orange is unhealthy`, a container this review had left up from an earlier stack while `gen-demo-keys` rewrote the mappings directory under it, alongside `EAI_AGAIN` registry timeouts during the image builds. `docker compose down -v` first, then the recipe from nothing, green. An environment fault, and the reason it can be called one is that it moved when the environment did and not when the code did |
 
 `just test-e2e` is the headline: Lane C could not run it and proved its two
 specs by hand instead. On this head it runs as written, all four images build,

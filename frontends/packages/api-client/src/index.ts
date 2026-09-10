@@ -8,7 +8,7 @@
  * STATUS: types only. No request is issued yet; see docs/status.md.
  */
 
-import type { PaymentStatus } from '@vpay/tokens';
+import type { PaymentStatus } from "@vpay/tokens";
 
 export interface PaymentIntentView {
   id: string;
@@ -23,7 +23,7 @@ export interface PaymentIntentView {
 export class NotImplementedError extends Error {
   constructor(what: string) {
     super(`${what} is not implemented — see docs/status.md`);
-    this.name = 'NotImplementedError';
+    this.name = "NotImplementedError";
   }
 }
 
@@ -35,14 +35,16 @@ export class NotImplementedError extends Error {
  */
 export function formatAmount(minor: number, currency: string): string {
   if (!Number.isInteger(minor)) {
-    throw new TypeError(`amount must be an integer in minor units, got ${minor}`);
+    throw new TypeError(
+      `amount must be an integer in minor units, got ${minor}`,
+    );
   }
-  const exponent = currency.toUpperCase() === 'XAF' ? 0 : 2;
+  const exponent = currency.toUpperCase() === "XAF" ? 0 : 2;
   if (exponent === 0) return `${minor} ${currency.toUpperCase()}`;
   const divisor = 10 ** exponent;
   const major = Math.trunc(minor / divisor);
   const frac = Math.abs(minor % divisor);
-  return `${major}.${String(frac).padStart(exponent, '0')} ${currency.toUpperCase()}`;
+  return `${major}.${String(frac).padStart(exponent, "0")} ${currency.toUpperCase()}`;
 }
 
 /** @throws NotImplementedError always. */
@@ -50,5 +52,5 @@ export function formatAmount(minor: number, currency: string): string {
 // await until this is implemented.
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function listPayments(): Promise<PaymentIntentView[]> {
-  throw new NotImplementedError('listPayments');
+  throw new NotImplementedError("listPayments");
 }

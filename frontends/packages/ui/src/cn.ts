@@ -1,5 +1,5 @@
-import { type ClassValue, clsx } from 'clsx';
-import { extendTailwindMerge } from 'tailwind-merge';
+import { type ClassValue, clsx } from "clsx";
+import { extendTailwindMerge } from "tailwind-merge";
 
 /**
  * daisyUI's component modifiers, registered as `tailwind-merge` conflict
@@ -45,81 +45,103 @@ import { extendTailwindMerge } from 'tailwind-merge';
  * taken here.
  */
 type DaisyClassGroupId =
-  | 'daisy-btn-variant'
-  | 'daisy-btn-style'
-  | 'daisy-btn-size'
-  | 'daisy-badge-variant'
-  | 'daisy-badge-style'
-  | 'daisy-badge-size'
-  | 'daisy-alert-variant'
-  | 'daisy-input-variant'
-  | 'daisy-select-variant'
-  | 'daisy-select-size'
-  | 'daisy-checkbox-variant'
-  | 'daisy-checkbox-size'
-  | 'daisy-radio-variant'
-  | 'daisy-radio-size'
-  | 'daisy-card-size'
-  | 'daisy-table-size'
-  | 'daisy-loading-type'
-  | 'daisy-loading-size';
+  | "daisy-btn-variant"
+  | "daisy-btn-style"
+  | "daisy-btn-size"
+  | "daisy-badge-variant"
+  | "daisy-badge-style"
+  | "daisy-badge-size"
+  | "daisy-alert-variant"
+  | "daisy-input-variant"
+  | "daisy-select-variant"
+  | "daisy-select-size"
+  | "daisy-checkbox-variant"
+  | "daisy-checkbox-size"
+  | "daisy-radio-variant"
+  | "daisy-radio-size"
+  | "daisy-card-size"
+  | "daisy-table-size"
+  | "daisy-loading-type"
+  | "daisy-loading-size";
 
 const twMerge = extendTailwindMerge<DaisyClassGroupId>({
   extend: {
     classGroups: {
-      'daisy-btn-variant': [
+      "daisy-btn-variant": [
         {
           btn: [
-            'primary',
-            'secondary',
-            'accent',
-            'neutral',
-            'info',
-            'success',
-            'warning',
-            'error',
-            'ghost',
-            'link',
+            "primary",
+            "secondary",
+            "accent",
+            "neutral",
+            "info",
+            "success",
+            "warning",
+            "error",
+            "ghost",
+            "link",
           ],
         },
       ],
-      'daisy-btn-style': [{ btn: ['outline', 'soft', 'dash'] }],
-      'daisy-btn-size': [{ btn: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-badge-variant': [
+      "daisy-btn-style": [{ btn: ["outline", "soft", "dash"] }],
+      "daisy-btn-size": [{ btn: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-badge-variant": [
         {
           badge: [
-            'primary',
-            'secondary',
-            'accent',
-            'neutral',
-            'info',
-            'success',
-            'warning',
-            'error',
-            'ghost',
+            "primary",
+            "secondary",
+            "accent",
+            "neutral",
+            "info",
+            "success",
+            "warning",
+            "error",
+            "ghost",
           ],
         },
       ],
-      'daisy-badge-style': [{ badge: ['outline', 'soft', 'dash'] }],
-      'daisy-badge-size': [{ badge: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-alert-variant': [{ alert: ['info', 'success', 'warning', 'error'] }],
-      'daisy-input-variant': [{ input: ['ghost', 'error'] }],
-      'daisy-select-variant': [{ select: ['ghost', 'error'] }],
-      'daisy-select-size': [{ select: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-checkbox-variant': [
-        { checkbox: ['primary', 'secondary', 'accent', 'neutral', 'success', 'warning', 'error'] },
+      "daisy-badge-style": [{ badge: ["outline", "soft", "dash"] }],
+      "daisy-badge-size": [{ badge: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-alert-variant": [
+        { alert: ["info", "success", "warning", "error"] },
       ],
-      'daisy-checkbox-size': [{ checkbox: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-radio-variant': [
-        { radio: ['primary', 'secondary', 'accent', 'neutral', 'success', 'warning', 'error'] },
+      "daisy-input-variant": [{ input: ["ghost", "error"] }],
+      "daisy-select-variant": [{ select: ["ghost", "error"] }],
+      "daisy-select-size": [{ select: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-checkbox-variant": [
+        {
+          checkbox: [
+            "primary",
+            "secondary",
+            "accent",
+            "neutral",
+            "success",
+            "warning",
+            "error",
+          ],
+        },
       ],
-      'daisy-radio-size': [{ radio: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-card-size': [{ card: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-table-size': [{ table: ['xs', 'sm', 'md', 'lg', 'xl'] }],
-      'daisy-loading-type': [
-        { loading: ['spinner', 'dots', 'ring', 'ball', 'bars', 'infinity'] },
+      "daisy-checkbox-size": [{ checkbox: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-radio-variant": [
+        {
+          radio: [
+            "primary",
+            "secondary",
+            "accent",
+            "neutral",
+            "success",
+            "warning",
+            "error",
+          ],
+        },
       ],
-      'daisy-loading-size': [{ loading: ['xs', 'sm', 'md', 'lg', 'xl'] }],
+      "daisy-radio-size": [{ radio: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-card-size": [{ card: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-table-size": [{ table: ["xs", "sm", "md", "lg", "xl"] }],
+      "daisy-loading-type": [
+        { loading: ["spinner", "dots", "ring", "ball", "bars", "infinity"] },
+      ],
+      "daisy-loading-size": [{ loading: ["xs", "sm", "md", "lg", "xl"] }],
     },
   },
 });

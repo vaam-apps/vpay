@@ -1,10 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import type { FormState } from '../form-state';
-import { SignInForm } from './sign-in-form';
-import { TotpForm } from './totp-form';
-import { PasswordForm } from './password-form';
+import type { FormState } from "../form-state";
+import { SignInForm } from "./sign-in-form";
+import { TotpForm } from "./totp-form";
+import { PasswordForm } from "./password-form";
 
 const CLEAN: FormState = { error: null, requestId: null };
 
@@ -18,79 +18,108 @@ function refuses(error: string, requestId: string | null = null) {
   return vi.fn(() => Promise.resolve({ error, requestId }));
 }
 
-describe('the password form', () => {
-  it('asks for an email and a password, and for no code', () => {
+describe("the password form", () => {
+  it("asks for an email and a password, and for no code", () => {
     // Two legs, not one: the code is the next request, authorised by the
     // session this one creates.
     render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
-    expect(screen.getByLabelText('Work email')).toBeInTheDocument();
-    expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "type",
+      "password",
+    );
     expect(screen.queryByLabelText(/code/i)).toBeNull();
   });
 
-  it('shows a refusal exactly once, with the request id beside it', async () => {
+  it("shows a refusal exactly once, with the request id beside it", async () => {
     // Exactly once: the first draft of this form rendered the same sentence
     // through FieldError AND through Alert, so every failed sign-in printed
     // it twice (docs/plans/exp26-notes/lane-d-review.md).
-    render(<SignInForm action={refuses('We could not sign you in.', 'req_01J8')} />);
-    fireEvent.submit(screen.getByRole('button', { name: 'Sign in' }).closest('form') as HTMLFormElement);
+    render(
+      <SignInForm action={refuses("We could not sign you in.", "req_01J8")} />,
+    );
+    fireEvent.submit(
+      screen
+        .getByRole("button", { name: "Sign in" })
+        .closest("form") as HTMLFormElement,
+    );
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('We could not sign you in.');
-    expect(screen.getAllByText('We could not sign you in.')).toHaveLength(1);
-    expect(alert).toHaveTextContent('req_01J8');
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("We could not sign you in.");
+    expect(screen.getAllByText("We could not sign you in.")).toHaveLength(1);
+    expect(alert).toHaveTextContent("req_01J8");
   });
 
-  it('marks both fields invalid through Field own validation state', async () => {
-    render(<SignInForm action={refuses('Refused.')} />);
-    fireEvent.submit(screen.getByRole('button', { name: 'Sign in' }).closest('form') as HTMLFormElement);
-    await screen.findByRole('alert');
+  it("marks both fields invalid through Field own validation state", async () => {
+    render(<SignInForm action={refuses("Refused.")} />);
+    fireEvent.submit(
+      screen
+        .getByRole("button", { name: "Sign in" })
+        .closest("form") as HTMLFormElement,
+    );
+    await screen.findByRole("alert");
 
-    expect(screen.getByLabelText('Work email')).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText("Work email")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
   });
 
-  it('disables every control while a submit is in flight', async () => {
+  it("disables every control while a submit is in flight", async () => {
     render(<SignInForm action={neverSettles()} />);
-    const button = screen.getByRole('button', { name: 'Sign in' });
-    fireEvent.submit(button.closest('form') as HTMLFormElement);
+    const button = screen.getByRole("button", { name: "Sign in" });
+    fireEvent.submit(button.closest("form") as HTMLFormElement);
 
-    expect(await screen.findByRole('button', { name: 'Signing in…' })).toBeDisabled();
-    expect(screen.getByLabelText('Work email')).toBeDisabled();
-    expect(screen.getByLabelText('Password')).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "Signing in…" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("Work email")).toBeDisabled();
+    expect(screen.getByLabelText("Password")).toBeDisabled();
   });
 });
 
-describe('the code form', () => {
-  it('constrains the field to six digits and offers the platform one-time code', () => {
+describe("the code form", () => {
+  it("constrains the field to six digits and offers the platform one-time code", () => {
     render(<TotpForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
-    const code = screen.getByLabelText('One-time code');
-    expect(code).toHaveAttribute('maxlength', '6');
-    expect(code).toHaveAttribute('pattern', '[0-9]{6}');
-    expect(code).toHaveAttribute('inputmode', 'numeric');
-    expect(code).toHaveAttribute('autocomplete', 'one-time-code');
+    const code = screen.getByLabelText("One-time code");
+    expect(code).toHaveAttribute("maxlength", "6");
+    expect(code).toHaveAttribute("pattern", "[0-9]{6}");
+    expect(code).toHaveAttribute("inputmode", "numeric");
+    expect(code).toHaveAttribute("autocomplete", "one-time-code");
   });
 
-  it('disables the field while a submit is in flight — THE replay case', async () => {
+  it("disables the field while a submit is in flight — THE replay case", async () => {
     // The code is verified behind a compare-and-swap replay guard, so the
     // SECOND submission of one code is refused on purpose. Without this a
     // double click shows "we could not sign you in" to somebody who typed a
     // perfectly good code.
     render(<TotpForm action={neverSettles()} />);
-    fireEvent.submit(screen.getByRole('button', { name: 'Continue' }).closest('form') as HTMLFormElement);
+    fireEvent.submit(
+      screen
+        .getByRole("button", { name: "Continue" })
+        .closest("form") as HTMLFormElement,
+    );
 
-    expect(await screen.findByRole('button', { name: 'Checking…' })).toBeDisabled();
-    expect(screen.getByLabelText('One-time code')).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "Checking…" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("One-time code")).toBeDisabled();
   });
 
-  it('says it is finishing an enrolment when it is', () => {
+  it("says it is finishing an enrolment when it is", () => {
     render(<TotpForm action={vi.fn(() => Promise.resolve(CLEAN))} enrolling />);
-    expect(screen.getByRole('button', { name: /finish enrolment/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /finish enrolment/i }),
+    ).toBeInTheDocument();
   });
 });
 
-describe('the password-change form', () => {
-  it('asks for the CURRENT password and for the new one twice', () => {
+describe("the password-change form", () => {
+  it("asks for the CURRENT password and for the new one twice", () => {
     // This test asserted the opposite until 2026-09-10 — "and for no current
     // one" — quoting the argument the endpoint itself carried: the session
     // has already presented both factors. It had, once, up to twelve hours
@@ -102,29 +131,38 @@ describe('the password-change form', () => {
     // `changing_a_password_needs_the_current_one_and_ends_every_other_session`
     // is the end-to-end half against a real vpay.
     render(<PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
-    expect(screen.getByLabelText('Current password')).toBeInTheDocument();
-    expect(screen.getByLabelText('New password')).toBeInTheDocument();
-    expect(screen.getByLabelText('Repeat it')).toBeInTheDocument();
+    expect(screen.getByLabelText("Current password")).toBeInTheDocument();
+    expect(screen.getByLabelText("New password")).toBeInTheDocument();
+    expect(screen.getByLabelText("Repeat it")).toBeInTheDocument();
   });
 
-  it('lets a password manager offer the stored password rather than a new one', () => {
+  it("lets a password manager offer the stored password rather than a new one", () => {
     // `autoComplete="new-password"` on the current-password field makes a
     // manager generate a fresh value into it, which is unusable for exactly
     // the people who use one.
-    const { container } = render(<PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    const { container } = render(
+      <PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />,
+    );
     expect(
-      (container.querySelector('#dashboard-current-password') as HTMLInputElement).autocomplete,
-    ).toBe('current-password');
+      (
+        container.querySelector(
+          "#dashboard-current-password",
+        ) as HTMLInputElement
+      ).autocomplete,
+    ).toBe("current-password");
     expect(
-      (container.querySelector('#dashboard-new-password') as HTMLInputElement).autocomplete,
-    ).toBe('new-password');
+      (container.querySelector("#dashboard-new-password") as HTMLInputElement)
+        .autocomplete,
+    ).toBe("new-password");
   });
 
-  it('hints the server own minimum length', () => {
+  it("hints the server own minimum length", () => {
     expect(
-      (render(<PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />).container.querySelector(
-        '#dashboard-new-password',
-      ) as HTMLInputElement).minLength,
+      (
+        render(
+          <PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />,
+        ).container.querySelector("#dashboard-new-password") as HTMLInputElement
+      ).minLength,
     ).toBe(12);
   });
 });

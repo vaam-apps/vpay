@@ -23,16 +23,20 @@
  * queries, and the settlement flips the session the way lane 1's worker hook
  * does. It invents no status the wire contract does not define.
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 
-import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
+import type { FailureCode } from "@vaam-apps/vpay-stripe-js";
 
 import type {
   CheckoutSession,
   CheckoutSessionPaymentStatus,
   CheckoutSessionStatus,
-} from '../lib/types';
+} from "../lib/types";
 
 export interface RecordedRequest {
   method: string;
@@ -45,9 +49,9 @@ export interface RecordedRequest {
 
 /** How the stub's intent ends once it has been polled enough times. */
 export type StubTerminal =
-  | { kind: 'succeeded' }
-  | { kind: 'canceled' }
-  | { kind: 'failed'; failure: FailureCode; message: string };
+  | { kind: "succeeded" }
+  | { kind: "canceled" }
+  | { kind: "failed"; failure: FailureCode; message: string };
 
 /**
  * What the stub renders as the response's `merchant` member.
@@ -60,9 +64,9 @@ export type StubTerminal =
  * `machine.ts` — so the stub has to be able to send all three.
  */
 export type StubMerchant =
-  | { kind: 'named'; name: string }
-  | { kind: 'absent' }
-  | { kind: 'malformed'; value: unknown };
+  | { kind: "named"; name: string }
+  | { kind: "absent" }
+  | { kind: "malformed"; value: unknown };
 
 export interface CheckoutStubOptions {
   publishableKey?: string;
@@ -76,7 +80,7 @@ export interface CheckoutStubOptions {
   amount?: number;
   currency?: string;
   paymentMethodTypes?: string[];
-  uiMode?: 'hosted' | 'embedded';
+  uiMode?: "hosted" | "embedded";
   successUrl?: string | null;
   cancelUrl?: string | null;
   returnUrl?: string | null;
@@ -111,16 +115,16 @@ export interface CheckoutStub {
 }
 
 const DEFAULTS = {
-  publishableKey: 'pk_test_0123456789abcdefghij',
-  sessionId: 'cs_test_stub0000000000000001',
-  sessionSecretSuffix: 'c'.repeat(32),
-  returnToken: 'r'.repeat(40),
-  intentId: 'pi_test_stub0000000000000001',
-  intentSecretSuffix: 'a'.repeat(32),
-  merchantName: 'Boutique Test',
+  publishableKey: "pk_test_0123456789abcdefghij",
+  sessionId: "cs_test_stub0000000000000001",
+  sessionSecretSuffix: "c".repeat(32),
+  returnToken: "r".repeat(40),
+  intentId: "pi_test_stub0000000000000001",
+  intentSecretSuffix: "a".repeat(32),
+  merchantName: "Boutique Test",
   amount: 5000,
-  currency: 'xaf',
-  redirectUrl: 'https://rail.example/stub-hosted-page/tok_123',
+  currency: "xaf",
+  redirectUrl: "https://rail.example/stub-hosted-page/tok_123",
 } as const;
 
 /**
@@ -138,7 +142,7 @@ export function errorEnvelope(
 ): { error: Record<string, string> } {
   const error: Record<string, string> = { type, code, message };
   if (param !== undefined) {
-    error['param'] = param;
+    error["param"] = param;
   }
   return { error };
 }
@@ -152,7 +156,12 @@ export function invalidParamEnvelope(
   param: string,
   message: string,
 ): { error: Record<string, string> } {
-  return errorEnvelope('invalid_request_error', 'invalid_request', message, param);
+  return errorEnvelope(
+    "invalid_request_error",
+    "invalid_request",
+    message,
+    param,
+  );
 }
 
 /**
@@ -162,24 +171,39 @@ export function invalidParamEnvelope(
  * models the **server's** knowledge of its rails, and reading the page's map
  * here would make the two agree by construction rather than by contract.
  */
-const REDIRECT_RAILS: ReadonlySet<string> = new Set(['orange_money']);
+const REDIRECT_RAILS: ReadonlySet<string> = new Set(["orange_money"]);
 
 /** The uniform 404 every credential failure on the browser surface renders. */
-export function notFoundEnvelope(resource: string, id: string): {
+export function notFoundEnvelope(
+  resource: string,
+  id: string,
+): {
   error: Record<string, string>;
 } {
-  return errorEnvelope('invalid_request_error', 'resource_missing', `No such ${resource}: ${id}`);
+  return errorEnvelope(
+    "invalid_request_error",
+    "resource_missing",
+    `No such ${resource}: ${id}`,
+  );
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
 
 interface IntentModel {
   id: string;
-  status: 'requires_payment_method' | 'requires_action' | 'processing' | 'succeeded' | 'canceled';
-  next_action: { type: 'redirect_to_url'; redirect_to_url: { url: string; return_url: string | null } } | null;
+  status:
+    | "requires_payment_method"
+    | "requires_action"
+    | "processing"
+    | "succeeded"
+    | "canceled";
+  next_action: {
+    type: "redirect_to_url";
+    redirect_to_url: { url: string; return_url: string | null };
+  } | null;
   last_payment_error: { code: FailureCode; message: string } | null;
 }
 
@@ -189,35 +213,40 @@ interface IntentModel {
  * Each test starts its own, so the suite is order-independent and no test
  * can see another's mutations.
  */
-export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<CheckoutStub> {
+export function startCheckoutStub(
+  options: CheckoutStubOptions = {},
+): Promise<CheckoutStub> {
   const publishableKey = options.publishableKey ?? DEFAULTS.publishableKey;
   const sessionId = options.sessionId ?? DEFAULTS.sessionId;
-  const sessionSecret = options.sessionSecret ?? `${sessionId}_secret_${DEFAULTS.sessionSecretSuffix}`;
+  const sessionSecret =
+    options.sessionSecret ??
+    `${sessionId}_secret_${DEFAULTS.sessionSecretSuffix}`;
   const returnToken = options.returnToken ?? DEFAULTS.returnToken;
   const intentId = options.intentId ?? DEFAULTS.intentId;
-  const intentSecret = options.intentSecret ?? `${intentId}_secret_${DEFAULTS.intentSecretSuffix}`;
+  const intentSecret =
+    options.intentSecret ?? `${intentId}_secret_${DEFAULTS.intentSecretSuffix}`;
   const amount = options.amount ?? DEFAULTS.amount;
   const currency = options.currency ?? DEFAULTS.currency;
-  const paymentMethodTypes = options.paymentMethodTypes ?? ['mtn_momo'];
+  const paymentMethodTypes = options.paymentMethodTypes ?? ["mtn_momo"];
   const merchant: StubMerchant = options.merchant ?? {
-    kind: 'named',
+    kind: "named",
     name: DEFAULTS.merchantName,
   };
-  const uiMode = options.uiMode ?? 'hosted';
+  const uiMode = options.uiMode ?? "hosted";
   const redirectUrl = options.redirectUrl ?? DEFAULTS.redirectUrl;
   const origins = options.origins ?? [];
   const hasSession = options.standaloneIntent !== true;
-  const terminal: StubTerminal = options.terminal ?? { kind: 'succeeded' };
+  const terminal: StubTerminal = options.terminal ?? { kind: "succeeded" };
   let pollsRemaining = options.pollsBeforeTerminal ?? 1;
 
   const intent: IntentModel = {
     id: intentId,
-    status: 'requires_payment_method',
+    status: "requires_payment_method",
     next_action: null,
     last_payment_error: null,
   };
-  let sessionStatus: CheckoutSessionStatus = 'open';
-  let paymentStatus: CheckoutSessionPaymentStatus = 'unpaid';
+  let sessionStatus: CheckoutSessionStatus = "open";
+  let paymentStatus: CheckoutSessionPaymentStatus = "unpaid";
   let confirmedReturnUrl: string | null = null;
 
   const requests: RecordedRequest[] = [];
@@ -225,15 +254,26 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
   const sessionObject = (withSecret: boolean): CheckoutSession => {
     const session: CheckoutSession = {
       id: sessionId,
-      object: 'checkout.session',
+      object: "checkout.session",
       livemode: false,
       ui_mode: uiMode,
       status: sessionStatus,
       payment_status: paymentStatus,
-      success_url: options.successUrl ?? (uiMode === 'hosted' ? 'https://shop.example/ok?sid={CHECKOUT_SESSION_ID}' : null),
-      cancel_url: options.cancelUrl ?? (uiMode === 'hosted' ? 'https://shop.example/cancel' : null),
-      return_url: options.returnUrl ?? (uiMode === 'embedded' ? 'https://shop.example/done?sid={CHECKOUT_SESSION_ID}' : null),
-      url: uiMode === 'hosted' ? `https://checkout.example/c/${sessionId}` : null,
+      success_url:
+        options.successUrl ??
+        (uiMode === "hosted"
+          ? "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}"
+          : null),
+      cancel_url:
+        options.cancelUrl ??
+        (uiMode === "hosted" ? "https://shop.example/cancel" : null),
+      return_url:
+        options.returnUrl ??
+        (uiMode === "embedded"
+          ? "https://shop.example/done?sid={CHECKOUT_SESSION_ID}"
+          : null),
+      url:
+        uiMode === "hosted" ? `https://checkout.example/c/${sessionId}` : null,
       expires_at: 1_757_000_000,
       created: 1_756_913_600,
     };
@@ -249,16 +289,19 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
    * check has to see.
    */
   const merchantMember = (): Record<string, unknown> => {
-    if (merchant.kind === 'absent') {
+    if (merchant.kind === "absent") {
       return {};
     }
-    return { merchant: merchant.kind === 'named' ? { name: merchant.name } : merchant.value };
+    return {
+      merchant:
+        merchant.kind === "named" ? { name: merchant.name } : merchant.value,
+    };
   };
 
   const intentObject = (withSecret: boolean): Record<string, unknown> => {
     const body: Record<string, unknown> = {
       id: intent.id,
-      object: 'payment_intent',
+      object: "payment_intent",
       amount,
       currency,
       status: intent.status,
@@ -271,53 +314,60 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
       livemode: false,
     };
     if (withSecret) {
-      body['client_secret'] = intentSecret;
+      body["client_secret"] = intentSecret;
     }
     return body;
   };
 
   /** What lane 1's worker hook does in the settlement transaction. */
   const settle = (): void => {
-    if (terminal.kind === 'succeeded') {
-      intent.status = 'succeeded';
+    if (terminal.kind === "succeeded") {
+      intent.status = "succeeded";
       intent.next_action = null;
-      sessionStatus = 'complete';
-      paymentStatus = 'paid';
+      sessionStatus = "complete";
+      paymentStatus = "paid";
       return;
     }
-    if (terminal.kind === 'canceled') {
-      intent.status = 'canceled';
+    if (terminal.kind === "canceled") {
+      intent.status = "canceled";
       intent.next_action = null;
-      sessionStatus = 'expired';
-      paymentStatus = 'failed';
+      sessionStatus = "expired";
+      paymentStatus = "failed";
       return;
     }
-    intent.status = 'requires_payment_method';
+    intent.status = "requires_payment_method";
     intent.next_action = null;
-    intent.last_payment_error = { code: terminal.failure, message: terminal.message };
-    sessionStatus = 'expired';
-    paymentStatus = 'failed';
+    intent.last_payment_error = {
+      code: terminal.failure,
+      message: terminal.message,
+    };
+    sessionStatus = "expired";
+    paymentStatus = "failed";
   };
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => {
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
       const record: RecordedRequest = {
-        method: req.method ?? '',
-        url: req.url ?? '',
+        method: req.method ?? "",
+        url: req.url ?? "",
         headers: req.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
+        body: Buffer.concat(chunks).toString("utf8"),
       };
       requests.push(record);
 
-      const parsed = new URL(record.url, 'http://stub.invalid');
+      const parsed = new URL(record.url, "http://stub.invalid");
       const path = parsed.pathname;
       const query = parsed.searchParams;
 
-      if (path === '/v1/browser/checkout/origins') {
-        if (query.get('key') !== publishableKey) {
-          json(res, 404, notFoundEnvelope('publishable key', query.get('key') ?? ''));
+      if (path === "/v1/browser/checkout/origins") {
+        if (query.get("key") !== publishableKey) {
+          json(
+            res,
+            404,
+            notFoundEnvelope("publishable key", query.get("key") ?? ""),
+          );
           return;
         }
         json(res, 200, { origins });
@@ -326,11 +376,14 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
 
       if (path === `/v1/browser/checkout/sessions/${sessionId}`) {
         if (!hasSession) {
-          json(res, 404, notFoundEnvelope('checkout session', sessionId));
+          json(res, 404, notFoundEnvelope("checkout session", sessionId));
           return;
         }
-        if (query.get('key') !== publishableKey || query.get('client_secret') !== sessionSecret) {
-          json(res, 404, notFoundEnvelope('checkout session', sessionId));
+        if (
+          query.get("key") !== publishableKey ||
+          query.get("client_secret") !== sessionSecret
+        ) {
+          json(res, 404, notFoundEnvelope("checkout session", sessionId));
           return;
         }
         json(res, 200, {
@@ -343,16 +396,22 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
 
       if (path === `/v1/browser/checkout/sessions/${sessionId}/return`) {
         if (!hasSession) {
-          json(res, 404, notFoundEnvelope('checkout session', sessionId));
+          json(res, 404, notFoundEnvelope("checkout session", sessionId));
           return;
         }
-        if (query.get('key') !== publishableKey || query.get('t') !== returnToken) {
-          json(res, 404, notFoundEnvelope('checkout session', sessionId));
+        if (
+          query.get("key") !== publishableKey ||
+          query.get("t") !== returnToken
+        ) {
+          json(res, 404, notFoundEnvelope("checkout session", sessionId));
           return;
         }
         // Every read of the return route is also a status query: the page
         // has no other way to learn the outcome.
-        if (intent.status === 'processing' || intent.status === 'requires_action') {
+        if (
+          intent.status === "processing" ||
+          intent.status === "requires_action"
+        ) {
           if (pollsRemaining <= 0) {
             settle();
           } else {
@@ -367,12 +426,21 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
         return;
       }
 
-      if (path === `/v1/browser/payment_intents/${intentId}` && record.method === 'GET') {
-        if (query.get('key') !== publishableKey || query.get('client_secret') !== intentSecret) {
-          json(res, 404, notFoundEnvelope('payment intent', intentId));
+      if (
+        path === `/v1/browser/payment_intents/${intentId}` &&
+        record.method === "GET"
+      ) {
+        if (
+          query.get("key") !== publishableKey ||
+          query.get("client_secret") !== intentSecret
+        ) {
+          json(res, 404, notFoundEnvelope("payment intent", intentId));
           return;
         }
-        if (intent.status === 'processing' || intent.status === 'requires_action') {
+        if (
+          intent.status === "processing" ||
+          intent.status === "requires_action"
+        ) {
           if (pollsRemaining <= 0) {
             settle();
           } else {
@@ -383,22 +451,35 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
         return;
       }
 
-      if (path === `/v1/browser/payment_intents/${intentId}/confirm` && record.method === 'POST') {
+      if (
+        path === `/v1/browser/payment_intents/${intentId}/confirm` &&
+        record.method === "POST"
+      ) {
         const form = new URLSearchParams(record.body);
-        if (form.get('key') !== publishableKey || form.get('client_secret') !== intentSecret) {
-          json(res, 404, notFoundEnvelope('payment intent', intentId));
+        if (
+          form.get("key") !== publishableKey ||
+          form.get("client_secret") !== intentSecret
+        ) {
+          json(res, 404, notFoundEnvelope("payment intent", intentId));
           return;
         }
-        if (intent.status !== 'requires_payment_method' || intent.last_payment_error !== null) {
+        if (
+          intent.status !== "requires_payment_method" ||
+          intent.last_payment_error !== null
+        ) {
           json(
             res,
             409,
-            errorEnvelope('invalid_request_error', 'intent_already_confirmed', 'This PaymentIntent already has a charge.'),
+            errorEnvelope(
+              "invalid_request_error",
+              "intent_already_confirmed",
+              "This PaymentIntent already has a charge.",
+            ),
           );
           return;
         }
-        confirmedReturnUrl = form.get('return_url');
-        const railCode = form.get('payment_method_data[type]') ?? '';
+        confirmedReturnUrl = form.get("return_url");
+        const railCode = form.get("payment_method_data[type]") ?? "";
         // The server's rule, mirrored rather than assumed away.
         //
         // A redirect rail needs somewhere to send the payer back to. The
@@ -412,40 +493,43 @@ export function startCheckoutStub(options: CheckoutStubOptions = {}): Promise<Ch
         if (
           REDIRECT_RAILS.has(railCode) &&
           (confirmedReturnUrl === null || confirmedReturnUrl.length === 0) &&
-          !(hasSession && sessionStatus === 'open')
+          !(hasSession && sessionStatus === "open")
         ) {
           json(
             res,
             400,
             invalidParamEnvelope(
-              'return_url',
-              'A return_url is required to confirm a payment method that redirects, unless the PaymentIntent belongs to an open Checkout Session.',
+              "return_url",
+              "A return_url is required to confirm a payment method that redirects, unless the PaymentIntent belongs to an open Checkout Session.",
             ),
           );
           return;
         }
         if (REDIRECT_RAILS.has(railCode)) {
-          intent.status = 'requires_action';
+          intent.status = "requires_action";
           intent.next_action = {
-            type: 'redirect_to_url',
-            redirect_to_url: { url: redirectUrl, return_url: confirmedReturnUrl },
+            type: "redirect_to_url",
+            redirect_to_url: {
+              url: redirectUrl,
+              return_url: confirmedReturnUrl,
+            },
           };
         } else {
-          intent.status = 'processing';
+          intent.status = "processing";
         }
         json(res, 200, intentObject(true));
         return;
       }
 
-      json(res, 404, notFoundEnvelope('route', path));
+      json(res, 404, notFoundEnvelope("route", path));
     });
   });
 
   return new Promise<CheckoutStub>((resolve, reject) => {
     const onStartupError = (err: Error): void => reject(err);
-    server.once('error', onStartupError);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', onStartupError);
+    server.once("error", onStartupError);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", onStartupError);
       const address = server.address() as AddressInfo;
       resolve({
         url: `http://127.0.0.1:${address.port}`,

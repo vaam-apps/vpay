@@ -24,10 +24,10 @@ This was not an unknown gap. `docs/plans/step9-notes/release-claims-review.md`
 had already measured both by mutation and left them open as a maintainer
 decision:
 
-| | mutation | result on `master` |
-|---|---|---|
-| M2 | `33929374661` → `39999999999` throughout `runbooks/release.md` | "not caught by anything — all five green" |
-| M3 | break `../adr/0014-builder-host-musl-triple.md` | "not caught by `just docs-check`, which prints `note: link checking is not implemented yet` and exits 0" |
+|     | mutation                                                       | result on `master`                                                                                       |
+| --- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| M2  | `33929374661` → `39999999999` throughout `runbooks/release.md` | "not caught by anything — all five green"                                                                |
+| M3  | break `../adr/0014-builder-host-musl-triple.md`                | "not caught by `just docs-check`, which prints `note: link checking is not implemented yet` and exits 0" |
 
 Both rows now carry a dated correction, and both mutations are re-run below.
 
@@ -59,9 +59,9 @@ and requires a **tracked** file or directory. Angle-bracketed targets
 - **`http(s)` URLs.** They need the network, they go stale for reasons outside
   this repository, and a gate that fails because someone else's site is down
   gets disabled. `verify-citations` is the deliberate exception: it resolves
-  ids that are claims about *our own* history.
+  ids that are claims about _our own_ history.
 - **`mailto:` targets.**
-- **Reference *usages*** (`[text][label]` with no definition). Only the
+- **Reference _usages_** (`[text][label]` with no definition). Only the
   definitions are resolved; a dangling label renders as literal text, which a
   reader sees.
 
@@ -73,12 +73,12 @@ re-run without reading.
 
 - **A run** is any standalone eleven-digit number, plus `actions/runs/<n>` in a
   URL naming this repository. **This is wider than the brief's `run <11
-  digits>`, deliberately.** This tree writes runs in lists — ``Runs
-  `33772512791`, `33784613048`, `33789060270`, `33792230539` `` — where a
+digits>`, deliberately.** This tree writes runs in lists — ``Runs
+`33772512791`, `33784613048`, `33789060270`, `33792230539` `` — where a
   cue-word rule checks the first and ignores the three places a wrong id would
   actually hide. ~~Every eleven-digit number in the tree is a run id.~~
   **Corrected 2026-09-05 (review, finding F3): every eleven-digit number in
-  tracked *Markdown* is a run id; the tree also holds two zero-padded webhook
+  tracked _Markdown_ is a run id; the tree also holds two zero-padded webhook
   timestamps and a phone number.** A leading zero is refused since the review
   — a run id is never zero-padded — and the phone-number case is a live false
   failure, stated rather than fixed.
@@ -87,7 +87,7 @@ re-run without reading.
 - **A pull request** is `#n` whose nearest preceding word is `PR`, `PRs`,
   `pull`, `pulls` or `pull request(s)`, plus any `#n` continuing such a run
   through nothing but separators (`PRs #16–#17`, `PRs #23, #24`, `PR #27 and
-  #28`); plus `pull/<n>` in a URL naming this repository. Resolved against
+#28`); plus `pull/<n>` in a URL naming this repository. Resolved against
   `/pulls/{n}`, which 404s for a plain issue — so an `#11` written with a
   pull-request cue would fail, because 11 is an issue.
 - **An issue** is the same, cued by `issue`/`issues`, plus `issues/<n>`.
@@ -96,14 +96,14 @@ re-run without reading.
 **Why a cue is required.** A rule that read every `#n` as a citation would
 fail this repository's correct prose. The uncued `#n` in the tree are:
 `Order #42` and `Order #1234` (example payloads in `docs/runbooks/`),
-``Commit `#7` `` and `` `237c716` (#1, CLI/env config) `` (commit *ordinals* in
+``Commit `#7` `` and `` `237c716` (#1, CLI/env config) `` (commit _ordinals_ in
 `docs/roadmap.md` — "Seven commits on `master`" — not pull requests), and
 `AGENTS.md open question #4` in ADR-0009. `PKCS#8` and `authkestra#287` are
 excluded by the character before the `#`; a `#n` that begins a line is a
 heading; `#9-the-known-flake` is an anchor. All of these are in
 `an_uncued_hash_number_is_not_a_citation` and its neighbours.
 
-**The cost of that, stated rather than hidden:** an id cited *only* without a
+**The cost of that, stated rather than hidden:** an id cited _only_ without a
 cue is not checked. Today that set is empty — every bold `**#17**` in
 `docs/roadmap.md`'s third addendum is also written `PR #17` in the same file,
 and the check is deduped by id, so all of them resolve.
@@ -117,7 +117,7 @@ this repository — the live name from `gh`, plus the two historical ones
 disagree, and GitHub redirects both).
 
 **It never skips.** Without `gh`, or unauthenticated, it fails and says which.
-(Nothing *proved* that until the review: every citation test was an offline
+(Nothing _proved_ that until the review: every citation test was an offline
 pattern test, and a mutation printing "skipped" and returning `Ok(())` left
 126/126 green. Guarded now by
 `a_missing_gh_fails_the_gate_rather_than_skipping` — finding F2.)
@@ -138,15 +138,15 @@ below proves.
 
 ## Counts
 
-| | |
-|---|---|
-| Markdown files scanned | **114** (`git ls-files '*.md'`) — 113 on `master`, plus this notes file. **115 since the review added `opus-review.md`** |
-| Repository links checked | **672** (**673** with the review's notes) |
-| Broken links found | **5** |
-| Broken links fixed | **5** |
-| Links skipped as out of scope | 90 bare anchors, 5 `http(s)`/`mailto` (counted separately; not part of the 672) |
-| Unique cited ids resolved | **39** — 24 workflow runs, 14 pull requests, 1 issue |
-| False citations found | **0** (plus the 2 exempted mutation records) |
+|                               |                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Markdown files scanned        | **114** (`git ls-files '*.md'`) — 113 on `master`, plus this notes file. **115 since the review added `opus-review.md`** |
+| Repository links checked      | **672** (**673** with the review's notes)                                                                                |
+| Broken links found            | **5**                                                                                                                    |
+| Broken links fixed            | **5**                                                                                                                    |
+| Links skipped as out of scope | 90 bare anchors, 5 `http(s)`/`mailto` (counted separately; not part of the 672)                                          |
+| Unique cited ids resolved     | **39** — 24 workflow runs, 14 pull requests, 1 issue                                                                     |
+| False citations found         | **0** (plus the 2 exempted mutation records)                                                                             |
 
 ### The five broken links, and what each was
 
@@ -154,13 +154,13 @@ All five were in `docs/plans/step8-notes/`. None named a file that was never
 written, so nothing became plain text — each was repointed at the file it
 meant.
 
-| file:line | as written | resolved to | the real target |
-|---|---|---|---|
-| `lane-c.md:175` | `adapter-orange-money.md` | `docs/plans/step8-notes/adapter-orange-money.md` | `../../flows/adapter-orange-money.md` |
-| `lane-c.md:181` | `reconciler.md` | `docs/plans/step8-notes/reconciler.md` | `../../flows/reconciler.md` |
-| `lane-c.md:189` | `reconciler.md` | `docs/plans/step8-notes/reconciler.md` | `../../flows/reconciler.md` |
-| `lane-h.md:289` | `flows/provider-port.md` | `docs/plans/step8-notes/flows/provider-port.md` | `../../flows/provider-port.md` |
-| `lane-h.md:332` | `../reference/vpay-api.md` | `docs/plans/reference/vpay-api.md` | `../../reference/vpay-api.md` |
+| file:line       | as written                 | resolved to                                      | the real target                       |
+| --------------- | -------------------------- | ------------------------------------------------ | ------------------------------------- |
+| `lane-c.md:175` | `adapter-orange-money.md`  | `docs/plans/step8-notes/adapter-orange-money.md` | `../../flows/adapter-orange-money.md` |
+| `lane-c.md:181` | `reconciler.md`            | `docs/plans/step8-notes/reconciler.md`           | `../../flows/reconciler.md`           |
+| `lane-c.md:189` | `reconciler.md`            | `docs/plans/step8-notes/reconciler.md`           | `../../flows/reconciler.md`           |
+| `lane-h.md:289` | `flows/provider-port.md`   | `docs/plans/step8-notes/flows/provider-port.md`  | `../../flows/provider-port.md`        |
+| `lane-h.md:332` | `../reference/vpay-api.md` | `docs/plans/reference/vpay-api.md`               | `../../reference/vpay-api.md`         |
 
 ~~The first four are one mistake: the notes quote a passage out of a
 `docs/flows/` document into a blockquote and keep the quoted document's own
@@ -238,17 +238,17 @@ around them claims.
 Each applied to the head of this branch, the named gate run, then
 `git checkout --` and `git status --porcelain` confirmed clean.
 
-| # | mutation | gate | result |
-|---|---|---|---|
-| M1 | the review's **M3**: `../adr/0014-builder-host-musl-triple.md` → `…-triples.md` in `docs/runbooks/release.md` | `cargo xtask verify-links` | **caught**, exit **1**: `docs/runbooks/release.md:86: ../adr/0014-builder-host-musl-triples.md -> docs/adr/0014-builder-host-musl-triples.md` and the same at `:222`. On `master` this exits 0. |
-| M2 | the review's **M2**: `33929374661` → `39999999999` throughout `docs/runbooks/release.md` | `cargo xtask verify-citations` | **caught**, exit **1**: `MISS run 39999999999 — HTTP 404 … cited at docs/runbooks/release.md:11, :204, :208`. The per-file exemption does not travel with the digits. |
-| M3 | `docs/status.md`'s `PR #31` citation repointed at pull request 9999, which does not exist | `cargo xtask verify-citations` | **caught**: `MISS PR 9999 — HTTP 404 … cited at docs/status.md:1394` |
-| M4 | delete the backtick-info clause from `fence_marker` | `cargo nextest run -p xtask`, then `verify-links` | **caught** by `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence` (1 failed). The gate itself still printed `ok` — with **591** links instead of 672. That is the finding below. |
+| #   | mutation                                                                                                      | gate                                              | result                                                                                                                                                                                          |
+| --- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | the review's **M3**: `../adr/0014-builder-host-musl-triple.md` → `…-triples.md` in `docs/runbooks/release.md` | `cargo xtask verify-links`                        | **caught**, exit **1**: `docs/runbooks/release.md:86: ../adr/0014-builder-host-musl-triples.md -> docs/adr/0014-builder-host-musl-triples.md` and the same at `:222`. On `master` this exits 0. |
+| M2  | the review's **M2**: `33929374661` → `39999999999` throughout `docs/runbooks/release.md`                      | `cargo xtask verify-citations`                    | **caught**, exit **1**: `MISS run 39999999999 — HTTP 404 … cited at docs/runbooks/release.md:11, :204, :208`. The per-file exemption does not travel with the digits.                           |
+| M3  | `docs/status.md`'s `PR #31` citation repointed at pull request 9999, which does not exist                     | `cargo xtask verify-citations`                    | **caught**: `MISS PR 9999 — HTTP 404 … cited at docs/status.md:1394`                                                                                                                            |
+| M4  | delete the backtick-info clause from `fence_marker`                                                           | `cargo nextest run -p xtask`, then `verify-links` | **caught** by `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence` (1 failed). The gate itself still printed `ok` — with **591** links instead of 672. That is the finding below.  |
 
 ### The finding M4 records
 
-`docs/status.md` line 69 begins ```` ```` ```ignore ```` ````: a four-backtick
-*code span* whose content is a three-backtick fence, which is how this
+`docs/status.md` line 69 begins ` ` ```ignore ` `: a four-backtick
+_code span_ whose content is a three-backtick fence, which is how this
 repository writes about doctest fences. A fence scanner that ignores
 CommonMark's "a backtick fence's info string may not contain a backtick" reads
 it as an opening fence that never closes, and masks **2 200 of that file's
@@ -329,25 +329,25 @@ whose output is pasted above, and by mutations M2 and M3.
 On this branch's head, in this worktree, `CARGO_BUILD_JOBS=4`,
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`, `VPAY_REQUIRE_NODE=1`.
 
-| command | result |
-|---|---|
-| `just fmt-check` | ok |
-| `just clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | ok — the workspace **includes `.xtask`**, so both new commands and all 36 new tests are linted |
-| `just verify` | ok — five gates: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types, 14 `#[from]` variants), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (672 links, 114 files) |
-| `just docs-check` | ok — `verify-status` **and `verify-links`**; no echo |
-| `just docs-check-citations` | ok — 39 unique ids, all resolve |
-| `cargo nextest run -p xtask` | **126 run, 126 passed, 0 skipped** (was 90) |
-| `just test-rust` (`cargo nextest run --workspace`) | **1202 run, 1202 passed, 0 skipped** |
-| `just test-doc` | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1202 total (minimum 1080)` |
-| `just lint-web` | ok |
-| `just test-web` | ok — 302 `@vpay/checkout`, 57 `examples/shop`, 3 `@vpay/ui`, and the rest |
-| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| command                                                                 | result                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just fmt-check`                                                        | ok                                                                                                                                                                                                                           |
+| `just clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | ok — the workspace **includes `.xtask`**, so both new commands and all 36 new tests are linted                                                                                                                               |
+| `just verify`                                                           | ok — five gates: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types, 14 `#[from]` variants), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (672 links, 114 files) |
+| `just docs-check`                                                       | ok — `verify-status` **and `verify-links`**; no echo                                                                                                                                                                         |
+| `just docs-check-citations`                                             | ok — 39 unique ids, all resolve                                                                                                                                                                                              |
+| `cargo nextest run -p xtask`                                            | **126 run, 126 passed, 0 skipped** (was 90)                                                                                                                                                                                  |
+| `just test-rust` (`cargo nextest run --workspace`)                      | **1202 run, 1202 passed, 0 skipped**                                                                                                                                                                                         |
+| `just test-doc`                                                         | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing                                                                                                                       |
+| `just verify-ignored`                                                   | `0 ignored (expected 0), 42 test binaries (expected 42), 1202 total (minimum 1080)`                                                                                                                                          |
+| `just lint-web`                                                         | ok                                                                                                                                                                                                                           |
+| `just test-web`                                                         | ok — 302 `@vpay/checkout`, 57 `examples/shop`, 3 `@vpay/ui`, and the rest                                                                                                                                                    |
+| `just deny`                                                             | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                                                            |
 
 **One environment finding, unrelated to this change and reported rather than
 worked around.** The first `just test-rust` in a fresh worktree fails
 `webhooks::the_delivered_signature_verifies_with_the_shipping_node_sdk` with
-`` "`pnpm --filter @vpay/sdk build` failed:\nsh: 1: tsc: not found" ``: that
+``"`pnpm --filter @vpay/sdk build` failed:\nsh: 1: tsc: not found"``: that
 test shells out to the shipping Node SDK, `just test-rust` does not depend on
 `install-node`, and a worktree with no `node_modules` has no `tsc`. CI's
 `rust` job installs Node and builds the SDK first, so it does not see this.
@@ -367,12 +367,12 @@ a missing toolchain is worth someone's attention.
   `https://github.com/datreeio/CRDs-catalog` resolves.
 - **Cross-repository citations are not resolved** (`authkestra#287`,
   `marcjazz/authkestra/issues/185`).
-- **A cited id is proven to *exist*, not to *support the sentence*.** Run
+- **A cited id is proven to _exist_, not to _support the sentence_.** Run
   `33929374661` exists; that it "pushed four digests" is still only checkable
   by a human.
 - **An uncued `#n` is not checked.** Empty set today; not guaranteed to stay
   empty.
-- **Reference *usages* with no definition are not reported.**
+- **Reference _usages_ with no definition are not reported.**
 - **Nothing in the tree exercises three of the parser's branches on real
   input**: there is not one reference definition, one angle-bracketed target
   or one `:line` suffix in any tracked `*.md` today. They are implemented and

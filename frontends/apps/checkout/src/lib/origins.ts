@@ -26,7 +26,7 @@ export function originOf(value: string): string | null {
   } catch {
     return null;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return null;
   }
   if (parsed.username.length > 0 || parsed.password.length > 0) {
@@ -38,7 +38,7 @@ export function originOf(value: string): string | null {
   // is letters, digits, dots and hyphens (IDN arrives already punycoded), or
   // a bracketed IPv6 literal.
   const host = parsed.hostname;
-  const bracketedIpv6 = host.startsWith('[') && host.endsWith(']');
+  const bracketedIpv6 = host.startsWith("[") && host.endsWith("]");
   if (host.length === 0 || (!bracketedIpv6 && !/^[a-z0-9.-]+$/.test(host))) {
     return null;
   }
@@ -60,7 +60,7 @@ export function originOf(value: string): string | null {
 export function normalizeOrigins(raw: readonly string[]): readonly string[] {
   const seen: string[] = [];
   for (const candidate of raw) {
-    if (typeof candidate !== 'string') {
+    if (typeof candidate !== "string") {
       continue;
     }
     const origin = originOf(candidate.trim());
@@ -125,7 +125,7 @@ export function resolveParentOrigin(
   referrer: string | null | undefined,
   allowed: readonly string[],
 ): string | null {
-  if (typeof referrer !== 'string' || referrer.length === 0) {
+  if (typeof referrer !== "string" || referrer.length === 0) {
     return null;
   }
   const origin = originOf(referrer);

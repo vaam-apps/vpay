@@ -192,12 +192,14 @@ describe("checkout.session.expired", () => {
     // `Event.type` is a `string`, not `KnownEventType`, so a type this SDK
     // version predates still decodes and is still readable — and the prefix
     // guard still narrows its payload, which is why it is a prefix.
-    const future: Event = { ...sessionExpired, type: "checkout.session.completed" };
+    const future: Event = {
+      ...sessionExpired,
+      type: "checkout.session.completed",
+    };
     expect(isCheckoutSessionEvent(future)).toBe(true);
     expect(future.type).toBe("checkout.session.completed");
   });
 });
-
 
 /**
  * `true` only when `A` and `B` are the *same* type, not merely mutually
@@ -208,7 +210,9 @@ describe("checkout.session.expired", () => {
  * annotation.
  */
 type Exactly<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
 
 /**
  * **Issue #46: `Refund.fee` has three read states and they must stay three.**
@@ -228,7 +232,10 @@ type Exactly<A, B> =
  * Drop the `| null` and this stops compiling; drop the `?` and it stops
  * compiling too.
  */
-const refundFeeIsAbsentNullOrANumber: Exactly<Refund["fee"], number | null | undefined> = true;
+const refundFeeIsAbsentNullOrANumber: Exactly<
+  Refund["fee"],
+  number | null | undefined
+> = true;
 
 describe("the refund fee's three states", () => {
   it("types fee so that absent, null and a measured zero stay three different answers", () => {

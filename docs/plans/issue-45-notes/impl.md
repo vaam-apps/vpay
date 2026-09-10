@@ -7,7 +7,7 @@ Implementation notes. Branch `claude/issue-45-refund-retrieve`, base
 
 The issue asked for a contract decision and offered two shapes for it. The
 decision taken was the stronger one: **`GET /v1/refunds/{id}` is part of the
-`/v1` contract *and is served***, because the port's own rule — "`query_status`
+`/v1` contract _and is served_**, because the port's own rule — "`query_status`
 is the authoritative read … must work indefinitely"
 ([flows/provider-port.md](../../flows/provider-port.md)) — applies to every
 money movement, and a refund was the only one without it. A webhook is not a
@@ -50,13 +50,13 @@ is a reviewer decision to reverse.
 
 **D3 — `status` is a `String` on the wire object, not a closed enum.**
 `EventObject::kind`'s argument: the vocabulary is closed by Postgres where it is
-*written* (`refund_status`), and a value that failed to parse on the read path
+_written_ (`refund_status`), and a value that failed to parse on the read path
 would turn a merchant's `GET` into a `500` instead of showing them the refund.
 `every_stored_refund_status_decodes_in_the_merchant_sdk` pins that the four the
 database can produce are the four both SDKs model, so widening the enum without
 widening the SDKs fails.
 
-**D4 — the `re_` prefix is checked into the *same* `404`, not into a `400`.**
+**D4 — the `re_` prefix is checked into the _same_ `404`, not into a `400`.**
 The brief asked for id-prefix validation; `v1::events::retrieve`'s own doc
 comment argues, in this repository's words, that a malformed path id is a `404`
 and not a shape error. Both are satisfied: the check exists and short-circuits
@@ -75,13 +75,13 @@ this repository calls claiming a feature.
 
 Each was applied, measured, and reverted, on 2026-09-05.
 
-| Mutation | Result |
-|---|---|
-| Drop `p.merchant_id = $1` from the join in `vpay_db::refunds` | `merchant_b_cannot_read_merchant_as_refund` **FAILS**: `left: 200, right: 404` |
-| Delete the `/refunds/{id}` entry from `vpay_api::v1::V1_ROUTES` | 3 of 4 integration cases **FAIL** (the SDK read is `unknown_route`), and the unit test `the_refund_resource_is_mounted_for_a_read_and_for_nothing_else` **FAILS**. **All 136 `vpay-sdk` tests still pass** — the SDK's wiremock cases prove the client, the route test proves the server, and neither substitutes for the other |
-| Render the response through a second hand-built map (`created` in ms) | `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical` **FAILS** on the serialised bytes |
-| Rename a test named in the `refunds.retrieve` parity row | `verify-sdk-parity` **FAILS**, naming the cell |
-| **Delete the `refunds.retrieve` parity row entirely** | `verify-sdk-parity` **still passes** (346 → 342 proving tests). **The gate is one-directional**: it checks that every test a cell names exists, and cannot know that a capability the SDKs have is unrecorded. The brief predicted a failure here; it does not happen, and that is a real limitation of the gate rather than of this change |
+| Mutation                                                              | Result                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Drop `p.merchant_id = $1` from the join in `vpay_db::refunds`         | `merchant_b_cannot_read_merchant_as_refund` **FAILS**: `left: 200, right: 404`                                                                                                                                                                                                                                                              |
+| Delete the `/refunds/{id}` entry from `vpay_api::v1::V1_ROUTES`       | 3 of 4 integration cases **FAIL** (the SDK read is `unknown_route`), and the unit test `the_refund_resource_is_mounted_for_a_read_and_for_nothing_else` **FAILS**. **All 136 `vpay-sdk` tests still pass** — the SDK's wiremock cases prove the client, the route test proves the server, and neither substitutes for the other             |
+| Render the response through a second hand-built map (`created` in ms) | `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical` **FAILS** on the serialised bytes                                                                                                                                                                                                                                |
+| Rename a test named in the `refunds.retrieve` parity row              | `verify-sdk-parity` **FAILS**, naming the cell                                                                                                                                                                                                                                                                                              |
+| **Delete the `refunds.retrieve` parity row entirely**                 | `verify-sdk-parity` **still passes** (346 → 342 proving tests). **The gate is one-directional**: it checks that every test a cell names exists, and cannot know that a capability the SDKs have is unrecorded. The brief predicted a failure here; it does not happen, and that is a real limitation of the gate rather than of this change |
 
 ## What is not proven
 
@@ -104,7 +104,7 @@ silently rewritten:
 
 1. `flows/merchant-auth.md`'s Resources table listed `GET /v1/events` as
    `⛔ 404`; it has been served since Step 5 (2026-09-03). `GET
-   /v1/events/{id}` was missing entirely, and the four Checkout Session routes
+/v1/events/{id}` was missing entirely, and the four Checkout Session routes
    are not in that table at all (they are in `flows/hosted-checkout.md`, which
    the table now points at).
 2. `api/README.md`'s "two of its eight resource methods" — the SDKs expose
@@ -141,7 +141,7 @@ Four files conflicted and one auto-merged in a way worth recording:
   hunk was neither definition. Reconstructed as two complete invocations,
   `AccountHolderTag` and `RefundTag`.
 - **`docs/api/README.md`** — the route-count sentence. The word "Twelve" sat
-  *outside* the conflict markers, on a line both sides shared, because #47 and
+  _outside_ the conflict markers, on a line both sides shared, because #47 and
   #45 each independently moved the count 11 → 12 for a different route. Both
   are in the table now, so the true figure is **thirteen methods across eleven
   paths**, re-counted from `V1_ROUTES` rather than carried from either side.
@@ -177,10 +177,10 @@ another branch, and that is still its change to make.
 **Both decisive mutations were re-run on the rebased tree** (2026-09-06,
 containers live), each reverted afterwards:
 
-| Mutation | Expected | Observed |
-|---|---|---|
-| Drop `p.merchant_id = $1` from the join in `vpay_db::refunds` | the tenancy case fails | `merchant_b_cannot_read_merchant_as_refund` **FAILED**, `200` where `404` is owed |
-| Delete the `re_` short-circuit in `vpay_api::v1::refunds::lookup` | the prefix case fails | `a_refund_id_without_the_re_prefix_is_never_looked_up` **FAILED**, `200` where `404` is owed — and it failed **alone**, the other four passing, which is the property that case was added for |
+| Mutation                                                          | Expected               | Observed                                                                                                                                                                                      |
+| ----------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Drop `p.merchant_id = $1` from the join in `vpay_db::refunds`     | the tenancy case fails | `merchant_b_cannot_read_merchant_as_refund` **FAILED**, `200` where `404` is owed                                                                                                             |
+| Delete the `re_` short-circuit in `vpay_api::v1::refunds::lookup` | the prefix case fails  | `a_refund_id_without_the_re_prefix_is_never_looked_up` **FAILED**, `200` where `404` is owed — and it failed **alone**, the other four passing, which is the property that case was added for |
 
 **What the gate did and did not cover, stated plainly.** `fmt-check`,
 `clippy` and `verify` (ten gates) passed on the rebased tree. The five

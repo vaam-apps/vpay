@@ -38,28 +38,28 @@ which Postgres refuses:
 ```
 
 There is no split of one `INSERT` into two statements. So `insert_in_tx` did
-not move. The two writes that *could* move did.
+not move. The two writes that _could_ move did.
 
 ### 1a. And "CrateStack cannot round-trip JSONB" is false, which changes the argument
 
 The brief cites F5. Checked against the pinned sources rather than accepted:
 
-| Claim | Source | Verdict |
-|---|---|---|
-| `Json` is a real `.cstack` scalar and emits `JSONB` | `cratestack-migrate/src/emit/postgres/columns.rs:275` | ✔ **exists** |
-| `Json` generates `::cratestack::Json<::cratestack::Value>` in the row struct | `cratestack-macros/src/shared/types.rs:36` | ✔ **exists** |
-| `SqlValue::Json` binds through sqlx's `Json` wrapper | `cratestack-sqlx/src/query/support/values.rs:41` | ✔ **exists** |
-| `map_scalar` reads `jsonb` back | `cratestack-migrate/src/introspect/postgres/types.rs` | ✘ **not mapped** |
+| Claim                                                                        | Source                                                | Verdict          |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------- | ---------------- |
+| `Json` is a real `.cstack` scalar and emits `JSONB`                          | `cratestack-migrate/src/emit/postgres/columns.rs:275` | ✔ **exists**     |
+| `Json` generates `::cratestack::Json<::cratestack::Value>` in the row struct | `cratestack-macros/src/shared/types.rs:36`            | ✔ **exists**     |
+| `SqlValue::Json` binds through sqlx's `Json` wrapper                         | `cratestack-sqlx/src/query/support/values.rs:41`      | ✔ **exists**     |
+| `map_scalar` reads `jsonb` back                                              | `cratestack-migrate/src/introspect/postgres/types.rs` | ✘ **not mapped** |
 
-So a `data Json` field would *work at runtime*. It is still not declared, for
+So a `data Json` field would _work at runtime_. It is still not declared, for
 two measured reasons, and the second is the one that decides it:
 
-1. **Drift gets worse.** An *undeclared* `jsonb` column is invisible to the
+1. **Drift gets worse.** An _undeclared_ `jsonb` column is invisible to the
    comparison in both directions (§3 below: declaring both models moved
    `EXPECTED_UNMAPPABLE_COLUMNS` by zero and produced no `column data exists
-   in the live database` line). Declaring `data Json` leaves the live column
+in the live database` line). Declaring `data Json` leaves the live column
    invisible while adding a `[blocking] column data is declared in the schema
-   but does not exist in the live database` line — precisely what
+but does not exist in the live database` line — precisely what
    `currencies.exponent` did before migration 0032.
 
 2. **`cratestack::Value` is not `serde_json::Value`, and the conversion is
@@ -80,7 +80,7 @@ two measured reasons, and the second is the one that decides it:
 
 Pinned — but pinned against the wrong event, corrected by the review
 ([opus-review.md](opus-review.md) F5). Both tests below render or run the
-statement the *current* model generates, so they go red when somebody
+statement the _current_ model generates, so they go red when somebody
 declares `data Json`. Neither can notice an upstream `map_scalar` fix:
 `map_scalar` is `cratestack-migrate`'s, which is not in `vpay-db`'s compiled
 graph, and `preview_sql` renders from this file's macro expansion alone. The
@@ -137,12 +137,12 @@ Driven with `cratestack migrate baseline --strict` against freshly built
 databases (all 32 migrations applied with `psql`, plus a hand-created
 `_sqlx_migrations` so the undeclared-table set matches the real run).
 
-| Variant | Report |
-|---|---|
-| **A** — base, no new models | **84 / 16 / 17** (reproduces the pinned constants exactly) |
-| **B** — both models, `@default("pending")` double-quoted | 102 / 16 / 17 |
-| **C** — B with `@default('pending')` single-quoted | 100 / 16 / 17 |
-| **D** — C with `webhook_deliveries.id`'s default dropped from the model | **101 / 16 / 17** — as delivered |
+| Variant                                                                 | Report                                                     |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **A** — base, no new models                                             | **84 / 16 / 17** (reproduces the pinned constants exactly) |
+| **B** — both models, `@default("pending")` double-quoted                | 102 / 16 / 17                                              |
+| **C** — B with `@default('pending')` single-quoted                      | 100 / 16 / 17                                              |
+| **D** — C with `webhook_deliveries.id`'s default dropped from the model | **101 / 16 / 17** — as delivered                           |
 
 Two findings in that table:
 
@@ -188,7 +188,7 @@ webhook_deliveries:
 **`@db_enforce` would make this worse, not better.** It promotes a validator
 to a CHECK named `naming.rs::check_name` -> `<table>_<column>_<validator>_check`,
 and the live names are hand-written — so each of the four length CHECKs would
-become a drop-and-add *pair*: two lines where there is now one. And
+become a drop-and-add _pair_: two lines where there is now one. And
 `ir/checks.rs` guarantees the kinds could never match anyway, since
 introspection reports every validator-derived CHECK as `CheckKind::Raw`.
 That is exp17 §1a applied in the only direction available without a rename
@@ -216,7 +216,7 @@ that cannot be filled in correctly.
 `webhook_deliveries.status_code` are `jsonb`/`int4`, on `map_scalar`'s
 deliberate unmapped list. They contribute **nothing** in either direction:
 `EXPECTED_UNMAPPABLE_COLUMNS` stays at 17, and no `exists in the live
-database` line appears. Declaring them as `Int`/`Json` would have *added*
+database` line appears. Declaring them as `Int`/`Json` would have _added_
 blocking lines.
 
 Four of the seventeen unmappable columns now sit inside tables the schema
@@ -264,7 +264,7 @@ Three things this render settles:
 
 `preview_sql` renders filters and the policy as the literal placeholders
 `<filters>` / `<update_policy>` rather than expanding them, so the unit test
-cannot assert the guard's *contents*; the container tests do that.
+cannot assert the guard's _contents_; the container tests do that.
 
 ---
 
@@ -273,14 +273,14 @@ cannot assert the guard's *contents*; the container tests do that.
 Every one applied to a clean tree, run, and reverted; `git status` clean
 afterwards each time.
 
-| # | Mutation | Measured result |
-|---|---|---|
-| 1 | `create_in_tx`: `.run_in_tx(&mut *tx, &ctx)` -> `.run(&ctx)` | `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending` **FAILS in 2.3 s** — the delivery row survives the abandoned transaction. `a_committed_fan_out_keeps_both_cratestack_writes` still passes |
-| 2 | `mark_fanned_out_in_tx`: the same swap | the same test **FAILS in 1.3 s** on the second assertion — `fanout_state` is `done` on an event whose deliveries were rolled back |
-| 3 | Delete `@@allow("create", …)` from `model WebhookDelivery` | `every_action_this_module_calls_has_an_allow_arm` **FAILS with no container, in milliseconds**. Runtime: **5 of 6** delivery-touching container tests red — LOUD on every path that creates a delivery |
-| 4 | Delete `@@allow("update", …)` from `model Event` | no-container test **FAILS**. Runtime: `a_committed_fan_out_keeps_both_cratestack_writes` and the abandon test fail; **`a_second_delivery_for_one_event_and_endpoint_is_not_created` still PASSES**, because it never reaches the flip. Silent in the error channel, total in effect |
-| 5 | Delete `@@allow("update", …)` from `model WebhookDelivery` | no-container test **FAILS**. Runtime: **exactly one** container test red — `a_second_delivery_for_one_event_and_endpoint_is_not_created`. The first fan-out of an event succeeds; only a **re-run** fails. That is the crash-recovery path |
-| 6 | Drop `CONSTRAINT type_is_a_documented_event` (migration 0029's re-add) | `an_undocumented_event_type_is_refused_by_the_database` **FAILS** (`PgQueryResult { rows_affected: 1 }` — the invented type was accepted). The drift report goes 101 -> 100 — and **the drift assertion FAILS on that too**, which this row originally denied. See §5b, corrected by the review |
+| #   | Mutation                                                               | Measured result                                                                                                                                                                                                                                                                                 |
+| --- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `create_in_tx`: `.run_in_tx(&mut *tx, &ctx)` -> `.run(&ctx)`           | `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending` **FAILS in 2.3 s** — the delivery row survives the abandoned transaction. `a_committed_fan_out_keeps_both_cratestack_writes` still passes                                                                                 |
+| 2   | `mark_fanned_out_in_tx`: the same swap                                 | the same test **FAILS in 1.3 s** on the second assertion — `fanout_state` is `done` on an event whose deliveries were rolled back                                                                                                                                                               |
+| 3   | Delete `@@allow("create", …)` from `model WebhookDelivery`             | `every_action_this_module_calls_has_an_allow_arm` **FAILS with no container, in milliseconds**. Runtime: **5 of 6** delivery-touching container tests red — LOUD on every path that creates a delivery                                                                                          |
+| 4   | Delete `@@allow("update", …)` from `model Event`                       | no-container test **FAILS**. Runtime: `a_committed_fan_out_keeps_both_cratestack_writes` and the abandon test fail; **`a_second_delivery_for_one_event_and_endpoint_is_not_created` still PASSES**, because it never reaches the flip. Silent in the error channel, total in effect             |
+| 5   | Delete `@@allow("update", …)` from `model WebhookDelivery`             | no-container test **FAILS**. Runtime: **exactly one** container test red — `a_second_delivery_for_one_event_and_endpoint_is_not_created`. The first fan-out of an event succeeds; only a **re-run** fails. That is the crash-recovery path                                                      |
+| 6   | Drop `CONSTRAINT type_is_a_documented_event` (migration 0029's re-add) | `an_undocumented_event_type_is_refused_by_the_database` **FAILS** (`PgQueryResult { rows_affected: 1 }` — the invented type was accepted). The drift report goes 101 -> 100 — and **the drift assertion FAILS on that too**, which this row originally denied. See §5b, corrected by the review |
 
 ### 5a. Neither `run_in_tx` mutation hangs, and that is not luck
 
@@ -295,7 +295,7 @@ delivery, so it locks nothing; the `events` row is held only by the
 `FOR KEY SHARE` the delivery's foreign key takes, which does not conflict
 with the `FOR NO KEY UPDATE` a non-key `UPDATE` wants.
 
-So the two seams have *different* failure signatures under the same mistake,
+So the two seams have _different_ failure signatures under the same mistake,
 and only measurement distinguishes them.
 
 **Corrected by the review ([opus-review.md](opus-review.md) F3).** The
@@ -303,7 +303,7 @@ paragraph above is true of the branch these two mutations take and false as a
 general statement about this call. `.do_nothing()` locks nothing only on the
 `Inserted` branch. On the `Existing` branch `resolve_pre_probe` is
 `select_for_update_by_conflict_target(&mut **tx, …)` — a `SELECT … FOR UPDATE`
-on this very transaction — and `authorize_existing_row` then *does* ask a
+on this very transaction — and `authorize_existing_row` then _does_ ask a
 second, pooled connection about that same row. It still does not hang, but
 because a plain `SELECT 1` does not block on a `FOR UPDATE` row lock, not
 because no lock is taken.
@@ -342,7 +342,7 @@ section went on to claim that "every assertion in
 still green" and that the new test "is the only thing that fails". That was
 wrong, and it was the load-bearing sentence of this whole section.
 `EXPECTED_DRIFT_CHANGES` is an exact `assert_eq!`, not a floor, so the drift
-test fails on the *lower* count too:
+test fails on the _lower_ count too:
 
 ```
 assertion `left == right` failed: ... the report counts 100 pending change(s),
@@ -353,13 +353,13 @@ what the report stopped seeing before moving anything
 ```
 
 The measurement recorded above (101 -> 100) was right; the inference drawn
-from it — that the report is *structurally incapable* of complaining — was
+from it — that the report is _structurally incapable_ of complaining — was
 not, and it understated a defence this repository already had.
 
 `an_undocumented_event_type_is_refused_by_the_database` is still worth having,
-for a reason that has to be stated differently: the count says *a constraint
-is gone*, and cannot say which or whether it mattered; the test says *the
-vocabulary is still closed*, which is what four documents rest on, and it is
+for a reason that has to be stated differently: the count says _a constraint
+is gone_, and cannot say which or whether it mattered; the test says _the
+vocabulary is still closed_, which is what four documents rest on, and it is
 the signal that survives someone re-pinning the constant. It also covers
 `fanout_state_is_known`, the other multi-value CHECK on the same table and the
 one the compare-and-swap depends on.
@@ -390,7 +390,7 @@ there are now many more than there were. Nothing in this repository runs
 - **Two existing tests changed their expected variant, and both got
   stronger rather than weaker.**
   `a_delivery_outside_the_length_checks_is_refused_by_the_database` now
-  asserts *both* layers: the generated validator refusing non-retryably, and
+  asserts _both_ layers: the generated validator refusing non-retryably, and
   — via raw `sqlx` that goes around CrateStack entirely — the CHECKs
   themselves still firing in the database, which is what still binds `psql`
   and every future writer. `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states`
@@ -412,7 +412,7 @@ there are now many more than there were. Nothing in this repository runs
 - **`insert_in_tx` did not move** (§1). It is the one write the brief named
   first.
 - **`jobs` is untouched and is not next.** `Jobs::claim` needs `FOR UPDATE
-  SKIP LOCKED`; `FindMany::for_update()` emits a bare `FOR UPDATE`. A lease
+SKIP LOCKED`; `FindMany::for_update()` emits a bare `FOR UPDATE`. A lease
   mechanism that silently lost `SKIP LOCKED` would turn every worker's claim
   into a queue behind every other worker's. `jobs.payload` is `jsonb` and
   `jobs.attempts` is `int4` besides.
@@ -421,10 +421,10 @@ there are now many more than there were. Nothing in this repository runs
   `UPDATE … RETURNING` with the `PREVIOUS_STATE` correlated sub-select, which
   no delegate expresses.
 - **Every read on both tables stays raw `sqlx`.** `Events::{pending_page,
-  list_page, get_by_id, get_unscoped}` all project `data`, and `list_page`'s
+list_page, get_by_id, get_unscoped}` all project `data`, and `list_page`'s
   cursor is a correlated sub-select (`seq < (SELECT seq FROM events WHERE id
-  = $2 AND merchant_id = $1)`) with no delegate. `WebhookDeliveries::{get,
-  pending_due, for_event, record_success, record_attempt}` read or write
+= $2 AND merchant_id = $1)`) with no delegate. `WebhookDeliveries::{get,
+pending_due, for_event, record_success, record_attempt}` read or write
   `attempt`/`status_code`, both `int4` and both undeclared.
 - **`Events::record_fanout_failure` stays on the pool**, deliberately and
   unchanged: it counts the failure of a transaction that has rolled back.
@@ -448,7 +448,7 @@ Three, none of them decided here.
    places, and of exp17's finding 3 (a migration that alters a live table
    breaks the previous release's binary in a rolling deploy).
 2. **Whether to `ALTER TABLE webhook_deliveries ALTER COLUMN id DROP
-   DEFAULT`**, closing one drift line. Cheap and safe today — the column
+DEFAULT`**, closing one drift line. Cheap and safe today — the column
    default has no remaining reader — but it is still a DDL change bought by a
    code generator's input-shaping rule, which is the trade `model Provider`'s
    GAP note reserves.

@@ -5,7 +5,7 @@ base `970bfe0`. Node `22.23.2` (`.nvmrc`), pnpm `9.15.0`, `CARGO_BUILD_JOBS=4`,
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`.
 
 **Verdict: NOT safe as drafted.** The version change itself is right and
-complete, and no Vitest 4 *configuration* migration is owed — that part of the
+complete, and no Vitest 4 _configuration_ migration is owed — that part of the
 draft holds, for reasons it did not check. But the bump breaks a test:
 `@vpay/ui` fails **six runs in ten** on vitest 4 and **zero in ten** on vitest 3,
 on the same machine with the same jsdom, React and Testing Library. The draft
@@ -18,12 +18,12 @@ file is fixed here; everything else fixed is a claim or a document.
 
 The advisory (`gh api /advisories/GHSA-82fw-gwwq-j7x9`):
 
-| field | value |
-| --- | --- |
-| summary | Vitest: Path Traversal / Arbitrary File Read via `@vitest/mocker` Redirect Mock |
-| severity | **moderate**, CVSS 5.9 |
-| published | 2026-09-08 |
-| affected | `vitest` `>= 2.1.0, < 4.1.11` → **4.1.11**; `@vitest/mocker` `>= 2.1.0, < 4.1.11` → **4.1.11** (plus the 5.0.0-beta line → 5.0.0-rc.2) |
+| field     | value                                                                                                                                  |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| summary   | Vitest: Path Traversal / Arbitrary File Read via `@vitest/mocker` Redirect Mock                                                        |
+| severity  | **moderate**, CVSS 5.9                                                                                                                 |
+| published | 2026-09-08                                                                                                                             |
+| affected  | `vitest` `>= 2.1.0, < 4.1.11` → **4.1.11**; `@vitest/mocker` `>= 2.1.0, < 4.1.11` → **4.1.11** (plus the 5.0.0-beta line → 5.0.0-rc.2) |
 
 The twelve open Dependabot alerts (`gh api 'repos/vaam-apps/vpay/dependabot/alerts?state=open'`),
 all one advisory:
@@ -50,14 +50,14 @@ those four packages is named by the advisory. `vitest` itself and
 
 ## 2. Findings
 
-| # | severity | finding |
-| --- | --- | --- |
-| **F1** | **gate hole / correctness — blocking** | the bump makes `@vpay/ui` fail 6 runs in 10; the draft reported it green and never finished `just ci` |
-| F2 | misleading-claim | `just audit-web` is **not** evidence that this advisory is closed |
-| F3 | misleading-claim | `just verify` is **twelve** gates, not ten; the draft's list names eight |
-| F4 | misleading-claim | the unexplained `sdk-node` 208-vs-207 is not a Vitest 4 effect — `master` is already 208, and `docs/status.md` is stale |
-| F5 | correctness (docs) | no `docs/status.md` update, which `CLAUDE.md` requires in the same commit |
-| F6 | nit | the migration audit checked 2 of the guide's 14 headings and generalised from them |
+| #      | severity                               | finding                                                                                                                 |
+| ------ | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **F1** | **gate hole / correctness — blocking** | the bump makes `@vpay/ui` fail 6 runs in 10; the draft reported it green and never finished `just ci`                   |
+| F2     | misleading-claim                       | `just audit-web` is **not** evidence that this advisory is closed                                                       |
+| F3     | misleading-claim                       | `just verify` is **twelve** gates, not ten; the draft's list names eight                                                |
+| F4     | misleading-claim                       | the unexplained `sdk-node` 208-vs-207 is not a Vitest 4 effect — `master` is already 208, and `docs/status.md` is stale |
+| F5     | correctness (docs)                     | no `docs/status.md` update, which `CLAUDE.md` requires in the same commit                                               |
+| F6     | nit                                    | the migration audit checked 2 of the guide's 14 headings and generalised from them                                      |
 
 ### F1 — the bump breaks `@vpay/ui`, six runs in ten
 
@@ -76,10 +76,10 @@ error: Recipe `test-web` failed on line 123 with exit code 1
 It is not load, and it is not a pre-existing flake. Measured, `pnpm --filter
 @vpay/ui test` run ten times on each side, same machine, same Node 22.23.2:
 
-| tree | vitest | result |
-| --- | --- | --- |
-| `b5be024` (the draft) | **4.1.11** | **4 pass, 6 fail** — every failure the same test, the same line |
-| `970bfe0` (`master`), `pnpm install --frozen-lockfile` into a throwaway `git archive` copy | **3.2.7** | **10 pass, 0 fail** |
+| tree                                                                                       | vitest     | result                                                          |
+| ------------------------------------------------------------------------------------------ | ---------- | --------------------------------------------------------------- |
+| `b5be024` (the draft)                                                                      | **4.1.11** | **4 pass, 6 fail** — every failure the same test, the same line |
+| `970bfe0` (`master`), `pnpm install --frozen-lockfile` into a throwaway `git archive` copy | **3.2.7**  | **10 pass, 0 fail**                                             |
 
 The two trees resolve identical `jsdom@25.0.1`, `@testing-library/react@16.3.2`,
 `react@19.2.8` and `react-dom@19.2.8`; vitest is the only difference.
@@ -100,7 +100,7 @@ is exactly what the diff above shows.
 
 **Fixed** by waiting for the condition instead of assuming it, with
 `waitFor` — already this package's convention (`dialog.test.tsx:52`) — for both
-focus assertions. Nothing about *what* is asserted changed. Proved three ways:
+focus assertions. Nothing about _what_ is asserted changed. Proved three ways:
 
 - **20 consecutive runs green** after the fix (`74 passed (74)`, `18 passed (18)`),
   against 4-in-10 before it.
@@ -116,7 +116,7 @@ assumed — every other suite was run repeatedly on vitest 4 and none failed:
 `@vpay/dashboard` 8/8, `@vpay/checkout` 8/8, `@vpay-examples/shop` 8/8,
 `@vaam-apps/vpay-stripe-js` 5/5, `@vaam-apps/vpay-sdk` 5/5.
 
-The same *shape* was then looked for by hand rather than left to luck. There are
+The same _shape_ was then looked for by hand rather than left to luck. There are
 four `document.activeElement` assertions in the repository:
 `dialog.test.tsx:53` was already inside a `waitFor`, `select.test.tsx`'s two are
 now, and `checkout-view.test.tsx:285` is synchronous with no `findBy`/`await`
@@ -146,20 +146,20 @@ So the whole file was hardened, not just the one assertion:
 - The two focus assertions → `waitFor` (the original F1 fix).
 
 Every assertion in the file that follows an interaction now waits for its
-condition. Nothing about *what* is asserted changed anywhere.
+condition. Nothing about _what_ is asserted changed anywhere.
 
 Rates measured on this host, `pnpm --filter @vpay/ui …` twenty times per cell,
 with CPU load supplied by 16–24 busy-loop processes whose PIDs are recorded and
 stopped by PID:
 
-| tree | vitest | what was run | load | result |
-| --- | --- | --- | --- | --- |
-| `master`'s file | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 12) | **13 pass, 7 fail** — all seven at `select.test.tsx:60` |
-| hardened | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 13) | **20 pass, 0 fail** |
-| hardened | **4.1.11** | full `@vpay/ui` suite | none | **20 pass, 0 fail** (74 tests, 18 files) |
-| `master`'s file | 3.2.7 | `select.test.tsx` alone | 20 burners (load ≈ 14) | 20 pass, 0 fail |
-| `master`'s file | 3.2.7 | full `@vpay/ui` suite | 24 burners (load rose to **46**) | 20 pass, 0 fail |
-| hardened | 3.2.7 | full `@vpay/ui` suite | 20 burners | **20 pass, 0 fail** (74 tests) |
+| tree            | vitest     | what was run            | load                             | result                                                  |
+| --------------- | ---------- | ----------------------- | -------------------------------- | ------------------------------------------------------- |
+| `master`'s file | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 12)           | **13 pass, 7 fail** — all seven at `select.test.tsx:60` |
+| hardened        | **4.1.11** | `select.test.tsx` alone | 16 burners (load ≈ 13)           | **20 pass, 0 fail**                                     |
+| hardened        | **4.1.11** | full `@vpay/ui` suite   | none                             | **20 pass, 0 fail** (74 tests, 18 files)                |
+| `master`'s file | 3.2.7      | `select.test.tsx` alone | 20 burners (load ≈ 14)           | 20 pass, 0 fail                                         |
+| `master`'s file | 3.2.7      | full `@vpay/ui` suite   | 24 burners (load rose to **46**) | 20 pass, 0 fail                                         |
+| hardened        | 3.2.7      | full `@vpay/ui` suite   | 20 burners                       | **20 pass, 0 fail** (74 tests)                          |
 
 Two things to read off that table honestly.
 
@@ -171,7 +171,7 @@ Two things to read off that table honestly.
   fail on vitest 3 in forty attempts. The reported sightings were inside full
   `just ci` runs, where the contention is Docker, Postgres containers and cargo
   I/O rather than CPU, and that shape was not reconstructed. What is
-  established is the mechanism and that the fix closes it; the vitest 3 *rate*
+  established is the mechanism and that the fix closes it; the vitest 3 _rate_
   under `just ci`-shaped load is unmeasured, and no number for it is claimed.
 
 ### F2 — `just audit-web` never gated this advisory, before or after
@@ -188,11 +188,11 @@ Measured in both directions rather than argued. `master`'s lockfile
 `970bfe0:pnpm-workspace.yaml` and this repository's `.npmrc`, in a scratch
 directory), Node 22.23.2:
 
-| command | exit | report |
-| --- | --- | --- |
-| `pnpm audit --audit-level=high --prod` (audit-web's first run) | **0** | — |
-| `pnpm audit --audit-level=high` (audit-web's second run) | **0** | prints `2 vulnerabilities found / Severity: 2 moderate` and still exits 0 |
-| `pnpm audit --audit-level=moderate` | **1** | names both `vitest` and `@vitest/mocker`, `>=2.1.0 <4.1.11` → `>=4.1.11` |
+| command                                                        | exit  | report                                                                    |
+| -------------------------------------------------------------- | ----- | ------------------------------------------------------------------------- |
+| `pnpm audit --audit-level=high --prod` (audit-web's first run) | **0** | —                                                                         |
+| `pnpm audit --audit-level=high` (audit-web's second run)       | **0** | prints `2 vulnerabilities found / Severity: 2 moderate` and still exits 0 |
+| `pnpm audit --audit-level=moderate`                            | **1** | names both `vitest` and `@vitest/mocker`, `>=2.1.0 <4.1.11` → `>=4.1.11`  |
 
 So `just audit-web` was green on `master` **with the advisory present**, which is
 also why CI stayed green for the two days the twelve alerts were open. On this
@@ -234,15 +234,15 @@ traced rather than accepted.
 It is not a Vitest 4 collection change. Counting `it(`/`test(` at file scope
 across the nine non-live suites, per revision:
 
-| revision | date | static cases |
-| --- | --- | --- |
-| `f42897f` | 2026-09-08 | 207 |
-| `9cb11f8` | 2026-09-10 | 207 |
-| `b73543c` | 2026-09-10 | 207 |
-| `c4ce32d` | 2026-09-10 | 207 |
-| **`49a7063`** | **2026-09-10** | **208** |
-| `970bfe0` (this branch's base) | 2026-09-10 | 208 |
-| `b5be024` (the draft) | 2026-09-10 | 208 |
+| revision                       | date           | static cases |
+| ------------------------------ | -------------- | ------------ |
+| `f42897f`                      | 2026-09-08     | 207          |
+| `9cb11f8`                      | 2026-09-10     | 207          |
+| `b73543c`                      | 2026-09-10     | 207          |
+| `c4ce32d`                      | 2026-09-10     | 207          |
+| **`49a7063`**                  | **2026-09-10** | **208**      |
+| `970bfe0` (this branch's base) | 2026-09-10     | 208          |
+| `b5be024` (the draft)          | 2026-09-10     | 208          |
 
 `49a7063` ("feat(customers): `customer.created` and `customer.updated`, under the
 row's lock (#66)") added one case to `sdks/nodejs/src/webhooks.test.ts`:
@@ -288,22 +288,22 @@ cross-read with context7's `/vitest-dev/vitest/v4.1.6`. Every JS tree
 (`frontends/`, `sdks/`, `examples/`) was swept, with `node_modules`, `dist`,
 `.next` and `storybook-static` excluded.
 
-| # | guide heading | verdict | evidence |
-| --- | --- | --- | --- |
-| 1 | Prerequisites: **Vite ≥ 6, Node ≥ 20** | **met** | the lockfile resolves exactly one vite, `vite@6.4.3` (itself an existing deliberate `pnpm.overrides` pin); `.nvmrc` `22.23.2`, root `engines.node >= 22.13.0`, `engine-strict=true` |
-| 2 | V8 coverage major changes (AST remapping, `ignoreEmptyLines`, `experimentalAstAwareRemapping`) | **n/a** | no `@vitest/coverage-v8` or `-istanbul` in any manifest or in the lockfile; no `test.coverage` block in any of the ten configs; no recipe or CI step passes `--coverage` |
-| 3 | `coverage.all` / `coverage.extensions` removed | **n/a** | same |
-| 4 | **Simplified `exclude`** — v4 excludes only `node_modules` and `.git` | **no effect**, checked | nine of the ten configs set `include` explicitly and every one is rooted at `src/` (dashboard `{src,app}/`), so `dist`, `cypress`, `.idea/.cache/.output/.temp` and `*.config.*` — the paths v4 stopped excluding — cannot match. The one package with **no** `vitest.config.ts`, and therefore v4's default `include`, is `frontends/packages/config`: six tracked files, one test (`src/eslint.test.js`), no `dist/`, no `cypress/`. No config spreads `configDefaults.exclude` |
-| 5 | `spyOn`/`fn` support constructors (an arrow `mockImplementation` now throws under `new`) | **no effect** | all eight `vi.spyOn` sites spy on plain functions — `console[method]` (checkout `secrets.test.ts`, twice), `globalThis.setInterval`, `globalThis.fetch`, `Math.random` four times — and none is constructed with `new` |
-| 6 | Changes to mocking (`getMockName`, `restoreAllMocks` scope, automock isolation, automocked getters, `settledResults`, `invocationCallOrder` base 1) | **no effect**, each sub-item | there are no snapshots anywhere, so the `[MockFunction spy]` → `[MockFunction]` rename cannot bite; the three `vi.restoreAllMocks()` sites (checkout `secrets.test.ts:58`, stripe-js `redirect.test.ts:87` and `polling.test.ts:39`) exist to restore **manual `vi.spyOn` spies**, which is precisely what v4 still restores; there is no automock in the repository — `vi.mock` appears once (`frontends/apps/checkout/src/layout.test.tsx:30`) with an explicit factory and no `spy: true`; `invocationCallOrder`, `getMockName` and `settledResults`: 0 hits |
-| 7 | Standalone mode with filename filter | **n/a** | nothing runs `vitest --standalone` |
-| 8 | `vite-node` → Module Runner (`deps.optimizer.web` → `client`, `vitest/execute`, custom-environment `transformMode` → `viteEnvironment`, `VITE_NODE_DEPS_MODULE_DIRECTORIES`) | **n/a** | no `deps`, `optimizer`, `server.deps` or custom environment in any config; no `vitest/execute` import; no `VITE_NODE_*` variable |
-| 9 | `workspace` → `projects` | **n/a** | no `vitest.workspace.*`, no `defineWorkspace`, no `test.workspace`, no `test.projects`. What this repository calls a "project" is a second **config file** run by a second package script (`sdks/nodejs/vitest.live.config.ts` via `test:live`; `sdks/stripe-compat/vitest.config.ts` via the e2e job's `compat`), which v4 does not touch |
-| 10 | Browser provider rework (`@vitest/browser` → `vitest/browser`, provider factory, `browser.instances`) | **n/a** | `@vitest/browser` is in no manifest and in no lockfile entry; no `test.browser` block. Real-browser testing here is Cypress |
-| 11 | Pool rework (`poolOptions`, `maxThreads`/`maxForks`, `singleThread`/`singleFork`, `minWorkers`, `threads.useAtomics`, `memoryLimit`) | **n/a** | none of those keys appears anywhere. `fileParallelism: false` (stripe-compat, sdk-node live) is a top-level option, not a `poolOptions` key, and is unchanged in v4 |
-| 12 | Reporter updates (`basic` removed, `verbose` now flat, `onCollected`/`onTaskUpdate`/`onFinished` removed) | **n/a** | no `reporters` key in any config, no `--reporter` in any package script, justfile recipe or CI step, and no custom reporter |
-| 13 | Snapshots with custom elements print the shadow root | **n/a** | `toMatchSnapshot`, `toMatchInlineSnapshot`, `toMatchFileSnapshot`: 0 hits; no `__snapshots__` directory exists |
-| 14 | Deprecated APIs removed (`poolMatchGlobs`, `environmentMatchGlobs`, `deps.external`/`inline`/`fallbackCJS`, `browser.testerScripts`, `minWorkers`, **test options as a third argument**) | **n/a** | the third-argument form is the one that matters, because v4 **ignores** it rather than erroring — a dropped `retry`/`timeout` would be invisible. A sweep of every `*.test.ts`/`*.tsx` in `frontends/`, `sdks/` and `examples/` for an object literal in third position returns nothing; the only options-object-as-second-argument hit in the repository is `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts`'s `describe("the dashboard", { testIsolation: false }, …)`, which is Cypress and which vitest never loads |
+| #   | guide heading                                                                                                                                                                            | verdict                      | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Prerequisites: **Vite ≥ 6, Node ≥ 20**                                                                                                                                                   | **met**                      | the lockfile resolves exactly one vite, `vite@6.4.3` (itself an existing deliberate `pnpm.overrides` pin); `.nvmrc` `22.23.2`, root `engines.node >= 22.13.0`, `engine-strict=true`                                                                                                                                                                                                                                                                                                                                                                             |
+| 2   | V8 coverage major changes (AST remapping, `ignoreEmptyLines`, `experimentalAstAwareRemapping`)                                                                                           | **n/a**                      | no `@vitest/coverage-v8` or `-istanbul` in any manifest or in the lockfile; no `test.coverage` block in any of the ten configs; no recipe or CI step passes `--coverage`                                                                                                                                                                                                                                                                                                                                                                                        |
+| 3   | `coverage.all` / `coverage.extensions` removed                                                                                                                                           | **n/a**                      | same                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 4   | **Simplified `exclude`** — v4 excludes only `node_modules` and `.git`                                                                                                                    | **no effect**, checked       | nine of the ten configs set `include` explicitly and every one is rooted at `src/` (dashboard `{src,app}/`), so `dist`, `cypress`, `.idea/.cache/.output/.temp` and `*.config.*` — the paths v4 stopped excluding — cannot match. The one package with **no** `vitest.config.ts`, and therefore v4's default `include`, is `frontends/packages/config`: six tracked files, one test (`src/eslint.test.js`), no `dist/`, no `cypress/`. No config spreads `configDefaults.exclude`                                                                               |
+| 5   | `spyOn`/`fn` support constructors (an arrow `mockImplementation` now throws under `new`)                                                                                                 | **no effect**                | all eight `vi.spyOn` sites spy on plain functions — `console[method]` (checkout `secrets.test.ts`, twice), `globalThis.setInterval`, `globalThis.fetch`, `Math.random` four times — and none is constructed with `new`                                                                                                                                                                                                                                                                                                                                          |
+| 6   | Changes to mocking (`getMockName`, `restoreAllMocks` scope, automock isolation, automocked getters, `settledResults`, `invocationCallOrder` base 1)                                      | **no effect**, each sub-item | there are no snapshots anywhere, so the `[MockFunction spy]` → `[MockFunction]` rename cannot bite; the three `vi.restoreAllMocks()` sites (checkout `secrets.test.ts:58`, stripe-js `redirect.test.ts:87` and `polling.test.ts:39`) exist to restore **manual `vi.spyOn` spies**, which is precisely what v4 still restores; there is no automock in the repository — `vi.mock` appears once (`frontends/apps/checkout/src/layout.test.tsx:30`) with an explicit factory and no `spy: true`; `invocationCallOrder`, `getMockName` and `settledResults`: 0 hits |
+| 7   | Standalone mode with filename filter                                                                                                                                                     | **n/a**                      | nothing runs `vitest --standalone`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 8   | `vite-node` → Module Runner (`deps.optimizer.web` → `client`, `vitest/execute`, custom-environment `transformMode` → `viteEnvironment`, `VITE_NODE_DEPS_MODULE_DIRECTORIES`)             | **n/a**                      | no `deps`, `optimizer`, `server.deps` or custom environment in any config; no `vitest/execute` import; no `VITE_NODE_*` variable                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 9   | `workspace` → `projects`                                                                                                                                                                 | **n/a**                      | no `vitest.workspace.*`, no `defineWorkspace`, no `test.workspace`, no `test.projects`. What this repository calls a "project" is a second **config file** run by a second package script (`sdks/nodejs/vitest.live.config.ts` via `test:live`; `sdks/stripe-compat/vitest.config.ts` via the e2e job's `compat`), which v4 does not touch                                                                                                                                                                                                                      |
+| 10  | Browser provider rework (`@vitest/browser` → `vitest/browser`, provider factory, `browser.instances`)                                                                                    | **n/a**                      | `@vitest/browser` is in no manifest and in no lockfile entry; no `test.browser` block. Real-browser testing here is Cypress                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 11  | Pool rework (`poolOptions`, `maxThreads`/`maxForks`, `singleThread`/`singleFork`, `minWorkers`, `threads.useAtomics`, `memoryLimit`)                                                     | **n/a**                      | none of those keys appears anywhere. `fileParallelism: false` (stripe-compat, sdk-node live) is a top-level option, not a `poolOptions` key, and is unchanged in v4                                                                                                                                                                                                                                                                                                                                                                                             |
+| 12  | Reporter updates (`basic` removed, `verbose` now flat, `onCollected`/`onTaskUpdate`/`onFinished` removed)                                                                                | **n/a**                      | no `reporters` key in any config, no `--reporter` in any package script, justfile recipe or CI step, and no custom reporter                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 13  | Snapshots with custom elements print the shadow root                                                                                                                                     | **n/a**                      | `toMatchSnapshot`, `toMatchInlineSnapshot`, `toMatchFileSnapshot`: 0 hits; no `__snapshots__` directory exists                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 14  | Deprecated APIs removed (`poolMatchGlobs`, `environmentMatchGlobs`, `deps.external`/`inline`/`fallbackCJS`, `browser.testerScripts`, `minWorkers`, **test options as a third argument**) | **n/a**                      | the third-argument form is the one that matters, because v4 **ignores** it rather than erroring — a dropped `retry`/`timeout` would be invisible. A sweep of every `*.test.ts`/`*.tsx` in `frontends/`, `sdks/` and `examples/` for an object literal in third position returns nothing; the only options-object-as-second-argument hit in the repository is `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts`'s `describe("the dashboard", { testIsolation: false }, …)`, which is Cypress and which vitest never loads                                        |
 
 Two things outside the guide, checked because they are how this repository would
 break quietly:
@@ -338,15 +338,15 @@ reproduced on both green runs. All six under Node 22.23.2 (`.nvmrc`),
 `CARGO_BUILD_JOBS=4`, `DOCKER_HOST=unix:///run/user/1000/docker.sock`, exit code
 read from a file rather than from a banner.
 
-| run | head | exit | where it stopped |
-| --- | --- | --- | --- |
-| 1 | `b5be024` | **100** | `test-rust`, at `checkout_sessions::a_confirm_past_the_horizon_…` — **an environment failure, not a code one**: `Error: the MTN stub container starts / Caused by: failed to create a container: Timeout error` after 255 s, on a box carrying other agents' testcontainers at load ≈ 10. 1411 of 1412 run passed; a `docker run --rm alpine true` smoke immediately afterwards exited 0. Not counted as a result |
-| 2 | `b5be024` + this review's doc edits | **1** | **`test-web`, `@vpay/ui`** — finding F1. Everything before it passed; see the numbers below |
-| 3 | the F1 fix's head | **100** | `test-rust` again, again on `failed to create a container: Timeout error` (the MTN wiremock stub), this time under `checkout_sessions::the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled` after 245 s. A different test from run 1, the same cause: 95 containers on the daemon, load ≈ 9, other agents' testcontainers alongside. 1437 of 1438 run passed. Not counted as a result |
-| 4 | the F1 fix's head | **0** | ran to the end — the gate for the code change |
-| 5 | this documentation commit's head | **100** | `test-rust`, `vpay-server::cli` `worker::a_valid_config_lets_the_worker_boot` — `expected exit 0 after SIGTERM, got unix_wait_status(256)`, a shutdown-timing case that had passed on the identical Rust in run 4 minutes earlier. Environment again; 1323 of 1324 run passed. Not counted as a result |
-| 6 | the head before the F1a hardening | **0** | ran to the end, every number identical to run 4 |
-| 7 | **the final head** | **0** | ran to the end after F1a. `verify` twelve gates, `verify-links` 1036/197, `test-rust` 1658/1658 (1584 s), `test-doc` 111/1 ignored, `verify-ignored` 45 binaries/1658, `test-web` 1284/96, `deny` ok — identical to runs 4 and 6 |
+| run | head                                | exit    | where it stopped                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `b5be024`                           | **100** | `test-rust`, at `checkout_sessions::a_confirm_past_the_horizon_…` — **an environment failure, not a code one**: `Error: the MTN stub container starts / Caused by: failed to create a container: Timeout error` after 255 s, on a box carrying other agents' testcontainers at load ≈ 10. 1411 of 1412 run passed; a `docker run --rm alpine true` smoke immediately afterwards exited 0. Not counted as a result |
+| 2   | `b5be024` + this review's doc edits | **1**   | **`test-web`, `@vpay/ui`** — finding F1. Everything before it passed; see the numbers below                                                                                                                                                                                                                                                                                                                       |
+| 3   | the F1 fix's head                   | **100** | `test-rust` again, again on `failed to create a container: Timeout error` (the MTN wiremock stub), this time under `checkout_sessions::the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled` after 245 s. A different test from run 1, the same cause: 95 containers on the daemon, load ≈ 9, other agents' testcontainers alongside. 1437 of 1438 run passed. Not counted as a result        |
+| 4   | the F1 fix's head                   | **0**   | ran to the end — the gate for the code change                                                                                                                                                                                                                                                                                                                                                                     |
+| 5   | this documentation commit's head    | **100** | `test-rust`, `vpay-server::cli` `worker::a_valid_config_lets_the_worker_boot` — `expected exit 0 after SIGTERM, got unix_wait_status(256)`, a shutdown-timing case that had passed on the identical Rust in run 4 minutes earlier. Environment again; 1323 of 1324 run passed. Not counted as a result                                                                                                            |
+| 6   | the head before the F1a hardening   | **0**   | ran to the end, every number identical to run 4                                                                                                                                                                                                                                                                                                                                                                   |
+| 7   | **the final head**                  | **0**   | ran to the end after F1a. `verify` twelve gates, `verify-links` 1036/197, `test-rust` 1658/1658 (1584 s), `test-doc` 111/1 ignored, `verify-ignored` 45 binaries/1658, `test-web` 1284/96, `deny` ok — identical to runs 4 and 6                                                                                                                                                                                  |
 
 Recipe by recipe, from run 7 — the green one on the final head — with run 2's
 numbers noted where they differ. Runs 4, 6 and 7 agree on every number below.
@@ -354,27 +354,27 @@ Run 7's own row is the one thing here that cannot be gated by the run it
 describes; it was added afterwards, and `just verify` — the only gate that reads
 these documents — was re-run on the exact final head after adding it.
 
-| recipe | result |
-| --- | --- |
-| `fmt-check` | ok |
-| `clippy` | ok, no warnings |
-| `verify` | **the twelve gates**, all ok, plus the advisory `verify-docs` report. `verify-status` 1 unimplemented item; `verify-errors` 19 error types; `verify-sdk-parity` 450 proving tests / 33 dated gaps; `verify-links` **1036 links in 197 tracked markdown files** (1033 in 195 before this review's two notes files were tracked); `verify-npm-scope` 2 publishable packages; `verify-serde` 85 types; `verify-repositories` 4 implementations, no generated schema exported; `verify-toolchain` `1.98.0`; `verify-migrations` 39 files |
-| `test-rust` | **1658 run, 1658 passed, 0 skipped** (1513 s, 1466 s, 1584 s on runs 4, 6, 7) — equal to `master`'s, as it must be: this branch touches no Rust |
-| `test-doc` | **111 passed, 1 ignored** |
-| `verify-ignored` | `0 ignored (expected 0), 45 test binaries (expected 45), 1658 total (minimum 1080)` |
-| `lint-web` | ok — `build-sdk-node`, then `pnpm -r typecheck`, then `pnpm -r lint`, 15 of 15 packages |
-| `test-web` | run 2: **failed** at `@vpay/ui` (F1). Runs 4, 6 and 7: **1284 passed, 0 skipped, across 96 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1 |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` (runs 4, 6 and 7 — run 2 never reached it) |
+| recipe           | result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fmt-check`      | ok                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `clippy`         | ok, no warnings                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `verify`         | **the twelve gates**, all ok, plus the advisory `verify-docs` report. `verify-status` 1 unimplemented item; `verify-errors` 19 error types; `verify-sdk-parity` 450 proving tests / 33 dated gaps; `verify-links` **1036 links in 197 tracked markdown files** (1033 in 195 before this review's two notes files were tracked); `verify-npm-scope` 2 publishable packages; `verify-serde` 85 types; `verify-repositories` 4 implementations, no generated schema exported; `verify-toolchain` `1.98.0`; `verify-migrations` 39 files |
+| `test-rust`      | **1658 run, 1658 passed, 0 skipped** (1513 s, 1466 s, 1584 s on runs 4, 6, 7) — equal to `master`'s, as it must be: this branch touches no Rust                                                                                                                                                                                                                                                                                                                                                                                      |
+| `test-doc`       | **111 passed, 1 ignored**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `verify-ignored` | `0 ignored (expected 0), 45 test binaries (expected 45), 1658 total (minimum 1080)`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `lint-web`       | ok — `build-sdk-node`, then `pnpm -r typecheck`, then `pnpm -r lint`, 15 of 15 packages                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `test-web`       | run 2: **failed** at `@vpay/ui` (F1). Runs 4, 6 and 7: **1284 passed, 0 skipped, across 96 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1                                                                                                                                                                                              |
+| `deny`           | `advisories ok, bans ok, licenses ok, sources ok` (runs 4, 6 and 7 — run 2 never reached it)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Not in `just ci`, run separately:
 
-| command | result |
-| --- | --- |
-| `pnpm install --frozen-lockfile` | exit 0, `Lockfile is up to date, resolution step is skipped` |
-| `just audit-web` equivalent, `--audit-level=high` (both runs) | exit **0** — and exit 0 on `master` too, with the advisory present. See F2 |
-| `pnpm audit --audit-level=moderate` | exit **0**, `No known vulnerabilities found` (on `master`'s lockfile: exit 1, both advisory entries) |
-| `pnpm --filter @vpay/ui test` ×20, after the F1 fix | **20/20**, `74 passed (74)` |
-| `pnpm --filter @vaam-apps/vpay-sdk test:live` with no `VPAY_BASE_URL` | exit **1**, thrown from `globalSetup` — still fails loudly under vitest 4, does not skip |
+| command                                                               | result                                                                                               |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`                                      | exit 0, `Lockfile is up to date, resolution step is skipped`                                         |
+| `just audit-web` equivalent, `--audit-level=high` (both runs)         | exit **0** — and exit 0 on `master` too, with the advisory present. See F2                           |
+| `pnpm audit --audit-level=moderate`                                   | exit **0**, `No known vulnerabilities found` (on `master`'s lockfile: exit 1, both advisory entries) |
+| `pnpm --filter @vpay/ui test` ×20, after the F1 fix                   | **20/20**, `74 passed (74)`                                                                          |
+| `pnpm --filter @vaam-apps/vpay-sdk test:live` with no `VPAY_BASE_URL` | exit **1**, thrown from `globalSetup` — still fails loudly under vitest 4, does not skip             |
 
 ## 5. What was not done
 
@@ -398,5 +398,5 @@ Not in `just ci`, run separately:
 - `frontends/apps/dashboard`'s `vitest run --passWithNoTests` remains a standing
   way for that suite to report green while collecting nothing. It predates this
   branch and it did not fire here (172 collected) — but it is the one place where
-  a Vitest 4 include-glob change *would* have been silent, so it is named rather
+  a Vitest 4 include-glob change _would_ have been silent, so it is named rather
   than fixed.

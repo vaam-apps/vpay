@@ -2,8 +2,8 @@
 
 **What this is.** A page vpay serves, in two modes, so a merchant does not have
 to build a payer page at all. It was requested by the maintainer on 2026-09-04,
-verbatim: *"We need a hosted page for driving payments on the web: one in-iframe
-version, one fully hosted page. We need that before prod."* Designed and built
+verbatim: _"We need a hosted page for driving payments on the web: one in-iframe
+version, one fully hosted page. We need that before prod."_ Designed and built
 as Step 9 ([`docs/plans/2026-09-04-step9-hosted-checkout.md`](../plans/2026-09-04-step9-hosted-checkout.md),
 decisions D1–D13).
 
@@ -23,21 +23,21 @@ session was created, whatever happened in between.
 
 ## The two modes
 
-| | Hosted | Embedded |
-|---|---|---|
-| What the merchant's server gets back | a `url` | a `client_secret` |
-| What the merchant does with it | redirects the payer to it | hands it to `@vaam-apps/vpay-stripe-js`'s `initEmbeddedCheckout`, which frames the page |
-| The URL a browser loads | `{checkout.public_base_url}/c/{cs_id}?key={pk}#{client_secret}` | `{checkout.public_base_url}/e/{cs_id}?key={pk}#{client_secret}` |
-| `Content-Security-Policy` on that page | `frame-ancestors 'none'` | `frame-ancestors <the merchant's `checkout_origins`>` |
-| Required on create | `success_url` **and** `cancel_url` | `return_url` |
-| Refused on create | `return_url` | `success_url`, `cancel_url` |
-| Where the payer ends up | the merchant's `success_url` / `cancel_url`, top-level | the merchant's `return_url`, and a `vpay:complete` message to the framing page |
-| Who performs a redirect rail's navigation | the page itself | the **parent**, on a `vpay:redirect` message — a sandboxed frame may not navigate the top level |
+|                                           | Hosted                                                          | Embedded                                                                                        |
+| ----------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| What the merchant's server gets back      | a `url`                                                         | a `client_secret`                                                                               |
+| What the merchant does with it            | redirects the payer to it                                       | hands it to `@vaam-apps/vpay-stripe-js`'s `initEmbeddedCheckout`, which frames the page         |
+| The URL a browser loads                   | `{checkout.public_base_url}/c/{cs_id}?key={pk}#{client_secret}` | `{checkout.public_base_url}/e/{cs_id}?key={pk}#{client_secret}`                                 |
+| `Content-Security-Policy` on that page    | `frame-ancestors 'none'`                                        | `frame-ancestors <the merchant's `checkout_origins`>`                                           |
+| Required on create                        | `success_url` **and** `cancel_url`                              | `return_url`                                                                                    |
+| Refused on create                         | `return_url`                                                    | `success_url`, `cancel_url`                                                                     |
+| Where the payer ends up                   | the merchant's `success_url` / `cancel_url`, top-level          | the merchant's `return_url`, and a `vpay:complete` message to the framing page                  |
+| Who performs a redirect rail's navigation | the page itself                                                 | the **parent**, on a `vpay:redirect` message — a sandboxed frame may not navigate the top level |
 
 Both modes render the same screens from the same state machine. The mode is a
 property of the session, decided by the merchant at create, and the page refuses
-to run in the wrong one: `/c/{id}` refuses if it *is* framed, `/e/{id}` refuses
-if it is *not*.
+to run in the wrong one: `/c/{id}` refuses if it _is_ framed, `/e/{id}` refuses
+if it is _not_.
 
 ## The object
 
@@ -79,8 +79,8 @@ Four things move a session, and only four:
    `paid`/`complete` on success, `failed`/`expired` on a terminal decline — so
    the two can never be observed disagreeing.
 2. **`POST /v1/checkout/sessions/{id}/expire`**, the merchant's own abandon. It
-   is a compare-and-swap with a `NOT EXISTS` live-charge guard *in the same
-   statement*: a session whose payer is mid-payment refuses with `409`.
+   is a compare-and-swap with a `NOT EXISTS` live-charge guard _in the same
+   statement_: a session whose payer is mid-payment refuses with `409`.
 3. **The worker's hourly housekeeping sweep**, which expires `open` sessions
    past `expires_at` that have no live charge — **and, since 2026-09-04, emits
    one `checkout.session.expired` per session in the same transaction as the
@@ -123,22 +123,22 @@ live payer links to the same payment.
 Merchant surface, `/v1` — token-authenticated, `Idempotency-Key` required on
 POST, tenant-scoped, in `V1_ROUTES`:
 
-| Method | Path | What it answers |
-|---|---|---|
-| POST | `/v1/checkout/sessions` | `201` with the session **and its `client_secret`**, plus `url` when hosted. Refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session |
-| GET | `/v1/checkout/sessions/{id}` | The session with `client_secret`, like `retrieve` on intents |
-| GET | `/v1/checkout/sessions` | A list, no secrets, filterable by `payment_intent` |
-| POST | `/v1/checkout/sessions/{id}/expire` | `open` → `expired`; a session with a live charge is `409` |
+| Method | Path                                | What it answers                                                                                                                                                                                              |
+| ------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| POST   | `/v1/checkout/sessions`             | `201` with the session **and its `client_secret`**, plus `url` when hosted. Refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session |
+| GET    | `/v1/checkout/sessions/{id}`        | The session with `client_secret`, like `retrieve` on intents                                                                                                                                                 |
+| GET    | `/v1/checkout/sessions`             | A list, no secrets, filterable by `payment_intent`                                                                                                                                                           |
+| POST   | `/v1/checkout/sessions/{id}/expire` | `open` → `expired`; a session with a live charge is `409`                                                                                                                                                    |
 
 Browser surface, `/v1/browser` — publishable key plus a session credential,
 the same CORS layer and the same uniform 404 as the payment-intent reads, in
 `BROWSER_ROUTES`:
 
-| Method | Path | What it answers |
-|---|---|---|
-| GET | `/v1/browser/checkout/sessions/{id}?key&client_secret` | The session with `payment_intent` **expanded and carrying the intent's own `client_secret`** — while `status = 'open'` |
-| GET | `/v1/browser/checkout/sessions/{id}/return?key&t` | The same, with `payment_intent` expanded **without** the intent's secret |
-| GET | `/v1/browser/checkout/origins?key` | `{"origins": [...]}` for the key's tenant, with no secret at all |
+| Method | Path                                                   | What it answers                                                                                                        |
+| ------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/browser/checkout/sessions/{id}?key&client_secret` | The session with `payment_intent` **expanded and carrying the intent's own `client_secret`** — while `status = 'open'` |
+| GET    | `/v1/browser/checkout/sessions/{id}/return?key&t`      | The same, with `payment_intent` expanded **without** the intent's secret                                               |
+| GET    | `/v1/browser/checkout/origins?key`                     | `{"origins": [...]}` for the key's tenant, with no secret at all                                                       |
 
 Every failure on both session reads is one byte-identical
 `ApiError::NotFound { resource: "checkout session" }` — unknown key, session not
@@ -221,7 +221,7 @@ Three properties worth stating because each is a test:
   on the merchant's list is refused even when the URL carries no key and no
   secret, so the refusal cannot be used to probe which half of a link is wrong.
 - **The language switch does not navigate.** A `?lang=fr` link has no fragment,
-  and resolving a fragment-less relative URL *drops* the current one — which on
+  and resolving a fragment-less relative URL _drops_ the current one — which on
   this page is the session's credential. The server picks the initial locale
   from `Accept-Language` (French by default: Cameroon first, and Orange's own
   page is French by default), and the switch swaps the dictionary in place.
@@ -233,18 +233,18 @@ Three properties worth stating because each is a test:
 
 ## The outcome screens
 
-*Changed 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+_Changed 2026-09-06 (the maintainer's requirement of 2026-09-05)._
 
 Every outcome — succeeded, failed, canceled — ends in **one button, named
 "Back to {merchant}"**, and nothing else. There is no countdown, no timer,
 and no navigation this page performs on its own. Both modes render the same
 screen; what differs is what the button does, which is what already differed:
 
-| | Hosted | Embedded |
-|---|---|---|
-| The button | `location.assign(success_url \| cancel_url)`, top-level | posts `vpay:complete` to the framer, then navigates to `return_url` |
-| Where the URL comes from | `forwardKindFor` — `success_url` on a paid session, `cancel_url` otherwise | `return_url`, for every outcome |
-| Session names nowhere | no button; "This payment is finished. You can close this page." | the same |
+|                          | Hosted                                                                     | Embedded                                                            |
+| ------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| The button               | `location.assign(success_url \| cancel_url)`, top-level                    | posts `vpay:complete` to the framer, then navigates to `return_url` |
+| Where the URL comes from | `forwardKindFor` — `success_url` on a paid session, `cancel_url` otherwise | `return_url`, for every outcome                                     |
+| Session names nowhere    | no button; "This payment is finished. You can close this page."            | the same                                                            |
 
 The button carries the merchant's name — `Back to Boutique Test` — and falls
 back to "Back to the shop" where the session read carried no usable name, the
@@ -257,7 +257,7 @@ why — on a handset, in a shop, with someone waiting. That the button was
 always there beside the countdown did not fix it: it made the countdown a
 race a slow reader loses.
 
-**A failed outcome is red.** *Corrected 2026-09-07.* The screen took its
+**A failed outcome is red.** _Corrected 2026-09-07._ The screen took its
 colour from `@vpay/tokens`' `statusTone` through the intent status each
 outcome implies, and a failed attempt leaves the intent at
 `requires_payment_method` — which is `neutral`, because on a **dashboard**
@@ -266,8 +266,8 @@ mapping was accurate and the screen was wrong: a payer whose payment failed
 read a grey box while a payer who cancelled read a red one. An operator's
 status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
 both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
-screens. *Updated 2026-09-07 (decision D4,
-[2026-09-07-ui-revamp.md](../plans/2026-09-07-ui-revamp.md) §9):* `canceled`
+screens. _Updated 2026-09-07 (decision D4,
+[2026-09-07-ui-revamp.md](../plans/2026-09-07-ui-revamp.md) §9):_ `canceled`
 now tones `warning`, not `error` — the design call this paragraph used to
 defer is taken, on the reasoning that a payer's own cancellation is not the
 same event as a payment that failed for a reason outside their control.
@@ -280,7 +280,7 @@ with no change to this app — the migration of that lookup onto `@vpay/ui`'s
 revamp.md` §4.1).
 
 **A failed outcome also shows the rail's own words** where the API gave any.
-`last_payment_error.message` is rendered as *data*, under the translated
+`last_payment_error.message` is rendered as _data_, under the translated
 sentence and labelled as the provider's ("What the payment provider said"),
 never in place of it: it arrives in whatever language the rail writes in,
 it is outside the closed `FailureCode` vocabulary the page translates, and
@@ -291,17 +291,17 @@ an attribute or a URL.
 
 ## Runtime configuration
 
-*New 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+_New 2026-09-06 (the maintainer's requirement of 2026-09-05)._
 
 **One image serves every operator.** The page's brand and its feature flags
 are two YAML files an operator mounts, read at container start — not a
 `tailwind.config.ts` edit, not a build argument, and not `NEXT_PUBLIC_*`
 inlined by `next build`.
 
-| File | Default path | Environment override |
-|---|---|---|
+| File            | Default path                       | Environment override          |
+| --------------- | ---------------------------------- | ----------------------------- |
 | `branding.yaml` | `/etc/vpay/checkout/branding.yaml` | `VPAY_CHECKOUT_BRANDING_FILE` |
-| `config.yaml` | `/etc/vpay/checkout/config.yaml` | `VPAY_CHECKOUT_CONFIG_FILE` |
+| `config.yaml`   | `/etc/vpay/checkout/config.yaml`   | `VPAY_CHECKOUT_CONFIG_FILE`   |
 
 Worked examples with every key commented are checked in at
 [`../../config/checkout/branding.example.yaml`](../../config/checkout/branding.example.yaml)
@@ -336,7 +336,7 @@ ADR-0003 already says about administration.
 `GET /config/v1` reports exactly what the container loaded, versioned in the
 path. It is a **verification surface for an operator**, not something the page
 uses: every value on it is already visible to any payer who opens the page. The
-file paths and the problem list are deliberately *not* on it — those are in the
+file paths and the problem list are deliberately _not_ on it — those are in the
 container log, where the person who can act on them is looking.
 
 **A missing file is a log line and defaults, never a blank page.** Absent,
@@ -369,12 +369,12 @@ default:
   library on a payment page — and its tests assert the output against values
   produced by **daisyUI's own converter** for six colours, so a drift is a
   failing test rather than a page that is quietly the wrong colour. The
-  colour that goes *on* the primary is derived, not configured, so a
+  colour that goes _on_ the primary is derived, not configured, so a
   combination nobody can read text on is not one this file can produce.
 
 ## Page memory, and the PIN vault that is not here
 
-*New 2026-09-06 (the maintainer's requirement of 2026-09-05).*
+_New 2026-09-06 (the maintainer's requirement of 2026-09-05)._
 
 The page may remember **two values on the payer's own device**: the canonical
 MSISDN they last paid with, and the rail they last chose. One IndexedDB
@@ -395,15 +395,15 @@ vpay, not into a URL, not through `postMessage`.
 - **`page_memory: false` removes the offer entirely** — no checkbox, no read,
   no write.
 - **The cost is stated on the checkbox**, in the payer's own language, not in
-  a tooltip: *"Anyone else who uses this device will see it. Do not tick this
-  on a shared or borrowed phone."* A household handset, a borrowed phone, a
+  a tooltip: _"Anyone else who uses this device will see it. Do not tick this
+  on a shared or borrowed phone."_ A household handset, a borrowed phone, a
   phone shop's demo unit — the copy survives closing the tab, and the person
   who pays that cost is whoever picks the device up next.
 
 **There is no PIN vault, and that is a refusal rather than an omission.** The
 maintainer's requirement asked for one: an opt-in local store for a payer's
-PIN, recalled into "the same form field the payer would type into". *This page
-has no such field, and neither does anything behind it.* MTN's flow is a push
+PIN, recalled into "the same form field the payer would type into". _This page
+has no such field, and neither does anything behind it._ MTN's flow is a push
 the payer approves on their handset; Orange's is approved on Orange's own
 page; `POST /v1/browser/payment_intents/{id}/confirm` accepts
 `payment_method_data[mtn_momo][msisdn]` and nothing else, and no
@@ -425,11 +425,11 @@ posts nothing into the frame at all: the child learns its framer's origin from
 the CSP vpay served it, not from a message, so the strongest form of "never
 `postMessage(…, '*')`" is "never `postMessage`".
 
-| Message | Direction | Payload | Why |
-|---|---|---|---|
-| `vpay:resize` | child → parent | `{ height }` | The frame is created at `height: 0`; the page owns its height and sends this on first paint and on every `ResizeObserver` callback. A height the SDK guessed would be an iframe silently stuck at the wrong size |
-| `vpay:complete` | child → parent | `{ session, status }` | `session` is the `cs_…` **id string**, never the object and never a secret. Read strictly: both members must be strings or the message is ignored and `onComplete` does not fire |
-| `vpay:redirect` | child → parent | `{ url }` | The parent performs the top-level navigation, because the frame is sandboxed `allow-scripts allow-same-origin allow-forms` — **`allow-top-navigation` is withheld**, which makes this message a necessity rather than a convention |
+| Message         | Direction      | Payload               | Why                                                                                                                                                                                                                                |
+| --------------- | -------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vpay:resize`   | child → parent | `{ height }`          | The frame is created at `height: 0`; the page owns its height and sends this on first paint and on every `ResizeObserver` callback. A height the SDK guessed would be an iframe silently stuck at the wrong size                   |
+| `vpay:complete` | child → parent | `{ session, status }` | `session` is the `cs_…` **id string**, never the object and never a secret. Read strictly: both members must be strings or the message is ignored and `onComplete` does not fire                                                   |
+| `vpay:redirect` | child → parent | `{ url }`             | The parent performs the top-level navigation, because the frame is sandboxed `allow-scripts allow-same-origin allow-forms` — **`allow-top-navigation` is withheld**, which makes this message a necessity rather than a convention |
 
 The SDK's handler also checks `event.source === frame.contentWindow`: the origin
 check alone would let two embedded checkouts on one merchant page resize and
@@ -441,7 +441,7 @@ which the CORS layer refuses.
 
 ## The popup, and why it is a third peer
 
-*New 2026-09-06, at the request of the `examples/shop` track.*
+_New 2026-09-06, at the request of the `examples/shop` track._
 
 A merchant may open the **hosted** page in a popup — `window.open(session.url)`
 — rather than framing it or navigating to it. That is a third shape, and it
@@ -454,19 +454,19 @@ The channel now takes a `peer`, `parent` or `opener`, and the popup case pins
 `document.referrer` matched against the merchant's `checkout_origins`, never
 used to extend them. `'*'` is still not a target anywhere.
 
-| | Framed (`/e/{id}`) | Popup (`/c/{id}`) | Top-level (`/c/{id}`) |
-|---|---|---|---|
-| Peer | `window.parent` | `window.opener` | none |
-| An unresolvable peer | **refused** — a page with no parent has no way to finish | renders, with no channel | normal |
-| `vpay:resize` | yes | **no** — a popup sizes itself | n/a |
-| `vpay:redirect` | yes — a sandboxed frame may not navigate the top level | **no** — see below | n/a |
-| `vpay:complete` | yes | yes | n/a |
-| "Back to {merchant}" does | posts `vpay:redirect` | posts `vpay:complete` (if it has not already), then `window.close()` | `location.assign` |
+|                           | Framed (`/e/{id}`)                                       | Popup (`/c/{id}`)                                                    | Top-level (`/c/{id}`) |
+| ------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------- | --------------------- |
+| Peer                      | `window.parent`                                          | `window.opener`                                                      | none                  |
+| An unresolvable peer      | **refused** — a page with no parent has no way to finish | renders, with no channel                                             | normal                |
+| `vpay:resize`             | yes                                                      | **no** — a popup sizes itself                                        | n/a                   |
+| `vpay:redirect`           | yes — a sandboxed frame may not navigate the top level   | **no** — see below                                                   | n/a                   |
+| `vpay:complete`           | yes                                                      | yes                                                                  | n/a                   |
+| "Back to {merchant}" does | posts `vpay:redirect`                                    | posts `vpay:complete` (if it has not already), then `window.close()` | `location.assign`     |
 
 Three of those rows are deliberate departures from what was asked for, and
 each is a decision rather than an omission:
 
-- **No `vpay:redirect` to an opener.** A popup *is* a top-level browsing
+- **No `vpay:redirect` to an opener.** A popup _is_ a top-level browsing
   context and may navigate itself. Asking the opener to navigate would send
   **the merchant's own page** to Orange Money out from under the payer, losing
   the page they expect to come back to. So the popup navigates itself to the
@@ -478,7 +478,7 @@ each is a decision rather than an omission:
   two.
 - **An opener that does not resolve is not a refusal.** A hosted page is a
   complete page on its own: it takes the payment and sends the payer to
-  `success_url` in this window. What it loses is the ability to *tell* the
+  `success_url` in this window. What it loses is the ability to _tell_ the
   opener, which is a degraded integration rather than an unsafe one. The
   embedded case still refuses, because a framed page with no parent has no way
   to finish at all. The commonest cause is the merchant's own
@@ -503,8 +503,8 @@ embedded page makes, on every hosted page load that carries a `key`, whether
 or not the page turns out to be in a popup — the server cannot know, because
 `window.opener` is a fact only the browser has. `fetchCheckoutOrigins` catches
 every failure and answers an empty list, so a vpay API that is down or
-refusing costs the hosted page **no channel** and nothing else. *Corrected
-2026-09-07:* this paragraph used to end by naming a gap — no timeout on that
+refusing costs the hosted page **no channel** and nothing else. _Corrected
+2026-09-07:_ this paragraph used to end by naming a gap — no timeout on that
 fetch, so a hanging API would hold the payment page's first byte. There is one
 now. `ORIGINS_TIMEOUT_MS` is two seconds, overridable per call so the budget is
 a test rather than a wait, and the abort lands in the same empty list every
@@ -513,7 +513,7 @@ that never answers; removing the signal makes the first hang.
 
 **The popup's return trip is wired by a different rule** (the maintainer's
 decision, 2026-09-06). After a redirect rail sends the payer back to
-`/c/{id}/return`, that page's referrer is the *rail's* origin, so
+`/c/{id}/return`, that page's referrer is the _rail's_ origin, so
 `resolveParentOrigin` has nothing to match and the popup would end with the
 merchant's window hearing nothing. So the return page resolves its opener
 with `soleOrigin` instead: **when the merchant has registered exactly one
@@ -521,7 +521,7 @@ with `soleOrigin` instead: **when the merchant has registered exactly one
 there is no channel.**
 
 The reasoning, in the maintainer's own terms: with one registered origin the
-`postMessage` target *is* the merchant's own origin, which is the only party
+`postMessage` target _is_ the merchant's own origin, which is the only party
 the message could ever have been for — so the worst case is a message
 delivered to its intended reader. With two or more, picking one would be
 choosing a target by guess, on a page that has just come back from a third
@@ -576,13 +576,13 @@ content policy while forbidding nothing.
 - **No browser has been observed enforcing `frame-ancestors`.** Cypress strips
   `Content-Security-Policy` from every document it proxies, so the header is
   asserted **as the server sends it** (`cy.request`, out of the runner's Node
-  process). What a browser *was* observed doing is the second lock: refusing an
+  process). What a browser _was_ observed doing is the second lock: refusing an
   unregistered framer by the page's own origin check — proven origin-driven by
   registering the fixture's origin in the overlay and watching the same page
   render. The two are different mechanisms and this document does not let one
   stand in for the other.
 - **No browser has been observed refusing to frame the hosted page.** Cypress's
-  runner *is* a frame, and the rewrite that makes the hosted page work under it
+  runner _is_ a frame, and the rewrite that makes the hosted page work under it
   is exactly the one that would hide the refusal.
   `frontends/apps/checkout/src/lib/entry.test.ts` covers it in jsdom.
 - **No pod has ever run the page.** The chart templates a Deployment, a Service
@@ -594,10 +594,10 @@ content policy while forbidding nothing.
   D5 already stated: rate limiting belongs at the ingress, and nothing in this
   repository enforces or checks that an operator has done it.
 - **No accessibility gate.** The screens have Storybook stories with the a11y
-  addon configured, and nothing runs axe. What *is* asserted in vitest: every
+  addon configured, and nothing runs axe. What _is_ asserted in vitest: every
   control — **native or not** — has an accessible name and is in the tab order,
   the live region is mounted from first render, focus moves to the new screen's
-  heading, and the MSISDN error is tied to its field. *Corrected 2026-09-07:*
+  heading, and the MSISDN error is tied to its field. _Corrected 2026-09-07:_
   this bullet said "every control is a native focusable element", which stopped
   being true when the memory opt-in became Base UI's checkbox — a
   `<span role="checkbox" tabindex="0">` with a visually hidden input beside it.
@@ -616,7 +616,7 @@ content policy while forbidding nothing.
 - **No POD has run the page with a mounted `branding.yaml` or `config.yaml`,
   and the chart still cannot supply them.** The parsers, the colour conversion
   and the filesystem layer are unit-tested (57 cases across `src/config/`).
-  *Corrected 2026-09-07:* this bullet claimed "the container was run by hand
+  _Corrected 2026-09-07:_ this bullet claimed "the container was run by hand
   with them" and cited
   [`../plans/exp21-checkout-page-notes/opus.md`](../plans/exp21-checkout-page-notes/opus.md),
   which says the opposite — "no container was run with the mounted files, and
@@ -754,7 +754,7 @@ the only way off them; `branding.yaml` and `config.yaml` are read at
 container start; and the page can remember a payer's number and last method
 on their own device, opt-in and clearable. The popup peer and the return
 trip's `soleOrigin` rule landed the same day, at the `examples/shop` track's
-request and by the maintainer's decision respectively. What has *not* changed:
+request and by the maintainer's decision respectively. What has _not_ changed:
 no rail behind this page has ever been anything but a WireMock host, and the
 four "what is not built" entries above are joined by five more.
 
@@ -762,7 +762,7 @@ four "what is not built" entries above are joined by five more.
 above was written with **no Cypress run** — the binary could not be fetched
 where it was built — and the specs were not green. The runtime theme override
 was emitted inside an explicitly written `<head>` element, and React threw #418
-(*hydration failed because the server rendered HTML did not match the client*),
+(_hydration failed because the server rendered HTML did not match the client_),
 uncaught, on the hosted payment page: **all three of `shop-hosted.cy.ts`'s
 tests failed**, with the page stuck on "Loading this payment…". It reproduces
 only with a `primary_color` configured, which is why no unit case could have
@@ -873,7 +873,7 @@ several of those rows are 🟡 where this document says "built".
 **Reviewed 2026-09-07 (`docs/plans/exp26-notes/lane-b-review.md`), and three
 things about this page changed as a result.**
 
-*The failure screen is readable again.* `OutcomePanel`'s `failed` branch
+_The failure screen is readable again._ `OutcomePanel`'s `failed` branch
 renders `.alert-error`, and daisyUI 5's bumblebee paints it at **3.53:1** —
 below WCAG AA's 4.5:1 for body text, and down from the **6.82:1** the same
 alert had under daisyUI 4. That is the one screen on this page that tells a
@@ -887,12 +887,12 @@ Chrome from the app's own compiled stylesheet: `.alert-error` **4.62:1**,
 the compiled sheet on every run, so a daisyUI bump that moves a colour is a
 failing test rather than an unreadable screen.
 
-*The language switch has a label a payer can see again.* The migration
+_The language switch has a label a payer can see again._ The migration
 replaced the visible `<label>` with an `aria-label`, which kept the accessible
 name and took the word off the screen. `LocaleSwitch` now names the control
 with a visible `<Text>` through `Select`'s `aria-labelledby`.
 
-*The brand-and-language row is a `<header>` again* on both `CheckoutView` and
+_The brand-and-language row is a `<header>` again_ on both `CheckoutView` and
 `ReturnView`, so a screen-reader user can still skip it by landmark.
 
 Also on this page and unchanged by any of it: the hydration guard

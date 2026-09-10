@@ -2,8 +2,8 @@
 
 Branch: `claude/step8-lane-f-sdk-parity`. Not part of the original Step 8
 lane list (A–D + E); added after that plan was written, per the user's rule:
-*"vpay sdk parity: each should share the very same kind of features. We need
-a matrix for that."*
+_"vpay sdk parity: each should share the very same kind of features. We need
+a matrix for that."_
 
 ## What landed
 
@@ -26,7 +26,7 @@ a matrix for that."*
    (`the_repositorys_own_matrix_passes`) runs it against this repository's
    real matrix and real SDK sources.
 4. Wired into `just verify` (`verify: verify-no-mocks verify-status
-   verify-errors verify-sdk-parity`) and into `cargo xtask verify-all`.
+verify-errors verify-sdk-parity`) and into `cargo xtask verify-all`.
 5. `docs/status.md`: a paragraph in the header (alongside the
    `verify-status`/`verify-errors` description) and a dated paragraph at the
    end of the "Merchant SDKs" section, both giving the current counts.
@@ -37,7 +37,7 @@ a matrix for that."*
 
 - `cargo xtask verify-sdk-parity` against the real tree:
   `verify-sdk-parity: ok — 267 proving test(s) named in
-  docs/sdks/parity.md all exist, 24 dated gap(s)`.
+docs/sdks/parity.md all exist, 24 dated gap(s)`.
 - `cargo nextest run -p xtask`: **62 tests run: 62 passed, 0 skipped**,
   including all 12 `sdk_parity_tests` and `the_repositorys_own_matrix_passes`.
 - **Revert-proof, actually done, not asserted:** renamed
@@ -57,25 +57,25 @@ did not do").
 
 ## Gap list (from the matrix's own "Gap ledger" — authoritative copy is there)
 
-| Gap | Where | Found | Owner |
-|---|---|---|---|
-| No CI-gated real-OP conformance for the Node assertion | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| `token_type` is not validated on the token response | `sdks/rust` | 2026-09-03 | SDK maintainers |
-| `invalidate()` has no compare-and-swap against the refused token | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| No retry policy beyond the single 401 re-auth | both | 2026-09-03 | SDK maintainers |
-| A repeated trailing slash on `base_url` is unproven, and the two differ | both | 2026-09-03 | SDK maintainers |
-| No test makes a request timeout fire | `sdks/rust` | 2026-09-03 | SDK maintainers |
-| No TLS trust-root control, and no TLS test | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| `events.retrieve` is served and neither SDK calls it | both | 2026-09-03 | SDK maintainers |
-| A refused amount throws a bare `TypeError`, not a `VpayError` | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| `request-id` is not surfaced | both | 2026-09-03 | SDK maintainers |
-| `stripe-should-retry` is not read | both | 2026-09-03 | SDK maintainers |
-| No assertion that a thrown error cannot carry a token | `sdks/rust` | 2026-09-03 | SDK maintainers |
-| `client_secret` is not redacted from `PaymentIntent` diagnostics | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| `exactOptionalPropertyTypes` has no Rust analogue | `sdks/rust` | 2026-09-03 | n/a |
-| A verified-but-undecodable body is not a distinct error | `sdks/nodejs` | 2026-09-03 | SDK maintainers |
-| No `async-stripe` authenticator (three rows) | `sdks/rust` | 2026-09-03 | SDK maintainers |
-| The browser package has never run against a live stack | `sdks/stripe-js` | 2026-09-03 | SDK maintainers |
+| Gap                                                                     | Where            | Found      | Owner           |
+| ----------------------------------------------------------------------- | ---------------- | ---------- | --------------- |
+| No CI-gated real-OP conformance for the Node assertion                  | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| `token_type` is not validated on the token response                     | `sdks/rust`      | 2026-09-03 | SDK maintainers |
+| `invalidate()` has no compare-and-swap against the refused token        | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| No retry policy beyond the single 401 re-auth                           | both             | 2026-09-03 | SDK maintainers |
+| A repeated trailing slash on `base_url` is unproven, and the two differ | both             | 2026-09-03 | SDK maintainers |
+| No test makes a request timeout fire                                    | `sdks/rust`      | 2026-09-03 | SDK maintainers |
+| No TLS trust-root control, and no TLS test                              | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| `events.retrieve` is served and neither SDK calls it                    | both             | 2026-09-03 | SDK maintainers |
+| A refused amount throws a bare `TypeError`, not a `VpayError`           | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| `request-id` is not surfaced                                            | both             | 2026-09-03 | SDK maintainers |
+| `stripe-should-retry` is not read                                       | both             | 2026-09-03 | SDK maintainers |
+| No assertion that a thrown error cannot carry a token                   | `sdks/rust`      | 2026-09-03 | SDK maintainers |
+| `client_secret` is not redacted from `PaymentIntent` diagnostics        | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| `exactOptionalPropertyTypes` has no Rust analogue                       | `sdks/rust`      | 2026-09-03 | n/a             |
+| A verified-but-undecodable body is not a distinct error                 | `sdks/nodejs`    | 2026-09-03 | SDK maintainers |
+| No `async-stripe` authenticator (three rows)                            | `sdks/rust`      | 2026-09-03 | SDK maintainers |
+| The browser package has never run against a live stack                  | `sdks/stripe-js` | 2026-09-03 | SDK maintainers |
 
 24 dated cells total (some gaps span more than one column/row; the ledger
 above lists 17 distinct findings, several counted twice by the check because
@@ -116,7 +116,7 @@ side and reading every removed line):
   (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`)
   and Step 7's advisory `verify-docs` report. `verify-docs` is kept last in
   the dependency list because Step 7's own comment turns on it being last
-  and never a gate; the recipe *definitions* are in the order
+  and never a gate; the recipe _definitions_ are in the order
   `verify-docs`, `verify-sdk-parity`. `verify-ignored`'s three counters are
   lanes B/D's and were not touched.
 - `docs/status.md` — Step 7's header note (`verify-errors`' broadened
@@ -131,7 +131,7 @@ rows are present.
 Re-measured on the rebased tree (not carried over from the pre-rebase run):
 
 - `cargo xtask verify-sdk-parity`: `ok — 267 proving test(s) named in
-  docs/sdks/parity.md all exist, 24 dated gap(s)` — **no drift**; Step 7
+docs/sdks/parity.md all exist, 24 dated gap(s)` — **no drift**; Step 7
   renamed nothing under `sdks/*`.
 - `cargo nextest run -p xtask`: **83 tests run, 83 passed, 0 skipped** (69
   from the integration branch + this lane's 14 `sdk_parity_tests`).
@@ -142,7 +142,7 @@ Re-measured on the rebased tree (not carried over from the pre-rebase run):
 - `just docs-check`: `verify-status` ok (link checking still not
   implemented — pre-existing).
 - `cargo fmt --all -- --check` and `cargo clippy -p xtask --all-targets --
-  -D warnings`: clean.
+-D warnings`: clean.
 - **Revert-proof re-run on the merged check, not asserted:** renamed
   `mints_an_assertion_with_the_expected_claim_shape` in
   `sdks/rust/src/auth.rs`; `verify-sdk-parity` failed naming

@@ -30,7 +30,7 @@
  */
 
 /** Currencies whose minor unit *is* their major unit. */
-const ZERO_DECIMAL = new Set(['XAF', 'XOF', 'JPY', 'KRW', 'CLP', 'VND']);
+const ZERO_DECIMAL = new Set(["XAF", "XOF", "JPY", "KRW", "CLP", "VND"]);
 
 /** The exponent for a currency code, upper- or lower-case. */
 export function currencyExponent(currency: string): number {
@@ -47,12 +47,12 @@ export function toDecimalString(minor: number, exponent: number): string {
   const negative = minor < 0;
   const digits = String(Math.abs(minor));
   if (exponent === 0) {
-    return `${negative ? '-' : ''}${digits}`;
+    return `${negative ? "-" : ""}${digits}`;
   }
-  const padded = digits.padStart(exponent + 1, '0');
+  const padded = digits.padStart(exponent + 1, "0");
   const whole = padded.slice(0, padded.length - exponent);
   const fraction = padded.slice(padded.length - exponent);
-  return `${negative ? '-' : ''}${whole}.${fraction}`;
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
 }
 
 /**
@@ -64,16 +64,22 @@ export function toDecimalString(minor: number, exponent: number): string {
  * off a `payment_intent` the server rendered, so this cannot fire for a
  * payer.
  */
-export function formatAmount(minor: number, currency: string, locale: string): string {
+export function formatAmount(
+  minor: number,
+  currency: string,
+  locale: string,
+): string {
   if (!Number.isInteger(minor)) {
-    throw new TypeError(`amount must be an integer in minor units, got ${minor}`);
+    throw new TypeError(
+      `amount must be an integer in minor units, got ${minor}`,
+    );
   }
   const code = currency.toUpperCase();
   const exponent = currencyExponent(code);
   const decimal = toDecimalString(minor, exponent);
   try {
     return new Intl.NumberFormat(locale, {
-      style: 'currency',
+      style: "currency",
       currency: code,
       minimumFractionDigits: exponent,
       maximumFractionDigits: exponent,

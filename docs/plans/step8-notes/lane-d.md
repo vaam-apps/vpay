@@ -22,7 +22,7 @@ against a real database failed both cases, for two independent reasons, both fix
 2. **The poll-kill case asserted the wrong status code for a successful submit.**
    `vpay_provider::Submitted` does not carry the rail's HTTP status line (ADR-0002: the core
    must not branch on a transport detail), so `vpay_db::provider_requests` records a
-   *successful* submit with the `0` sentinel (`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`,
+   _successful_ submit with the `0` sentinel (`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`,
    documented at length on that constant, migration `0020`) rather than MTN's real `202`. The
    checkpoint asserted `Some(202)`; the real row is `Some(0)`. Fixed by transcribing the same
    `ANSWERED_SENTINEL` constant `worker_recovery.rs` already uses, for the same documented
@@ -47,7 +47,7 @@ Unix-only (`#![cfg(unix)]`, the whole file — its subject is a POSIX signal):
   (`--worker-concurrency 1`), claims the poll job, and is `Child::kill()`ed (`SIGKILL`) once
   **two independent witnesses** agree the query is in flight: WireMock's own request journal
   (`POST /__admin/requests/count`) has seen it, and `provider_requests` has the row the worker
-  wrote *before* opening the socket (`status_code IS NULL`, `error_kind IS NULL`) and cannot
+  wrote _before_ opening the socket (`status_code IS NULL`, `error_kind IS NULL`) and cannot
   complete if killed. The exit status is asserted `signal() == Some(9)`, `code() == None` — a
   process that chose to `exit(1)` could not stand in for one that was killed. What survives is
   asserted directly: the job's lease is still held by the dead worker's own `worker_id`
@@ -66,7 +66,7 @@ Unix-only (`#![cfg(unix)]`, the whole file — its subject is a POSIX signal):
 
 - **`a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a_second_submit`**
   — the `submitting` kill point (crash-safety.md's kill point 2), staged against the
-  **shipping `vpay-server`**, not written into the database. It *was* stageable against the
+  **shipping `vpay-server`**, not written into the database. It _was_ stageable against the
   real binary with no seam: a second documentation MSISDN (`237600000cf9`) arms a WireMock
   mapping whose `requesttopay` response itself is delayed 30 s, so the real server's confirm
   handler is genuinely blocked inside the POST when it is killed. The server is `SIGKILL`ed
@@ -105,7 +105,7 @@ So the test does not wait for the real five minutes. `age_the_dead_workers_lease
 that belongs to a different job. This is the same technique, and the same justification, as
 `support::make_every_job_runnable` (ages `run_at`) and
 `worker_recovery.rs::strand_the_poll_job` (writes `locked_at` directly): the test controls the
-queue's *clock*, not the queue's *code path* — the lease really was taken by a really-killed
+queue's _clock_, not the queue's _code path_ — the lease really was taken by a really-killed
 process, `locked_by` really is that process's own `worker_id`, and the reap, the claim and the
 re-run that follow afterward are all the shipping binary's own logic running unmodified. The
 file's own module doc (`worker_kill9.rs:16-18`) states this plainly: "Nothing here is
@@ -145,11 +145,11 @@ and both are documented here rather than worked around silently:
 
 1. **A shared `CARGO_TARGET_DIR` corrupted this worktree's build.** The task's own environment
    variables point `CARGO_TARGET_DIR` at `/home/selast/dev/vpay/.claude/worktrees/step8-target`
-   — the *same* directory another concurrently running lane (`step8-lane-b-ssrf`, a sibling
+   — the _same_ directory another concurrently running lane (`step8-lane-b-ssrf`, a sibling
    worktree, observed live via `ps aux` adding a `webhooks` field to `vpay_config::Config` as
    part of its own SSRF work) was also building into at the same time. A run under that shared
    directory failed to compile with `error[E0063]: missing field 'webhooks' in initializer of
-   'vpay_config::Config'` at four call sites in **this worktree's own, unrelated files**
+'vpay_config::Config'` at four call sites in **this worktree's own, unrelated files**
    (`worker_kill9.rs`, `merchant_token_flow.rs`, `webhooks.rs`, `browser_checkout.rs`) — but
    this worktree's own `vpay_config::Config` (`backends/crates/vpay-config/src/config.rs`) has
    no such field; `webhooks` lives on `MerchantClient`, not `Config`. Building the identical
@@ -165,7 +165,7 @@ and both are documented here rather than worked around silently:
    `vpay-testcontainers-docker-host.md`): `fs.inotify.max_user_instances` is 128 and this
    desktop session plus several concurrent test runs from sibling lanes were holding ~122 of
    them, which occasionally produced `testcontainers` `container startup timeout` /
-   `failed to create a container: Timeout error` on an *unrelated* container start, not a
+   `failed to create a container: Timeout error` on an _unrelated_ container start, not a
    failure of this suite's own logic. No `sudo` was available non-interactively to raise the
    limit, so this was not fixed at the host level; the mitigation applied was the one the
    memory note already recommends — remove `Created`-state container debris left by earlier
@@ -195,7 +195,7 @@ rather than doubting their own source.
 
 - **Kill point 1** (crash before the `charges` insert / before any `provider_requests` row) is
   not staged against a real process here — there is no network call to delay at that point (it
-  is the moment *before* the reference is minted), so there is nothing for a real `SIGKILL` to
+  is the moment _before_ the reference is minted), so there is nothing for a real `SIGKILL` to
   land "during"; `worker_recovery.rs` continues to be the only proof of that case, by writing
   the state directly. This narrows, rather than removes, `docs/flows/crash-safety.md`'s "the
   states are written, not caused" caveat — it now applies to one of the three kill points
@@ -256,7 +256,7 @@ loop" and "Charge submission" rows:
 - `cargo clippy -p vpay-tests-integration --all-targets -- -D warnings` — **clean, zero
   warnings**.
 - `cargo nextest run -p vpay-tests-integration -E 'binary(worker_kill9)' --no-fail-fast
-  --retries 2` — **2 tests run: 2 passed, 0 failed, 0 skipped, 0 retries consumed** (measured
+--retries 2` — **2 tests run: 2 passed, 0 failed, 0 skipped, 0 retries consumed** (measured
   twice; a third run without `--retries` also 2/2).
 - `just verify` (`verify-no-mocks` + `verify-status` + `verify-errors`) — see the top-level
   summary; this lane adds no mock, no new `NotImplemented` token, and no new `pub …Error` type,

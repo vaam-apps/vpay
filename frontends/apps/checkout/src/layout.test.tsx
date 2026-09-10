@@ -23,22 +23,24 @@
  * So the assertions below are not about tidiness. `<head>` must not appear in
  * this layout's output, and the style must carry the two props that hoist it.
  */
-import { isValidElement, type ReactElement, type ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 
-vi.mock('next/headers', () => ({
-  headers: () => Promise.resolve(new Headers({ 'accept-language': 'en' })),
+vi.mock("next/headers", () => ({
+  headers: () => Promise.resolve(new Headers({ "accept-language": "en" })),
 }));
 
 const BRANDING = `${import.meta.dirname}/../../../../config/checkout/branding.example.yaml`;
 const CONFIG = `${import.meta.dirname}/../../../../config/checkout/config.example.yaml`;
-process.env['VPAY_CHECKOUT_BRANDING_FILE'] = BRANDING;
-process.env['VPAY_CHECKOUT_CONFIG_FILE'] = CONFIG;
+process.env["VPAY_CHECKOUT_BRANDING_FILE"] = BRANDING;
+process.env["VPAY_CHECKOUT_CONFIG_FILE"] = CONFIG;
 
-const { default: RootLayout, THEME_OVERRIDE_HREF, THEME_OVERRIDE_PRECEDENCE } = await import(
-  '../app/layout'
-);
+const {
+  default: RootLayout,
+  THEME_OVERRIDE_HREF,
+  THEME_OVERRIDE_PRECEDENCE,
+} = await import("../app/layout");
 
 async function tree(): Promise<ReactElement> {
   return (await RootLayout({ children: null })) as ReactElement;
@@ -66,33 +68,36 @@ function hostTypes(node: ReactNode, seen: string[] = []): string[] {
   if (!isValidElement(node)) {
     return seen;
   }
-  if (typeof node.type === 'string') {
+  if (typeof node.type === "string") {
     seen.push(node.type);
   }
   hostTypes((node.props as { children?: ReactNode }).children, seen);
   return seen;
 }
 
-describe('the root layout', () => {
-  it('renders NO explicit <head> element — the thing that broke hydration', async () => {
+describe("the root layout", () => {
+  it("renders NO explicit <head> element — the thing that broke hydration", async () => {
     const types = hostTypes(await tree());
-    expect(types).toContain('html');
-    expect(types).toContain('body');
-    expect(types).toContain('style');
-    expect(types, 'a <head> this layout renders itself is the defect').not.toContain('head');
+    expect(types).toContain("html");
+    expect(types).toContain("body");
+    expect(types).toContain("style");
+    expect(
+      types,
+      "a <head> this layout renders itself is the defect",
+    ).not.toContain("head");
   });
 
-  it('hoists the theme override with href and precedence, so it is a resource and not a child', async () => {
+  it("hoists the theme override with href and precedence, so it is a resource and not a child", async () => {
     const html = await markup();
     expect(html).toContain(`href="${THEME_OVERRIDE_HREF}"`);
     expect(html).toContain(`precedence="${THEME_OVERRIDE_PRECEDENCE}"`);
     // And it is still the colour the mounted file asked for — daisyUI 5's
     // --color-primary takes a CSS colour directly, so this is the operator's
     // #rrggbb re-emitted rather than converted.
-    expect(html).toContain('--color-primary:#f3c623;');
+    expect(html).toContain("--color-primary:#f3c623;");
   });
 
-  it('renders the theme this app is themed with, and the negotiated language', async () => {
+  it("renders the theme this app is themed with, and the negotiated language", async () => {
     const html = await markup();
     expect(html).toContain('data-theme="bumblebee"');
     expect(html).toContain('lang="en"');

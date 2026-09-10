@@ -1,7 +1,7 @@
 # `vpay-worker` reference
 
 Why the code in `backends/crates/vpay-worker` looks the way it does. The
-crate's own doc comments say *what* each item is and link here; this page
+crate's own doc comments say _what_ each item is and link here; this page
 carries the reasoning, the orderings and the history that a reader needs once —
 not on every `cargo doc` build.
 
@@ -12,7 +12,7 @@ code is shaped the way it is. The processes this page supports are
 [crash-safety.md](../flows/crash-safety.md) and
 [webhooks.md](../flows/webhooks.md); what follows is the code's side of them.
 [../status.md](../status.md) is the record of what is actually wired up — this
-crate holds *handlers*, and a handler no loop calls is not a running worker.
+crate holds _handlers_, and a handler no loop calls is not a running worker.
 
 - [Reading order](#reading-order)
 - [The job loop](#the-job-loop)
@@ -87,7 +87,7 @@ each happened.
 until issue #77, 2026-09-07) and so does
 `backends/tests/integration/tests/worker_e2e.rs`. There is no second
 implementation, no `#[cfg(test)]` variant and no injected clock: the integration
-suite drives *this* loop, against a real Postgres and a real WireMock rail,
+suite drives _this_ loop, against a real Postgres and a real WireMock rail,
 which is the only way a claim/settle protocol can be proven at all — `SKIP
 LOCKED`, the `locked_by` guard and the drain are properties of Postgres and of
 concurrency, not of Rust types.
@@ -99,7 +99,7 @@ background loop and scraping logs for the answer.
 
 ### The drain
 
-On shutdown the tasks stop *claiming*; each finishes the job it is on. That is
+On shutdown the tasks stop _claiming_; each finishes the job it is on. That is
 the whole of a clean drain, and it is why `LoopReport::released` is zero on one:
 a task only re-checks shutdown between jobs, so a claimed job is always settled
 before its task exits, and there is no lease left to hand back.
@@ -119,7 +119,7 @@ compare-and-swap to make safe).
 Waiting for the signal before racing the drain against `grace` is the whole
 difference between a bounded drain and a worker that aborts every in-flight job
 `grace` seconds after it started, forever. The shape mirrors `vpay-server`'s
-`grace_clock`, which waits for draining to have *begun* before it sleeps.
+`grace_clock`, which waits for draining to have _begun_ before it sleeps.
 
 `run_loop` returns a `LoopReport` and not a `Result`, because after the seed
 there is nothing left whose failure should stop a worker. A claim that fails is
@@ -172,7 +172,7 @@ turned one unconditional `UPDATE` into `expire_due_sessions`: a page of due
 sessions read through `vpay_db::CheckoutSessions::due_for_expiry`, each
 rendered through `vpay_api::model::CheckoutSessionObject::expired_snapshot`,
 each flipped and evented in its own transaction by
-`vpay_db::CheckoutSessions::expire_due`. The render has to happen *before* the
+`vpay_db::CheckoutSessions::expire_due`. The render has to happen _before_ the
 write because `events.data` is the wire object and the write takes it as an
 input — the shape `intent_snapshot` and `Settlement::apply_succeeded` have had
 since Step 4.
@@ -216,13 +216,13 @@ credential.
 
 Twice, deliberately, and the two lines say different things.
 
-`handlers::log_failure` reports the *error* at `Classify::severity`, sets
+`handlers::log_failure` reports the _error_ at `Classify::severity`, sets
 `alert = true` for `Severity::Page` and nothing else, and is where a job failure
 reaches `vpay_error_events_total` and `vpay_alert_events_total` through
 `vpay_core::metrics::record_error_event`. It is the frame that still knows which
 job and which charge failed.
 
-`run_loop::log_disposition` reports the *disposition* and carries `alert` from
+`run_loop::log_disposition` reports the _disposition_ and carries `alert` from
 `Decision::RetryAfter`, which fires at `Severity::Error` and above — a wider net,
 and the one the 24-hour `unresolved` escalation needs (`JobError::Exhausted` is
 `Severity::Error`, not `Page`, so the handler's line does not flag it and this
@@ -235,7 +235,7 @@ rail refused our credentials" and "so this job is parked forever". An alerting
 rule that deduplicates on `job_id` sees one incident either way.
 
 Both are written as four `match` arms rather than a `Level` variable because
-`alert` is an event *field* and has to be written at the macro call site; see
+`alert` is an event _field_ and has to be written at the macro call site; see
 `error::tracing_level`.
 
 The queue's own failures — a `claim` that could not run — are counted in
@@ -269,9 +269,9 @@ still polled — hourly rather than on the ladder — because "a late success �
 minute 40, or hour 30 from `unresolved` — is the normal transition"
 ([reconciler.md](../flows/reconciler.md)), and a poll that stopped asking would
 be the thing that lost it. What the horizon decides is what happens to every
-answer *short of* a terminal one: escalate, instead of taking another rung.
+answer _short of_ a terminal one: escalate, instead of taking another rung.
 
-Its placement *above* the crash-recovery block is the part that is easy to get
+Its placement _above_ the crash-recovery block is the part that is easy to get
 wrong. That block can return without ever reaching the horizon line — and one of
 its arms, `Resubmit`, returns a rung of the ladder. A `submitting` charge whose
 resubmit job is dead-lettered comes back to it on every poll
@@ -279,7 +279,7 @@ resubmit job is dead-lettered comes back to it on every poll
 afterwards would never be evaluated at all for exactly the charge that has been
 stuck longest.
 
-Escalation is measured from `charges.created_at`, which is written *before* the
+Escalation is measured from `charges.created_at`, which is written _before_ the
 rail is called by construction — so it is the age of the payer's exposure and
 not of our bookkeeping.
 
@@ -288,7 +288,7 @@ not of our bookkeeping.
 When the rail will not answer a charge that is already past the horizon,
 `rail_did_not_answer` logs the rail's error and escalates with
 `JobError::Exhausted` instead of returning it. ADR-0011 permits it here for one
-reason: `Exhausted` says something *truer* about a rail that will not answer a
+reason: `Exhausted` says something _truer_ about a rail that will not answer a
 day-old charge than the rail's own transient error does. Nothing else the
 composite wraps is like that.
 
@@ -314,7 +314,7 @@ skipped when the charge is already `unresolved`, which is what makes the hourly
 re-escalation idempotent: the alert repeats, the row does not move, and
 `charges.updated_at` keeps naming the last time anything actually changed.
 `a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_it_again`
-asserts the timestamp *and* the alert — a no-op that also stopped alerting would
+asserts the timestamp _and_ the alert — a no-op that also stopped alerting would
 satisfy half of that sentence.
 
 ### Resubmit and escalate is a real non-determinism
@@ -332,7 +332,7 @@ The resubmit row is committed first and the escalation second, in two
 transactions, and the escalation moves the charge to `unresolved`. So the
 resubmit job usually finds the charge outside `submitting` and returns
 `Outcome::Done` without calling the rail: past the horizon the escalation
-ordinarily *supersedes* the resubmit rather than running alongside it. A
+ordinarily _supersedes_ the resubmit rather than running alongside it. A
 concurrent worker that claims the resubmit between the two commits does send it,
 under the charge's existing reference. Both orders are safe — the reference
 never changes, and `escalate_to_unresolved` is idempotent — but this is a real
@@ -351,7 +351,7 @@ POST" and "the POST went out and the answer was lost" — and `provider_requests
 is the only evidence that tells them apart.
 
 **The flow shape decides first.** On a redirect rail the payer cannot act until
-they are handed a URL, and the URL is handed over only *after* the rail's key
+they are handed a URL, and the URL is handed over only _after_ the rail's key
 material is committed ("the commit is the gate on the redirect"). So a redirect
 charge still in `submitting` is one nobody could have paid, and — because the
 `pay_token` needed to ask the rail about it was in the response we lost — one
@@ -359,7 +359,7 @@ nobody can ever ask about either. That reference is dead: fail it and let the
 merchant open a new PaymentIntent. Polling it instead produces
 `ProviderError::Config` on every rung of the ladder forever, which is a dead
 letter dressed up as an outage. The branch is on `ProviderFlow`, a capability
-*value*, never on a rail code (ADR-0002).
+_value_, never on a rail code (ADR-0002).
 
 **The precondition is that the charge is in `submitting`**, and it is
 `RecoveryAction::FailDeadOrder` that makes it a precondition rather than a
@@ -441,7 +441,7 @@ Three things about that shape are deliberate:
   before any network call by construction (`vpay_db::NewCharge`), so it dates
   the window from the moment the race opens; it is the same column
   `past_the_horizon` measures the 24-hour escalation from.
-- **And it is Postgres' clock at *both* ends.** The guard shipped comparing
+- **And it is Postgres' clock at _both_ ends.** The guard shipped comparing
   `created_at` against `OffsetDateTime::now_utc()` on the worker host, which is
   a different machine: a worker sixty seconds ahead of the database measured
   every charge as a minute older than it was, so every live confirm passed the
@@ -463,7 +463,7 @@ Three things about that shape are deliberate:
   sixty seconds is not twenty-four hours old.
 
 The alternatives were a delayed first rung (`run_at = now + first_rung`, which
-weakens crash recovery by the same delay *and* leaves the race open for any
+weakens crash recovery by the same delay _and_ leaves the race open for any
 confirm slower than the rung) and a lease the confirm holds on the charge
 (more correct, and a schema change plus a second failure mode when the holder
 dies). The age guard is the smallest change that closes it and reuses a number
@@ -478,7 +478,7 @@ required, never either.
 `RecoveryPolicy` is a plain struct with a `Default`, deliberately not a
 `#[cfg(test)]` seam: AGENTS.md's first rule is that no test double may be
 reachable from a shipping binary, and "the tests override the policy" is only
-honest if the tests override the *same* value production uses. An integration
+honest if the tests override the _same_ value production uses. An integration
 test asking for `not_found_window: 50 ms` exercises the identical code path a
 deployment runs at 60 s, with no sleeps.
 
@@ -493,7 +493,7 @@ its own and how it is shaped.
 ### Why it is not a fifth statement inside `sweep_expired`
 
 It runs on the same hourly schedule and its healthy answer is zero too, which
-is exactly the argument that put *checkout-session expiry* inside that job.
+is exactly the argument that put _checkout-session expiry_ inside that job.
 What separates this one is what a failure means. `sweep_expired`'s three
 statements are bounded deletes of vpay's own bookkeeping — idempotency
 records, client-assertion `jti`s, dead workers' leases. This one erases a
@@ -546,8 +546,8 @@ compile. `from_wire` held a **private copy** of the same list, and
 `SweepIdleCustomers` was missing from it.
 
 The result was silent and total: the row was written, claimed, and
-dead-lettered as *"`sweep_idle_customers` is not a job kind this build knows;
-the row was written by a different version"*, with `alert = true`, for a kind
+dead-lettered as _"`sweep_idle_customers` is not a job kind this build knows;
+the row was written by a different version"_, with `alert = true`, for a kind
 this build ships. The sweep never ran and every log line blamed a phantom
 deployment skew. `cargo build`, `just clippy` and all ten `verify` gates were
 green.
@@ -555,7 +555,7 @@ green.
 The list is now `JobKind::EVERY`, a `pub const` that
 `the_kinds_are_exactly_the_check_constraints` compares against migration
 `0034`'s own `kind_is_known` — so the omission is a four-millisecond unit-test
-failure. The test's own `KINDS` array *was a second copy* of the same list,
+failure. The test's own `KINDS` array _was a second copy_ of the same list,
 which is precisely why it could not have caught this; it now aliases the
 shipped constant. **There is no construction at 1.98.0 that makes a
 string→enum parse exhaustive**, so the honest statement is that this is
@@ -579,7 +579,7 @@ in flight rolls back whole, and the rest are still `pending`. The replay that
 follows is absorbed by two database objects — the unique index
 `webhook_deliveries_event_endpoint` means a re-run creates no second row, and
 `jobs_dedupe_key` with `jobs::webhook_dedupe_key` means it enqueues no second
-job — and both are absorbed *inside* that transaction together with
+job — and both are absorbed _inside_ that transaction together with
 `mark_fanned_out_in_tx`. Nothing here compensates, retries by hand, or
 reads-then-writes.
 
@@ -590,9 +590,9 @@ against a backlog entry that is no longer ours to claim: the transaction is
 abandoned (`TxOutcome::Abandon`), and that is not a failure.
 
 **Each event is attempted independently**, and its failure is counted in a
-*separate* statement — the transaction whose failure is being counted has rolled
+_separate_ statement — the transaction whose failure is being counted has rolled
 back, so a counter inside it would roll back too and the event would be retried
-forever at zero. A failure to *count* a failure is logged at `warn` and
+forever at zero. A failure to _count_ a failure is logged at `warn` and
 swallowed: the pass has already decided to continue, and it must not become the
 thing that stops the drain.
 
@@ -621,7 +621,7 @@ holding and this pass needs the fan-out's per-row isolation.
 
 `handle_scan_deliveries` wraps its own pass only so that every one of the pass's
 `?`s reaches the `alert = true` line — an early return added later cannot bypass
-it. The loop's own disposition line reports the *job*; that one reports what the
+it. The loop's own disposition line reports the _job_; that one reports what the
 failure means: the backstop behind every webhook delivery is not running, and a
 backstop nobody notices has stopped is a backstop that is not there.
 
@@ -633,7 +633,7 @@ as well as the tail. The runbook's query enumerates the rest.
 ## Delivering one webhook
 
 The order is what makes an attempt auditable: the body is rendered and hashed
-*before* the request, the digest is compared against the one the first attempt
+_before_ the request, the digest is compared against the one the first attempt
 that rendered and signed a body stored, and the outcome is written whether the
 receiver answered or not.
 
@@ -644,7 +644,7 @@ every attempt" an observable invariant rather than a hope, at the cost of one
 64-character column instead of a copy of every event body per endpoint. The
 consequence for the code is the split between the two failure recorders —
 `record_unsigned` stores no digest because nothing was signed, while
-`record_no_response` stores one because the bytes *were* signed and only the
+`record_no_response` stores one because the bytes _were_ signed and only the
 answer is missing. Stamping the column on an attempt that never left the process
 would make every later mismatch check run against a body no receiver ever saw.
 
@@ -685,7 +685,7 @@ dropped, keeping the first — defence in depth, not the guard (boot-time
 validation refuses a duplicate `id`), and it matters only because the
 alternative is worse: two endpoints sharing an id collide on
 `webhook_deliveries_event_endpoint`, so exactly one of them would be delivered
-to and *which one* would depend on iteration order.
+to and _which one_ would depend on iteration order.
 
 ### What is not checked here
 
@@ -716,8 +716,8 @@ operator never configured.
 
 ### Two retry ladders, and why they do not share
 
-`delivery_delay`, not `JobError::decision`. Polling asks a *rail* what happened
-to money; delivering tells a *merchant* what already happened. The two have no
+`delivery_delay`, not `JobError::decision`. Polling asks a _rail_ what happened
+to money; delivering tells a _merchant_ what already happened. The two have no
 failure vocabulary in common: a merchant's `500` is not a `ProviderError`,
 nothing about it is classified by ADR-0011's table, and pushing it through the
 poll ladder's decision table would give a webhook receiver the rail's 24-hour
@@ -733,7 +733,7 @@ keeps rescheduling forever is a queue that never drains.
 The exhaustion is `Severity::Error` with `alert = true` and **not** a
 `JobError`: a merchant will never be told about this transition by vpay, so a
 human has to tell them — but nothing is broken here, the receiver is, and the
-*job* did exactly what it was asked to. The row is the durable record
+_job_ did exactly what it was asked to. The row is the durable record
 (`state = 'exhausted'`); the log line is what gets someone to look at it.
 
 The budget constants (`WEBHOOK_CONNECT_TIMEOUT`, `WEBHOOK_REQUEST_TIMEOUT`) live
@@ -745,7 +745,7 @@ saying so.
 
 ## Signing
 
-`signing::signature_header` is the *sending* half of the scheme
+`signing::signature_header` is the _sending_ half of the scheme
 [webhooks.md](../flows/webhooks.md) names; the two SDK verifiers
 (`sdks/rust/src/webhooks.rs`, `sdks/nodejs/src/webhooks.ts`) are the
 specification it is held to, and it is the only place in the workspace that
@@ -767,7 +767,7 @@ a key order or a float rendering differs.
 
 **One `v1=` per configured secret, in configuration order.** Rotation is "add
 the new secret, wait, remove the old one"; during the overlap a receiver holding
-*either* secret verifies, because both verifiers try every `v1=` value. Emitting
+_either_ secret verifies, because both verifiers try every `v1=` value. Emitting
 only the newest would make rotation a flag-day.
 
 Two things it deliberately does not do. **No constant-time anything**: signing
@@ -777,13 +777,13 @@ to protect — which is why this crate does not depend on it while the SDK does.
 sender that tried to enforce them would only be describing its own clock.
 
 Two edge cases are answers rather than defects. An empty `secrets` produces
-`t=…` alone, which every verifier calls a *malformed header* — there is no such
+`t=…` alone, which every verifier calls a _malformed header_ — there is no such
 thing as an unsigned delivery a receiver should accept, so that is exactly the
 refusal an endpoint configured with no secret deserves (and `handle_deliver`
 records a failed attempt instead of reaching here). A pre-epoch clock writes
 `t=-…`, which fails both verifiers' `^\d+$` rule; clamping to zero would be
 worse, because the delivery would then be signed with a timestamp that is not
-the one the sender believes and would fail the *tolerance* check instead — the
+the one the sender believes and would fail the _tolerance_ check instead — the
 same rejection, reported as something the merchant could plausibly debug.
 
 `sign`'s error arm returns an empty string. `Hmac::new_from_slice` is infallible
@@ -801,7 +801,7 @@ test one in-process would be to introduce a fake pool or a fake
 `ProviderAdapter`, and AGENTS.md's first rule forbids a test double reachable
 from a shipping binary (ADR-0006 — the stub rail and the stub receiver are hosts
 in configuration, reached over HTTP exactly as the real ones are). So the proofs
-live in `backends/tests/integration/tests/`, which drives *these functions*
+live in `backends/tests/integration/tests/`, which drives _these functions_
 against a Postgres container and a WireMock container, reproduces kill point 1
 by writing the state a crash leaves behind and kill point 2 and the mid-poll
 crash by really killing the shipping binaries (`worker_kill9.rs`), and reads

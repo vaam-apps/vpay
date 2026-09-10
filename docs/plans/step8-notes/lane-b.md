@@ -30,21 +30,21 @@ outage must not cost a merchant their event on the first try.
 
 ## Files
 
-| Path | What is there |
-|---|---|
+| Path                                                                          | What is there                                                                                                                                                          |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backends/crates/vpay-worker/src/ssrf.rs` (new, 874 lines incl. 9 unit tests) | `EgressPolicy`, `AddressClass`, `EgressRefusal`, `VettedTarget`, `vet` (:373), `pinned_client` (:441), `classify` (:466) / `classify_v4` (:476) / `classify_v6` (:537) |
-| `backends/crates/vpay-worker/src/webhooks.rs:849` | the doc section "Where the URL is checked, since Step 8", replacing "What is *not* checked here" |
-| `backends/crates/vpay-worker/src/webhooks.rs:975-995` | **the whole hook**: `ssrf::vet` then `ssrf::pinned_client`, immediately before `signature_header` |
-| `backends/crates/vpay-worker/src/webhooks.rs:1209` / `:1262` | `record_refused_target` / `refusal_excerpt` |
-| `backends/crates/vpay-worker/src/handlers.rs:88-125` | `WebhookContext.http: &reqwest::Client` → `WebhookContext.egress: EgressPolicy`; `:219` the dispatch arm |
-| `backends/crates/vpay-worker/src/run_loop.rs:612,675,793,803` | the same swap through `run_loop`/`claim_loop` |
-| `backends/crates/vpay-provider/src/http.rs:266` | `client_pinned_to`; its unit test at `:594` |
-| `backends/crates/vpay-config/src/config.rs:355,430,524` | `WebhookPolicy`, the `webhooks:` field on `Config`, the livemode rule in `validate_all` |
-| `backends/crates/vpay-config/src/lib.rs:590` | `ConfigError::PrivateWebhookTargetsInLivemode` |
-| `backends/apps/vpay-worker-bin/src/main.rs:388-406` | builds no webhook client any more; projects the policy instead |
-| `config/application-sandbox.yml:6-24` | `webhooks.allow_private_targets: true` |
-| `justfile` (`gen-demo-keys`, `:624`, `:638`, `:698-709`) | the same block in the generated `demo` overlay, plus the staleness check that regenerates an overlay predating it |
-| `backends/tests/integration/tests/webhooks.rs:2336-2649` | the two container-backed cases and their two helpers |
+| `backends/crates/vpay-worker/src/webhooks.rs:849`                             | the doc section "Where the URL is checked, since Step 8", replacing "What is _not_ checked here"                                                                       |
+| `backends/crates/vpay-worker/src/webhooks.rs:975-995`                         | **the whole hook**: `ssrf::vet` then `ssrf::pinned_client`, immediately before `signature_header`                                                                      |
+| `backends/crates/vpay-worker/src/webhooks.rs:1209` / `:1262`                  | `record_refused_target` / `refusal_excerpt`                                                                                                                            |
+| `backends/crates/vpay-worker/src/handlers.rs:88-125`                          | `WebhookContext.http: &reqwest::Client` → `WebhookContext.egress: EgressPolicy`; `:219` the dispatch arm                                                               |
+| `backends/crates/vpay-worker/src/run_loop.rs:612,675,793,803`                 | the same swap through `run_loop`/`claim_loop`                                                                                                                          |
+| `backends/crates/vpay-provider/src/http.rs:266`                               | `client_pinned_to`; its unit test at `:594`                                                                                                                            |
+| `backends/crates/vpay-config/src/config.rs:355,430,524`                       | `WebhookPolicy`, the `webhooks:` field on `Config`, the livemode rule in `validate_all`                                                                                |
+| `backends/crates/vpay-config/src/lib.rs:590`                                  | `ConfigError::PrivateWebhookTargetsInLivemode`                                                                                                                         |
+| `backends/apps/vpay-worker-bin/src/main.rs:388-406`                           | builds no webhook client any more; projects the policy instead                                                                                                         |
+| `config/application-sandbox.yml:6-24`                                         | `webhooks.allow_private_targets: true`                                                                                                                                 |
+| `justfile` (`gen-demo-keys`, `:624`, `:638`, `:698-709`)                      | the same block in the generated `demo` overlay, plus the staleness check that regenerates an overlay predating it                                                      |
+| `backends/tests/integration/tests/webhooks.rs:2336-2649`                      | the two container-backed cases and their two helpers                                                                                                                   |
 
 ## Decisions taken in this lane
 
@@ -62,7 +62,7 @@ against 2.9 µs for `client_with_timeouts`, 200 builds each, debug build, warm
 numbers are in `client_pinned_to`'s doc comment). The construction is therefore
 not the cost — **the connection pool is**: two deliveries to one receiver no
 longer share a connection and each pays a fresh TCP+TLS handshake. A per-host
-cache would keep the pool and would be a cache of *pins*: a client held past
+cache would keep the pool and would be a cache of _pins_: a client held past
 its DNS answer keeps delivering to the address that name used to have. Given a
 delivery rate bounded by settlements, one handshake per delivery is the cheaper
 mistake. **This is a real regression for a high-volume merchant and is stated
@@ -100,7 +100,7 @@ IPv4-compatible form `::a.b.c.d`, and the IANA special-purpose IPv4 blocks
 does not consult it.** `cargo xtask verify-errors` counts it (**13** error types
 now, 12 before it) and ADR-0011 asks every leaf to classify itself.
 `Category::Configuration` throughout, with `retry()` overridden to follow
-`is_permanent()` so a later boundary that *does* read it cannot disagree with
+`is_permanent()` so a later boundary that _does_ read it cannot disagree with
 `handle_deliver`. The doc comment says this plainly rather than implying the
 ladder is derived from it.
 
@@ -147,21 +147,21 @@ in `vpay_provider::http`" against a function that was on disk, and
 `verify-errors: 12 error type(s)` where this tree has 13). Nothing below comes
 from the shared directory.
 
-| Command | Result |
-|---|---|
-| `cargo fmt --all --check` | clean |
-| `cargo clippy -p vpay-worker -p vpay-config --all-targets -- -D warnings` | clean |
-| `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
-| `cargo nextest run -p vpay-worker` | **67 passed, 0 skipped** — 9 of them new (`ssrf::tests`), so 58 before |
-| `cargo nextest run -p vpay-config` | **97 passed, 0 skipped** — 3 new, so 94 before |
-| `cargo nextest run -p vpay-provider` | **17 passed, 0 skipped** — 1 new (the pin test), so 16 before |
-| `VPAY_REQUIRE_NODE=1 cargo nextest run -p vpay-tests-integration -E 'binary(webhooks)' --no-fail-fast --retries 2` | **17 passed, 0 skipped**, 539 s (3 slow, all container starts) — 2 new, so 15 before |
-| `just verify` | `verify-no-mocks: ok` / `verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md` / `verify-errors: ok — 13 error type(s), all classified; anyhow confined to binaries` |
-| `just verify-ignored` | `0 ignored (expected 0), 39 test binaries (expected 39), 984 total (minimum 900)` — no binary added, no counter needs bumping |
+| Command                                                                                                            | Result                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all --check`                                                                                          | clean                                                                                                                                                                                       |
+| `cargo clippy -p vpay-worker -p vpay-config --all-targets -- -D warnings`                                          | clean                                                                                                                                                                                       |
+| `cargo deny check`                                                                                                 | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                           |
+| `cargo nextest run -p vpay-worker`                                                                                 | **67 passed, 0 skipped** — 9 of them new (`ssrf::tests`), so 58 before                                                                                                                      |
+| `cargo nextest run -p vpay-config`                                                                                 | **97 passed, 0 skipped** — 3 new, so 94 before                                                                                                                                              |
+| `cargo nextest run -p vpay-provider`                                                                               | **17 passed, 0 skipped** — 1 new (the pin test), so 16 before                                                                                                                               |
+| `VPAY_REQUIRE_NODE=1 cargo nextest run -p vpay-tests-integration -E 'binary(webhooks)' --no-fail-fast --retries 2` | **17 passed, 0 skipped**, 539 s (3 slow, all container starts) — 2 new, so 15 before                                                                                                        |
+| `just verify`                                                                                                      | `verify-no-mocks: ok` / `verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md` / `verify-errors: ok — 13 error type(s), all classified; anyhow confined to binaries` |
+| `just verify-ignored`                                                                                              | `0 ignored (expected 0), 39 test binaries (expected 39), 984 total (minimum 900)` — no binary added, no counter needs bumping                                                               |
 
 One caveat on the integration run, stated because it cost a run: the first
 attempt failed `the_delivered_signature_verifies_with_the_shipping_node_sdk`
-with ``sh: 1: tsc: not found`` — this worktree had no `node_modules`. That is
+with `sh: 1: tsc: not found` — this worktree had no `node_modules`. That is
 the test working as designed (it fails rather than skips under
 `VPAY_REQUIRE_NODE=1`) and is unrelated to this lane;
 `CYPRESS_INSTALL_BINARY=0 pnpm install --frozen-lockfile` fixed it and the
@@ -367,22 +367,22 @@ absent.`
    has. Left alone rather than changed under this lane; the column pair that
    says nothing came back is `status_code IS NULL AND responded_at IS NULL`,
    and both are null.
-5. No deployment has ever *refused* a real merchant's endpoint; the evidence is
+5. No deployment has ever _refused_ a real merchant's endpoint; the evidence is
    the container-backed suite and the revert proof, not production.
 
 ## Rebase note for the orchestrator
 
-* The only edits outside new files that Step 7 is likely to touch are
+- The only edits outside new files that Step 7 is likely to touch are
   `WebhookContext` (one field swapped), `run_loop`'s two signatures (one
   parameter swapped) and the ~20-line hook in `handle_deliver`. If Step 7 split
   `handle_deliver` into steps, the hook belongs in the step that owns "send",
   before signing, and `record_refused_target` moves with `record_failure`.
-* The `justfile` edit (`gen-demo-keys`) will conflict with **lane A**, which
+- The `justfile` edit (`gen-demo-keys`) will conflict with **lane A**, which
   rewrites the demo recipes. Keep both: lane A's recipe structure and this
   lane's `webhooks: allow_private_targets: true` block in the generated overlay
   plus the `allow_private_targets` staleness grep. Without it `just demo`'s
   webhook step fails against a receiver that is working perfectly.
-* `Config` gained a field, so every `vpay_config::Config { … }` struct literal
+- `Config` gained a field, so every `vpay_config::Config { … }` struct literal
   in the tree gained one line (11 sites, all `webhooks:
-  vpay_config::WebhookPolicy::default(),`). A new literal added by another lane
+vpay_config::WebhookPolicy::default(),`). A new literal added by another lane
   needs the same line.

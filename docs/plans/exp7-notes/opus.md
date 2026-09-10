@@ -13,10 +13,10 @@ Sample 7 of the tier experiment, `opus` arm. Base `a81b6b6`, branch
 
 ## What changed
 
-| Was | Is | Directory |
-|---|---|---|
-| `@vpay/sdk` | `@vaam-apps/vpay-sdk` | `sdks/nodejs` |
-| `@vpay/stripe-js` | `@vaam-apps/vpay-stripe-js` | `sdks/stripe-js` |
+| Was                   | Is                              | Directory            |
+| --------------------- | ------------------------------- | -------------------- |
+| `@vpay/sdk`           | `@vaam-apps/vpay-sdk`           | `sdks/nodejs`        |
+| `@vpay/stripe-js`     | `@vaam-apps/vpay-stripe-js`     | `sdks/stripe-js`     |
 | `@vpay/stripe-compat` | `@vaam-apps/vpay-stripe-compat` | `sdks/stripe-compat` |
 
 Each of the three manifests also gained `publishConfig.access: "public"`
@@ -32,14 +32,14 @@ Run 2026-09-05 against `https://registry.npmjs.org/` (`npm config get
 registry`), unauthenticated (`npm whoami` → `E401`), so these are the public
 registry's answers and not a private mirror's.
 
-| Package | `npm view <pkg> version` | exit |
-|---|---|---|
-| `@vpay/sdk` | `npm error code E404` — `'@vpay/sdk@*' is not in this registry.` | 1 |
-| `@vpay/stripe-js` | `npm error code E404` — `'@vpay/stripe-js@*' is not in this registry.` | 1 |
-| `@vpay/stripe-compat` | `npm error code E404` — `'@vpay/stripe-compat@*' is not in this registry.` | 1 |
-| `@vaam-apps/vpay-sdk` | `npm error code E404` — `'@vaam-apps/vpay-sdk@*' is not in this registry.` | 1 |
-| `@vaam-apps/vpay-stripe-js` | `npm error code E404` — `'@vaam-apps/vpay-stripe-js@*' is not in this registry.` | 1 |
-| `@vaam-apps/vpay-stripe-compat` | `npm error code E404` — `'@vaam-apps/vpay-stripe-compat@*' is not in this registry.` | 1 |
+| Package                         | `npm view <pkg> version`                                                             | exit |
+| ------------------------------- | ------------------------------------------------------------------------------------ | ---- |
+| `@vpay/sdk`                     | `npm error code E404` — `'@vpay/sdk@*' is not in this registry.`                     | 1    |
+| `@vpay/stripe-js`               | `npm error code E404` — `'@vpay/stripe-js@*' is not in this registry.`               | 1    |
+| `@vpay/stripe-compat`           | `npm error code E404` — `'@vpay/stripe-compat@*' is not in this registry.`           | 1    |
+| `@vaam-apps/vpay-sdk`           | `npm error code E404` — `'@vaam-apps/vpay-sdk@*' is not in this registry.`           | 1    |
+| `@vaam-apps/vpay-stripe-js`     | `npm error code E404` — `'@vaam-apps/vpay-stripe-js@*' is not in this registry.`     | 1    |
+| `@vaam-apps/vpay-stripe-compat` | `npm error code E404` — `'@vaam-apps/vpay-stripe-compat@*' is not in this registry.` | 1    |
 
 The first three are the check the rename depended on: **no version of any old
 name exists, so nothing downstream can break.** The last three were not asked
@@ -97,12 +97,12 @@ or `pnpm publish` or reads an `NPM_TOKEN` (grepped for all four). So:
 `git grep -n -E '@vpay/(sdk|stripe-js|stripe-compat)'` over everything
 tracked.
 
-| Pattern | Files before | Lines before | Lines after |
-|---|---|---|---|
-| `@vpay/sdk` | 75 | 191 | 35 |
-| `@vpay/stripe-js` | 78 | 198 | 46 |
-| `@vpay/stripe-compat` | 9 | 18 | 4 |
-| combined (unique lines) | 120 | 391 | 81 |
+| Pattern                 | Files before | Lines before | Lines after |
+| ----------------------- | ------------ | ------------ | ----------- |
+| `@vpay/sdk`             | 75           | 191          | 35          |
+| `@vpay/stripe-js`       | 78           | 198          | 46          |
+| `@vpay/stripe-compat`   | 9            | 18           | 4           |
+| combined (unique lines) | 120          | 391          | 81          |
 
 The "after" column excludes this notes file, which quotes the old names 13
 times on purpose. The 81 are **71** in `docs/plans/**`, **4** in `docs/adr/**`
@@ -149,7 +149,7 @@ docs/adr/0010-merchant-auth-private-key-jwt.md           1
 ```
 
 This one is a genuine trade and it is not mine to settle: ADR-0015 describes
-`docs/sdks/parity.md`, which *was* renamed, so the record and the document it
+`docs/sdks/parity.md`, which _was_ renamed, so the record and the document it
 governs now spell the same package differently. Superseding two ADRs for a
 package rename is a maintainer decision. **Flagged, not taken.**
 
@@ -169,11 +169,11 @@ a name, not a measurement.
   purpose. The brief listed `User-Agent` under "any user-facing string in the
   SDKs follows"; here nothing follows, because nothing named the package.
 - **The Rust crate `vpay-sdk`** (`sdks/rust`, `publish = false`): crates.io
-  has no scopes. Left alone, as the brief says. Its *prose* mentions of the
+  has no scopes. Left alone, as the brief says. Its _prose_ mentions of the
   npm package were updated (`sdks/rust/README.md`, `src/model.rs`,
   `src/validate.rs`).
 - **`pnpm-lock.yaml`'s `importers` keys.** The brief expected these to
-  change; they did not, and could not — they are workspace *directory paths*
+  change; they did not, and could not — they are workspace _directory paths_
   (`sdks/nodejs`, `sdks/stripe-js`, `sdks/stripe-compat`), not package names.
   What changed is the dependency entries inside them: 10 lines, listed below.
 - **`Cargo.toml`'s `repository = "https://github.com/vymalo/vpay"`**, and the
@@ -202,25 +202,25 @@ resolution churn:
 Run on the final tree, Node `v22.23.2`, `CARGO_BUILD_JOBS=4`, after
 `rm -rf sdks/nodejs/dist sdks/stripe-js/dist` so the SDK builds are cold.
 
-| Command | Exit | What it printed |
-|---|---|---|
-| `pnpm install --frozen-lockfile` | **0** | `Lockfile is up to date, resolution step is skipped` — on the *regenerated* lockfile |
-| `pnpm -r typecheck` (cold, no `dist/`) | **2** | `cypress/tasks/checkoutTasks.ts(18,28): error TS2307: Cannot find module '@vaam-apps/vpay-sdk'`. **Pre-existing, and measured as such** — see below |
-| `just lint-web` | **0** | builds the Node SDK first, then `pnpm -r typecheck` and `pnpm -r lint` over 15 projects |
-| `pnpm -r typecheck` (warm) | **0** | 15 of 16 projects, all `Done` |
-| `just test-web` | **0** | **723 tests, 0 skipped, 45 files**: `frontends/apps/checkout` 302, `sdks/nodejs` 172, `sdks/stripe-js` 119, `frontends/packages/config` 63, `examples/shop` 57, `frontends/packages/api-client` 4, `frontends/packages/tokens` 3, `frontends/packages/ui` 3. Identical to the count on `a81b6b6` |
-| `just audit-web` | **0** | `No known vulnerabilities found` for the `--prod` graph and for the whole workspace; one attempt each |
-| `just verify` | **0** | `verify-no-mocks` ok; `verify-status` ok (1 unimplemented item); `verify-errors` ok (15 types, 14 `#[from]` variants); `verify-sdk-parity` ok (**342** proving tests, 26 dated gaps); `verify-links` ok (**679** links in **116** files, up from 676/115 — this notes file and its three links) |
-| `just docs-check` | **0** | `verify-status` + `verify-links`, both ok |
+| Command                                | Exit  | What it printed                                                                                                                                                                                                                                                                                  |
+| -------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile`       | **0** | `Lockfile is up to date, resolution step is skipped` — on the _regenerated_ lockfile                                                                                                                                                                                                             |
+| `pnpm -r typecheck` (cold, no `dist/`) | **2** | `cypress/tasks/checkoutTasks.ts(18,28): error TS2307: Cannot find module '@vaam-apps/vpay-sdk'`. **Pre-existing, and measured as such** — see below                                                                                                                                              |
+| `just lint-web`                        | **0** | builds the Node SDK first, then `pnpm -r typecheck` and `pnpm -r lint` over 15 projects                                                                                                                                                                                                          |
+| `pnpm -r typecheck` (warm)             | **0** | 15 of 16 projects, all `Done`                                                                                                                                                                                                                                                                    |
+| `just test-web`                        | **0** | **723 tests, 0 skipped, 45 files**: `frontends/apps/checkout` 302, `sdks/nodejs` 172, `sdks/stripe-js` 119, `frontends/packages/config` 63, `examples/shop` 57, `frontends/packages/api-client` 4, `frontends/packages/tokens` 3, `frontends/packages/ui` 3. Identical to the count on `a81b6b6` |
+| `just audit-web`                       | **0** | `No known vulnerabilities found` for the `--prod` graph and for the whole workspace; one attempt each                                                                                                                                                                                            |
+| `just verify`                          | **0** | `verify-no-mocks` ok; `verify-status` ok (1 unimplemented item); `verify-errors` ok (15 types, 14 `#[from]` variants); `verify-sdk-parity` ok (**342** proving tests, 26 dated gaps); `verify-links` ok (**679** links in **116** files, up from 676/115 — this notes file and its three links)  |
+| `just docs-check`                      | **0** | `verify-status` + `verify-links`, both ok                                                                                                                                                                                                                                                        |
 
 Not in the brief's list, run anyway because the rename edited Rust doc
 comments (including one inside a compiled doctest, `vpay-core/src/ids.rs`):
 
-| Command | Exit | What it printed |
-|---|---|---|
-| `just fmt-check` (`cargo fmt --all -- --check`) | **0** | silent |
-| `cargo clippy --workspace --all-targets -- -D warnings` | **0** | no warnings |
-| `just test-doc` (`cargo test --doc --workspace`) | **0** | **86 doctests passed, 1 ignored, 0 failed** |
+| Command                                                 | Exit  | What it printed                             |
+| ------------------------------------------------------- | ----- | ------------------------------------------- |
+| `just fmt-check` (`cargo fmt --all -- --check`)         | **0** | silent                                      |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **0** | no warnings                                 |
+| `just test-doc` (`cargo test --doc --workspace`)        | **0** | **86 doctests passed, 1 ignored, 0 failed** |
 
 ### The one non-zero, and why it is not this change's
 
@@ -272,5 +272,5 @@ is why the other 40-odd renamed markdown files did not fail anything.
   tree is **not** prettier-clean on `master` — `prettier --check .` reports
   dozens of pre-existing files, `README.md`, `package.json` and
   `pnpm-lock.yaml` among them — so running it would have buried a 106-file
-  rename under an unrelated reformat. `just fmt-check`, which *is* the gate,
+  rename under an unrelated reformat. `just fmt-check`, which _is_ the gate,
   is `cargo fmt --all -- --check` only and does not cover prose.

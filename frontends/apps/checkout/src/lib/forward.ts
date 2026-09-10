@@ -7,10 +7,10 @@
  * who does not write it gets a return with no correlation value, which is
  * documented on the field rather than fixed by a silent parameter.
  */
-import type { CheckoutSession } from './types';
+import type { CheckoutSession } from "./types";
 
 /** The one template placeholder vpay substitutes. Stripe's own spelling. */
-export const SESSION_ID_PLACEHOLDER = '{CHECKOUT_SESSION_ID}';
+export const SESSION_ID_PLACEHOLDER = "{CHECKOUT_SESSION_ID}";
 
 /**
  * Replaces **every** occurrence of {@link SESSION_ID_PLACEHOLDER}.
@@ -21,12 +21,17 @@ export const SESSION_ID_PLACEHOLDER = '{CHECKOUT_SESSION_ID}';
  * that alphabet ever widens, whichever part of the URL the placeholder sits
  * in.
  */
-export function substituteSessionId(template: string, sessionId: string): string {
-  return template.split(SESSION_ID_PLACEHOLDER).join(encodeURIComponent(sessionId));
+export function substituteSessionId(
+  template: string,
+  sessionId: string,
+): string {
+  return template
+    .split(SESSION_ID_PLACEHOLDER)
+    .join(encodeURIComponent(sessionId));
 }
 
 /** Which of the session's URLs an outcome sends the payer to. */
-export type ForwardKind = 'success' | 'cancel' | 'return';
+export type ForwardKind = "success" | "cancel" | "return";
 
 /**
  * The absolute URL to forward to, or `null`.
@@ -38,14 +43,17 @@ export type ForwardKind = 'success' | 'cancel' | 'return';
  * would actually perform the navigation. `javascript:` in an
  * `location.assign` is script execution on vpay's own origin.
  */
-export function forwardTarget(session: CheckoutSession, kind: ForwardKind): string | null {
+export function forwardTarget(
+  session: CheckoutSession,
+  kind: ForwardKind,
+): string | null {
   const template =
-    kind === 'success'
+    kind === "success"
       ? session.success_url
-      : kind === 'cancel'
+      : kind === "cancel"
         ? session.cancel_url
         : session.return_url;
-  if (typeof template !== 'string' || template.length === 0) {
+  if (typeof template !== "string" || template.length === 0) {
     return null;
   }
   const substituted = substituteSessionId(template, session.id);
@@ -55,7 +63,7 @@ export function forwardTarget(session: CheckoutSession, kind: ForwardKind): stri
   } catch {
     return null;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return null;
   }
   return substituted;
@@ -74,8 +82,8 @@ export function forwardKindFor(
   session: CheckoutSession,
   paid: boolean,
 ): ForwardKind {
-  if (session.ui_mode === 'embedded') {
-    return 'return';
+  if (session.ui_mode === "embedded") {
+    return "return";
   }
-  return paid ? 'success' : 'cancel';
+  return paid ? "success" : "cancel";
 }

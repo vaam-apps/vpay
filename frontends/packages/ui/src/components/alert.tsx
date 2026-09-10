@@ -1,23 +1,22 @@
-import { cva, type VariantProps } from 'class-variance-authority';
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-const alert = cva('mt-4 alert', {
+const alert = cva("mt-4 alert", {
   variants: {
     tone: {
-      neutral: '',
-      info: 'alert-info',
-      success: 'alert-success',
-      warning: 'alert-warning',
-      error: 'alert-error',
+      neutral: "",
+      info: "alert-info",
+      success: "alert-success",
+      warning: "alert-warning",
+      error: "alert-error",
     },
   },
-  defaultVariants: { tone: 'neutral' },
+  defaultVariants: { tone: "neutral" },
 });
 
 export interface AlertProps
-  extends React.ComponentPropsWithoutRef<'div'>,
-    VariantProps<typeof alert> {}
+  extends React.ComponentPropsWithoutRef<"div">, VariantProps<typeof alert> {}
 
 /**
  * A status message.
@@ -29,6 +28,13 @@ export interface AlertProps
  * `@vpay/tokens` is the 2026-09-07 defect this revamp fixes (plan §3, the
  * `checkoutOutcomeTone` mutation).
  */
-export function Alert({ tone, className, role = 'alert', ...rest }: AlertProps) {
-  return <div role={role} className={cn(alert({ tone }), className)} {...rest} />;
+export function Alert({
+  tone,
+  className,
+  role = "alert",
+  ...rest
+}: AlertProps) {
+  return (
+    <div role={role} className={cn(alert({ tone }), className)} {...rest} />
+  );
 }

@@ -14,11 +14,11 @@
  * offers the page refuses outright. A payer who cannot pay must be told so
  * before they try, not after the redirect goes nowhere.
  */
-import type { MessageKey } from '../i18n/index';
-import type { PaymentIntent, PublicPaymentIntent } from './types';
+import type { MessageKey } from "../i18n/index";
+import type { PaymentIntent, PublicPaymentIntent } from "./types";
 
 /** What the page must do for a rail. */
-export type RailFlow = 'mobile_money_push' | 'redirect';
+export type RailFlow = "mobile_money_push" | "redirect";
 
 /**
  * Rail code → the page flow it needs, and the dictionary key naming it.
@@ -27,11 +27,12 @@ export type RailFlow = 'mobile_money_push' | 'redirect';
  * is translated like everything else. Adding a rail to this map without
  * adding its key to both dictionaries does not compile.
  */
-export const RAIL_PAGE_FLOWS: Readonly<Record<string, { flow: RailFlow; label: MessageKey }>> =
-  Object.freeze({
-    mtn_momo: { flow: 'mobile_money_push', label: 'rail.mtn_momo' },
-    orange_money: { flow: 'redirect', label: 'rail.orange_money' },
-  });
+export const RAIL_PAGE_FLOWS: Readonly<
+  Record<string, { flow: RailFlow; label: MessageKey }>
+> = Object.freeze({
+  mtn_momo: { flow: "mobile_money_push", label: "rail.mtn_momo" },
+  orange_money: { flow: "redirect", label: "rail.orange_money" },
+});
 
 export interface SupportedRail {
   code: string;

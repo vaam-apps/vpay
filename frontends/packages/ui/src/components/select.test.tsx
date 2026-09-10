@@ -1,21 +1,26 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { Select } from './select';
+import { Select } from "./select";
 
 const LOCALES = [
-  { value: 'en', label: 'English' },
-  { value: 'fr', label: 'Français' },
+  { value: "en", label: "English" },
+  { value: "fr", label: "Français" },
 ];
 
-describe('Select', () => {
-  it('opens the popup and reports the chosen item', async () => {
+describe("Select", () => {
+  it("opens the popup and reports the chosen item", async () => {
     const onValueChange = vi.fn();
     const { unmount } = render(
-      <Select items={LOCALES} defaultValue="en" onValueChange={onValueChange} aria-label="Locale" />,
+      <Select
+        items={LOCALES}
+        defaultValue="en"
+        onValueChange={onValueChange}
+        aria-label="Locale"
+      />,
     );
-    const trigger = screen.getByRole('combobox', { name: 'Locale' });
-    expect(trigger.textContent).toBe('English');
+    const trigger = screen.getByRole("combobox", { name: "Locale" });
+    expect(trigger.textContent).toBe("English");
 
     fireEvent.click(trigger);
     // `findByRole`, not `getByRole`: Base UI mounts the popup into a portal
@@ -23,14 +28,14 @@ describe('Select', () => {
     // time `fireEvent` returns. See the docblock on the case below — every
     // assertion in this file that follows an interaction waits for its
     // condition rather than assuming the schedule that produced it.
-    const option = await screen.findByRole('option', { name: 'Français' });
+    const option = await screen.findByRole("option", { name: "Français" });
     // Base UI's Select.Item only commits a click that was preceded by a
     // pointerdown on the same item — it is how a real click is
     // distinguished from a click event fired by whatever opened the popup.
-    fireEvent.pointerDown(option, { pointerType: 'mouse' });
+    fireEvent.pointerDown(option, { pointerType: "mouse" });
     fireEvent.click(option, { detail: 1 });
     await waitFor(() => {
-      expect(onValueChange).toHaveBeenCalledWith('fr');
+      expect(onValueChange).toHaveBeenCalledWith("fr");
     });
     unmount();
   });
@@ -48,22 +53,22 @@ describe('Select', () => {
    * nothing changed would be a case asserting the harness. Real-browser
    * commit is Cypress's, plan §7 row 6.
    */
-  it('opens on ArrowDown from the trigger and moves the highlight with the arrows', async () => {
+  it("opens on ArrowDown from the trigger and moves the highlight with the arrows", async () => {
     const { unmount } = render(
       <Select items={LOCALES} defaultValue="en" aria-label="Locale" />,
     );
-    const trigger = screen.getByRole('combobox', { name: 'Locale' });
-    expect(screen.queryByRole('listbox')).toBeNull();
+    const trigger = screen.getByRole("combobox", { name: "Locale" });
+    expect(screen.queryByRole("listbox")).toBeNull();
 
     trigger.focus();
-    fireEvent.keyDown(trigger, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(trigger, { key: "ArrowDown", code: "ArrowDown" });
 
-    const list = await screen.findByRole('listbox');
-    const english = await screen.findByRole('option', { name: 'English' });
-    const french = await screen.findByRole('option', { name: 'Français' });
+    const list = await screen.findByRole("listbox");
+    const english = await screen.findByRole("option", { name: "English" });
+    const french = await screen.findByRole("option", { name: "Français" });
 
     // The selected item is the one the keyboard lands on, not the first.
-    expect(english.getAttribute('aria-selected')).toBe('true');
+    expect(english.getAttribute("aria-selected")).toBe("true");
     // `waitFor`, not a bare `expect`: Base UI moves focus onto the
     // highlighted item AFTER the listbox is in the document, so
     // `findByRole('listbox')` above can resolve a tick before focus lands.
@@ -79,7 +84,7 @@ describe('Select', () => {
       expect(document.activeElement).toBe(english);
     });
 
-    fireEvent.keyDown(list, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(list, { key: "ArrowDown", code: "ArrowDown" });
     await waitFor(() => {
       expect(document.activeElement).toBe(french);
     });

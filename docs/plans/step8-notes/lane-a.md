@@ -9,13 +9,13 @@ VM). That matters for one finding and is stated where it does.
 
 ## 1. What landed
 
-| Deliverable | State |
-|---|---|
-| Both rails, six outcomes, each printing the intent's public fields, the `failure_code` and the signature-verified webhook | **done** |
+| Deliverable                                                                                                                                        | State                                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Both rails, six outcomes, each printing the intent's public fields, the `failure_code` and the signature-verified webhook                          | **done**                                                            |
 | `compose.demo.yml` `name: ${VPAY_DEMO_PROJECT:-vpay-demo}`; `demo_project`/`demo_port`/`demo_receiver_port` used consistently by every demo recipe | **done at the Compose layer, incomplete at the `.e2e/` layer** — §4 |
-| Split recipes `demo`, `demo-up`, `demo-walk`, `demo-status`, `demo-down`; readiness by `--wait` on healthchecks | **done** |
-| `docs/runbooks/demo.md` with real pasted output, linked from README and `docs/runbooks/README.md` | **done** |
-| A green `just demo` from nothing | **NOT achieved — §3.** A real vpay defect, not a demo defect. |
+| Split recipes `demo`, `demo-up`, `demo-walk`, `demo-status`, `demo-down`; readiness by `--wait` on healthchecks                                    | **done**                                                            |
+| `docs/runbooks/demo.md` with real pasted output, linked from README and `docs/runbooks/README.md`                                                  | **done**                                                            |
+| A green `just demo` from nothing                                                                                                                   | **NOT achieved — §3.** A real vpay defect, not a demo defect.       |
 
 Files: `examples/merchant-demo/src/main.rs`,
 `backends/tests/conformance/wiremock/{mtn,orange}/mappings/demo-outcomes.json`,
@@ -40,8 +40,9 @@ Files: `examples/merchant-demo/src/main.rs`,
   Docker daemon timing out creating a container at load average 20+, with
   `case_2_orange_money` passing beside it at 201 s. Infrastructure, not the
   mappings; it passed on a quieter machine with the same tree.
+
 - **`cargo fmt --all -- --check`**, **`cargo clippy -p merchant-demo
-  --all-targets -- -D warnings`**, **`just verify`**: clean.
+--all-targets -- -D warnings`**, **`just verify`**: clean.
 - **The walkthrough went green twice**, six outcomes for six, exit 0 — once
   standalone and once on a second concurrent stack. One is pasted verbatim in
   `docs/runbooks/demo.md` §4.
@@ -53,14 +54,14 @@ Files: `examples/merchant-demo/src/main.rs`,
 Nothing rewrites stored state to force an outcome; every one is selected at the
 stub by a field the merchant controls.
 
-| # | Rail | Steered by | Settles to | `failure_code` |
-|---|---|---|---|---|
-| 1 | `mtn_momo` | MSISDN `237600000ce0` (existing `mtn-e2e-poll`) | `succeeded` | — |
-| 2 | `mtn_momo` | MSISDN `237600000f01` (**new** `mtn-demo-decline`) | `requires_payment_method` | `insufficient_funds` |
-| 3 | `mtn_momo` | MSISDN `237600000f02` (**new** `mtn-demo-expiry`) | `requires_payment_method` | `payer_timeout` |
-| 4 | `orange_money` | 5000 XAF (falls through to the catch-all SUCCESS) | `succeeded` | — |
-| 5 | `orange_money` | 5001 XAF (**new**, `EXPIRED`) | `requires_payment_method` | `payer_timeout` |
-| 6 | `orange_money` | 5002 XAF (**new**, `FAILED`) | `requires_payment_method` | `provider_error` |
+| #   | Rail           | Steered by                                         | Settles to                | `failure_code`       |
+| --- | -------------- | -------------------------------------------------- | ------------------------- | -------------------- |
+| 1   | `mtn_momo`     | MSISDN `237600000ce0` (existing `mtn-e2e-poll`)    | `succeeded`               | —                    |
+| 2   | `mtn_momo`     | MSISDN `237600000f01` (**new** `mtn-demo-decline`) | `requires_payment_method` | `insufficient_funds` |
+| 3   | `mtn_momo`     | MSISDN `237600000f02` (**new** `mtn-demo-expiry`)  | `requires_payment_method` | `payer_timeout`      |
+| 4   | `orange_money` | 5000 XAF (falls through to the catch-all SUCCESS)  | `succeeded`               | —                    |
+| 5   | `orange_money` | 5001 XAF (**new**, `EXPIRED`)                      | `requires_payment_method` | `payer_timeout`      |
+| 6   | `orange_money` | 5002 XAF (**new**, `FAILED`)                       | `requires_payment_method` | `provider_error`     |
 
 **MTN's expiry is `COULD_NOT_PERFORM_TRANSACTION`, not `EXPIRED`.** `EXPIRED`
 is Orange's status string; MTN documents `PENDING`/`SUCCESSFUL`/`FAILED` only,
@@ -102,10 +103,10 @@ Window = the rail call plus two commits. Normally tens of ms; **measured at
 
 ### Two observed outcomes, both bad
 
-| Rail | Branch | Merchant got | Database holds |
-|---|---|---|---|
-| MTN (push) | `RecoveryAction::Advance` (`handlers.rs:295`) | `500` | intent `succeeded`; a `payment_intent.succeeded` webhook **was delivered** |
-| Orange (redirect) | `RecoveryAction::FailDeadOrder` — taken **unconditionally** for `ProviderFlow::Redirect` with no age check, `backends/crates/vpay-worker/src/recovery.rs:179` | `500` | charge `failed`, `failure_code = provider_unavailable`, `failure_raw` = "the rail's submit response was lost before its token could be committed; the payer was never handed a redirect URL" — **while the confirm held exactly that token** |
+| Rail              | Branch                                                                                                                                                        | Merchant got | Database holds                                                                                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MTN (push)        | `RecoveryAction::Advance` (`handlers.rs:295`)                                                                                                                 | `500`        | intent `succeeded`; a `payment_intent.succeeded` webhook **was delivered**                                                                                                                                                                   |
+| Orange (redirect) | `RecoveryAction::FailDeadOrder` — taken **unconditionally** for `ProviderFlow::Redirect` with no age check, `backends/crates/vpay-worker/src/recovery.rs:179` | `500`        | charge `failed`, `failure_code = provider_unavailable`, `failure_raw` = "the rail's submit response was lost before its token could be committed; the payer was never handed a redirect URL" — **while the confirm held exactly that token** |
 
 Verified in the demo database:
 
@@ -166,7 +167,7 @@ literal in `.github/workflows/ci.yml` (lines 339 and 363), `just
 stripe-compat` (`justfile:1026`), `examples/merchant-stripe-node/index.mjs:48`,
 `sdks/stripe-compat/src/env.ts:105` and as `examples/merchant-demo`'s
 `DEFAULT_PRIVATE_KEY_FILE` (`main.rs:114`). Keying it on `demo_project` is the
-right fix and touches the CI e2e job, whose failure mode here is a *silent*
+right fix and touches the CI e2e job, whose failure mode here is a _silent_
 `invalid_client`. Out of this lane's blast radius with three sibling lanes in
 flight; recorded instead.
 
@@ -181,13 +182,11 @@ not harmless as a pattern. Escaped, with a comment saying why.
 
 ## 6. Status rows to add or change (verbatim, for lane E)
 
-**Change** the row `| Local demo (\`just demo\`, \`examples/merchant-demo\`, \`compose.demo.yml\`) | 🟡 |`
-(currently `docs/status.md:1126`) — append to its body:
+**Change** the row `| Local demo (\`just demo\`, \`examples/merchant-demo\`, \`compose.demo.yml\`) | 🟡 |`(currently`docs/status.md:1126`) — append to its body:
 
 > **Updated 2026-09-04 (Step 8, lane A): six steps became four, and the fourth is six payments on both rails.** The walkthrough is now a table — MTN push to `succeeded`, to `insufficient_funds` (payer decline) and to `payer_timeout` (the prompt expired); Orange redirect to `succeeded` with the `next_action.redirect_to_url` printed, to `payer_timeout` (the hosted page expired) and to `provider_error` (the rail refused and documents no reason) — and each one prints the intent's public fields, asserts the exact `last_payment_error.code`, and verifies the `Vpay-Signature` of the webhook that settlement produced, read out of the receiver's own request journal. **Every outcome is selected at the rail stub by a field a merchant controls** — the MSISDN on MTN (documentation numbers `237600000f01`/`237600000f02`, carried to the status query by WireMock scenario, since MTN's status query is a `GET` that steers no other way) and the amount on Orange (5001/5002, which travel on its `POST` status body) — never by rewriting stored state. `just demo` is now `demo-up` + `demo-walk`, both of which exist separately, alongside `demo-status` and `demo-down`; readiness is `docker compose up --wait` on healthchecks (both rail stubs gained one) plus an external `/healthz` poll for the two `FROM scratch` services that cannot carry one. `compose.demo.yml`'s `name:` reads `${VPAY_DEMO_PROJECT:-vpay-demo}` and three `just` variables (`demo_project`, `demo_port`, `demo_receiver_port`) let two stacks run at once — **proven by running both**, two networks, two volumes, two databases, and the second stack's walkthrough green while the first was up. **Still 🟡, and for a new reason: `just demo` from nothing has never been observed green.** Six walkthrough attempts on 2026-09-03/04 gave two greens (six outcomes for six, exit 0) and four `500`s on a confirm, every one of them the `write_matched_no_row` race between `vpay-api`'s confirm and `vpay-worker`'s immediately-runnable poll job — **a defect in vpay, not in the demo**, written up in `docs/runbooks/demo.md` §9 and `docs/plans/step8-notes/lane-a.md` §3. `docs/runbooks/demo.md` is the procedure, with the output of a real run pasted rather than narrated.
 
-**Change** the row `| \`just demo\` step 7 — the delivered webhook | 🟡 |`
-(currently `docs/status.md:962`) — retitle to `| \`just demo\` — the delivered webhook, per outcome | 🟡 |` and append:
+**Change** the row `| \`just demo\` step 7 — the delivered webhook | 🟡 |`(currently`docs/status.md:962`) — retitle to `| \`just demo\` — the delivered webhook, per outcome | 🟡 |` and append:
 
 > **Updated 2026-09-04 (Step 8, lane A): it is no longer one webhook but six**, one per outcome, and the verified event's `type` is now asserted against what that outcome must produce (`payment_intent.succeeded` / `payment_intent.payment_failed`) — so a run in which every payment was delivered as a success could not pass, which the single-outcome version could not have caught. **Re-observed passing on 2026-09-04**, six for six, on this pass's own authority rather than a previous pass's: the journal paste is in `docs/runbooks/demo.md` §4. Still 🟡 for the unchanged reason — the receiver is a WireMock host, not a merchant, and the demo has never run in CI.
 

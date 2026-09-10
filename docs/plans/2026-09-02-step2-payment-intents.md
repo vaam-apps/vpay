@@ -3,6 +3,7 @@
 # Step 2 — payment intents without a rail: implementation-ready design
 
 Decisions taken by the orchestrator (do not reopen):
+
 - D1 keep `one_charge_per_intent` unique and unscoped; add NON-unique partial `charges_live_idx`.
 - D2 charge carries the intent's currency verbatim; no conversion, no per-rail currency check this step.
 - D3 **Keep** the `/v1` auth layer (authenticated by construction) but make it validate ONCE: replace
@@ -24,6 +25,7 @@ Decisions taken by the orchestrator (do not reopen):
 - `ApiError` gains `NotFound { resource, id }`, `Conflict { message }`, `Forbidden`.
 
 ## 0. Facts about the tree (post Step 1)
+
 1. `vpay-api` links no adapter crate; `adapters()`/`adapter_registry()` live in `backends/apps/vpay-server/src/lib.rs:11,19`,
    consumed only by a log line in `main.rs`. `RouterDeps` (`vpay-api/src/lib.rs:~149`) has `pool`, `merchant_op`, `merchant_validator`.
 2. `RouterDeps` holds no `Config`; `livemode` (`config.deployment.livemode`) is unreachable from handlers today.
@@ -31,7 +33,9 @@ Decisions taken by the orchestrator (do not reopen):
 4. `from_extractor_with_state` discards the extracted value (axum 0.8) — see D3.
 
 ## 1. Migrations (0014–0018) — implementer A
+
 **0014_payment-intent-api-fields.sql** (hard cutover on 0003):
+
 ```sql
 ALTER TABLE payment_intents
   ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -52,6 +56,7 @@ CREATE INDEX payment_intents_merchant_seq_idx ON payment_intents (merchant_id, s
 ALTER TABLE charges ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX charges_live_idx ON charges (state) WHERE state IN ('submitting','submitted','pending','unresolved');
 ```
+
 (check the exact `charge_state` enum labels in 0004 and use them.)
 **0015_create-idempotency-keys.sql**: PK `(merchant_id, idempotency_key)`; `request_method TEXT`, `request_path TEXT`,
 `request_hash BYTEA CHECK (octet_length(request_hash)=32)`, `state TEXT CHECK (state IN ('in_flight','complete'))`,
@@ -69,6 +74,7 @@ fanout_state TEXT DEFAULT 'pending' CHECK IN ('pending','done'), created_at)`; `
 index `(seq) WHERE fanout_state='pending'`; unique on `seq`; index `(merchant_id, seq DESC)`.
 
 ## 2. vpay-db — implementer A
+
 `DbError` gains `UniqueViolation { constraint, source }` (Category::Conflict, code `resource_conflict`) and
 `ForeignKeyViolation { constraint, source }` (Category::InvalidRequest, code `invalid_reference`); helper `classify_write(sqlx::Error) -> DbError`
 (23505 → Unique, 23503 → FK, else Query). Every exhaustive `match` in `impl Classify for DbError` gets both arms.
@@ -82,6 +88,7 @@ provider_ref_extra: Option<Value>, redirect_url: Option<String>, state: String, 
 `enum IdempotencyClaim { Fresh, Replay(IdempotencyRecord), InFlight, Mismatch }`.
 
 Signatures C codes against, verbatim:
+
 ```rust
 // payment_intents.rs
 pub async fn insert(pool: &PgPool, new: &NewPaymentIntent) -> Result<PaymentIntentRow, DbError>;
@@ -105,12 +112,14 @@ pub struct ProviderSeed { pub code: String, pub display_name: String, pub flow: 
 pub struct CurrencySeed { pub code: String, pub exponent: i32 }
 pub async fn reconcile(pool: &PgPool, currencies: &[CurrencySeed], providers: &[ProviderSeed]) -> Result<(), DbError>;
 ```
+
 `claim`: `INSERT … ON CONFLICT (merchant_id, idempotency_key) DO NOTHING RETURNING …`; zero rows → SELECT existing and compare hash in constant time.
 `reconcile`: BEGIN; upsert currencies (check exponent against existing rows); upsert providers ON CONFLICT (code) DO UPDATE; `UPDATE providers SET enabled=false WHERE code <> ALL($codes)`; COMMIT.
 Docker tests in `vpay-db/tests/repositories.rs`: second charge → `UniqueViolation{constraint:"one_charge_per_intent"}` not Query; unknown currency → FK; stale `transition` → Ok(None) untouched;
 two concurrent `claim`s → exactly one Fresh; list cursor round trip over 25 rows; `reconcile` idempotent and flips enabled=false for a dropped code.
 
 ## 3. vpay-core — implementer B
+
 `state.rs`: `pub enum Transition { Create, Confirm(ProviderFlow), Cancel }`, `pub const fn next_status(from: IntentStatus, t: Transition) -> Option<IntentStatus>`;
 Confirm(Push): RequiresPaymentMethod → Processing; Confirm(Redirect): RequiresPaymentMethod → RequiresAction (route through `ProviderFlow::status_after_confirm`);
 Cancel: RequiresPaymentMethod → Canceled; everything else None. Initial `ChargeState` is `Submitting`.
@@ -118,6 +127,7 @@ Cancel: RequiresPaymentMethod → Canceled; everything else None. Initial `Charg
 `uuid` moves from vpay-api dev-deps to deps as needed.
 
 ## 4. vpay-api — B (form, idempotency extractor, model, ApiError variants) and C (handlers, wiring)
+
 Wire object (`vpay-api/src/model.rs`), exactly `sdks/rust/tests/support/mod.rs:134-149`; EMIT EVERY KEY incl. explicit nulls:
 `{ "id":"pi_…","object":"payment_intent","amount":5000,"currency":"xaf","status":"requires_payment_method","payment_method_types":["mtn_momo"],
 "next_action":null,"last_payment_error":null,"metadata":{},"description":null,"created":1753401600,"livemode":false }`;
@@ -149,12 +159,14 @@ the submitting charge row + NULL-status provider_request row are left on purpose
 enabled currency codes, enabled provider codes + ProviderConfig per rail), with `FromRef<AppState>` impls.
 
 ## 5. vpay-config — C
+
 `MerchantClient.merchant_id: String` (garde min 1); uniqueness across clients → new `ConfigError::DuplicateMerchantId` in `Config::validate_all`;
 add `merchant_id:` to `config/application.yml` and every fixture. `ProviderHost.enabled: bool` (`#[serde(default = "default_true")]`); no capability fields.
 Boot step 4 call site in BOTH binaries between `run_migrations` and `ensure_active_signing_key`: build `Vec<ProviderSeed>` by joining `config.providers`
 against the binary's own `adapters()`; a YAML provider code with no linked adapter is exit 78 (ConfigError).
 
 ## 6. Tests — C (`backends/tests/integration/tests/payment_intents.rs`, harness cloned from merchant_token_flow.rs)
+
 1 create_then_retrieve_round_trips_through_the_sdk; 2 a_replayed_idempotency_key_returns_the_same_object_and_no_second_row (count(*)=1);
 3 a_reused_key_with_a_different_body_is_the_400_envelope (type idempotency_error, code idempotency_key_in_use — check Category::Idempotency's actual code);
 4 a_second_confirm_cannot_produce_a_second_charge (count=1, second is 409); 5 confirm_reaches_the_adapter_and_renders_the_documented_501 (+ submitting charge row + NULL provider_request row);
@@ -164,6 +176,7 @@ against the binary's own `adapters()`; a YAML provider code with no linked adapt
 `just verify-ignored`: bump `expected_suites` by exactly the number of new test binaries.
 
 ## 7. Work split
+
 A: migrations 0014–0018, `vpay-db/src/{error,payment_intents,charges,idempotency,provider_requests,config_reconcile}.rs`, `vpay-db/src/lib.rs`, `vpay-db/tests/repositories.rs`.
 B: `vpay-core/src/{state,ids}.rs`, `vpay-api/src/{form,idempotency,model,error}.rs`, `vpay-api/Cargo.toml`.
 C: `vpay-config/src/{oauth,config,lib,error}.rs`, `config/application.yml`, fixtures, `vpay-api/src/v1/**`, `vpay-api/src/lib.rs` (RouterDeps, FromRef, routes, D3 middleware),
@@ -171,6 +184,7 @@ C: `vpay-config/src/{oauth,config,lib,error}.rs`, `config/application.yml`, fixt
 Shared files: none between A/B; C owns lib.rs/main.rs; docs/status.md is updated by the orchestrator after all three.
 
 ## 8. Docs (orchestrator, after)
+
 status.md: HTTP surface, Idempotency ⛔→🟡, Database schema (5→10 migrations), Config guard rails / YAML config loading (boot step 4 exists), ApiError row; no new NotImplemented token;
 `mtn_momo::submit`/`orange_money::submit` are reached from a shipping request path for the first time (501 is a real answer now). docs/api/README.md, flows/payment-lifecycle.md,
 crash-safety.md, merchant-auth.md, configuration.md Status; roadmap Phase 3; examples/merchant-demo extended to create + retrieve.

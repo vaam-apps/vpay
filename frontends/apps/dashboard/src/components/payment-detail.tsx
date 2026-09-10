@@ -1,8 +1,14 @@
-import { Alert, Heading, Stack, StatusBadge, Table, Text } from '@vpay/ui';
+import { Alert, Heading, Stack, StatusBadge, Table, Text } from "@vpay/ui";
 
-import { ABSENT, asPaymentStatus, formatAmount, formatInstant, formatMethods } from '../format';
-import type { PaymentDetail } from '../server/api';
-import { DetailTimeline } from './detail-timeline';
+import {
+  ABSENT,
+  asPaymentStatus,
+  formatAmount,
+  formatInstant,
+  formatMethods,
+} from "../format";
+import type { PaymentDetail } from "../server/api";
+import { DetailTimeline } from "./detail-timeline";
 
 export interface PaymentDetailViewProps {
   detail: PaymentDetail;
@@ -82,11 +88,17 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
             </tr>
             <tr>
               <th scope="row">Customer</th>
-              <td>{intent.customer === null ? ABSENT : <code>{intent.customer}</code>}</td>
+              <td>
+                {intent.customer === null ? (
+                  ABSENT
+                ) : (
+                  <code>{intent.customer}</code>
+                )}
+              </td>
             </tr>
             <tr>
               <th scope="row">Livemode</th>
-              <td>{intent.livemode ? 'yes' : 'no'}</td>
+              <td>{intent.livemode ? "yes" : "no"}</td>
             </tr>
           </tbody>
         </Table>
@@ -140,7 +152,9 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
               </tr>
               <tr>
                 <th scope="row">Payer (masked)</th>
-                <td data-testid="detail-payer">{charge.payer_ref_masked ?? ABSENT}</td>
+                <td data-testid="detail-payer">
+                  {charge.payer_ref_masked ?? ABSENT}
+                </td>
               </tr>
               <tr>
                 <th scope="row">vpay reference</th>
@@ -150,7 +164,13 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
               </tr>
               <tr>
                 <th scope="row">Rail transaction</th>
-                <td>{charge.provider_txn_id === null ? ABSENT : <code>{charge.provider_txn_id}</code>}</td>
+                <td>
+                  {charge.provider_txn_id === null ? (
+                    ABSENT
+                  ) : (
+                    <code>{charge.provider_txn_id}</code>
+                  )}
+                </td>
               </tr>
               <tr>
                 <th scope="row">Failure</th>
@@ -231,12 +251,12 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
           one screen with the same text.
         */}
         <Text tone="muted" size="xs" data-testid="timeline-gap">
-          Five of the eight documented event types are written by nothing —{' '}
-          <code>payment_intent.created</code>,{' '}
-          <code>payment_intent.processing</code>,{' '}
-          <code>payment_intent.canceled</code>, <code>charge.refunded</code>{' '}
-          and <code>charge.refund.updated</code> — so this is not the whole
-          history of a payment.
+          Five of the eight documented event types are written by nothing —{" "}
+          <code>payment_intent.created</code>,{" "}
+          <code>payment_intent.processing</code>,{" "}
+          <code>payment_intent.canceled</code>, <code>charge.refunded</code> and{" "}
+          <code>charge.refund.updated</code> — so this is not the whole history
+          of a payment.
         </Text>
       </section>
     </Stack>

@@ -12,7 +12,7 @@ using `private_key_jwt` client authentication (RFC 7523). This document is
 the wire contract the two merchant SDKs — [`sdks/rust`](../../sdks/rust) and
 [`sdks/nodejs`](../../sdks/nodejs) — implement, and the contract the server
 side (Phase 2/3 of the [roadmap](../roadmap.md)) must serve. Where the two
-disagree, the SDK is wrong *or* the server is wrong; neither may quietly
+disagree, the SDK is wrong _or_ the server is wrong; neither may quietly
 adapt to the other.
 
 Everything below was derived from what the pinned OP actually enforces —
@@ -44,18 +44,18 @@ merchant backend (SDK)                         vpay (as OP for /v1)
 
 ### 1. The client assertion
 
-| Part | Value | Why exactly this |
-|---|---|---|
-| Header `alg` | `RS256` | The registered JWK is RSA; the OP derives the permitted algorithm set from the *key*, never from the header (`assertion_algorithms`), and refuses `none`/`HS*` before loading any key |
-| Header `typ` | `JWT` | Conventional; the OP does not read it |
-| Header `kid` | Optional. If the merchant registered more than one key it is **required** and must match one registered `kid` exactly; with one registered key it may be omitted | `select_key`: no `kid` ⇒ the JWK Set must hold exactly one key, otherwise the assertion is refused rather than guessed |
-| `iss` | `client_id` | RFC 7523 §3 points 1–2; the OP checks `iss == sub == client_id` of the registration it loaded |
-| `sub` | `client_id` | same |
-| `aud` | The OP's own token endpoint URL or issuer, as a single string | RFC 7523 §3; the OP accepts either its token endpoint URL or its issuer identifier (`handlers/token.rs`, `authenticate_client`), **both derived from `deployment.public_base_url` and from nothing else**. The SDKs default it to the URL they POST to, which is right only when the merchant reaches vpay at the URL vpay publishes as its own — see below |
-| `jti` | UUIDv4, fresh per assertion | Spent exactly once server-side (`ClientAssertionStore`, backed by `oauth_client_assertion_jtis` — see [status](../status.md)). Reusing one is indistinguishable from a replay and is refused |
-| `exp` | `now + lifetime`, lifetime **1..=300 s**, default 60 | `MAX_CLIENT_ASSERTION_LIFETIME_SECS = 300` on both the minting (`authkestra-engine`) and verifying side; anything further out is refused. The SDKs reject a configured lifetime outside that range at construction rather than clamping silently |
-| `iat` | `now` | Emitted by `authkestra-engine`'s own minter; harmless to the OP, useful in logs |
-| `nbf` | Not emitted | Optional in RFC 7523 §3; the OP validates it only if present |
+| Part         | Value                                                                                                                                                            | Why exactly this                                                                                                                                                                                                                                                                                                                                            |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Header `alg` | `RS256`                                                                                                                                                          | The registered JWK is RSA; the OP derives the permitted algorithm set from the _key_, never from the header (`assertion_algorithms`), and refuses `none`/`HS*` before loading any key                                                                                                                                                                       |
+| Header `typ` | `JWT`                                                                                                                                                            | Conventional; the OP does not read it                                                                                                                                                                                                                                                                                                                       |
+| Header `kid` | Optional. If the merchant registered more than one key it is **required** and must match one registered `kid` exactly; with one registered key it may be omitted | `select_key`: no `kid` ⇒ the JWK Set must hold exactly one key, otherwise the assertion is refused rather than guessed                                                                                                                                                                                                                                      |
+| `iss`        | `client_id`                                                                                                                                                      | RFC 7523 §3 points 1–2; the OP checks `iss == sub == client_id` of the registration it loaded                                                                                                                                                                                                                                                               |
+| `sub`        | `client_id`                                                                                                                                                      | same                                                                                                                                                                                                                                                                                                                                                        |
+| `aud`        | The OP's own token endpoint URL or issuer, as a single string                                                                                                    | RFC 7523 §3; the OP accepts either its token endpoint URL or its issuer identifier (`handlers/token.rs`, `authenticate_client`), **both derived from `deployment.public_base_url` and from nothing else**. The SDKs default it to the URL they POST to, which is right only when the merchant reaches vpay at the URL vpay publishes as its own — see below |
+| `jti`        | UUIDv4, fresh per assertion                                                                                                                                      | Spent exactly once server-side (`ClientAssertionStore`, backed by `oauth_client_assertion_jtis` — see [status](../status.md)). Reusing one is indistinguishable from a replay and is refused                                                                                                                                                                |
+| `exp`        | `now + lifetime`, lifetime **1..=300 s**, default 60                                                                                                             | `MAX_CLIENT_ASSERTION_LIFETIME_SECS = 300` on both the minting (`authkestra-engine`) and verifying side; anything further out is refused. The SDKs reject a configured lifetime outside that range at construction rather than clamping silently                                                                                                            |
+| `iat`        | `now`                                                                                                                                                            | Emitted by `authkestra-engine`'s own minter; harmless to the OP, useful in logs                                                                                                                                                                                                                                                                             |
+| `nbf`        | Not emitted                                                                                                                                                      | Optional in RFC 7523 §3; the OP validates it only if present                                                                                                                                                                                                                                                                                                |
 
 The OP allows 60 s of clock leeway (`jsonwebtoken`'s default), so a merchant
 clock a few seconds off still authenticates.
@@ -74,8 +74,8 @@ lifetime are all correct — the response says nothing about audiences, so this
 is not a failure a merchant diagnoses from the wire.
 
 That is a **third** string, not a redefinition of either of the two beside it,
-and the three are worth keeping apart: the *token endpoint* is where the request
-is POSTed and nobody compares it; the *assertion audience* is what the OP calls
+and the three are worth keeping apart: the _token endpoint_ is where the request
+is POSTed and nobody compares it; the _assertion audience_ is what the OP calls
 itself; and the `audience` **request parameter** (`vpay:v1`, the next table) is
 the resource server the minted token is for. It is
 [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)-adjacent and changes
@@ -86,14 +86,14 @@ conflating the first two.
 
 `POST` to the token endpoint, `Content-Type: application/x-www-form-urlencoded`:
 
-| Field | Value |
-|---|---|
-| `grant_type` | `client_credentials` |
-| `client_id` | the merchant's `client_id` (RFC 7521 §4.2 makes it optional alongside an assertion; the SDKs always send it so a log line names the caller even when the assertion fails to parse) |
-| `client_assertion_type` | `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` |
-| `client_assertion` | the JWT from step 1 |
-| `audience` | `vpay:v1` (see below) |
-| `scope` | Only if the merchant configured one; otherwise omitted |
+| Field                   | Value                                                                                                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `grant_type`            | `client_credentials`                                                                                                                                                               |
+| `client_id`             | the merchant's `client_id` (RFC 7521 §4.2 makes it optional alongside an assertion; the SDKs always send it so a log line names the caller even when the assertion fails to parse) |
+| `client_assertion_type` | `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`                                                                                                                           |
+| `client_assertion`      | the JWT from step 1                                                                                                                                                                |
+| `audience`              | `vpay:v1` (see below)                                                                                                                                                              |
+| `scope`                 | Only if the merchant configured one; otherwise omitted                                                                                                                             |
 
 No `client_secret`, ever — the OP rejects a request presenting more than one
 client-authentication method (`extract_credential`), and a merchant
@@ -163,7 +163,7 @@ requires write, which is fail-closed
 `scopes:` from the YAML** — RFC 6749 §3.3's "locally defined default",
 defined here as the registration itself. Both SDKs omit `scope`, so this is
 the path every SDK call takes. Applied in `vpay_api::op::token::token_handler`
-before the grant runs, and it only ever *fills in* an omitted value: a
+before the grant runs, and it only ever _fills in_ an omitted value: a
 request naming a narrower scope keeps it, and anything outside the
 registration is still `invalid_scope`
 (`the_default_scope_is_the_clients_own_registration_and_nothing_wider`).
@@ -186,11 +186,11 @@ one `issuer` string: token endpoint = `{issuer}/token`, JWKS =
 (`OpConfig` in `config.rs`). The SDKs' **default** follows the existing
 [`examples/merchant-curl`](../../examples/merchant-curl/README.md):
 
-| | Default | Override |
-|---|---|---|
-| Issuer | `{base_url}/v1/oauth` | configurable |
+|                                      | Default                                        | Override     |
+| ------------------------------------ | ---------------------------------------------- | ------------ |
+| Issuer                               | `{base_url}/v1/oauth`                          | configurable |
 | Token endpoint (and assertion `aud`) | `{issuer}/token` → `{base_url}/v1/oauth/token` | configurable |
-| Resource base | `{base_url}/v1` | configurable |
+| Resource base                        | `{base_url}/v1`                                | configurable |
 
 **Decided by the server on 2026-09-02, and the SDK defaults were already
 right.** `vpay_api::op::issuer_for` derives the issuer as
@@ -201,7 +201,7 @@ the `iss` the validator pins and the `issuer` in the discovery document
 cannot drift apart. `the_issuer_and_endpoints_are_what_the_sdk_derives_from_a_base_url`
 pins the values; `the_jwks_and_discovery_documents_describe_this_process`
 compares the served discovery document against what the SDK derived on its
-own, over a booted server. It is a *deployment* setting, not a per-SDK one:
+own, over a booted server. It is a _deployment_ setting, not a per-SDK one:
 `/v1/oauth` is not configurable, because a deployment that moved it would
 silently break every merchant who took the default.
 
@@ -218,27 +218,27 @@ invention beyond the rails' payment-method names.
 Request bodies are `application/x-www-form-urlencoded`, bracket-nested the
 way Stripe's official SDKs encode them:
 
-| Shape | Wire form |
-|---|---|
-| scalar | `amount=5000` |
-| nested object | `metadata[order_id]=1234`, `payment_method_data[mtn_momo][msisdn]=237670000000` |
-| array | `payment_method_types[0]=mtn_momo&payment_method_types[1]=orange_money` (indexed, as `stripe-node`/`stripe-rust` send; the server must also accept the unindexed `payment_method_types[]=…` form the curl examples use, exactly as Stripe does) |
-| boolean | `true` / `false` |
-| integer | decimal, no separators; **amounts are integer minor units** ([money.md](money.md)) — both SDKs refuse a non-integer amount before it reaches the wire |
-| currency | lowercase on the wire (`xaf`), matching Stripe |
+| Shape         | Wire form                                                                                                                                                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| scalar        | `amount=5000`                                                                                                                                                                                                                                   |
+| nested object | `metadata[order_id]=1234`, `payment_method_data[mtn_momo][msisdn]=237670000000`                                                                                                                                                                 |
+| array         | `payment_method_types[0]=mtn_momo&payment_method_types[1]=orange_money` (indexed, as `stripe-node`/`stripe-rust` send; the server must also accept the unindexed `payment_method_types[]=…` form the curl examples use, exactly as Stripe does) |
+| boolean       | `true` / `false`                                                                                                                                                                                                                                |
+| integer       | decimal, no separators; **amounts are integer minor units** ([money.md](money.md)) — both SDKs refuse a non-integer amount before it reaches the wire                                                                                           |
+| currency      | lowercase on the wire (`xaf`), matching Stripe                                                                                                                                                                                                  |
 
 `GET` parameters use the same encoder into the query string. Responses are
 JSON.
 
 ### Headers
 
-| Header | When | Value |
-|---|---|---|
-| `Authorization` | always | `Bearer <access_token>` |
+| Header            | When         | Value                                                                                          |
+| ----------------- | ------------ | ---------------------------------------------------------------------------------------------- |
+| `Authorization`   | always       | `Bearer <access_token>`                                                                        |
 | `Idempotency-Key` | every `POST` | caller-supplied, else a UUIDv4 generated per call — so a network retry can never double-create |
-| `Content-Type` | `POST` | `application/x-www-form-urlencoded` |
-| `Accept` | always | `application/json` |
-| `User-Agent` | always | `vpay-sdk-rust/<version>` / `vpay-sdk-node/<version>` |
+| `Content-Type`    | `POST`       | `application/x-www-form-urlencoded`                                                            |
+| `Accept`          | always       | `application/json`                                                                             |
+| `User-Agent`      | always       | `vpay-sdk-rust/<version>` / `vpay-sdk-node/<version>`                                          |
 
 ### Idempotency
 
@@ -261,17 +261,17 @@ fields cannot be shifted across each other
 stored digest is compared in constant time (`subtle::ConstantTimeEq`) so the
 response cannot be used as a hash oracle.
 
-| What the caller did | What they get |
-|---|---|
-| Replayed a key whose first request finished | the **stored response body, byte for byte**, with its original status — `a_replayed_idempotency_key_returns_the_same_object_and_no_second_row` |
-| Replayed a key with a different body | `400` `idempotency_error`/`idempotency_key_in_use` — `a_reused_key_with_a_different_body_is_the_400_envelope` |
-| Sent a key whose first request is still running | `400` `idempotency_error`/`idempotency_key_in_flight` — `a_key_whose_first_request_is_still_running_is_answered_with_its_own_code` |
-| Retried after a `5xx` | the key was **released**; the retry re-executes — `a_5xx_releases_its_idempotency_key_so_the_retry_re_executes` |
-| Replayed after the deployment changed underneath | the original answer, unchanged — `a_replay_survives_the_rail_being_disabled` |
+| What the caller did                              | What they get                                                                                                                                  |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replayed a key whose first request finished      | the **stored response body, byte for byte**, with its original status — `a_replayed_idempotency_key_returns_the_same_object_and_no_second_row` |
+| Replayed a key with a different body             | `400` `idempotency_error`/`idempotency_key_in_use` — `a_reused_key_with_a_different_body_is_the_400_envelope`                                  |
+| Sent a key whose first request is still running  | `400` `idempotency_error`/`idempotency_key_in_flight` — `a_key_whose_first_request_is_still_running_is_answered_with_its_own_code`             |
+| Retried after a `5xx`                            | the key was **released**; the retry re-executes — `a_5xx_releases_its_idempotency_key_so_the_retry_re_executes`                                |
+| Replayed after the deployment changed underneath | the original answer, unchanged — `a_replay_survives_the_rail_being_disabled`                                                                   |
 
 Two orderings matter and are deliberate. The key is claimed **before** a
 create body is validated, so a replay short-circuits before a rule that has
-since changed can be re-evaluated; and a *validation* failure **releases**
+since changed can be re-evaluated; and a _validation_ failure **releases**
 the key rather than storing the `400`, so a merchant who fixes the
 deployment and retries under the same key gets the intent rather than a
 day-old refusal. The claim itself is one `INSERT … ON CONFLICT`, never
@@ -327,48 +327,48 @@ their refusals in [hosted-checkout.md](hosted-checkout.md); they are not
 repeated here rather than being restated in a second place that can drift.
 
 **Re-measured again on 2026-09-06** for S4a's five `/v1/customers` routes,
-which *are* listed below — unlike the Checkout Session ones, because these
+which _are_ listed below — unlike the Checkout Session ones, because these
 five are the whole of that resource's surface and there is nothing left over
 for a second document to own. The privacy rules around them, which no table
 can carry, are [customers.md](customers.md).
 
-| Method | Path | Request fields | Returns | Served |
-|---|---|---|---|---|
-| `POST` | `/v1/payment_intents` | `amount`, `currency`, `payment_method_types[]`, `metadata[…]`, `description`, `customer` | `payment_intent` | ✅ — `customer` was **accepted and dropped** until 2026-09-06 (S4a) and is now stored and rendered; see [customers.md](customers.md) |
-| `GET` | `/v1/payment_intents/{id}` | | `payment_intent` | ✅ |
-| `POST` | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent` | 🟡 reaches a rail over HTTP: `processing` / `requires_action`, `409 charge_declined`, `502`. 🟡 because that rail has only ever been a WireMock stub |
-| `POST` | `/v1/payment_intents/{id}/cancel` | | `payment_intent` | ✅ |
-| `GET` | `/v1/payment_intents` | `limit`, `starting_after`, `ending_before` | `list` of `payment_intent` | ✅ |
-| `POST` | `/v1/refunds` | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]` | `refund` | ⛔ 404 |
-| `GET` | `/v1/refunds/{id}` | | `refund` | ✅ |
-| `GET` | `/v1/events` | `limit`, `starting_after`, `ending_before`, `type` | `list` of `event` | ✅ since 2026-09-03 (Step 5), merchant-scoped and newest first (`events_are_listed_newest_first_scoped_to_the_merchant`). **`type` is accepted and ignored**, not refused — a filtered call gets an unfiltered page ([../status.md](../status.md)) |
-| `GET` | `/v1/events/{id}` | | `event` | ✅ since 2026-09-03 (Step 5). A foreign merchant's id is the same `404` a nonexistent one gets, byte for byte (`events_get_by_id_is_merchant_scoped`) |
-| `POST` | `/v1/customers` | `name`, `email`, `phone`, `metadata[…]` | `customer` | ✅ **New 2026-09-06 (S4a).** At least one of `name`/`email`/`phone` is required and **`phone` alone is enough** — the maintainer's decision of 2026-09-05 ([customers.md](customers.md)) |
-| `GET` | `/v1/customers/{id}` | | `customer` | ✅ |
-| `POST` | `/v1/customers/{id}` | `name`, `email`, `phone`, `metadata[…]` | `customer` | ✅ The update. A field sent **empty** is *cleared*, which is a different request from omitting it; clearing the last identifier is a `400` |
-| `GET` | `/v1/customers` | `limit`, `starting_after`, `ending_before` | `list` of `customer` | ✅ No `email` filter, deliberately ([customers.md](customers.md)) |
-| `DELETE` | `/v1/customers/{id}` | | `{"id", "object", "deleted": true}` | ✅ A **hard** delete, and the only `DELETE` on this API — so the only route where the `Idempotency-Key` this table requires on every write is carried on a verb with no body. A customer any intent or session references is a `409` and cannot be deleted at all |
-| `GET` | `/v1/balance` | | `balance` | ⛔ 404 |
-| `GET` | `/v1/account_holders` | `msisdn`, `payment_method_type` | `account_holder` | ✅ **New 2026-09-05 (issue #47).** Reaches the rail over HTTP; 🟡 in the sense every rail claim here is 🟡 — that rail has only ever been a WireMock stub. `payments:read` is enough. Nothing is persisted, and the response carries a name and nothing else ([account-holder-lookup.md](account-holder-lookup.md)) |
+| Method   | Path                               | Request fields                                                                                       | Returns                             | Served                                                                                                                                                                                                                                                                                                              |
+| -------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/v1/payment_intents`              | `amount`, `currency`, `payment_method_types[]`, `metadata[…]`, `description`, `customer`             | `payment_intent`                    | ✅ — `customer` was **accepted and dropped** until 2026-09-06 (S4a) and is now stored and rendered; see [customers.md](customers.md)                                                                                                                                                                                |
+| `GET`    | `/v1/payment_intents/{id}`         |                                                                                                      | `payment_intent`                    | ✅                                                                                                                                                                                                                                                                                                                  |
+| `POST`   | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent`                    | 🟡 reaches a rail over HTTP: `processing` / `requires_action`, `409 charge_declined`, `502`. 🟡 because that rail has only ever been a WireMock stub                                                                                                                                                                |
+| `POST`   | `/v1/payment_intents/{id}/cancel`  |                                                                                                      | `payment_intent`                    | ✅                                                                                                                                                                                                                                                                                                                  |
+| `GET`    | `/v1/payment_intents`              | `limit`, `starting_after`, `ending_before`                                                           | `list` of `payment_intent`          | ✅                                                                                                                                                                                                                                                                                                                  |
+| `POST`   | `/v1/refunds`                      | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]`                                  | `refund`                            | ⛔ 404                                                                                                                                                                                                                                                                                                              |
+| `GET`    | `/v1/refunds/{id}`                 |                                                                                                      | `refund`                            | ✅                                                                                                                                                                                                                                                                                                                  |
+| `GET`    | `/v1/events`                       | `limit`, `starting_after`, `ending_before`, `type`                                                   | `list` of `event`                   | ✅ since 2026-09-03 (Step 5), merchant-scoped and newest first (`events_are_listed_newest_first_scoped_to_the_merchant`). **`type` is accepted and ignored**, not refused — a filtered call gets an unfiltered page ([../status.md](../status.md))                                                                  |
+| `GET`    | `/v1/events/{id}`                  |                                                                                                      | `event`                             | ✅ since 2026-09-03 (Step 5). A foreign merchant's id is the same `404` a nonexistent one gets, byte for byte (`events_get_by_id_is_merchant_scoped`)                                                                                                                                                               |
+| `POST`   | `/v1/customers`                    | `name`, `email`, `phone`, `metadata[…]`                                                              | `customer`                          | ✅ **New 2026-09-06 (S4a).** At least one of `name`/`email`/`phone` is required and **`phone` alone is enough** — the maintainer's decision of 2026-09-05 ([customers.md](customers.md))                                                                                                                            |
+| `GET`    | `/v1/customers/{id}`               |                                                                                                      | `customer`                          | ✅                                                                                                                                                                                                                                                                                                                  |
+| `POST`   | `/v1/customers/{id}`               | `name`, `email`, `phone`, `metadata[…]`                                                              | `customer`                          | ✅ The update. A field sent **empty** is _cleared_, which is a different request from omitting it; clearing the last identifier is a `400`                                                                                                                                                                          |
+| `GET`    | `/v1/customers`                    | `limit`, `starting_after`, `ending_before`                                                           | `list` of `customer`                | ✅ No `email` filter, deliberately ([customers.md](customers.md))                                                                                                                                                                                                                                                   |
+| `DELETE` | `/v1/customers/{id}`               |                                                                                                      | `{"id", "object", "deleted": true}` | ✅ A **hard** delete, and the only `DELETE` on this API — so the only route where the `Idempotency-Key` this table requires on every write is carried on a verb with no body. A customer any intent or session references is a `409` and cannot be deleted at all                                                   |
+| `GET`    | `/v1/balance`                      |                                                                                                      | `balance`                           | ⛔ 404                                                                                                                                                                                                                                                                                                              |
+| `GET`    | `/v1/account_holders`              | `msisdn`, `payment_method_type`                                                                      | `account_holder`                    | ✅ **New 2026-09-05 (issue #47).** Reaches the rail over HTTP; 🟡 in the sense every rail claim here is 🟡 — that rail has only ever been a WireMock stub. `payments:read` is enough. Nothing is persisted, and the response carries a name and nothing else ([account-holder-lookup.md](account-holder-lookup.md)) |
 
 ### Objects
 
 `payment_intent`
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | string | `pi_…` |
-| `object` | `"payment_intent"` | |
-| `amount` | integer | minor units |
-| `currency` | string | lowercase |
-| `status` | enum | exactly `vpay_core::state::IntentStatus`'s five values: `requires_payment_method`, `requires_action`, `processing`, `succeeded`, `canceled` — there is no `failed` status ([payment-lifecycle.md](payment-lifecycle.md)) |
-| `payment_method_types` | string[] | rail codes: `mtn_momo`, `orange_money` |
-| `next_action` | object or null | redirect rails only: `{ "type": "redirect_to_url", "redirect_to_url": { "url": "…", "return_url": "…" } }` |
-| `last_payment_error` | object or null | `{ "code": <failure taxonomy>, "message": "…" }` — `code` is one of [failures.md](failures.md)'s closed vocabulary |
-| `metadata` | object of string→string | |
-| `description` | string or null | |
-| `created` | integer | Unix seconds |
-| `livemode` | boolean | |
+| Field                  | Type                    | Notes                                                                                                                                                                                                                    |
+| ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                   | string                  | `pi_…`                                                                                                                                                                                                                   |
+| `object`               | `"payment_intent"`      |                                                                                                                                                                                                                          |
+| `amount`               | integer                 | minor units                                                                                                                                                                                                              |
+| `currency`             | string                  | lowercase                                                                                                                                                                                                                |
+| `status`               | enum                    | exactly `vpay_core::state::IntentStatus`'s five values: `requires_payment_method`, `requires_action`, `processing`, `succeeded`, `canceled` — there is no `failed` status ([payment-lifecycle.md](payment-lifecycle.md)) |
+| `payment_method_types` | string[]                | rail codes: `mtn_momo`, `orange_money`                                                                                                                                                                                   |
+| `next_action`          | object or null          | redirect rails only: `{ "type": "redirect_to_url", "redirect_to_url": { "url": "…", "return_url": "…" } }`                                                                                                               |
+| `last_payment_error`   | object or null          | `{ "code": <failure taxonomy>, "message": "…" }` — `code` is one of [failures.md](failures.md)'s closed vocabulary                                                                                                       |
+| `metadata`             | object of string→string |                                                                                                                                                                                                                          |
+| `description`          | string or null          |                                                                                                                                                                                                                          |
+| `created`              | integer                 | Unix seconds                                                                                                                                                                                                             |
+| `livemode`             | boolean                 |                                                                                                                                                                                                                          |
 
 `refund`: `id` (`re_…`), `object: "refund"`, `amount`, `currency`,
 `payment_intent`, `status` (`pending` \| `succeeded` \| `failed` \| `canceled`),
@@ -382,11 +382,11 @@ payer's money and a buyer's refund never nets a fee.
 
 Its nullability is the point of the field, not a detail of it:
 
-| `fee` | means |
-|---|---|
-| `null` | the rail reported no fee. **Not zero.** |
-| `0` | the rail reported that the movement was free |
-| *n* | the rail charged *n* minor units of `currency` |
+| `fee`  | means                                          |
+| ------ | ---------------------------------------------- |
+| `null` | the rail reported no fee. **Not zero.**        |
+| `0`    | the rail reported that the movement was free   |
+| _n_    | the rail charged _n_ minor units of `currency` |
 
 A merchant building a settlement statement shows a line for `0` and shows
 nothing for `null`. Substituting one for the other — `fee ?? 0` in TypeScript,
@@ -453,14 +453,14 @@ that is the merchant's job, and the docs say so where the verifier is used.
 
 ## What can go wrong
 
-| Failure | Where it surfaces | What the SDK does |
-|---|---|---|
-| Wrong private key, unregistered `kid`, `client_id` typo | `401`/`400` from the token endpoint with `invalid_client` | Returns an authentication error; no retry |
-| Merchant disabled via `disabled_clients` ([status](../status.md)) | Token endpoint refuses, or a `/v1` route returns `401` | One re-auth attempt, then the error |
-| Assertion `exp` too far out (> 300 s) | Refused by the OP | Cannot happen: the SDK refuses to be configured that way |
-| Clock skew beyond 60 s | `invalid_client` | Returned; the message names the check that failed only as far as the OP does (it is deliberately not an oracle) |
-| Token endpoint path differs from the SDK default | `404` with the Stripe-shaped `unknown_route` envelope | Returned as an unexpected-response error; the fix is the `issuer`/`token_endpoint` setting |
-| Merchant's PR merged but a pod not yet restarted | `invalid_client` from one replica, success from another (ADR-0010's rolling-deploy window) | Returned; the merchant's own retry policy decides |
+| Failure                                                           | Where it surfaces                                                                          | What the SDK does                                                                                               |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| Wrong private key, unregistered `kid`, `client_id` typo           | `401`/`400` from the token endpoint with `invalid_client`                                  | Returns an authentication error; no retry                                                                       |
+| Merchant disabled via `disabled_clients` ([status](../status.md)) | Token endpoint refuses, or a `/v1` route returns `401`                                     | One re-auth attempt, then the error                                                                             |
+| Assertion `exp` too far out (> 300 s)                             | Refused by the OP                                                                          | Cannot happen: the SDK refuses to be configured that way                                                        |
+| Clock skew beyond 60 s                                            | `invalid_client`                                                                           | Returned; the message names the check that failed only as far as the OP does (it is deliberately not an oracle) |
+| Token endpoint path differs from the SDK default                  | `404` with the Stripe-shaped `unknown_route` envelope                                      | Returned as an unexpected-response error; the fix is the `issuer`/`token_endpoint` setting                      |
+| Merchant's PR merged but a pod not yet restarted                  | `invalid_client` from one replica, success from another (ADR-0010's rolling-deploy window) | Returned; the merchant's own retry policy decides                                                               |
 
 ## Known limitations (security review, 2026-09-02)
 
@@ -488,7 +488,7 @@ has not made:
 
 **Updated 2026-09-06: the whole kill-switch repository changed engine, and
 nothing else changed.** `disabled_clients` (the row in the failure table
-above) is read *and written* through CrateStack now —
+above) is read _and written_ through CrateStack now —
 `find_unique(id).run(&system_context())` for the lookup,
 `upsert(..).run(..)` for `disable_client` and
 `delete_many().where_(..).run(..)` for `enable_client`, all in
@@ -589,7 +589,7 @@ settles it, not this paragraph:
 
 - `an_sdk_client_authenticates_and_reaches_the_honest_404` — the Rust SDK
   mints an assertion, exchanges it for a token, and reaches `/v1` past the
-  authentication boundary. The 404 *is* the assertion: it is only reachable
+  authentication boundary. The 404 _is_ the assertion: it is only reachable
   with a valid token.
 - `a_v1_request_with_no_bearer_token_is_the_401_envelope` — the other side
   of the boundary, over a raw client the SDK cannot impersonate.
@@ -612,13 +612,13 @@ settles it, not this paragraph:
   freshly minted assertion and with every parameter its own handler would
   need, each answered **`unauthorized_client`/400**. This is what the
   "one grant only" claim at the top of this document actually rests on, and
-  it is also load-bearing for the *implementation*: `/v1`'s OP fills the
+  it is also load-bearing for the _implementation_: `/v1`'s OP fills the
   three `OpStore` slots those grants would use with fail-closed stores
   (`vpay_api::op::refusing_stores`) whose every method returns an error, and
   every authkestra grant handler renders a store error as `server_error` — so
   **`unauthorized_client` rather than `server_error`** is the proof that
   nothing reaches them. **Corrected 2026-09-05 by review:** an earlier version
-  of this bullet said a store error would be a *500*. It would not. This
+  of this bullet said a store error would be a _500_. It would not. This
   endpoint answers everything but `invalid_client` with a 400
   (`only_invalid_client_answers_401`, in `op/token.rs`, asserts that for
   `server_error` by name), so the status is the same either way and the error
@@ -672,10 +672,10 @@ work does not close them.
   writes either table.~~ **— corrected 2026-09-05, in both halves.**
   `/v1/events` and `/v1/events/{id}` have been served since Step 5
   (2026-09-03) and `events` is read by `vpay_db::Events`; `GET
-  /v1/refunds/{id}` is served as of issue #45 and `refunds` is read by
+/v1/refunds/{id}` is served as of issue #45 and `refunds` is read by
   `vpay_db::Refunds`. **Nothing writes either table from `/v1`**, and that is
   the part that is still true: `POST /v1/refunds` is unrouted, `GET
-  /v1/balance` is unrouted, and events are written only by the settlement
+/v1/balance` is unrouted, and events are written only by the settlement
   and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
   migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
   never written**: the column is in the repository's projection and the key
@@ -705,11 +705,11 @@ What the SDKs themselves prove is unchanged by any of this:
 
 - **Rust SDK** (`sdks/rust`, crate `vpay-sdk`): the assertion it mints is
   accepted by the real verifier, `authkestra_op::client_assertion::
-  verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
+verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
   holding the corresponding public JWK — with and without a `kid` — and an
   assertion signed by a different key, or for a different audience, is
   refused by that same verifier (`tests/op_conformance.rs`). Since
-  2026-09-02 the same check runs against the registration the *server*
+  2026-09-02 the same check runs against the registration the _server_
   builds from YAML, in `vpay-api`'s own tests
   (`an_sdk_minted_assertion_verifies_against_the_registration_this_module_builds`,
   with `an_assertion_signed_by_a_key_this_merchant_did_not_register_is_refused`
@@ -738,7 +738,7 @@ What the SDKs themselves prove is unchanged by any of this:
   and `the_real_verifier_accepts_the_same_client_once_assertion_audience_is_set`,
   which run a real `Client`'s assertion through the real pinned
   `authkestra_op` verifier, and by `examples/shop/src/server/vpay.test.ts` on
-  the Node side — verifier-*shaped* rather than the verifier itself, which is
+  the Node side — verifier-_shaped_ rather than the verifier itself, which is
   the standing Node gap two bullets up. [`docs/sdks/parity.md`](../sdks/parity.md)
   records the capability ✅/✅. **The defect this closed had never been caught by
   a test on either side**: it needed a merchant's server reaching vpay by a name

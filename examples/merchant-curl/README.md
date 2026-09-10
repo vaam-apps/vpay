@@ -3,7 +3,7 @@
 > **What runs, and what does not.** Every call below — including **confirm**
 > — executes against a running `vpay-server`. Confirm reaches the rail over
 > HTTP and, when the rail accepts, moves the intent to `processing` (push) or
-> `requires_action` (redirect). What is *not* built is everything after that:
+> `requires_action` (redirect). What is _not_ built is everything after that:
 > nothing asks the rail whether the payer approved, so an intent that reaches
 > `processing` stays there until a human looks. The reconciler is a later
 > step — see ../../docs/status.md and
@@ -16,10 +16,10 @@
 > unrouted; it had been wrong about `/v1/events` since Step 5 (2026-09-03).
 >
 > **Every `POST` under `/v1` requires an `Idempotency-Key` header.** The
-> *server* never defaults one: a `POST` without the header is refused with a
+> _server_ never defaults one: a `POST` without the header is refused with a
 > `400` naming `idempotency_key`, before anything is created. Both SDKs do
 > default one (a UUIDv4 per call), which is why this is only ever a curl
-> problem. Reuse the same key to retry the *same* request safely; use a new
+> problem. Reuse the same key to retry the _same_ request safely; use a new
 > key for a new request. See "Idempotency" below.
 >
 > Array parameters are shown in Stripe's curl style (`key[]=v`); the SDKs
@@ -82,7 +82,7 @@ makes the SDK's own network-level retry safe.
 Override it — `RequestOptions::new().with_idempotency_key("…")` in Rust,
 `{ idempotencyKey: "…" }` in Node — when the thing you must not do twice is
 bigger than one HTTP call: a key derived from your order id (say
-`order_1234_create`) makes the *whole operation* idempotent across process
+`order_1234_create`) makes the _whole operation_ idempotent across process
 restarts, a crashed job runner, or a queue that delivers the same message
 twice. A per-call UUID cannot protect you there, because the retry is a
 different call.
@@ -96,15 +96,15 @@ an error rather than a new object — see below.
 What the server does with a key:
 
 - **Missing or empty** → `400`, `{"error":{"type":"invalid_request_error",
-  "param":"idempotency_key", …}}`. Nothing is created.
-- **Same key, same body** → the *stored* response is replayed, byte for byte.
+"param":"idempotency_key", …}}`. Nothing is created.
+- **Same key, same body** → the _stored_ response is replayed, byte for byte.
   Nothing is created a second time. This is what makes a network retry safe.
 - **Same key, different body** → `400`,
   `{"error":{"type":"idempotency_error","code":"idempotency_key_in_use", …}}`.
 - **Same key, first request still running** → `400`,
   `{"error":{"type":"idempotency_error","code":"idempotency_key_in_flight", …}}`
-  — *"A request with this Idempotency-Key is still in progress; retry
-  shortly."* Retry the same call after a moment. Do **not** switch to a new
+  — _"A request with this Idempotency-Key is still in progress; retry
+  shortly."_ Retry the same call after a moment. Do **not** switch to a new
   key until you know how the first one ended: a new key is a new operation,
   and the first one may still be about to succeed.
 
@@ -114,7 +114,7 @@ What the server does with a key:
   the envelope's `code` (`vpay_sdk::Error::Api { code, .. }` in Rust,
   `VpayApiError.code` in Node); neither maps it to a distinct exception type.
 
-Which answers are *stored* for a replay, and which hand the key back:
+Which answers are _stored_ for a replay, and which hand the key back:
 
 - **`2xx` and most `4xx` are stored.** A `4xx` is your request's own outcome —
   re-running it would produce it again — so the retry is answered identically
@@ -129,7 +129,7 @@ Which answers are *stored* for a replay, and which hand the key back:
   confirm returns when the rail could not be reached. "We do not know whether
   the rail saw it" is the only honest thing to say, and freezing that for 24
   hours would answer a merchant retrying after the deployment was fixed with
-  the old outage. The retry therefore *re-executes*; that is safe because it
+  the old outage. The retry therefore _re-executes_; that is safe because it
   is not the key that prevents a double charge — the unique index behind "one
   charge per intent, forever" is, and a re-executed confirm meets it and
   answers `409`.
@@ -164,13 +164,13 @@ curl -X POST https://api.vpay.example/v1/payment_intents \
 
 The parameters, exactly:
 
-| Parameter | Required | Notes |
-|---|---|---|
-| `amount` | yes | Integer minor units, `1..=2^53-1`. |
-| `currency` | yes | Case-insensitive on the way in, lowercase on the way out. Must be one this deployment configures. |
+| Parameter                | Required | Notes                                                                                                                                         |
+| ------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `amount`                 | yes      | Integer minor units, `1..=2^53-1`.                                                                                                            |
+| `currency`               | yes      | Case-insensitive on the way in, lowercase on the way out. Must be one this deployment configures.                                             |
 | `payment_method_types[]` | yes, ≥ 1 | Rail codes. Each must be enabled on this deployment, or the create is refused — an intent naming a rail that is off could never be confirmed. |
-| `metadata[k]` | no | ≤ 50 keys, key ≤ 40 chars, value ≤ 500 chars. |
-| `description` | no | ≤ 1000 chars. Shown to you, never to the payer. |
+| `metadata[k]`            | no       | ≤ 50 keys, key ≤ 40 chars, value ≤ 500 chars.                                                                                                 |
+| `description`            | no       | ≤ 1000 chars. Shown to you, never to the payer.                                                                                               |
 
 ## Retrieve, and list
 
@@ -217,12 +217,12 @@ still confirmable on a rail that does settle in its currency.
 Three other answers this call can give, and what each means for your
 bookkeeping:
 
-| answer | what happened | what to do |
-|---|---|---|
-| `409` `charge_declined` | the rail **decided**: the charge is `failed` and the intent carries `last_payment_error` | read `last_payment_error.code` against [failures.md](../../docs/flows/failures.md); a retry is a **new** PaymentIntent |
-| `502` `provider_unavailable` | the rail could not be reached (or answered unreadably), and vpay does not know whether it saw the request. Nothing moved: the charge is still `submitting` | retry the same call under the same `Idempotency-Key`. If the first attempt did land, you get the **first** `409` below — poll, do not open a second intent |
-| `409`, message *"…is being resolved with the rail; poll `GET /v1/payment_intents/{id}` — do not create a new PaymentIntent."* | this intent already has a charge and that charge is **live** (`submitting`/`submitted`/`pending`/`unresolved`) | **do not open a second intent.** Poll the `GET`; the charge will resolve one way or the other. This is what you get when your `502` retry raced a submit the rail did receive |
-| `409`, message *"This payment intent already has a charge. One charge per intent, forever — create a new payment intent to try again."* | this intent's charge is **terminal** (`succeeded`/`failed`) | nothing is in flight; a retry is a new PaymentIntent |
+| answer                                                                                                                                  | what happened                                                                                                                                              | what to do                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `409` `charge_declined`                                                                                                                 | the rail **decided**: the charge is `failed` and the intent carries `last_payment_error`                                                                   | read `last_payment_error.code` against [failures.md](../../docs/flows/failures.md); a retry is a **new** PaymentIntent                                                        |
+| `502` `provider_unavailable`                                                                                                            | the rail could not be reached (or answered unreadably), and vpay does not know whether it saw the request. Nothing moved: the charge is still `submitting` | retry the same call under the same `Idempotency-Key`. If the first attempt did land, you get the **first** `409` below — poll, do not open a second intent                    |
+| `409`, message _"…is being resolved with the rail; poll `GET /v1/payment_intents/{id}` — do not create a new PaymentIntent."_           | this intent already has a charge and that charge is **live** (`submitting`/`submitted`/`pending`/`unresolved`)                                             | **do not open a second intent.** Poll the `GET`; the charge will resolve one way or the other. This is what you get when your `502` retry raced a submit the rail did receive |
+| `409`, message _"This payment intent already has a charge. One charge per intent, forever — create a new payment intent to try again."_ | this intent's charge is **terminal** (`succeeded`/`failed`)                                                                                                | nothing is in flight; a retry is a new PaymentIntent                                                                                                                          |
 
 **Nothing polls a `processing` intent yet.** The rail has the request; the
 worker that asks it how the payment ended is a later step

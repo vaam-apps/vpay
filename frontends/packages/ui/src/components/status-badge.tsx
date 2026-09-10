@@ -1,8 +1,11 @@
-import { statusLabel, statusTone, type PaymentStatus } from '@vpay/tokens';
+import { statusLabel, statusTone, type PaymentStatus } from "@vpay/tokens";
 
-import { Badge, type BadgeProps } from './badge';
+import { Badge, type BadgeProps } from "./badge";
 
-export interface StatusBadgeProps extends Omit<BadgeProps, 'tone' | 'children'> {
+export interface StatusBadgeProps extends Omit<
+  BadgeProps,
+  "tone" | "children"
+> {
   status: PaymentStatus;
 }
 
@@ -13,9 +16,20 @@ export interface StatusBadgeProps extends Omit<BadgeProps, 'tone' | 'children'> 
  * coloured green in one view and grey in another. Composes {@link Badge}
  * rather than carrying its own `cva` map — one badge variant map, not two.
  */
-export function StatusBadge({ status, size, className, ...rest }: StatusBadgeProps) {
+export function StatusBadge({
+  status,
+  size,
+  className,
+  ...rest
+}: StatusBadgeProps) {
   return (
-    <Badge tone={statusTone[status]} size={size} className={className} data-status={status} {...rest}>
+    <Badge
+      tone={statusTone[status]}
+      size={size}
+      className={className}
+      data-status={status}
+      {...rest}
+    >
       {statusLabel[status]}
     </Badge>
   );

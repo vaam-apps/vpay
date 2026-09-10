@@ -10,23 +10,23 @@ E to apply.
 
 Three commits, one per SDK, plus this record.
 
-| Commit | What |
-|---|---|
+| Commit    | What                                                                                                                                |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `2dce84e` | `@vpay/stripe-js`: `initEmbeddedCheckout`, `retrieveCheckoutSession`, the session routes on the browser stub, the README retraction |
-| `de9e480` | `sdks/nodejs`: `client.checkout.sessions.{create,retrieve,list,expire}` |
-| `547eeb6` | `sdks/rust`: `client.checkout().sessions()`, `CheckoutSession` with a redacting `Debug` |
-| `e5e59f3` | `docs/sdks/parity.md` rows, and this note |
-| _this_ | `payment_intent` expanded on the browser read — the integrator's 2026-09-04 ruling (see item 1 below) |
+| `de9e480` | `sdks/nodejs`: `client.checkout.sessions.{create,retrieve,list,expire}`                                                             |
+| `547eeb6` | `sdks/rust`: `client.checkout().sessions()`, `CheckoutSession` with a redacting `Debug`                                             |
+| `e5e59f3` | `docs/sdks/parity.md` rows, and this note                                                                                           |
+| _this_    | `payment_intent` expanded on the browser read — the integrator's 2026-09-04 ruling (see item 1 below)                               |
 
 ### Counts
 
-| Suite | Before | After | Ignored / skipped |
-|---|---|---|---|
-| `pnpm --filter @vpay/stripe-js test` | 87 | **119** | 0 |
-| `pnpm --filter @vpay/sdk test` | 149 | **163** | 0 |
-| `cargo nextest run -p vpay-sdk` | 113 | **124** | 0 |
-| `cargo xtask verify-sdk-parity` | 267 proving tests, 24 gaps | **322 proving tests, 26 gaps** | — |
-| `cargo test --doc -p vpay-sdk` | 3 pass, 1 ignored | 3 pass, 1 ignored | the ignored one is the pre-existing ```` ```rust,ignore ```` block under the Rust README's "Errors" |
+| Suite                                | Before                     | After                          | Ignored / skipped                                                                             |
+| ------------------------------------ | -------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vpay/stripe-js test` | 87                         | **119**                        | 0                                                                                             |
+| `pnpm --filter @vpay/sdk test`       | 149                        | **163**                        | 0                                                                                             |
+| `cargo nextest run -p vpay-sdk`      | 113                        | **124**                        | 0                                                                                             |
+| `cargo xtask verify-sdk-parity`      | 267 proving tests, 24 gaps | **322 proving tests, 26 gaps** | —                                                                                             |
+| `cargo test --doc -p vpay-sdk`       | 3 pass, 1 ignored          | 3 pass, 1 ignored              | the ignored one is the pre-existing ` ```rust,ignore ` block under the Rust README's "Errors" |
 
 ## The guard-failure proofs
 
@@ -81,7 +81,7 @@ must send.
   required, not a relaxation: without it the page runs in an opaque origin
   and its `/v1/browser` requests carry `Origin: null`, which the CORS layer
   refuses. What the list withholds is `allow-top-navigation` — so the framed
-  page *cannot* navigate the merchant's tab, which is what makes
+  page _cannot_ navigate the merchant's tab, which is what makes
   `vpay:redirect` a necessity rather than a convention. **Lane 3 must not
   need popups, downloads or top-navigation from inside the frame.** If it
   does, this attribute is the thing to change, and changing it should be a
@@ -135,7 +135,7 @@ if lane 1 or lane 3 lands something else.
    `client_secret` present on the session read and absent on the return
    read — and **on `/v1` it stays the `pi_…` string**. Applied in the commit
    `fix(sdks): payment_intent is the expanded intent on the browser session
-   read` (named rather than hashed, because it carries this note and so
+read` (named rather than hashed, because it carries this note and so
    cannot cite its own hash): `@vpay/stripe-js`'s
    `CheckoutSession.payment_intent` is now `PaymentIntent`, both merchant
    SDKs keep `String`/`string` with the divergence named on the field
@@ -151,6 +151,7 @@ if lane 1 or lane 3 lands something else.
    SDKs have one — what holds for both credentials equally is that the
    `Stripe` object retains neither and no error it builds quotes either,
    and that is what the new test pins.
+
 2. **`vpay:complete`'s `session` member.** D8 writes
    `{type:'vpay:complete', session, status}` without saying whether `session`
    is the `cs_…` or the whole object. This lane reads it as the id (a string)
@@ -158,7 +159,7 @@ if lane 1 or lane 3 lands something else.
    `onComplete` will not fire.**
 3. **The uniform 404's message for a session.** The stub renders
    `No such checkout session: {id}`, by analogy with the intent's
-   `No such payment intent: {id}`. The *shape* is what the tests assert
+   `No such payment intent: {id}`. The _shape_ is what the tests assert
    (`invalid_request_error` / `resource_missing`, no `param`); the message
    text appears in a fixture only.
 
@@ -234,16 +235,16 @@ lanes 2 and 3's material.
 
 Run in this worktree, `CARGO_BUILD_JOBS=4`, no Docker.
 
-| Command | Result |
-|---|---|
-| `pnpm install --frozen-lockfile` | ok (the lockfile gained `jsdom ^25.0.1` under `sdks/stripe-js`, already resolved at 25.0.1 for `frontends/packages/ui`) |
-| `pnpm --filter @vpay/stripe-js test` | 119 passed, 8 files |
-| `pnpm --filter @vpay/sdk test` | 163 passed, 9 files |
-| `pnpm -r typecheck` | ok |
-| `just lint-web` | ok |
-| `cargo nextest run -p vpay-sdk` | 124 passed, 0 skipped |
-| `cargo clippy -p vpay-sdk --all-targets -- -D warnings` | ok |
-| `cargo fmt --all --check` | ok |
-| `cargo xtask verify-sdk-parity` | 322 proving tests, 26 dated gaps |
-| `just verify` | ok |
-| `just test-doc` | 3 passed, 1 ignored (pre-existing) |
+| Command                                                 | Result                                                                                                                  |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`                        | ok (the lockfile gained `jsdom ^25.0.1` under `sdks/stripe-js`, already resolved at 25.0.1 for `frontends/packages/ui`) |
+| `pnpm --filter @vpay/stripe-js test`                    | 119 passed, 8 files                                                                                                     |
+| `pnpm --filter @vpay/sdk test`                          | 163 passed, 9 files                                                                                                     |
+| `pnpm -r typecheck`                                     | ok                                                                                                                      |
+| `just lint-web`                                         | ok                                                                                                                      |
+| `cargo nextest run -p vpay-sdk`                         | 124 passed, 0 skipped                                                                                                   |
+| `cargo clippy -p vpay-sdk --all-targets -- -D warnings` | ok                                                                                                                      |
+| `cargo fmt --all --check`                               | ok                                                                                                                      |
+| `cargo xtask verify-sdk-parity`                         | 322 proving tests, 26 dated gaps                                                                                        |
+| `just verify`                                           | ok                                                                                                                      |
+| `just test-doc`                                         | 3 passed, 1 ignored (pre-existing)                                                                                      |

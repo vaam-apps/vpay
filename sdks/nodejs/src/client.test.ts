@@ -705,7 +705,9 @@ describe("resource methods", () => {
   // three into the same line. That is the bug the issue reports one layer up,
   // where an integrator shipped a hardcoded `provider_fee_minor: 0`.
   it("refunds.create keeps a fee of 0, null and absent as three different answers", async () => {
-    const cases: Array<[string, Record<string, unknown>, number | null | undefined]> = [
+    const cases: Array<
+      [string, Record<string, unknown>, number | null | undefined]
+    > = [
       ["a measured zero", { fee: 0 }, 0],
       ["nothing reported", { fee: null }, null],
       ["a real cost", { fee: 250 }, 250],
@@ -738,7 +740,9 @@ describe("resource methods", () => {
       // The distinction is only useful if it is *checkable*: `typeof` is the
       // narrowing the doc comment tells a caller to use, and it must be the
       // one that separates a measured zero from both flavours of unknown.
-      expect(typeof result.fee === "number", label).toBe(typeof expected === "number");
+      expect(typeof result.fee === "number", label).toBe(
+        typeof expected === "number",
+      );
     }
   });
 
@@ -2817,7 +2821,8 @@ describe("invoices", () => {
           error: {
             type: "invalid_request_error",
             code: "invoice_status",
-            message: "Invoice in_123 is paid, not open, so it cannot be voided.",
+            message:
+              "Invoice in_123 is paid, not open, so it cannot be voided.",
           },
         },
       }),
@@ -3067,7 +3072,10 @@ describe("invoices", () => {
 
     // The two Stripe types vpay deliberately does not write stay out of the
     // union: nothing writes them, so an entry would be a false claim.
-    const notEmitted = ["invoice.marked_uncollectible", "invoice.payment_failed"];
+    const notEmitted = [
+      "invoice.marked_uncollectible",
+      "invoice.payment_failed",
+    ];
     expect(notEmitted).not.toContain("invoice.paid");
   });
 });

@@ -54,7 +54,7 @@ on:
   # first evidence that this workflow works arrives on merge rather than on a
   # tag nobody wants to cut blind.
   push:
-    tags: ['v*']
+    tags: ["v*"]
     branches: [master]
 
 # Two publishes of the same ref must not race for the same tag. Not

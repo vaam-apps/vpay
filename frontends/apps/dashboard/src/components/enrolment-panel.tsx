@@ -1,4 +1,4 @@
-import { Alert, Heading, Stack, Text } from '@vpay/ui';
+import { Alert, Heading, Stack, Text } from "@vpay/ui";
 
 export interface EnrolmentPanelProps {
   /** The `otpauth://totp/…` URI vpay minted, as a PNG data URL. */

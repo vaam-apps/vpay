@@ -18,8 +18,8 @@ undelivered webhook that stayed undelivered while no worker ran, and the same
 container restarted delivering it in ~6 s, signed.
 
 Every SIGTERM in every suite went through `worker_kill9.rs`'s
-`stop_worker_cleanly`, whose own assertion string says *"a worker with nothing
-in flight"* — so the empty case was covered and the interesting one was not.
+`stop_worker_cleanly`, whose own assertion string says _"a worker with nothing
+in flight"_ — so the empty case was covered and the interesting one was not.
 
 ## The scenario
 
@@ -92,7 +92,7 @@ The case fails unless those four appear in that order. A `webhook delivered`
 before the drain began means the receiver answered before the signal arrived,
 and the run is rejected with a message saying to raise `RECEIVER_ACK_DELAY`
 rather than to relax the assertion. So the failure mode of a slow machine is
-*a loud, self-describing failure*, not a green run that proved nothing.
+_a loud, self-describing failure_, not a green run that proved nothing.
 
 **The overlap that the lease assertion needs is by construction.** See below.
 
@@ -119,14 +119,14 @@ That half of the hand measurement is still only a measurement.
 
 Both were run against the shipping code and reverted; neither is argued.
 
-| Mutation | Result |
-|---|---|
-| **Remove the drain** — `drain_tasks` aborts every task and returns `(Drain::Clean, 0)` the instant the signal is seen | **FAIL**: *the worker never logged `webhook delivered`*. The transcript shows `received SIGTERM` → `shutdown signalled` → `job loop stopped … drain=Clean` with no delivery between them. The receiver had already accepted the POST, so this is the lost delivery that becomes a double send as soon as anything retries |
-| **Remove the lease respect** — `locked_at IS NULL` and `FOR UPDATE SKIP LOCKED` dropped from `vpay_db::Jobs::claim` | **FAIL** on the double-send assertion, `left: 2  right: 1`, with two byte-identical signed POSTs of the same `evt_…` in the receiver's journal |
+| Mutation                                                                                                              | Result                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Remove the drain** — `drain_tasks` aborts every task and returns `(Drain::Clean, 0)` the instant the signal is seen | **FAIL**: _the worker never logged `webhook delivered`_. The transcript shows `received SIGTERM` → `shutdown signalled` → `job loop stopped … drain=Clean` with no delivery between them. The receiver had already accepted the POST, so this is the lost delivery that becomes a double send as soon as anything retries |
+| **Remove the lease respect** — `locked_at IS NULL` and `FOR UPDATE SKIP LOCKED` dropped from `vpay_db::Jobs::claim`   | **FAIL** on the double-send assertion, `left: 2  right: 1`, with two byte-identical signed POSTs of the same `evt_…` in the receiver's journal                                                                                                                                                                            |
 
 The second mutation is also why the assertions are ordered the way they are.
-On the first attempt it failed one assertion earlier, on *"a succeeded
-delivery's job must be deleted"* — true, but internal bookkeeping. The
+On the first attempt it failed one assertion earlier, on _"a succeeded
+delivery's job must be deleted"_ — true, but internal bookkeeping. The
 receiver's journal is what a merchant experiences, so that block was moved
 ahead of the delivery-row block and the mutation re-run to confirm it now
 reports the double send first.
@@ -141,17 +141,17 @@ tested one by whitespace and by where a line breaks inside a panic message.
 The case itself runs again in the full gate below, on the final head.
 
 | Run | Exit | Test wall clock |
-|---|---|---|
-| 1 | 0 | 48.3 s |
-| 2 | 0 | 35.9 s |
-| 3 | 0 | 33.9 s |
-| 4 | 0 | 31.6 s |
-| 5 | 0 | 38.8 s |
-| 6 | 0 | 39.5 s |
-| 7 | 0 | 30.4 s |
-| 8 | 0 | 30.7 s |
-| 9 | 0 | 32.2 s |
-| 10 | 0 | 99.8 s |
+| --- | ---- | --------------- |
+| 1   | 0    | 48.3 s          |
+| 2   | 0    | 35.9 s          |
+| 3   | 0    | 33.9 s          |
+| 4   | 0    | 31.6 s          |
+| 5   | 0    | 38.8 s          |
+| 6   | 0    | 39.5 s          |
+| 7   | 0    | 30.4 s          |
+| 8   | 0    | 30.7 s          |
+| 9   | 0    | 32.2 s          |
+| 10  | 0    | 99.8 s          |
 
 **10 passed, 0 failed, 0 skipped.** Run 10 is three times the median and still
 green, which is the run worth naming: the ordering assertion was armed for all

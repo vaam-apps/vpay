@@ -6,7 +6,7 @@ performed. [ADR-0013](../adr/0013-database-backups-and-retention.md) is
 **proposed**, not implemented. This runbook is written so that the drill it
 describes can be run the first time somebody has a backup to run it against.
 
-What *has* been done, on 2026-09-03: **every SQL statement below was executed
+What _has_ been done, on 2026-09-03: **every SQL statement below was executed
 against a scratch `postgres:16-alpine` with all 21 migrations applied**, on a
 fixture built to contain one torn ledger transaction. The queries run, and
 §4's ledger check found the torn transaction and then reported clean once it
@@ -17,16 +17,16 @@ of the evidence. See §7.
 
 ## 1. When to use this
 
-| Situation | Use this runbook? |
-|---|---|
-| Data loss or corruption in the primary database | Yes — §3 onward, against a scratch database first |
-| The quarterly drill ADR-0013 §6 requires | Yes — §2, then §4, then §6 |
-| A rolled-back deploy | **No.** Migrations do not roll back; see [release.md](release.md) §5 |
-| A retired signing key crash-looping the server | **No.** See [rotate-signing-key.md](rotate-signing-key.md) |
+| Situation                                       | Use this runbook?                                                    |
+| ----------------------------------------------- | -------------------------------------------------------------------- |
+| Data loss or corruption in the primary database | Yes — §3 onward, against a scratch database first                    |
+| The quarterly drill ADR-0013 §6 requires        | Yes — §2, then §4, then §6                                           |
+| A rolled-back deploy                            | **No.** Migrations do not roll back; see [release.md](release.md) §5 |
+| A retired signing key crash-looping the server  | **No.** See [rotate-signing-key.md](rotate-signing-key.md)           |
 
 ## 2. Restore into a scratch database. Always.
 
-**Never restore over a live database.** Restore to a *new* instance or a new
+**Never restore over a live database.** Restore to a _new_ instance or a new
 database name, verify it with §4, and only then decide whether to cut over.
 A restore that turns out to be to the wrong instant, over the live data, is
 the failure this rule exists to prevent — and vpay has no down-migrations to
@@ -35,7 +35,7 @@ undo it with.
 The restore command itself belongs to whoever operates the database, and is
 deliberately not written here:
 
-- **A managed provider**: its own PITR restore, which produces a *new*
+- **A managed provider**: its own PITR restore, which produces a _new_
   instance. Restoring in place is the option not to take.
 - **CloudNativePG**: a `Cluster` with a `bootstrap.recovery` stanza naming
   the `barmanObjectStore` and a `recoveryTarget` — a new `Cluster`, not the
@@ -49,7 +49,7 @@ so the instant you want is usually "immediately before the event", not
 
 **Both binaries run migrations at boot** (`vpay_db::run_migrations`). A
 restored database is already at the schema version its snapshot was taken at;
-starting a *newer* image against it migrates it forward, in place, with no
+starting a _newer_ image against it migrates it forward, in place, with no
 way back. Decide the image version before you start anything, and pin it by
 digest ([release.md](release.md) §4).
 
@@ -84,7 +84,7 @@ invariant is an aggregate over several rows, and a row-level `CHECK`
 evaluates one row at a time. This query is the only thing that checks it on
 restored data.
 
-And the transactions that lost *all* their entries, which the query above
+And the transactions that lost _all_ their entries, which the query above
 cannot see because it joins:
 
 ```sql
@@ -151,19 +151,19 @@ A successful `INSERT` here is the finding. `ROLLBACK` either way.
 None of these are errors. They are consequences of a correct restore, and
 nothing reports them.
 
-| What | Query | What to do |
-|---|---|---|
-| **Charges left mid-flight** | `SELECT state, COUNT(*) FROM charges WHERE state IN ('submitting','submitted','pending','unresolved') GROUP BY state;` | These are payments whose outcome the snapshot does not know. The poll ladder will chase them once the worker starts |
-| **Rail calls with no answer recorded** | `SELECT charge_id, provider_reference_id, operation, attempt, sent_at FROM provider_requests WHERE status_code IS NULL ORDER BY sent_at;` | The ambiguous set: the rail may have acted. [unresolved-charges.md](unresolved-charges.md) is the procedure, and `provider_reference_id` is what you search the rail by |
-| **Jobs that will re-run** | `SELECT kind, dedupe_key, attempts, run_at FROM jobs WHERE run_at <= now() AND locked_at IS NULL ORDER BY run_at;` | Read this list **before** starting the worker. `resubmit_charge` rows are the ones to think about (§3) |
-| **A revoked client is un-revoked** | `SELECT client_id, disabled_at, reason FROM disabled_clients ORDER BY disabled_at;` | Compare against why each was disabled. A revocation made after the restore instant is **gone**, and the client is live again — see [rotate-rail-credentials.md](rotate-rail-credentials.md) §3 |
-| **The replay window re-opened** | `SELECT COUNT(*) FROM oauth_client_assertion_jtis WHERE expires_at > now();` | Nothing to run; a fact to know. Assertions spent after the restore instant are spendable again until their own `exp` passes (ADR-0013). Merchant assertion lifetimes are short, so this closes on its own — it is not detectable while it is open |
-| **Which signing key the snapshot believes is active** | `SELECT kid, active, expires_at FROM oauth_signing_keys ORDER BY created_at;` | Must agree with the Secret you are about to mount. §6 |
+| What                                                  | Query                                                                                                                                     | What to do                                                                                                                                                                                                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Charges left mid-flight**                           | `SELECT state, COUNT(*) FROM charges WHERE state IN ('submitting','submitted','pending','unresolved') GROUP BY state;`                    | These are payments whose outcome the snapshot does not know. The poll ladder will chase them once the worker starts                                                                                                                               |
+| **Rail calls with no answer recorded**                | `SELECT charge_id, provider_reference_id, operation, attempt, sent_at FROM provider_requests WHERE status_code IS NULL ORDER BY sent_at;` | The ambiguous set: the rail may have acted. [unresolved-charges.md](unresolved-charges.md) is the procedure, and `provider_reference_id` is what you search the rail by                                                                           |
+| **Jobs that will re-run**                             | `SELECT kind, dedupe_key, attempts, run_at FROM jobs WHERE run_at <= now() AND locked_at IS NULL ORDER BY run_at;`                        | Read this list **before** starting the worker. `resubmit_charge` rows are the ones to think about (§3)                                                                                                                                            |
+| **A revoked client is un-revoked**                    | `SELECT client_id, disabled_at, reason FROM disabled_clients ORDER BY disabled_at;`                                                       | Compare against why each was disabled. A revocation made after the restore instant is **gone**, and the client is live again — see [rotate-rail-credentials.md](rotate-rail-credentials.md) §3                                                    |
+| **The replay window re-opened**                       | `SELECT COUNT(*) FROM oauth_client_assertion_jtis WHERE expires_at > now();`                                                              | Nothing to run; a fact to know. Assertions spent after the restore instant are spendable again until their own `exp` passes (ADR-0013). Merchant assertion lifetimes are short, so this closes on its own — it is not detectable while it is open |
+| **Which signing key the snapshot believes is active** | `SELECT kid, active, expires_at FROM oauth_signing_keys ORDER BY created_at;`                                                             | Must agree with the Secret you are about to mount. §6                                                                                                                                                                                             |
 
 Also: `idempotency_keys` older than the restore instant are gone with it, so a
 merchant retrying a `POST /v1` from before the snapshot is treated as a first
 attempt, not a replay. `one_charge_per_intent` still stops a second charge on
-the same intent; a second *intent* is a second payment.
+the same intent; a second _intent_ is a second payment.
 
 ## 6. The signing key is the second restore input
 

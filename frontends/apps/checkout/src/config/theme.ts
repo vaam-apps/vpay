@@ -33,7 +33,9 @@
 
 /** sRGB 0–1 → linear-light 0–1. The IEC 61966-2-1 transfer function. */
 function linearize(channel: number): number {
-  return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+  return channel <= 0.04045
+    ? channel / 12.92
+    : Math.pow((channel + 0.055) / 1.055, 2.4);
 }
 
 /** `#rrggbb` → three linear-light channels, or `null` if it is not that. */
@@ -41,7 +43,8 @@ function linearRgb(hex: string): [number, number, number] | null {
   if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
     return null;
   }
-  const channel = (start: number): number => Number.parseInt(hex.slice(start, start + 2), 16) / 255;
+  const channel = (start: number): number =>
+    Number.parseInt(hex.slice(start, start + 2), 16) / 255;
   return [linearize(channel(1)), linearize(channel(3)), linearize(channel(5))];
 }
 
@@ -62,7 +65,7 @@ function isDark([r, g, b]: [number, number, number]): boolean {
 }
 
 /** The theme every page renders under. daisyUI's own `bumblebee`. */
-export const THEME = 'bumblebee';
+export const THEME = "bumblebee";
 
 /**
  * The `<style>` body that applies an operator's colour, or `null`.
@@ -87,7 +90,7 @@ export function themeStyleSheet(primaryColor: string | null): string | null {
   if (rgb === null) {
     return null;
   }
-  const towards = isDark(rgb) ? 'white' : 'black';
+  const towards = isDark(rgb) ? "white" : "black";
   return (
     `:root[data-theme="${THEME}"]{` +
     `--color-primary:${primaryColor};` +

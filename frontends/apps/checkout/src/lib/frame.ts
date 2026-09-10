@@ -17,17 +17,17 @@
  * `event.origin` is not the framer is dropped without being read. Any page
  * that can get a handle to this frame's window can post to it.
  */
-import type { CheckoutSessionStatus } from './types';
+import type { CheckoutSessionStatus } from "./types";
 
 /** `{type:'vpay:resize', height}` — the parent sizes the iframe to the content. */
 export interface ResizeMessage {
-  type: 'vpay:resize';
+  type: "vpay:resize";
   height: number;
 }
 
 /** `{type:'vpay:complete', session, status}` — the payment reached a terminal state. */
 export interface CompleteMessage {
-  type: 'vpay:complete';
+  type: "vpay:complete";
   /** The checkout session's id. Never its `client_secret`. */
   session: string;
   status: CheckoutSessionStatus;
@@ -42,7 +42,7 @@ export interface CompleteMessage {
  * which is the merchant's own page — performs the navigation.
  */
 export interface RedirectMessage {
-  type: 'vpay:redirect';
+  type: "vpay:redirect";
   url: string;
 }
 
@@ -68,7 +68,7 @@ export type ChildMessage = ResizeMessage | CompleteMessage | RedirectMessage;
  *   send the merchant's own page to Orange Money out from under the payer.
  *   `CheckoutController` reads {@link FrameChannel.peer} to decide.
  */
-export type ChannelPeer = 'parent' | 'opener';
+export type ChannelPeer = "parent" | "opener";
 
 export interface FrameChannel {
   /** Which window is on the other end. */
@@ -103,17 +103,19 @@ export interface FrameChannelOptions {
  * `parent === self` would deliver the message to this very document), and a
  * page that was not opened by a script has no opener.
  */
-export function createFrameChannel(options: FrameChannelOptions): FrameChannel | null {
+export function createFrameChannel(
+  options: FrameChannelOptions,
+): FrameChannel | null {
   const { win, parentOrigin } = options;
-  const peer: ChannelPeer = options.peer ?? 'parent';
+  const peer: ChannelPeer = options.peer ?? "parent";
   // `Window.opener` is `any` in `lib.dom` — it is whatever the opener chose
   // to leave there for same-origin openers — so it is narrowed here rather
   // than trusted. Nothing is ever *read* off it: the only thing this channel
   // does with the handle is `postMessage` to a pinned origin.
   const opener: unknown = win.opener;
   const peerWindow: Window | null =
-    peer === 'opener'
-      ? typeof opener === 'object' && opener !== null
+    peer === "opener"
+      ? typeof opener === "object" && opener !== null
         ? (opener as Window)
         : null
       : win.parent;
@@ -136,24 +138,28 @@ export function createFrameChannel(options: FrameChannelOptions): FrameChannel |
     }
     options.onMessage?.(event.data);
   };
-  win.addEventListener('message', listener);
+  win.addEventListener("message", listener);
 
   // `ResizeObserver` is a global in `lib.dom`, not a member of `Window`, so
   // it is read off the injected window through a narrow cast rather than
   // reached for on `globalThis`: in a test the framed window is a stub, and
   // observing the *test runner's* document instead would prove nothing.
-  const ResizeObserverCtor = (win as unknown as { ResizeObserver?: typeof ResizeObserver })
-    .ResizeObserver;
+  const ResizeObserverCtor = (
+    win as unknown as { ResizeObserver?: typeof ResizeObserver }
+  ).ResizeObserver;
   let observer: ResizeObserver | null = null;
   // No height reporting to an opener: see {@link ChannelPeer}.
-  const observed = peer === 'parent' ? options.observe : undefined;
-  if (observed !== undefined && typeof ResizeObserverCtor === 'function') {
+  const observed = peer === "parent" ? options.observe : undefined;
+  if (observed !== undefined && typeof ResizeObserverCtor === "function") {
     const created = new ResizeObserverCtor((entries) => {
       const entry = entries[0];
       if (entry === undefined) {
         return;
       }
-      post({ type: 'vpay:resize', height: Math.ceil(entry.contentRect.height) });
+      post({
+        type: "vpay:resize",
+        height: Math.ceil(entry.contentRect.height),
+      });
     });
     created.observe(observed);
     observer = created;
@@ -166,7 +172,10 @@ export function createFrameChannel(options: FrameChannelOptions): FrameChannel |
   // once on `observe()` in a browser; posting here as well costs one
   // duplicate message and removes the dependency on that behaviour.
   if (observed !== undefined) {
-    post({ type: 'vpay:resize', height: Math.ceil(observed.getBoundingClientRect().height) });
+    post({
+      type: "vpay:resize",
+      height: Math.ceil(observed.getBoundingClientRect().height),
+    });
   }
 
   return {
@@ -174,11 +183,11 @@ export function createFrameChannel(options: FrameChannelOptions): FrameChannel |
     parentOrigin,
     post,
     postHeight(height: number): void {
-      post({ type: 'vpay:resize', height: Math.ceil(height) });
+      post({ type: "vpay:resize", height: Math.ceil(height) });
     },
     dispose(): void {
       observer?.disconnect();
-      win.removeEventListener('message', listener);
+      win.removeEventListener("message", listener);
     },
   };
 }

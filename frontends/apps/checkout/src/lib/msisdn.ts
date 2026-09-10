@@ -23,9 +23,9 @@
  */
 
 /** Cameroon's country calling code. */
-const CM_COUNTRY_CODE = '237';
+const CM_COUNTRY_CODE = "237";
 /** Every Cameroon mobile number begins with this digit. */
-const CM_MOBILE_PREFIX = '6';
+const CM_MOBILE_PREFIX = "6";
 /** Digits in a Cameroon national mobile number, the leading `6` included. */
 const CM_NATIONAL_DIGITS = 9;
 
@@ -36,10 +36,10 @@ const CM_NATIONAL_DIGITS = 9;
  * a literal one is invisible in a diff. Everything else makes the input
  * invalid.
  */
-const SEPARATORS = new Set([' ', '\t', '-', '.', '(', ')', '\u00a0', '\u202f']);
+const SEPARATORS = new Set([" ", "\t", "-", ".", "(", ")", "\u00a0", "\u202f"]);
 
 function isDigit(character: string): boolean {
-  return character >= '0' && character <= '9';
+  return character >= "0" && character <= "9";
 }
 
 /**
@@ -51,17 +51,17 @@ function isDigit(character: string): boolean {
  * show the payer the rule and let them retype it.
  */
 export function normalizeCameroonMsisdn(input: string): string | null {
-  if (typeof input !== 'string') {
+  if (typeof input !== "string") {
     return null;
   }
-  let digits = '';
+  let digits = "";
   let index = 0;
   const trimmed = input.trim();
-  if (trimmed.startsWith('+')) {
+  if (trimmed.startsWith("+")) {
     index = 1;
   }
   for (; index < trimmed.length; index += 1) {
-    const character = trimmed[index] ?? '';
+    const character = trimmed[index] ?? "";
     if (isDigit(character)) {
       digits += character;
       continue;
@@ -105,5 +105,5 @@ export function formatCameroonMsisdn(canonical: string): string {
   for (let at = 1; at < national.length; at += 2) {
     pairs.push(national.slice(at, at + 2));
   }
-  return `+${CM_COUNTRY_CODE} ${national.slice(0, 1)} ${pairs.join(' ')}`;
+  return `+${CM_COUNTRY_CODE} ${national.slice(0, 1)} ${pairs.join(" ")}`;
 }

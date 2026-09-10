@@ -1,12 +1,12 @@
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Meta, StoryObj } from "@storybook/react-vite";
 
-import { Radio, RadioGroup } from './radio';
+import { Radio, RadioGroup } from "./radio";
 
 const meta = {
-  title: 'Primitives/Radio',
+  title: "Primitives/Radio",
   component: RadioGroup,
-  parameters: { layout: 'centered' },
-  tags: ['autodocs'],
+  parameters: { layout: "centered" },
+  tags: ["autodocs"],
 } satisfies Meta<typeof RadioGroup>;
 
 export default meta;

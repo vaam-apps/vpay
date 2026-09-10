@@ -1,7 +1,7 @@
 # exp5 (docs class) — retiring the stale "release.yml has never run" claims
 
 Branch `claude/exp5-release-claims-opus`, base `master` 33d6c25, 2026-09-05.
-Docs only: no source, schema, or workflow *logic* changed — the one
+Docs only: no source, schema, or workflow _logic_ changed — the one
 `.github/workflows/release.yml` edit is inside a `#` comment block.
 
 ---
@@ -61,12 +61,12 @@ Each was also pushed to `:sha-33d6c253a232958604801518a08a2f34accb689c`.
 The `cosign sign (keyless, GitHub OIDC)` step in each `merge` job logged
 `Pushing signature to: ghcr.io/vaam-apps/vpay-<name>` and a Rekor entry:
 
-| Image | tlog index |
-|---|---|
-| `vpay-server` | 2717616118 |
-| `vpay-worker` | 2717617767 |
+| Image            | tlog index |
+| ---------------- | ---------- |
+| `vpay-server`    | 2717616118 |
+| `vpay-worker`    | 2717617767 |
 | `vpay-dashboard` | 2717616040 |
-| `vpay-checkout` | 2717615975 |
+| `vpay-checkout`  | 2717615975 |
 
 The build step also shows `--build-arg
 VPAY_GIT_SHA=33d6c253a232958604801518a08a2f34accb689c`, and
@@ -153,46 +153,46 @@ said "NOTHING IN THIS FILE HAS EVER RUN … nothing has been signed", and
 neither "HAS EVER RUN" nor "nothing has been signed" matches this pattern. It
 was found because the brief named it. Three further stale claims were found
 the same way — by reading the files the brief listed rather than by grepping
-— and are marked *(not a grep hit)* below. **The grep under-reports this
+— and are marked _(not a grep hit)_ below. **The grep under-reports this
 defect; that is worth knowing before anyone treats it as the detector.**
 
-| file:line (pre-edit) | class | action | measurement it now cites |
-|---|---|---|---|
-| `.github/workflows/release.yml:18-22` *(not a grep hit)* | **a** | header paragraph rewritten; original sentence quoted as history, dated correction added | run `33929374661`, 4 digests, 4 tlog indices |
-| `docs/runbooks/release.md:4` (header) | **a** | struck through + dated correction; the one true clause (**no `v*` tag**) called out and kept | 13 runs / 12 green; digest+tlog table; the 403 and the anonymous-pull refusal |
-| `docs/runbooks/release.md:166-167` (§6) *(not a grep hit)* | **a** | struck through + `Retired 2026-09-05` | run `33929374661` |
-| `docs/runbooks/release.md:168-170` (§6, arm64) *(not a grep hit)* | **a** | struck through; replaced with the two Rust-image arm64 jobs specifically | `build vpay-{server,worker} (arm64)` on `ubuntu-24.04-arm`, both `success` |
-| `docs/runbooks/release.md:173` (§6, `cosign verify`) | **c** | **left alone** | — still true; I did not run `cosign verify` |
-| `docs/runbooks/deploy-and-rollback.md:13-14` (header) *(not a grep hit)* | **a** | struck through + dated correction | server/worker index digests from `33929374661` |
-| `docs/runbooks/deploy-and-rollback.md:217, 218` (§6) | **a** | struck through + `Retired 2026-09-05`, with the still-unproven half stated | 13 runs / 12 green; visibility unmeasured |
-| `docs/flows/deployment.md:352-355` (§9) | **a** | body struck through, heading kept (it is still true) | run `33929374661`, four images; 403 + anonymous-pull refusal |
-| `docs/flows/deployment.md:475` (`vpay_build_info`) | **a** | struck through + dated correction | `--build-arg VPAY_GIT_SHA=33d6c25…` in the run log; `backends/Dockerfile:64` |
-| `docs/flows/deployment.md:418` (Step 7 correction) | **b** | **one dated clause added** (count 4 → 13/12; visibility attempted) | `gh run list`; the 403 |
-| `docs/flows/deployment.md:11` (chart "has never run") | **c** | **left alone** | still true — no cluster has run the chart (`docs/status.md`) |
-| `docs/flows/merchant-auth.md:486` | **a** | struck through + dated correction | CI run `33929374663`, 1159/1159, 163 integration tests, two named PASS lines |
-| `docs/runbooks/README.md:110` | **b** | **one dated clause added** | 13 runs / 12 green; run `33929374661` |
-| `deploy/helm/vpay/README.md:542` *(not a grep hit)* | **b/c** | trailing "publishing them is block A" struck; pull half kept | run `33929374661` |
-| `docs/status.md:1618` (image publishing) | **b** — already struck in Step 7 | **the one permitted dated sentence** (verbatim in §3 below) | four post-rename runs; the 403 |
-| `docs/status.md:1635` (`vpay_build_info`) | **a** | **struck through + dated correction — one status.md edit beyond the permitted sentence; see §3.1 for why** | `--build-arg VPAY_GIT_SHA=33d6c25…` in run `33929374661` |
-| `docs/status.md:657` | **b** | **left alone** — inside a note headed `Last verified: 2026-09-03, on branch claude/step6-deployment` | — |
-| `docs/status.md:1388` | **b** | **left alone** — "had never executed *before this pass*", explicitly past | — |
-| `docs/status.md:1592` | **b** | **left alone** — quotes a claim it is itself retiring | — |
-| `docs/status.md:1594` | **n/a** | **left alone** — "examples … are never run: the ```` ```no_run ```` fences" | — |
-| `docs/status.md:1763` | **c** | **left alone** — `cratestack migrate diff` genuinely never run | — |
-| `docs/status.md:998, 1390 (×2), 1391, 1405 (×2), 1409, 1830` | **a**, different family | **left alone deliberately — see §4** | — |
-| `docs/runbooks/rotate-signing-key.md:185` | **c** | **left alone** | still true — no cluster has ever run vpay |
-| `docs/sdks/parity.md:239, 240` | **c** | **left alone** | still true — dated gap rows, owned by SDK maintainers |
-| `docs/roadmap.md:603` | **a**, different family | **left alone** — inside `Status addendum — 2026-09-03 (Step 2, …)`; see §4 | — |
-| `docs/roadmap.md:827` | **c** | **left alone** | still true — no real rail has been called |
-| `docs/plans/2026-09-03-step6-deployment.md:190, 257` | **b** | **left alone** — dated plan document | — |
-| `docs/plans/2026-09-03-step7-cleanup-rework.md:28` | **b** | **left alone** — dated plan document | — |
-| `docs/plans/2026-09-04-step9-hosted-checkout.md:637` | **b** | **left alone** — dated plan document | — |
-| `docs/plans/step8-notes/lane-a.md:192`, `lane-d.md:76`, `lane-f.md:78` | **b** | **left alone** — dated lane notes | — |
-| `docs/plans/step9-notes/lane-4.md:312, 382`, `lane-5.md:195` | **b** | **left alone** — dated lane notes | — |
-| `.github/workflows/ci.yml:173` | **n/a** | **left alone** — "this job never runs Cypress" | — |
-| `deploy/helm/vpay/templates/deployment-worker.yaml:15` | **n/a** | **left alone** — "two workers never run the same job" | — |
-| `docs/reference/vpay-db.md:590` | **n/a** | **left alone** — "never runs on the rail that has URLs" | — |
-| `justfile:1694` | **n/a** | **left alone** — "is never running a path the one-liner does" | — |
+| file:line (pre-edit)                                                     | class                            | action                                                                                                     | measurement it now cites                                                      |
+| ------------------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `.github/workflows/release.yml:18-22` _(not a grep hit)_                 | **a**                            | header paragraph rewritten; original sentence quoted as history, dated correction added                    | run `33929374661`, 4 digests, 4 tlog indices                                  |
+| `docs/runbooks/release.md:4` (header)                                    | **a**                            | struck through + dated correction; the one true clause (**no `v*` tag**) called out and kept               | 13 runs / 12 green; digest+tlog table; the 403 and the anonymous-pull refusal |
+| `docs/runbooks/release.md:166-167` (§6) _(not a grep hit)_               | **a**                            | struck through + `Retired 2026-09-05`                                                                      | run `33929374661`                                                             |
+| `docs/runbooks/release.md:168-170` (§6, arm64) _(not a grep hit)_        | **a**                            | struck through; replaced with the two Rust-image arm64 jobs specifically                                   | `build vpay-{server,worker} (arm64)` on `ubuntu-24.04-arm`, both `success`    |
+| `docs/runbooks/release.md:173` (§6, `cosign verify`)                     | **c**                            | **left alone**                                                                                             | — still true; I did not run `cosign verify`                                   |
+| `docs/runbooks/deploy-and-rollback.md:13-14` (header) _(not a grep hit)_ | **a**                            | struck through + dated correction                                                                          | server/worker index digests from `33929374661`                                |
+| `docs/runbooks/deploy-and-rollback.md:217, 218` (§6)                     | **a**                            | struck through + `Retired 2026-09-05`, with the still-unproven half stated                                 | 13 runs / 12 green; visibility unmeasured                                     |
+| `docs/flows/deployment.md:352-355` (§9)                                  | **a**                            | body struck through, heading kept (it is still true)                                                       | run `33929374661`, four images; 403 + anonymous-pull refusal                  |
+| `docs/flows/deployment.md:475` (`vpay_build_info`)                       | **a**                            | struck through + dated correction                                                                          | `--build-arg VPAY_GIT_SHA=33d6c25…` in the run log; `backends/Dockerfile:64`  |
+| `docs/flows/deployment.md:418` (Step 7 correction)                       | **b**                            | **one dated clause added** (count 4 → 13/12; visibility attempted)                                         | `gh run list`; the 403                                                        |
+| `docs/flows/deployment.md:11` (chart "has never run")                    | **c**                            | **left alone**                                                                                             | still true — no cluster has run the chart (`docs/status.md`)                  |
+| `docs/flows/merchant-auth.md:486`                                        | **a**                            | struck through + dated correction                                                                          | CI run `33929374663`, 1159/1159, 163 integration tests, two named PASS lines  |
+| `docs/runbooks/README.md:110`                                            | **b**                            | **one dated clause added**                                                                                 | 13 runs / 12 green; run `33929374661`                                         |
+| `deploy/helm/vpay/README.md:542` _(not a grep hit)_                      | **b/c**                          | trailing "publishing them is block A" struck; pull half kept                                               | run `33929374661`                                                             |
+| `docs/status.md:1618` (image publishing)                                 | **b** — already struck in Step 7 | **the one permitted dated sentence** (verbatim in §3 below)                                                | four post-rename runs; the 403                                                |
+| `docs/status.md:1635` (`vpay_build_info`)                                | **a**                            | **struck through + dated correction — one status.md edit beyond the permitted sentence; see §3.1 for why** | `--build-arg VPAY_GIT_SHA=33d6c25…` in run `33929374661`                      |
+| `docs/status.md:657`                                                     | **b**                            | **left alone** — inside a note headed `Last verified: 2026-09-03, on branch claude/step6-deployment`       | —                                                                             |
+| `docs/status.md:1388`                                                    | **b**                            | **left alone** — "had never executed _before this pass_", explicitly past                                  | —                                                                             |
+| `docs/status.md:1592`                                                    | **b**                            | **left alone** — quotes a claim it is itself retiring                                                      | —                                                                             |
+| `docs/status.md:1594`                                                    | **n/a**                          | **left alone** — "examples … are never run: the ` ```no_run ` fences"                                      | —                                                                             |
+| `docs/status.md:1763`                                                    | **c**                            | **left alone** — `cratestack migrate diff` genuinely never run                                             | —                                                                             |
+| `docs/status.md:998, 1390 (×2), 1391, 1405 (×2), 1409, 1830`             | **a**, different family          | **left alone deliberately — see §4**                                                                       | —                                                                             |
+| `docs/runbooks/rotate-signing-key.md:185`                                | **c**                            | **left alone**                                                                                             | still true — no cluster has ever run vpay                                     |
+| `docs/sdks/parity.md:239, 240`                                           | **c**                            | **left alone**                                                                                             | still true — dated gap rows, owned by SDK maintainers                         |
+| `docs/roadmap.md:603`                                                    | **a**, different family          | **left alone** — inside `Status addendum — 2026-09-03 (Step 2, …)`; see §4                                 | —                                                                             |
+| `docs/roadmap.md:827`                                                    | **c**                            | **left alone**                                                                                             | still true — no real rail has been called                                     |
+| `docs/plans/2026-09-03-step6-deployment.md:190, 257`                     | **b**                            | **left alone** — dated plan document                                                                       | —                                                                             |
+| `docs/plans/2026-09-03-step7-cleanup-rework.md:28`                       | **b**                            | **left alone** — dated plan document                                                                       | —                                                                             |
+| `docs/plans/2026-09-04-step9-hosted-checkout.md:637`                     | **b**                            | **left alone** — dated plan document                                                                       | —                                                                             |
+| `docs/plans/step8-notes/lane-a.md:192`, `lane-d.md:76`, `lane-f.md:78`   | **b**                            | **left alone** — dated lane notes                                                                          | —                                                                             |
+| `docs/plans/step9-notes/lane-4.md:312, 382`, `lane-5.md:195`             | **b**                            | **left alone** — dated lane notes                                                                          | —                                                                             |
+| `.github/workflows/ci.yml:173`                                           | **n/a**                          | **left alone** — "this job never runs Cypress"                                                             | —                                                                             |
+| `deploy/helm/vpay/templates/deployment-worker.yaml:15`                   | **n/a**                          | **left alone** — "two workers never run the same job"                                                      | —                                                                             |
+| `docs/reference/vpay-db.md:590`                                          | **n/a**                          | **left alone** — "never runs on the rail that has URLs"                                                    | —                                                                             |
+| `justfile:1694`                                                          | **n/a**                          | **left alone** — "is never running a path the one-liner does"                                              | —                                                                             |
 
 ### Counts
 
@@ -200,14 +200,14 @@ The 43 matching lines, each assigned exactly once. The assignment was checked
 against the grep output by script — every key present, none extra, totals
 summing to 43 — rather than added up by hand.
 
-| Class | Count | Lines |
-|---|---|---|
-| **(a) retired** | **8** | `flows/deployment.md:352`, `flows/deployment.md:475`, `flows/merchant-auth.md:486`, `runbooks/deploy-and-rollback.md:217`, `runbooks/deploy-and-rollback.md:218`, `runbooks/release.md:4`, `status.md:1621`, `status.md:1635` |
-| **(b) dated clause added** | **3** | `flows/deployment.md:418`, `runbooks/README.md:110`, `status.md:1618` |
-| **(a) left deliberately** | **6** | `status.md:998`, `status.md:1390`, `status.md:1391`, `status.md:1405`, `status.md:1830`, `roadmap.md:603` — the test-evidence family, §4 |
-| **(c) verified still true** | **8** | `flows/deployment.md:11`, `runbooks/release.md:173`, `runbooks/rotate-signing-key.md:185`, `sdks/parity.md:239`, `sdks/parity.md:240`, `roadmap.md:827`, `status.md:1409`, `status.md:1763` |
-| **(b) dated history, left** | **12** | the nine `docs/plans/*` lines, plus `status.md:657`, `status.md:1388`, `status.md:1592` |
-| **(n/a) not a status claim** | **6** | `.github/workflows/ci.yml:173`, `deploy/helm/vpay/templates/deployment-worker.yaml:15`, `docs/plans/step8-notes/lane-d.md:76`, `docs/reference/vpay-db.md:590`, `justfile:1694`, `status.md:1594` |
+| Class                        | Count  | Lines                                                                                                                                                                                                                         |
+| ---------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **(a) retired**              | **8**  | `flows/deployment.md:352`, `flows/deployment.md:475`, `flows/merchant-auth.md:486`, `runbooks/deploy-and-rollback.md:217`, `runbooks/deploy-and-rollback.md:218`, `runbooks/release.md:4`, `status.md:1621`, `status.md:1635` |
+| **(b) dated clause added**   | **3**  | `flows/deployment.md:418`, `runbooks/README.md:110`, `status.md:1618`                                                                                                                                                         |
+| **(a) left deliberately**    | **6**  | `status.md:998`, `status.md:1390`, `status.md:1391`, `status.md:1405`, `status.md:1830`, `roadmap.md:603` — the test-evidence family, §4                                                                                      |
+| **(c) verified still true**  | **8**  | `flows/deployment.md:11`, `runbooks/release.md:173`, `runbooks/rotate-signing-key.md:185`, `sdks/parity.md:239`, `sdks/parity.md:240`, `roadmap.md:827`, `status.md:1409`, `status.md:1763`                                   |
+| **(b) dated history, left**  | **12** | the nine `docs/plans/*` lines, plus `status.md:657`, `status.md:1388`, `status.md:1592`                                                                                                                                       |
+| **(n/a) not a status claim** | **6**  | `.github/workflows/ci.yml:173`, `deploy/helm/vpay/templates/deployment-worker.yaml:15`, `docs/plans/step8-notes/lane-d.md:76`, `docs/reference/vpay-db.md:590`, `justfile:1694`, `status.md:1594`                             |
 
 8 + 3 + 6 + 8 + 12 + 6 = **43**.
 
@@ -321,13 +321,13 @@ to re-find them.
 
 Every command below was run in this worktree after the last edit.
 
-| Gate | Command | Result |
-|---|---|---|
-| verify | `just verify` | **exit 0** — `verify-no-mocks: ok`; `verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code` (two-directional); `verify-errors: ok — 15 error type(s)`; `verify-sdk-parity: ok — 342 proving test(s) … 26 dated gap(s)`; `verify-docs` advisory |
-| docs | `just docs-check` | **exit 0** — but it is `cargo xtask verify-status` plus `note: link checking is not implemented yet`. ~~**It does not check links.**~~ **Corrected 2026-09-05:** true of the tree this table measures; since that date `docs-check` runs `cargo xtask verify-links` and the echo is gone. |
-| links | own checker (below) | **159 relative links across the 8 edited markdown files, 0 missing**; `checked=159 ok=159 miss=0`, exit 0 |
-| actions | `actionlint .github/workflows/release.yml` | **exit 0**; `actionlint` over all of `.github/workflows/` also exit 0 |
-| grep | the §2 grep, re-run | only (b)/(c)/(n/a) hits remain; every (a) line that still matches is inside a `~~…~~` strike-through, checked by eye |
+| Gate    | Command                                    | Result                                                                                                                                                                                                                                                                                              |
+| ------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| verify  | `just verify`                              | **exit 0** — `verify-no-mocks: ok`; `verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code` (two-directional); `verify-errors: ok — 15 error type(s)`; `verify-sdk-parity: ok — 342 proving test(s) … 26 dated gap(s)`; `verify-docs` advisory |
+| docs    | `just docs-check`                          | **exit 0** — but it is `cargo xtask verify-status` plus `note: link checking is not implemented yet`. ~~**It does not check links.**~~ **Corrected 2026-09-05:** true of the tree this table measures; since that date `docs-check` runs `cargo xtask verify-links` and the echo is gone.           |
+| links   | own checker (below)                        | **159 relative links across the 8 edited markdown files, 0 missing**; `checked=159 ok=159 miss=0`, exit 0                                                                                                                                                                                           |
+| actions | `actionlint .github/workflows/release.yml` | **exit 0**; `actionlint` over all of `.github/workflows/` also exit 0                                                                                                                                                                                                                               |
+| grep    | the §2 grep, re-run                        | only (b)/(c)/(n/a) hits remain; every (a) line that still matches is inside a `~~…~~` strike-through, checked by eye                                                                                                                                                                                |
 
 Because `just docs-check` did not check links **when this was measured**
 (`cargo xtask verify-links` landed 2026-09-05 and does; the throwaway script's
@@ -336,7 +336,7 @@ the link result comes from a throwaway script: it extracts every markdown inline
 resolves it against each file's own directory, skipping `http`/`mailto`/bare-anchor targets **and fenced code
 blocks**. It was given a **control** before being trusted — a probe file with
 a good link, a `../` link, an anchor link, a dangling link and a link inside a
-```` ```text ```` fence reported `checked=4 ok=3 miss=1`, naming the dangling
+` ```text ` fence reported `checked=4 ok=3 miss=1`, naming the dangling
 one and ignoring the fenced one, and exited 1. So a miss is detectable; this
 is not a checker that always passes.
 
@@ -344,7 +344,7 @@ The fence rule matters here: §3 quotes the `docs/status.md` sentence verbatim,
 and that sentence's links are relative to `docs/`, so they would dangle when
 read from `docs/plans/step9-notes/` (moved there 2026-09-05; the same two
 directory levels below `docs/`, so the dangling-link risk is unchanged). The
-quote is fenced as ```` ```text ````
+quote is fenced as ` ```text `
 rather than reworded, which keeps it verbatim and stops it rendering four
 broken links. The first version of the checker had no fence rule and reported
 those four; the checker was fixed rather than the finding argued away.

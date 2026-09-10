@@ -11,29 +11,29 @@ counters), plus this note.
 
 ## 1. What landed
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | Migration `0028` — `checkout_sessions`, three closed vocabularies, `urls_match_ui_mode`, both credential-length CHECKs, the partial unique index and three read indexes | `backends/migrations/0028_create-checkout-sessions.sql` |
-| 2 | `vpay_core::ids` — `CHECKOUT_SESSION_PREFIX`/`checkout_session_id()`, `return_token()`, and `secret_body()` shared with `client_secret_suffix()` | `backends/crates/vpay-core/src/ids.rs:46` (prefix), `:196` (id), `:283` (`secret_body`), `:339` (`return_token`) |
-| 3 | `vpay_db::checkout_sessions` — `CheckoutSessionRow` (redacting `Debug`), `NewCheckoutSession`, `SessionListPage`, the `CheckoutSessions` trait and its `PgRepositories` impl | `backends/crates/vpay-db/src/checkout_sessions.rs`; registered at `backends/crates/vpay-db/src/lib.rs:20`, added to the `Repositories` umbrella at `backends/crates/vpay-db/src/repository.rs:437` |
-| 3b | `CheckoutSessionRow::publishable_key` (a column, migration `0028`) and `CheckoutSessionRow::return_page_url(checkout_base)` — the return-page URL lane 2 hands a rail, built in one place | `backends/crates/vpay-db/src/checkout_sessions.rs:115` (the method), `:214` (the field) |
-| 4 | The settlement flip — `checkout_sessions::settle_for_intent(tx, intent_id, paid)`, `pub(crate)`, called **inside** the settlement transaction | `backends/crates/vpay-db/src/checkout_sessions.rs:303` (the write), `backends/crates/vpay-db/src/settlement.rs:166` (`flip_session`), called at `:411` and `:466` |
-| 5 | `/v1/checkout/sessions` — create, retrieve, list, expire; every URL rule; `Idempotency-Key` through the shared `PostRequest` | `backends/crates/vpay-api/src/v1/checkout_sessions.rs`; `V1_ROUTES` at `backends/crates/vpay-api/src/v1/mod.rs:170` |
-| 6 | `/v1/browser/checkout/{sessions/{id},sessions/{id}/return,origins}` | `backends/crates/vpay-api/src/browser/checkout_sessions.rs`; `BROWSER_ROUTES` at `backends/crates/vpay-api/src/browser/mod.rs:136` |
-| 7 | `CheckoutSessionObject`, `CheckoutSessionWithSecret` (redacting `Debug`, **including the `url`**), `ExpandableIntent`, `CheckoutSessionTag` | `backends/crates/vpay-api/src/model.rs:74` (tag), `:388` (`ExpandableIntent`), `:452` (object), `:566` (with-secret) |
-| 8 | `ApiError::CheckoutNotConfigured`, code `checkout_not_configured` | `backends/crates/vpay-api/src/error.rs:381` |
-| 9 | `ResourceConfig::checkout_public_base_url()`, `checkout_origins_for()`, `publishable_keys_for()` | `backends/crates/vpay-api/src/v1/mod.rs:453` (fields), `:640` (accessors) |
-| 10 | `vpay_config::CheckoutConfig`, `MerchantClient::checkout_origins`, six named `ConfigError` variants, two validators, six fixtures | `backends/crates/vpay-config/src/config.rs:388` (`CheckoutConfig`), `:1204` (`validate_checkout_base_url`), `:1303` (`validate_checkout_origins`); `backends/crates/vpay-config/src/oauth.rs:333` (the field); `backends/crates/vpay-config/src/lib.rs:585` (the variants); `backends/crates/vpay-config/tests/fixtures/checkout-*.yml` |
-| 11 | The samples | `config/application.yml` (`checkout:` block, `checkout_origins`), `config/application-sandbox.yml` |
-| 12 | Integration suite — 11 cases | `backends/tests/integration/tests/checkout_sessions.rs` |
-| 13 | Reference pages | `docs/reference/vpay-db.md` (new §`checkout_sessions`), `docs/reference/vpay-api.md` (new §"Checkout Sessions"), `docs/reference/vpay-config.md` (new §"The `checkout:` block"), `docs/reference/vpay-core.md` (new §"`return_token` is a second *capability*") |
-| 14 | Counters | `justfile`: `expected_suites` 41 → 42, `min_tests` 1000 → 1050 |
+| #   | Thing                                                                                                                                                                                     | Where                                                                                                                                                                                                                                                                                                                                   |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Migration `0028` — `checkout_sessions`, three closed vocabularies, `urls_match_ui_mode`, both credential-length CHECKs, the partial unique index and three read indexes                   | `backends/migrations/0028_create-checkout-sessions.sql`                                                                                                                                                                                                                                                                                 |
+| 2   | `vpay_core::ids` — `CHECKOUT_SESSION_PREFIX`/`checkout_session_id()`, `return_token()`, and `secret_body()` shared with `client_secret_suffix()`                                          | `backends/crates/vpay-core/src/ids.rs:46` (prefix), `:196` (id), `:283` (`secret_body`), `:339` (`return_token`)                                                                                                                                                                                                                        |
+| 3   | `vpay_db::checkout_sessions` — `CheckoutSessionRow` (redacting `Debug`), `NewCheckoutSession`, `SessionListPage`, the `CheckoutSessions` trait and its `PgRepositories` impl              | `backends/crates/vpay-db/src/checkout_sessions.rs`; registered at `backends/crates/vpay-db/src/lib.rs:20`, added to the `Repositories` umbrella at `backends/crates/vpay-db/src/repository.rs:437`                                                                                                                                      |
+| 3b  | `CheckoutSessionRow::publishable_key` (a column, migration `0028`) and `CheckoutSessionRow::return_page_url(checkout_base)` — the return-page URL lane 2 hands a rail, built in one place | `backends/crates/vpay-db/src/checkout_sessions.rs:115` (the method), `:214` (the field)                                                                                                                                                                                                                                                 |
+| 4   | The settlement flip — `checkout_sessions::settle_for_intent(tx, intent_id, paid)`, `pub(crate)`, called **inside** the settlement transaction                                             | `backends/crates/vpay-db/src/checkout_sessions.rs:303` (the write), `backends/crates/vpay-db/src/settlement.rs:166` (`flip_session`), called at `:411` and `:466`                                                                                                                                                                       |
+| 5   | `/v1/checkout/sessions` — create, retrieve, list, expire; every URL rule; `Idempotency-Key` through the shared `PostRequest`                                                              | `backends/crates/vpay-api/src/v1/checkout_sessions.rs`; `V1_ROUTES` at `backends/crates/vpay-api/src/v1/mod.rs:170`                                                                                                                                                                                                                     |
+| 6   | `/v1/browser/checkout/{sessions/{id},sessions/{id}/return,origins}`                                                                                                                       | `backends/crates/vpay-api/src/browser/checkout_sessions.rs`; `BROWSER_ROUTES` at `backends/crates/vpay-api/src/browser/mod.rs:136`                                                                                                                                                                                                      |
+| 7   | `CheckoutSessionObject`, `CheckoutSessionWithSecret` (redacting `Debug`, **including the `url`**), `ExpandableIntent`, `CheckoutSessionTag`                                               | `backends/crates/vpay-api/src/model.rs:74` (tag), `:388` (`ExpandableIntent`), `:452` (object), `:566` (with-secret)                                                                                                                                                                                                                    |
+| 8   | `ApiError::CheckoutNotConfigured`, code `checkout_not_configured`                                                                                                                         | `backends/crates/vpay-api/src/error.rs:381`                                                                                                                                                                                                                                                                                             |
+| 9   | `ResourceConfig::checkout_public_base_url()`, `checkout_origins_for()`, `publishable_keys_for()`                                                                                          | `backends/crates/vpay-api/src/v1/mod.rs:453` (fields), `:640` (accessors)                                                                                                                                                                                                                                                               |
+| 10  | `vpay_config::CheckoutConfig`, `MerchantClient::checkout_origins`, six named `ConfigError` variants, two validators, six fixtures                                                         | `backends/crates/vpay-config/src/config.rs:388` (`CheckoutConfig`), `:1204` (`validate_checkout_base_url`), `:1303` (`validate_checkout_origins`); `backends/crates/vpay-config/src/oauth.rs:333` (the field); `backends/crates/vpay-config/src/lib.rs:585` (the variants); `backends/crates/vpay-config/tests/fixtures/checkout-*.yml` |
+| 11  | The samples                                                                                                                                                                               | `config/application.yml` (`checkout:` block, `checkout_origins`), `config/application-sandbox.yml`                                                                                                                                                                                                                                      |
+| 12  | Integration suite — 11 cases                                                                                                                                                              | `backends/tests/integration/tests/checkout_sessions.rs`                                                                                                                                                                                                                                                                                 |
+| 13  | Reference pages                                                                                                                                                                           | `docs/reference/vpay-db.md` (new §`checkout_sessions`), `docs/reference/vpay-api.md` (new §"Checkout Sessions"), `docs/reference/vpay-config.md` (new §"The `checkout:` block"), `docs/reference/vpay-core.md` (new §"`return_token` is a second _capability_")                                                                         |
+| 14  | Counters                                                                                                                                                                                  | `justfile`: `expected_suites` 41 → 42, `min_tests` 1000 → 1050                                                                                                                                                                                                                                                                          |
 
 ## 2. Decisions taken in this lane, and why
 
 - **The settlement flip lives in `vpay-db`'s transaction, not in
   `vpay-worker/src/handlers.rs`.** The plan places "the worker hook" in
-  `handlers.rs`. The *decision* is the worker's — `settle_succeeded` or
+  `handlers.rs`. The _decision_ is the worker's — `settle_succeeded` or
   `settle_failed` — but the settlement transaction itself is
   `vpay_db::settlement::apply_{succeeded,failed}`, and a write made after
   that commit would leave a window in which the intent is `succeeded` and the
@@ -45,14 +45,14 @@ counters), plus this note.
 - **`payment_intent` is expanded in place on the browser reads**
   (`ExpandableIntent`, `#[serde(untagged)]`), not carried beside the session
   in an envelope. The integrator's binding clarification asked for the
-  expanded object on those two routes and the id on `/v1`; expansion *on the
-  field* is Stripe's own `expand` shape, avoids two keys named
+  expanded object on those two routes and the id on `/v1`; expansion _on the
+  field_ is Stripe's own `expand` shape, avoids two keys named
   `payment_intent` at two nesting levels, and makes "with or without the
   intent's credential" a choice of enum variant rather than a field a handler
   clears.
 - **Neither browser read renders the session's `url`.** It carries the
   session's `client_secret` in its fragment, and the return read is authorised
-  by the *weaker* `return_token`. Echoing it there would be a three-step
+  by the _weaker_ `return_token`. Echoing it there would be a three-step
   escalation out of a query-string value: `return_token` → session secret →
   the session read → the intent's `client_secret` → `confirm`. It costs the
   page nothing.
@@ -63,14 +63,14 @@ counters), plus this note.
 - **The session pins a publishable key, and it is a column.** Every URL vpay
   mints carries `?key=`, because all three browser routes authenticate by it
   and the return page cannot use a fragment. `create` takes an optional
-  `publishable_key`, defaults to the tenant's *first configured* key, refuses
+  `publishable_key`, defaults to the tenant's _first configured_ key, refuses
   one that is not theirs with a `400`, and answers `checkout_not_configured`
   (a second sentence under the same code) for a tenant with none. It is
   **stored** rather than derived at render time so a key rotation cannot
   strand a payer already on a rail's page — the full argument is on the column
   in `0028` and in `docs/reference/vpay-db.md`.
 - **`return_page_url` is a method on the row, not a `format!` in `vpay-api`.**
-  Two callers build that URL and a *rail* holds the copy that matters, so the
+  Two callers build that URL and a _rail_ holds the copy that matters, so the
   two must agree byte for byte. It carries a compiled doctest.
 - **`get_for_merchant` call sites are now fully qualified.** Two traits offer
   the name, so `PaymentIntents::get_for_merchant(repos, …)` at three sites in
@@ -123,8 +123,7 @@ orchestrator rather than invented.
 
 ### 3c. Not done, and out of lane
 
-- `ChargeRef::return_url` and populating it from `find_open_by_intent` — lane
-  2. The trait method exists and its contract is documented in
+- `ChargeRef::return_url` and populating it from `find_open_by_intent` — lane 2. The trait method exists and its contract is documented in
   `docs/reference/vpay-db.md` for exactly that, and
   `CheckoutSessionRow::return_page_url(checkout_base)` builds the URL so
   neither caller has to. Lane 2's `v1/return_trip.rs` `session` branch, which
@@ -150,15 +149,15 @@ orchestrator rather than invented.
 Host: the lane worktree, `CARGO_BUILD_JOBS=4`,
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`.
 
-| Gate | Result |
-|---|---|
-| `cargo fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo nextest run -p vpay-db -p vpay-api -p vpay-config -p vpay-core -p vpay-worker --retries 2 -j 1` | **560 run, 560 passed, 0 skipped** (156.8 s) |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(browser_checkout) \| binary(confirm_rails)' --retries 2 -j 1` | **30 run, 30 passed, 0 skipped** — 13 + 10 + 7 |
-| `just verify` | ok — `verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity` all pass; `verify-docs` is the advisory report |
-| `just verify-ignored` | **0 ignored (expected 0), 42 test binaries (expected 42), 1098 total (minimum 1050)** |
-| `just test-doc` | **82 doctests, 82 passed, 0 failed** |
+| Gate                                                                                                                                               | Result                                                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all --check`                                                                                                                          | clean                                                                                                                        |
+| `cargo clippy --workspace --all-targets -- -D warnings`                                                                                            | clean                                                                                                                        |
+| `cargo nextest run -p vpay-db -p vpay-api -p vpay-config -p vpay-core -p vpay-worker --retries 2 -j 1`                                             | **560 run, 560 passed, 0 skipped** (156.8 s)                                                                                 |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(browser_checkout) \| binary(confirm_rails)' --retries 2 -j 1` | **30 run, 30 passed, 0 skipped** — 13 + 10 + 7                                                                               |
+| `just verify`                                                                                                                                      | ok — `verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity` all pass; `verify-docs` is the advisory report |
+| `just verify-ignored`                                                                                                                              | **0 ignored (expected 0), 42 test binaries (expected 42), 1098 total (minimum 1050)**                                        |
+| `just test-doc`                                                                                                                                    | **82 doctests, 82 passed, 0 failed**                                                                                         |
 
 `cargo xtask verify-errors` is green with `ApiError::CheckoutNotConfigured`
 added: the variant is on an enum that already `impl Classify`, and the six new
@@ -178,14 +177,14 @@ suppressed; the report is advisory and fails nothing.
 Each mutation was applied, the named test run, and the file restored from a
 copy taken first. `git status --porcelain` is empty after all six.
 
-| # | Mutation | Test | Observed |
-|---|---|---|---|
-| 1 | Delete the `session.merchant_id != merchant_id` arm from `browser::checkout_sessions::authenticate` | `every_credential_failure_on_the_checkout_surface_is_the_identical_404` | **FAIL** — "another merchant's publishable key, valid and registered" answered `200` instead of `404`, rendering merchant A's session *and the intent's `client_secret`* to merchant B's key |
-| 2 | Change `retrieve_for_return` to build `ExpandableIntent::ExpandedWithSecret` | `the_session_read_carries_the_intents_secret_and_the_return_read_does_not` | **FAIL** — the return read rendered `client_secret` on the expanded intent |
-| 3 | Remove the `flip_session` call from `vpay_db::settlement::apply_succeeded` | `the_settlement_transaction_flips_the_session_with_the_intent` | **FAIL** — intent `succeeded`, session still `("open", "unpaid")`; expected `("complete", "paid")` |
-| 4 | Remove the `NOT EXISTS` live-charge clause from `checkout_sessions`' `expire` | `expiring_a_session_is_a_compare_and_swap_and_a_live_charge_refuses_it` | **FAIL** — a session whose intent had a live charge expired with `200` instead of `409` |
-| 5 | `CREATE UNIQUE INDEX` → `CREATE INDEX` for `checkout_sessions_one_open_per_intent` in migration `0028` | `an_intent_may_have_only_one_open_session` | **FAIL** — the second insert succeeded, leaving one intent with two open sessions and two live payer links |
-| 6 | Delete the `registered.iter().any(...)` check from `chosen_publishable_key`, accepting any key the merchant names | `a_session_pins_the_tenants_first_key_unless_the_merchant_names_another` | **FAIL** — merchant A minted `…/c/cs_…?key=pk_test_betadoualasandbox0001#…`, a link whose page would authenticate against **merchant B's** tenant and answer the uniform 404 to every payer. `201` instead of `400` |
+| #   | Mutation                                                                                                          | Test                                                                       | Observed                                                                                                                                                                                                            |
+| --- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Delete the `session.merchant_id != merchant_id` arm from `browser::checkout_sessions::authenticate`               | `every_credential_failure_on_the_checkout_surface_is_the_identical_404`    | **FAIL** — "another merchant's publishable key, valid and registered" answered `200` instead of `404`, rendering merchant A's session _and the intent's `client_secret`_ to merchant B's key                        |
+| 2   | Change `retrieve_for_return` to build `ExpandableIntent::ExpandedWithSecret`                                      | `the_session_read_carries_the_intents_secret_and_the_return_read_does_not` | **FAIL** — the return read rendered `client_secret` on the expanded intent                                                                                                                                          |
+| 3   | Remove the `flip_session` call from `vpay_db::settlement::apply_succeeded`                                        | `the_settlement_transaction_flips_the_session_with_the_intent`             | **FAIL** — intent `succeeded`, session still `("open", "unpaid")`; expected `("complete", "paid")`                                                                                                                  |
+| 4   | Remove the `NOT EXISTS` live-charge clause from `checkout_sessions`' `expire`                                     | `expiring_a_session_is_a_compare_and_swap_and_a_live_charge_refuses_it`    | **FAIL** — a session whose intent had a live charge expired with `200` instead of `409`                                                                                                                             |
+| 5   | `CREATE UNIQUE INDEX` → `CREATE INDEX` for `checkout_sessions_one_open_per_intent` in migration `0028`            | `an_intent_may_have_only_one_open_session`                                 | **FAIL** — the second insert succeeded, leaving one intent with two open sessions and two live payer links                                                                                                          |
+| 6   | Delete the `registered.iter().any(...)` check from `chosen_publishable_key`, accepting any key the merchant names | `a_session_pins_the_tenants_first_key_unless_the_merchant_names_another`   | **FAIL** — merchant A minted `…/c/cs_…?key=pk_test_betadoualasandbox0001#…`, a link whose page would authenticate against **merchant B's** tenant and answer the uniform 404 to every payer. `201` instead of `400` |
 
 Proofs 1, 2, 5 and 6 are the security-relevant ones. 1 and 2 are the two the
 brief named; 5 is the one that would otherwise look like it was enforced by
@@ -196,7 +195,7 @@ publishable-key ruling introduced.
 
 ### 6a. New row (Payments / API surface table)
 
-| Checkout Sessions — `/v1/checkout/sessions` and `/v1/browser/checkout/*` (`vpay_api::v1::checkout_sessions`, `vpay_api::browser::checkout_sessions`) | 🟡 | **New 2026-09-04 (Step 9 lane 1).** A `checkout.session` (`cs_…`, migration `0028`) a merchant creates from its server against an existing `pi_…` — `create`/`retrieve`/`list`/`expire` on `/v1` (token-authenticated, `Idempotency-Key`, tenant-scoped), and three `GET`s on `/v1/browser/checkout` for the page. **Two payer credentials, not one** (D6): `client_secret` rides in the hosted `url`'s *fragment* and buys the intent's own `client_secret`; `return_token` rides in the return page's *query string* — it must, a fragment does not survive a rail's redirect — and buys the session and its intent **without** that credential. Every failure on both browser reads is the byte-identical uniform 404, including the tenancy case, and neither read renders the `url` (it carries the stronger credential in its fragment). `create` refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session — the last enforced by a **partial unique index**, not only by the pre-check. `expire` is a compare-and-swap with a `NOT EXISTS` live-charge guard in the same statement, so a session cannot be marked abandoned while a rail may still take the payment. The settlement transaction (`vpay_db::settlement`) flips `payment_status`/`status` in the **same commit** as the intent — `paid`/`complete` on success, `failed`/`expired` on a terminal decline. Proven by `backends/tests/integration/tests/checkout_sessions.rs` — 11 container-backed cases against real Postgres, the real WireMock MTN rail and the shipping worker loop, with five recorded guard-failure proofs (`docs/plans/step9-notes/lane-1.md` §5). Still 🟡 and not ✅: **no page exists yet** (lane 3), the return trip through the port is not wired (lane 2), no SDK models the resource (lane 5), and no expiry sweep runs — see the two rows below. |
+| Checkout Sessions — `/v1/checkout/sessions` and `/v1/browser/checkout/*` (`vpay_api::v1::checkout_sessions`, `vpay_api::browser::checkout_sessions`) | 🟡 | **New 2026-09-04 (Step 9 lane 1).** A `checkout.session` (`cs_…`, migration `0028`) a merchant creates from its server against an existing `pi_…` — `create`/`retrieve`/`list`/`expire` on `/v1` (token-authenticated, `Idempotency-Key`, tenant-scoped), and three `GET`s on `/v1/browser/checkout` for the page. **Two payer credentials, not one** (D6): `client_secret` rides in the hosted `url`'s _fragment_ and buys the intent's own `client_secret`; `return_token` rides in the return page's _query string_ — it must, a fragment does not survive a rail's redirect — and buys the session and its intent **without** that credential. Every failure on both browser reads is the byte-identical uniform 404, including the tenancy case, and neither read renders the `url` (it carries the stronger credential in its fragment). `create` refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session — the last enforced by a **partial unique index**, not only by the pre-check. `expire` is a compare-and-swap with a `NOT EXISTS` live-charge guard in the same statement, so a session cannot be marked abandoned while a rail may still take the payment. The settlement transaction (`vpay_db::settlement`) flips `payment_status`/`status` in the **same commit** as the intent — `paid`/`complete` on success, `failed`/`expired` on a terminal decline. Proven by `backends/tests/integration/tests/checkout_sessions.rs` — 11 container-backed cases against real Postgres, the real WireMock MTN rail and the shipping worker loop, with five recorded guard-failure proofs (`docs/plans/step9-notes/lane-1.md` §5). Still 🟡 and not ✅: **no page exists yet** (lane 3), the return trip through the port is not wired (lane 2), no SDK models the resource (lane 5), and no expiry sweep runs — see the two rows below. |
 
 ### 6b. New row (Configuration table)
 
@@ -221,8 +220,8 @@ publishable-key ruling introduced.
   `CheckoutSessionRow::return_page_url`).
 - **`BROWSER_ROUTES` is five entries, not two.** Any status text saying "two
   routes" about `/v1/browser` is now wrong. The property that replaced the
-  count: *exactly one entry answers a non-`GET` method, and it is the confirm
-  that has been there since Step 5c* — Step 9 added no second way to move
+  count: _exactly one entry answers a non-`GET` method, and it is the confirm
+  that has been there since Step 5c_ — Step 9 added no second way to move
   money.
 
 ## 7. Flow-doc lines to retire (lane E)
@@ -232,16 +231,18 @@ Each is quoted verbatim as it stands today, with the replacement.
 ### `docs/flows/browser-checkout.md`, D2 (line 36)
 
 **Retire:**
+
 > - **D2 — `client_secret` is rendered only by `create`, `retrieve`, and the two
 >   browser routes**, through a wrapper type that never touches the object
 >   every other response renders:
 
 **Replace with:**
+
 > - **D2 — `client_secret` is rendered only by `create`, `retrieve`, the two
 >   payment-intent browser routes, and — since Step 9 — the checkout
 >   **session** read** (`GET /v1/browser/checkout/sessions/{id}`, which hands
 >   the page the intent's credential once it has proved it holds the
->   *session's*). It is rendered through a wrapper type that never touches the
+>   _session's_). It is rendered through a wrapper type that never touches the
 >   object every other response renders:
 
 ### `docs/flows/browser-checkout.md`, "The routes" table (line ~131)
@@ -256,9 +257,11 @@ rows, append:
 ### `docs/flows/browser-checkout.md`, the mounting paragraph (line ~135)
 
 **Retire:**
+
 > (its own table is `BROWSER_ROUTES`, exactly two entries)
 
 **Replace with:**
+
 > (its own table is `BROWSER_ROUTES`, five entries since Step 9 — and the
 > property that pin defends is not the count but that **exactly one of them
 > answers a non-`GET` method**, the confirm that has been there since Step 5c)
@@ -266,22 +269,25 @@ rows, append:
 ### `docs/flows/browser-checkout.md`, "There is no `create`…" (line ~137)
 
 **Retire:**
+
 > There is no `create`, no `list`, and no `cancel` here — proved by
 > `the_browser_surface_has_no_create_no_list_and_no_cancel` — and no route
 > answers `401` (`every_browser_route_is_reachable_without_a_merchant_token`).
 
 **Replace with:**
+
 > There is no `create`, no `list`, and no `cancel` here — proved by
 > `the_browser_surface_has_no_create_no_list_and_no_cancel` — and no route
 > answers `401` (`every_browser_route_is_reachable_without_a_merchant_token`,
 > which also pins the table's contents and that only the confirm writes).
 > Step 9's three additions are all reads, and vpay's own checkout page
-> confirms through the *same* `POST /v1/browser/payment_intents/{id}/confirm`
+> confirms through the _same_ `POST /v1/browser/payment_intents/{id}/confirm`
 > a merchant's page does.
 
 ### `docs/flows/browser-checkout.md`, "Every failure is the same 404" (line ~114)
 
 **Append after the existing paragraph:**
+
 > Step 9 added a second uniform 404 on the same surface, for the checkout
 > session (`browser::checkout_sessions`): five ways to refuse — unknown key,
 > session not found, session belongs to a different merchant, wrong
@@ -296,13 +302,14 @@ rows, append:
 ### `docs/flows/payment-lifecycle.md`, "What still has never happened" (line ~172)
 
 **Append to the paragraph, before "See ../status.md":**
+
 > Since Step 9 the settlement transaction also moves a **checkout session**
 > when one drove the payment — `paid`/`complete` on success, `failed`/`expired`
 > on a terminal decline, in the same commit as the intent's own status, so the
 > two can never be observed disagreeing
 > (`vpay_db::checkout_sessions::settle_for_intent`, called from
 > `vpay_db::settlement`). Nothing else about the lifecycle changed: a session
-> is a *view* of one checkout attempt and moves no money.
+> is a _view_ of one checkout attempt and moves no money.
 
 ## 8. What I did not do
 

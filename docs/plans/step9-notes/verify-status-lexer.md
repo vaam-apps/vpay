@@ -12,15 +12,15 @@ the record is accurate:
 
 `verify_status` did not scan the raw file. It scanned `searchable(&text)`,
 which already stripped block comments (nesting- and string-aware) and dropped
-any line whose *trimmed start* was `//`. So a leading `//`, `///` or `//!`
+any line whose _trimmed start_ was `//`. So a leading `//`, `///` or `//!`
 line, and a `/* */` block, were already prose — `docs/status.md` said so, and
 `a_token_quoted_in_a_comment_is_not_a_shipping_claim` already pinned it.
 
 Two shapes did get through, and both were still live:
 
-* a **trailing** `// … ProviderError::NotImplemented("x") …` comment, because
-  the stripper dropped whole *lines* and only when they *began* with `//`;
-* any **string literal** whose content spells the token out — in practice a
+- a **trailing** `// … ProviderError::NotImplemented("x") …` comment, because
+  the stripper dropped whole _lines_ and only when they _began_ with `//`;
+- any **string literal** whose content spells the token out — in practice a
   raw string, `r#"ProviderError::NotImplemented("x")"#`, since a plain string
   has to escape its inner quotes and the old argument reader required a bare
   `"` immediately after the paren. A `#[doc = r#"…"#]` attribute is the same
@@ -33,7 +33,7 @@ pass by finding nothing. That is the right instinct and the wrong remedy — a
 lexer removes the trade instead of the compromise.
 
 Consequence, unchanged from the brief: a false positive forces a phantom
-bullet into `docs/status.md`, the two-directional check then *requires* that
+bullet into `docs/status.md`, the two-directional check then _requires_ that
 bullet to stay, and the cheapest way for an author to clear one is to delete
 the honest sentence from the adapter's doc comment that explained the gap.
 
@@ -64,24 +64,24 @@ A hand-written lexer in `.xtask/src/main.rs`. No parser dependency was added;
 `syn` is **not** in `.xtask/Cargo.toml` (its four deps are `rsa`, `rand`,
 `sha2`, `base64`, all for `gen-signing-key`), so pulling one in was not open.
 
-* `strip_comment_kinds` / `CommentKinds` — one lexer, two modes. `All`
+- `strip_comment_kinds` / `CommentKinds` — one lexer, two modes. `All`
   removes every comment (`//`, `///`, `//!`, `/* */`, `/** */`, nested);
   `BlocksOnly` removes block comments and leaves `//` lines verbatim.
-* `strip_comments` (`All`) — what `searchable` now calls, replacing the old
+- `strip_comments` (`All`) — what `searchable` now calls, replacing the old
   `strip_block_comments` + line filter.
-* `strip_block_comments` (`BlocksOnly`) — kept, because `verify-docs`'
-  `count_doc_and_code` *counts* `///` lines; a stripper that removed them
+- `strip_block_comments` (`BlocksOnly`) — kept, because `verify-docs`'
+  `count_doc_and_code` _counts_ `///` lines; a stripper that removed them
   would report every file as having no docs. `only_the_gates_stripper_removes_doc_lines`
   is the test that stops the two modes collapsing into each other.
-* `end_of_literal` / `end_of_quoted` / `end_of_raw` / `end_of_char_literal` —
+- `end_of_literal` / `end_of_quoted` / `end_of_raw` / `end_of_char_literal` —
   string, raw string (any `#` count), byte and C-string prefixes, and
-  character literals. A lifetime (`'a`, `'static`) is deliberately *not* a
+  character literals. A lifetime (`'a`, `'static`) is deliberately _not_ a
   literal: reading one as a char literal would swallow everything up to the
   next `'` in the file, which is the delete-too-much failure that passes a
   gate silently.
-* `scan_not_implemented` — now lexes instead of `match_indices`. It skips
+- `scan_not_implemented` — now lexes instead of `match_indices`. It skips
   whole literals, so a `NotImplemented(` spelled inside one is never
-  examined; when the needle is found *in code* it reads the following literal
+  examined; when the needle is found _in code_ it reads the following literal
   as the token. Literals are skipped rather than blanked, because the token
   this gate extracts **is** a string literal — blanking would turn
   `NotImplemented("mtn_momo::refund")` into `NotImplemented("")`.
@@ -96,7 +96,7 @@ describing a code path ADR-0006 says must not exist.
 
 **The scanner is shared, and `verify-no-mocks` does use it.** The
 `connect_lazy` half of `app_source_violations` calls `searchable`, so it
-inherits the fix: a *trailing* `// … connect_lazy …` comment is now
+inherits the fix: a _trailing_ `// … connect_lazy …` comment is now
 documentation rather than a call, which is what that guard's own doc comment
 always claimed. `a_binary_that_opens_its_pool_lazily_is_a_violation` was
 extended with a trailing-comment line to pin it. `verify-errors` also calls
@@ -115,6 +115,7 @@ async fn guard_proof(&self) -> Result<(), ProviderError> {
     Err(ProviderError::NotImplemented("guard::proof_in_code"))
 }
 ```
+
 ```
 $ cargo run -q -p xtask -- verify-status
 xtask: these unimplemented items are missing from docs/status.md under
@@ -133,6 +134,7 @@ fn guard_proof(&self) -> u8 {
     0
 }
 ```
+
 ```
 $ cargo run -q -p xtask -- verify-status
 verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code
@@ -164,14 +166,14 @@ item(s)`. The tree was restored (`git status --short` showed only
 
 ## 5. Gates (every number measured here, 2026-09-05, `CARGO_BUILD_JOBS=4`)
 
-| command | result |
-|---|---|
-| `cargo fmt --all --check` | clean |
-| `cargo clippy -p xtask --all-targets -- -D warnings` | clean (the lexer was rewritten off `chars[i]` onto `chars.get(i)`; the workspace denies `indexing_slicing`) |
-| `cargo nextest run -p xtask` | **89 tests run: 89 passed, 0 skipped** (was 83) |
-| `cargo xtask verify-no-mocks` | ok — no test double reachable from a shipping binary |
-| `just verify` | ok — `verify-status` **1** item (unchanged), `verify-errors` **15** types / **14** `#[from]` variants (unchanged), `verify-sdk-parity` **342** tests / **26** gaps (unchanged) |
-| `just verify-ignored` | **0 ignored, 42 test binaries, 1153 total** (was 1147; +6, all in `xtask`) |
+| command                                              | result                                                                                                                                                                         |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cargo fmt --all --check`                            | clean                                                                                                                                                                          |
+| `cargo clippy -p xtask --all-targets -- -D warnings` | clean (the lexer was rewritten off `chars[i]` onto `chars.get(i)`; the workspace denies `indexing_slicing`)                                                                    |
+| `cargo nextest run -p xtask`                         | **89 tests run: 89 passed, 0 skipped** (was 83)                                                                                                                                |
+| `cargo xtask verify-no-mocks`                        | ok — no test double reachable from a shipping binary                                                                                                                           |
+| `just verify`                                        | ok — `verify-status` **1** item (unchanged), `verify-errors` **15** types / **14** `#[from]` variants (unchanged), `verify-sdk-parity` **342** tests / **26** gaps (unchanged) |
+| `just verify-ignored`                                | **0 ignored, 42 test binaries, 1153 total** (was 1147; +6, all in `xtask`)                                                                                                     |
 
 `verify-docs` and `verify-errors` output was diffed old-vs-new binary on this
 same tree: **byte-identical** in both cases.
@@ -210,13 +212,13 @@ Was:
 
 Now:
 
-> described cannot sit here unnoticed. The scanner reads *code*, not text:
+> described cannot sit here unnoticed. The scanner reads _code_, not text:
 > since 2026-09-05 it lexes, so a `NotImplemented("…")` written in a comment
 > of any kind (`//`, `///`, `//!`, `/* */` nested or not — leading **or**
 > trailing), in a `#[doc = "…"]` attribute, or inside any string, raw-string
 > or character literal is prose, and prose declares nothing. It was
 > comment-aware from 2026-09-03 (that blind spot is described in the Step 2
-> note below, where it was found), but only for comments that *began* a line,
+> note below, where it was found), but only for comments that _began_ a line,
 > and not at all for string literals; a trailing `// … NotImplemented("x")` or
 > an `r#"…"#` carrying the token still forced a phantom bullet into this file
 > — and because the check runs in both directions, the bullet then had to
@@ -256,21 +258,21 @@ Now:
 
 ## 7. What was NOT done
 
-* **`end_of_cfg_test_item` still has its own, separate literal scanner**
+- **`end_of_cfg_test_item` still has its own, separate literal scanner**
   (`.xtask/src/main.rs`), and it is **not raw-string aware**: a `#[cfg(test)]`
   item containing `r#"…{…"#` could still unbalance its brace count and delete
   more than the item. It was out of scope here, it predates this change, and
   no such literal exists in the tree today. Left visible rather than
   half-fixed.
-* **The four other `verify-*` gates were not re-lexed.** `verify-errors` and
+- **The four other `verify-*` gates were not re-lexed.** `verify-errors` and
   the `connect_lazy` half of `verify-no-mocks` benefit because they share
   `searchable`; `verify-sdk-parity` and `verify-docs` do their own text
   matching and were left alone. `STUB_ADAPTER_NAMES` still matches raw text
   including comments, deliberately.
-* **No escape decoding.** `literal_content` returns the token as written; a
+- **No escape decoding.** `literal_content` returns the token as written; a
   token containing a backslash escape would come back escaped. Tokens are
   identifier paths, so an escape in one is a bug worth seeing rather than
   silently normalising — but that is a choice, not a proof.
-* **`just ci` was not run in full.** The gates in §5 are what was run;
+- **`just ci` was not run in full.** The gates in §5 are what was run;
   `test-web`, `lint-web` and `deny` were not, because nothing outside
   `.xtask`, `justfile` and `docs/` changed.

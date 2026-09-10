@@ -11,7 +11,7 @@ to take on the maintainer's behalf.
 The brief's slice 1 was: sign-in (authorization code + PKCE against vpay's
 own OP), a `/dashboard/v1` read surface bound to one merchant, three pages
 (sign-in, payments list, payment detail), vitest + Rust + Cypress tests, and
-docs. It anticipated that *serving the grant* might be larger than a slice
+docs. It anticipated that _serving the grant_ might be larger than a slice
 and said so: "deliver sign-in end to end first and report the rest as not
 done rather than stubbing it."
 
@@ -46,7 +46,7 @@ nobody. vpay must produce that `Identity`, and vpay has:
   endpoints this deployment must not serve).
 
 Choosing among a staff table with password hashes, WebAuthn, TOTP, or
-federating the *human* step to an external IdP in front of vpay's own OP is
+federating the _human_ step to an external IdP in front of vpay's own OP is
 an ADR. It touches ADR-0009's central claim ("vpay runs Authkestra as its own
 OP") and it is a security-critical credential model that would be shipped
 unreviewed if a slice invented one in passing.
@@ -87,7 +87,7 @@ Documented in `docs/flows/dashboard.md` (new) and
 
 ## The hole this found
 
-`validate_merchant_client` required `vpay:v1` to be *present* in a merchant
+`validate_merchant_client` required `vpay:v1` to be _present_ in a merchant
 registration's `allowed_audiences` and restricted nothing else it could
 contain. `authkestra_op`'s `handle_client_credentials` mints a token for any
 requested audience the registration permits. So a merchant whose YAML listed
@@ -101,15 +101,15 @@ depends on one check is a boundary one edit removes.
 
 ## Mutations run
 
-| Mutation | Result |
-|---|---|
-| Remove `validate_dashboard_binding`'s call | 1 config test fails |
-| Remove the merchant-claims-dashboard-audience check | 1 config test fails |
-| `MerchantScope` from `claims.client_id` instead of the binding | 3 integration tests fail |
-| Delete the `claims.client_id != binding.client_id` arm | 1 integration test fails |
-| Build the dash nest's validator with `Surface::Merchant` | 8 integration tests fail |
-| Mount the nest unconditionally | **nothing fails** — see below |
-| Unconditional mount **and** the middleware's `None` guard weakened to 401 | 1 integration test fails |
+| Mutation                                                                  | Result                        |
+| ------------------------------------------------------------------------- | ----------------------------- |
+| Remove `validate_dashboard_binding`'s call                                | 1 config test fails           |
+| Remove the merchant-claims-dashboard-audience check                       | 1 config test fails           |
+| `MerchantScope` from `claims.client_id` instead of the binding            | 3 integration tests fail      |
+| Delete the `claims.client_id != binding.client_id` arm                    | 1 integration test fails      |
+| Build the dash nest's validator with `Surface::Merchant`                  | 8 integration tests fail      |
+| Mount the nest unconditionally                                            | **nothing fails** — see below |
+| Unconditional mount **and** the middleware's `None` guard weakened to 401 | 1 integration test fails      |
 
 The sixth is recorded rather than smoothed over. The conditional mount in
 `router` and `require_dashboard_token`'s own `None` guard produce the same

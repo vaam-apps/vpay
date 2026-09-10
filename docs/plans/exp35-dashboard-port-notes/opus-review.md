@@ -28,13 +28,13 @@ reads as though nothing was right.
 
 ## Findings
 
-| # | Finding | Severity |
-|---|---|---|
-| F1 | `gen-demo-keys` **wrote a literal `:3000`** into the overlay's `redirect_uris` while its staleness check greped for the current port. The feature did not work at any non-default port, and every invocation regenerated the shared merchant key pair | blocking |
-| F2 | **Nothing ever set `VPAY_DASHBOARD_URL`**, so Cypress's `baseUrl` stayed on its `?? "http://localhost:3000"` fallback whatever the variable said | blocking |
-| F3 | The `just … demo-staff` sub-invocation in `test-e2e` did not repeat `demo_dashboard_port` | minor |
-| F4 | The prose in four files still said the port could not be a variable; one file got a duplicated, garbled paragraph | docs |
-| F5 | The commit message claimed three proofs that had not been run | honesty |
+| #   | Finding                                                                                                                                                                                                                                               | Severity |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| F1  | `gen-demo-keys` **wrote a literal `:3000`** into the overlay's `redirect_uris` while its staleness check greped for the current port. The feature did not work at any non-default port, and every invocation regenerated the shared merchant key pair | blocking |
+| F2  | **Nothing ever set `VPAY_DASHBOARD_URL`**, so Cypress's `baseUrl` stayed on its `?? "http://localhost:3000"` fallback whatever the variable said                                                                                                      | blocking |
+| F3  | The `just … demo-staff` sub-invocation in `test-e2e` did not repeat `demo_dashboard_port`                                                                                                                                                             | minor    |
+| F4  | The prose in four files still said the port could not be a variable; one file got a duplicated, garbled paragraph                                                                                                                                     | docs     |
+| F5  | The commit message claimed three proofs that had not been run                                                                                                                                                                                         | honesty  |
 
 ### F1 — the one line the issue is about
 
@@ -56,7 +56,7 @@ Two failures in one line.
 
 1. **The registration disagrees with the app.** The OP has `:3000`; the app
    sends `:13000`; authkestra matches byte for byte. Every staff sign-in dies.
-2. **The check can never be satisfied by what the writer writes**, so *every*
+2. **The check can never be satisfied by what the writer writes**, so _every_
    invocation regenerates the shared merchant key pair. `gen-demo-keys` is a
    dependency of `test-e2e`, `demo-up` and `stripe-compat`, and a regenerated
    pair leaves any already-running stack answering `invalid_client`
@@ -81,7 +81,7 @@ the brief asked for, keyed on the port the way `checkout_base_present` is.
 `frontends/tests/e2e/cypress.config.ts` has read `VPAY_DASHBOARD_URL` since
 Step 9, with `?? "http://localhost:3000"` behind it. **No recipe ever set it.**
 So every bare `cy.visit("/…")` in `dashboard.cy.ts` resolved against 3000
-regardless — at a custom port, straight at whichever *other* stack held 3000,
+regardless — at a custom port, straight at whichever _other_ stack held 3000,
 or at nothing at all. `test-e2e` now passes it beside the URLs it already
 passed.
 
@@ -100,7 +100,7 @@ explaining that a bare call once created a container in somebody else's stack.
 The change's whole point is that a sentence in four files stopped being true.
 
 - **`compose.demo.yml`** — the draft replaced the "cannot become one"
-  paragraph but left a *second* copy of the `!override` rationale beside the
+  paragraph but left a _second_ copy of the `!override` rationale beside the
   original, with a mangled backtick (``vpay-server's `ports:` is``). Rewritten
   as one block that says what changed and what did not: the byte-for-byte
   matching is unchanged and is still why this port was different from the
@@ -108,7 +108,7 @@ The change's whole point is that a sentence in four files stopped being true.
   be a fixed string if nothing writes it, and `gen-demo-keys` writes this one.
 - **`justfile`'s `demo_services`** — still asserted the port "is NOT one of the
   `demo_*` variables" and that "two demo stacks cannot both serve a dashboard".
-  Rewritten rather than deleted, so the reason it *was* true is still on the
+  Rewritten rather than deleted, so the reason it _was_ true is still on the
   page.
 - **`docs/runbooks/demo.md`** — the draft wrote a literal
   `{{demo_dashboard_port}}` into markdown, which renders as those braces to a
@@ -116,8 +116,8 @@ The change's whole point is that a sentence in four files stopped being true.
   untrue since exp28.
 - **`docs/flows/dashboard.md`** — the Status section this project's checklist
   requires, which the draft did not touch at all.
-- **`.github/workflows/ci.yml`** — the e2e job's `:3000` is left literal *on
-  purpose*, and now says so: the job sets no override, it is one stack on a
+- **`.github/workflows/ci.yml`** — the e2e job's `:3000` is left literal _on
+  purpose_, and now says so: the job sets no override, it is one stack on a
   fresh runner, and the variable exists for two stacks on a developer's
   machine. Argued rather than threaded, with the condition under which the
   argument stops holding written down.
@@ -181,18 +181,18 @@ demo_orange_port=19082 demo_checkout_port=13080 demo_shop_port=13081
 demo_dashboard_port=13000 test-e2e`, while `exp35b` held 13001 and the user's
 `vpay-demo` held 3000 — **exit 0**:
 
-| spec | tests | passing | failing | pending | skipped |
-|---|---|---|---|---|---|
-| `checkout.cy.ts` | 1 | 1 | 0 | 0 | 0 |
-| `dashboard.cy.ts` | 8 | 8 | 0 | 0 | 0 |
-| `shop-hosted.cy.ts` | 3 | 3 | 0 | 0 | 0 |
-| `shop-embedded.cy.ts` (own run, `chromeWebSecurity: false`) | 4 | 4 | 0 | 0 | 0 |
-| **total** | **16** | **16** | **0** | **0** | **0** |
+| spec                                                        | tests  | passing | failing | pending | skipped |
+| ----------------------------------------------------------- | ------ | ------- | ------- | ------- | ------- |
+| `checkout.cy.ts`                                            | 1      | 1       | 0       | 0       | 0       |
+| `dashboard.cy.ts`                                           | 8      | 8       | 0       | 0       | 0       |
+| `shop-hosted.cy.ts`                                         | 3      | 3       | 0       | 0       | 0       |
+| `shop-embedded.cy.ts` (own run, `chromeWebSecurity: false`) | 4      | 4       | 0       | 0       | 0       |
+| **total**                                                   | **16** | **16**  | **0**   | **0**   | **0**   |
 
 The recipe's own probe reported `test-e2e: waiting for dashboard on
-http://localhost:13000/`, and `dashboard.cy.ts`'s eight include *"signs a staff
-member in through the real OP, enrolling their second factor on the way"* and
-*"signs the same staff member back in with the password they set"* — i.e. the
+http://localhost:13000/`, and `dashboard.cy.ts`'s eight include _"signs a staff
+member in through the real OP, enrolling their second factor on the way"_ and
+_"signs the same staff member back in with the password they set"_ — i.e. the
 full authorization-code leg against an OP whose registered `redirect_uri` names
 :13000.
 
@@ -265,20 +265,20 @@ the port being the default.
 On `df08a42`, exit code read from a file rather than from a harness banner —
 **exit 0**:
 
-| recipe | result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy --workspace --all-targets -D warnings` | ok |
-| `verify` | the twelve gates passed; `verify-docs` is advisory and never fails |
-| ↳ `verify-links` | 1007 links in 189 tracked markdown files resolve to a tracked path |
-| ↳ `verify-status` | 1 unimplemented item, declared in `docs/status.md` |
-| ↳ `verify-migrations` | 37 migration files match `MANIFEST.sha256` |
-| `test-rust` (`cargo nextest run --workspace`) | **1605 run, 1605 passed, 0 skipped** (1091 s) |
-| `test-doc` (`cargo test --doc --workspace`) | **107 passed, 0 failed, 1 ignored** |
-| `verify-ignored` | 0 ignored (expected 0), 45 test binaries (expected 45), 1605 total (floor 1080) |
-| `lint-web` | `pnpm -r typecheck`, `pnpm -r lint` ok |
-| `test-web` | **1244 passed, 0 skipped** across 9 packages (checkout 507, nodejs 190, dashboard 150, stripe-js 146, shop 102, ui 74, config 63, tokens 8, api-client 4) |
-| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+| recipe                                         | result                                                                                                                                                    |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`                                    | ok                                                                                                                                                        |
+| `clippy --workspace --all-targets -D warnings` | ok                                                                                                                                                        |
+| `verify`                                       | the twelve gates passed; `verify-docs` is advisory and never fails                                                                                        |
+| ↳ `verify-links`                               | 1007 links in 189 tracked markdown files resolve to a tracked path                                                                                        |
+| ↳ `verify-status`                              | 1 unimplemented item, declared in `docs/status.md`                                                                                                        |
+| ↳ `verify-migrations`                          | 37 migration files match `MANIFEST.sha256`                                                                                                                |
+| `test-rust` (`cargo nextest run --workspace`)  | **1605 run, 1605 passed, 0 skipped** (1091 s)                                                                                                             |
+| `test-doc` (`cargo test --doc --workspace`)    | **107 passed, 0 failed, 1 ignored**                                                                                                                       |
+| `verify-ignored`                               | 0 ignored (expected 0), 45 test binaries (expected 45), 1605 total (floor 1080)                                                                           |
+| `lint-web`                                     | `pnpm -r typecheck`, `pnpm -r lint` ok                                                                                                                    |
+| `test-web`                                     | **1244 passed, 0 skipped** across 9 packages (checkout 507, nodejs 190, dashboard 150, stripe-js 146, shop 102, ui 74, config 63, tokens 8, api-client 4) |
+| `deny`                                         | advisories ok, bans ok, licenses ok, sources ok                                                                                                           |
 
 **The Rust and web counts are master's, not this branch's.** No `.rs`, `.ts` or
 `.tsx` file is touched between `d5a93df` and `df08a42` — the diff is `justfile`,
@@ -291,7 +291,7 @@ nothing on this branch moved it.
 
 **One caveat on `check-schema`**, pre-existing and not caused by this branch: it
 warned `cratestack 0.11.1 on PATH, this repository pins 0.12.0`, ran in full
-anyway, and passed *against the 0.11.1 grammar*. So `schemas/vpay.cstack` is
+anyway, and passed _against the 0.11.1 grammar_. So `schemas/vpay.cstack` is
 type-checked here under an older CLI than the pin names.
 
 ---
@@ -313,7 +313,7 @@ type-checked here under an older CLI than the pin names.
   merchant key pair. Bringing a second stack up still regenerates them and
   still leaves the older stack's `demo-walk` on `invalid_client`. That is the
   pre-existing limitation in §7, untouched here and not in #78's scope — but it
-  does mean "two stacks coexist" holds for *serving*, including two dashboards,
+  does mean "two stacks coexist" holds for _serving_, including two dashboards,
   and not for two simultaneously-authenticating merchant walkthroughs.
 - **`just demo-up` was never bound to the literal default port 3000** on this
   host, for the reason given above.

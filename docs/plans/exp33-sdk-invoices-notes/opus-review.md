@@ -11,11 +11,11 @@ pass's, and it starts by saying what happened to those three.
 
 ## The three uncommitted files
 
-| File | What the change was | Verdict |
-|---|---|---|
-| `.xtask/src/main.rs` | a per-column rule for `✅` cells, a `PARITY_COLUMN_SPELLINGS` table, four tests, and thirteen entries added to the vacuity guard's list | **kept**, split into three commits, each with its own measurement |
-| `sdks/nodejs/src/resources/invoices.ts` | `mark_uncollectible` → `markUncollectible` | **kept** — but the change was incomplete: four documents still said the opposite |
-| `sdks/nodejs/src/client.test.ts` | the same rename in the proving case, plus an assertion that the *path* is still snake_case | **kept** |
+| File                                    | What the change was                                                                                                                     | Verdict                                                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `.xtask/src/main.rs`                    | a per-column rule for `✅` cells, a `PARITY_COLUMN_SPELLINGS` table, four tests, and thirteen entries added to the vacuity guard's list | **kept**, split into three commits, each with its own measurement                |
+| `sdks/nodejs/src/resources/invoices.ts` | `mark_uncollectible` → `markUncollectible`                                                                                              | **kept** — but the change was incomplete: four documents still said the opposite |
+| `sdks/nodejs/src/client.test.ts`        | the same rename in the proving case, plus an assertion that the _path_ is still snake_case                                              | **kept**                                                                         |
 
 None was committed as it stood. Each claim in them was re-measured rather
 than taken on trust, and the diff carried one `cargo fmt --check` failure
@@ -39,7 +39,7 @@ FAILED — sdk_parity_tests::the_repositorys_own_sdks_enumerate_exactly_the_capa
 ```
 
 `the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records`
-*names*, rather than counts, every capability the two SDKs declare — and it
+_names_, rather than counts, every capability the two SDKs declare — and it
 is the only thing that does, because `verify-sdk-parity` counts. Thirteen
 invoice methods landed in each SDK and the list was not updated, so a head
 whose `just verify` was green failed `cargo nextest run --workspace`.
@@ -60,7 +60,7 @@ verify-sdk-parity: ok — 443 proving test(s) … 32 SDK method(s) …
 exit 0
 ```
 
-Both directional rules are satisfied while *either* column declares the
+Both directional rules are satisfied while _either_ column declares the
 capability, and the ✅ cell's named test is source text that goes on existing
 because it belongs to the other SDK. The one thing the row's two cells exist
 to tell apart was the one thing unchecked.
@@ -76,8 +76,8 @@ Fixed in `12f4230`.
 
 **The finding the live run paid for.** Both SDKs shipped
 `CreateInvoiceParams.currency` optional, with the same sentence in each:
-*"omitted from the body entirely when `None`, which is how the server gets to
-apply this deployment's own default rather than this SDK guessing it."*
+_"omitted from the body entirely when `None`, which is how the server gets to
+apply this deployment's own default rather than this SDK guessing it."_
 
 There is no such default. `vpay_api::v1::invoices::create` calls
 `payment_intents::parse_currency(params.currency.as_deref(), config)`, whose
@@ -125,8 +125,8 @@ Fixed in `a555843`.
 because `verify-sdk-parity` keyed a row on one spelling verbatim. That is a
 check deciding a public API's spelling because it could not read two, and
 [ADR-0015](../../adr/0015-sdk-parity.md) decision 1 says the opposite in as
-many words: parity is *"per capability, with the same wire semantics — not per
-method name"*, and its alternatives reject method-name parity outright.
+many words: parity is _"per capability, with the same wire semantics — not per
+method name"_, and its alternatives reject method-name parity outright.
 
 The interrupted reviewer had renamed it and taught the gate a table. That
 work is kept: `PARITY_COLUMN_SPELLINGS` carries the one entry and is read in
@@ -197,16 +197,16 @@ Re-measured against `backends/crates/vpay-api/src/v1/invoices.rs` and
 
 Each applied to the tree, run, and reverted.
 
-| # | Mutation | Gate | Exit | Caught |
-|---|---|---|---|---|
-| 1 | delete `invoices.void` from `sdks/rust` only — **on the delivered head** | `verify-sdk-parity` | **0** | **no** — the escape, finding 2 |
-| 2 | the same, after `12f4230` | `verify-sdk-parity` | 1 | yes, naming `sdks/rust` and not `sdks/nodejs` |
-| 3 | the thirteen invoice capabilities missing from the vacuity list — **the delivered head as it stood** | `cargo nextest -p xtask` | 100 | yes (finding 1: nothing ran it) |
-| 4 | delete the one `PARITY_COLUMN_SPELLINGS` entry | `verify-sdk-parity` | 1 | yes, in both directions at once |
-| 5 | the same | `cargo nextest -p xtask` | 100 | yes — the canonical list |
-| 6 | spell the Node method `mark_uncollectible` again | `verify-sdk-parity` | 1 | yes — `PARITY_COLUMN_SPELLINGS[0] … exempts nothing` |
-| 7 | unset `VPAY_BASE_URL` for the Rust live suite | `cargo nextest --features live-stack` | 100 | yes — `2 tests run: 0 passed, 2 failed`, never `0 tests run` |
-| 8 | point the Node live suite at a dead port | `pnpm test:live` | 1 | yes — the preflight, not a skip |
+| #   | Mutation                                                                                             | Gate                                  | Exit  | Caught                                                       |
+| --- | ---------------------------------------------------------------------------------------------------- | ------------------------------------- | ----- | ------------------------------------------------------------ |
+| 1   | delete `invoices.void` from `sdks/rust` only — **on the delivered head**                             | `verify-sdk-parity`                   | **0** | **no** — the escape, finding 2                               |
+| 2   | the same, after `12f4230`                                                                            | `verify-sdk-parity`                   | 1     | yes, naming `sdks/rust` and not `sdks/nodejs`                |
+| 3   | the thirteen invoice capabilities missing from the vacuity list — **the delivered head as it stood** | `cargo nextest -p xtask`              | 100   | yes (finding 1: nothing ran it)                              |
+| 4   | delete the one `PARITY_COLUMN_SPELLINGS` entry                                                       | `verify-sdk-parity`                   | 1     | yes, in both directions at once                              |
+| 5   | the same                                                                                             | `cargo nextest -p xtask`              | 100   | yes — the canonical list                                     |
+| 6   | spell the Node method `mark_uncollectible` again                                                     | `verify-sdk-parity`                   | 1     | yes — `PARITY_COLUMN_SPELLINGS[0] … exempts nothing`         |
+| 7   | unset `VPAY_BASE_URL` for the Rust live suite                                                        | `cargo nextest --features live-stack` | 100   | yes — `2 tests run: 0 passed, 2 failed`, never `0 tests run` |
+| 8   | point the Node live suite at a dead port                                                             | `pnpm test:live`                      | 1     | yes — the preflight, not a skip                              |
 
 Mutations 1, 3 and 6 are the three that matter: the first two are defects that
 were on the branch, and the third is what keeps the spelling table from
@@ -214,23 +214,23 @@ rotting.
 
 ## Gates on the final head
 
-| Gate | Result |
-|---|---|
-| `just verify` | twelve gates, exit 0 |
-| `cargo nextest run -p vpay-sdk` | 164 run, 164 passed, **0 skipped** |
-| `cargo test --doc -p vpay-sdk` | 8 passed, 1 ignored |
-| `cargo nextest run -p xtask` | 231 run, 231 passed, 0 skipped |
-| `just verify-ignored` | 0 ignored, **45** test binaries (expected 45), 1624 total |
-| `verify-sdk-parity` | **448** proving tests, **35** dated gaps, 32 methods, 36 rows |
-| `just ci` | **exit 0** — 1624 Rust tests run, 1624 passed, **0 skipped** (1278 s); doctests 8 passed 1 ignored; `pnpm -r test` 1261 cases across nine packages, 0 skipped |
+| Gate                            | Result                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                   | twelve gates, exit 0                                                                                                                                          |
+| `cargo nextest run -p vpay-sdk` | 164 run, 164 passed, **0 skipped**                                                                                                                            |
+| `cargo test --doc -p vpay-sdk`  | 8 passed, 1 ignored                                                                                                                                           |
+| `cargo nextest run -p xtask`    | 231 run, 231 passed, 0 skipped                                                                                                                                |
+| `just verify-ignored`           | 0 ignored, **45** test binaries (expected 45), 1624 total                                                                                                     |
+| `verify-sdk-parity`             | **448** proving tests, **35** dated gaps, 32 methods, 36 rows                                                                                                 |
+| `just ci`                       | **exit 0** — 1624 Rust tests run, 1624 passed, **0 skipped** (1278 s); doctests 8 passed 1 ignored; `pnpm -r test` 1261 cases across nine packages, 0 skipped |
 
 Live, against compose project `exp33-review2` on `:18080`, images built from
 this head:
 
-| Suite | Result |
-|---|---|
+| Suite                                                                      | Result                     |
+| -------------------------------------------------------------------------- | -------------------------- |
 | `cargo nextest run -p vpay-sdk --features live-stack --test live_invoices` | 2 run, 2 passed, 0 skipped |
-| `pnpm --filter @vaam-apps/vpay-sdk test:live` | 1 file, 3 passed |
+| `pnpm --filter @vaam-apps/vpay-sdk test:live`                              | 1 file, 3 passed           |
 
 ## What this review did NOT do
 
@@ -240,7 +240,7 @@ this head:
   same line `just stripe-compat` uses — failed on this host with
   `container exp33-review2-wiremock-orange-1 is unhealthy`, whose health log
   is 157 consecutive `OCI runtime exec failed: … current working directory is
-  outside of container mount namespace root`. That is a rootless-Docker shim
+outside of container mount namespace root`. That is a rootless-Docker shim
   fault on the host, not a defect in the recipe or the stack: the same daemon
   had an unrelated stack in a restart loop at the time, and `/healthz` on the
   server this recipe brought up answered `200` throughout.

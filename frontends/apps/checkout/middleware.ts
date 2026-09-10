@@ -24,17 +24,17 @@
  * be in a popup and needs an origin to post to. Its CSP does not change: see
  * {@link HOSTED_PATH}.
  */
-import { NextResponse, type NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from "next/server";
 
-import { fetchCheckoutOrigins } from './src/lib/api';
+import { fetchCheckoutOrigins } from "./src/lib/api";
 import {
   EMBED_ORIGINS_HEADER,
   SECURITY_HEADERS,
   contentSecurityPolicy,
   encodeOriginsHeader,
-} from './src/lib/csp';
-import { serverApiBaseUrl } from './src/lib/env';
-import { normalizeOrigins } from './src/lib/origins';
+} from "./src/lib/csp";
+import { serverApiBaseUrl } from "./src/lib/env";
+import { normalizeOrigins } from "./src/lib/origins";
 
 /** `/e/{cs_id}` and nothing else. The hosted and return pages are never framed. */
 const EMBEDDED_PATH = /^\/e\/[^/]+\/?$/;
@@ -66,10 +66,12 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   let origins: readonly string[] = [];
 
   if (embedded || HOSTED_PATH.test(path) || RETURN_PATH.test(path)) {
-    const key = request.nextUrl.searchParams.get('key');
+    const key = request.nextUrl.searchParams.get("key");
     const baseUrl = serverApiBaseUrl();
     if (key !== null && key.length > 0 && baseUrl !== null) {
-      origins = normalizeOrigins(await fetchCheckoutOrigins(baseUrl, key, fetch));
+      origins = normalizeOrigins(
+        await fetchCheckoutOrigins(baseUrl, key, fetch),
+      );
     }
   }
 
@@ -86,7 +88,10 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   // `frame-ancestors 'none'` whatever the lookup returned; the list it
   // carries is for `postMessage`, and conflating the two would let a
   // merchant's popup registration make its hosted page framable.
-  response.headers.set('Content-Security-Policy', contentSecurityPolicy(embedded ? origins : []));
+  response.headers.set(
+    "Content-Security-Policy",
+    contentSecurityPolicy(embedded ? origins : []),
+  );
   return response;
 }
 
@@ -99,5 +104,5 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
  * part of the security headers nobody re-reads.
  */
 export const config = {
-  matcher: ['/:path*'],
+  matcher: ["/:path*"],
 };

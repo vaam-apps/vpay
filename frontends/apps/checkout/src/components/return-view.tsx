@@ -5,14 +5,14 @@
  * been to the rail. What it can show is "still waiting for the rail's
  * answer", an outcome, an expired session, or a read it could not make.
  */
-import { PageShell, Stack } from '@vpay/ui';
+import { PageShell, Stack } from "@vpay/ui";
 
-import type { Branding } from '../config/settings';
-import type { Locale, Translate } from '../i18n/index';
-import { failureMessage } from '../lib/failures';
-import { formatAmount } from '../lib/money';
-import type { ReturnState } from '../lib/return';
-import { LocaleSwitch } from './locale-switch';
+import type { Branding } from "../config/settings";
+import type { Locale, Translate } from "../i18n/index";
+import { failureMessage } from "../lib/failures";
+import { formatAmount } from "../lib/money";
+import type { ReturnState } from "../lib/return";
+import { LocaleSwitch } from "./locale-switch";
 import {
   BrandHeader,
   NoticePanel,
@@ -21,7 +21,7 @@ import {
   StatusPanel,
   SupportLine,
   merchantLine,
-} from './screens';
+} from "./screens";
 
 export interface ReturnViewProps {
   state: ReturnState;
@@ -36,9 +36,11 @@ export interface ReturnViewProps {
 
 export function ReturnView(props: ReturnViewProps) {
   const { state, t, locale } = props;
-  const context = 'context' in state ? state.context : null;
+  const context = "context" in state ? state.context : null;
   const amount =
-    context === null ? '' : formatAmount(context.intent.amount, context.intent.currency, locale);
+    context === null
+      ? ""
+      : formatAmount(context.intent.amount, context.intent.currency, locale);
   const merchant = context?.merchant?.name ?? null;
 
   return (
@@ -62,38 +64,50 @@ export function ReturnView(props: ReturnViewProps) {
         <div aria-live="polite" aria-atomic="true" data-testid="live-region">
           {(() => {
             switch (state.name) {
-              case 'loading':
-                return <StatusPanel t={t} screen="loading" title={t('state.loading')} body={null} />;
-              case 'error':
+              case "loading":
+                return (
+                  <StatusPanel
+                    t={t}
+                    screen="loading"
+                    title={t("state.loading")}
+                    body={null}
+                  />
+                );
+              case "error":
                 return (
                   <NoticePanel
                     t={t}
                     screen="error"
-                    title={t('error.title')}
+                    title={t("error.title")}
                     body={t(state.error.code)}
                     code={state.error.serverCode}
                   />
                 );
-              case 'expired':
+              case "expired":
                 return (
                   <NoticePanel
                     t={t}
                     screen="expired"
-                    title={t('expired.title')}
-                    body={merchantLine(t, merchant, 'expired.body', 'expired.body_unnamed')}
+                    title={t("expired.title")}
+                    body={merchantLine(
+                      t,
+                      merchant,
+                      "expired.body",
+                      "expired.body_unnamed",
+                    )}
                   />
                 );
-              case 'polling':
+              case "polling":
                 return (
                   <StatusPanel
                     t={t}
                     screen="polling"
-                    title={t('state.waiting_title')}
-                    body={t('state.waiting_body', { amount })}
+                    title={t("state.waiting_title")}
+                    body={t("state.waiting_body", { amount })}
                     notice={state.notice}
                   />
                 );
-              case 'outcome':
+              case "outcome":
                 return (
                   <OutcomePanel
                     t={t}
@@ -106,17 +120,17 @@ export function ReturnView(props: ReturnViewProps) {
                     onBack={props.onReturnToMerchant}
                   />
                 );
-              case 'forwarding':
+              case "forwarding":
                 return (
                   <StatusPanel
                     t={t}
                     screen="forwarding"
-                    title={t('state.forwarding_title')}
+                    title={t("state.forwarding_title")}
                     body={merchantLine(
                       t,
                       merchant,
-                      'state.forwarding_body',
-                      'state.forwarding_body_unnamed',
+                      "state.forwarding_body",
+                      "state.forwarding_body_unnamed",
                     )}
                   />
                 );

@@ -15,31 +15,31 @@
  *   the parent receives is the session's own, not this page's guess from the
  *   intent.
  */
-import type { Stripe, StripeError } from '@vaam-apps/vpay-stripe-js';
+import type { Stripe, StripeError } from "@vaam-apps/vpay-stripe-js";
 
-import type { MessageKey } from '../i18n/index';
-import type { BrowserCheckoutApi, SessionCredentials } from './api';
-import type { FrameChannel } from './frame';
-import { normalizeCameroonMsisdn } from './msisdn';
+import type { MessageKey } from "../i18n/index";
+import type { BrowserCheckoutApi, SessionCredentials } from "./api";
+import type { FrameChannel } from "./frame";
+import { normalizeCameroonMsisdn } from "./msisdn";
 import {
   INITIAL_STATE,
   contextOf,
   reduce,
   type CheckoutEvent,
   type CheckoutState,
-} from './machine';
-import type { SupportedRail } from './rails';
-import type { CheckoutError, PaymentIntent } from './types';
+} from "./machine";
+import type { SupportedRail } from "./rails";
+import type { CheckoutError, PaymentIntent } from "./types";
 
 /** Maps a `@vaam-apps/vpay-stripe-js` error onto a message this page can show in either language. */
 export function messageForStripeError(error: StripeError): MessageKey {
-  if (error.type === 'api_connection_error') {
-    return 'error.network';
+  if (error.type === "api_connection_error") {
+    return "error.network";
   }
-  if (error.code === 'resource_missing') {
-    return 'error.session_not_found';
+  if (error.code === "resource_missing") {
+    return "error.session_not_found";
   }
-  return 'error.unexpected';
+  return "error.unexpected";
 }
 
 /** The same, for this app's own API failures. `CheckoutErrorCode` is already a key. */
@@ -120,7 +120,7 @@ export class CheckoutController {
 
   /** Refuses before any read: the framer is not an origin the merchant registered. */
   refuseEmbedding(): void {
-    this.#dispatch({ type: 'refuse', reason: 'embed_not_allowed' });
+    this.#dispatch({ type: "refuse", reason: "embed_not_allowed" });
   }
 
   /** Reads the session and enters the state it implies. Resumes a poll when one is owed. */
@@ -130,26 +130,26 @@ export class CheckoutController {
       this.#options.credentials,
     );
     if (!result.ok) {
-      this.#dispatch({ type: 'load_failed', error: result.error });
+      this.#dispatch({ type: "load_failed", error: result.error });
       return;
     }
     this.#dispatch({
-      type: 'loaded',
+      type: "loaded",
       context: contextOf(result.value, this.#options.allowedMethods ?? null),
     });
-    if (this.#state.name === 'waiting') {
+    if (this.#state.name === "waiting") {
       await this.#poll();
-    } else if (this.#state.name === 'outcome') {
+    } else if (this.#state.name === "outcome") {
       await this.#announceOutcome();
     }
   }
 
   chooseRail(rail: SupportedRail): void {
-    this.#dispatch({ type: 'choose_rail', rail });
+    this.#dispatch({ type: "choose_rail", rail });
   }
 
   back(): void {
-    this.#dispatch({ type: 'back' });
+    this.#dispatch({ type: "back" });
   }
 
   /**
@@ -161,33 +161,39 @@ export class CheckoutController {
    */
   async submitMsisdn(raw: string): Promise<void> {
     const state = this.#state;
-    if (state.name !== 'collect_msisdn') {
+    if (state.name !== "collect_msisdn") {
       return;
     }
     const msisdn = normalizeCameroonMsisdn(raw);
     if (msisdn === null) {
-      this.#dispatch({ type: 'problem', problem: 'msisdn.invalid' });
+      this.#dispatch({ type: "problem", problem: "msisdn.invalid" });
       return;
     }
     const rail = state.rail;
     const clientSecret = this.#intentSecret();
     if (clientSecret === null) {
-      this.#dispatch({ type: 'problem', problem: 'error.missing_secret' });
+      this.#dispatch({ type: "problem", problem: "error.missing_secret" });
       return;
     }
-    this.#dispatch({ type: 'confirm_started' });
-    const result = await this.#options.stripe.confirmMobileMoneyPayment(clientSecret, {
-      type: rail.code,
-      msisdn,
-    });
+    this.#dispatch({ type: "confirm_started" });
+    const result = await this.#options.stripe.confirmMobileMoneyPayment(
+      clientSecret,
+      {
+        type: rail.code,
+        msisdn,
+      },
+    );
     if (result.error !== undefined) {
-      this.#dispatch({ type: 'problem', problem: messageForStripeError(result.error) });
+      this.#dispatch({
+        type: "problem",
+        problem: messageForStripeError(result.error),
+      });
       return;
     }
-    this.#dispatch({ type: 'intent_updated', intent: result.paymentIntent });
-    if (this.#state.name === 'waiting') {
+    this.#dispatch({ type: "intent_updated", intent: result.paymentIntent });
+    if (this.#state.name === "waiting") {
       await this.#poll();
-    } else if (this.#state.name === 'outcome') {
+    } else if (this.#state.name === "outcome") {
       await this.#announceOutcome();
     }
   }
@@ -205,25 +211,28 @@ export class CheckoutController {
    */
   async startRedirect(): Promise<void> {
     const state = this.#state;
-    if (state.name !== 'ready_redirect') {
+    if (state.name !== "ready_redirect") {
       return;
     }
     const clientSecret = this.#intentSecret();
     if (clientSecret === null) {
-      this.#dispatch({ type: 'problem', problem: 'error.missing_secret' });
+      this.#dispatch({ type: "problem", problem: "error.missing_secret" });
       return;
     }
-    this.#dispatch({ type: 'confirm_started' });
+    this.#dispatch({ type: "confirm_started" });
     const result = await this.#options.stripe.confirmPayment({
       clientSecret,
       // The rail is named on the confirm, exactly as it is for a push:
       // an intent may offer more than one, and the payer chose this one.
       // Without it the server has no way to know which rail to charge.
       confirmParams: { payment_method_data: { type: state.rail.code } },
-      redirect: 'if_required',
+      redirect: "if_required",
     });
     if (result.error !== undefined) {
-      this.#dispatch({ type: 'problem', problem: messageForStripeError(result.error) });
+      this.#dispatch({
+        type: "problem",
+        problem: messageForStripeError(result.error),
+      });
       return;
     }
     const intent = result.paymentIntent;
@@ -231,21 +240,21 @@ export class CheckoutController {
     if (url === null) {
       // A redirect rail that answered without a redirect. Not an error —
       // poll and let the intent say what happened.
-      this.#dispatch({ type: 'intent_updated', intent });
-      if (this.#state.name === 'waiting') {
+      this.#dispatch({ type: "intent_updated", intent });
+      if (this.#state.name === "waiting") {
         await this.#poll();
-      } else if (this.#state.name === 'outcome') {
+      } else if (this.#state.name === "outcome") {
         await this.#announceOutcome();
       }
       return;
     }
-    this.#dispatch({ type: 'redirect_required', url });
+    this.#dispatch({ type: "redirect_required", url });
     this.#navigateTopLevel(url);
   }
 
   /** Re-runs the poll after a `waitForPaymentIntent` that could not be answered. */
   async retryPoll(): Promise<void> {
-    if (this.#state.name !== 'waiting') {
+    if (this.#state.name !== "waiting") {
       return;
     }
     await this.#poll();
@@ -270,12 +279,12 @@ export class CheckoutController {
    * - **Top-level** — this document navigates itself, as before.
    */
   forward(url: string): void {
-    this.#dispatch({ type: 'forward', url });
-    if (this.#state.name !== 'forwarding') {
+    this.#dispatch({ type: "forward", url });
+    if (this.#state.name !== "forwarding") {
       return;
     }
     const channel = this.#options.channel;
-    if (channel !== null && channel.peer === 'opener') {
+    if (channel !== null && channel.peer === "opener") {
       this.#announceComplete();
       if (this.#openerIsGone()) {
         this.#options.navigate(url);
@@ -316,8 +325,8 @@ export class CheckoutController {
     // A POPUP navigates itself: it is a top-level browsing context, and
     // `vpay:redirect` to an opener would send the merchant's own page to the
     // rail out from under the payer. Only a frame delegates.
-    if (channel !== null && channel.peer === 'parent') {
-      channel.post({ type: 'vpay:redirect', url });
+    if (channel !== null && channel.peer === "parent") {
+      channel.post({ type: "vpay:redirect", url });
       return;
     }
     this.#options.navigate(url);
@@ -326,7 +335,7 @@ export class CheckoutController {
   async #poll(): Promise<void> {
     const clientSecret = this.#intentSecret();
     if (clientSecret === null) {
-      this.#dispatch({ type: 'problem', problem: 'error.missing_secret' });
+      this.#dispatch({ type: "problem", problem: "error.missing_secret" });
       return;
     }
     const options: { timeoutMs?: number; intervalMs?: number } = {};
@@ -336,15 +345,21 @@ export class CheckoutController {
     if (this.#options.pollIntervalMs !== undefined) {
       options.intervalMs = this.#options.pollIntervalMs;
     }
-    const result = await this.#options.stripe.waitForPaymentIntent(clientSecret, options);
+    const result = await this.#options.stripe.waitForPaymentIntent(
+      clientSecret,
+      options,
+    );
     if (result.error !== undefined) {
       // The payer stays on the waiting screen: the payment is in flight and
       // this page has learnt nothing that says otherwise.
-      this.#dispatch({ type: 'problem', problem: messageForStripeError(result.error) });
+      this.#dispatch({
+        type: "problem",
+        problem: messageForStripeError(result.error),
+      });
       return;
     }
-    this.#dispatch({ type: 'intent_updated', intent: result.paymentIntent });
-    if (this.#state.name === 'outcome') {
+    this.#dispatch({ type: "intent_updated", intent: result.paymentIntent });
+    if (this.#state.name === "outcome") {
       await this.#announceOutcome();
     }
   }
@@ -365,8 +380,11 @@ export class CheckoutController {
     );
     if (refreshed.ok) {
       this.#dispatch({
-        type: 'session_refreshed',
-        session: contextOf(refreshed.value, this.#options.allowedMethods ?? null).session,
+        type: "session_refreshed",
+        session: contextOf(
+          refreshed.value,
+          this.#options.allowedMethods ?? null,
+        ).session,
       });
     }
     this.#announceComplete();
@@ -386,15 +404,15 @@ export class CheckoutController {
       return;
     }
     const state = this.#state;
-    if (!('context' in state) || state.context === null) {
+    if (!("context" in state) || state.context === null) {
       return;
     }
-    if (state.name !== 'outcome' && state.name !== 'forwarding') {
+    if (state.name !== "outcome" && state.name !== "forwarding") {
       return;
     }
     this.#announced = true;
     this.#options.channel?.post({
-      type: 'vpay:complete',
+      type: "vpay:complete",
       session: state.context.session.id,
       status: state.context.session.status,
     });
@@ -403,11 +421,12 @@ export class CheckoutController {
   /** The intent's own `client_secret`, present only on the session read. */
   #intentSecret(): string | null {
     const state = this.#state;
-    if (!('context' in state) || state.context === null) {
+    if (!("context" in state) || state.context === null) {
       return null;
     }
-    const secret = (state.context.intent as Partial<PaymentIntent>).client_secret;
-    return typeof secret === 'string' && secret.length > 0 ? secret : null;
+    const secret = (state.context.intent as Partial<PaymentIntent>)
+      .client_secret;
+    return typeof secret === "string" && secret.length > 0 ? secret : null;
   }
 
   #dispatch(event: CheckoutEvent): void {
@@ -425,11 +444,11 @@ export class CheckoutController {
 /** The absolute URL a `next_action.redirect_to_url` names, or `null`. */
 export function redirectUrlOf(intent: PaymentIntent): string | null {
   const nextAction = intent.next_action;
-  if (nextAction === null || nextAction.type !== 'redirect_to_url') {
+  if (nextAction === null || nextAction.type !== "redirect_to_url") {
     return null;
   }
   const url = nextAction.redirect_to_url.url;
-  if (typeof url !== 'string' || url.length === 0) {
+  if (typeof url !== "string" || url.length === 0) {
     return null;
   }
   let parsed: URL;
@@ -441,5 +460,7 @@ export function redirectUrlOf(intent: PaymentIntent): string | null {
   // The rail chose this string; vpay echoed it. `javascript:` here would be
   // script execution on vpay's own origin, and a relative one would resolve
   // against this page rather than the rail.
-  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? url : null;
+  return parsed.protocol === "http:" || parsed.protocol === "https:"
+    ? url
+    : null;
 }

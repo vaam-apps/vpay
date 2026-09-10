@@ -15,19 +15,19 @@ them.
 
 ## 1. The draft's claims, checked
 
-| Claim in `haiku.md` | Verdict |
-|---|---|
-| `justfile` `cratestack_version := "0.12.0"`, `Cargo.toml` `=0.12.0`, twelve `cratestack-*` in `Cargo.lock`, both CI action pins to `0823bab…` | **true**, all four |
-| the twelve lock entries are the whole change | **true** — the set of package *names* in `Cargo.lock` is byte-identical before and after (497 either way); only twelve versions and checksums moved |
-| `0823bab382425e1fe4d04c42b9657b7e7bb7b286` is the v0.12.0 commit | **true** — `gh api repos/cratestack/cratestack/git/ref/tags/v0.12.0` → that sha, `"type": "commit"` (lightweight tag, nothing to dereference) |
-| "schema check passes" **under 0.12.0** | **claim unsupported as made** — see F1. True when actually run at 0.12.0 |
-| drift "101/16 unchanged" | **true**, but measured at the wrong version — see F1. Re-derived at 0.12.0: unchanged |
-| "verify ten gates, clippy, fmt, deny ok" | **true**, re-run |
-| "all lib tests passed (75)"; "integration tests passed (23)" | **misleading** — see F2 |
-| "It did NOT run `just ci`" | **false** — it ran it and it went **red**. See F2 |
-| "Declaration count increased from 12 to 15 (models added since the file was last checked)" | **false** — the floor and the count were already 15 at the base commit; this branch adds no declaration |
-| "the four upstream gaps remain unresolved" | **true**, and now with file:line evidence — § 3 |
-| "docs/status.md's 0.11.1 mentions are historical notes and intentionally not edited" | **false for at least three of them** — see F4 |
+| Claim in `haiku.md`                                                                                                                           | Verdict                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `justfile` `cratestack_version := "0.12.0"`, `Cargo.toml` `=0.12.0`, twelve `cratestack-*` in `Cargo.lock`, both CI action pins to `0823bab…` | **true**, all four                                                                                                                                  |
+| the twelve lock entries are the whole change                                                                                                  | **true** — the set of package _names_ in `Cargo.lock` is byte-identical before and after (497 either way); only twelve versions and checksums moved |
+| `0823bab382425e1fe4d04c42b9657b7e7bb7b286` is the v0.12.0 commit                                                                              | **true** — `gh api repos/cratestack/cratestack/git/ref/tags/v0.12.0` → that sha, `"type": "commit"` (lightweight tag, nothing to dereference)       |
+| "schema check passes" **under 0.12.0**                                                                                                        | **claim unsupported as made** — see F1. True when actually run at 0.12.0                                                                            |
+| drift "101/16 unchanged"                                                                                                                      | **true**, but measured at the wrong version — see F1. Re-derived at 0.12.0: unchanged                                                               |
+| "verify ten gates, clippy, fmt, deny ok"                                                                                                      | **true**, re-run                                                                                                                                    |
+| "all lib tests passed (75)"; "integration tests passed (23)"                                                                                  | **misleading** — see F2                                                                                                                             |
+| "It did NOT run `just ci`"                                                                                                                    | **false** — it ran it and it went **red**. See F2                                                                                                   |
+| "Declaration count increased from 12 to 15 (models added since the file was last checked)"                                                    | **false** — the floor and the count were already 15 at the base commit; this branch adds no declaration                                             |
+| "the four upstream gaps remain unresolved"                                                                                                    | **true**, and now with file:line evidence — § 3                                                                                                     |
+| "docs/status.md's 0.11.1 mentions are historical notes and intentionally not edited"                                                          | **false for at least three of them** — see F4                                                                                                       |
 
 ## 2. Findings
 
@@ -38,7 +38,7 @@ directory in the scratchpad; the only CLI root there is this review's). With a
 non-existent directory on `PATH`, `cratestack` resolves to the shared
 `~/.cargo/bin/cratestack`, which is **0.11.1**. So both of the draft's
 CrateStack measurements — `check-schema` and the drift test — ran against the
-*old* grammar and the *old* tool, in a bump whose entire subject is the new
+_old_ grammar and the _old_ tool, in a bump whose entire subject is the new
 ones. Neither recipe fails on the mismatch by design (`check-schema` warns;
 the drift test prints the pin beside the version it found), which is why this
 was invisible in its own log.
@@ -104,7 +104,7 @@ cratestack 0.12.0
 **F4 — moderate — the pin moved and its reasoning did not.** `0.11.1` survived
 in 14 files outside `docs/plans/`. Each was classified rather than swept:
 
-*Moved (a claim about the version this repository runs):* `Cargo.toml`'s
+_Moved (a claim about the version this repository runs):_ `Cargo.toml`'s
 "`=0.11.1`, exactly" block and its `cratestack-pg`/`cratestack-sqlx`
 citations; `deny.toml`'s "no feature combination at 0.11.1" and `cratestack =
 "=0.11.1"`; `rust-toolchain.toml`'s "CrateStack 0.11.1 is what this repository
@@ -117,13 +117,13 @@ the `@@check` argument and the "first CrateStack read" pin list;
 `docs/flows/webhooks.md`'s `Json`-scalar sentence; and every
 `cratestack-*-0.11.1/src/…` citation in `vpay-db` and `postgres_smoke.rs`.
 
-*Kept (dated history, and still true of the release it names):* the 1.95.0 →
+_Kept (dated history, and still true of the release it names):_ the 1.95.0 →
 1.98.0 install transcripts, the sqlx 0.8 → 0.9 section, the three "gate on
 head" run records, the release-cadence measurement (reworded to "then-pinned"
 only), and the doc comment explaining why the drift banner reads the pin out
 of the justfile instead of hardcoding `0.11.1`.
 
-*Deliberately not touched:*
+_Deliberately not touched:_
 `backends/migrations/0032_currencies-providers-cratestack-shape.sql`, which
 names 0.11.1 twice. `sqlx::migrate!` checksums migration files; editing a
 comment in one is a schema-history change wearing a docs change's clothes.
@@ -135,7 +135,7 @@ touched at all, which CLAUDE.md requires in the same commit.
 
 **F5 — minor — one adjacent pre-existing error, fixed with the date and named
 here because it is not this bump's doing.** `rust-toolchain.toml` still said
-"No CrateStack *library* crate is in this workspace's dependency graph today".
+"No CrateStack _library_ crate is in this workspace's dependency graph today".
 That has been false since 2026-09-06, when `vpay-db` took `cratestack-pg`.
 Struck rather than deleted, in the file's own style.
 
@@ -153,12 +153,12 @@ whole `src/` of `cratestack-core`, `cratestack-sqlx`, `cratestack-sql`,
 (`src/ir/columns.rs`); `cratestack-macros` and `cratestack-parser` differ only
 in the enum-query-filter feature and the `SchemaError` change.
 
-| Gap | 0.12.0 evidence | State |
-|---|---|---|
-| `@default(...)` in `Create{Model}Input` / `upsert_update_columns` | `cratestack-macros-0.12.0/src/model/inputs.rs:20-23` filters `is_generated_on_create`, which is `has_default` (`src/shared/attrs.rs:91-93`); `src/model/descriptor/columns.rs:85-91`. Both files md5-identical to 0.11.1 | open |
-| `do_nothing()` / `DO UPDATE` authorising on `runtime.pool()` | `cratestack-sqlx-0.12.0/src/query/write/upsert_exec.rs:45`; `upsert_resolve.rs:161-169` (`row_passes_update_policy(runtime.pool(), …)`). Crate `src/` unchanged | open |
-| `Value::from_plain_json` demotes non-`i64` numbers to `f64` | `cratestack-core-0.12.0/src/value.rs:95-106` (`number.as_i64()` else `as_f64().unwrap_or_default()`). Crate `src/` unchanged | open |
-| `jsonb` / `int4` (and `int2`, `bytea`) have no read-back | `cratestack-migrate-0.12.0/src/introspect/postgres/types.rs:16-36`; the crate's own test asserts `map_scalar("int4", 'b', 'N') == None` at `:57`. File md5-identical | open |
+| Gap                                                               | 0.12.0 evidence                                                                                                                                                                                                          | State |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
+| `@default(...)` in `Create{Model}Input` / `upsert_update_columns` | `cratestack-macros-0.12.0/src/model/inputs.rs:20-23` filters `is_generated_on_create`, which is `has_default` (`src/shared/attrs.rs:91-93`); `src/model/descriptor/columns.rs:85-91`. Both files md5-identical to 0.11.1 | open  |
+| `do_nothing()` / `DO UPDATE` authorising on `runtime.pool()`      | `cratestack-sqlx-0.12.0/src/query/write/upsert_exec.rs:45`; `upsert_resolve.rs:161-169` (`row_passes_update_policy(runtime.pool(), …)`). Crate `src/` unchanged                                                          | open  |
+| `Value::from_plain_json` demotes non-`i64` numbers to `f64`       | `cratestack-core-0.12.0/src/value.rs:95-106` (`number.as_i64()` else `as_f64().unwrap_or_default()`). Crate `src/` unchanged                                                                                             | open  |
+| `jsonb` / `int4` (and `int2`, `bytea`) have no read-back          | `cratestack-migrate-0.12.0/src/introspect/postgres/types.rs:16-36`; the crate's own test asserts `map_scalar("int4", 'b', 'N') == None` at `:57`. File md5-identical                                                     | open  |
 
 `@@check(expr)` is likewise still absent: `grep -rn '@@check'` over
 `cratestack-parser-0.12.0/src` and `cratestack-migrate-0.12.0/src` returns
@@ -177,7 +177,7 @@ nothing, and `convert/checks.rs::field_has_db_enforce` still takes a single
   — new `src/shared/enum_query_parser.rs`, plumbed through
   `shared/types.rs`'s query-parameter parsers. vpay compiles the generated
   `pub mod axum` and calls none of it; `cargo clippy --workspace
-  --all-targets -- -D warnings` is clean.
+--all-targets -- -D warnings` is clean.
 - `fix(parser): a type-valued @computed field is legal on a model` —
   `validate/type_names.rs` exempts computed fields.
 - The rest is release tooling, docs and the TypeScript/RTK client.
@@ -209,17 +209,17 @@ counts, in this file and in `docs/status.md`; `just verify` — all ten gates,
 `check-schema` at 0.12.0 included — was re-run green on the head that
 carries them.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy` | ok, `-D warnings`, `--all-targets` |
-| `verify` | the **ten** gates: `verify-no-mocks`; `verify-status` (1 unimplemented, declared); `verify-errors` (17 error types, 15 `#[from]`); `verify-sdk-parity` (385 proving tests, 29 dated gaps); `verify-links` (836 links, 152 files); `verify-npm-scope`; **`check-schema` (cratestack 0.12.0, 15 declarations)**; `verify-serde` (53 types, 16 exempted); `verify-repositories` (4 impls); `verify-toolchain` (1.98.0) |
-| `test-rust` | **1401 run, 1401 passed, 0 skipped**, 43 binaries, containers included |
-| `test-doc` | 96 passed, **1 ignored** (`sdks/rust` README block, pre-existing) |
-| `verify-ignored` | 0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080) |
-| `lint-web` | ok |
-| `test-web` | 797 tests, 0 skipped, 8 packages (checkout 302, nodejs 180, stripe-js 146, shop 96, config 63, api-client 4, tokens 3, ui 3) |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| Recipe           | Result                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`      | ok                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `clippy`         | ok, `-D warnings`, `--all-targets`                                                                                                                                                                                                                                                                                                                                                                                  |
+| `verify`         | the **ten** gates: `verify-no-mocks`; `verify-status` (1 unimplemented, declared); `verify-errors` (17 error types, 15 `#[from]`); `verify-sdk-parity` (385 proving tests, 29 dated gaps); `verify-links` (836 links, 152 files); `verify-npm-scope`; **`check-schema` (cratestack 0.12.0, 15 declarations)**; `verify-serde` (53 types, 16 exempted); `verify-repositories` (4 impls); `verify-toolchain` (1.98.0) |
+| `test-rust`      | **1401 run, 1401 passed, 0 skipped**, 43 binaries, containers included                                                                                                                                                                                                                                                                                                                                              |
+| `test-doc`       | 96 passed, **1 ignored** (`sdks/rust` README block, pre-existing)                                                                                                                                                                                                                                                                                                                                                   |
+| `verify-ignored` | 0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)                                                                                                                                                                                                                                                                                                                                          |
+| `lint-web`       | ok                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `test-web`       | 797 tests, 0 skipped, 8 packages (checkout 302, nodejs 180, stripe-js 146, shop 96, config 63, api-client 4, tokens 3, ui 3)                                                                                                                                                                                                                                                                                        |
+| `deny`           | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                                                                                                                                                                                                                                                   |
 
 Two notes on the numbers. **1401, not the 1421 the review brief expected** —
 this branch touches no test source (`git diff --stat 3694e34..HEAD` is
@@ -243,5 +243,5 @@ most likely means run inside `test-rust` above, green, 0 skipped.
   establishing that it is not an assertion failure.
 - `just helm-check` — not part of `just ci`, needs the network, and this
   branch touches no chart.
-- Any claim about a *cluster*, a merchant endpoint, or a live rail. Unchanged
+- Any claim about a _cluster_, a merchant endpoint, or a live rail. Unchanged
   by this branch.

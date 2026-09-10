@@ -13,20 +13,20 @@
  * from any component") was false as written, and nothing checked it either
  * way. `src/testing/no-runtime-imports.test.ts` checks it now.
  */
-import type { CheckoutState } from '../lib/machine';
-import type { ReturnState } from '../lib/return';
-import { makeContext, makePublicIntent, makeSession } from './fixtures';
+import type { CheckoutState } from "../lib/machine";
+import type { ReturnState } from "../lib/return";
+import { makeContext, makePublicIntent, makeSession } from "./fixtures";
 
-const BOTH_RAILS = { payment_method_types: ['mtn_momo', 'orange_money'] };
+const BOTH_RAILS = { payment_method_types: ["mtn_momo", "orange_money"] };
 const MTN = {
-  code: 'mtn_momo',
-  flow: 'mobile_money_push',
-  label: 'rail.mtn_momo',
+  code: "mtn_momo",
+  flow: "mobile_money_push",
+  label: "rail.mtn_momo",
 } as const;
 const ORANGE = {
-  code: 'orange_money',
-  flow: 'redirect',
-  label: 'rail.orange_money',
+  code: "orange_money",
+  flow: "redirect",
+  label: "rail.orange_money",
 } as const;
 const RAILS = {
   supported: [MTN, ORANGE],
@@ -34,141 +34,159 @@ const RAILS = {
 } as const;
 
 export const CHECKOUT_SCREENS: Record<string, CheckoutState> = {
-  loading: { name: 'loading' },
-  error: { name: 'error', error: { code: 'error.session_not_found' } },
-  refused_embed: { name: 'refused', reason: 'embed_not_allowed', context: null },
-  refused_rail: {
-    name: 'refused',
-    reason: 'no_supported_rail',
-    context: makeContext({}, { payment_method_types: ['zzz_pay'] }),
+  loading: { name: "loading" },
+  error: { name: "error", error: { code: "error.session_not_found" } },
+  refused_embed: {
+    name: "refused",
+    reason: "embed_not_allowed",
+    context: null,
   },
-  expired: { name: 'expired', context: makeContext({ status: 'expired' }) },
+  refused_rail: {
+    name: "refused",
+    reason: "no_supported_rail",
+    context: makeContext({}, { payment_method_types: ["zzz_pay"] }),
+  },
+  expired: { name: "expired", context: makeContext({ status: "expired" }) },
   select_rail: {
-    name: 'select_rail',
+    name: "select_rail",
     context: makeContext({}, BOTH_RAILS),
-    rails: { supported: [...RAILS.supported], unsupported: ['zzz_pay'] },
+    rails: { supported: [...RAILS.supported], unsupported: ["zzz_pay"] },
   },
   collect_msisdn: {
-    name: 'collect_msisdn',
+    name: "collect_msisdn",
     context: makeContext({}, BOTH_RAILS),
     rails: { supported: [...RAILS.supported], unsupported: [] },
     rail: MTN,
     problem: null,
   },
   collect_msisdn_invalid: {
-    name: 'collect_msisdn',
+    name: "collect_msisdn",
     context: makeContext({}, BOTH_RAILS),
     rails: { supported: [...RAILS.supported], unsupported: [] },
     rail: MTN,
-    problem: 'msisdn.invalid',
+    problem: "msisdn.invalid",
   },
   ready_redirect: {
-    name: 'ready_redirect',
+    name: "ready_redirect",
     context: makeContext({}, BOTH_RAILS),
     rails: { supported: [...RAILS.supported], unsupported: [] },
     rail: ORANGE,
     problem: null,
   },
-  confirming: { name: 'confirming', context: makeContext(), rail: MTN },
-  waiting: { name: 'waiting', context: makeContext({}, { status: 'processing' }), rail: MTN, notice: null },
-  waiting_notice: {
-    name: 'waiting',
-    context: makeContext({}, { status: 'processing' }),
+  confirming: { name: "confirming", context: makeContext(), rail: MTN },
+  waiting: {
+    name: "waiting",
+    context: makeContext({}, { status: "processing" }),
     rail: MTN,
-    notice: 'error.network',
+    notice: null,
+  },
+  waiting_notice: {
+    name: "waiting",
+    context: makeContext({}, { status: "processing" }),
+    rail: MTN,
+    notice: "error.network",
   },
   redirecting: {
-    name: 'redirecting',
+    name: "redirecting",
     context: makeContext({}, BOTH_RAILS),
     rail: ORANGE,
-    url: 'https://rail.example/stub-hosted-page/tok_1',
+    url: "https://rail.example/stub-hosted-page/tok_1",
   },
   outcome_succeeded: {
-    name: 'outcome',
-    context: makeContext({ status: 'complete', payment_status: 'paid' }, { status: 'succeeded' }),
-    kind: 'succeeded',
+    name: "outcome",
+    context: makeContext(
+      { status: "complete", payment_status: "paid" },
+      { status: "succeeded" },
+    ),
+    kind: "succeeded",
     failure: null,
     reason: null,
   },
   outcome_failed: {
-    name: 'outcome',
+    name: "outcome",
     context: makeContext(
-      { status: 'expired', payment_status: 'failed' },
+      { status: "expired", payment_status: "failed" },
       {
-        status: 'requires_payment_method',
+        status: "requires_payment_method",
         last_payment_error: {
-          code: 'insufficient_funds',
-          message: 'Le solde du compte est insuffisant (MTN-4001)',
+          code: "insufficient_funds",
+          message: "Le solde du compte est insuffisant (MTN-4001)",
         },
       },
     ),
-    kind: 'failed',
-    failure: 'insufficient_funds',
+    kind: "failed",
+    failure: "insufficient_funds",
     // The rail's own words, as `providerReason` cleans them. Shown under the
     // translated sentence, never instead of it.
-    reason: 'Le solde du compte est insuffisant (MTN-4001)',
+    reason: "Le solde du compte est insuffisant (MTN-4001)",
   },
   outcome_canceled: {
-    name: 'outcome',
-    context: makeContext({ status: 'expired', payment_status: 'failed' }, { status: 'canceled' }),
-    kind: 'canceled',
+    name: "outcome",
+    context: makeContext(
+      { status: "expired", payment_status: "failed" },
+      { status: "canceled" },
+    ),
+    kind: "canceled",
     failure: null,
     reason: null,
   },
   forwarding: {
-    name: 'forwarding',
-    context: makeContext({ status: 'complete', payment_status: 'paid' }, { status: 'succeeded' }),
-    kind: 'succeeded',
-    url: 'https://shop.example/ok?sid=cs_test_fixture000000000001',
+    name: "forwarding",
+    context: makeContext(
+      { status: "complete", payment_status: "paid" },
+      { status: "succeeded" },
+    ),
+    kind: "succeeded",
+    url: "https://shop.example/ok?sid=cs_test_fixture000000000001",
   },
 };
 
 export const RETURN_SCREENS: Record<string, ReturnState> = {
-  loading: { name: 'loading' },
-  error: { name: 'error', error: { code: 'error.missing_return_token' } },
+  loading: { name: "loading" },
+  error: { name: "error", error: { code: "error.missing_return_token" } },
   polling: {
-    name: 'polling',
+    name: "polling",
     context: {
       session: makeSession(),
-      intent: makePublicIntent({ status: 'requires_action' }),
-      merchant: { name: 'Boutique Test' },
+      intent: makePublicIntent({ status: "requires_action" }),
+      merchant: { name: "Boutique Test" },
     },
     notice: null,
   },
   expired: {
-    name: 'expired',
+    name: "expired",
     context: {
-      session: makeSession({ status: 'expired' }),
+      session: makeSession({ status: "expired" }),
       intent: makePublicIntent(),
-      merchant: { name: 'Boutique Test' },
+      merchant: { name: "Boutique Test" },
     },
   },
   outcome_succeeded: {
-    name: 'outcome',
+    name: "outcome",
     context: {
-      session: makeSession({ status: 'complete', payment_status: 'paid' }),
-      intent: makePublicIntent({ status: 'succeeded' }),
-      merchant: { name: 'Boutique Test' },
+      session: makeSession({ status: "complete", payment_status: "paid" }),
+      intent: makePublicIntent({ status: "succeeded" }),
+      merchant: { name: "Boutique Test" },
     },
-    kind: 'succeeded',
+    kind: "succeeded",
     failure: null,
     reason: null,
   },
   outcome_failed: {
-    name: 'outcome',
+    name: "outcome",
     context: {
-      session: makeSession({ status: 'expired', payment_status: 'failed' }),
+      session: makeSession({ status: "expired", payment_status: "failed" }),
       intent: makePublicIntent({
-        status: 'requires_payment_method',
+        status: "requires_payment_method",
         last_payment_error: {
-          code: 'payer_timeout',
-          message: 'Payer did not approve in time (OM-TIMEOUT)',
+          code: "payer_timeout",
+          message: "Payer did not approve in time (OM-TIMEOUT)",
         },
       }),
-      merchant: { name: 'Boutique Test' },
+      merchant: { name: "Boutique Test" },
     },
-    kind: 'failed',
-    failure: 'payer_timeout',
-    reason: 'Payer did not approve in time (OM-TIMEOUT)',
+    kind: "failed",
+    failure: "payer_timeout",
+    reason: "Payer did not approve in time (OM-TIMEOUT)",
   },
 };

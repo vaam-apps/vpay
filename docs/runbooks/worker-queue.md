@@ -156,7 +156,7 @@ WHERE locked_at < now() - interval '5 minutes';
 ```
 
 This is exactly `reap_expired_leases`. Keep the interval at or above the
-deployment's lease: freeing a lease that is merely *slow* hands the same job to
+deployment's lease: freeing a lease that is merely _slow_ hands the same job to
 a second worker while the first is still running it. That is survivable — every
 handler is a compare-and-swap and the loser's write matches no row — but it
 shows up as `lost` on the gauge and it wastes a rail call.
@@ -200,7 +200,7 @@ changed the charge — reconcile it against the rail's settlement statement"
 ### What it means
 
 A poll landed on a charge that had already settled, and the rail's answer went
-the *other* way: `failed` against a `succeeded` charge, or `succeeded` against
+the _other_ way: `failed` against a `succeeded` charge, or `succeeded` against
 a `failed` one. Only those two pairs raise this
 (`vpay_core::settlement::contradiction`); a `pending` or `not_found` answer
 against a settled charge is a rail that has not caught up with itself and is
@@ -224,10 +224,11 @@ reconciliation can start from it alone.
    `provider_txn_id` (migration `0021`) is written only by
    `vpay_db::Settlement::apply_succeeded`, so a `succeeded` charge that has one
    is the identifier to quote to the rail.
+
 2. Read the `provider_requests` timeline for the charge — steps 2 and 3 of
    [unresolved-charges.md](unresolved-charges.md) apply unchanged.
 3. Reconcile against the rail's settlement statement. If the statement agrees
-   with the rail's *later* answer and not with vpay's charge, the money moved
+   with the rail's _later_ answer and not with vpay's charge, the money moved
    differently from what the merchant was told: escalate, and do not resolve it
    from the API alone.
 

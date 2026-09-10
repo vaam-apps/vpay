@@ -166,7 +166,9 @@ export function secondsLeftInStep(): number {
  * Nothing is stubbed: this is the same endpoint, the same credential and the
  * same row the app itself reads on every render.
  */
-export async function staffTokenExpiry(sessionToken: string): Promise<string | null> {
+export async function staffTokenExpiry(
+  sessionToken: string,
+): Promise<string | null> {
   const base = process.env["VPAY_BASE_URL"];
   if (typeof base !== "string" || base.length === 0) {
     throw new Error(

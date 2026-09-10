@@ -1,11 +1,11 @@
-'use client';
+"use client";
 
-import { useActionState } from 'react';
+import { useActionState } from "react";
 
-import { Button, Field, FieldLabel, Input, Stack } from '@vpay/ui';
+import { Button, Field, FieldLabel, Input, Stack } from "@vpay/ui";
 
-import { NO_ERROR, type FormAction } from '../form-state';
-import { FormAlert } from './form-alert';
+import { NO_ERROR, type FormAction } from "../form-state";
+import { FormAlert } from "./form-alert";
 
 export interface SignInFormProps {
   /** `signIn` from `src/server/actions.ts`, passed in so this file imports no server code. */
@@ -62,7 +62,7 @@ export function SignInForm({ action }: SignInFormProps) {
         <FormAlert error={state.error} requestId={state.requestId} />
 
         <Button type="submit" block disabled={pending}>
-          {pending ? 'Signing in…' : 'Sign in'}
+          {pending ? "Signing in…" : "Sign in"}
         </Button>
       </Stack>
     </form>

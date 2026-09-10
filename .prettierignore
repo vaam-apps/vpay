@@ -8,6 +8,18 @@
 # Prettier 3 reads `.gitignore` as well as this file, so generated trees
 # (`dist/`, `storybook-static/`, `.e2e/`, `node_modules/`) are already out of
 # scope and are deliberately not repeated here.
+#
+# THERE IS A SECOND IGNORE FILE: `examples/shop/.prettierignore`, for the
+# `zen generate` output and `.next/`. It applies to that package's own `lint`
+# script (`prettier --check`, run from that directory) and NOT to `just fmt`
+# or `just fmt-check-web`, which run from here and read only this file. The
+# two agree today, measured rather than assumed: every path it names is
+# either in the root `.gitignore` already or a file prettier cannot parse
+# (`examples/shop/zenstack/migrations/` holds `.sql` and a `.toml`, and
+# `schema.zmodel` is not a language prettier knows). Add a `.ts`, `.json` or
+# `.md` under one of those paths and they stop agreeing — the root run would
+# check a generated file the package deliberately excludes. Mirror the entry
+# here if that happens.
 
 # Helm templates are Go templates that happen to have a `.yaml` extension: a
 # line like `{{- include "vpay.validate" . -}}` is not YAML, prettier's YAML

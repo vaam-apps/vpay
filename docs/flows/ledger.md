@@ -8,25 +8,25 @@ received.
 
 **Capture of 5,000 XAF, no fee**
 
-| Account | Direction | Amount |
-|---|---|---|
-| `payer_clearing` | debit | 5000 |
-| `merchant_payable` | credit | 5000 |
+| Account            | Direction | Amount |
+| ------------------ | --------- | ------ |
+| `payer_clearing`   | debit     | 5000   |
+| `merchant_payable` | credit    | 5000   |
 
 **Capture with a 100 XAF platform fee**
 
-| Account | Direction | Amount |
-|---|---|---|
-| `payer_clearing` | debit | 5000 |
-| `merchant_payable` | credit | 4900 |
-| `platform_fee_revenue` | credit | 100 |
+| Account                | Direction | Amount |
+| ---------------------- | --------- | ------ |
+| `payer_clearing`       | debit     | 5000   |
+| `merchant_payable`     | credit    | 4900   |
+| `platform_fee_revenue` | credit    | 100    |
 
 **Refund of 2,000 XAF** (fee not refunded — Stripe's default)
 
-| Account | Direction | Amount |
-|---|---|---|
-| `merchant_payable` | debit | 2000 |
-| `payer_clearing` | credit | 2000 |
+| Account            | Direction | Amount |
+| ------------------ | --------- | ------ |
+| `merchant_payable` | debit     | 2000   |
+| `payer_clearing`   | credit    | 2000   |
 
 ## When refunds post
 
@@ -39,7 +39,7 @@ A refund is asynchronous, so:
   was neither a database schema nor `schemas/vpay.cstack`'s grammar could
   express a cross-column constraint. The schema has since been implemented
   in raw SQL. `payment_intents` now carries `CONSTRAINT no_over_refund CHECK
-  (amount_refunded + amount_refund_pending <= amount)`
+(amount_refunded + amount_refund_pending <= amount)`
   (`backends/migrations/0003_create-payment-intents.sql:73`), proven to fire
   by `over_refund_is_rejected_by_the_database` in
   `backends/tests/integration/tests/postgres_smoke.rs` against a real
@@ -48,7 +48,7 @@ A refund is asynchronous, so:
   **Be precise about what this does and does not guarantee** (mirroring the
   comment block on the constraint itself in the migration). It **does**
   guarantee, unconditionally and including under concurrency, that no
-  *committed* row can ever end up over-refunded: two concurrent `UPDATE`s
+  _committed_ row can ever end up over-refunded: two concurrent `UPDATE`s
   racing to increment `amount_refund_pending` still serialize at the
   database — the second writer blocks on the row lock Postgres's MVCC
   already takes for any `UPDATE`, then re-evaluates the CHECK against the
@@ -70,6 +70,7 @@ A refund is asynchronous, so:
   nothing in the application writes to `payment_intents` or the ledger
   tables today; only the integration test does, directly, to prove the
   constraint fires.
+
 - **On success:** in one transaction, decrement pending, increment refunded,
   write the ledger transaction.
 - **On failure:** decrement pending only. Nothing was posted, so **no reversal
@@ -81,13 +82,13 @@ A refund is asynchronous, so:
 **Decided 2026-09-05 ([issue #46](https://github.com/vaam-apps/vpay/issues/46)),
 and stated here because "it does not post" is a decision, not an omission.**
 
-The `refund` object carries a `fee` — what the rail charged *us* to move the
+The `refund` object carries a `fee` — what the rail charged _us_ to move the
 money back ([merchant-auth.md](merchant-auth.md)). It is **reported to the
 merchant and posted nowhere.** None of the three postings above gains an
 entry, `platform_fee_revenue` is untouched, and the refund posting stays the
 two lines it is today.
 
-Why not post it. A posting rule has to answer *who pays*, and that answer is
+Why not post it. A posting rule has to answer _who pays_, and that answer is
 not vpay's: the integrator whose report opened the issue needs the fee to
 follow fault (their platform eats it on a platform error, the merchant on
 theirs), which is a marketplace judgement about a specific order, not
@@ -133,7 +134,7 @@ says the same thing.
 schema in `schemas/vpay.cstack`.** `vpay_ledger::AccountKind` has exactly
 three variants — `MerchantPayable`, `PayerClearing`, `PlatformFeeRevenue` —
 with no per-merchant dimension. "Per merchant: `balance(merchant_payable) = …`"
-cannot actually be computed from that type as modelled: nothing says *which*
+cannot actually be computed from that type as modelled: nothing says _which_
 merchant a given `MerchantPayable` posting belongs to. Fixing this needs a new
 field on the Rust type (and the table that mirrors it), not a schema-only
 patch — adding a `merchant_id` column to the design sketch without a

@@ -684,7 +684,7 @@ none of them touches the network:
   fields (`customer` and `currency` — the second was optional for one day, and
   a running vpay answers `400` without it); the `GET`
   whose response carries the lines; the update's three states (`due_date=` is
-  *clear it*, an unmentioned field is absent, and a patch that mentions
+  _clear it_, an unmentioned field is absent, and a patch that mentions
   nothing sends nothing); the list's two cursors and two filters; the
   `DELETE` with its key and no body; that `finalize`, `void` and
   `markUncollectible` each `POST` an **empty** body to its own path while

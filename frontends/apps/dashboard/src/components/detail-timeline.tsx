@@ -1,4 +1,4 @@
-import { List, Stack, Text } from '@vpay/ui';
+import { List, Stack, Text } from "@vpay/ui";
 
 export interface TimelineEvent {
   id: string;

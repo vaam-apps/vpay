@@ -30,7 +30,7 @@
  */
 
 /** The staff session token vpay minted. */
-export const SESSION_COOKIE = 'vpay_dash_session';
+export const SESSION_COOKIE = "vpay_dash_session";
 
 /**
  * The **sealed** TOTP secret, between the password leg and the first code.
@@ -48,7 +48,7 @@ export const SESSION_COOKIE = 'vpay_dash_session';
  * that is enrolment, not a leak — but the sealed blob is this app's own
  * business.
  */
-export const ENROLMENT_COOKIE = 'vpay_dash_enrolment';
+export const ENROLMENT_COOKIE = "vpay_dash_enrolment";
 
 /**
  * The attributes every cookie this app sets carries.
@@ -60,8 +60,8 @@ export const ENROLMENT_COOKIE = 'vpay_dash_enrolment';
 export const COOKIE_ATTRIBUTES = {
   httpOnly: true,
   secure: true,
-  sameSite: 'lax',
-  path: '/',
+  sameSite: "lax",
+  path: "/",
 } as const;
 
 /**

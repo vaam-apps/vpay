@@ -1,23 +1,23 @@
-import { render } from '@testing-library/react';
-import { PAYMENT_STATUS } from '@vpay/tokens';
-import { describe, expect, it } from 'vitest';
+import { render } from "@testing-library/react";
+import { PAYMENT_STATUS } from "@vpay/tokens";
+import { describe, expect, it } from "vitest";
 
-import { Alert } from './components/alert';
-import { Badge } from './components/badge';
-import { Button } from './components/button';
-import { Card, CardBody } from './components/card';
-import { Checkbox } from './components/checkbox';
-import { Dialog } from './components/dialog';
-import { Drawer } from './components/drawer';
-import { Field, FieldDescription, FieldLabel } from './components/field';
-import { Heading, List, PageShell, Stack, Text } from './components/layout';
-import { Input } from './components/input';
-import { Radio, RadioGroup } from './components/radio';
-import { Select } from './components/select';
-import { Spinner } from './components/spinner';
-import { StatusBadge } from './components/status-badge';
-import { Table } from './components/table';
-import { axeViolations } from './testing/axe';
+import { Alert } from "./components/alert";
+import { Badge } from "./components/badge";
+import { Button } from "./components/button";
+import { Card, CardBody } from "./components/card";
+import { Checkbox } from "./components/checkbox";
+import { Dialog } from "./components/dialog";
+import { Drawer } from "./components/drawer";
+import { Field, FieldDescription, FieldLabel } from "./components/field";
+import { Heading, List, PageShell, Stack, Text } from "./components/layout";
+import { Input } from "./components/input";
+import { Radio, RadioGroup } from "./components/radio";
+import { Select } from "./components/select";
+import { Spinner } from "./components/spinner";
+import { StatusBadge } from "./components/status-badge";
+import { Table } from "./components/table";
+import { axeViolations } from "./testing/axe";
 
 /**
  * One render tree covering every `@vpay/ui` export, checked against
@@ -70,8 +70,8 @@ function KitchenSink() {
 
       <Select
         items={[
-          { value: 'en', label: 'English' },
-          { value: 'fr', label: 'Français' },
+          { value: "en", label: "English" },
+          { value: "fr", label: "Français" },
         ]}
         defaultValue="en"
         aria-label="Locale"
@@ -103,7 +103,9 @@ function KitchenSink() {
         <Dialog.Portal>
           <Dialog.Popup>
             <Dialog.Title>Sign-in failed</Dialog.Title>
-            <Dialog.Description>Check the code and try again.</Dialog.Description>
+            <Dialog.Description>
+              Check the code and try again.
+            </Dialog.Description>
             <Dialog.Close>Dismiss</Dialog.Close>
           </Dialog.Popup>
         </Dialog.Portal>
@@ -116,7 +118,7 @@ function KitchenSink() {
   );
 }
 
-describe('@vpay/ui structural accessibility', () => {
+describe("@vpay/ui structural accessibility", () => {
   /**
    * The negative control, and it runs FIRST on purpose.
    *
@@ -127,18 +129,20 @@ describe('@vpay/ui structural accessibility', () => {
    * check as having been done by hand once; a check nobody can re-run is a
    * claim, so it is a test now.
    */
-  it('reports a violation when there is one (the harness is not asleep)', async () => {
+  it("reports a violation when there is one (the harness is not asleep)", async () => {
     const { unmount } = render(
       <div>
         <button type="button" />
       </div>,
     );
     const violations = await axeViolations(document.body);
-    expect(violations.map((violation) => violation.id)).toContain('button-name');
+    expect(violations.map((violation) => violation.id)).toContain(
+      "button-name",
+    );
     unmount();
   });
 
-  it('has zero violations for label, button-name, aria-*, region and list', async () => {
+  it("has zero violations for label, button-name, aria-*, region and list", async () => {
     const { unmount } = render(<KitchenSink />);
     const violations = await axeViolations(document.body);
     expect(violations).toEqual([]);

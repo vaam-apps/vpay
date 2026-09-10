@@ -31,10 +31,10 @@ export interface PageCredentials {
 }
 
 /** The separator `vpay_core::ids::client_secret` joins an id and its suffix with. */
-const SECRET_SEPARATOR = '_secret_';
+const SECRET_SEPARATOR = "_secret_";
 
 function stripLeadingHash(hash: string): string {
-  return hash.startsWith('#') ? hash.slice(1) : hash;
+  return hash.startsWith("#") ? hash.slice(1) : hash;
 }
 
 /**
@@ -44,18 +44,23 @@ function stripLeadingHash(hash: string): string {
  * a pure function: every case below is a test, and none of them needs a
  * browser.
  */
-export function parsePageCredentials(search: string, hash: string): PageCredentials {
-  const query = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+export function parsePageCredentials(
+  search: string,
+  hash: string,
+): PageCredentials {
+  const query = new URLSearchParams(
+    search.startsWith("?") ? search.slice(1) : search,
+  );
   const fragment = stripLeadingHash(hash);
 
   let clientSecret: string | null = null;
   let fragmentKey: string | null = null;
 
   if (fragment.length > 0) {
-    if (fragment.includes('=')) {
+    if (fragment.includes("=")) {
       const parameters = new URLSearchParams(fragment);
-      clientSecret = parameters.get('client_secret');
-      fragmentKey = parameters.get('key');
+      clientSecret = parameters.get("client_secret");
+      fragmentKey = parameters.get("key");
     } else {
       // The plan's shape: the fragment *is* the secret.
       clientSecret = decodeURIComponent(fragment);
@@ -68,17 +73,20 @@ export function parsePageCredentials(search: string, hash: string): PageCredenti
     clientSecret = null;
   }
 
-  const key = query.get('key') ?? fragmentKey;
+  const key = query.get("key") ?? fragmentKey;
   return {
     key: key !== null && key.length > 0 ? key : null,
-    clientSecret: clientSecret !== null && clientSecret.length > 0 ? clientSecret : null,
+    clientSecret:
+      clientSecret !== null && clientSecret.length > 0 ? clientSecret : null,
   };
 }
 
 /** The return page's `?t=` token. */
 export function parseReturnToken(search: string): string | null {
-  const query = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
-  const token = query.get('t');
+  const query = new URLSearchParams(
+    search.startsWith("?") ? search.slice(1) : search,
+  );
+  const token = query.get("t");
   return token !== null && token.length > 0 ? token : null;
 }
 
@@ -98,7 +106,7 @@ export function parseReturnToken(search: string): string | null {
  * outlives the payment, and D6's whole point is that the credential lives in
  * a fragment that does not.
  */
-export const PUBLISHABLE_KEY_STORAGE_PREFIX = 'vpay.checkout.key.';
+export const PUBLISHABLE_KEY_STORAGE_PREFIX = "vpay.checkout.key.";
 
 export function rememberPublishableKey(
   storage: Storage | null | undefined,
@@ -119,7 +127,8 @@ export function recallPublishableKey(
   sessionId: string,
 ): string | null {
   try {
-    const value = storage?.getItem(`${PUBLISHABLE_KEY_STORAGE_PREFIX}${sessionId}`) ?? null;
+    const value =
+      storage?.getItem(`${PUBLISHABLE_KEY_STORAGE_PREFIX}${sessionId}`) ?? null;
     return value !== null && value.length > 0 ? value : null;
   } catch {
     return null;

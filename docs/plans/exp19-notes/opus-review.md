@@ -27,15 +27,15 @@ not move, and the holes were underneath them.
 
 ## Findings
 
-| # | Severity | Finding |
-|---|---|---|
-| 1 | **gate-hole** + misleading-claim | The object's key set was guarded by nothing, and the tripwire that two documents named did not exist |
-| 2 | **gate-hole** | `GET /v1/customers`' cursor could be de-scoped across tenants and nothing objected |
-| 3 | **gate-hole** | `POST /v1/customers`' idempotency was exercised by no case |
-| 4 | **gate-hole** | Four documented rules for a **checkout session's** `customer` had no test at all |
-| 5 | misleading-claim | `touch_last_used`'s published contract names a statement that is never rendered |
-| 6 | misleading-claim | "Phone is the customer identity" never said that it does not deduplicate |
-| 7 | rule-break (ADR-0015) | Neither SDK models a checkout session's `customer`, in either direction, with no gap row |
+| #   | Severity                         | Finding                                                                                              |
+| --- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 1   | **gate-hole** + misleading-claim | The object's key set was guarded by nothing, and the tripwire that two documents named did not exist |
+| 2   | **gate-hole**                    | `GET /v1/customers`' cursor could be de-scoped across tenants and nothing objected                   |
+| 3   | **gate-hole**                    | `POST /v1/customers`' idempotency was exercised by no case                                           |
+| 4   | **gate-hole**                    | Four documented rules for a **checkout session's** `customer` had no test at all                     |
+| 5   | misleading-claim                 | `touch_last_used`'s published contract names a statement that is never rendered                      |
+| 6   | misleading-claim                 | "Phone is the customer identity" never said that it does not deduplicate                             |
+| 7   | rule-break (ADR-0015)            | Neither SDK models a checkout session's `customer`, in either direction, with no gap row             |
 
 ### 1. The customer object's key set — nothing guarded it
 
@@ -57,7 +57,7 @@ delivered at-least-once and stored in `events` **forever** — the one place
 vpay cannot retract a field.
 
 **And the count in all three places was wrong.** The object is `id`, `object`,
-`name`, `email`, `phone`, `metadata`, `created`, `livemode` — *eight* keys,
+`name`, `email`, `phone`, `metadata`, `created`, `livemode` — _eight_ keys,
 which is exactly what `customers.md`'s own table lists row for row while its
 prose said seven. The test is named for the measured count and the documents
 were corrected to it, not the reverse.
@@ -87,7 +87,7 @@ which no unique index can catch because there deliberately is none.
 `docs/flows/customers.md` documents four rules (accepted, stored, rendered,
 inherited from the intent, refused when the two disagree).
 `checkout_sessions.rs` gained a `customer_id: None` field filler and a
-key-count bump on the *nested intent*. Nothing else.
+key-count bump on the _nested intent_. Nothing else.
 
 Deleting the contradiction check and running both suites:
 
@@ -141,7 +141,7 @@ and neither `CheckoutSession` type carries the key the server now returns. A
 merchant driving sessions through an SDK cannot attach a customer at all.
 
 `verify-sdk-parity` did not notice because it is two-directional between the
-**SDKs**, and the SDKs agree with each other — they are short of the *server*.
+**SDKs**, and the SDKs agree with each other — they are short of the _server_.
 Recorded as dated ⛔/⛔ rows owned by the SDK maintainers rather than
 implemented here (ADR-0015 allows either), because adding a resource field to
 two SDKs is a change to Checkout Sessions and not to the review of Customers.
@@ -153,14 +153,14 @@ two SDKs is a change to Checkout Sessions and not to the review of Customers.
 
 Verified by mutation, and each held:
 
-| Mutation | Result |
-|---|---|
-| `from_wire` back on its own private list, missing `SweepIdleCustomers` (the *original* bug, re-armed exactly) | `the_wire_spelling_is_the_same_by_both_routes` **FAILS in 12 ms**; `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two` **FAILS naming the dead letter and `alert: true`**. Two gates, as claimed |
-| Rename the Rust test the `customers.del` parity row names | `verify-sdk-parity` fails naming row, SDK and test |
-| Rename Node's `customers.del` | `verify-sdk-parity` fails naming the unrowed method |
-| Drop the tenant filter from `list_page`'s cursor | caught only by the new case (finding 2) |
-| `create` releases the key instead of storing the response | caught only by the new case (finding 3) |
-| Remove the session's contradiction check | caught only by the new case (finding 4) |
+| Mutation                                                                                                      | Result                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from_wire` back on its own private list, missing `SweepIdleCustomers` (the _original_ bug, re-armed exactly) | `the_wire_spelling_is_the_same_by_both_routes` **FAILS in 12 ms**; `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two` **FAILS naming the dead letter and `alert: true`**. Two gates, as claimed |
+| Rename the Rust test the `customers.del` parity row names                                                     | `verify-sdk-parity` fails naming row, SDK and test                                                                                                                                                                     |
+| Rename Node's `customers.del`                                                                                 | `verify-sdk-parity` fails naming the unrowed method                                                                                                                                                                    |
+| Drop the tenant filter from `list_page`'s cursor                                                              | caught only by the new case (finding 2)                                                                                                                                                                                |
+| `create` releases the key instead of storing the response                                                     | caught only by the new case (finding 3)                                                                                                                                                                                |
+| Remove the session's contradiction check                                                                      | caught only by the new case (finding 4)                                                                                                                                                                                |
 
 Also confirmed by reading and by the green gate: `delete_idle` re-checks its
 guard **inside the `DELETE`** rather than after a read, so the sweep cannot
@@ -171,7 +171,7 @@ the uniform 404; a foreign customer on an intent or a session is the identical
 the drift constants are re-derived by
 `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` against a
 real container rather than asserted against themselves; and
-`every_action_this_module_calls_has_an_allow_arm` asserts the *absence* of the
+`every_action_this_module_calls_has_an_allow_arm` asserts the _absence_ of the
 three arms the model does not grant, not only the presence of two.
 
 `park_the_housekeeping_jobs`' second `ensure` (525b0be) is a real fix and
@@ -191,18 +191,18 @@ keeps the promise its doc makes.
    That absence predates S4a and was left alone; `PaymentIntentObject` and
    `RefundObject` have one and `CheckoutSessionObject` does not.
 4. `CustomerObject` derives `Debug` with the payer's name, email and phone in
-   clear. Nothing formats one today (`CustomerRow`, which *is* logged, hand-
+   clear. Nothing formats one today (`CustomerRow`, which _is_ logged, hand-
    redacts all three), so this is latent rather than a leak — but it is one
    `tracing::warn!(?object, …)` away from being one.
 
 ## Not checked
 
-* Nothing about `cratestack` 0.11.1 beyond what the change calls.
-* No rolling-deploy test of `0034`; `opus.md` § 8's reasoning was not
+- Nothing about `cratestack` 0.11.1 beyond what the change calls.
+- No rolling-deploy test of `0034`; `opus.md` § 8's reasoning was not
   re-derived.
-* Cypress, the e2e compose stack, the shop demo, and any live rail.
-* Creating a customer with **only an email** is not exercised by any case; it
+- Cypress, the e2e compose stack, the shop demo, and any live rail.
+- Creating a customer with **only an email** is not exercised by any case; it
   is the same code path as the name-only creates the cursor case makes, so it
   was reasoned about rather than measured.
-* The `aa912bb` side of the drift delta (101/16/17) is `opus.md`'s
-  measurement, not re-derived here; the *current* side is gate-enforced.
+- The `aa912bb` side of the drift delta (101/16/17) is `opus.md`'s
+  measurement, not re-derived here; the _current_ side is gate-enforced.

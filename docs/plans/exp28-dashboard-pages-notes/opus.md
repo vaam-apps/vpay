@@ -43,7 +43,7 @@ Generating a second pair for the exchange — which a plausible refactor would d
 `vpay_api::staff::oauth::token` writes the minted token into the
 `staff_sessions` row before answering. So this app keeps none: every render
 reads it back from `GET /dash/v1/staff/session`. That is what makes signing out
-a revocation *in practice* rather than only in the schema — a token cached in
+a revocation _in practice_ rather than only in the schema — a token cached in
 the Next process would keep rendering payments for a signed-out session until
 it expired, and every unit test would still pass.
 
@@ -59,9 +59,9 @@ the variable names an operator has to set, and no form.
 
 - **The rail.** `GET /dash/v1/payment_intents` returns no charge at all, so the
   only rail-shaped value in the list response is `payment_method_types` — the
-  rails an intent *may* be confirmed against. The column is headed **Methods**.
+  rails an intent _may_ be confirmed against. The column is headed **Methods**.
   A "Rail" heading over that value would be wrong for every intent that offers
-  two and was taken by one, and it would be wrong *invisibly*.
+  two and was taken by one, and it would be wrong _invisibly_.
 - **The payer.** `charges.payer_ref_masked` is never written by anything. The
   **detail** page renders it from the column as an em dash and says so; the
   **list** has no such column, because the list response has no such field —
@@ -79,7 +79,7 @@ exp26's review made the nav-honesty rule a test, resolving every internal
 `href` in the rendered layout against `app/**/page.tsx`. That half cannot see a
 link rendered only in a branch the test does not exercise — which is exactly
 what a session-aware nav would introduce. `NAV_LINKS` is now an exported
-constant and the test checks it *as well as* the markup, plus a third case that
+constant and the test checks it _as well as_ the markup, plus a third case that
 the nav renders what it declares, so neither half can pass while the other is
 wrong.
 
@@ -91,17 +91,17 @@ the gate render.
 
 ## Gates, recipe by recipe
 
-| Gate | Result |
-|---|---|
-| `pnpm --filter @vpay/dashboard test` | **136 passed, 18 files, 0 skipped** (was 22 in 6) |
-| `pnpm --filter @vpay/dashboard typecheck` | clean |
-| `pnpm --filter @vpay/dashboard lint` | clean, `--max-warnings 0` |
-| `pnpm --filter @vpay/dashboard build` | clean; all six real routes server-rendered on demand, as they must be — every one reads cookies. Next's own generated `/_not-found` is the one static entry, and this row said "all seven routes dynamic" until that was checked against the build output |
-| `pnpm --filter @vpay/e2e typecheck` / `lint` | clean |
-| `just verify-ui` | exit 0 |
-| `git grep className` under `app/`+`src/` (non-test) | **zero matches** |
-| `just ci` | **exit 0** — `fmt-check`, `clippy`, `verify` (eleven gates), `test-rust` (**1550 tests run, 1550 passed, 0 skipped**; `verify-ignored`: 0 ignored, expected 0; 46 test binaries, expected 46), `test-doc`, `lint-web`, `test-web` (**1230 across nine projects**, of which `frontends/apps/dashboard` 136), `deny` (advisories, bans, licenses, sources all ok) |
-| `just test-e2e` (isolated project, non-default ports) | **exit 0 — 15 Cypress tests across four specs, 15 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1, `dashboard.cy.ts` **7**, `shop-hosted.cy.ts` 3 in pass 1; `shop-embedded.cy.ts` 4 in pass 2. Stack torn down by `down -v`, zero containers and zero volumes left |
+| Gate                                                  | Result                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vpay/dashboard test`                  | **136 passed, 18 files, 0 skipped** (was 22 in 6)                                                                                                                                                                                                                                                                                                               |
+| `pnpm --filter @vpay/dashboard typecheck`             | clean                                                                                                                                                                                                                                                                                                                                                           |
+| `pnpm --filter @vpay/dashboard lint`                  | clean, `--max-warnings 0`                                                                                                                                                                                                                                                                                                                                       |
+| `pnpm --filter @vpay/dashboard build`                 | clean; all six real routes server-rendered on demand, as they must be — every one reads cookies. Next's own generated `/_not-found` is the one static entry, and this row said "all seven routes dynamic" until that was checked against the build output                                                                                                       |
+| `pnpm --filter @vpay/e2e typecheck` / `lint`          | clean                                                                                                                                                                                                                                                                                                                                                           |
+| `just verify-ui`                                      | exit 0                                                                                                                                                                                                                                                                                                                                                          |
+| `git grep className` under `app/`+`src/` (non-test)   | **zero matches**                                                                                                                                                                                                                                                                                                                                                |
+| `just ci`                                             | **exit 0** — `fmt-check`, `clippy`, `verify` (eleven gates), `test-rust` (**1550 tests run, 1550 passed, 0 skipped**; `verify-ignored`: 0 ignored, expected 0; 46 test binaries, expected 46), `test-doc`, `lint-web`, `test-web` (**1230 across nine projects**, of which `frontends/apps/dashboard` 136), `deny` (advisories, bans, licenses, sources all ok) |
+| `just test-e2e` (isolated project, non-default ports) | **exit 0 — 15 Cypress tests across four specs, 15 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1, `dashboard.cy.ts` **7**, `shop-hosted.cy.ts` 3 in pass 1; `shop-embedded.cy.ts` 4 in pass 2. Stack torn down by `down -v`, zero containers and zero volumes left                                                                                         |
 
 Run from nothing on `54a0939` — **the branch's last code-bearing commit; every
 commit after it changes only `docs/`**, which is the exact form of "on the
@@ -115,14 +115,14 @@ Each one applied to the tree, the suite run, the mutation reverted. The
 "measured" totals are the suite size **at the time each was run**, which grew
 from 128 to 136 across the pass.
 
-| Mutation | Expected | Measured |
-|---|---|---|
-| `COOKIE_ATTRIBUTES.httpOnly` → `false` | `cookies.test.ts` fails | **1 failed, 127 passed** — "is httpOnly — no script on this origin may read a payments credential" |
-| token exchange sends `createPkce().verifier` (a *fresh* pair) instead of the one the challenge came from | `oauth.test.ts` fails | **1 failed, 127 passed** — "carries the verifier the challenge was derived from — THE decisive case" |
-| `NAV_LINKS` gains `{ href: '/webhooks' }` | `layout.test.tsx` fails | **2 failed, 126 passed** — the rendered-markup case *and* the constant case |
-| the status filter's control is renamed off `status` | `payments-filters.test.tsx` fails | **1 failed, 132 passed** — "submits the status as `status`, which is the parameter vpay reads" |
-| `pagerHrefs` reads `has_more` the same way in both directions (the bug as it was) | `payments-query.test.ts` fails | **2 failed, 134 passed** — one per half of the inversion |
-| (in a browser) — | `dashboard.cy.ts` asserts the session cookie is `httpOnly`, that `document.cookie` cannot see it, and that no JWT appears in the rendered page | see the Cypress section |
+| Mutation                                                                                                 | Expected                                                                                                                                       | Measured                                                                                             |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                                                   | `cookies.test.ts` fails                                                                                                                        | **1 failed, 127 passed** — "is httpOnly — no script on this origin may read a payments credential"   |
+| token exchange sends `createPkce().verifier` (a _fresh_ pair) instead of the one the challenge came from | `oauth.test.ts` fails                                                                                                                          | **1 failed, 127 passed** — "carries the verifier the challenge was derived from — THE decisive case" |
+| `NAV_LINKS` gains `{ href: '/webhooks' }`                                                                | `layout.test.tsx` fails                                                                                                                        | **2 failed, 126 passed** — the rendered-markup case _and_ the constant case                          |
+| the status filter's control is renamed off `status`                                                      | `payments-filters.test.tsx` fails                                                                                                              | **1 failed, 132 passed** — "submits the status as `status`, which is the parameter vpay reads"       |
+| `pagerHrefs` reads `has_more` the same way in both directions (the bug as it was)                        | `payments-query.test.ts` fails                                                                                                                 | **2 failed, 134 passed** — one per half of the inversion                                             |
+| (in a browser) —                                                                                         | `dashboard.cy.ts` asserts the session cookie is `httpOnly`, that `document.cookie` cannot see it, and that no JWT appears in the rendered page | see the Cypress section                                                                              |
 
 ## The last defect, and how it was found
 
@@ -133,8 +133,8 @@ The last defect this pass found, and it found it by reading
 the flag meant. The query is one statement with a direction: forward it walks
 `seq DESC` from `starting_after`; backward it walks `seq ASC` from
 `ending_before` and reverses the rows before answering. So `has_more` is "there
-was a row past the `limit` **in the direction just walked**" — *older rows
-exist* going forward, *newer rows exist* going back.
+was a row past the `limit` **in the direction just walked**" — _older rows
+exist_ going forward, _newer rows exist_ going back.
 
 `pagerHrefs` read it the same way in both directions, which is wrong twice at
 once. Paged backwards, `Next` disappeared although the page it came from
@@ -154,12 +154,12 @@ itself against the real stack rather than by hand — so the images are of the
 build the spec passed against, and re-capturing them is a `just test-e2e`
 rather than a ritual.
 
-| Image | What it is |
-|---|---|
-| `01-login.png` | `/login`, before anything is typed — no credential is in an image |
-| `02-enrolment.png` | `/login/totp` on a first sign-in: the QR, the base32 key, and the notice that nothing is stored until a code from it verifies |
-| `03-payments.png` | `/payments` — the signed-in bar naming the staff member and the tenant, the filters, and real rows created by `checkout.cy.ts` |
-| `04-payment-detail.png` | `/payments/{id}` |
+| Image                   | What it is                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `01-login.png`          | `/login`, before anything is typed — no credential is in an image                                                              |
+| `02-enrolment.png`      | `/login/totp` on a first sign-in: the QR, the base32 key, and the notice that nothing is stored until a code from it verifies  |
+| `03-payments.png`       | `/payments` — the signed-in bar naming the staff member and the tenant, the filters, and real rows created by `checkout.cy.ts` |
+| `04-payment-detail.png` | `/payments/{id}`                                                                                                               |
 
 `02-enrolment.png` deliberately contains a real TOTP secret. It belongs to a
 staff member the stack creates fresh on every run and destroys with `down -v`
@@ -205,7 +205,7 @@ cookies before every test by default. Four of six tests failed on pages that
 had correctly redirected to `/login`. `testIsolation: false` on the describe
 block is the fix, and the alternative is worse than it looks: vpay's TOTP
 replay guard admits only a strictly greater time step, so six sign-ins need six
-*different* 30-second windows — three minutes of waiting for clocks in order to
+_different_ 30-second windows — three minutes of waiting for clocks in order to
 test a payments list.
 
 ## What is covered end to end and by no unit test
@@ -218,7 +218,7 @@ assume otherwise.
 mocking `next/headers` and `next/navigation`, and mocking those would test the
 mock: `cookies()` and `redirect()` only mean anything inside a request, and a
 test that stubbed them would assert that this app calls functions it obviously
-calls. What *is* unit tested is everything they decide with — `gateFor`'s three
+calls. What _is_ unit tested is everything they decide with — `gateFor`'s three
 branches, the cookie attributes, both OAuth legs against a stubbed `fetch`, the
 `FormData` reading — and the composition of those is what the browser run
 covers.
@@ -235,7 +235,7 @@ stays there.
   serves. The dashboard's equivalent would disclose the internal API hostname,
   which is a deployment-layout fact the checkout's version deliberately omits;
   it was not worth designing a redacted version this pass.
-- **Anything a staff member can do *to* a payment.** No re-poll, no replay, no
+- **Anything a staff member can do _to_ a payment.** No re-poll, no replay, no
   refund, no annotation — `/dash/v1` refuses every non-`GET` method at the
   boundary — and therefore no `audit_log`, because there is nothing to audit.
 - **Slices 2–6** (webhooks, checkout sessions, balances, settings, rail

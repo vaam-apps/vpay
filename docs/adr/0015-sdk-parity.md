@@ -40,8 +40,8 @@ call has no way to know, short of trying it, whether the two behave the
 same, behave differently, or one of them doesn't exist. For a payments SDK
 that is worse than an admitted gap: it is an unadmitted one.
 
-The user's rule, verbatim: *"vpay sdk parity: each should share the very
-same kind of features. We need a matrix for that."*
+The user's rule, verbatim: _"vpay sdk parity: each should share the very
+same kind of features. We need a matrix for that."_
 
 ## Decision
 
@@ -60,7 +60,7 @@ integration uses to call `/v1`. A PR that adds `events.retrieve` to one and
 not the other does not merge silently; it either brings both along or it
 updates the matrix row to `⛔` with today's date, the reason, and an owner,
 so the gap is a decision on record rather than an accident nobody noticed.
-This is a statement about how *new* capabilities land, not a demand to close
+This is a statement about how _new_ capabilities land, not a demand to close
 every gap this ADR found on adoption — see "What this does not require"
 below.
 
@@ -83,7 +83,7 @@ pretending it is the third column of the merchant matrix.
 
 **`sdks/stripe-compat` is evidence, not an SDK, and gets no rows.** It
 drives the real `stripe@22.6.1` package through `@vpay/sdk/stripe` against a
-live compose stack. It exists to *prove* capabilities the merchant SDKs
+live compose stack. It exists to _prove_ capabilities the merchant SDKs
 claim (it is where `request-id` and `stripe-should-retry` are actually
 observed on the wire), not to claim any of its own — a row here would be
 graded against code this repository does not ship to a merchant.
@@ -98,7 +98,7 @@ depends on, not from an SDK's internal structure:
 - token cache and refresh margin (reuse, the 30s-or-half-`expires_in` rule,
   single-flighting concurrent first calls)
 - every `/v1` resource operation: `payment_intents.{create,retrieve,confirm,
-  cancel,list}`, `refunds.create`, `events.{list,retrieve}`,
+cancel,list}`, `refunds.create`, `events.{list,retrieve}`,
   `balance.retrieve`
 - idempotency-key handling (generated when absent, replayed byte-identical
   on the 401 re-auth retry)
@@ -117,7 +117,7 @@ depends on, not from an SDK's internal structure:
 - the Stripe authenticator (`createStripeAuthenticator` and its Rust
   equivalent, whenever one exists): host-binding, shared token cache
 
-A capability absent from *both* SDKs is still recorded `⛔`/`⛔` — the two
+A capability absent from _both_ SDKs is still recorded `⛔`/`⛔` — the two
 are at parity with each other and both short of the server, which is a
 different, weaker statement than "done," and it is recorded rather than
 left blank so the difference stays visible (see "What this matrix does not

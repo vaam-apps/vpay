@@ -124,7 +124,7 @@ SELECT count(*) AS undrained FROM events WHERE fanout_state = 'pending';
 
 A number that does not fall over a few seconds means the `fanout:events`
 singleton is not running — no worker is up, or the seed lost its row. A number
-that falls to a *floor* and stops means the events at the head of the page are
+that falls to a _floor_ and stops means the events at the head of the page are
 failing individually; those count up `fanout_attempts` and land in
 `fanout_state = 'failed'` after five passes, which is its own section below. It is
 seeded by `vpay_worker::run_loop::seed_singletons` at every worker boot with
@@ -209,12 +209,12 @@ Three details, each of which is the reason the statement is written this way:
   for). Re-running the whole transaction is a no-op: `UPDATE 0`, `INSERT 0`.
 - **`attempt = 0` restores the whole ladder**, so a receiver that is still
   broken fails fast on the 10-second rung rather than a day from now. To grant
-  exactly *one* more attempt instead, leave `attempt` alone: `delivery_delay(8)`
+  exactly _one_ more attempt instead, leave `attempt` alone: `delivery_delay(8)`
   is `None`, so the next failure exhausts the row again immediately.
 - **`payload_sha256` is deliberately not cleared.** It is the digest of the
   bytes the first signed attempt signed, and the handler compares its freshly rendered body
-  against it before sending. If the replay dead-letters with *"re-rendered event
-  … to a different body than the one the first signed attempt signed"*, that is the check
+  against it before sending. If the replay dead-letters with _"re-rendered event
+  … to a different body than the one the first signed attempt signed"_, that is the check
   working: the event renderer changed between the original attempt and now, and
   the delivery must not go out under a signature nobody can reproduce. Clearing
   the column would silence the one check that catches it.
@@ -253,7 +253,7 @@ not been run; treat it as a sketch to adapt, not a copy-paste.
 - **Do not `DELETE` the row.** It is the only record that a merchant was owed
   an event and did not get it, and `webhook_deliveries_event_endpoint` means
   the fan-out will not recreate it — the event is already `fanout_state =
-  'done'`.
+'done'`.
 - **Do not `UPDATE events SET fanout_state = 'pending'` to "re-fan-out".** The
   drain's insert is `ON CONFLICT (event_id, endpoint_id) DO NOTHING`, so the
   delivery row is not recreated and no job is enqueued; the event just flips
@@ -340,7 +340,7 @@ WHERE dedupe_key = 'webhook:11111111-1111-1111-1111-111111111111'
   which reads as a flapping receiver rather than as a permanently broken row.
   That is the exact hot loop parking exists to prevent.
 
-If the delivery should *not* go out at all, leave the job parked and record
+If the delivery should _not_ go out at all, leave the job parked and record
 why; the `pending` delivery row and the parked job together are the durable
 statement that a merchant was owed an event and did not get it.
 
@@ -416,7 +416,7 @@ WHERE id = 'evt_11111111111111111111111111'
 ```
 
 The next `fan_out_events` pass picks it up within five seconds. Note what this
-does *not* need: no job to enqueue, unlike a delivery replay — the drain is a
+does _not_ need: no job to enqueue, unlike a delivery replay — the drain is a
 singleton that reads the backlog, so putting the event back in the backlog is
 the whole of it.
 
@@ -431,7 +431,7 @@ the whole of it.
   want five more alerts' worth of noise.
 
 **Not executed.** This `UPDATE` is written from migration `0024`'s columns and
-has not been run against a database. The state it repairs *is* produced against
+has not been run against a database. The state it repairs _is_ produced against
 a real Postgres by
 `a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alerts_once`.
 
@@ -486,7 +486,7 @@ invisible to the fan-out and produces no delivery row at all, not this warning.
 
 An endpoint may declare **one or two** secrets (`ConfigError::WebhookSecretCount`
 refuses zero and three or more). Each produces one `v1=` in `Vpay-Signature`,
-and both SDK verifiers accept a header if *any* `v1=` matches, so a rotation has
+and both SDK verifiers accept a header if _any_ `v1=` matches, so a rotation has
 no window in which deliveries fail. The order is:
 
 1. Add the new secret **beside** the old one, keeping the old one first:
@@ -516,7 +516,7 @@ no window in which deliveries fail. The order is:
 
 **Three boot rules will refuse a badly-made rotation, all at step 1 rather than
 at step 4.** A literal secret in a livemode file is
-`ConfigError::LiteralSecret`, checked against the file's *text* before
+`ConfigError::LiteralSecret`, checked against the file's _text_ before
 placeholders are resolved, so pasting the value inline fails. A livemode secret
 shorter than **32 bytes once resolved** is `ConfigError::WeakWebhookSecret` — an
 HMAC-SHA256 key below the hash's own 32-byte output adds nothing over one at it

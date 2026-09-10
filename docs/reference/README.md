@@ -7,7 +7,7 @@ not: **why does this code look like this?**
   superseded, never edited.
 - A [flow](../flows/) describes a process: what happens, in what order, what
   can go wrong, and what invariant holds throughout.
-- A page here explains the *shape of the code* that implements them: the port
+- A page here explains the _shape of the code_ that implements them: the port
   boundaries, the orderings that are load-bearing, the alternatives that were
   tried and rejected, and the measurements behind a constant.
 
@@ -38,14 +38,14 @@ depends on.
 
 ## Pages
 
-| Crate | What the page covers |
-|---|---|
-| [vpay-api.md](vpay-api.md) | The router and its middleware order, the merchant OP, resource-server JWT validation, the JWKS cache, the form decoder, the confirm path, boot |
-| [vpay-config.md](vpay-config.md) | The boot sequence both binaries follow, exit codes, the flags that are optional in the parser and required in practice, the OAuth client shapes |
-| [vpay-core.md](vpay-core.md) | The domain crate: ids, money's two provider encodings, the two state machines, the failure taxonomy, the `Classify` tiers, the metric vocabulary |
-| [vpay-db.md](vpay-db.md) | The repository seam — why a trait object rather than a generic, why the transaction API is a closure, what stays `pub` — and one section per table family |
-| [vpay-worker.md](vpay-worker.md) | The job loop and what it owns, one poll, the recovery table, settlement, and the webhook outbox's two transactions |
-| [rails.md](rails.md) | One page for `vpay-provider` and both adapters: the port's shape, the shared token cache and its caller-supplied margin, the bounded rail read, and what each rail keeps to itself |
+| Crate                            | What the page covers                                                                                                                                                               |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [vpay-api.md](vpay-api.md)       | The router and its middleware order, the merchant OP, resource-server JWT validation, the JWKS cache, the form decoder, the confirm path, boot                                     |
+| [vpay-config.md](vpay-config.md) | The boot sequence both binaries follow, exit codes, the flags that are optional in the parser and required in practice, the OAuth client shapes                                    |
+| [vpay-core.md](vpay-core.md)     | The domain crate: ids, money's two provider encodings, the two state machines, the failure taxonomy, the `Classify` tiers, the metric vocabulary                                   |
+| [vpay-db.md](vpay-db.md)         | The repository seam — why a trait object rather than a generic, why the transaction API is a closure, what stays `pub` — and one section per table family                          |
+| [vpay-worker.md](vpay-worker.md) | The job loop and what it owns, one poll, the recovery table, settlement, and the webhook outbox's two transactions                                                                 |
+| [rails.md](rails.md)             | One page for `vpay-provider` and both adapters: the port's shape, the shared token cache and its caller-supplied margin, the bounded rail read, and what each rail keeps to itself |
 
 Not one page per crate everywhere: `rails.md` covers three crates, because the
 argument for the port and the argument for an adapter are the same argument

@@ -34,13 +34,13 @@ VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
   pnpm --filter @vaam-apps/vpay-stripe-compat compat
 ```
 
-| Variable | Default |
-|---|---|
-| `VPAY_BASE_URL` | `http://localhost:18080` |
-| `VPAY_MERCHANT_CLIENT_ID` | *required* |
-| `VPAY_MERCHANT_PRIVATE_KEY_PATH` | *required* — an absolute path, or one relative to the cwd `pnpm` uses (this package) |
-| `VPAY_RECEIVER_URL` | `http://localhost:8083` — the WireMock webhook receiver, read for its request journal |
-| `MERCHANT_WEBHOOK_SECRET` | the placeholder `compose.e2e.yml` gives both binaries; a stub value for a stub receiver on a `livemode: false` stack |
+| Variable                         | Default                                                                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `VPAY_BASE_URL`                  | `http://localhost:18080`                                                                                             |
+| `VPAY_MERCHANT_CLIENT_ID`        | _required_                                                                                                           |
+| `VPAY_MERCHANT_PRIVATE_KEY_PATH` | _required_ — an absolute path, or one relative to the cwd `pnpm` uses (this package)                                 |
+| `VPAY_RECEIVER_URL`              | `http://localhost:8083` — the WireMock webhook receiver, read for its request journal                                |
+| `MERCHANT_WEBHOOK_SECRET`        | the placeholder `compose.e2e.yml` gives both binaries; a stub value for a stub receiver on a `livemode: false` stack |
 
 ## It cannot skip
 
@@ -65,16 +65,16 @@ see any of that, and a mock in a shipping path is forbidden anyway
 
 ## Layout
 
-| File | What it covers |
-|---|---|
-| `src/env.ts` | Configuration, with no defaults for the two credential-shaped variables |
-| `src/preflight.ts` | The skip-proof gate described above |
-| `src/client.ts` | The one place a `Stripe` client is built, and the **only** place a cast appears — every cast is a real thing a TypeScript merchant has to write, so the test files stay cast-free |
-| `src/lifecycle.compat.test.ts` | create, retrieve, cursor paging, `autoPagingToArray`, cancel, confirm → `processing`, `expand` accepted and ignored through stripe-node's indexed array encoding, and a bounded poll to `succeeded` once the worker has asked the rail |
-| `src/webhooks.compat.test.ts` | A delivery the WireMock receiver actually recorded, verified with `stripe.webhooks.constructEvent` — and refused for a tampered body and for a wrong secret |
-| `src/errors.compat.test.ts` | The status → error-class mapping, `err.param`, `err.requestId`, the 409 and its retry advisory, the 405/413 collapse, and the parameters that move money elsewhere (`capture_method: "manual"`, `transfer_data`, `application_fee_amount` on confirm) being refused rather than ignored |
-| `src/idempotency.compat.test.ts` | stripe-node's auto-generated key, replay, and a reused key with a changed body |
-| `src/headers.compat.test.ts` | The `request-id`/`x-request-id` mirror, no `apiVersion`, `Stripe-Version`/`Stripe-Account` accepted and ignored |
+| File                             | What it covers                                                                                                                                                                                                                                                                          |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/env.ts`                     | Configuration, with no defaults for the two credential-shaped variables                                                                                                                                                                                                                 |
+| `src/preflight.ts`               | The skip-proof gate described above                                                                                                                                                                                                                                                     |
+| `src/client.ts`                  | The one place a `Stripe` client is built, and the **only** place a cast appears — every cast is a real thing a TypeScript merchant has to write, so the test files stay cast-free                                                                                                       |
+| `src/lifecycle.compat.test.ts`   | create, retrieve, cursor paging, `autoPagingToArray`, cancel, confirm → `processing`, `expand` accepted and ignored through stripe-node's indexed array encoding, and a bounded poll to `succeeded` once the worker has asked the rail                                                  |
+| `src/webhooks.compat.test.ts`    | A delivery the WireMock receiver actually recorded, verified with `stripe.webhooks.constructEvent` — and refused for a tampered body and for a wrong secret                                                                                                                             |
+| `src/errors.compat.test.ts`      | The status → error-class mapping, `err.param`, `err.requestId`, the 409 and its retry advisory, the 405/413 collapse, and the parameters that move money elsewhere (`capture_method: "manual"`, `transfer_data`, `application_fee_amount` on confirm) being refused rather than ignored |
+| `src/idempotency.compat.test.ts` | stripe-node's auto-generated key, replay, and a reused key with a changed body                                                                                                                                                                                                          |
+| `src/headers.compat.test.ts`     | The `request-id`/`x-request-id` mirror, no `apiVersion`, `Stripe-Version`/`Stripe-Account` accepted and ignored                                                                                                                                                                         |
 
 ## What it does not prove
 

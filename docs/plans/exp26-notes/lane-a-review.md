@@ -16,7 +16,7 @@ package could not be built by any consumer at all (finding 9), which every
 gate in the lane's own list was blind to.
 
 The numbers in `lane-a.md` reproduce, the component set is real, and the gate
-that *is* wired catches what it says it catches. Mostly the problem was
+that _is_ wired catches what it says it catches. Mostly the problem was
 coverage rather than honesty — with two exceptions, findings 8 and 9, where a
 sentence in `docs/status.md` outlived the code it described.
 
@@ -27,36 +27,36 @@ open question surfaced rather than taken.
 
 Recipe by recipe, re-run here on that commit:
 
-| claim | true? |
-|---|---|
-| `pnpm install --frozen-lockfile` green | **yes**, exit 0 |
-| `just lint-web` green | **yes**, exit 0 — including `frontends/apps/checkout`, contrary to the report in finding 10 |
-| `just test-web` green (checkout 448, shop 96, tokens 8, ui 46) | **yes**, every figure exact |
-| `just audit-web` clean | **yes**, exit 0 |
-| `build-storybook` green | **yes**, exit 0 |
-| `just verify-ui` red only on checkout's `form-control` | **yes**, and that is the only failing line |
-| the `verify-ui` gate's four checks each proven by mutation | **yes** for the three it kept; the colour check had four holes (finding 4) |
-| `cn()` knows daisyUI's conflict groups | **yes** for every group it declares; two of them conflated dimensions that compose (finding 5) |
-| the `@source` correction (three `../`, not four) | **yes**, proved decisively on the compiled CSS |
-| the class-string / one-line-`className` rules are part of the gate | **NO** — the plugin was never wired (finding 1) |
+| claim                                                                                                 | true?                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm install --frozen-lockfile` green                                                                | **yes**, exit 0                                                                                                                                              |
+| `just lint-web` green                                                                                 | **yes**, exit 0 — including `frontends/apps/checkout`, contrary to the report in finding 10                                                                  |
+| `just test-web` green (checkout 448, shop 96, tokens 8, ui 46)                                        | **yes**, every figure exact                                                                                                                                  |
+| `just audit-web` clean                                                                                | **yes**, exit 0                                                                                                                                              |
+| `build-storybook` green                                                                               | **yes**, exit 0                                                                                                                                              |
+| `just verify-ui` red only on checkout's `form-control`                                                | **yes**, and that is the only failing line                                                                                                                   |
+| the `verify-ui` gate's four checks each proven by mutation                                            | **yes** for the three it kept; the colour check had four holes (finding 4)                                                                                   |
+| `cn()` knows daisyUI's conflict groups                                                                | **yes** for every group it declares; two of them conflated dimensions that compose (finding 5)                                                               |
+| the `@source` correction (three `../`, not four)                                                      | **yes**, proved decisively on the compiled CSS                                                                                                               |
+| the class-string / one-line-`className` rules are part of the gate                                    | **NO** — the plugin was never wired (finding 1)                                                                                                              |
 | "`pnpm -r build` now compiles all packages including the dashboard's `next build`" (`docs/status.md`) | **NO** — that build was broken (finding 9); the lane did not run it, and did not claim to in `lane-a.md`, but left the sentence standing in `docs/status.md` |
-| the intermittent-failure rate, and "unmount every Base UI render" | **NO** — did not reproduce in 12 runs, and one render had no `unmount()` (finding 7) |
-| the axe harness was sanity-checked | done once by hand; nothing in the tree (finding 8) |
+| the intermittent-failure rate, and "unmount every Base UI render"                                     | **NO** — did not reproduce in 12 runs, and one render had no `unmount()` (finding 7)                                                                         |
+| the axe harness was sanity-checked                                                                    | done once by hand; nothing in the tree (finding 8)                                                                                                           |
 
 ## Findings
 
-| # | severity | finding |
-|---|---|---|
-| 1 | gate-hole | `eslint-plugin-better-tailwindcss` installed, never wired |
-| 2 | correctness | `Select`'s popup width compiled to invalid CSS |
-| 3 | rule-break | `Drawer`'s backdrop was a raw `bg-black/40` |
-| 4 | gate-hole | `verify-ui`'s colour check had three measured holes |
-| 5 | correctness | `cn()` dropped a daisyUI colour when a style class followed it |
-| 6 | rule-break | a11y properties the components claim and never assert |
-| 7 | misleading-claim | the intermittent failure could not be reproduced, and its fix is incomplete |
-| 8 | misleading-claim | the axe harness's negative control existed only in prose |
-| 9 | correctness | `@vpay/ui`'s `.js` import suffixes broke every consumer's `next build` — the second time |
-| 10 | not reproduced | the reported `tailwind.config.ts` lint failure in `frontends/apps/checkout` |
+| #   | severity         | finding                                                                                  |
+| --- | ---------------- | ---------------------------------------------------------------------------------------- |
+| 1   | gate-hole        | `eslint-plugin-better-tailwindcss` installed, never wired                                |
+| 2   | correctness      | `Select`'s popup width compiled to invalid CSS                                           |
+| 3   | rule-break       | `Drawer`'s backdrop was a raw `bg-black/40`                                              |
+| 4   | gate-hole        | `verify-ui`'s colour check had three measured holes                                      |
+| 5   | correctness      | `cn()` dropped a daisyUI colour when a style class followed it                           |
+| 6   | rule-break       | a11y properties the components claim and never assert                                    |
+| 7   | misleading-claim | the intermittent failure could not be reproduced, and its fix is incomplete              |
+| 8   | misleading-claim | the axe harness's negative control existed only in prose                                 |
+| 9   | correctness      | `@vpay/ui`'s `.js` import suffixes broke every consumer's `next build` — the second time |
+| 10  | not reproduced   | the reported `tailwind.config.ts` lint failure in `frontends/apps/checkout`              |
 
 ### 1 — `eslint-plugin-better-tailwindcss` was installed and never configured (gate-hole)
 
@@ -78,7 +78,7 @@ that matters: an unwired gate nobody has recorded reads as a gate that runs.
 
 Fixed in `a6e2951`. A `tailwind` option on `vpayEslintConfig`, off by default,
 on for `@vpay/ui`. **Not keyed to the existing `react` flag** — measured: the
-plugin compiles the Tailwind entry point through the *linted* package's own
+plugin compiles the Tailwind entry point through the _linted_ package's own
 `tailwindcss`, so enabling it wherever React renders aborts ESLint outright in
 `@vpay/checkout` and `@vpay/dashboard`, which are on Tailwind 3 until lanes B
 and D migrate them. **Each app flips `tailwind: true` in the commit that moves
@@ -91,14 +91,14 @@ independently of `verify-ui`'s grep.
 
 Six mutations, each staged in `badge.tsx`, run, reverted:
 
-| mutation | rule that fired |
-|---|---|
-| a two-line class attribute | `enforce-consistent-line-wrapping` |
-| a one-line class attribute over 100 columns | `enforce-consistent-line-wrapping` |
-| `form-control` | `no-unknown-classes` |
-| Tailwind 3 bare-variable arbitrary value | `enforce-consistent-variable-syntax` |
-| `mt-1 mt-1` | `no-duplicate-classes` |
-| `text-xs mt-1` | `enforce-consistent-class-order` |
+| mutation                                    | rule that fired                      |
+| ------------------------------------------- | ------------------------------------ |
+| a two-line class attribute                  | `enforce-consistent-line-wrapping`   |
+| a one-line class attribute over 100 columns | `enforce-consistent-line-wrapping`   |
+| `form-control`                              | `no-unknown-classes`                 |
+| Tailwind 3 bare-variable arbitrary value    | `enforce-consistent-variable-syntax` |
+| `mt-1 mt-1`                                 | `no-duplicate-classes`               |
+| `text-xs mt-1`                              | `enforce-consistent-class-order`     |
 
 The rule set's first real run reported ten findings inside `@vpay/ui`, all
 fixed in the same commit.
@@ -150,16 +150,16 @@ The check was `className=.*\b(bg|text|border)-<palette>-[0-9]` over
 `frontends/apps` and `examples/shop`. Mutations, staged in
 `frontends/apps/dashboard/app/page.tsx`, run, reverted:
 
-| mutation | before | after |
-|---|---|---|
-| `const TONE_CLASS = { failed: 'bg-red-500 text-white' };` | **PASSED** | fails |
-| `<div className="bg-black/40" />` | **PASSED** | fails |
-| `<div className="text-[#ff0000]" />` | **PASSED** | fails |
-| `<div className="bg-[rgb(255,0,0)]" />` | **PASSED** | fails |
-| `<div className="border-emerald-600" />` | fails | fails |
-| `const PALETTE = { bad: 'bg-red-600' };` in `@vpay/ui` | **PASSED** | fails |
-| `<span className="text-white" />` in `@vpay/ui` | **PASSED** | fails |
-| `<div className="bg-base-200 text-error" />` | passes | passes — the negative control |
+| mutation                                                  | before     | after                         |
+| --------------------------------------------------------- | ---------- | ----------------------------- |
+| `const TONE_CLASS = { failed: 'bg-red-500 text-white' };` | **PASSED** | fails                         |
+| `<div className="bg-black/40" />`                         | **PASSED** | fails                         |
+| `<div className="text-[#ff0000]" />`                      | **PASSED** | fails                         |
+| `<div className="bg-[rgb(255,0,0)]" />`                   | **PASSED** | fails                         |
+| `<div className="border-emerald-600" />`                  | fails      | fails                         |
+| `const PALETTE = { bad: 'bg-red-600' };` in `@vpay/ui`    | **PASSED** | fails                         |
+| `<span className="text-white" />` in `@vpay/ui`           | **PASSED** | fails                         |
+| `<div className="bg-base-200 text-error" />`              | passes     | passes — the negative control |
 
 Why the first one matters most: requiring `className=` on the same line made a
 class held in a lookup object invisible, and that is not hypothetical —
@@ -212,7 +212,7 @@ stay grouped with the colours. daisyUI's CSS would support the same argument
 for them (`.btn-ghost` also reads `--btn-color`, for its text), but `Button`'s
 own `cva` map offers `ghost` as an alternative to `primary`, and plan §3 pins
 `cn('btn btn-primary', 'btn-ghost') === 'btn btn-ghost'` as this file's named
-acceptance case. Whether a *ghost primary* button should be expressible is a
+acceptance case. Whether a _ghost primary_ button should be expressible is a
 product decision about the component's API, not a review's.
 
 ### 6 — a11y properties the components claim and never assert (rule-break)
@@ -220,7 +220,7 @@ product decision about the component's API, not a review's.
 Fixed in `1c47d1d`; 46 → 60 cases.
 
 - **Checkbox.** `docs/status.md` records of the checkbox D2 replaced: "the label
-  click and space key both *measured*". Neither was re-asserted after the swap
+  click and space key both _measured_". Neither was re-asserted after the swap
   — and a `<button role="checkbox">` is not a form control, so a label does not
   associate with it the way it does with an `<input>`, which is precisely what
   D2 could have broken. Three cases now: a wrapping `<label>`, a `htmlFor`
@@ -342,7 +342,7 @@ On this branch checkout still declares `daisyui ^4.12.23` / `tailwindcss
 ^3.4.17` and resolves **4.12.24 / 3.4.19** — read from
 `frontends/apps/checkout/node_modules/daisyui/package.json`, and pinned that
 way in `pnpm-lock.yaml`, so a clean `pnpm install --frozen-lockfile` cannot
-produce anything else. A worktree that installed from a *modified* manifest and
+produce anything else. A worktree that installed from a _modified_ manifest and
 then stashed only its source diff would keep the modified `node_modules`, which
 is the most likely origin of the report.
 
@@ -368,7 +368,7 @@ file in the same commit, per §4.1, not to type around the import.
   input, select, checkbox, radio, card, table and loading, in both the variant
   and the size dimension. Non-conflicting daisyUI classes are **not** dropped:
   `cn('btn btn-primary','btn-block','btn-wide')`, `cn('card','card-body',
-  'bg-base-200')`, `cn('table table-zebra','table-pin-rows')`,
+'bg-base-200')`, `cn('table table-zebra','table-pin-rows')`,
   `cn('modal modal-box','modal-open')`, `cn('join','join-item')` all keep every
   class. Deleting `'ghost'` from `daisy-btn-variant` fails exactly its own named
   case and nothing else; emptying `daisy-alert-variant` likewise.
@@ -403,7 +403,7 @@ file in the same commit, per §4.1, not to type around the import.
 ## Not checked
 
 - **`color-contrast` under `bumblebee`.** Storybook's a11y addon runs in the
-  Storybook *UI*; `build-storybook` does not run axe, and no
+  Storybook _UI_; `build-storybook` does not run axe, and no
   `@storybook/test-runner` is installed. The structural axe pass is vitest's and
   excludes contrast on purpose. So the numbers this review can report are
   structural only: **0 violations across every component, and a negative control
@@ -414,9 +414,9 @@ file in the same commit, per §4.1, not to type around the import.
   from a CDN, and no lane has migrated an app yet, so nothing it covers has
   changed.
 - **`just ci` in full.** Rust is untouched by this lane (`git diff --stat
-  7d52421..HEAD` names no file under `backends/`), so `fmt-check`, `clippy`,
+7d52421..HEAD` names no file under `backends/`), so `fmt-check`, `clippy`,
   `test-rust`, `test-doc`, `verify-ignored` and `deny` were not re-run. Per plan
-  §7 row 2, a *changed* Rust number would itself be a finding; there is no
+  §7 row 2, a _changed_ Rust number would itself be a finding; there is no
   mechanism here by which one could change.
 - **A real browser.** No page in this repository has been rendered by one on
   this branch. `@vpay/ui` has no consumer yet — the three apps are still on

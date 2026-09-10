@@ -9,7 +9,7 @@ says so; where one is refuted, the command and its output are recorded.
 
 PR #102 (exp42) had not merged when this review ran, so the rebase STEP 0
 anticipates did not happen and no `ConfigError` conflict was resolved. The
-variant this branch added to `ConfigError` is *removed* by F2 below, so that
+variant this branch added to `ConfigError` is _removed_ by F2 below, so that
 conflict no longer exists in either direction.
 
 ---
@@ -19,17 +19,17 @@ conflict no longer exists in either direction.
 `just ci` recipe by recipe on `6cfd78e`, each run separately, exit code read
 from a file:
 
-| Recipe | Exit | Wall |
-|---|---|---|
-| `fmt-check` | 0 | 1 s |
-| `clippy` | 0 | 51 s |
-| `verify` | 0 | 14 s |
-| `test-rust` | **100** | 538 s |
-| `test-doc` | 0 | 6 s |
-| `verify-ignored` | 0 | 1 s |
-| `lint-web` | 0 | 22 s |
-| `test-web` | 0 | 10 s |
-| `deny` | 0 | 1 s |
+| Recipe           | Exit    | Wall  |
+| ---------------- | ------- | ----- |
+| `fmt-check`      | 0       | 1 s   |
+| `clippy`         | 0       | 51 s  |
+| `verify`         | 0       | 14 s  |
+| `test-rust`      | **100** | 538 s |
+| `test-doc`       | 0       | 6 s   |
+| `verify-ignored` | 0       | 1 s   |
+| `lint-web`       | 0       | 22 s  |
+| `test-web`       | 0       | 10 s  |
+| `deny`           | 0       | 1 s   |
 
 ```
 FAIL [5.030s] (1328/1666) vpay-server::cli
@@ -58,18 +58,18 @@ string and could only fail.
 
 Two further things were wrong with the case beneath that:
 
-* Its name claims a boot it never performs. It supplied
+- Its name claims a boot it never performs. It supplied
   `UNREACHABLE_DATABASE_URL` and asserted exit **69**, which proves only that
-  *some* guard did not fire before the pool was opened. A guard refusing 5 and
+  _some_ guard did not fire before the pool was opened. A guard refusing 5 and
   a guard refusing 6 both leave that assertion green.
-* Written the obvious second way it fails again: `tracing_subscriber`'s text
-  formatter colours field names *into a pipe*, so a line arrives as
+- Written the obvious second way it fails again: `tracing_subscriber`'s text
+  formatter colours field names _into a pipe_, so a line arrives as
   `\x1b[3mconcurrency\x1b[0m\x1b[2m=\x1b[0m5` and `contains("concurrency=5")`
   is a substring that is never present. Measured with `cat -A` on the real
   binary's stdout.
 
 Fixed in `b8d7c90`: the case is now `with_live_postgres`, reads stdout through
-a documented `strip_ansi`, asserts the accepted concurrency *and* the next boot
+a documented `strip_ansi`, asserts the accepted concurrency _and_ the next boot
 step (`database connected and migrations applied`), then SIGTERMs and requires
 exit 0.
 
@@ -79,7 +79,7 @@ exit 0.
 and says why in its own doc comment:
 
 > **Defined in the binary, not in `vpay-config`, deliberately** — which inputs
-> a process requires is a property of *that process*.
+> a process requires is a property of _that process_.
 
 The rule joins a CLI flag to `vpay_db::MAX_CONNECTIONS`. `vpay-config` does not
 depend on `vpay-db`, cannot see the constant, and would have had to carry a
@@ -90,7 +90,7 @@ about the YAML document and the flags. It is also worker-only, exactly like
 `docs/reference/vpay-config.md` says the same thing about this crate from the
 other side, and it was written before this change:
 
-> Which inputs a process requires is a property of *that process*, which is
+> Which inputs a process requires is a property of _that process_, which is
 > why `StartupError` is defined in the binary rather than in this crate.
 
 Moved in `b8d7c90` to `StartupError::WorkerConcurrencyExceedsPoolSize`. Same
@@ -113,7 +113,7 @@ replica. Both spellings and all three numbers survive, asserted with `&&`.
 `pool.rs` and `docs/reference/vpay-db.md` both read "Nothing enforces the
 relationship between this constant and that flag, and nothing measures it under
 load." The draft made the first half false and left both sentences standing.
-Worse, `docs/flows/crash-safety.md` gained a *new* claim that is not true:
+Worse, `docs/flows/crash-safety.md` gained a _new_ claim that is not true:
 
 > Exceeding this limit causes **every** crash-recovery fan-out to queue on
 > `ACQUIRE_TIMEOUT`, which turns recovery into a hang.
@@ -130,7 +130,7 @@ Fixed in `2d86b29` (the measurement and the two Rust-side documents) and
 
 Found by the guard the brief asked for, on its first run. The chart's own
 "everything turned on" example describes a release that installs and then
-CrashLoopBackOffs. The draft checked only the *default* (4) and concluded the
+CrashLoopBackOffs. The draft checked only the _default_ (4) and concluded the
 chart satisfied the rule. Fixed in `76ce196`, along with the guard
 (`worker-concurrency-pool`), its `ci/guards/` fixture and three stale guard
 counts the change made wronger (`justfile` said seventeen against eighteen
@@ -161,7 +161,7 @@ connections (`upsert_do_nothing_authorize.rs` re-checks the update policy on
 other database users hold one each: `concurrency` claim loops, the lease
 reaper, the gauge loop. The arithmetic worst case is therefore
 `2·concurrency + 2 ≤ MAX_CONNECTIONS`, i.e. `(MAX_CONNECTIONS - 2) / 2 = 4`,
-which is *stricter* than the issue's `MAX_CONNECTIONS / 2 = 5`.
+which is _stricter_ than the issue's `MAX_CONNECTIONS / 2 = 5`.
 
 **Measured.** A throwaway probe (the committed case's shape, run at several
 widths: N transactions opened and held on a barrier, then all N asking for
@@ -178,7 +178,7 @@ EXP45-PROBE n=10 pool=10 tx_opened=10 probe_failures=10 slowest_probe=5.0019s   
 
 Three conclusions, and the middle one is the one that matters:
 
-1. **The empirical bound is 10, not 5 and not 4** — it is *higher* than the
+1. **The empirical bound is 10, not 5 and not 4** — it is _higher_ than the
    arithmetic, not lower. The second connection is released as soon as the
    policy probe answers, so one free connection serves every waiting probe in
    under two milliseconds. Nothing queues until all `MAX_CONNECTIONS`
@@ -225,13 +225,13 @@ decide, having measured it:
 
 Every one was applied, run, and reverted.
 
-| # | Mutation | Expected | Observed |
-|---|---|---|---|
-| M1 | Delete the guard from `worker::boot` | over-ceiling case fails, exit 69 | **FAIL**, `left: Some(69) right: Some(78)`; ceiling case still passes |
-| M2 | Move the guard after `open_migrated_database` | over-ceiling case fails, exit 69 | **FAIL**, `left: Some(69) right: Some(78)` |
-| M3 | `>` becomes `>=` (off-by-one at the ceiling) | ceiling case fails | **FAIL**, "a concurrency of exactly MAX_CONNECTIONS / 2 must be accepted and logged" |
-| M4 | Neuter the chart guard's `fail` | `just helm-check` names it | `helm-check: FAIL — guard 'worker-concurrency-pool' did not fire` |
-| M5 | (measurement, not a mutation) pin 8 connections instead of 10 in the control | reaper succeeds | reaper ok in 1.25 ms — the control's `expect_err` is not vacuous |
+| #   | Mutation                                                                     | Expected                         | Observed                                                                             |
+| --- | ---------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| M1  | Delete the guard from `worker::boot`                                         | over-ceiling case fails, exit 69 | **FAIL**, `left: Some(69) right: Some(78)`; ceiling case still passes                |
+| M2  | Move the guard after `open_migrated_database`                                | over-ceiling case fails, exit 69 | **FAIL**, `left: Some(69) right: Some(78)`                                           |
+| M3  | `>` becomes `>=` (off-by-one at the ceiling)                                 | ceiling case fails               | **FAIL**, "a concurrency of exactly MAX_CONNECTIONS / 2 must be accepted and logged" |
+| M4  | Neuter the chart guard's `fail`                                              | `just helm-check` names it       | `helm-check: FAIL — guard 'worker-concurrency-pool' did not fire`                    |
+| M5  | (measurement, not a mutation) pin 8 connections instead of 10 in the control | reaper succeeds                  | reaper ok in 1.25 ms — the control's `expect_err` is not vacuous                     |
 
 M1 is the mutation the brief named. M3 is the one that says the boundary is the
 boundary: it is caught only by the case F1 rewrote, and would have passed
@@ -241,18 +241,18 @@ against the draft's version had that version run at all.
 
 ## 4. The gate, on the reviewed head (`a7866d1` + this file's own commit)
 
-| Recipe | Exit | Wall |
-|---|---|---|
-| `fmt-check` | 0 | 1 s |
-| `clippy` | 0 | 8 s |
-| `verify` | 0 (twelve gates) | 8 s |
-| `test-rust` | 0 | 1376 s |
-| `test-doc` | 0 | 7 s |
-| `verify-ignored` | 0 | 1 s |
-| `lint-web` | 0 | 45 s |
-| `test-web` | 0 | 31 s |
-| `deny` | 0 | 2 s |
-| `just helm-check` (not in `just ci`) | 0 | — |
+| Recipe                               | Exit             | Wall   |
+| ------------------------------------ | ---------------- | ------ |
+| `fmt-check`                          | 0                | 1 s    |
+| `clippy`                             | 0                | 8 s    |
+| `verify`                             | 0 (twelve gates) | 8 s    |
+| `test-rust`                          | 0                | 1376 s |
+| `test-doc`                           | 0                | 7 s    |
+| `verify-ignored`                     | 0                | 1 s    |
+| `lint-web`                           | 0                | 45 s   |
+| `test-web`                           | 0                | 31 s   |
+| `deny`                               | 0                | 2 s    |
+| `just helm-check` (not in `just ci`) | 0                | —      |
 
 `Summary [1376.055s] 1667 tests run: 1667 passed, 0 skipped`;
 `verify-ignored: 0 ignored (expected 0), 45 test binaries (expected 45), 1667
@@ -269,7 +269,7 @@ dropped.** It failed at
 on the same head it passed in 108 s, and the full re-run above is green. The
 case polls a 50 s budget for a delivery that normally arrives in seconds;
 nothing on this branch touches that path, and its own history carries a race
-fix (`9f7307a`). If it recurs on an *idle* machine, the budget is the thing to
+fix (`9f7307a`). If it recurs on an _idle_ machine, the budget is the thing to
 read, not the flake.
 
 The last commit on this branch is documentation only (`docs/status.md` and
@@ -281,15 +281,15 @@ three exit 0. No Rust source differs from the head the table above measured.
 
 ## 5. What this review did not do
 
-* **Did not tighten the ceiling to 4**, and did not raise it to 10. Both are
+- **Did not tighten the ceiling to 4**, and did not raise it to 10. Both are
   the maintainer's; §2 records what a decision would now be made on.
-* **Did not touch `docs/plans/exp18-notes/opus-review.md`** — it is a dated
+- **Did not touch `docs/plans/exp18-notes/opus-review.md`** — it is a dated
   record of what was known on 2026-09-06, and §3 item 4 of it was correct when
   written. This file is the answer to it.
-* **Did not run `just docs-check-citations`** (network + token) or
+- **Did not run `just docs-check-citations`** (network + token) or
   `just test-e2e` / `just demo-walk`; nothing here touches the compose stack or
   the browser suites. The chart is still a thing that has never been applied to
   a cluster, and `just helm-check` says nothing about one.
-* **Did not measure under real load.** Every number in §2 is a barrier-driven
-  test on one machine against a local container. It bounds the *connection
-  arithmetic*, not throughput.
+- **Did not measure under real load.** Every number in §2 is a barrier-driven
+  test on one machine against a local container. It bounds the _connection
+  arithmetic_, not throughput.

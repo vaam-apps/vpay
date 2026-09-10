@@ -9,7 +9,7 @@
 By this date the workspace had ten error types across seven crates, every
 one a `thiserror` enum, and `anyhow` correctly confined to the two binaries
 (`AGENTS.md`: "`thiserror` for library crates, `anyhow` only in binaries").
-What it did not have was any agreement on what happens to an error *between*
+What it did not have was any agreement on what happens to an error _between_
 the crate that raises it and the place it is finally acted on:
 
 - The HTTP layer built its Stripe-shaped envelope by hand at every call site
@@ -42,7 +42,7 @@ classification** that every tier implements or consumes.
 
 - Each library crate defines closed `thiserror` enums for its own failures
   (`MoneyError`, `LedgerError`, `ConfigError`, `DbError`, `ProviderError`,
-  `AuthRejection`, ...). One enum per *concern*, not per function.
+  `AuthRejection`, ...). One enum per _concern_, not per function.
 - Foreign errors are wrapped with `#[source]` (or `#[from]` when the wrap is
   one-to-one and adds no information), never flattened to a `String` and
   never boxed as `Box<dyn Error>`. A `String` payload is allowed only for
@@ -51,7 +51,7 @@ classification** that every tier implements or consumes.
 - `Display` is for operators and logs and may name hosts, tables and library
   text. It **must not** contain a secret: no credential value, no PEM, no
   token. Hand-written `Debug` where a payload could carry one.
-- `#[non_exhaustive]` is used on errors that cross a *published* boundary
+- `#[non_exhaustive]` is used on errors that cross a _published_ boundary
   (the SDKs) and not on workspace-internal ones, where exhaustive `match` is
   the point.
 - `ProviderError::NotImplemented("<crate>::<fn>")` stays exactly as it is —
@@ -91,14 +91,14 @@ through the API or the worker.
 ### Tier 3 — boundaries (`anyhow` at the edge only)
 
 - `backends/apps/*` `main()` returns `anyhow::Result<()>` and uses
-  `.context(..)` to say *what the process was doing* when a leaf failed. The
+  `.context(..)` to say _what the process was doing_ when a leaf failed. The
   leaf's `Classify` still decides the exit code: `main` finds the first
   classifiable error in the `anyhow` chain (`vpay_core::error::find_in_chain`)
   and exits with `Category::exit_code()` — `78` for configuration, `69` for
   an unreachable database, `1` otherwise.
 - `anyhow` never appears in a library crate's `[dependencies]` and never in a
   public signature. It may appear in `[dev-dependencies]` for tests.
-- The SDKs (`sdks/rust`, `sdks/nodejs`) model the *wire* — the envelope the
+- The SDKs (`sdks/rust`, `sdks/nodejs`) model the _wire_ — the envelope the
   API emits — not the system. They do not implement `Classify`.
 
 ## Alternatives considered
@@ -107,7 +107,7 @@ through the API or the worker.
   other crate's failure vocabulary, and a match in the ledger would have to
   acknowledge JWT errors. Composition per layer keeps each crate's enum
   closed and small.
-- **`anyhow` everywhere.** Rejected: a payment path needs to *branch* on
+- **`anyhow` everywhere.** Rejected: a payment path needs to _branch_ on
   errors (retry a rail timeout, never retry a rejected charge), and
   `anyhow::Error` can only be downcast by guessing types. It is the right
   tool exactly where nothing branches — process startup.
@@ -154,7 +154,7 @@ were not following it.
 
 `ProviderError::Transport(String)` and `ProviderError::Malformed(String)`
 flattened `reqwest`'s and the bounded-body reader's errors with `format!` at
-roughly forty call sites — the *"never flattened to a `String`"* rule, broken
+roughly forty call sites — the _"never flattened to a `String`"_ rule, broken
 in the one place a payment path most needs the leaf. They are now struct
 variants:
 

@@ -77,23 +77,23 @@ prints a one-time password that must be changed at first sign-in
 session whose staff row still carries that flag, so a printed password
 cannot become a long-lived credential by being ignored.
 
-*Amended 2026-09-10 (issue #79 item 3).* **`POST /staff/password` requires the
+_Amended 2026-09-10 (issue #79 item 3)._ **`POST /staff/password` requires the
 password in force, and deletes every other session of that staff member.**
 Neither was true as delivered, and the argument for the first being absent is
 in the repository verbatim: "the session making the change has already
 presented both factors, and re-checking a password this endpoint then
 overwrites would be a second copy of that check in the wrong layer." What it
-misses is *when*. A session lives up to twelve hours (decision 2); the two
+misses is _when_. A session lives up to twelve hours (decision 2); the two
 factors were presented once, at its start. So the credential protecting an
 irreversible account takeover was **the session cookie alone** — an unattended
 browser, a stolen cookie, an XSS on the dashboard's origin — and the change
 also clears `password_change_required`, so one request bought the account.
 
-Re-presenting the current password is a *different* check from the sign-in's,
+Re-presenting the current password is a _different_ check from the sign-in's,
 not a second copy of it: that one authenticated a session, this one authorises
 one irreversible action inside it.
 
-*Amended again 2026-09-10 (exp36 review, finding F1).* **A `401` from this
+_Amended again 2026-09-10 (exp36 review, finding F1)._ **A `401` from this
 endpoint is no longer a statement about the session, and the dashboard must
 not read it as one.** It was, before this amendment: the endpoint's only
 refusal was "this session is not authenticated", so the client cleared its
@@ -101,7 +101,7 @@ cookie on one. Adding a credential gave the same `401` a second meaning —
 "the current password is wrong" — and the client was not revisited, so a typo
 signed the person out instead of telling them. The consequence of "every
 refusal is one answer" is that a caller cannot distinguish them, and the
-correct reading for a *credential* endpoint is therefore that a `401` ends
+correct reading for a _credential_ endpoint is therefore that a `401` ends
 nothing: whether the session is over is decided by the next render's session
 read, which is a fresh question with an unambiguous answer.
 
@@ -116,7 +116,7 @@ sessions had in flight. The caller's own survives because signing somebody out
 for choosing a password would make the success case look like a failure.
 
 The table is born on CrateStack: `model StaffMember` in `schemas/vpay.cstack`
-— the *model* name decides the table name, because CrateStack 0.11.1 has no
+— the _model_ name decides the table name, because CrateStack 0.11.1 has no
 `@@map` and pluralises what it is given, so `model Staff` would read and write
 `staffs`; migration `0035`'s header records how that was found — in
 the shape CrateStack projects — no DB default on any column a writer names,
@@ -152,20 +152,20 @@ lockout is a denial of service an attacker triggers by guessing at somebody
 else's address. ~~The limits are per replica; the honest reading of that is in
 Consequences.~~
 
-*Amended 2026-09-10 (issue #88 item 1).* The row also carries
+_Amended 2026-09-10 (issue #88 item 1)._ The row also carries
 **`access_token_expires_at`** (migration `0040`), written in the same statement
 as the token and paired with it by a CHECK, and
 **the access token's TTL is a deployment setting** —
 `staff_auth.access_token_ttl_seconds`, 900 by default, bounded 10..=3600.
 
-Neither is a change to what this decision *decides*; both are what make its
+Neither is a change to what this decision _decides_; both are what make its
 arithmetic survivable. The token lives fifteen minutes and the session up to
 twelve hours, and nothing re-minted: a quarter of an hour into every sign-in,
 every render was an error box (the exp28 review's finding F4). The dashboard
 now replaces the token when a fifth of its life is left, running **the same
 authorization-code leg** — which re-reads the staff row, the active status, the
 merchant binding and `password_change_required` on every mint, so a re-mint is
-*more* checking than carrying one token, not a way around any. There is still
+_more_ checking than carrying one token, not a way around any. There is still
 no refresh token on this surface and there is not going to be one.
 
 The TTL is configurable here and deliberately not on `/v1`, whose constant
@@ -180,7 +180,7 @@ minutes shipped.
 `docs/flows/dashboard-auth.md`, "Replacing the token before it expires",
 carries the mechanism and the proof.
 
-*Amended 2026-09-10 (issue #79 item 2).* The counters are rows in
+_Amended 2026-09-10 (issue #79 item 2)._ The counters are rows in
 `rate_limit_windows` (migration `0038`), so **every replica spends from one
 budget**. This ADR's Consequences called the in-process version's cost "the
 first thing to revisit if a deployment runs many replicas", and refused the
@@ -210,13 +210,13 @@ obviously the right number for one that no longer does; **whether the shared
 default should now be lower than ten is a maintainer decision this amendment
 does not take**, and `docs/status.md` records it as open.
 
-*Reviewed 2026-09-10 (exp36 review).* **Ten stays**, and the argument that
+_Reviewed 2026-09-10 (exp36 review)._ **Ten stays**, and the argument that
 settles it is one nobody had made. The case for lowering is that the budget
 got stricter by becoming shared, so there is now headroom to spend. But the
 per-**address** half is the one that would be spent, and with
 `staff_auth.trusted_proxies` empty — the default, and the state of every
 deployment behind a proxy that has not been reconfigured — that half is shared
-by *everybody*. Lowering the shared number therefore makes a proxy-fronted
+by _everybody_. Lowering the shared number therefore makes a proxy-fronted
 deployment lock its whole staff out faster, which is the opposite of what
 "the budget got stricter" is being offered as a reason for. The rationale for
 ten was never about replicas: it is that a person who mistypes a generated
@@ -232,8 +232,8 @@ without a release and without this ADR. What the review takes is the default,
 not the choice.
 
 **"Sign-in" is both legs, and it was one leg until 2026-09-07.** The limiter
-was called from `POST /staff/login` and from nowhere else, so the *second
-factor* — six digits, three of them live at any instant given the one-step
+was called from `POST /staff/login` and from nowhere else, so the _second
+factor_ — six digits, three of them live at any instant given the one-step
 skew, on a path that costs no argon2id verification — was the cheapest
 credential in this design to guess and the only one nothing bounded. A caller
 holding one phished password and one `pending_totp` session could try codes at
@@ -264,7 +264,7 @@ so CrateStack and `vpay-db` could share a transaction.
 **The audience is the dashboard client's own `client_id`, and `vpay:dash/v1`
 is retired.** `default_handle_authorization_code` mints with
 `aud = <client_id>`; rather than fork the handler to honour a requested
-audience, the *validator* is changed to expect what the grant actually
+audience, the _validator_ is changed to expect what the grant actually
 produces. `Surface::Dashboard.audience()` is gone; `JwtValidator::new` takes
 the audience as a parameter, and `vpay-server` passes
 `dashboard_client.client_id`.
@@ -273,7 +273,7 @@ Three consequences follow, and each is a change this ADR owns:
 
 - **`require_dashboard_token` is redesigned.** It compared the token's `sub`
   to the dashboard client id. Under `client_credentials` that was right
-  (`sub` *is* the client id); under this grant `sub` is the **staff member**
+  (`sub` _is_ the client id); under this grant `sub` is the **staff member**
   and the client id is the audience — so the check as written refused every
   token a real login would issue. It was
   [exp23's finding F7](../plans/exp23-dashboard-notes/opus-review.md), and
@@ -305,7 +305,7 @@ verifier or a token.
 
 This is a **deviation from the shape a reader would assume** and is recorded
 rather than glossed: in a browser-driven flow the user agent follows the
-redirect and a callback *page* completes the exchange. Here the callback is a
+redirect and a callback _page_ completes the exchange. Here the callback is a
 route handler in the same app, and the redirect is followed by the app's own
 server. Everything the grant checks is unchanged — the redirect URI is still
 matched byte for byte against the registration, PKCE is still mandatory, the
@@ -357,15 +357,15 @@ closed on a database error.
 
 **Moving a staff member between merchants takes effect at once too.** The
 same read compares the row's `merchant_id` to the binding. That is a second
-question from the token's merchant *claim*: the claim says which tenant the
+question from the token's merchant _claim_: the claim says which tenant the
 token was minted for, the row says which tenant the person belongs to now.
 `oauth_authorization_codes.merchant_id` is a copy taken at issue so an edit
 cannot move a token to a **new** tenant; this is the other half, without
-which the copy only protects the tenant being moved *to*. It refuses nobody
+which the copy only protects the tenant being moved _to_. It refuses nobody
 who was ever allowed in — `/authorize` requires the same equality before it
 will mint a code.
 
-*Added 2026-09-07 (exp24 review, findings F1 and F6).* As first delivered
+_Added 2026-09-07 (exp24 review, findings F1 and F6)._ As first delivered
 `require_dashboard_token` read `staff_members` not at all: everything it
 checked was a statement about the **token** and none of it was a statement
 about the **person**. A disabled staff member went on listing their
@@ -380,7 +380,7 @@ attempts a single one does. … It is recorded in
 `docs/flows/dashboard-auth.md` and is the first thing to revisit if a
 deployment runs many replicas.~~
 
-*Superseded 2026-09-10 (issue #79 item 2).* It was revisited; see decision 2's
+_Superseded 2026-09-10 (issue #79 item 2)._ It was revisited; see decision 2's
 amendment. The budget is one row per key in `rate_limit_windows` and is shared
 by every replica. What remains true, and is the residual this paragraph is
 replaced by: **an attacker who straddles a window boundary still gets twice
@@ -397,7 +397,7 @@ per-IP half then bounds the deployment rather than the caller. The per-email
 half is unaffected and still bounds guessing at one account. ~~Closing it
 needs a trusted-proxy allow-list, which this slice does not have.~~
 
-*Amended 2026-09-10 (issue #79 item 1).* It has one:
+_Amended 2026-09-10 (issue #79 item 1)._ It has one:
 `staff_auth.trusted_proxies`, a list of addresses and CIDR blocks.
 **`X-Forwarded-For` is read exactly when the transport peer is in that list,
 and the client address is then the first untrusted hop from the RIGHT** — the
@@ -414,14 +414,14 @@ the amendment below. `Forwarded` (RFC 7239) is still not read, deliberately: two
 parsers over one caller-supplied string means the more permissive answer wins,
 and the more permissive answer is the one that buys a fresh bucket.
 
-*Amended again 2026-09-10 (exp36 review, finding F2).* **The walk reads every
+_Amended again 2026-09-10 (exp36 review, finding F2)._ **The walk reads every
 `X-Forwarded-For` field line, not the first one.** As first delivered it read
 `HeaderMap::get`, which answers the first value only. A proxy may append its
 hop as a **new** field line rather than rewriting the caller's — a per-proxy
 configuration difference, not a rarity — and RFC 9110 §5.2 makes repeated
 field lines one comma-separated list in the order received. On such a
 deployment the entire chain this module walked was therefore the one the
-*caller* wrote; the "first untrusted hop" was whatever they put at the end of
+_caller_ wrote; the "first untrusted hop" was whatever they put at the end of
 it; and the allow-list handed out **a fresh rate-limit bucket per request**
 instead of closing one — the very hole the paragraph above refuses to open,
 from a trusted peer rather than an untrusted one. Measured: with the first
@@ -436,7 +436,7 @@ what this ADR shipped — so a deployment that does not set it is in the state
 the paragraph above describes, and `vpay-server` logs that at `info` on every
 boot rather than leaving it to be discovered.
 
-*Corrected 2026-09-07 (exp24 review, finding F2).* As first delivered the
+_Corrected 2026-09-07 (exp24 review, finding F2)._ As first delivered the
 per-IP half did not exist at all: the peer address reaches a handler only
 through axum's `ConnectInfo`, and neither `vpay-server` nor the test harness
 built its service with `into_make_service_with_connect_info`. Every attempt
