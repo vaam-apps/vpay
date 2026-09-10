@@ -278,9 +278,24 @@ export async function changePassword(_previous: FormState, form: FormData): Prom
     { sessionToken: token },
   );
   if (!result.ok) {
-    if (result.failure.status === 401) {
-      await clearSessionCookie();
-    }
+    // NOT `if (status === 401) clearSessionCookie()`, which is what stood
+    // here until the exp36 review, and which was correct only for as long as
+    // this endpoint had no credential to refuse.
+    //
+    // Since 2026-09-10 vpay answers `401` here for a wrong or absent CURRENT
+    // PASSWORD as well as for a session it will not accept — one answer for
+    // both, deliberately, because this module has exactly one refusal. So the
+    // old reading turned a typo into a sign-out: the cookie went, the next
+    // render of this page found no token and redirected, and the person never
+    // saw the sentence telling them what was wrong. Measured in a browser —
+    // `dashboard.cy.ts` leg 4 typed a wrong current password, expected the
+    // alert, and got `(new url) /login` instead.
+    //
+    // Nothing is lost by not clearing it. A session that really IS over is
+    // caught one render later by `PasswordPage`, which reads the session on
+    // every render and redirects to `/login` when vpay refuses it — the page
+    // whose job that is, deciding it from a fresh answer, rather than an
+    // action inferring it from a status that now means two things.
     return shown(result.failure);
   }
 

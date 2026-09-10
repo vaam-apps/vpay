@@ -93,6 +93,18 @@ Re-presenting the current password is a *different* check from the sign-in's,
 not a second copy of it: that one authenticated a session, this one authorises
 one irreversible action inside it.
 
+*Amended again 2026-09-10 (exp36 review, finding F1).* **A `401` from this
+endpoint is no longer a statement about the session, and the dashboard must
+not read it as one.** It was, before this amendment: the endpoint's only
+refusal was "this session is not authenticated", so the client cleared its
+cookie on one. Adding a credential gave the same `401` a second meaning —
+"the current password is wrong" — and the client was not revisited, so a typo
+signed the person out instead of telling them. The consequence of "every
+refusal is one answer" is that a caller cannot distinguish them, and the
+correct reading for a *credential* endpoint is therefore that a `401` ends
+nothing: whether the session is over is decided by the next render's session
+read, which is a fresh question with an unambiguous answer.
+
 The revocation half answers the other question this endpoint had never
 answered. Changing a password is what a person does when they believe somebody
 else has their account, and until this amendment it did nothing whatsoever

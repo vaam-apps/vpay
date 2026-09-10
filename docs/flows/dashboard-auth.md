@@ -130,6 +130,20 @@ of their own login by guessing here.
 Every refusal is the same `401` this document's next section describes. Absent
 and wrong are one answer.
 
+**And a `401` from this endpoint ends nothing.** *Corrected 2026-09-10 by the
+exp36 review (finding F1).* The dashboard cleared its session cookie on any
+`401` from `POST /staff/password` — which was right while the endpoint's only
+refusal was an unauthenticated session, and became wrong the moment it grew a
+credential to refuse. "Every refusal is one answer" cuts both ways: a caller
+cannot tell "your session is over" from "that is not your password", so the
+only safe reading on a credential endpoint is that neither ends the session.
+Whether the session is over is the *next render's* question, and
+`PasswordPage` asks it on every render and redirects to `/login` when vpay
+refuses. Measured before the fix, in a browser at
+`demo_dashboard_port=13200`: a wrong current password produced
+`(new url) /login` and no alert at all, and `dashboard.cy.ts` was 6 of 8
+failing.
+
 Proof:
 `changing_a_password_needs_the_current_one_and_ends_every_other_session`. The
 decisive mutations, one per half: delete the `verify_password` and the first

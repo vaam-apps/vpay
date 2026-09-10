@@ -13,13 +13,63 @@ The implementation is sound where it is proven, and **the one thing that was
 not proven was wrong**. `just test-e2e` had never been run — the notes say so
 plainly rather than hiding it, which is why it was the first thing this review
 did. It fails: **dashboard.cy.ts, 6 of 8 failing**, and the first failure is
-`leg 4`, the current-password field this change exists for. It is written up as **F1** in this review's next commit, once the mutation that proves the fix has been run in a browser rather than reasoned about.
+`leg 4`, the current-password field this change exists for. That is F1, below.
 
 **This document is written as the review proceeds**, one section per finding,
 each landing in the commit that fixes it. A finding is not written down here
 until the mutation that proves the fix has actually been run.
 
 ## Findings
+
+### F1 — a wrong current password signs the staff member out · **correctness / gate-hole**
+
+`POST /dash/v1/staff/password` answers `401` for a wrong or absent current
+password since this branch. `frontends/apps/dashboard/src/server/actions.ts`
+still read **any** `401` from that endpoint as "the session is over" and
+called `clearSessionCookie()` — code that was correct for exactly as long as
+the endpoint had no credential to refuse, and that was not revisited when it
+grew one.
+
+So a staff member who mistypes their current password is signed out of the
+browser instead of being told. And the Cypress leg written for this feature
+cannot pass: it types a wrong current password, expects the page to stay put
+with an alert, and instead the next render finds no cookie and bounces to
+`/login`.
+
+Measured, as delivered, at `demo_dashboard_port=13200`:
+
+```
+28 - contains  button, Set password
+29 - click            (fetch) POST 200 /login/password
+31 - assert  expected /login/password to equal /login/password
+32   get [role="alert"]                                    0
+33 - assert  expected [role="alert"] to be visible         FAILED
+     (new url) http://localhost:13200/login
+```
+
+```
+✖  dashboard.cy.ts      02:18   8   2   6   -   -
+✔  checkout.cy.ts       00:13   1   1   -   -   -
+✔  shop-hosted.cy.ts    00:14   3   3   -   -   -
+✖  1 of 3 failed (33%)  02:46  12   6   6   -   -
+```
+
+The other five dashboard failures are the cascade: that spec runs
+`testIsolation: false`, and its retries replay an enrolment that attempt 1 has
+already committed, so attempt 2 looks for a QR code that will never be shown
+again. The reported error for failure 1 is therefore the retry's
+(`[data-testid="totp-qr"]` never found) and not the first attempt's, which is
+the one quoted above.
+
+**Fix:** a `401` from this endpoint clears nothing. Nothing is lost, because a
+guard already existed for the case it was covering: `PasswordPage` reads the
+session on every render and redirects to `/login` when vpay refuses it. A
+session that really is over therefore still ends at the sign-in form — one
+render later, decided by the page whose job it is from a fresh answer, rather
+than by an action inferring it from a status that now means two things.
+
+**The mutation:** put the two lines back and leg 4 fails again, in a browser,
+exactly as above.
 
 ### F2 — a repeated `X-Forwarded-For` was read as its first line only · **correctness**
 
