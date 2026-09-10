@@ -547,6 +547,94 @@ sentence. `just demo-walk` and `just test-e2e` were not run either; the
 no non-`///` line.
 
 ---
+Last verified: 2026-09-10, on branch `claude/exp38-sigterm-scenario` at its
+head — the scenario is `365b6da` and its notes are `34fb910`; base `ff1f507` =
+`master`. No sha is named for the head itself because this entry is *in* it —
+**issue #85: the graceful stop is a test now, not a measurement.**
+
+`docs/flows/crash-safety.md` had recorded a hand measurement and said, in its
+own words, that "nothing re-runs it, and a regression in the drain would be
+caught by no gate". Every SIGTERM in every suite went through
+`worker_kill9.rs`'s `stop_worker_cleanly`, whose assertion string says *"a
+worker with nothing in flight"*, so the empty case was covered and the
+interesting one was not.
+`a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once`
+is the third scenario in that file, and the "Real signal crash tests" row
+below is the detail. In one sentence: a payment settles, one of **two**
+running workers claims its `payment_intent.succeeded` delivery, that worker is
+sent a real `SIGTERM` while its POST is inside the merchant's receiver, and it
+exits **0** having *finished the delivery* — one signed POST at the receiver,
+one delivery row `succeeded` with `attempt = 0`, and the same four-record
+exactly-once invariant the two `SIGKILL` cases assert.
+
+**Determinism was the hard part and is not a margin.** The receiver's 6 s
+delay sits strictly between `vpay_worker::webhooks::WEBHOOK_REQUEST_TIMEOUT`
+(10 s) and `--shutdown-grace-seconds` (20 s); both comparisons are `const`
+assertions in the test file against the shipping constants, so lowering either
+budget fails the **build** rather than making the case flaky. And the case
+reads the signalled worker's own transcript, rejecting any run in which
+`webhook delivered` does not fall between `shutdown signalled; draining
+in-flight jobs` and `graceful shutdown complete, exiting` — so a machine slow
+enough for the receiver to answer first reports that, instead of passing
+green. **Ten consecutive runs before this entry was written: 10 passed, 0
+failed, 0 skipped**, 30.4 s to 99.8 s, the slowest three times the median and
+still green.
+
+**Two decisive mutations, measured rather than argued.** Removing the drain
+(`Drain::Clean` returned the instant the signal is seen) fails with *the
+worker never logged `webhook delivered`*: the send was cut off after the
+receiver had already accepted it. Removing `locked_at IS NULL` from
+`vpay_db::Jobs::claim` fails on the double-send assertion, `left: 2
+right: 1` — two byte-identical signed POSTs of one `evt_…` at the receiver.
+The second is why the second worker **co-runs** rather than restarting: a
+worker spawned after the signal boots only once the drain is over, so the
+lease it must not steal no longer exists and the property would be proved
+vacuously, on some runs and not others.
+
+**`just ci` exit 0 on the head carrying this entry**, exit code read from a
+file rather than a banner, on Node **22.23.2** (`.nvmrc`), rustc **1.98.0**
+(`rust-toolchain.toml`) and the pinned `cratestack` **0.12.0**: `fmt-check`;
+`clippy` `-D warnings`; `verify`, all **twelve** gates (`verify-status` 1
+declared unimplemented item, `verify-errors` 18 error types / 16 `#[from]`
+variants, `verify-sdk-parity` 448 proving tests / 35 dated gaps,
+`verify-links` **1033 links in 192 tracked markdown files**, `check-schema` 25
+declarations under cratestack 0.12.0, `verify-serde` 83 types / 16 exemptions,
+`verify-repositories` 4 implementations, `verify-toolchain` 1.98.0,
+`verify-migrations` 37 files); `test-rust` **1626 tests run, 1626 passed, 0
+skipped** across **45** binaries against a real Postgres and real WireMock
+rails; `test-doc` **109 passed, 1 ignored** (`sdks/rust`'s README block,
+pre-existing); `verify-ignored` **0 ignored (expected 0), 45 test binaries
+(expected 45), 1626 total**; `lint-web`; `test-web` (`@vpay/checkout` 507 in 24
+files, `dashboard` 150 in 20, `@vaam-apps/vpay-sdk` 207 in 9,
+`@vaam-apps/vpay-stripe-js` 146 in 9, all 0 skipped); `deny` (advisories, bans,
+licenses, sources all ok).
+
+**It was run on the code head first** (`34fb910`, the scenario and its notes,
+before this page said anything about them) **and then again here**, because a
+status page written after a gate is a page that gate did not read. Every count
+above is identical on both, with one exception that is this entry's own doing:
+`verify-links` read **1032** there and reads 1033 here, the extra link being
+the one at the end of this paragraph. Only the wall clock moved otherwise, by
+roughly half again its own length between the fastest and slowest of this
+branch's gate runs, on a machine that was also running other work — a number
+deliberately not quoted here, because it measures the machine rather than this
+change, and not one count moved with it. **This change adds two cases to an
+existing binary and adds no binary**, which is why the expected-suite count did
+not move, and the three container-backed `worker_kill9` scenarios took
+3.7–31.9 s each.
+
+**What it does NOT cover, and none of it is glossed.** `Drain::TimedOut` under
+a real signal — the grace period elapsing with a job still in flight, exit `1`,
+leases handed back — is still proven only by
+`a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds`
+(`worker_e2e.rs`), which drives `run_loop` in-process; no signalled shipping
+binary reaches that branch anywhere. **No case restarts a worker after a
+graceful stop**, so that half of the hand measurement is still only a
+measurement. `SIGINT` is not signalled by any case even though
+`vpay_config::signal` handles it identically. And the rail and the receiver
+are both WireMock containers, on `mtn_momo` only — the same limit every other
+case on this page carries.
+[plans/exp38-sigterm-scenario-notes/opus.md](plans/exp38-sigterm-scenario-notes/opus.md).
 
 Last verified: 2026-09-07, on branch `claude/exp30-single-binary` at the head
 of the **sabotage review** of issue #77's one-binary change (base `30fb8f1` =
