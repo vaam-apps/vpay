@@ -511,6 +511,43 @@ network, a database or a binary this workspace does not build.
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
 
+Last verified: 2026-09-10, on branch `claude/exp39-readme-gaps` at the head of
+the **sabotage review** of issue #87's three honesty gaps (base `ff1f507`; the
+haiku draft's six commits are squashed into this branch's four, and
+[plans/exp39-readme-gaps-notes/opus-review.md](plans/exp39-readme-gaps-notes/opus-review.md)
+says why).
+
+**`just ci` exit 0 on the review head**, exit code read from a file:
+`fmt-check`; `clippy` `-D warnings`; `verify`, all twelve gates
+(`verify-links` **1031 links in 192 tracked files**, `verify-status` 1
+declared unimplemented item, `verify-errors` 18 error types / 16 `#[from]`
+variants, `verify-sdk-parity` 448 proving tests / 35 dated gaps,
+`check-schema` **25 declarations** at cratestack 0.12.0 — seventeen models,
+eight enums — `verify-serde` 83 types / 16 exemptions,
+`verify-repositories` 4 implementations, `verify-toolchain` 1.98.0,
+`verify-migrations` 37 files); `test-rust` **1626 tests run, 1626 passed, 0
+skipped** across **45** binaries against a real Postgres and real
+WireMock rails; `test-doc` **109 passed, 1 ignored** (`sdks/rust`'s README
+block, pre-existing); `verify-ignored` **0 ignored (expected 0), 45 binaries
+(expected 45), 1626 total (floor 1080)**; `lint-web`; `test-web` (0 skipped;
+`@vpay/checkout` 507 in 24 files, `@vpay/dashboard` 150 in 20); `deny`.
+
+**1626 is master's 1624 plus this change's two, and 1624 was measured rather
+than subtracted** — `ff1f507`'s own `backends/apps/vpay-server/tests/cli.rs`
+was checked out over this branch's and `cargo nextest list --workspace`
+answered 1624 across 45 binaries, then the file was restored.
+
+**What this run does not cover, and it is the whole reason the branch
+exists:** the draft it reviews passed the identical gate — `just ci` exit 0 on
+`79b3594`, 1626 tests, twelve gates — while its `docs/status.md` row named
+three models that are not in `schemas/vpay.cstack` and its new startup message
+named an environment variable clap does not read. Nothing in `just ci` reads a
+sentence. `just demo-walk` and `just test-e2e` were not run either; the
+`examples/merchant-demo` change is comment-only, proven by the diff carrying
+no non-`///` line.
+
+---
+
 Last verified: 2026-09-07, on branch `claude/exp30-single-binary` at the head
 of the **sabotage review** of issue #77's one-binary change (base `30fb8f1` =
 `master`, which carries #80's `vpay-server staff add`; the implementation is
