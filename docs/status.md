@@ -2697,6 +2697,24 @@ WireMock cannot escape an attribute).
   it would have read before this change. The Orange pay case now asserts both
   controls point back through the rail's container.
 
+**The gate, at the delivered commit.** `just ci` end to end, exit 0, with
+containers: `verify` **twelve gates ok**; `test-rust` **1663 tests run, 1663
+passed, 0 skipped** (1658 before — this change adds five: four conformance
+cases and one arithmetic case in `confirm_rails`), 21 m 15 s; `test-doc`
+**111 passed, 1 ignored** (the ignored one is `sdks/rust`'s README block and
+is pre-existing); `verify-ignored` **0 ignored (expected 0), 45 test binaries
+(expected 45), 1663 total**; `test-web` **781 passed** across the three web
+suites (checkout 507, dashboard 172, shop 102); `deny` `advisories ok, bans
+ok, licenses ok, sources ok`; `fmt-check` and `clippy` clean.
+
+*(Three earlier runs of the same gate on the same tree died on a
+`postgres:16-alpine … container startup timeout` — a different test each
+time, never an assertion, on a host carrying a load average of 8-10 from
+unrelated work. Each was checked rather than retried blind: the named test
+passed in isolation in under four seconds. Recorded because "flaky" is a
+claim, and the evidence for it is that the failure moved and the failing
+assertion never existed.)*
+
 **Measured beyond `just ci`, on a throwaway compose project
 (`exp43-orange-stub-race`, ports 13700-13702/18700-18702, torn down; the
 maintainer's `vpay-demo` stack was not touched):**
