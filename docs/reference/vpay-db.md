@@ -1557,6 +1557,22 @@ what makes "write the row and tell nobody" inexpressible — so the count moved
 by one. Every one of the four interpolates crate constants and binds every
 caller value, so the paragraph below is unchanged.
 
+**Re-done 2026-09-10 for issue #91's D5, where the count moved 56 → 57 — one
+addition, not a net.** `invoices::add_refund_for_intent_in_tx` is
+`UPDATE invoices SET amount_refunded = amount_refunded + $2, updated_at = $3
+WHERE payment_intent_id = $1 AND status = 'paid' RETURNING {COLUMNS}`. It
+interpolates `invoices::COLUMNS` and nothing else; all three caller-supplied
+values are bound, and the increment is an *expression over the row's own
+column* rather than a computed total, so there is not even an arithmetic
+result to interpolate.
+
+The other statement that landed with it, `refunds::settle_in_tx`, adds **no
+site at all**, and that is worth a sentence rather than silence: it needs no
+constant, so it is written as a plain `&'static str` and the compiler's own
+check is never switched off for it. A statement that does not have to be a
+`format!` should not be one — the count above is the budget, and this is what
+spending nothing looks like.
+
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is
 already a bind parameter — the `.bind(..)` calls immediately below each
