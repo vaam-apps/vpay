@@ -2050,6 +2050,7 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
     assert_eq!(invoice.amount_due, 11_000);
     assert_eq!(invoice.amount_paid, 0);
     assert_eq!(invoice.amount_remaining, 11_000);
+    assert_eq!(invoice.amount_refunded, 0);
     assert_eq!(invoice.due_date, None);
     assert_eq!(invoice.description.as_deref(), Some("September hosting"));
     assert_eq!(

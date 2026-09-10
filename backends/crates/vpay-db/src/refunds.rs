@@ -1,8 +1,8 @@
 //! The `refunds` repository (`backends/migrations/0017_create-refunds.sql`,
 //! plus `0031_refunds-fee.sql`) — one read, and nothing else.
 //!
-//! **This module does not create refunds, and there is no write here at all.**
-//! Creating one needs a rail refund, and neither rail has one:
+//! **This module does not create refunds.** Creating one needs a rail refund,
+//! and neither rail has one:
 //! `mtn_momo::refund` is `ProviderError::NotImplemented` and Orange Money
 //! answers `Unsupported` because its Web Payment product documents no refund
 //! API (`docs/status.md`). `POST /v1/refunds` stays unrouted. What this module
@@ -11,6 +11,25 @@
 //! read", `docs/flows/webhooks.md` says delivery is at-least-once and
 //! unordered, and a merchant holding a `re_…` with no way to ask what happened
 //! to it has neither (issue #45).
+//!
+//! # The one write, and why it is `pub(crate)`
+//!
+//! Since issue #91's D5 there is exactly one write here, [`settle_in_tx`],
+//! and it is not a create: it moves an **existing** `pending` refund to
+//! `succeeded` inside the transaction that also adds the amount to the
+//! invoice the refunded intent paid. It is `pub(crate)` and reached only from
+//! [`crate::settlement`], which is what keeps "a refund is never settled
+//! without the document it came off being updated in the same commit" a
+//! property of the type system rather than of a convention. The create half
+//! is still absent and still deliberate: a `create` here would be a write
+//! path no shipping code calls.
+//!
+//! What that costs, stated rather than hidden: no rail can produce the
+//! `pending` row this function settles, so nothing in `vpay-server` reaches
+//! it and every deployment's `refunds` table is empty. `docs/status.md` says
+//! so. The seam exists because D5's decision is about what the *database*
+//! does when a refund lands, and a decision with no statement behind it is a
+//! sentence in a document.
 //!
 //! # Why the scope is a join and not a column
 //!
@@ -124,11 +143,15 @@ pub struct RefundRow {
 
 /// The `refunds` reads a consumer of this crate may perform.
 ///
-/// One method, and no write. A `create` here would be a write path no
+/// Two reads, and **no create**. A `create` here would be a write path no
 /// shipping code calls — the refund a merchant would create needs
 /// `ProviderAdapter::refund`, which is `NotImplemented` on MTN and
 /// `Unsupported` on Orange — and this repository's rule is that an unbuilt
-/// feature stays visibly unbuilt (`AGENTS.md` rule 2).
+/// feature stays visibly unbuilt (`AGENTS.md` rule 2). The one write this
+/// module does have, [`settle_in_tx`], is deliberately not on this trait: it
+/// is `pub(crate)` and belongs to [`crate::settlement`]'s transaction, so a
+/// consumer of this crate cannot settle a refund without the invoice update
+/// that goes with it.
 #[async_trait::async_trait]
 pub trait Refunds: Send + Sync {
     /// Reads one refund *for this merchant*.
@@ -176,6 +199,72 @@ pub trait Refunds: Send + Sync {
         merchant_id: &str,
         payment_intent_id: &str,
     ) -> Result<Vec<RefundRow>, DbError>;
+}
+
+/// The `refunds` columns [`settle_in_tx`] needs to finish the transaction it
+/// is part of: which intent to charge the refund against, and how much.
+///
+/// A second, narrower projection rather than [`RefundRow`], and the split is
+/// deliberate: [`RefundRow`] is *the merchant read*, shaped by what
+/// `GET /v1/refunds/{id}` renders. This one is *the settlement's own
+/// working set* — it exists so the statement that flips the row hands the
+/// caller exactly the two facts the next statement in the same transaction
+/// needs, with no round trip and nothing that could have changed in between.
+/// Reusing the wire projection here would tie a settlement's inputs to a
+/// rendering decision.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct SettledRefund {
+    /// The refund that was settled.
+    pub id: String,
+    /// The intent the money came back off — the key
+    /// `vpay_db::invoices`' refund statement matches the invoice on.
+    pub payment_intent_id: String,
+    /// Minor units, strictly positive (`amount_positive`, migration `0017`).
+    pub amount: i64,
+}
+
+/// Moves one `pending` refund to `succeeded`, inside the caller's
+/// transaction.
+///
+/// `Ok(None)` means the refund was not `pending` — it has already been
+/// settled, or it failed, or there is no such row. For a job that may be
+/// running twice that is information rather than an error, exactly as
+/// [`crate::Settlement::apply_succeeded`]'s `Ok(None)` is.
+///
+/// # The state machine is the `WHERE` clause
+///
+/// `AND status = 'pending'` is in the statement, not in a check beside it.
+/// `refunds_status_enum_check` (migration `0037`) closes the vocabulary and
+/// this clause closes the transition; between them there is no read whose
+/// answer could be stale by the time the write lands.
+///
+/// # No tenant predicate, and that is not an omission
+///
+/// Unlike [`Refunds::get_for_merchant`], this statement filters on the
+/// refund's id alone. It is not reachable from a merchant-facing route — it
+/// is `pub(crate)`, called only by [`crate::settlement`], which is driven by
+/// a rail's answer about a movement vpay itself initiated. There is no
+/// caller-supplied id to scope, and a join added here would be a tenancy
+/// check on a value no tenant chose.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+pub(crate) async fn settle_in_tx(
+    conn: &mut sqlx::PgConnection,
+    refund_id: &str,
+    now: OffsetDateTime,
+) -> Result<Option<SettledRefund>, DbError> {
+    sqlx::query_as::<_, SettledRefund>(
+        "UPDATE refunds SET status = 'succeeded', updated_at = $2 \
+         WHERE id = $1 AND status = 'pending' \
+         RETURNING id, payment_intent_id, amount",
+    )
+    .bind(refund_id)
+    .bind(now)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(crate::error::classify_write)
 }
 
 #[async_trait::async_trait]

@@ -226,12 +226,12 @@ pub(crate) fn checkout_session_json(id: &str, client_secret: Option<&str>) -> Va
 }
 
 /// An `invoice` object with every field the wire contract lists (S4b) — all
-/// **eighteen** keys, one line expanded.
+/// **nineteen** keys, one line expanded.
 ///
 /// The count is the point: this object is the `data.object` of all four
-/// `invoice.*` event types, so a nineteenth key is signed, delivered and
+/// `invoice.*` event types, so a twentieth key is signed, delivered and
 /// stored forever. `vpay_api`'s
-/// `the_invoice_object_is_the_documented_eighteen_keys` holds the number on
+/// `the_invoice_object_is_the_documented_nineteen_keys` holds the number on
 /// the server side; this fixture is what the SDK decodes, so a key that
 /// appeared on one side and not the other shows up as a decode difference
 /// here rather than in a container.
@@ -251,6 +251,11 @@ pub(crate) fn invoice_json(id: &str) -> Value {
         "amount_due": 11_000,
         "amount_paid": 0,
         "amount_remaining": 11_000,
+        // Zero on every real invoice today (no rail can refund), and spelled
+        // here anyway: `Invoice::amount_refunded` is `#[serde(default)]`, so a
+        // fixture that omitted it would decode identically whether the server
+        // sent the key or not.
+        "amount_refunded": 0,
         "due_date": null,
         "description": "September hosting",
         "metadata": { "order_id": "1234" },

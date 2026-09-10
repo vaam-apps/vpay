@@ -211,6 +211,11 @@ async fn live_invoice_lifecycle() {
     assert_eq!(open.amount_due, 32_500);
     assert_eq!(open.amount_remaining, 32_500);
     assert_eq!(open.amount_paid, 0);
+    // Migration 0042's key, against a running server: this is the only place
+    // in this crate that proves the server actually SENDS it. `amount_refunded`
+    // is `#[serde(default)]`, so every offline fixture would decode `0` whether
+    // the key were on the wire or not.
+    assert_eq!(open.amount_refunded, 0);
 
     let read = client
         .invoices()

@@ -138,7 +138,7 @@ pub use persistence::PersistenceError;
 pub use pool::{MAX_CONNECTIONS, connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
 pub use rate_limits::RateLimits;
-pub use refunds::{RefundRow, Refunds};
+pub use refunds::{RefundRow, Refunds, SettledRefund};
 pub use repository::{
     PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
     UnitOfWork,

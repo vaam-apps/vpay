@@ -708,6 +708,20 @@ export interface Invoice {
   /** `amount_due - amount_paid`, and what `pay` mints an intent for. */
   amount_remaining: number;
   /**
+   * What has been given back out of {@link Invoice.amount_paid}, as a
+   * **gross** total.
+   *
+   * It is not subtracted from `amount_paid` and does not raise
+   * `amount_remaining`: a refunded invoice is still `"paid"` with nothing
+   * remaining, and vpay has no credit note object. `0` on every invoice today
+   * — no vpay rail can refund yet, so nothing can move it. Do not read a
+   * non-zero value as money being owed again.
+   *
+   * Optional in the type so a client of this version keeps compiling against
+   * a server that predates migration `0042`, where the key is absent.
+   */
+  amount_refunded?: number;
+  /**
    * Unix **seconds**, or `null`. **Advisory**: nothing in vpay reads it —
    * there is no dunning, no reminder and no automatic transition.
    */

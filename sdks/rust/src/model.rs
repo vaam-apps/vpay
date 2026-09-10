@@ -620,10 +620,11 @@ pub struct InvoiceStatusTransitions {
 
 /// An `invoice` (S4b): a merchant's bill to one customer.
 ///
-/// Eighteen keys, the count `vpay_api`'s
-/// `the_invoice_object_is_the_documented_eighteen_keys` pins on the server
+/// Nineteen keys, the count `vpay_api`'s
+/// `the_invoice_object_is_the_documented_nineteen_keys` pins on the server
 /// side; `an_invoice_decodes_every_documented_key_and_its_lines` is this
-/// crate's half.
+/// crate's half. It was eighteen until migration `0042` added
+/// [`Self::amount_refunded`] (issue #91, D5).
 ///
 /// # `lines` is always expanded, and always unpaged
 ///
@@ -674,6 +675,20 @@ pub struct Invoice {
     /// `amount_due - amount_paid`, and the amount
     /// [`crate::InvoicesResource::pay`] mints an intent for.
     pub amount_remaining: i64,
+    /// What has been given back out of [`Self::amount_paid`], as a **gross**
+    /// total.
+    ///
+    /// It is *not* subtracted from [`Self::amount_paid`] and does not raise
+    /// [`Self::amount_remaining`]: a refunded invoice is still
+    /// [`InvoiceStatus::Paid`] with nothing remaining, and vpay has no credit
+    /// note object. `0` on every invoice today — no vpay rail can refund yet,
+    /// so nothing can move it. Do not treat a non-zero value as a signal that
+    /// money is owed again.
+    ///
+    /// `#[serde(default)]` so a client of this version keeps decoding a
+    /// server that predates migration `0042`, where the key is absent.
+    #[serde(default)]
+    pub amount_refunded: i64,
     /// Unix **seconds**, or `None`.
     ///
     /// **Advisory**: nothing in vpay reads it. There is no dunning, no
@@ -1127,6 +1142,7 @@ impl Event {
     ///         "id": "in_1", "object": "invoice", "customer": "cus_1",
     ///         "currency": "xaf", "status": "open", "number": "A7K3M9QP-000001",
     ///         "amount_due": 5000, "amount_paid": 0, "amount_remaining": 5000,
+    ///         "amount_refunded": 0,
     ///         "due_date": null, "description": null, "metadata": {},
     ///         "payment_intent": null, "hosted_invoice_url": null,
     ///         // Empty on every `invoice.*` body — see above.
