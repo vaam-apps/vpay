@@ -184,6 +184,9 @@ that was killed.
   — kill point 2, staged against the shipping server with no test-only seam. The
   worker recovers by polling and never resubmits: **one** submit in the journal,
   which is what the retry rule is actually about.
+- **`a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once`**
+  — the third scenario, added 2026-09-10 for issue #85, and about the *other*
+  signal. It is described under "The graceful stop" below.
 
 **Two clocks are simulated in that file, and nothing else is.**
 `age_the_dead_workers_lease` moves `jobs.locked_at` ten minutes back, guarded on
@@ -205,7 +208,9 @@ rail is a WireMock container in both.
 
 **Status: implemented, and driving payments. Updated 2026-09-03 (Step 4);
 re-verified 2026-09-07 twice — for issue #77, and again for migration `0037`
-(S5, the money tables through CrateStack).**
+(S5, the money tables through CrateStack); extended 2026-09-10 (issue #85)
+with the SIGTERM scenario, which is the first automated case in this
+repository that signals a shipping process holding outstanding work.**
 
 **Nothing in this document's behaviour changed for `0037` either, and the
 migration is the reason to say so explicitly.** It converted
@@ -255,32 +260,71 @@ never spawns a binary, so it is `worker_kill9` and the ten
 `vpay-server::cli worker::*` cases that hold the subcommand honest, not this
 suite).
 
-### The graceful stop is a different property from `kill -9`, and is not in the suite
+### The graceful stop is a different property from `kill -9`, and since 2026-09-10 it is in the suite
 
 Everything above is about a process that is **killed**. A SIGTERM with work
-outstanding is the other half, and no automated case reaches it: the suites
+outstanding is the other half. ~~and no automated case reaches it: the suites
 send SIGTERM only through `stop_worker_cleanly`, whose own assertion string
-says "a worker with nothing in flight". That has been true since the helper
-was written and is not something issue #77 changed — the same helper did the
-same thing when it spawned `vpay-worker-bin`.
+says "a worker with nothing in flight" […] **This is a measurement, not a
+test.** Nothing re-runs it, and a regression in the drain would be caught by
+no gate. Turning it into a third `worker_kill9` scenario is the obvious answer
+and was not done in this pass.~~ **Retired 2026-09-10 (issue #85): it was
+done.**
 
-It was run by hand in the #77 review instead, on the demo compose stack, and
-the outcome is recorded here because a reader would otherwise assume the
-suite covers it. `docker kill -s TERM` on the worker mid-settlement: the
-container exits **0** having logged `received SIGTERM, starting graceful
-shutdown` then `graceful shutdown complete, exiting` (i.e. `Drain::Clean`, not
-the `Drain::TimedOut` branch that exits `1`). An intent whose settlement had
-committed but whose webhook had not been delivered stayed undelivered while
-no worker ran — zero POSTs at the receiver for it — and the **same container,
-restarted and nothing else**, delivered it within ~6 s, signed. Outstanding
-work at a graceful stop is not lost; it waits for a worker, which is the same
-invariant the lease and the compare-and-swap handlers give a killed one.
-Details in
+- **`a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once`**
+  — an ordinary payment settles, its `payment_intent.succeeded` webhook is
+  claimed by one of **two** running workers, and that worker is sent a real
+  `SIGTERM` while its POST is inside the merchant's receiver. It exits **0**
+  with the drain log line, having **finished the delivery**: one delivery row
+  `succeeded` with `attempt = 0`, its job deleted, and **one** signed POST in
+  the receiver's own journal — which
+  `vpay_sdk::webhooks::verify` accepts under the configured secret. The
+  four-record exactly-once invariant the two `SIGKILL` cases assert holds too.
+
+The receiver is made slow the same way the rail is in the cases above — a
+`fixedDelayMilliseconds` mapping (`slow-ack.json`, 6 s) — and the number is
+chosen against two shipping budgets rather than against a stopwatch: **below**
+`vpay_worker::webhooks::WEBHOOK_REQUEST_TIMEOUT` (10 s), so the
+acknowledgement always beats the delivery client's own deadline, and **below**
+the worker's `--shutdown-grace-seconds` (20 s), so the drain can never run out
+of time. Both comparisons are `const` assertions in `worker_kill9.rs`, so
+lowering either budget breaks the build rather than making the case flaky. And
+because a margin is not a proof, the case reads the signalled worker's own
+transcript afterwards and **fails** unless `shutdown signalled; draining
+in-flight jobs` precedes `webhook delivered` in it: a signal that arrived
+after the receiver had already answered makes the run say so rather than pass
+while proving nothing.
+
+**Why two workers rather than a restart.** The hand measurement restarted the
+container; the test cannot, and the reason is the property it is trying to
+prove. A worker spawned *after* the signal has connected, migrated and
+reconciled by the time the drain is over, so the job it must not steal no
+longer exists and the lease would be respected vacuously — on some runs and
+not others, with nothing able to tell which. A worker already running when the
+signal lands overlaps by construction, and that is what makes the second
+decisive mutation bite: **remove `locked_at IS NULL` from `Jobs::claim`** and
+the surviving worker claims the delivery the draining one still holds, sending
+the merchant a second identical signed POST. Measured: `left: 2  right: 1` on
+the receiver's journal. **Remove the drain** (return `Drain::Clean` the
+instant the signal is seen) and the same case fails with *the worker never
+logged `webhook delivered`* — the send was cut off after the receiver had
+already accepted it, which is the lost delivery that becomes a double send as
+soon as anything retries.
+
+The original hand measurement is unchanged and still recorded — `docker kill
+-s TERM` on the demo stack, exit **0**, `Drain::Clean` rather than the
+`Drain::TimedOut` branch that exits `1`, an undelivered webhook that stayed
+undelivered while no worker ran and was delivered in ~6 s, signed, by the
+same container restarted. Details in
 [../plans/exp30-single-binary-notes/opus-review.md](../plans/exp30-single-binary-notes/opus-review.md).
 
-**This is a measurement, not a test.** Nothing re-runs it, and a regression in
-the drain would be caught by no gate. Turning it into a third `worker_kill9`
-scenario is the obvious answer and was not done in this pass.
+**What the new case does not cover, plainly.** It asserts the *clean* drain
+only. `Drain::TimedOut` — the grace period elapsing with a job still in
+flight, exit `1`, leases handed back — is proven by
+`a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds`
+(`worker_e2e.rs`) against `run_loop` in-process, not by a signalled shipping
+binary; and no case restarts a worker after a graceful stop, which is the one
+half of the hand measurement that is still only a measurement.
 
 **What was already true (Step 3), unchanged.**
 `POST /v1/payment_intents/{id}/confirm`
