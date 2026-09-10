@@ -614,6 +614,56 @@ fn an_unreachable_database_is_exit_69_naming_postgres() {
     );
 }
 
+/// `--database-url` / `DATABASE_URL` is required, and its absence is a
+/// *configuration* failure — exit `78`, naming both spellings.
+///
+/// **New 2026-09-10 (issue #87), and it closes a gap `docs/status.md`, this
+/// README and `docs/flows/configuration.md` had all recorded rather than
+/// fixed:** the serve path used to raise a bare `anyhow` context string
+/// here, which `exit_code_for` cannot classify, so the one flag whose
+/// absence is *most* likely in a fresh deploy exited `1` — "this is a vpay
+/// bug" — while `--config` and `--oauth-signing-key-file` exited `78`.
+///
+/// `env_remove("DATABASE_URL")`, and it is not defensive: this file spawns
+/// with the test runner's own environment, `.env.example` ships
+/// `DATABASE_URL=…`, and sqlx tooling exports it. Without the removal this
+/// case asserts "no database URL" on a machine that has one and fails with
+/// `69`, which is what it did when it was written.
+///
+/// Both spellings are asserted with `&&`, matching
+/// `worker::a_zero_worker_concurrency_from_the_environment_is_refused_by_name_as_exit_78`:
+/// the message *is* the fix, and an `||` passes while the variable name is
+/// wrong — which is how `VPAY_DATABASE_URL`, a variable clap does not read,
+/// survived its first green run.
+#[test]
+fn a_missing_database_url_is_exit_78_naming_the_problem() {
+    let output = bin()
+        .env_remove("DATABASE_URL")
+        .env("VPAY_CONFIG", valid_config_path())
+        .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+        .output()
+        .expect("spawn vpay-server");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected EX_CONFIG (78) with no --database-url/DATABASE_URL at all, got {:?}; \
+         stderr: {stderr}",
+        output.status,
+    );
+    assert!(
+        stderr.contains("--database-url") && stderr.contains("DATABASE_URL"),
+        "the refusal must name both spellings of what is missing, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("VPAY_DATABASE_URL"),
+        "there is no VPAY_DATABASE_URL: `CommonArgs::database_url` declares `env = \"DATABASE_URL\"`, \
+         so an operator who exported the variable this message named would get this same failure \
+         back. Got: {stderr}"
+    );
+}
+
 /// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` is required,
 /// and its absence is a *configuration* failure — exit `78`, naming the
 /// flag.
@@ -2072,6 +2122,50 @@ mod worker {
         assert!(
             stderr.contains("Postgres"),
             "stderr should name Postgres as what could not be reached, got: {stderr}"
+        );
+    }
+
+    /// The worker's half of the parent module's
+    /// `a_missing_database_url_is_exit_78_naming_the_problem`, and the reason
+    /// there are two: `StartupError::MissingDatabaseUrl` is raised from two
+    /// call sites, `main.rs`'s `boot` and `worker.rs`'s, and one of them can
+    /// be reverted to a bare `.context(..)` with the other's case still green.
+    ///
+    /// Both modes must answer with the same number for the same kind of
+    /// failure — the argument
+    /// `worker::a_missing_config_is_exit_78_naming_the_problem` gives — and
+    /// this mode reaches the check later, after the config, the concurrency
+    /// and the adapters, so a `78` here also says nothing before it turned a
+    /// missing URL into something else.
+    ///
+    /// No `--oauth-signing-key-file`: the worker issues no tokens and does not
+    /// accept the flag, which is why this case needs one env var where the
+    /// parent module's needs two. `env_remove` for the same reason it has one.
+    #[test]
+    fn a_missing_database_url_is_exit_78_naming_the_problem() {
+        let output = bin()
+            .env_remove("DATABASE_URL")
+            .env("VPAY_CONFIG", valid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "expected EX_CONFIG (78) with no --database-url/DATABASE_URL at all, got {:?}; \
+             stderr: {stderr}",
+            output.status,
+        );
+        assert!(
+            stderr.contains("--database-url") && stderr.contains("DATABASE_URL"),
+            "the refusal must name both spellings of what is missing, got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("VPAY_DATABASE_URL"),
+            "there is no VPAY_DATABASE_URL: `CommonArgs::database_url` declares \
+             `env = \"DATABASE_URL\"`, so an operator who exported the variable this message \
+             named would get this same failure back. Got: {stderr}"
         );
     }
 

@@ -96,10 +96,32 @@ fn main() -> ExitCode {
 /// set of inputs a process requires belongs to *that binary*, and there is one
 /// binary now. Which mode reads which variant is still exact — nothing on the
 /// serve path can produce [`Self::UnusableConcurrency`] and nothing in
-/// [`worker`] can produce [`Self::MissingSigningKeyFile`] — and both classify
-/// identically anyway, so the merge cannot move an exit code.
+/// [`worker`] can produce [`Self::MissingSigningKeyFile`] — and all three
+/// classify identically anyway, so the merge cannot move an exit code.
+///
+/// [`Self::MissingDatabaseUrl`] (2026-09-10, issue #87) is the exception to
+/// that pattern, and it is worth stating because it is the one variant
+/// **both** modes raise, from two call sites that must not drift. That is
+/// why `tests/cli.rs` carries a subprocess case per mode rather than one.
 #[derive(Debug, thiserror::Error)]
 enum StartupError {
+    /// `--database-url` / `DATABASE_URL` was not supplied. Named in full,
+    /// both spellings, because the message is the entire fix.
+    ///
+    /// The variable is `DATABASE_URL` — sqlx's own spelling, and what
+    /// `vpay_config::CommonArgs::database_url` hands clap — not
+    /// `VPAY_DATABASE_URL` like every other vpay knob. Naming the wrong one
+    /// *here* is worse than naming none: an operator who exports the
+    /// variable this message asks for gets the identical failure back,
+    /// during a deploy that is already down. `a_missing_database_url_…`
+    /// asserts both spellings appear, so the message cannot drift off the
+    /// flag `--help` prints.
+    #[error(
+        "--database-url / DATABASE_URL is required: vpay-server cannot connect to a \
+         database without one (see docs/status.md)"
+    )]
+    MissingDatabaseUrl,
+
     /// `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE` was not
     /// supplied. Named in full, both spellings, because the message is the
     /// entire fix.
@@ -120,7 +142,8 @@ impl vpay_core::error::Classify for StartupError {
     /// A deploy that must be fixed — never retried, never the caller's
     /// fault. [`Category::Configuration`] is what makes that exit `78`,
     /// the same number a malformed YAML file produces, because it is the
-    /// same kind of operator problem. Both variants, for the same reason.
+    /// same kind of operator problem. All three variants, for that one
+    /// reason: none of them is a condition a supervisor should retry.
     fn category(&self) -> Category {
         Category::Configuration
     }
@@ -418,10 +441,11 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level and is required here — see docs/reference/vpay-config.md
     // § optional flags that are required in practice.
-    let database_url = args.common.database_url.as_deref().context(
-        "--database-url / DATABASE_URL is required: vpay-server cannot serve traffic without \
-         a database to open a pool against and migrate (see docs/status.md)",
-    )?;
+    let database_url = args
+        .common
+        .database_url
+        .as_deref()
+        .ok_or(StartupError::MissingDatabaseUrl)?;
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
     vpay_api::boot::reconcile_reference_tables(
