@@ -499,3 +499,21 @@ transaction and uses the commit path as its control).
   the rails behave as these documents claim.
 
 See [../status.md](../status.md).
+
+## Worker concurrency and the pool
+
+Since 2026-09-10 (exp45): the worker's `--worker-concurrency` flag is
+guarded at boot. A fan-out transaction on the Existing branch (crash
+recovery) holds two pooled connections — one for the transaction, one for
+the authorization check — so the safe ceiling is `MAX_CONNECTIONS / 2`. With
+`MAX_CONNECTIONS = 10` (the current setting in `vpay-db`), the maximum safe
+concurrency is 5.
+
+Exceeding this limit causes every crash-recovery fan-out to queue on
+`ACQUIRE_TIMEOUT`, which turns recovery into a hang. The boot check refuses
+a concurrency higher than this and names the numbers: the configured value,
+the pool size, and the safe maximum.
+
+This is a configuration check, not a runtime one: an operator setting
+`--worker-concurrency` higher than the pool allows gets a clear `exit 78`
+before any work is claimed.
