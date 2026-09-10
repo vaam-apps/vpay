@@ -23,12 +23,12 @@ against the live schema:
 The copies that actually survived a "deletion" were somewhere else, and no
 code named any of them:
 
-| Where | What |
-|---|---|
-| `customers.{name,email,phone}` | the row could not be deleted |
-| `events.data` | **every** `customer.*` body ever written; nothing prunes `events` |
-| `charges.payer_ref`, `payer_ref_masked` | the payer's MSISDN as the rail was given it — reachable from a customer only *through* an intent |
-| `idempotency_keys.response_body` | the exact JSON a `POST /v1/customers` answered, kept 24 hours |
+| Where                                   | What                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `customers.{name,email,phone}`          | the row could not be deleted                                                                     |
+| `events.data`                           | **every** `customer.*` body ever written; nothing prunes `events`                                |
+| `charges.payer_ref`, `payer_ref_masked` | the payer's MSISDN as the rail was given it — reachable from a customer only _through_ an intent |
+| `idempotency_keys.response_body`        | the exact JSON a `POST /v1/customers` answered, kept 24 hours                                    |
 
 `provider_requests` (0016) and `webhook_deliveries` (0022) carry no bodies and
 need no statement — checked, not assumed.
@@ -62,7 +62,7 @@ no behaviour. Left strict, it now backstops the erasure in the one direction
 that matters: an erasure that NULLed the three identifiers rather than marking
 them is refused outright.
 
-What *is* added is `anonymized_customers_carry_the_marker`, which is stronger
+What _is_ added is `anonymized_customers_carry_the_marker`, which is stronger
 than anything the brief asked for: a row whose `anonymized_at` is set carries
 `[redacted]` in **all nine** identifier columns. That makes a partially
 completed erasure unrepresentable rather than merely discouraged.
@@ -74,15 +74,15 @@ is a `400`.
 
 ## Measurements
 
-| | before | after |
-|---|---|---|
-| migrations applied | 39 | 40 (no `0040` — exp44 holds it) |
-| `EXPECTED_DRIFT_CHANGES` | 172 | 176 |
-| `EXPECTED_DRIFTED_RELATIONS` | 24 | 24 |
-| `EXPECTED_UNMAPPABLE_COLUMNS` | 19 | 19 |
-| `EXPECTED_ASSERT_SITES` | 56 | 60 |
-| `customers.rs` integration cases | 18 | 21 |
-| workspace tests (`just test-rust`) | — | 1681, 0 ignored, 46 binaries |
+|                                    | before | after                           |
+| ---------------------------------- | ------ | ------------------------------- |
+| migrations applied                 | 39     | 40 (no `0040` — exp44 holds it) |
+| `EXPECTED_DRIFT_CHANGES`           | 172    | 176                             |
+| `EXPECTED_DRIFTED_RELATIONS`       | 24     | 24                              |
+| `EXPECTED_UNMAPPABLE_COLUMNS`      | 19     | 19                              |
+| `EXPECTED_ASSERT_SITES`            | 56     | 60                              |
+| `customers.rs` integration cases   | 18     | 21                              |
+| workspace tests (`just test-rust`) | —      | 1681, 0 ignored, 46 binaries    |
 
 The drift `+4` is a `+5` and a `-1`, and both halves are worth reading. The
 `+5` is five hand-named single-column address CHECKs, the class every modelled
@@ -90,7 +90,7 @@ table in this schema pays a line for. The `-1` is
 `phone_is_a_canonical_msisdn` **leaving the report**: `0041` widened it by one
 disjunct so the marker is storable, which made it multi-column, and
 `introspect/postgres/constraints.rs` filters those out. A constraint that got
-*stronger* as a pair with the marker CHECK reads here as drift going down.
+_stronger_ as a pair with the marker CHECK reads here as drift going down.
 
 **Seven new columns cost zero column-level lines** — no `type differs`, no
 `default value differs`, no undeclared column. `model Customer` declares all
@@ -99,21 +99,21 @@ established for this table.
 
 ## Mutations run, and what caught each
 
-| # | Mutation | Caught by |
-|---|---|---|
-| M1 | drop `address_city` from `anonymized_customers_carry_the_marker` | `an_anonymised_customer_carries_the_marker_in_every_identifier_column`, `the_redaction_marker_is_the_one_the_migration_enforces` |
-| M2 | skip the `charges.payer_ref` redaction | `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` |
-| M3 | skip the `events.data` redaction | same |
-| M4 | skip the `idempotency_keys.response_body` redaction | same |
-| M5 | abandon the erasure's transaction after writing the event | `a_customer_with_payment_history_is_anonymised_rather_than_deleted`, `a_delete_removes_the_row_and_answers_the_stripe_deleted_shape`, the scanner |
-| M6 | drop `checked_country`, route `country` through `checked_text` | `a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503`, `an_address_round_trips_…` |
-| M7 | drop the `invoices` clause from `UNREFERENCED` | `an_invoiced_customer_is_anonymised_rather_than_deleted`, `the_sweep_guard_names_every_table_that_can_reference_a_customer` |
-| M8 | drop `anonymized_at IS NULL` from `idle_since` | `the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one` |
-| M9 | merge `address_city` component-wise instead of replacing | `an_address_round_trips_is_replaced_whole_and_is_cleared_by_an_empty_value` |
-| M10 | render `deleted: false` on every live customer | `the_customer_object_is_the_documented_nine_keys`, `a_phone_only_customer_renders_the_absent_identifiers_as_null` |
-| M11 | rename the Rust SDK's erased-customer test | `verify-sdk-parity`, naming the row and the column |
-| M12 | drop `address` from `CreateCustomerParams::to_form` (Rust) | `create_customer_sends_the_documented_body_and_decodes_the_object` |
-| M13 | drop `address` from the Node create body | `customers.create: exact path, method, Idempotency-Key, and body` |
+| #   | Mutation                                                         | Caught by                                                                                                                                         |
+| --- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | drop `address_city` from `anonymized_customers_carry_the_marker` | `an_anonymised_customer_carries_the_marker_in_every_identifier_column`, `the_redaction_marker_is_the_one_the_migration_enforces`                  |
+| M2  | skip the `charges.payer_ref` redaction                           | `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`                                                                                |
+| M3  | skip the `events.data` redaction                                 | same                                                                                                                                              |
+| M4  | skip the `idempotency_keys.response_body` redaction              | same                                                                                                                                              |
+| M5  | abandon the erasure's transaction after writing the event        | `a_customer_with_payment_history_is_anonymised_rather_than_deleted`, `a_delete_removes_the_row_and_answers_the_stripe_deleted_shape`, the scanner |
+| M6  | drop `checked_country`, route `country` through `checked_text`   | `a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503`, `an_address_round_trips_…`                                                    |
+| M7  | drop the `invoices` clause from `UNREFERENCED`                   | `an_invoiced_customer_is_anonymised_rather_than_deleted`, `the_sweep_guard_names_every_table_that_can_reference_a_customer`                       |
+| M8  | drop `anonymized_at IS NULL` from `idle_since`                   | `the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one`                                                                 |
+| M9  | merge `address_city` component-wise instead of replacing         | `an_address_round_trips_is_replaced_whole_and_is_cleared_by_an_empty_value`                                                                       |
+| M10 | render `deleted: false` on every live customer                   | `the_customer_object_is_the_documented_nine_keys`, `a_phone_only_customer_renders_the_absent_identifiers_as_null`                                 |
+| M11 | rename the Rust SDK's erased-customer test                       | `verify-sdk-parity`, naming the row and the column                                                                                                |
+| M12 | drop `address` from `CreateCustomerParams::to_form` (Rust)       | `create_customer_sends_the_documented_body_and_decodes_the_object`                                                                                |
+| M13 | drop `address` from the Node create body                         | `customers.create: exact path, method, Idempotency-Key, and body`                                                                                 |
 
 M6 is worth one note: `the_country_is_two_letters_upper_cased_and_nothing_else`
 **passed** under that mutation, because it calls `checked_country` directly and
@@ -122,7 +122,7 @@ it. The integration case is what caught it. A unit test that exercises a
 helper cannot see a caller that stopped calling it.
 
 M11 is worth another: `verify-sdk-parity` checks **method** names and the
-**test** names a ✅ cell claims. It does not check *fields*. Removing an SDK
+**test** names a ✅ cell claims. It does not check _fields_. Removing an SDK
 field is caught by that SDK's own body-asserting test (M12, M13), not by the
 gate.
 
@@ -153,7 +153,7 @@ gate.
   would make the list deny a `cus_…` that `GET /v1/customers/{id}` answers,
   and make `has_more` describe a different set from the rows. Stated in
   `docs/flows/customers.md` as a choice, with the shape a filter would take.
-- **Nothing tells the merchant to erase *their* copy.** They received the
+- **Nothing tells the merchant to erase _their_ copy.** They received the
   identifiers in `customer.created` and every `customer.updated` before the
   erasure. vpay redacts its own stored bodies and cannot reach theirs. There
   is no `customer.redacted` fan-out and no design for one.
