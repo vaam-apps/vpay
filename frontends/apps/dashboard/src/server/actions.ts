@@ -16,6 +16,17 @@
  * Each action returns {@link FormState}: a message and a request id, or
  * `null` and a redirect. Never a thrown error for a refusal — a staff member
  * who mistyped a password must read a sentence, not Next's error page.
+ *
+ * # Every one of them opens with an origin check
+ *
+ * An export of a `'use server'` file is a `POST` endpoint anything on the
+ * internet can reach, and the session cookie is `SameSite=Lax` rather than
+ * `Strict`, so a top-level form submission from another site carries it.
+ * `server/csrf.ts` is the check and it compares the **configured** public
+ * origin — never `X-Forwarded-Host`, which is what Next's own check uses and
+ * which the caller sets (issue #88 item 4). Adding a fifth action means
+ * adding the two lines; there is no wrapper, because a wrapper around a
+ * `'use server'` export changes what Next registers.
  */
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -29,6 +40,7 @@ import {
   ENROLMENT_MAX_AGE_SECONDS,
   SESSION_MAX_AGE_SECONDS,
 } from './cookies';
+import { originRefusal } from './csrf';
 import { decodePendingEnrolment, encodePendingEnrolment } from './enrolment';
 import { completeAuthorizationCode } from './oauth';
 import {
@@ -71,6 +83,14 @@ function field(form: FormData, name: string): string {
  * value is returned to the caller: `FormState` is what a browser reads.
  */
 export async function signIn(_previous: FormState, form: FormData): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
   const { config } = dashboardConfig();
   if (config === null) {
     return { error: UNCONFIGURED, requestId: null };
@@ -131,6 +151,14 @@ export async function signIn(_previous: FormState, form: FormData): Promise<Form
  * has it ignored, which is why this is safe to send whenever it is present.
  */
 export async function submitTotp(_previous: FormState, form: FormData): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
   const { config } = dashboardConfig();
   if (config === null) {
     return { error: UNCONFIGURED, requestId: null };
@@ -201,6 +229,14 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
  * works.
  */
 export async function changePassword(_previous: FormState, form: FormData): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
   const { config } = dashboardConfig();
   if (config === null) {
     return { error: UNCONFIGURED, requestId: null };
@@ -269,6 +305,17 @@ export async function changePassword(_previous: FormState, form: FormData): Prom
  * end up signed out of this browser.
  */
 export async function signOut(): Promise<void> {
+  // Issue #88 item 4, and this one is the reason the check is per action
+  // rather than per form: a sign-out is the action an `<img src>` or a link
+  // scanner would fire, which `signed-in-bar.tsx` already made a POST to
+  // avoid. A refused call does nothing at all — it does not clear the cookie
+  // and it does not delete the row — and answers the redirect a browser that
+  // reached it honestly would have got, so a forged one is indistinguishable
+  // from a completed one to whoever forged it.
+  if ((await originRefusal()) !== null) {
+    redirect(LOGIN_PATH);
+  }
+
   const { config } = dashboardConfig();
   const token = await sessionToken();
   if (config !== null && token !== null) {

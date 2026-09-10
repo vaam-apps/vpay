@@ -194,6 +194,36 @@ runs, which re-reads the staff row and re-checks the account, the merchant
 binding and `password_change_required` — so re-minting is *more* checking than
 carrying one token for twelve hours, not less. A `403` is never retried.
 
+**Every server action opens with an origin check, and it does not compare two
+values the caller sets.** An export of a `'use server'` file is a `POST`
+endpoint anything on the internet can reach — Next registers an action id for
+it — and this app's session cookie is `SameSite=Lax` rather than `Strict`, so
+a top-level form submission from another site carries it.
+
+Next has its own check and it is not the one this deployment wants:
+`app-render/action-handler` compares `Origin` against the host, and the host
+it uses is **`x-forwarded-host` when present**, falling back to `Host`. Behind
+a proxy that does not strip incoming forwarding headers — the default for
+several — a caller who sends `X-Forwarded-Host: evil.example` and
+`Origin: https://evil.example` makes the two agree and passes.
+
+`server/csrf.ts` compares `Origin` against **`VPAY_DASHBOARD_PUBLIC_ORIGIN`**,
+which no caller can influence, and `originIsAllowed`'s signature is the guard:
+it takes the `Origin` and the `Host` and there is no third parameter for a
+forwarding header to arrive through, so the decisive mutation is a signature
+change rather than a one-character edit (issue #88 item 4). An absent `Origin`
+is refused — the check must not be removable by removing a header.
+
+**The variable is optional, and what a deployment gets without it is stated
+rather than hidden.** With it unset the check compares the `Host` header —
+still never `X-Forwarded-Host`, so strictly stronger than Next's own — which
+is right for a dashboard a browser reaches directly and **wrong behind a
+proxy that rewrites `Host`**, where every action is refused with one sentence
+and a line in the container log naming the variable. It is optional because
+making it required would have taken the sign-in down for every deployment not
+yet reconfigured, this repository's own compose stacks included;
+`docs/status.md` carries that as the follow-up.
+
 **A vpay this app cannot reach is not a sign-out.** Every failure of the
 session read used to send a browser to `/signed-out`, and `server/api.ts`
 deliberately turns a rejected `fetch` into an `ApiFailure` with `status: 0`

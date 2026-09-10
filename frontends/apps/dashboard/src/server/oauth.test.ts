@@ -22,6 +22,10 @@ const CONFIG: DashboardConfig = {
   clientId: 'vpay-dashboard',
   redirectUri: 'http://localhost:3000/dash/v1/callback',
   scope: 'dashboard:read',
+  // Not what this suite is about; `csrf.test.ts` is where the origin check
+  // is exercised. `null` is the shipping default and means the `Host`
+  // fallback rather than an allow-everything.
+  publicOrigin: null,
 };
 
 /** What one call to the stub recorded. */
