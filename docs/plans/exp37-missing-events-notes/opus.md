@@ -141,16 +141,28 @@ transaction, identical for every call inside one. The cancel statement writes
 `0018`'s `created_at DEFAULT now()`, so the two are **bit-identical** exactly
 when they were one transaction.
 
-The **update** path cannot use equality, and that limit is stated in the test
-rather than glossed: `record_payment_error` and `customers::update_in_tx` bind
-`updated_at` from the calling process's clock, not from `now()` (it is the
-same instant `last_used_at`'s `GREATEST` needs, and that one must be the
-caller's). What holds instead is an *ordering* — the transaction starts, Rust
-then reads its clock — so `events.created_at <= payment_intents.updated_at`,
-and an event written in a transaction opened after the update committed is
-strictly later. It relies on the wall clock not jumping backwards between two
-statements microseconds apart; that is the one flake this assertion could
-have, and it is written down here rather than discovered.
+The **customer update** path cannot use equality, and that limit is stated in
+the test rather than glossed: `customers::update_in_tx` binds `updated_at`
+from the calling process's clock, not from `now()` (it is the same instant
+`last_used_at`'s `GREATEST` needs, and that one must be the caller's). What
+holds instead is an *ordering* — the transaction starts, Rust then reads its
+clock — so `events.created_at <= customers.updated_at`, and an event written
+in a transaction opened after the update committed is strictly later. It
+relies on the wall clock not jumping backwards between two statements
+microseconds apart; that is the one flake this assertion could have, and it
+is written down here rather than discovered.
+
+> **Corrected by the sabotage review, 2026-09-10.** This paragraph named
+> `record_payment_error` alongside `customers::update_in_tx` as binding
+> `updated_at` from the caller's clock. It does not:
+> `payment_intents::record_payment_error`'s statement is
+> `SET … updated_at = now()`, the same `transaction_timestamp()` the cancel
+> uses, which is exactly why M4b below could fire an **equality** assertion
+> on the decline and did. The paragraph contradicted this file's own "What
+> was NOT done" section, which says the cancel's and the decline's claims
+> rest on an equality and only the customer update's on an ordering. That
+> section was right; this one was not, and it named the wrong function
+> rather than describing the wrong test.
 
 ### The abandon cases, at the seam
 
