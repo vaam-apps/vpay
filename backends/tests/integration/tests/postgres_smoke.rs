@@ -171,6 +171,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
     assert_eq!(
         applied, 41,
         "all forty-one migration files under backends/migrations should be recorded as applied \
+        "all forty-one migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -268,6 +269,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          one-wide gap. sqlx applies files in name order and records what it \
          applied; it does not require the sequence to be dense, which is why \
          this assertion counts ROWS and the sentence above says `files`.)"
+         and issues #67/#68/#96's 0041, which gives `customers` the six \
+         address columns and the `anonymized_at` that makes \
+         DELETE /v1/customers/{{id}} a complete erasure of the payer: a \
+         customer with payment history cannot be row-deleted (the FKs are \
+         NO ACTION, deliberately) and is anonymised instead, with every \
+         identifier column replaced by the literal [redacted] -- which \
+         anonymized_customers_carry_the_marker refuses to let the row lie \
+         about.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -821,6 +830,207 @@ async fn a_customer_with_no_name_email_or_phone_is_refused_by_the_database() -> 
     .execute(&pool)
     .await
     .context("a phone-only customer is a complete customer")?;
+
+    Ok(())
+}
+
+/// A row that says the payer was erased may not still hold one of their
+/// identifiers — `anonymized_customers_carry_the_marker`, against a real
+/// Postgres.
+///
+/// **This is the only thing that can check it**, for
+/// `a_customer_with_no_name_email_or_phone_is_refused_by_the_database`'s
+/// reason: the constraint is multi-column and the drift report skips every
+/// multi-column CHECK in both directions, so deleting it moves
+/// `EXPECTED_DRIFT_CHANGES` by exactly zero.
+///
+/// # What it is for, and why the marker is written even where nothing was
+///
+/// `vpay_db::customers`' erasure is one `UPDATE` assigning nine columns from
+/// one bind. The failure that matters is not that it fails — it is that it
+/// *misses* a column: a tenth identifier added to `customers` later, a
+/// hand-edited `SET` list, a merge that drops one assignment. Every one of
+/// those leaves a row claiming a payer was erased while still holding a piece
+/// of them, and nothing in Rust would object. This CHECK is what refuses it.
+///
+/// The loop below is the assertion: it takes a fully-marked, legal row and
+/// un-marks **one column at a time**, asserting each of the nine is refused.
+/// A CHECK that named eight columns would pass a `contains` and fail exactly
+/// one iteration of this.
+///
+/// The literal is `vpay_db::REDACTED` and not a string spelled here, so this
+/// is also the proof that the Rust constant and the migration agree —
+/// `the_redaction_marker_is_the_one_the_migration_enforces` in `vpay-db`
+/// checks the same pair in milliseconds and against the migration's *text*;
+/// this one checks it against a running database.
+#[tokio::test]
+async fn an_anonymised_customer_carries_the_marker_in_every_identifier_column() -> anyhow::Result<()>
+{
+    let (_container, pool) = migrated_postgres().await?;
+
+    const IDENTIFIERS: [&str; 9] = [
+        "name",
+        "email",
+        "phone",
+        "address_line1",
+        "address_line2",
+        "address_city",
+        "address_state",
+        "address_postal_code",
+        "address_country",
+    ];
+
+    let marker = vpay_db::REDACTED;
+
+    // The legal shape first. Without this the loop below would pass against a
+    // table that refused every anonymised row for some other reason — a NOT
+    // NULL, a length bound — and would be asserting nothing about this CHECK.
+    let columns = IDENTIFIERS.join(", ");
+    let values = IDENTIFIERS
+        .iter()
+        .map(|_| format!("'{marker}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // `AssertSqlSafe`: every interpolation above is a literal from
+    // `IDENTIFIERS` or `vpay_db::REDACTED`, both of which are constants in
+    // this file's own crate graph. Nothing here is a value from anywhere else.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at, \
+         anonymized_at, {columns}) \
+         VALUES ('cus_erased00000000000000', 'merchant_a', false, '{{}}'::jsonb, now(), \
+         now(), {values})"
+    )))
+    .execute(&pool)
+    .await
+    .context("a fully marked anonymised customer is the shape the erasure writes")?;
+
+    for held_back in IDENTIFIERS {
+        // One column left as the payer's real value; the other eight marked.
+        // This is a partially-completed erasure, and it is what the CHECK
+        // exists to make unrepresentable.
+        let values = IDENTIFIERS
+            .iter()
+            .map(|column| {
+                if *column == held_back {
+                    "'Ada Ngo'".to_owned()
+                } else {
+                    format!("'{marker}'")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let outcome = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at, \
+             anonymized_at, {columns}) \
+             VALUES ('cus_partial000000000000', 'merchant_a', false, '{{}}'::jsonb, now(), \
+             now(), {values})"
+        )))
+        .execute(&pool)
+        .await;
+
+        let Err(error) = outcome else {
+            panic!(
+                "`{held_back}` survived an anonymisation and Postgres accepted the row: the \
+                 payer was told they were erased and vpay kept one of their identifiers"
+            );
+        };
+        assert_eq!(
+            error
+                .as_database_error()
+                .expect("a database-level error")
+                .constraint(),
+            Some("anonymized_customers_carry_the_marker"),
+            "`{held_back}` must be refused by the marker CHECK specifically, not by a length \
+             bound or a NOT NULL that happens to fire on the same row"
+        );
+    }
+
+    Ok(())
+}
+
+/// An anonymised customer's `phone` may be the marker and **nothing else**,
+/// and a live one's must still be a canonical MSISDN.
+///
+/// Migration `0041` widened `phone_is_a_canonical_msisdn` by one disjunct so
+/// `[redacted]` is storable, which is also what made it multi-column and took
+/// it out of the drift report (`EXPECTED_DRIFT_CHANGES`' `-1`). A widened
+/// constraint nobody re-checks is how a shape guard quietly becomes a
+/// comment, so both halves are asserted here: the disjunct is not a hole,
+/// because `anonymized_customers_carry_the_marker` pins what an anonymised
+/// row may hold, and the pattern still fires on a live row.
+///
+/// `address_country_is_iso_3166_1_alpha_2` is asserted in the same case, for
+/// the same reason and because it is the same shape of rule: the API's `400`
+/// is the front line and this is the backstop a second writer — a backfill, a
+/// repair script — reaches without passing the API at all.
+#[tokio::test]
+async fn an_anonymised_customers_phone_may_be_the_marker_and_nothing_else() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    // A live customer's phone is still a phone number.
+    let err = sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, metadata, last_used_at) \
+         VALUES ('cus_livephone00000000000', 'merchant_a', false, 'not-a-phone', \
+                 '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("`not-a-phone` is not a canonical MSISDN");
+    assert_eq!(
+        err.as_database_error()
+            .expect("a database-level error")
+            .constraint(),
+        Some("phone_is_a_canonical_msisdn"),
+        "widening the CHECK for the marker must not have widened it for everything"
+    );
+
+    // And an anonymised row may not hold an arbitrary string in it either —
+    // the marker CHECK is what closes the disjunct.
+    let err = sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, name, email, phone, \
+         address_line1, address_line2, address_city, address_state, address_postal_code, \
+         address_country, metadata, last_used_at, anonymized_at) \
+         VALUES ('cus_erasedjunk0000000000', 'merchant_a', false, '[redacted]', '[redacted]', \
+                 'not-a-phone', '[redacted]', '[redacted]', '[redacted]', '[redacted]', \
+                 '[redacted]', '[redacted]', '{}'::jsonb, now(), now())",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("an anonymised row's phone is the marker or nothing");
+    assert_eq!(
+        err.as_database_error()
+            .expect("a database-level error")
+            .constraint(),
+        Some("anonymized_customers_carry_the_marker")
+    );
+
+    // The country shape, both directions.
+    let err = sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, address_country, \
+         metadata, last_used_at) \
+         VALUES ('cus_badcountry0000000000', 'merchant_a', false, '237600000200', 'CMR', \
+                 '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("`CMR` is alpha-3, not alpha-2");
+    assert_eq!(
+        err.as_database_error()
+            .expect("a database-level error")
+            .constraint(),
+        Some("address_country_is_iso_3166_1_alpha_2")
+    );
+
+    sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, address_line1, \
+         address_country, metadata, last_used_at) \
+         VALUES ('cus_goodcountry000000000', 'merchant_a', false, '237600000200', \
+                 '12 Rue Njo-Njo', 'CM', '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("a real address on a live customer is accepted")?;
 
     Ok(())
 }
@@ -2415,7 +2625,40 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     the schema` line, exactly as its six siblings on this table already
 ///     do. Declaring it with `@db_enforce` would make it worse rather than
 ///     better, for the reason `EXPECTED_DRIFT_CHANGES` gives above.
-const EXPECTED_DRIFT_CHANGES: u32 = 173;
+/// **172 -> 176 on 2026-09-10** (issues #67, #68, #96 item 2, migration
+/// `0041`), measured against a freshly migrated database rather than
+/// inferred. `customers` goes 10 -> 14 and nothing else moves at all. The +4
+/// is a +5 and a -1, and both halves are worth reading because they are the
+/// two things this file has learned to predict:
+///
+///   * **+5** — `address_line1_length`, `address_line2_length`,
+///     `address_city_length`, `address_state_length` and
+///     `address_postal_code_length`, five hand-named single-column CHECKs, in
+///     the class that has cost every modelled table in this schema a line
+///     each since `currencies`.
+///   * **-1** — `phone_is_a_canonical_msisdn` **leaves the report**. It did
+///     not go away: `0041` widened it by one disjunct (`anonymized_at IS NOT
+///     NULL`, so the marker is admissible) and that made it *multi-column*,
+///     which `introspect/postgres/constraints.rs` filters out with
+///     `array_length(c.conkey, 1) = 1`. A constraint that got **stronger**
+///     as a pair with `anonymized_customers_carry_the_marker` reads here as
+///     drift going down, which is exactly the direction this constant's own
+///     warning is about — it is not a sign the schema caught up.
+///
+/// **What cost nothing is the part to read.** Seven new columns — the six
+/// `address_*` and `anonymized_at` — and **not one column-level line**: no
+/// `column … exists in the live database but is not declared`, no `type
+/// differs`, no `default value differs`. `model Customer` declares all seven
+/// and migration `0041` gave none of them a DB `DEFAULT`, which is the
+/// condition 0034 established for this table and the reason adding to it is
+/// cheap. `address_country_is_iso_3166_1_alpha_2` and
+/// `anonymized_customers_carry_the_marker` are both multi-column and
+/// contribute nothing in either direction, like the fifteen cross-column
+/// CHECKs before them — which is why
+/// `an_anonymised_customer_carries_the_marker_in_every_identifier_column`
+/// and `an_anonymised_customers_phone_may_be_the_marker_and_nothing_else`
+/// assert them against a real Postgres directly.
+const EXPECTED_DRIFT_CHANGES: u32 = 176;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2474,6 +2717,11 @@ const EXPECTED_DRIFT_CHANGES: u32 = 173;
 /// that makes that migration's +1 mean what it says: `invoices` was already
 /// on this list as a declared-and-differing table and stays exactly one entry
 /// on it. A line arrived; no table did.
+/// **Still 24 after migration 0041 (2026-09-10):** `customers` gained seven
+/// columns, six CHECKs and lost one to multi-column invisibility, and stayed
+/// exactly one entry on this list. That is what this constant is for — a +4
+/// in the change count with this number unmoved means lines moved within a
+/// table already here, not that a relation entered or left.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -2907,12 +3155,42 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         observed,
         [
             ("checkout_sessions", "urls_match_ui_mode"),
+            // Migration 0041's country shape, widened by `anonymized_at IS
+            // NOT NULL` so the redaction marker is admissible — which is what
+            // makes it multi-column and puts it here.
+            ("customers", "address_country_is_iso_3166_1_alpha_2"),
+            // Migration 0041's erasure invariant, and the most consequential
+            // constraint in this list: a row whose `anonymized_at` is set
+            // carries the literal `[redacted]` in all nine identifier
+            // columns. It is what turns "the erasure wrote every column" from
+            // two call sites remembering into something Postgres refuses to
+            // let be untrue — and the drift report cannot see it at all,
+            // which is why
+            // `an_anonymised_customer_carries_the_marker_in_every_identifier_column`
+            // asserts it directly.
+            ("customers", "anonymized_customers_carry_the_marker"),
             // S4a's one-of rule: a customer must have at least one of `name`,
             // `email` and `phone`. The eleventh, and the one whose invisibility
             // to the report is *most* consequential, because it is a table
             // `schemas/vpay.cstack` genuinely models — so a reader of the
             // report could reasonably believe `customers` is fully compared.
+            //
+            // 0041 deliberately did NOT relax it. The design note it was
+            // written from proposed `anonymized_at IS NOT NULL OR (...)`, on
+            // the assumption that anonymisation NULLs the identifiers; it
+            // writes the marker instead, which is not NULL, so the relaxation
+            // would have weakened a live constraint to buy no behaviour. It
+            // now also backstops the erasure: a future one that NULLed the
+            // three identifiers rather than marking them is refused outright.
             ("customers", "at_least_one_identifier"),
+            // 0034's MSISDN shape, MOVED here by 0041 from the single-column
+            // set the drift report can see — the `-1` in
+            // `EXPECTED_DRIFT_CHANGES`' 172 -> 176. It gained
+            // `anonymized_at IS NOT NULL` for the same reason the country
+            // check has it, and `anonymized_customers_carry_the_marker` above
+            // is what stops that disjunct being a hole: an anonymised row's
+            // phone may be the marker and nothing else.
+            ("customers", "phone_is_a_canonical_msisdn"),
             ("idempotency_keys", "complete_has_a_response"),
             // S4b's line arithmetic: `amount = quantity * unit_amount`. The
             // only reason `invoice_items.amount` can be a stored column

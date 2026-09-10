@@ -1333,6 +1333,40 @@ model Customer {
   name String? @sensitive
   email String? @sensitive
   phone String? @sensitive
+  // The address (migration 0041, issue #67). Six nullable components rather
+  // than one `Json` column, and that choice is `metadata`'s GAP note read in
+  // the other direction: a `jsonb` address would be invisible to the drift
+  // report in both directions and could not be declared here at all without
+  // `Value::from_plain_json`'s number demotion. Six TEXT columns are the
+  // shape this file can actually compare, so declaring them costs zero drift
+  // lines while the address itself costs six `[safe] CHECK ... is not
+  // declared` lines for its bounds.
+  //
+  // `@sensitive` on all six for the reason the three identifiers above carry
+  // it: an address is the payer's, not the merchant's, and the alternative is
+  // deciding retroactively which of a payer's details were safe to have
+  // written to an audit log.
+  //
+  // The `@length`s mirror 0041's CHECKs and carry NO `@db_enforce`, for the
+  // measured reason every model in this file states: the live CHECKs are
+  // hand-named, `@db_enforce` would generate
+  // `customers_address_line1_length_check`, `diff/checks.rs` matches by name
+  // first, so promoting them emits a drop-and-add PAIR where declaring them
+  // without it emits nothing. `inputs.rs::validate_impl_tokens` still builds
+  // `input.validate()` from them.
+  //
+  // `address_country` carries no validator at all, deliberately, for the
+  // reason `phone` carries no `@length`: 0041's
+  // `address_country_is_iso_3166_1_alpha_2` is a regex, a `@length(min: 2,
+  // max: 2)` here would be a second and weaker copy of it that accepts `zz`
+  // and `1!`, and it would read as though the shape were checked in-process
+  // when it is not.
+  address_line1 String? @length(min: 1, max: 256) @sensitive
+  address_line2 String? @length(min: 1, max: 256) @sensitive
+  address_city String? @length(min: 1, max: 256) @sensitive
+  address_state String? @length(min: 1, max: 256) @sensitive
+  address_postal_code String? @length(min: 1, max: 64) @sensitive
+  address_country String? @sensitive
   // The twelve-month sweep's whole input (the maintainer's decision of
   // 2026-09-05). NO `@default(...)`: `touch_last_used` is the only writer
   // that goes through this model, and `Update{Model}Input`'s field for a
@@ -1340,6 +1374,22 @@ model Customer {
   // patch does not touch the column", which is exactly what every other
   // field of that input is left at.
   last_used_at DateTime
+  // When this payer's identifiers were erased, or NULL for a live customer
+  // (migration 0041, issues #68 and #96 item 2).
+  //
+  // NO `@default(...)`, like `last_used_at` above and for the same reason:
+  // the column is written by one statement that knows the instant, and a
+  // default would be a write nothing in the code names — on the one column
+  // whose value is the evidence that an erasure happened.
+  //
+  // NOT `@@soft_delete`, and the distinction is the reason this field is
+  // allowed to exist beside `a_customer_delete_is_a_delete_and_not_a_soft_
+  // delete`. `@@soft_delete` would make `delete_many` render an `UPDATE`
+  // that sets a flag and leaves the payer's name, email and phone on the
+  // row; this column is set only by a statement that has already replaced
+  // every one of them with `[redacted]`, which 0041's
+  // `anonymized_customers_carry_the_marker` refuses to let it lie about.
+  anonymized_at DateTime?
   created_at DateTime @default(now())
   updated_at DateTime @default(now())
 
