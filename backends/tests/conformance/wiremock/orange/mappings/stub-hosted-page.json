@@ -1,11 +1,13 @@
 {
   "mappings": [
     {
-      "name": "the stub's hosted payment page: a Pay link and a Cancel link",
+      "name": "the stub's hosted payment page: a Pay link, a Cancel link, and the payer's window",
       "metadata": {
         "file": [
           "GET /stub-hosted-page/{pay_token} -- what a payer's BROWSER sees after",
-          "vpay redirects them, standing in for Orange Money's own hosted page.",
+          "vpay redirects them, standing in for Orange Money's own hosted page; the",
+          "two controls on it; and the WHOLE of the payer's state machine, which is",
+          "the WireMock scenario `orange-hosted-page-payer`.",
           "",
           "webpayment.json has answered every accepted submit with a payment_url",
           "under this path since Step 3, and until Step 9 nothing served it: a",
@@ -18,6 +20,85 @@
           "reached over HTTP exactly as the rail is. It is a stub of the RAIL's",
           "page. It is not, and must never become, a stub of a vpay page --",
           "vpay's own return page is frontends/apps/checkout's, served by vpay.",
+          "",
+          "WHAT CHANGED ON 2026-09-10 (issue #58), AND WHY.",
+          "",
+          "Until then this stub answered the FIRST transactionstatus SUCCESS, and",
+          "the demo's Orange test numbers therefore did not work from a browser:",
+          "`vpay_api::v1::payment_intents`'s confirm handler enqueues the",
+          "`poll_charge` job with `run_at = now()` -- `poll_delay(0)` is the delay",
+          "before the SECOND attempt, not the first -- and `vpay_worker`'s idle",
+          "sleep is one second. Measured on the demo stack on 2026-09-06 from this",
+          "container's own request journal: webpayment at T, the payer landing on",
+          "this page at T+44 ms, the first transactionstatus at T+449 ms, the",
+          "payer's form at T+11.96 s. The order came back PAID for 237600000400.",
+          "",
+          "So the payer now has a WINDOW, and it is bounded at both ends:",
+          "",
+          "  submit           -> `submitted`          (webpayment.json arms it)",
+          "  1st status       -> PENDING              -> `submitted-polled`",
+          "  2nd status       -> SUCCESS (catch-all)  -> `Started`",
+          "",
+          "  ... unless a payer lands on this page, which at any point arms the",
+          "  bounded chain instead:",
+          "",
+          "  GET this page    -> `payer-on-page-1`",
+          "  status x4        -> PENDING              -> `payer-never-acted`",
+          "  status           -> EXPIRED              -> `Started`",
+          "",
+          "  ... and each of the page's three exits arms a terminal answer:",
+          "",
+          "  #pay / the form  -> `payer-paid`         -> SUCCESS, then `Started`",
+          "  #cancel          -> `payer-gave-up`      -> EXPIRED, then `Started`",
+          "  the form + a test number -> demo-outcomes.json's two arms",
+          "",
+          "THE FIRST RUNG IS UNCONDITIONAL, AND THAT IS THE POINT. Arming only on",
+          "this page's GET would be a RACE: the browser's GET and the worker's",
+          "first poll are 44 ms and 449 ms out of the same submit, and which lands",
+          "first depends on where in its one-second idle sleep the worker happened",
+          "to be. One PENDING answer that depends on nothing but the submit turns a",
+          "~400 ms margin into a ~10 s one (the first rung of `poll_delay`), which",
+          "is what makes `shop-hosted.cy.ts`'s Orange legs deterministic rather",
+          "than usually-green. It costs the Orange happy path one rung, and it",
+          "costs the merchant demo nothing at all: those two mappings sit at",
+          "priority 6, BELOW demo-outcomes.json's amount-keyed mappings (4), so",
+          "5001 and 5002 are still terminal on the first rung.",
+          "",
+          "PRIORITIES, and why each is what it is. Lower wins.",
+          "  1  transactionstatus.json's order_id-keyed cases. The conformance",
+          "     suite depends on them and they must keep winning: a case that",
+          "     submits and then asks about REF_SLOW is asking about REF_SLOW.",
+          "  3  every mapping below that answers from a payer's PRESENCE or ACTION.",
+          "     Above the amount-keyed demo mappings (4) deliberately: a payer",
+          "     standing on this page is the strongest statement about a charge",
+          "     that this stub can have, and settling it from the amount while they",
+          "     are still reading is the bug this file exists to fix.",
+          "  4  demo-outcomes.json's amount-keyed mappings -- the HEADLESS demo",
+          "     (`just demo-walk`), which opens no browser and never GETs this page.",
+          "  6  the two unconditional rungs above. Below 4 on purpose.",
+          "  10 transactionstatus.json's catch-all SUCCESS.",
+          "",
+          "STRICTLY SEQUENTIAL. One scenario per container, so two Orange charges",
+          "in flight against one stub share it and the wrong one could be answered.",
+          "Every one of the mappings below either transitions to `Started` or is",
+          "re-armed by the next submit, so no charge inherits a state nobody chose;",
+          "what is not fixable in WireMock is two charges overlapping. The demo and",
+          "both Cypress specs drive one payment at a time.",
+          "",
+          "MEASURED on 2026-09-10, in the sabotage review, against this image and",
+          "these mappings, because 'the wrong one could be answered' was an argument",
+          "and this is the observation:",
+          "  A submits, B submits, A polls twice -> A is PENDING then SUCCESS and B's",
+          "    FIRST poll is SUCCESS: A consumed the rung B was going to stand in.",
+          "  C submits, D submits, C's payer clicks Cancel, D polls -> D gets EXPIRED.",
+          "  G submits at amount 5001, H submits, H's payer clicks Pay, G polls ->",
+          "    G gets SUCCESS, because the payer-action mappings are priority 3 and",
+          "    demo-outcomes.json's amount-keyed ones are 4. A click on one charge's",
+          "    page can therefore pay a charge the shop's README promises will expire.",
+          "Whether 3 should instead be BELOW 4 is a maintainer decision; the argument",
+          "for 3 is under PRIORITIES above and its cost is the third line here.",
+          "This limit is on the rendered page too (`id=\"stub-limits\"`), in",
+          "examples/shop/README.md, in docs/runbooks/demo.md and in docs/status.md.",
           "",
           "Commentary lives in `metadata` because WireMock fails to start on a",
           "mapping document containing any field it does not recognise."
@@ -42,22 +123,70 @@
           "So the token is carried WITH its two URLs: webpayment.json's response",
           "templates payment_url as",
           "  /stub-hosted-page/{pay_token}?return=<urlEncoded>&cancel=<urlEncoded>",
-          "and this mapping templates them straight back out. The pairing is",
+          "and this mapping carries them straight back out -- on the form's hidden",
+          "inputs, and, since 2026-09-10, on the two links as well. The pairing is",
           "preserved -- these are the exact bytes THAT submit carried, not a",
           "deployment-wide constant -- which is the property a test of the return",
           "trip needs. What is lost is the rail-side storage, and with it any claim",
           "that Orange would accept a return_url it had not been told about at",
           "submit. Nothing in this repository makes that claim.",
           "",
-          "This is a difference between the stub and the rail. It is the same class",
-          "of difference as the stub keying its pay_token on the order_id, and it is",
-          "written down here rather than discovered later.",
+          "THE LINKS NOW GO THROUGH THIS CONTAINER, and that is the change issue",
+          "#58 asked for. Until 2026-09-10 `#pay` and `#cancel` pointed STRAIGHT at",
+          "the return URL, so a payer who used them never touched this stub again --",
+          "which is exactly why exp22 could not close the race: there was no way to",
+          "learn that a payer had acted. They now point at /pay and /cancel on this",
+          "container, which 302 to the same two URLs. The redirect is what a test",
+          "asserts on, and it is a STRONGER assertion than the old href one: the",
+          "bytes are not merely rendered into a page, they are the Location a payer's",
+          "browser is actually sent to.",
           "",
-          "TRIPLE STACHE, {{{...}}}, not double. Handlebars' double stache",
-          "HTML-escapes, so a return_url carrying `&` would reach the href as",
-          "`&amp;` and a test asserting on the exact URL the submit sent would fail",
-          "on an escape it did not choose. This is a stub whose only reader is a",
-          "test and a demo browser; byte-for-byte is what it is for.",
+          "TRIPLE STACHE, {{{...}}}, not double, on everything that is a URL -- and",
+          "MEASURED, on 2026-09-10, rather than reasoned about, because the reasoning",
+          "this file used to carry was wrong.",
+          "",
+          "What it used to say: that the double stache HTML-escapes, so the hidden",
+          "inputs below could be written with it and a `&` would reach the browser as",
+          "`&amp;` and be read back as `&`. That is Handlebars' documented behaviour",
+          "and it is NOT this image's. Driven against wiremock/wiremock:3.9.2 with a",
+          "return URL of `https://m.test/back?q=\"x\"&y=<z>`, the rendered page carries",
+          "",
+          "  <input type=\"hidden\" name=\"return\" value=\"https://m.test/back?q=\"x\"&y=<z>\">",
+          "",
+          "-- unescaped, quotes and all, which closes the attribute early. So the",
+          "double stache is not protecting anything, and the choice between the two",
+          "staches changes nothing at all for a value with no HTML metacharacters in",
+          "it. It is left as the double stache only because changing it would be a",
+          "diff that fixes nothing.",
+          "",
+          "The two HREFS are a different matter and are safe, because they do not rely",
+          "on the stache: they wrap the URL in WireMock's `urlEncode` helper first, so",
+          "what lands in the attribute is percent-encoded and contains no `\"`, `<` or",
+          "`&` at all. The literal separator between this container's own two query",
+          "parameters is written `&amp;` because it is inside an attribute, and that",
+          "one IS a literal in the template rather than something a stache produced.",
+          "",
+          "WHAT IS STILL BROKEN, AND IS NOT THIS CHANGE'S TO FIX: a return_url",
+          "containing a double quote would break the FORM below, because a GET form's",
+          "hidden input has to carry the DECODED value (the browser percent-encodes it",
+          "again on submit) and WireMock cannot HTML-escape an attribute. The links",
+          "are immune; the form is not. No test in this repository sends such a URL,",
+          "and `vpay_api`'s `checked_return_url` is what would have to refuse one --",
+          "it checks the scheme and the length and nothing else, so it would NOT.",
+          "",
+          "Since the sabotage review of 2026-09-10 that is also written on the PAGE,",
+          "under `id=\"stub-limits\"`, beside the one-payment-at-a-time limit, because a",
+          "limit recorded only in a `metadata` block no reader renders is a limit",
+          "nobody meets until it bites. `the_hosted_pages_pending_chain_is_bounded_",
+          "and_ends_in_an_expiry` asserts that section is there.",
+          "",
+          "The fix that exists, and was not taken: write the hidden inputs",
+          "`{{{urlEncode ...}}}` (percent-encoded, so no quote can reach the attribute)",
+          "and split the /pay mappings on the PRESENCE of `msisdn` -- only the form",
+          "sends it -- so the form's arm can answer `{{{urlEncode ... decode=true}}}`",
+          "while the links' arm stays as it is. It is surgery on a stub four suites",
+          "share, for a value nothing here sends, and needs a full `just test-e2e` to",
+          "validate. Maintainer decision.",
           "",
           "The urlPathPattern is loose on the token because it is generated per",
           "charge: pay-<uuid> from the catch-all, pay-dup-1 from the duplicate",
@@ -66,26 +195,13 @@
           "",
           "Proven by the_stub_hosted_page_links_to_the_return_url_the_submit_carried",
           "in backends/tests/integration/tests/confirm_rails.rs, which confirms a",
-          "real intent, follows the payment_url the rail answered with, and asserts",
-          "both hrefs are the merchant's own return URL.",
-          "",
-          "THE TEST-NUMBER FORM, added 2026-09-06 (exp22). The two links above are",
-          "unchanged, deliberately: `the_stub_hosted_page_links_to_the_return_url_the_",
-          "submit_carried` asserts their exact hrefs, and `shop-hosted.cy.ts` clicks",
-          "`#pay`. The form is ADDITIVE and submits to",
-          "/stub-hosted-page/{pay_token}/pay, which demo-outcomes.json serves: it arms",
-          "a scenario from the MSISDN and 302s to the same return URL the links carry,",
-          "so the success path through `#pay` and the success path through the form",
-          "end in the same place.",
-          "",
-          "The hidden inputs use the DOUBLE stache, unlike the hrefs above. An",
-          "attribute value is not an href: `&` inside one has to be written `&amp;` to",
-          "be read back as `&`, which is exactly what the escaping stache produces and",
-          "what the browser then submits. The triple stache would put a bare `&` in an",
-          "attribute -- which browsers do parse, but which is the wrong tool for the",
-          "job and would break the day a URL carried a quote."
+          "real intent, follows the payment_url the rail answered with, and then",
+          "follows both of the page's links and asserts each 302 lands on the",
+          "merchant's own return URL."
         ]
       },
+      "scenarioName": "orange-hosted-page-payer",
+      "newScenarioState": "payer-on-page-1",
       "request": {
         "method": "GET",
         "urlPathPattern": "/stub-hosted-page/[^/]+"
@@ -96,7 +212,346 @@
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store"
         },
-        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>\n<a id=\"pay\" href=\"{{{request.query.return}}}\">Pay</a>\n<a id=\"cancel\" href=\"{{{request.query.cancel}}}\">Cancel</a>\n</p>\n<h2>Or pay with one of the demo's test numbers</h2>\n<p>Orange is a <strong>redirect</strong> rail: the number is typed here, on the rail's own page, and vpay never sees it. That is why the demo steers this rail's outcome from this form rather than from anything the merchant sent. The numbers are documented in <code>examples/shop/README.md</code>; anything not listed there pays.</p>\n<form id=\"test-number-form\" method=\"get\" action=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay\">\n<input type=\"hidden\" name=\"return\" value=\"{{request.query.return}}\">\n<input type=\"hidden\" name=\"cancel\" value=\"{{request.query.cancel}}\">\n<label for=\"msisdn\">Orange Money number</label>\n<input id=\"msisdn\" name=\"msisdn\" value=\"237600000000\" size=\"20\">\n<button id=\"pay-with-number\" type=\"submit\">Pay with this number</button>\n</form>\n</body>\n</html>\n"
+        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>While you are on this page the rail answers vpay's status query <code>PENDING</code>, for a bounded number of polls. Choose one of the two links below, or pay with a test number; do nothing for long enough and the page expires.</p>\n<p>\n<a id=\"pay\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Pay</a>\n<a id=\"cancel\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/cancel?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Cancel</a>\n</p>\n<h2>Or pay with one of the demo's test numbers</h2>\n<p>Orange is a <strong>redirect</strong> rail: the number is typed here, on the rail's own page, and vpay never sees it. That is why the demo steers this rail's outcome from this form rather than from anything the merchant sent. The numbers are documented in <code>examples/shop/README.md</code>; anything not listed there pays.</p>\n<form id=\"test-number-form\" method=\"get\" action=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay\">\n<input type=\"hidden\" name=\"return\" value=\"{{request.query.return}}\">\n<input type=\"hidden\" name=\"cancel\" value=\"{{request.query.cancel}}\">\n<label for=\"msisdn\">Orange Money number</label>\n<input id=\"msisdn\" name=\"msisdn\" value=\"237600000000\" size=\"20\">\n<button id=\"pay-with-number\" type=\"submit\">Pay with this number</button>\n</form>\n<h2 id=\"stub-limits\">Two limits of this stub, written here because nothing else on this page shows them</h2>\n<ul>\n<li><strong>One payment at a time.</strong> The window you are standing in is a single WireMock scenario on this container, and WireMock scenarios cannot be keyed on a payment. If a second Orange charge is in flight it does not get a window of its own, and whichever of the two links above you press decides <em>whichever charge vpay asks about next</em> &mdash; including a charge whose amount the demo has promised will fail. Measured 2026-09-10; see <code>docs/status.md</code>, &sect; &ldquo;The Orange stub&rsquo;s hosted page grew a payer&rsquo;s window&rdquo;.</li>\n<li><strong>The form above is not safe for a return URL containing a double quote.</strong> Its two hidden inputs carry the URLs undecoded and unescaped, because a GET form has to, and WireMock cannot HTML-escape an attribute. Such a URL closes the attribute and injects into this page. The two links are immune &mdash; they percent-encode first. vpay&rsquo;s own <code>return_url</code> check looks at the scheme and the length and nothing else, so it would accept one. Recorded, not fixed: this is a WireMock stub of a rail (ADR-0006) and no test in this repository sends such a URL.</li>\n</ul>\n</body>\n</html>\n"
+      }
+    },
+    {
+      "name": "a submitted charge nobody has looked at yet is PENDING once",
+      "metadata": {
+        "why": [
+          "THE RUNG THAT REMOVES THE RACE. `submitted` is armed by",
+          "webpayment.json's accepted submit -- by the charge existing, not by",
+          "anything a payer did -- so this answer does not depend on whether the",
+          "payer's browser has reached the hosted page yet. It buys the whole",
+          "first rung of `vpay_worker::poll_delay` (10 s) for that GET to land",
+          "in, against the ~400 ms it had before.",
+          "",
+          "PRIORITY 6: below demo-outcomes.json's amount-keyed mappings (4), so",
+          "`just demo-walk`'s 5001 and 5002 outcomes are still answered",
+          "terminally on the first rung and that program's timings do not move;",
+          "above transactionstatus.json's catch-all SUCCESS (10), which is the",
+          "answer this defers by one rung.",
+          "",
+          "It is also the only mapping in this scenario a charge reaches with no",
+          "payer involved at all, which is why it hands over to a state that",
+          "falls straight back to the catch-all rather than to more PENDING: a",
+          "charge nobody is paying must still settle the way it always did."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "submitted",
+      "newScenarioState": "submitted-polled",
+      "priority": 6,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"PENDING\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "and settles on the next ask, exactly as it did before the window existed",
+      "metadata": {
+        "why": [
+          "The same body transactionstatus.json's priority-10 catch-all serves,",
+          "one rung later, and a transition back to `Started` so the next charge",
+          "on this container inherits nothing. Written out here rather than left",
+          "to fall through because falling through would leave the scenario in",
+          "`submitted-polled` for ever.",
+          "",
+          "PRIORITY 6, for the reason the mapping above gives: 5001 and 5002 are",
+          "answered by demo-outcomes.json (4) whatever this scenario's state is."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "submitted-polled",
+      "newScenarioState": "Started",
+      "priority": 6,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"SUCCESS\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\",\"txnid\":\"stub-txn\"}"
+      }
+    },
+    {
+      "name": "a payer is on the page: PENDING (1 of 4)",
+      "metadata": {
+        "why": [
+          "Poll 1 of 4 while a payer is on the page.",
+          "",
+          "WHY 4 AND NOT SOME OTHER NUMBER. The chain has to be",
+          "long enough that a payer can read the page and click, and short",
+          "enough that a charge nobody pays still reaches a terminal state.",
+          "`vpay_worker::poll_delay` is 10s, 20s, 30s, 45s, 60s, 90s, then",
+          "120s, so 4 PENDING answers put the terminal one at",
+          "10+20+30+45 = 105 seconds after the payer landed -- comfortably",
+          "over the 30 seconds issue #58 asks for, and comfortably under the",
+          "two-minute outcome timeout the Cypress specs give a charge.",
+          "",
+          "That arithmetic is not a comment: `the_pending_chain_gives_a_payer",
+          "_at_least_thirty_seconds_on_the_worker_s_own_ladder` in",
+          "backends/tests/integration reads THIS FILE and `poll_delay` and",
+          "fails if either moves under the other.",
+          "",
+          "PRIORITY 3 on every rung: above demo-outcomes.json's amount-keyed",
+          "mappings (4), because a payer who is standing on the rail's page",
+          "is a stronger statement about a charge than the amount a merchant",
+          "chose; below transactionstatus.json's order_id-keyed cases (1),",
+          "which the conformance suite depends on."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-on-page-1",
+      "newScenarioState": "payer-on-page-2",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"PENDING\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "a payer is on the page: PENDING (2 of 4)",
+      "metadata": {
+        "why": [
+          "Poll 2 of 4 while a payer is on the page."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-on-page-2",
+      "newScenarioState": "payer-on-page-3",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"PENDING\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "a payer is on the page: PENDING (3 of 4)",
+      "metadata": {
+        "why": [
+          "Poll 3 of 4 while a payer is on the page."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-on-page-3",
+      "newScenarioState": "payer-on-page-4",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"PENDING\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "a payer is on the page: PENDING (4 of 4)",
+      "metadata": {
+        "why": [
+          "Poll 4 of 4 while a payer is on the page."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-on-page-4",
+      "newScenarioState": "payer-never-acted",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"PENDING\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "the payer never acted: the page expires",
+      "metadata": {
+        "why": [
+          "The chain's terminal answer, and the reason the chain is BOUNDED. A",
+          "payer who leaves the tab open must not leave a charge polling PENDING",
+          "for the twenty-four hours `docs/flows/reconciler.md` gives the ladder.",
+          "",
+          "EXPIRED -> payer_timeout (vpay_adapter_orange_money::mapping::",
+          "STATUS_TABLE, docs/flows/adapter-orange-money.md): 'the payer never",
+          "entered the one-time code before the hosted page aged out' is",
+          "precisely what has happened here.",
+          "",
+          "Answered ONCE and then disarmed, for the reason MTN's file gives:",
+          "EXPIRED is terminal, the worker settles on it and asks nothing more,",
+          "and leaving the scenario armed would make the NEXT charge inherit an",
+          "outcome nobody chose."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-never-acted",
+      "newScenarioState": "Started",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"EXPIRED\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
+      }
+    },
+    {
+      "name": "the payer paid: the #pay link, and the form with any number the demo does not steer",
+      "metadata": {
+        "why": [
+          "The success exit, and the DISARM. Priority 5 so demo-outcomes.json's",
+          "two number-keyed arms (3) win when the payer typed one of those; this",
+          "one carries every other number, and the `#pay` link, which carries no",
+          "`msisdn` parameter at all.",
+          "",
+          "302 to the return URL THIS submit carried, taken out of the query",
+          "string the page put on the link (or out of the form's hidden input,",
+          "which holds the same bytes). Not followed by the conformance suite's",
+          "client -- `vpay_provider::http::client` refuses redirects on purpose --",
+          "so the Location is directly assertable."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "newScenarioState": "payer-paid",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/stub-hosted-page/[^/]+/pay"
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "{{{request.query.return}}}",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "the armed payment answers SUCCESS once, then disarms",
+      "metadata": {
+        "why": [
+          "What the payer's click is FOR. Without it the click would only",
+          "disarm the chain and the charge would settle on the catch-all anyway,",
+          "one rung later -- which is the same answer for the wrong reason, and",
+          "would leave `the_payer_who_clicks_pay_settles_the_charge` passing for",
+          "a stub that had never noticed the click. This mapping is what the",
+          "'drop the click arming' mutation deletes.",
+          "",
+          "PRIORITY 3, with the rest of the payer's own actions."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-paid",
+      "newScenarioState": "Started",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"SUCCESS\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\",\"txnid\":\"stub-txn-paid\"}"
+      }
+    },
+    {
+      "name": "the payer gave up: the #cancel link",
+      "metadata": {
+        "why": [
+          "The abandon exit. 302 to the CANCEL url this submit carried -- which",
+          "`vpay-adapter-orange-money` fills with the charge's single return_url,",
+          "because Orange's page distinguishes paid from cancelled and vpay",
+          "cannot (docs/flows/adapter-orange-money.md). Two URLs, one value, and",
+          "this mapping reads the one the page's #cancel link carried so that a",
+          "deployment which ever DID send two would land the payer on the right",
+          "one without this file changing.",
+          "",
+          "ORANGE HAS NO `CANCELLED` STATUS. Its five documented statuses are",
+          "INITIATED, PENDING, SUCCESS, EXPIRED and FAILED, so a stub answering",
+          "CANCELLED would be this repository inventing a rail vocabulary --",
+          "exactly what examples/shop/README.md refuses to do elsewhere. A payer",
+          "who abandons the page is a page that ages out unpaid, which is",
+          "EXPIRED, which is payer_timeout. That is also why this shares",
+          "`payer-gave-up` with nothing: it is its own state so a captured",
+          "journal says which exit a payer took."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "newScenarioState": "payer-gave-up",
+      "priority": 3,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/stub-hosted-page/[^/]+/cancel"
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "{{{request.query.cancel}}}",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "the armed abandonment answers EXPIRED once, then disarms",
+      "metadata": {
+        "why": [
+          "EXPIRED -> payer_timeout, the same mapping the chain's own expiry",
+          "uses and for the same reason: the page ended without a payment.",
+          "Answered once and disarmed, because it is terminal."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "requiredScenarioState": "payer-gave-up",
+      "newScenarioState": "Started",
+      "priority": 3,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"status\":\"EXPIRED\",\"order_id\":\"{{jsonPath request.body '$.order_id'}}\"}"
       }
     }
   ]

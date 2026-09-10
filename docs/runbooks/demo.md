@@ -80,6 +80,12 @@ nothing on this page runs a path the one-liner does not:
 | `just demo` | `demo-up` then `demo-walk` |
 | `just demo-staff` | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](#6-signing-in-to-the-dashboard)) |
 
+**`just demo-walk` takes about a minute** — 58 s measured on 2026-09-10, six
+payments, of which two wait a ten-second rung of `vpay_worker::poll_delay` (the
+settling MTN outcome, and since issue #58 the settling Orange one) and four are
+terminal on the first ask. `just demo` is that plus `demo-up`, which is an
+image build the first time.
+
 `demo-walk` is separately re-runnable, which is what you want while reading its
 output: each run mints fresh idempotency keys and fresh intents.
 
@@ -236,7 +242,11 @@ the fifth mints one hosted and one embedded Checkout Session and prints the
 hosted `url` in full and the embedded secret redacted. Every amount is XAF on
 both rails (the demo overlay; the real MTN sandbox rejects XAF, see §"One
 currency"). Verbatim and complete from the program's first line to its last;
-nothing below was written by hand. The `demo-up` output above it (image
+nothing below was written by hand. **It is a 2026-09-04 capture and it is
+left as one**: issue #58 changed the `selected by:` line outcome 4/6 prints and
+added a ten-second rung to its settlement, so a run today prints different
+bytes there. Hand-editing a transcript labelled verbatim would be worse than
+the staleness; the current behaviour is §"The demo's test numbers" below. The `demo-up` output above it (image
 builds, `docker compose up --wait`) is the same as §3's and is not repeated.
 
 ```console
@@ -692,23 +702,49 @@ Two things to know before you drive them:
   the rail stub's own hosted page**, in the "Or pay with one of the demo's
   test numbers" form beside the Pay link — Orange is a redirect rail and vpay
   never sees a number.
-- **Orange's numbers do not work from a browser today.** vpay's confirm
+- **Orange's numbers work from a browser, and did not until 2026-09-10**
+  ([issue #58](https://github.com/vaam-apps/vpay/issues/58)). vpay's confirm
   handler enqueues the first status query at `now()` — `poll_delay(0)` is the
-  delay before the *second* attempt — and the worker's idle sleep is a
-  second, so the stub's catch-all answers `SUCCESS` and the order is **paid**
-  before you can reach the form, whatever number you were about to type.
+  delay before the *second* attempt — and the worker's idle sleep is a second,
+  so the stub's catch-all used to answer `SUCCESS` and the order was **paid**
+  before you could reach the form, whatever number you were about to type.
   Measured on 2026-09-06 from the stub's own journal: submit at T, first
   `transactionstatus` at T+449 ms, the form at T+12 s, order `paid` for
-  `237600000400`. Check the order page's `failure_code`; do not read the walk
-  as working. The mappings are right and are proven at the adapter level; what
-  is missing, and why it was not added, is in
-  [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
-  MTN's numbers are unaffected — a push rail carries the number in the
-  merchant's own submit, so there is no window to lose.
+  `237600000400`.
+
+  What changed is the **stub**, not vpay: nothing about the first poll moved,
+  because a charge being asked about as soon as it exists is a deliberate
+  property (`docs/flows/crash-safety.md`). The rail stub now answers `PENDING`
+  once from the submit and four more times once your browser has actually
+  loaded its page — about 105 seconds on the worker's ladder — and then
+  `EXPIRED`. So: **type the number and press the button; do not leave the tab
+  and come back after two minutes**, or you will get `payer_timeout` whatever
+  you typed, which is also what the Cancel link now gives you. None of those
+  seconds is a fact about Orange — see
+  [../flows/adapter-orange-money.md](../flows/adapter-orange-money.md).
+
+  MTN's numbers are unaffected by any of it — a push rail carries the number
+  in the merchant's own submit, so there was never a window to lose.
+
+  **Drive one payment at a time.** The window is a single WireMock scenario on
+  a single container, keyed on nothing per charge, because WireMock scenarios
+  cannot be. Measured 2026-09-10: with two Orange charges in flight the second
+  never gets its `PENDING` rung, and a payer clicking Pay or Cancel on one
+  charge's page decides whichever charge the worker asks about next — a `5001`
+  charge included, whose amount-keyed mapping the payer-action mappings
+  outrank. `just demo-walk` is strictly sequential and opens no page, so it
+  never meets this; two browser tabs on two orders will. See
+  [../status.md](../status.md) §"The Orange stub's hosted page grew a payer's
+  window" for the measurements.
 
 The one outcome no *number* reaches is `cancelled`, because it is not a rail
-outcome at all. Clicking "cancel" on the rail's page is a navigation and
-leaves the order open. The order page's "Cancel this payment" button reaches
+outcome at all. Clicking "cancel" on the rail's page ends the payment, but
+what the rail then reports is `EXPIRED`, so the order comes back **`failed`**
+with `payer_timeout` — Orange documents no `CANCELLED` and the stub will not
+invent one. (Before 2026-09-10 that link went straight back to the merchant,
+the stub never learned you had clicked it, and the order came back `paid`.)
+
+The order page's "Cancel this payment" button reaches
 `POST /v1/payment_intents/{id}/cancel`, the intent becomes `canceled` at vpay,
 and **since 2026-09-10 vpay emits one `payment_intent.canceled` in that same
 transaction** ([issue #57](https://github.com/vaam-apps/vpay/issues/57)) — so

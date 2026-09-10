@@ -69,7 +69,12 @@
 //!   `next_action.redirect_to_url` a merchant would send a browser to, and
 //!   then the rail stub answers the status query as though the payer had
 //!   completed it. Nothing here opens that URL. The browser return trip is a
-//!   named gap, not an oversight — see `docs/runbooks/demo.md`.
+//!   named gap, not an oversight — see `docs/runbooks/demo.md`; the thing
+//!   that *does* open it is `frontends/tests/e2e`'s two Orange cases, and
+//!   since 2026-09-10 what they find there is a payer's window rather than a
+//!   charge already settled (issue #58). This program is on the other side of
+//!   that: it never GETs the page, so it never arms the window's chain, and
+//!   the only difference it sees is the one unconditional `PENDING` rung.
 //! * **A rail calling *us*.** The route exists; nothing in this demo
 //!   makes a rail use it. See [`CALLBACK_NOT_EXERCISED`].
 //!
@@ -355,7 +360,9 @@ const OUTCOMES: [Outcome; 6] = [
         amount: 5000,
         steering: Steering::ReturnUrl(DEMO_RETURN_URL),
         selected_by: "5000 XAF is claimed by no amount-keyed mapping, so the status query \
-                      falls through to transactionstatus.json's catch-all SUCCESS",
+                      is answered PENDING once by the payer's window and then falls \
+                      through to transactionstatus.json's catch-all SUCCESS on the \
+                      next rung — about ten seconds, not half a second (issue #58)",
         after_confirm: IntentStatus::RequiresAction,
         settled: IntentStatus::Succeeded,
         failure_code: None,
@@ -394,8 +401,14 @@ const OUTCOMES: [Outcome; 6] = [
 ///
 /// The poll ladder's rungs are 10 s, 20 s, 30 s … (`vpay_worker::poll_delay`)
 /// and the settling MTN outcome is answered `PENDING` first, so its earliest
-/// possible settlement is about thirty seconds after the confirm; every other
-/// outcome is terminal on the first rung. This is a *ceiling* on a wait that
+/// possible settlement is about thirty seconds after the confirm. Since
+/// 2026-09-10 (issue #58) the settling **Orange** outcome is answered
+/// `PENDING` once too — the rung that gives a payer's browser time to reach
+/// the rail's hosted page before the charge is decided — so it settles about
+/// ten seconds in rather than half a second. The two amount-keyed Orange
+/// outcomes below (5001, 5002) are unchanged and still terminal on the first
+/// rung: their mappings sit *above* that rung in priority precisely so this
+/// program's timings did not move. This is a *ceiling* on a wait that
 /// normally ends well before it — generous enough that a cold compose stack
 /// does not fail the demo, tight enough that a worker which is not running
 /// fails it in under two minutes with a message saying so.

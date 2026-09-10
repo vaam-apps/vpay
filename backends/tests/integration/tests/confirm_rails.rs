@@ -1380,13 +1380,32 @@ async fn a_session_driven_confirm_is_refused_when_the_checkout_app_is_gone() -> 
     Ok(())
 }
 
-/// The stub's hosted page links to the URLs *that* submit carried.
+/// The stub's hosted page sends a payer to the URLs *that* submit carried —
+/// and it now sends them **through the rail's own container** to get there.
 ///
 /// The other half of the redirect leg: `submit` tells the rail where the
 /// payer goes, and this is a payer's browser being told the same thing by the
 /// rail's page. Nothing in this repository could follow a `payment_url`
 /// before Step 9 — the URL pointed at `/stub-hosted-page/…` and no mapping
 /// served it, so a payer got the stub's 404.
+///
+/// **What changed on 2026-09-10 (issue #58), and why this case is stronger
+/// for it.** Until then the page's two links pointed *straight* at the
+/// merchant's URL, and this case asserted the two `href`s. That made the
+/// links a dead end for the stub: a payer who used one never touched the
+/// container again, so the stub could not tell a payer who had paid from one
+/// who had wandered off, and the demo's Orange test numbers lost the race to
+/// the worker's first poll. The links now go to `/stub-hosted-page/{token}/pay`
+/// and `…/cancel` on the same container, which `302` to the two URLs the
+/// submit carried.
+///
+/// So this asserts the redirect rather than the `href`, which is the better
+/// assertion of the two: the `Location` a payer's browser is actually sent to
+/// is the thing that matters, and an `href` is only evidence about it. The
+/// URLs are still `RETURN_URL` for both, because
+/// `vpay-adapter-orange-money` sends the charge's single `return_url` as both
+/// `return_url` and `cancel_url` — Orange's page distinguishes paid from
+/// cancelled and vpay cannot.
 ///
 /// Two deliberate limits, both properties of the *stub* and not of vpay:
 ///
@@ -1447,16 +1466,137 @@ async fn the_stub_hosted_page_links_to_the_return_url_the_submit_carried() -> an
     );
     let html = page.text().await.context("the page body is readable")?;
 
-    assert!(
-        html.contains(&format!(r#"<a id="pay" href="{RETURN_URL}">"#)),
-        "the Pay link must go where this charge's submit said: {html}"
-    );
-    assert!(
-        html.contains(&format!(r#"<a id="cancel" href="{RETURN_URL}">"#)),
-        "the Cancel link must go where this charge's submit said: {html}"
-    );
+    // A client that does NOT follow redirects, so the `Location` is readable.
+    // `reqwest`'s default follows up to ten, and the tenth would be the
+    // merchant's own site — which nothing in this suite serves, so the case
+    // would fail on a connection error rather than on what it is about.
+    let browser = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("a no-redirect client builds")?;
+
+    for id in ["pay", "cancel"] {
+        let href = href_of(&html, id);
+        assert!(
+            href.starts_with("/stub-hosted-page/"),
+            "the page's {id} control must go back through the rail's own container — a link \
+             straight to the merchant is a payer the rail never hears from again: {href}"
+        );
+        let followed = browser
+            .get(format!("{}{href}", harness.orange_origin))
+            .send()
+            .await
+            .with_context(|| format!("the stub answers the {id} control"))?;
+        assert_eq!(
+            followed.status().as_u16(),
+            302,
+            "the {id} control must send the payer somewhere"
+        );
+        assert_eq!(
+            followed
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok()),
+            Some(RETURN_URL),
+            "the {id} control must land where THIS charge's submit said"
+        );
+    }
 
     harness.shutdown().await;
+    Ok(())
+}
+
+/// The `href` of the link with this `id`, out of the stub's rendered page.
+fn href_of(page: &str, id: &str) -> String {
+    let anchor = format!(r#"<a id="{id}" href=""#);
+    let (_, rest) = page
+        .split_once(&anchor)
+        .unwrap_or_else(|| panic!("no link with id={id} on the page: {page}"));
+    let (href, _) = rest
+        .split_once('"')
+        .unwrap_or_else(|| panic!("unterminated href for id={id}: {page}"));
+    // The one HTML entity the stub's template writes by hand, between this
+    // container's own two query parameters.
+    href.replace("&amp;", "&")
+}
+
+/// **The payer's window, in seconds, against the ladder that consumes it.**
+///
+/// Issue #58 asks for a bounded chain of `PENDING` answers "chosen against the
+/// worker's poll backoff so a payer has ≥ 30 s to click". Two numbers decide
+/// whether that is true, and they live in two files that know nothing about
+/// each other:
+///
+/// * how many polls the stub answers `PENDING` for — a chain of scenario
+///   states in `wiremock/orange/mappings/stub-hosted-page.json`;
+/// * how far apart those polls are — [`vpay_worker::poll_delay`].
+///
+/// Either can be changed alone, and the failure is silent in both directions:
+/// shorten the chain and a payer is settled out from under; shorten the ladder
+/// and the same chain buys them a fraction of the time it used to. Neither
+/// shows up as a failing test anywhere else, because no other case looks at
+/// both. This one multiplies them out.
+///
+/// It reads the chain out of the mapping file rather than being told it, so
+/// there is nothing to keep in step by hand: the conformance suite's own
+/// `PENDING_POLLS_ON_THE_HOSTED_PAGE` is a *copy* of that number, and this is
+/// the check on the number itself.
+///
+/// No container, no Postgres, no rail — it is arithmetic over a JSON document
+/// and a pure function.
+#[test]
+fn the_pending_chain_gives_a_payer_at_least_thirty_seconds() -> anyhow::Result<()> {
+    let mappings = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../conformance/wiremock/orange/mappings/stub-hosted-page.json");
+    let document: Value = serde_json::from_str(
+        &std::fs::read_to_string(&mappings)
+            .with_context(|| format!("reading {}", mappings.display()))?,
+    )
+    .context("the stub's hosted-page mappings are JSON")?;
+
+    // Every mapping that answers a status query PENDING *because a payer is on
+    // the page*: the chain, and nothing else. Counted from the mapping's own
+    // `requiredScenarioState`, so a rung deleted from the chain is a rung
+    // missing from this count.
+    let chain = document
+        .get("mappings")
+        .and_then(Value::as_array)
+        .context("the document must carry mappings")?
+        .iter()
+        .filter(|mapping| {
+            mapping
+                .get("requiredScenarioState")
+                .and_then(Value::as_str)
+                .is_some_and(|state| state.starts_with("payer-on-page-"))
+                && mapping
+                    .pointer("/response/body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|body| body.contains("PENDING"))
+        })
+        .count();
+    assert!(
+        chain > 0,
+        "no PENDING chain in {} — a payer on the rail's page would be settled out from \
+         under by the first poll, which is exactly the bug issue #58 is about",
+        mappings.display()
+    );
+
+    // The chain answers polls 0..chain-1 PENDING, so the terminal answer lands
+    // on poll `chain`, which the ladder schedules `poll_delay(0) + … +
+    // poll_delay(chain - 1)` after the first one. The first poll is enqueued at
+    // `now()` by the confirm handler — `poll_delay(0)` is the delay before the
+    // SECOND attempt, not the first — so this sum is the whole of the window.
+    let window: std::time::Duration = (0..chain)
+        .map(|attempt| vpay_worker::poll_delay(u32::try_from(attempt).unwrap_or(u32::MAX)))
+        .sum();
+
+    assert!(
+        window >= std::time::Duration::from_secs(30),
+        "a payer gets {window:?} on the rail's hosted page before the stub expires it; \
+         issue #58 asks for at least 30s. Either the chain in {} got shorter or \
+         vpay_worker::poll_delay did.",
+        mappings.display()
+    );
     Ok(())
 }
 

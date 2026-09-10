@@ -121,6 +121,16 @@ method, not a core change.
    becomes `true`, this adapter overrides
    `ProviderAdapter::account_holder_name` with its own `NotImplemented` token
    until it is written, and `docs/status.md` grows a row.
+9. **How long the real hosted page gives a payer, and what
+   `transactionstatus` answers while they are on it** (added 2026-09-10 with
+   issue #58). The adapter needs no answer to this — `INITIATED` and
+   `PENDING` both map to `Pending` and the poll ladder is indifferent to how
+   many rungs it spends there — so nothing is blocked on it. It is written
+   down because the *stub* now has an answer (one unconditional `PENDING`,
+   four more while a payer is on the page, then `EXPIRED`) and a reader must
+   not mistake it for a measurement of Orange. If the real page's window turns
+   out to be minutes rather than seconds, the thing that changes is the
+   escalation in [reconciler.md](reconciler.md), not this adapter.
 
 ## Status
 
@@ -142,9 +152,10 @@ over HTTP exactly as the rail is (ADR-0006); the mappings live in
 directory `compose.yml` bind-mounts, so a mapping fixed for one is fixed for
 both.
 
-**All 13 conformance port cases now pass for this rail** — 33 tests in the
-suite, 33 passed, 0 skipped, measured 2026-09-04 with `cargo nextest run
--p vpay-tests-conformance` (26 on 2026-09-03; `the_submit_tells_the_rail_where_to_call_back`
+**All 13 conformance port cases now pass for this rail** — 51 tests in the
+suite, 51 passed, 0 skipped, measured 2026-09-10 with `cargo nextest run
+-p vpay-tests-conformance` (47 before issue #58 added the four hosted-page
+window cases named below; 33 on 2026-09-04, 26 on 2026-09-03; `the_submit_tells_the_rail_where_to_call_back`
 was added by Step 8 lane C and `the_submit_tells_the_rail_where_to_send_the_payer_back`
 by Step 9 lane 2, and Step 9 lane 2b added three MTN-only cases that do not
 parameterise over this rail). *(An earlier draft of this section said five of
@@ -156,6 +167,22 @@ The adapter's behaviour did not change — a `query_status` with no `pay_token`
 is still `ProviderError::Config` and never `NotFound`, because "the rail has
 no record" is what tells a reconciler nothing has happened yet, and a charge
 whose `pay_token` we lost is the opposite case.)*
+
+**The payer's window on the stub's hosted page** (2026-09-10, issue #58) is
+four more cases in that suite, and they are cases about the *stub*, not about
+this adapter — the adapter's `Pending`/`Succeeded`/`Failed(payer_timeout)`
+mapping did not change a line. They exist because the stub's old timing made
+the demo's Orange test numbers unreachable from a browser, which was a false
+green on the shop's own checkout panel:
+`a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles`,
+`the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry`, and
+`the_payers_exit_from_the_hosted_page_decides_the_charge` (two cases: `#pay` →
+`SUCCESS`, `#cancel` → `EXPIRED`, each following the link the *page* rendered
+rather than one the test built, so a link pointed back at the merchant fails
+them). How many seconds the chain is worth against the worker's own ladder is
+`the_pending_chain_gives_a_payer_at_least_thirty_seconds` in
+`backends/tests/integration`, which reads the mapping file and
+`vpay_worker::poll_delay` and multiplies.
 
 **What the transport refuses.** Every call goes through
 `vpay_provider::http`: redirects are returned rather than followed
@@ -216,13 +243,31 @@ measured from the *send*, not the answer
   `payment_url` carries the two URLs as query parameters and the page templates
   them back. The pairing is real — those are the bytes that submit sent — but
   nothing here shows Orange would accept a `return_url` it had not been told
-  about, and nothing claims it would. The stub also has no *cancel* semantics
-  of its own: its "Cancel" link is the same return URL, which is why Step 9's
-  Cypress proof of the cancel path is a **decline** forwarding to `cancel_url`
-  rather than a payer abandoning the page.
+  about, and nothing claims it would.
+
+  **The page also has a *timing* now, and it is the stub's invention, not
+  Orange's** (2026-09-10, issue #58). Until then the stub answered the first
+  `transactionstatus` `SUCCESS`, which on the demo stack landed 449 ms after
+  the submit against the ~12 s a payer took to act, so a charge was decided
+  before its payer had read anything; the documented Orange test numbers did
+  not work from a browser at all. The stub now answers `PENDING` once from the
+  submit, and four more times once a payer has loaded the page — about 105 s
+  on `vpay_worker::poll_delay`'s rungs — and then `EXPIRED`. **None of those
+  numbers is a fact about Orange.** What the real rail does while a payer is
+  on its page, and how long it gives them, is item 9 of "To confirm" below.
+
+  The stub's *cancel* semantics are its own invention too, and are the
+  smallest one available: its Cancel link now routes through the container
+  (so the stub can learn the payer clicked it) and arms `EXPIRED`, because
+  Orange's five documented statuses contain no `CANCELLED` and this repository
+  will not add one to a rail's vocabulary. Step 9's Cypress proof of the
+  merchant-side cancel path is still a **decline** forwarding to `cancel_url`;
+  the payer-abandons-the-page case is a second Cypress case beside it.
 - **Nothing here has ever called Orange.** Every wire assertion above is
   against WireMock; a mapping faithful to this document but not to Orange
-  would pass. All **eight** "to confirm" items above still stand — the
+  would pass. All **nine** "to confirm" items above still stand — the
   eighth, Orange's account-holder route, was added on 2026-09-05 with issue
   #47 and is the reason `supports_account_holder_lookup` is `false` for this
-  rail rather than unbuilt.
+  rail rather than unbuilt; the ninth, how long the real hosted page gives a
+  payer, was added on 2026-09-10 with issue #58 because the stub now has an
+  answer of its own and nothing must read it as a measurement of Orange.

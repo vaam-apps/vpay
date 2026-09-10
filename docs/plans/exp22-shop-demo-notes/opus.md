@@ -35,6 +35,19 @@ directory to exp21.
 
 ### D1. Orange's test numbers lose a race to the worker, and do not work from a browser
 
+> **Taken, and closed, on 2026-09-10** — issue #58, notes in
+> [../exp43-orange-stub-race-notes/opus.md](../exp43-orange-stub-race-notes/opus.md).
+> The maintainer chose option 1 of the three below, in the shape this
+> document could not settle on: the stub answers `PENDING` **once
+> unconditionally from the submit** (which is what makes the arming
+> deterministic rather than a 400 ms race the browser usually wins — the half
+> this document did not have) and then for a **bounded chain of four polls**
+> once a payer has loaded the page, after which the page expires. The
+> disarming problem the paragraph below describes is solved by routing the
+> page's `#pay` and `#cancel` links back through the stub, so a payer who
+> uses them *is* an event the container sees. Option 2 was refused for the
+> reason given here. Everything below is left as written.
+
 Orange is a redirect rail: the number never reaches vpay, so the demo steers
 its outcome from a form on the **stub's** hosted page, which arms a WireMock
 scenario the later `transactionstatus` query reads.
