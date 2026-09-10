@@ -15,9 +15,15 @@ plainly rather than hiding it, which is why it was the first thing this review
 did. It fails: **dashboard.cy.ts, 6 of 8 failing**, and the first failure is
 `leg 4`, the current-password field this change exists for. That is F1, below.
 
-**This document is written as the review proceeds**, one section per finding,
-each landing in the commit that fixes it. A finding is not written down here
-until the mutation that proves the fix has actually been run.
+Seven findings, numbered F1–F7 in the order they were found. F6 is recorded
+and **not fixed**, with the reason; every other one is fixed in its own commit
+with the mutation that proves it, and no finding was written down here until
+that mutation had actually been run.
+
+**Base:** this branch is rebased onto `f55e002`. `origin/master` moved again
+during the review (PR #95, the exp33 SDK invoices) and it was **not** rebased
+a second time — chasing a moving master mid-review invalidates the gate
+evidence below. Whoever merges will meet #95.
 
 ## Findings
 
@@ -186,68 +192,6 @@ second browser of the same person still has its own. The second is what stops
 a thief with a stolen cookie from locking the owner out of their own sign-in,
 and it was an argument in a doc comment and nothing else.
 
-## The two calls the implementer surfaced, judged
-
-### The shared default sign-in budget: **ten stays**
-
-The brief asked for this to be decided with ADR-0017's rationale in front of
-it. The case for lowering is the one the implementer stated: the budget got
-strictly stricter by becoming shared, so there is headroom to spend.
-
-The argument that settles it against lowering had not been made. **The half
-that would be spent is the per-address one**, and with
-`staff_auth.trusted_proxies` empty — the default, and the state of every
-deployment behind a proxy that has not been reconfigured — that half is shared
-by *everybody*. Lowering the shared number therefore makes a proxy-fronted
-deployment lock its whole staff out faster, which is the opposite of what
-"the budget got stricter" is being offered as a reason for.
-
-And the reason for ten was never replicas: it is that a person who mistypes a
-generated one-time password twice and then fetches it from a terminal must not
-be locked out of their own first login. Nothing about that changed. What ten
-buys an attacker, shared: 2,880 guesses a day at one account behind argon2id;
-nothing at all against a 130-bit printed password; under one percent a year
-against six TOTP digits with three live.
-
-**The item stays open in `docs/status.md` all the same, and that is the point
-of it being configuration.** A deployment that measures its own traffic moves
-it without a release and without an ADR. The review takes the *default*, not
-the choice.
-
-### `VPAY_DASHBOARD_PUBLIC_ORIGIN`: set now, required later
-
-See F3. Set where it is consumed and proven (`compose.e2e.yml`), named and
-shape-checked where it is not (the chart). Kept optional, because required
-belongs with the dashboard Deployment this chart does not write.
-
-## Left open on purpose
-
-### `submitTotp` signs a person out for a mistyped code · **nit / misleading comment**
-
-The same `401`-means-two-things shape as F1, one route over. A wrong six-digit
-code is a `401`, and `submitTotp` clears the session cookie on any `401` from
-`/staff/totp` — so a mistyped code sends somebody back to the email-and-
-password form rather than telling them. The comment there lists "gone,
-expired, idle, at the wrong stage" and not "wrong code", which is the
-commonest of the five.
-
-**Not fixed, and not because it is small.** It predates this branch, it is not
-a hole (the extra sign-in bounds code guessing rather than loosening it), and
-unlike `changePassword` the two lines cannot simply be dropped:
-`/login/totp` reads no session on render, only the cookie's presence, so with
-the cookie kept a session that really *is* over leaves the person retyping
-codes at a form that will never accept one. Closing it means giving that page
-the session read `PasswordPage` already has — a change to a route this brief
-did not cover, in a review that would then be unreviewed. Recorded in
-`docs/flows/dashboard.md` beside `refusalFor`.
-
-### Proactive token re-mint (#88 item 1)
-
-Still not done, and the implementer's account of why is accurate: the reactive
-re-mint in `dash-read.ts` exists and works, and a proactive one needs a
-`staff_sessions.access_token_expires_at` column, an API field, a `gateFor`
-arm and a configurable TTL. This review did not attempt it either.
-
 ### F7 — vpay's origin check does not replace Next's, and the docs read as if it does · **misleading-claim**
 
 Measured against a booted stack, firing the real `signIn` action id with
@@ -289,6 +233,68 @@ Documented rather than coded around. The lever is
 `serverActions.allowedOrigins` in `next.config`, and pulling it widens Next's
 own check — a security change wanting its own review, which no measured
 deployment needs.
+
+## The two calls the implementer surfaced, judged
+
+### The shared default sign-in budget: **ten stays**
+
+The brief asked for this to be decided with ADR-0017's rationale in front of
+it. The case for lowering is the one the implementer stated: the budget got
+strictly stricter by becoming shared, so there is headroom to spend.
+
+The argument that settles it against lowering had not been made. **The half
+that would be spent is the per-address one**, and with
+`staff_auth.trusted_proxies` empty — the default, and the state of every
+deployment behind a proxy that has not been reconfigured — that half is shared
+by *everybody*. Lowering the shared number therefore makes a proxy-fronted
+deployment lock its whole staff out faster, which is the opposite of what
+"the budget got stricter" is being offered as a reason for.
+
+And the reason for ten was never replicas: it is that a person who mistypes a
+generated one-time password twice and then fetches it from a terminal must not
+be locked out of their own first login. Nothing about that changed. What ten
+buys an attacker, shared: 2,880 guesses a day at one account behind argon2id;
+nothing at all against a 130-bit printed password; under one percent a year
+against six TOTP digits with three live.
+
+**The item stays open in `docs/status.md` all the same, and that is the point
+of it being configuration.** A deployment that measures its own traffic moves
+it without a release and without an ADR. The review takes the *default*, not
+the choice.
+
+### `VPAY_DASHBOARD_PUBLIC_ORIGIN`: set now, required later
+
+See F3. Set where it is consumed and proven (`compose.e2e.yml`), named and
+shape-checked where it is not (the chart). Kept optional, because required
+belongs with the dashboard Deployment this chart does not write.
+
+## Left open on purpose
+
+### F6 — `submitTotp` signs a person out for a mistyped code · **nit / misleading comment, left open**
+
+The same `401`-means-two-things shape as F1, one route over. A wrong six-digit
+code is a `401`, and `submitTotp` clears the session cookie on any `401` from
+`/staff/totp` — so a mistyped code sends somebody back to the email-and-
+password form rather than telling them. The comment there lists "gone,
+expired, idle, at the wrong stage" and not "wrong code", which is the
+commonest of the five.
+
+**Not fixed, and not because it is small.** It predates this branch, it is not
+a hole (the extra sign-in bounds code guessing rather than loosening it), and
+unlike `changePassword` the two lines cannot simply be dropped:
+`/login/totp` reads no session on render, only the cookie's presence, so with
+the cookie kept a session that really *is* over leaves the person retyping
+codes at a form that will never accept one. Closing it means giving that page
+the session read `PasswordPage` already has — a change to a route this brief
+did not cover, in a review that would then be unreviewed. Recorded in
+`docs/flows/dashboard.md` beside `refusalFor`.
+
+### Proactive token re-mint (#88 item 1)
+
+Still not done, and the implementer's account of why is accurate: the reactive
+re-mint in `dash-read.ts` exists and works, and a proactive one needs a
+`staff_sessions.access_token_expires_at` column, an API field, a `gateFor`
+arm and a configurable TTL. This review did not attempt it either.
 
 ## The attack table
 
@@ -339,3 +345,51 @@ Not touched. Raising a timeout to make a red test green is the one edit a
 review like this should never make, and the spec is otherwise sound; recorded
 so that the next person to see it has the diagnosis rather than a mystery.
 Run 3 was 8/8.
+
+## Gates, on the final head
+
+`just ci`, end to end, exit code read from a file. Run four times on this
+branch: twice as delivered (the first killed by a signal from the harness at
+test 1190, re-run clean) and twice after the fixes. The third run failed on
+`vpay-sdk::token_exchange::a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`
+— a wiremock verification of a race in the Rust SDK's token cache, in a file
+**no commit on this branch touches** (`git diff --name-only <merge-base>..HEAD`
+names nothing under `sdks/`). It passed 5/5 in isolation and passed on the
+re-run; recorded as a flake seen once, not fixed and not hidden.
+
+| Recipe | Result |
+|---|---|
+| `fmt-check` | clean (`cargo fmt -p vpay-api -p vpay-db -p vpay-tests-integration`, never `just fmt`) |
+| `clippy` | clean, `--workspace --all-targets -D warnings` |
+| `verify` | ok — the twelve gates; `check-schema` under cratestack **0.12.0** from the scratchpad's private bin, `verify-migrations` 38 files, `verify-links` 1010 links in 191 files |
+| `test-rust` | **1627 passed, 0 skipped, 0 ignored** (from 1619) |
+| `test-doc` | 109 doctests, 1 ignored (`sdks/rust`'s `ReadmeDoctests`, pre-existing) |
+| `verify-ignored` | 0 ignored (expected 0), 45 binaries (expected 45), 1627 total (min 1080) |
+| `lint-web`, `test-web` | clean; dashboard **172**, checkout 507, shop 102, node SDK 190, stripe-js 146, ui 74, config 63, tokens 8, api-client 4 |
+| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+
+`just helm-check` (CI's `deploy` job, not part of `just ci`): lint, render,
+**18 guards all fired by name (18 expected)**, rate limit, kubeconform 23
+resources valid.
+
+`just test-e2e`, at `demo_project=exp36-review`,
+`demo_dashboard_port=13200`, `demo_port=13080`, `demo_receiver_port=13083`,
+`demo_orange_port=13082`, `demo_checkout_port=13180`, `demo_shop_port=13001`
+— the maintainer's `vpay-demo` on 8080/3000/3001/3080 untouched throughout:
+
+| Run | Tree | `dashboard.cy.ts` | Total |
+|---|---|---|---|
+| 1 | as delivered | **8 tests, 2 passing, 6 failing** | 12 / 6 / 6, exit 1 |
+| 2 | after F1 | 8 tests, 7 passing, 1 failing (the flake above) | 12 / 11 / 1, exit 1 |
+| 3 | after F1 | **8 / 8** | **12 / 12, exit 0** — plus `shop-embedded.cy.ts` 4 / 4 |
+
+Run 1 is the evidence the implementer could not produce, and it is the reason
+this review exists. Runs 2 and 3 are the same tree; see the observation above.
+
+## Verdict
+
+**Not safe as delivered.** Two defects, one of them introduced by the branch
+and caught only by the gate the branch had not run; two behaviours it rests on
+that no test executed; one variable the whole feature depends on that was set
+nowhere. Safe now, on `56a2f59`, with every fix carrying the mutation that
+proves it.
