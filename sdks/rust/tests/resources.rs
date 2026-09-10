@@ -1992,7 +1992,7 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
                 customer: "cus_1".to_string(),
                 // Upper-cased deliberately: the wire contract says lowercase
                 // and the SDK normalises, exactly as on an intent.
-                currency: Some("XAF".to_string()),
+                currency: "XAF".to_string(),
                 description: Some("September hosting".to_string()),
                 due_date: Some(1_753_401_600),
                 metadata: BTreeMap::from([("order_id".to_string(), "1234".to_string())]),
@@ -2044,11 +2044,17 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
     );
 }
 
-/// A customer is the only required field, and every unset field is **omitted**
-/// rather than sent empty — `description=` means "clear it" on the update
-/// path and would mean an empty description here.
+/// `customer` and `currency` are the two required fields, and every unset one
+/// is **omitted** rather than sent empty — `description=` means "clear it" on
+/// the update path and would mean an empty description here.
+///
+/// The name said "needs only a customer" until 2026-09-08. It did not: the
+/// server answers `400 A three-letter \`currency\` code is required.`, which
+/// a `wiremock` that answers `201` to anything could never have said, and
+/// `live_invoice_lifecycle` is where it now gets said. See
+/// `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
 #[tokio::test]
-async fn an_invoice_needs_only_a_customer_and_the_rest_is_omitted() {
+async fn an_unset_invoice_field_is_omitted_from_the_body_rather_than_sent_empty() {
     let (server, client) = fixture().await;
     Mock::given(method("POST"))
         .and(path("/v1/invoices"))
@@ -2058,12 +2064,15 @@ async fn an_invoice_needs_only_a_customer_and_the_rest_is_omitted() {
 
     client
         .invoices()
-        .create(CreateInvoiceParams::new("cus_1"), RequestOptions::new())
+        .create(
+            CreateInvoiceParams::new("cus_1", "xaf"),
+            RequestOptions::new(),
+        )
         .await
         .unwrap();
 
     let request = only_request(&server, "/v1/invoices").await;
-    assert_eq!(body_string(&request), "customer=cus_1");
+    assert_eq!(body_string(&request), "customer=cus_1&currency=xaf");
 }
 
 /// `invoices.retrieve` is a `GET` with no body, and the lines come back

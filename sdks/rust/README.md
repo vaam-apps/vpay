@@ -539,7 +539,9 @@ customers or invoices), run by `just test-sdk-rust`:
   `Debug` output either way — `tests/debug_redaction.rs` fails this SDK the
   same way it would fail a `Credentials`/`Client` regression.
 - All thirteen invoice operations (S4b, added 2026-09-08): the exact body of
-  `invoices().create()` and of a create that supplies only a customer; the
+  `invoices().create()` and of a create that supplies nothing but the two
+  required fields (`customer` and `currency` — the second was optional for one
+  day, and a running vpay answers `400` without it); the
   `GET`s that carry the lines; the update's three states (`due_date=` is
   *clear it*, an unmentioned field is absent); the list's two cursors and two
   filters; the `DELETE` with its key and no body; that `finalize`, `void` and

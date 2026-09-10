@@ -74,16 +74,17 @@ export class InvoicesResource {
    *
    * A `400` naming `customer` when it is absent, unknown, or another
    * merchant's — one sentence for all three, so the parameter is not an
-   * oracle.
+   * oracle; and a `400` naming `currency` for one this deployment does not
+   * settle.
    */
   async create(
     params: CreateInvoiceParams,
     options?: RequestOptions,
   ): Promise<Invoice> {
-    const body: Record<string, FormValue> = { customer: params.customer };
-    if (params.currency !== undefined) {
-      body["currency"] = params.currency.toLowerCase();
-    }
+    const body: Record<string, FormValue> = {
+      customer: params.customer,
+      currency: params.currency.toLowerCase(),
+    };
     if (params.description !== undefined) {
       body["description"] = params.description;
     }

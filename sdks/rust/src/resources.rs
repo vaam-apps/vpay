@@ -501,13 +501,24 @@ impl ListCustomersParams {
 
 /// `POST /v1/invoices` request fields (S4b).
 ///
-/// `customer` is the only required one, and it is required for a reason worth
-/// stating: an invoice is a bill to somebody, and one that names no payer is
-/// one nobody can be asked to pay. It is a plain `String` rather than an
-/// `Option<String>` so that the type says so — the server answers a `400`
-/// naming `customer` for an absent, unknown or *other merchant's* `cus_…`,
-/// always the same sentence, so the parameter cannot be used to discover
-/// which customers exist under some other account.
+/// `customer` and `currency` are both required, and both are plain `String`s
+/// rather than `Option<String>`s so that the type says so.
+///
+/// `customer` is required for a reason worth stating: an invoice is a bill to
+/// somebody, and one that names no payer is one nobody can be asked to pay.
+/// The server answers a `400` naming `customer` for an absent, unknown or
+/// *other merchant's* `cus_…`, always the same sentence, so the parameter
+/// cannot be used to discover which customers exist under some other account.
+///
+/// `currency` is required because **the server requires it**, exactly as it
+/// does on an intent — `parse_currency(None, …)` is
+/// `400 A three-letter \`currency\` code is required.`, and there is no
+/// deployment default it falls back to. This field was an `Option<String>`
+/// until 2026-09-08, documented as "omitted from the body entirely when
+/// `None`, which is how the server gets to apply this deployment's own
+/// default": measured against a running vpay, that request is a `400`. A
+/// type that can express only sendable requests is the same reason
+/// [`CreatePaymentIntentParams::currency`] is a `String`.
 ///
 /// A created invoice is always a [`crate::InvoiceStatus::Draft`] with no
 /// number, no lines and zero amounts. Add lines with
@@ -518,12 +529,9 @@ pub struct CreateInvoiceParams {
     /// The `cus_…` this invoice bills. Required.
     pub customer: String,
     /// Lower-cased at encode time regardless of how it was supplied, for
-    /// [`CreatePaymentIntentParams::currency`]'s reason.
-    ///
-    /// Omitted from the body entirely when `None`, which is how the server
-    /// gets to apply this deployment's own default rather than this SDK
-    /// guessing it.
-    pub currency: Option<String>,
+    /// [`CreatePaymentIntentParams::currency`]'s reason. Required — see the
+    /// type's own documentation.
+    pub currency: String,
     /// The merchant's note on the document. At most 1000 characters, which
     /// the server checks.
     pub description: Option<String>,
@@ -539,12 +547,13 @@ pub struct CreateInvoiceParams {
 }
 
 impl CreateInvoiceParams {
-    /// The one required field, for a caller who would otherwise write a
+    /// The two required fields, for a caller who would otherwise write a
     /// struct literal with a `..Default::default()` in it.
     #[must_use]
-    pub fn new(customer: impl Into<String>) -> Self {
+    pub fn new(customer: impl Into<String>, currency: impl Into<String>) -> Self {
         Self {
             customer: customer.into(),
+            currency: currency.into(),
             ..Self::default()
         }
     }
@@ -557,7 +566,7 @@ impl CreateInvoiceParams {
             ),
             (
                 "currency".to_string(),
-                FormValue::from(self.currency.as_ref().map(|c| c.to_lowercase())),
+                FormValue::from(self.currency.to_lowercase()),
             ),
             (
                 "description".to_string(),
@@ -1264,7 +1273,8 @@ impl InvoicesResource<'_> {
     /// # Errors
     /// See [`enum@crate::Error`]. In particular a `400` naming `customer`
     /// when it is absent, unknown, or another merchant's — one sentence for
-    /// all three, so the parameter is not an oracle.
+    /// all three, so the parameter is not an oracle; and a `400` naming
+    /// `currency` for one this deployment does not settle.
     pub async fn create(
         &self,
         params: CreateInvoiceParams,

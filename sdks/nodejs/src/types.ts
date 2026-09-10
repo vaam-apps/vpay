@@ -757,10 +757,16 @@ export interface CreateInvoiceParams {
   customer: string;
   /**
    * Lower-cased at encode time regardless of how it was supplied, as an
-   * intent's is. Omitted from the body entirely when absent, so the server
-   * applies this deployment's own default rather than this SDK guessing it.
+   * intent's is.
+   *
+   * **Required**, as it is on an intent. This field was optional until
+   * 2026-09-08 and documented as letting "the server apply this deployment's
+   * own default"; measured against a running vpay, a create with no
+   * `currency` is `400 A three-letter \`currency\` code is required.` —
+   * there is no such default. A type that can express only sendable requests
+   * is why {@link CreatePaymentIntentParams.currency} is required too.
    */
-  currency?: string | undefined;
+  currency: string;
   /** At most 1000 characters, which the server checks. */
   description?: string | undefined;
   /**

@@ -2625,18 +2625,25 @@ describe("invoices", () => {
     expect(invoice.livemode).toBe(false);
   });
 
-  it("an invoice needs only a customer, and every other field is omitted", async () => {
+  // The name said "an invoice needs only a customer" until 2026-09-08. It
+  // does not: `POST /v1/invoices` with no `currency` is
+  // `400 A three-letter \`currency\` code is required.` — measured against a
+  // running vpay, which a stub answering 201 to anything could never have
+  // said. `currency` is a required field of `CreateInvoiceParams` now, as it
+  // already was of `CreatePaymentIntentParams`. See
+  // `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
+  it("an unset invoice field is omitted from the body rather than sent empty", async () => {
     const server = await withServer({
       resource: () => ({ status: 201, body: sampleInvoice() }),
     });
     const client = makeClient(server);
 
-    await client.invoices.create({ customer: "cus_1" });
+    await client.invoices.create({ customer: "cus_1", currency: "xaf" });
 
     const req = server.requests.find((r) => r.url === "/v1/invoices")!;
     // Omitted, never sent empty: `description=` means "clear it" on the
     // update path and would mean an empty description here.
-    expect(req.body).toBe("customer=cus_1");
+    expect(req.body).toBe("customer=cus_1&currency=xaf");
   });
 
   it("invoices.retrieve: a GET whose response carries the lines", async () => {

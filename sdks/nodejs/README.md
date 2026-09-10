@@ -680,7 +680,9 @@ none of them touches the network:
   private key, and that neither the client nor any error this SDK throws
   carries an access token into `util.inspect` output.
 - All thirteen invoice operations (S4b, added 2026-09-08): the exact body of
-  `invoices.create` and of a create that supplies only a customer; the `GET`
+  `invoices.create` and of a create that supplies nothing but the two required
+  fields (`customer` and `currency` — the second was optional for one day, and
+  a running vpay answers `400` without it); the `GET`
   whose response carries the lines; the update's three states (`due_date=` is
   *clear it*, an unmentioned field is absent, and a patch that mentions
   nothing sends nothing); the list's two cursors and two filters; the
