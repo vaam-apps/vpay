@@ -4848,6 +4848,7 @@ name = "vpay-tests-integration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "authkestra-op",
  "axum",
  "base64 0.22.1",

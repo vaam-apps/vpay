@@ -36,6 +36,13 @@ vpay-worker.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
 vpay-testkit.workspace = true
+# `tests/boot_coherence.rs` implements `vpay_provider::ProviderAdapter`, which
+# is an `#[async_trait]` trait, so the impl needs the same attribute. **Not a
+# licence for test doubles** (AGENTS.md rule 1): that file's rail answers every
+# call with `ProviderError::Unsupported` and exists only to *declare* the one
+# capability set no shipping adapter may declare — the same use, and the same
+# pin, as `vpay-api`'s own `#[cfg(test)]` `TestRail`.
+async-trait.workspace = true
 # `tests/worker_e2e.rs` installs a real Prometheus recorder and scrapes it
 # through the shipping `vpay_api::observability` router, so the assertion is
 # on the document a Prometheus server would actually receive rather than on
