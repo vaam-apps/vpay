@@ -674,17 +674,22 @@ ignored (expected 0), 45 test binaries (expected 45), 1650 total**;
 `config` 63, `tokens` 8, `api-client` 4, all 0 skipped); `deny` (advisories,
 bans, licenses, sources all ok).
 
+**Run twice, on the code head `ccc97ba` and again on `fa1d257`, the head this
+entry is in** — because a status page written after a gate is a page that gate
+did not read. Every count above is identical on both. The six `worker_kill9`
+cases, `ccc97ba` then `fa1d257`:
+`a_worker_sigtermed_mid_delivery…` **40.8 s / 35.5 s**,
+`a_drain_that_runs_out_of_grace_under_a_real_signal…` **36.7 s / 32.7 s**,
+the two `SIGKILL` cases 3.4 s / 3.8 s and 3.5 s / 7.1 s, and the two
+container-free guards 4 ms on both. The entry previously quoted
+"3.7–31.9 s each" for three scenarios: that range took its low from one gate
+run and its high from another, which is a range no single run measured.
+
 **1650, not 1626.** The implementation's gate ran on a branch based on
 `ff1f507`; this one is rebased onto `ded879d`, which is 22 tests further on,
 and the review adds two more cases (the timed-out drain and the mapping
 guard) to an existing binary — the expected-binary count is still **45**,
-because neither adds a binary. The six `worker_kill9` cases on this run:
-`a_worker_sigtermed_mid_delivery…` **40.8 s**,
-`a_drain_that_runs_out_of_grace_under_a_real_signal…` **36.7 s**, the two
-`SIGKILL` cases 3.4 s each, and the two container-free guards 4 ms each.
-(The entry previously quoted "3.7–31.9 s each" for three scenarios; that
-range spanned two different gate runs rather than one, which is why it is
-replaced by one run's numbers.)
+because neither adds a binary.
 
 **It took three attempts to get a clean gate on this head, and the two
 failures were the machine.** A `vpay-db` test failed twice on

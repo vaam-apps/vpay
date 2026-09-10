@@ -181,13 +181,17 @@ reading the code.
 
 ## The gate, on the head this review ends at
 
-`just ci`, exit code read from a file: **exit 0** on `ccc97ba`, Node 22.23.2,
-rustc 1.98.0, cratestack 0.12.0. `test-rust` **1650 run, 1650 passed, 0
-skipped** across 45 binaries; `test-doc` 111 passed, 1 ignored; `verify` all
-twelve; `verify-ignored` 0 ignored (expected 0), 45 binaries (expected 45),
-1650 total; `lint-web`, `test-web`, `deny` all clean.
+`just ci`, exit code read from a file: **exit 0** on `ccc97ba` (the code head)
+and **exit 0** again on `fa1d257` (the head the status entry is in), Node
+22.23.2, rustc 1.98.0, cratestack 0.12.0. `test-rust` **1650 run, 1650
+passed, 0 skipped** across 45 binaries; `test-doc` 111 passed, 1 ignored;
+`verify` all twelve (`verify-links` 1039 links in 195 files, `verify-errors`
+19 types, `verify-serde` 85 types, `verify-migrations` 38 files);
+`verify-ignored` 0 ignored (expected 0), 45 binaries (expected 45), 1650
+total; `lint-web`, `test-web`, `deny` all clean. Identical counts on both
+heads.
 
-It took three attempts. The first found the race above; the second and third
+The first of those took three attempts. The first found the race above; the second and third
 failed a `vpay-db` test on `failed to create a container: Timeout error` and
 `container startup timeout`, on a host carrying two other agents' full suites
 at load average 10. Neither is anything this branch touches, and the run
