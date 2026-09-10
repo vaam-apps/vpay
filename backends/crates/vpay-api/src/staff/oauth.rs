@@ -117,7 +117,12 @@ pub struct TokenResponse {
     pub access_token: String,
     /// `Bearer`, always.
     pub token_type: String,
-    /// Seconds, from `crate::op::ACCESS_TOKEN_TTL_SECS`.
+    /// Seconds, from `staff_auth.access_token_ttl_seconds` (900 by default).
+    ///
+    /// Read off the OP configuration the token was signed under rather than
+    /// from a constant, since 2026-09-10: this endpoint and
+    /// `GET /staff/session`'s `access_token_expires_at` have to agree, and
+    /// they do because both come from the same field.
     pub expires_in: u64,
     /// What was granted, space-delimited.
     pub scope: String,
@@ -375,12 +380,13 @@ pub(crate) async fn token(
         serde_json::Value::String(code.merchant_id.clone()),
     );
 
+    let ttl_secs = login.dashboard_op.access_token_ttl_secs();
     let access_token = login
         .dashboard_op
         .tokens()
         .issue_user_token_with_extra(
             identity,
-            crate::op::ACCESS_TOKEN_TTL_SECS,
+            ttl_secs,
             Some(code.scope.clone()),
             // THE AUDIENCE, and ADR-0017 decision 3 in one argument: the
             // dashboard client's own id, which is what
@@ -396,8 +402,29 @@ pub(crate) async fn token(
     // Written to the session row, which is what makes signing out a
     // revocation: the dashboard's server reads the token back from here on
     // every render, and a deleted row has none to read.
+    //
+    // The expiry goes with it (issue #88 item 1). `now` is the same instant
+    // the TTL was applied to a moment ago, and `ttl_secs` is the same number,
+    // so the column and the JWT's own `exp` name one instant — which is what
+    // makes the dashboard's decision to re-mint early a decision about the
+    // token it actually holds. A TTL that could not be represented is a
+    // refusal rather than a silently truncated expiry: it can only happen if
+    // the configured bound (10..=3600) is ever widened past `i64` seconds.
+    let Some(expires_at) = i64::try_from(ttl_secs)
+        .ok()
+        .map(time::Duration::seconds)
+        .map(|ttl| now.saturating_add(ttl))
+    else {
+        tracing::error!(
+            ttl_secs,
+            "the dashboard access-token TTL is not representable"
+        );
+        return Err(ApiError::Internal(
+            "the dashboard access token could not be dated".to_owned(),
+        ));
+    };
     if !repositories
-        .record_access_token(&code.session_id, &access_token, now)
+        .record_access_token(&code.session_id, &access_token, expires_at, now)
         .await?
     {
         // The session was signed out between `/authorize` and here. The code
@@ -416,7 +443,7 @@ pub(crate) async fn token(
     Ok(Json(TokenResponse {
         access_token,
         token_type: "Bearer".to_owned(),
-        expires_in: crate::op::ACCESS_TOKEN_TTL_SECS,
+        expires_in: ttl_secs,
         scope: code.scope,
     }))
 }

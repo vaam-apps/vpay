@@ -518,6 +518,24 @@ fn staff_auth_with(trusted_proxies: Vec<String>, rate_limits: RateLimits) -> Sta
         totp_encryption_key: Some(URL_SAFE_NO_PAD.encode([9_u8; 32])),
         trusted_proxies,
         rate_limits,
+        // The shipping TTL. A case whose subject is the expiry passes its own
+        // — see `staff_auth_with_token_ttl` — and every other case must run
+        // under the number a deployment that wrote nothing gets, so that a
+        // short TTL cannot make an unrelated assertion pass or fail.
+        access_token_ttl_seconds: StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+    }
+}
+
+/// The same block with a **short** `/dash/v1` token TTL.
+///
+/// The only way to exercise an expiry in a test that does not sit for a
+/// quarter of an hour, and the reason the TTL is configuration at all
+/// (`staff_auth.access_token_ttl_seconds`). The value is bounded at 10 by
+/// `garde`, so this is the shortest a deployment may legally ask for.
+fn staff_auth_with_token_ttl(access_token_ttl_seconds: u32) -> StaffAuth {
+    StaffAuth {
+        access_token_ttl_seconds,
+        ..staff_auth_with(Vec::new(), RateLimits::default())
     }
 }
 
@@ -2197,5 +2215,529 @@ async fn changing_a_password_needs_the_current_one_and_ends_every_other_session(
         )
         .await?;
     assert_eq!(status, 401, "the replaced password is refused: {body}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 22
+
+/// **A mistyped six-digit code must not end the session** — and the route
+/// that lets the dashboard know the difference.
+///
+/// `POST /dash/v1/staff/totp` answers one `401` for a wrong code and for
+/// every session it refuses, which is this module's whole design. The
+/// dashboard app read that `401` as "the session is over" and cleared the
+/// cookie, so a typo sent a staff member back to the email-and-password form
+/// (the exp36 review's F6). The two lines could not simply be deleted:
+/// `/login/totp` read no session at all, so with the cookie kept a session
+/// that really *was* over would have left somebody typing codes at a form
+/// that could never accept one.
+///
+/// `GET /dash/v1/staff/session/stage` is what closes it, and this asserts the
+/// four things the page now rests on:
+///
+/// 1. `/staff/session` is refused at this stage and `/staff/session/stage` is
+///    not — which is why it is a new route rather than a reuse;
+/// 2. a **wrong code** leaves the session live and still `pending_totp`, so
+///    the browser may simply try again;
+/// 3. the body carries the stage and **no identity at all** — a caller here
+///    has presented a password and no second factor;
+/// 4. an accepted code moves it to `authenticated`, and signing out ends it.
+///
+/// The decisive mutation is `session_stage` calling `authenticated_session`
+/// instead of `load_session`: (1) and (2) then answer `401`, and the page has
+/// no way back to the honest one of F6's two meanings.
+#[tokio::test]
+async fn a_wrong_code_leaves_the_session_live_and_the_stage_route_says_so() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+
+    // (1) The stage read answers where the session read cannot.
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&enrolling.session), None)
+        .await?;
+    assert_eq!(
+        status, 401,
+        "/staff/session is refused before the second factor — the reason /staff/session/stage \
+         exists: {body}"
+    );
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("pending_totp"),
+        "{body}"
+    );
+
+    // (3) The stage and nothing else. Every key here would be something the
+    // second factor exists to gate.
+    let keys: Vec<&String> = body
+        .as_object()
+        .context("the stage response is an object")?
+        .keys()
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["stage"],
+        "the stage route must publish nothing about the person: {body}"
+    );
+
+    // (2) A wrong code. Refused, with the same 401 a dead session gets — and
+    // the session is untouched.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", "000000"), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(status, 401, "a wrong code is refused: {body}");
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 200,
+        "a MISTYPED CODE MUST NOT END THE SESSION. A 401 here is the dashboard signing a staff \
+         member out for a typo, which is exactly what F6 was: {body}"
+    );
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("pending_totp"),
+        "and it is still owed a code, so the same enrolment blob may be re-presented: {body}"
+    );
+
+    // (4) The right code moves the stage, and it is the SAME session token —
+    // the blob the browser kept is still the one that commits the enrolment.
+    let code = enrolling
+        .totp
+        .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", &code), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(
+        status, 200,
+        "the retry after a typo must complete the enrolment: {body}"
+    );
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("authenticated"),
+        "{body}"
+    );
+
+    // And it is a session read like any other: sign-out ends it.
+    let (status, body) = harness
+        .post_form("/dash/v1/staff/logout", Some(&enrolling.session), &[])
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a signed-out session is over at this route too: {body}"
+    );
+
+    // As is a forged one, and one with no header at all.
+    let (status, _) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some("not-a-session-vpay-ever-minted"),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 401);
+    let (status, _) = harness
+        .get_json("/dash/v1/staff/session/stage", None, None)
+        .await?;
+    assert_eq!(status, 401);
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 23
+
+/// A **disabled** staff member's session is over at the stage route too.
+///
+/// `load_session` re-reads the staff row on every request, and this is the
+/// route the `/login/totp` page decides from — so a route that trusted the
+/// session row would leave a disabled person typing codes at a live form.
+/// The decisive mutation is deleting the `is_active` arm from
+/// `load_session`: this reads `200`.
+#[tokio::test]
+async fn a_disabled_account_is_refused_at_the_stage_route() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+
+    let (status, _) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "live before the account is disabled");
+
+    sqlx::query("UPDATE staff_members SET status = 'disabled' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&harness.repositories.op_store_pool())
+        .await
+        .context("disabling the staff member")?;
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a disabled account's half-authenticated session must stop at once: {body}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 24
+
+/// **The `/dash/v1` token is re-minted from a live session and from nothing
+/// else** — and the row records when it dies (issue #88 item 1).
+///
+/// There is no `refresh_token` on this surface and there is not going to be
+/// one (`docs/flows/dashboard-auth.md`, "Token lifetimes"). The refresh *is*
+/// the authorization-code leg, run again on the session the browser already
+/// holds — which is not a way around a check but strictly more checking than
+/// carrying one token for twelve hours: `authorize` re-reads the staff row and
+/// re-checks the active status, the merchant binding and
+/// `password_change_required` on **every** mint.
+///
+/// This asserts the four refusals that makes true, each with the same session
+/// **restored afterwards** so the control proves the mutation caused the
+/// refusal rather than something the case had already broken:
+///
+/// 1. a live session mints a *different* token, and moves the recorded expiry;
+/// 2. a **disabled** staff member's session cannot;
+/// 3. a staff member **moved to another merchant** cannot;
+/// 4. an **idle** session cannot;
+/// 5. a **signed-out** session cannot.
+///
+/// And the TTL: `staff_auth.access_token_ttl_seconds` is honoured on the wire
+/// (`expires_in`) and in `staff_sessions.access_token_expires_at`, which is
+/// what the dashboard's margin arithmetic reads. The decisive mutation is
+/// writing `crate::op::ACCESS_TOKEN_TTL_SECS` back into either place: the
+/// deployment here configures 10 seconds and 900 is not within a minute of it.
+#[tokio::test]
+async fn the_dashboard_token_is_re_minted_from_a_live_session_and_from_nothing_else()
+-> anyhow::Result<()> {
+    /// Short enough that the assertions below are unambiguous against the
+    /// shipping 900, and the shortest `garde` admits.
+    const TTL_SECONDS: i64 = 10;
+
+    let harness = harness_with(staff_auth_with_token_ttl(
+        u32::try_from(TTL_SECONDS).expect("10 fits in a u32"),
+    ))
+    .await?;
+    let pool = harness.repositories.op_store_pool();
+
+    /// The session row's token and its recorded expiry, read directly —
+    /// `StaffSessions::load` refuses an expired row, and one of the cases
+    /// below deliberately makes it one.
+    async fn recorded(
+        pool: &sqlx::PgPool,
+        session: &str,
+    ) -> anyhow::Result<(Option<String>, Option<OffsetDateTime>)> {
+        let row = sqlx::query(
+            "SELECT access_token, access_token_expires_at FROM staff_sessions WHERE id = $1",
+        )
+        .bind(hex(&sha256(session.as_bytes())))
+        .fetch_one(pool)
+        .await
+        .context("reading the session row")?;
+        Ok((row.get("access_token"), row.get("access_token_expires_at")))
+    }
+
+    /// The whole leg: `/authorize` then `/token`. The status of the
+    /// authorization request is what every refusal below shows up as.
+    async fn re_mint(harness: &Harness, session: &str) -> anyhow::Result<(u16, Option<Value>)> {
+        let (status, code) = harness.authorize(session, CHALLENGE).await?;
+        if status != 302 {
+            return Ok((status, None));
+        }
+        let code = code.context("a 302 carries a code")?;
+        let (status, body) = harness.exchange(&code, VERIFIER).await?;
+        Ok((status, Some(body)))
+    }
+
+    let signed_in = harness.sign_in().await?;
+    let session = signed_in.session;
+
+    // ---- (0) the TTL, on the wire and in the row --------------------------
+    let before = OffsetDateTime::now_utc();
+    let (status, body) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the first mint: {body:?}");
+    let body = body.context("a body")?;
+    assert_eq!(
+        field(&body, "expires_in"),
+        &Value::from(TTL_SECONDS),
+        "`expires_in` must be staff_auth.access_token_ttl_seconds, not the /v1 constant: {body}"
+    );
+    let first_token = field(&body, "access_token")
+        .as_str()
+        .context("an access token")?
+        .to_owned();
+
+    let (stored, expires_at) = recorded(&pool, &session).await?;
+    assert_eq!(
+        stored.as_deref(),
+        Some(first_token.as_str()),
+        "the row carries the token that was just minted"
+    );
+    let expires_at = expires_at.context(
+        "access_token_expires_at must be written WITH the token; a NULL here is a token the \
+         dashboard cannot decide about and migration 0040's CHECK should have refused the row",
+    )?;
+    let recorded_ttl = (expires_at - before).whole_seconds();
+    assert!(
+        (TTL_SECONDS..=TTL_SECONDS + 5).contains(&recorded_ttl),
+        "the recorded expiry must be the configured TTL from the mint, not 900: {recorded_ttl}s"
+    );
+
+    // ---- (1) a live session mints a DIFFERENT token, and moves the expiry --
+    let (status, body) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "a live session re-mints: {body:?}");
+    let second_token = field(&body.context("a body")?, "access_token")
+        .as_str()
+        .context("an access token")?
+        .to_owned();
+    assert_ne!(
+        second_token, first_token,
+        "a re-mint must be a NEW token; the same string back would mean nothing was re-checked"
+    );
+    let (stored, second_expiry) = recorded(&pool, &session).await?;
+    assert_eq!(stored.as_deref(), Some(second_token.as_str()));
+    assert!(
+        second_expiry.context("an expiry")? >= expires_at,
+        "the recorded expiry moves forward with the token it belongs to"
+    );
+
+    // ---- (2) a disabled staff member's session cannot ---------------------
+    sqlx::query("UPDATE staff_members SET status = 'disabled' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await
+        .context("disabling the staff member")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "a disabled account must not be able to renew its dashboard token"
+    );
+    sqlx::query("UPDATE staff_members SET status = 'active' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the control: the session itself is still good");
+
+    // ---- (3) a staff member moved to another merchant cannot --------------
+    sqlx::query("UPDATE staff_members SET merchant_id = $1 WHERE email = $2")
+        .bind(MERCHANT_B)
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await
+        .context("moving the staff member")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "a staff member who no longer belongs to the bound merchant must not be renewed a token \
+         for it"
+    );
+    sqlx::query("UPDATE staff_members SET merchant_id = $1 WHERE email = $2")
+        .bind(MERCHANT_A)
+        .bind(STAFF_EMAIL)
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the control again");
+
+    // ---- (4) an idle session cannot ---------------------------------------
+    //
+    // Aged in the table rather than waited for: the idle bound is thirty
+    // minutes and `SessionRow::is_live_at` reads the column.
+    sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+        .bind(OffsetDateTime::now_utc() - time::Duration::minutes(31))
+        .bind(hex(&sha256(session.as_bytes())))
+        .execute(&pool)
+        .await
+        .context("aging the session past its idle bound")?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 401, "an idle session must not renew a token");
+    sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+        .bind(OffsetDateTime::now_utc())
+        .bind(hex(&sha256(session.as_bytes())))
+        .execute(&pool)
+        .await?;
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(status, 200, "the last control");
+
+    // ---- (5) a signed-out session cannot ----------------------------------
+    let (status, body) = harness
+        .post_form("/dash/v1/staff/logout", Some(&session), &[])
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = re_mint(&harness, &session).await?;
+    assert_eq!(
+        status, 401,
+        "SIGN-OUT IS THE REVOCATION. A session that can still renew its token has not been \
+         signed out of anything"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 25
+
+/// **The stage route does not move `last_seen_at`, and `/staff/session`
+/// does.**
+///
+/// # What the property is for
+///
+/// ADR-0017 decision 2 gives a session a thirty-minute *idle* bound, and
+/// `/staff/session` moves it on every accepted read — that is what makes it
+/// idle rather than "since login". `session_stage` deliberately does not, and
+/// the reason is the one case where a session is half a credential: a caller
+/// holding a `pending_totp` session has presented a password and no second
+/// factor. Being *asked* for a credential is not use of a session, so a page
+/// left open on the code form — or a script polling this route, which is
+/// unauthenticated and unlimited exactly as `/staff/session` is — must not be
+/// able to hold a half-authenticated session open until the twelve-hour
+/// absolute bound. It idles out in thirty minutes like any other.
+///
+/// # Why it needs a test rather than the comment it had
+///
+/// The branch that added the route stated this in four places — the handler's
+/// doc comment, `docs/flows/dashboard-auth.md`, the ADR amendment and the
+/// implementation notes — and nothing measured it. Measured by the exp44
+/// review before this test existed: one line,
+/// `state.repositories().touch(&session.id, now).await?;`, added to
+/// `session_stage`, and `staff_sign_in`, `boot_coherence` and
+/// `dashboard_read_surface` ran **43 of 43 green**.
+///
+/// The row is **aged** before each read because `StaffSessions::touch` filters
+/// on `last_seen_at < now`: a stamp inside the same instant writes nothing, so
+/// a test that did not age the row could not tell a deliberate no-op from an
+/// accidental one. And the `/staff/session` control is what stops this passing
+/// because touching broke everywhere at once.
+#[tokio::test]
+async fn the_stage_route_does_not_move_the_idle_bound() -> anyhow::Result<()> {
+    /// Where the idle bound stands, read straight off the row.
+    async fn idle_bound(pool: &sqlx::PgPool, id: &str) -> anyhow::Result<OffsetDateTime> {
+        Ok(
+            sqlx::query("SELECT last_seen_at FROM staff_sessions WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .context("reading last_seen_at")?
+                .get("last_seen_at"),
+        )
+    }
+
+    /// Puts the idle bound five minutes into the past, so that any touch is
+    /// unmistakable and none of it is inside `touch`'s `last_seen_at < now`
+    /// filter.
+    async fn age(pool: &sqlx::PgPool, id: &str) -> anyhow::Result<OffsetDateTime> {
+        sqlx::query("UPDATE staff_sessions SET last_seen_at = $1 WHERE id = $2")
+            .bind(OffsetDateTime::now_utc() - time::Duration::minutes(5))
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("aging the session")?;
+        idle_bound(pool, id).await
+    }
+
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+    let pool = harness.repositories.op_store_pool();
+    let id = hex(&sha256(enrolling.session.as_bytes()));
+
+    // ---- a `pending_totp` session: the case the property exists for -------
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        idle_bound(&pool, &id).await?,
+        aged,
+        "THE STAGE READ MUST NOT MOVE THE IDLE BOUND. A session that has proved a password and \
+         no second factor must idle out on schedule however often this route is asked"
+    );
+
+    // ---- and after the second factor, still not ---------------------------
+    let code = enrolling
+        .totp
+        .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", &code), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        idle_bound(&pool, &id).await?,
+        aged,
+        "the stage read is not use of a session at either stage"
+    );
+
+    // ---- the control: `/staff/session` DOES move it -----------------------
+    let aged = age(&pool, &id).await?;
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&enrolling.session), None)
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        idle_bound(&pool, &id).await? > aged,
+        "the control: an accepted /staff/session read is what moves the idle bound, so the \
+         assertions above are about this route and not about a touch that stopped working"
+    );
     Ok(())
 }

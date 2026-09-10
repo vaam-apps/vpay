@@ -2234,6 +2234,38 @@ demo_staff_merchant := "demo-merchant-tenant"
 # else in there — it is a credential, however throwaway.
 demo_staff_password_file := ".e2e/" + demo_project + "/staff-password.txt"
 
+# How long a `/dash/v1` access token lives on the demo stack, in seconds
+# (`staff_auth.access_token_ttl_seconds`, issue #88 item 1).
+#
+# THIRTY, and NOT the 900 a deployment that writes nothing gets. That is a
+# deliberate difference between this stack and production, and it is the whole
+# reason the setting is configuration at all.
+#
+# The token's TTL is 900 s while a session's bounds are twelve hours and thirty
+# minutes idle, so what a staff member met a quarter of an hour into every
+# sign-in — an error box on every render, because nothing re-minted — was
+# exercised by NOTHING. `dashboard.cy.ts` runs in about two minutes and
+# `just demo-walk` in less; a browser run cannot sit out fifteen minutes, so
+# before this variable the only proof the re-mint worked was a unit test over a
+# stubbed clock. At thirty seconds the margin falls at twenty-four and a spec
+# crosses both in one leg with six seconds of slack on either side — measured:
+# at twenty the window was four seconds wide and the leg landed 300 ms inside
+# it, which is a flake waiting for a slower machine.
+#
+# `gen-demo-keys` writes it into the overlay and its shape check is keyed on
+# the CURRENT value, so `just demo_staff_token_ttl=900 demo` regenerates rather
+# than silently keeping a file for the other number — the same job that check
+# does for `demo_dashboard_port`. That check is an ANCHORED regex and not a
+# `grep -F`: every other value in this file that a freshness check keys on ends
+# in something (a path, a hostname) that cannot be a prefix of another legal
+# value, and a bare number is not — `grep -F '...: 10'` matches a line reading
+# `...: 100`, so `just demo_staff_token_ttl=10 demo` against an overlay written
+# for 100 kept the stale file and served a TTL ten times what was asked for.
+#
+# The bound `garde` enforces is 10..=3600; anything outside it stops the server
+# at boot with a validation error naming the field.
+demo_staff_token_ttl := "30"
+
 
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
@@ -2449,7 +2481,8 @@ gen-demo-keys: gen-e2e-signing-key
     staff_auth_present() {
         grep -q '^staff_auth:$' "$overlay" \
             && grep -qE '^  password_pepper: .+$' "$overlay" \
-            && grep -qE '^  totp_encryption_key: .+$' "$overlay"
+            && grep -qE '^  totp_encryption_key: .+$' "$overlay" \
+            && grep -qE '^  access_token_ttl_seconds: {{demo_staff_token_ttl}}$' "$overlay"
     }
 
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
@@ -2548,7 +2581,7 @@ gen-demo-keys: gen-e2e-signing-key
             # — legal for a sandbox, and it logs a warning nobody reads — so
             # the dashboard's first call is a 404 and the login page reports
             # it as though the address were wrong.
-            echo "gen-demo-keys: $overlay predates the \`staff_auth\` secrets, so this stack would serve no staff login — regenerating the pair"
+            echo "gen-demo-keys: $overlay is missing a \`staff_auth\` line this stack needs — either both secrets (without which it serves no staff login at all) or \`access_token_ttl_seconds: {{demo_staff_token_ttl}}\` — regenerating the pair"
         elif ! checkout_base_present; then
             # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
             # the origin every payer link vpay mints is built on. Stale, and
@@ -2786,6 +2819,12 @@ gen-demo-keys: gen-e2e-signing-key
       # nothing else, and a wrong length is a refusal to serve any login
       # rather than a runtime surprise.
       totp_encryption_key: $staff_totp_key
+      # How long a /dash/v1 access token lives (issue #88 item 1). THIRTY on
+      # this stack and 900 in a deployment that writes nothing — see
+      # \`demo_staff_token_ttl\` in the justfile for why the demo deliberately
+      # differs, and \`docs/flows/dashboard-auth.md\` for what the dashboard
+      # does with it.
+      access_token_ttl_seconds: {{demo_staff_token_ttl}}
 
     merchant_clients:
       - client_id: demo-merchant

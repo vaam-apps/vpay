@@ -301,20 +301,24 @@ which turns four cases in `gate.test.ts` red.
 > `changePassword` learned that the hard way (finding F1) and no longer
 > clears the cookie on one.
 >
-> **`submitTotp` still does, and this review left it alone.** A wrong
-> six-digit code is a `401` there, so a mistyped code sends a person back to
-> the email-and-password form rather than telling them. That behaviour is
-> older than this change and its comment does not name the case — it lists
-> "gone, expired, idle, at the wrong stage" and not "wrong code", which is the
-> commonest of the five. It is not a hole (a session that is genuinely over is
-> also refused, and the extra sign-in bounds code guessing rather than
-> loosening it), and unlike `changePassword` it cannot simply be dropped:
-> `/login/totp` reads no session on render — only the cookie's presence — so
-> with the cookie kept, a session that really is over leaves the person
-> retyping codes at a form that will never accept one. Closing it means giving
-> that page the session read `PasswordPage` already has. Left open on purpose,
-> and written down rather than quietly fixed in a review that was not asked
-> for it.
+> ~~**`submitTotp` still does, and this review left it alone.**~~ **Closed
+> 2026-09-10 (exp44).** A wrong six-digit code is a `401` there, so a mistyped
+> code sent a person back to the email-and-password form rather than telling
+> them — and took the sealed enrolment blob with it, so a first sign-in could
+> not even be retried. The exp36 review recorded it (F6) and did not fix it,
+> for a reason that was accurate: unlike `changePassword` the two lines could
+> not simply be dropped, because `/login/totp` read no session on render —
+> only the cookie's presence — so with the cookie kept a session that really
+> was over would leave the person retyping codes at a form that could never
+> accept one. Closing it meant giving that page the session read
+> `PasswordPage` has, and `GET /staff/session` cannot serve it: that route is
+> refused before the second factor, with the same `401` a dead session gets.
+> So the page reads `GET /dash/v1/staff/session/stage` instead — an eighth
+> staff route that answers the stage and nothing about the person — and
+> `server/gate.ts::totpGateFor` is the decision, in the same shape and for the
+> same reason as `refusalFor` beside it. `docs/flows/dashboard-auth.md`, "A
+> mistyped code does not end a session either", carries the argument and the
+> proof.
 
 **There is one route that is not a page**, and it exists for a Next rule
 rather than for a person: `GET /signed-out` clears the session cookie and

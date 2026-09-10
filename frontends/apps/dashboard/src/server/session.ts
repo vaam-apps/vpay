@@ -35,7 +35,12 @@ import { redirect } from 'next/navigation';
 
 import { dashboardConfig } from '../config/runtime';
 import type { DashboardConfig } from '../config/settings';
-import { getJson, type ApiFailure, type SessionResponse } from './api';
+import {
+  getJson,
+  type ApiFailure,
+  type SessionResponse,
+  type SessionStageResponse,
+} from './api';
 import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from './cookies';
 import { gateFor, refusalFor } from './gate';
 import { completeAuthorizationCode } from './oauth';
@@ -139,6 +144,32 @@ export async function readSession(
 }
 
 /**
+ * Reads how far a session has got, or `null` with the refusal.
+ *
+ * The read `/login/totp` takes on every render. {@link readSession} cannot
+ * serve it: `GET /dash/v1/staff/session` is refused for a session that has not
+ * presented a code, with the same `401` it answers for a session that is over,
+ * so the page could not tell a typo from a sign-out — see
+ * {@link import('./gate').totpGateFor}.
+ *
+ * Like {@link readSession} it does not redirect: deciding is
+ * `totpGateFor`'s job and acting is the page's.
+ */
+export async function readSessionStage(
+  config: DashboardConfig,
+  token: string,
+): Promise<{ stage: SessionStageResponse | null; failure: ApiFailure | null }> {
+  const result = await getJson<SessionStageResponse>(
+    config.apiBaseUrl,
+    '/dash/v1/staff/session/stage',
+    { sessionToken: token },
+  );
+  return result.ok
+    ? { stage: result.value, failure: null }
+    : { stage: null, failure: result.failure };
+}
+
+/**
  * The gate every protected page opens with. Redirects rather than returning
  * when the answer is "not here".
  *
@@ -189,7 +220,7 @@ export async function requireStaff(): Promise<StaffGate> {
     redirect(SIGNED_OUT_PATH);
   }
 
-  const gate = gateFor(first.session);
+  const gate = gateFor(first.session, Date.now());
   if (gate.kind === 'must-change-password') {
     redirect(PASSWORD_PATH);
   }
@@ -207,8 +238,32 @@ export async function requireStaff(): Promise<StaffGate> {
     // proxy, a connection that was reset — is vpay being unreachable while
     // this browser's session is very likely still good.
     if (refusalFor(exchanged.failure) === 'outage') {
+      // A **stale** token is not a missing one, and this is the whole reason
+      // `gateFor` tells them apart. The one in hand is still inside its TTL —
+      // that is what the margin bought — so a vpay that could not be reached
+      // for the re-mint costs nothing at all here, where it would otherwise
+      // replace a page that could have rendered with an error box. If it does
+      // expire before vpay comes back, `dash-read.ts` answers the `401` with
+      // its own attempt and then renders the refusal.
+      if (gate.kind === 'stale-token') {
+        return {
+          kind: 'ready',
+          staff: {
+            session: gate.session,
+            accessToken: gate.accessToken,
+            sessionToken: token,
+            config,
+          },
+        };
+      }
       return { kind: 'outage', failure: exchanged.failure };
     }
+    // A `401` is NOT fallen back on, deliberately, stale token or not: it
+    // means `/oauth/authorize` refused this session on this request — signed
+    // out elsewhere, the account disabled, the staff member moved to another
+    // merchant — and reading on with the token that refusal has just
+    // invalidated is the fifteen-minute hole the exp24 review's finding F1
+    // closed one layer down.
     redirect(SIGNED_OUT_PATH);
   }
   return {

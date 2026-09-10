@@ -7,7 +7,7 @@
 //! **Corrected 2026-09-07**
 //! ([ADR-0017](../../../../../docs/adr/0017-staff-authentication.md)). The
 //! authorization-code grant *is* served, for the dashboard client and nothing
-//! else: [`crate::staff`] is the seven unauthenticated routes that produce the
+//! else: [`crate::staff`] is the eight unauthenticated routes that produce the
 //! `Identity` `authkestra_op::handlers::authorize::handle_authorize` takes as
 //! a parameter and authenticates nobody for, and
 //! `backends/tests/integration/tests/staff_sign_in.rs` drives password ->

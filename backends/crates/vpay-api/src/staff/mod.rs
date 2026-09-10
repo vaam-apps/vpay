@@ -51,6 +51,7 @@ use axum::routing::{get, post};
 use axum::{Form, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use vpay_db::{NewSession, SessionRow, SessionState, StaffRow, StaffSessions};
 
 use crate::ApiError;
@@ -275,6 +276,57 @@ pub struct SessionResponse {
     /// The `/dash/v1` access token, once the code exchange has minted one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+    /// When [`Self::access_token`] stops being accepted, RFC 3339. Absent
+    /// exactly when the token is.
+    ///
+    /// # Why a caller needs this and cannot compute it
+    ///
+    /// The token is a JWT and carries its own `exp`, but the dashboard app is
+    /// not a verifier of it: it holds the string and presents it, and reading
+    /// a claim out of a credential without checking the signature is a habit
+    /// worth not having in a payments app. So the instant is published beside
+    /// the token, out of `staff_sessions.access_token_expires_at` (migration
+    /// 0040), where the exchange wrote it.
+    ///
+    /// What it is *for* is issue #88 item 1: the app re-mints while the token
+    /// is still good, rather than after a read has failed on it. See
+    /// [`Self::access_token_ttl_seconds`] for the other half.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token_expires_at: Option<String>,
+    /// How long a freshly minted token lives here, in seconds
+    /// (`staff_auth.access_token_ttl_seconds`).
+    ///
+    /// Published because the margin is a **fraction** of the TTL and the app
+    /// cannot divide by a number it does not have. An absolute margin instead
+    /// would be wrong at one end or the other: sixty seconds is a fifteenth
+    /// of the shipping 900 and three times the TTL an end-to-end run sets, so
+    /// it would either re-mint too late to matter or re-mint on every render.
+    ///
+    /// Not a secret and not a contract: nothing outside this deployment ever
+    /// receives a dashboard token, and this route is reachable only with a
+    /// session credential.
+    pub access_token_ttl_seconds: u64,
+}
+
+/// What `GET /dash/v1/staff/session/stage` answers.
+///
+/// **One field, and that is the whole design.** [`SessionResponse`] is
+/// refused for a session that has not presented a second factor, and it has
+/// to be: a caller holding a `pending_totp` session has proved a password and
+/// nothing else, so handing them a display name and a merchant id would move
+/// the tenant's identity to the wrong side of the second factor.
+///
+/// This route answers the one question the dashboard's `/login/totp` page has
+/// to ask on every render — *is the session I am holding still alive?* — and
+/// answers it with a word that says nothing about the person. See
+/// [`session_stage`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionStageResponse {
+    /// `pending_totp` or `authenticated`: the two values
+    /// `staff_sessions_state_is_known` admits, and nothing derived from the
+    /// staff row.
+    pub stage: &'static str,
 }
 
 /// The routes this module mounts, relative to `crate::dash::DASH_NEST`.
@@ -287,6 +339,7 @@ pub const STAFF_ROUTES: &[(&str, &[&str])] = &[
     ("/staff/totp", &["POST"]),
     ("/staff/password", &["POST"]),
     ("/staff/session", &["GET"]),
+    ("/staff/session/stage", &["GET"]),
     ("/staff/logout", &["POST"]),
     ("/oauth/authorize", &["GET"]),
     ("/oauth/token", &["POST"]),
@@ -304,6 +357,7 @@ pub(crate) fn routes() -> Router<crate::AppState> {
         .route("/staff/totp", post(totp_step))
         .route("/staff/password", post(change_password))
         .route("/staff/session", get(session))
+        .route("/staff/session/stage", get(session_stage))
         .route("/staff/logout", post(logout))
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/token", post(oauth::token))
@@ -673,6 +727,7 @@ pub(crate) async fn session(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SessionResponse>, ApiError> {
+    let login = state.staff_login()?;
     let now = OffsetDateTime::now_utc();
     let (session, staff) = authenticated_session(&state, &headers, now).await?;
 
@@ -687,6 +742,64 @@ pub(crate) async fn session(
         merchant_id: staff.merchant_id,
         password_change_required: staff.password_change_required,
         access_token: session.access_token,
+        // Formatted here rather than sent as a Unix integer for the reason
+        // every other instant on this crate's wire is: `crate::model` renders
+        // times as RFC 3339, and one route answering seconds-since-epoch is
+        // one shape a reader has to learn twice.
+        access_token_expires_at: session
+            .access_token_expires_at
+            .and_then(|at| at.format(&Rfc3339).ok()),
+        access_token_ttl_seconds: login.dashboard_op.access_token_ttl_secs(),
+    }))
+}
+
+/// How far this session has got, and nothing else about it.
+///
+/// # Why this route exists, and what it cost not to have it
+///
+/// [`session`] refuses a `pending_totp` session — [`authenticated_session`] —
+/// so the dashboard's `/login/totp` page had **no way to tell a live session
+/// mid-sign-in from a dead one**: both are the same `401`. It therefore read
+/// no session at all and rendered the code form for whatever cookie was
+/// present, and its server action inferred the session's fate from the `401`
+/// that `POST /staff/totp` answers for a *wrong code* — signing a staff
+/// member out for a typo (the exp36 review's F6, and F1 one route over).
+///
+/// The page now asks this route on every render. A `401` here means the
+/// session really is over — absent, expired, idle, forged, disabled, or
+/// naming a staff row that is gone, all of them [`load_session`]'s refusals —
+/// and that is the only thing that sends somebody back to `/login`.
+///
+/// # What it deliberately does not answer
+///
+/// No `staff_id`, no display name, no email, no merchant id, no access token.
+/// A caller holding a `pending_totp` session has presented a password and no
+/// second factor, and every one of those fields is something the second
+/// factor is there to gate. The stage is a fact about the *session*, which
+/// the caller is already holding; see [`SessionStageResponse`].
+///
+/// # It does not touch `last_seen_at`
+///
+/// Unlike [`session`], deliberately. A person sitting on the code form is not
+/// using their session — they are being asked for the credential that would
+/// make it usable — and moving the idle bound on a render of that page would
+/// let an unattended browser hold a half-authenticated session open
+/// indefinitely.
+///
+/// # Errors
+///
+/// [`ApiError::StaffSignInRefused`] for every session this deployment will
+/// not accept — one answer, as everywhere in this module;
+/// [`ApiError::Db`] if Postgres fails.
+pub(crate) async fn session_stage(
+    State(state): State<crate::AppState>,
+    headers: HeaderMap,
+) -> Result<Json<SessionStageResponse>, ApiError> {
+    let now = OffsetDateTime::now_utc();
+    let (session, _staff) = load_session(&state, &headers, now).await?;
+
+    Ok(Json(SessionStageResponse {
+        stage: session.state.as_wire_str(),
     }))
 }
 
@@ -928,11 +1041,38 @@ mod tests {
     /// Every route this module mounts is listed in `STAFF_ROUTES`, which is
     /// what the boundary test walks.
     #[test]
-    fn the_route_table_names_seven_unauthenticated_paths() {
-        assert_eq!(STAFF_ROUTES.len(), 7);
+    fn the_route_table_names_eight_unauthenticated_paths() {
+        assert_eq!(STAFF_ROUTES.len(), 8);
         for (path, methods) in STAFF_ROUTES {
             assert!(path.starts_with('/'), "{path}");
             assert!(!methods.is_empty(), "{path}");
+        }
+    }
+
+    /// `/staff/session/stage` carries the session's stage and **nothing about
+    /// the person**.
+    ///
+    /// The decisive mutation is adding any field off the staff row — an
+    /// `email`, a `merchant_id`, a `display_name` — which is what "just reuse
+    /// `SessionResponse`" would look like: this test then finds a key it did
+    /// not expect. A `pending_totp` caller has proved a password and no
+    /// second factor, and every such field is on the wrong side of it.
+    #[test]
+    fn the_stage_response_carries_one_field_and_no_identity() {
+        for stage in [
+            SessionState::PendingTotp.as_wire_str(),
+            SessionState::Authenticated.as_wire_str(),
+        ] {
+            let body = serde_json::to_value(SessionStageResponse { stage })
+                .expect("a one-field struct serialises");
+            let object = body.as_object().expect("an object");
+
+            assert_eq!(
+                object.keys().collect::<Vec<_>>(),
+                vec!["stage"],
+                "the stage route must publish nothing but the stage: {body}"
+            );
+            assert_eq!(object.get("stage").and_then(|v| v.as_str()), Some(stage));
         }
     }
 }

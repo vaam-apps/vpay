@@ -118,6 +118,14 @@ pub struct SessionRow {
     /// The `/dash/v1` access token this session's code exchange minted, or
     /// `None` before it. A live bearer credential — see the `Debug` impl.
     pub access_token: Option<String>,
+    /// When [`Self::access_token`] stops being accepted, or `None` when there
+    /// is none.
+    ///
+    /// `None` exactly when the token is — migration 0040's
+    /// `staff_sessions_token_expiry_is_paired`. It is what lets the dashboard
+    /// replace the token **before** a read fails on it (issue #88 item 1)
+    /// rather than after; see [`StaffSessions::record_access_token`].
+    pub access_token_expires_at: Option<OffsetDateTime>,
 }
 
 /// Redacts the access token, which is a live bearer credential for the length
@@ -136,6 +144,10 @@ impl fmt::Debug for SessionRow {
                 "access_token",
                 &self.access_token.as_ref().map(|_| "[redacted]"),
             )
+            // NOT redacted, unlike the token beside it: an expiry is a
+            // timestamp and it is the one field somebody debugging a re-mint
+            // loop actually needs to read.
+            .field("access_token_expires_at", &self.access_token_expires_at)
             .finish()
     }
 }
@@ -232,13 +244,20 @@ pub trait StaffSessions {
     /// [`DbError::Persistence`].
     async fn mark_authenticated(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError>;
 
-    /// Records the access token the code exchange minted for this session.
-    /// `false` means no such session.
+    /// Records the access token the code exchange minted for this session,
+    /// **and when it expires**. `false` means no such session.
     ///
     /// This is what makes [`StaffSessions::delete`] a **revocation** rather
     /// than a sign-out: the token cannot be presented by anyone who cannot
     /// read it back out of this row, and the row is gone. It is the
     /// server-side deny-list ADR-0009's Consequences section left undecided.
+    ///
+    /// `expires_at` is not derived here, unlike [`NewSession`]'s absolute
+    /// bound: the TTL is the *caller's* — `staff_auth.access_token_ttl_seconds`,
+    /// read off the OP configuration the token was actually signed under — and
+    /// a second copy of it in this crate would be a number that could disagree
+    /// with the one inside the JWT. What this crate guarantees is that the two
+    /// columns move together, which is migration 0040's CHECK.
     ///
     /// # Errors
     ///
@@ -247,6 +266,7 @@ pub trait StaffSessions {
         &self,
         id: &str,
         access_token: &str,
+        expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<bool, DbError>;
 
@@ -316,6 +336,9 @@ impl StaffSessions for crate::repository::PgRepositories {
                 expires_at: to_chrono(new.now.saturating_add(ABSOLUTE_LIFETIME)),
                 last_seen_at: to_chrono(new.now),
                 access_token: None,
+                // Paired with the token, and there is none yet: the code
+                // exchange is what writes both.
+                access_token_expires_at: None,
             })
             .run(&system_context())
             .await
@@ -384,6 +407,7 @@ impl StaffSessions for crate::repository::PgRepositories {
         &self,
         id: &str,
         access_token: &str,
+        expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<bool, DbError> {
         let summary = self
@@ -393,6 +417,11 @@ impl StaffSessions for crate::repository::PgRepositories {
             .where_(staff_session::id().eq(id.to_owned()))
             .set(cratestack_schema::UpdateStaffSessionInput {
                 access_token: Some(Some(access_token.to_owned())),
+                // In the SAME statement as the token, which is what makes
+                // migration 0040's paired CHECK a property rather than a
+                // convention: there is no instant at which one is written
+                // and the other is not.
+                access_token_expires_at: Some(Some(to_chrono(expires_at))),
                 last_seen_at: Some(to_chrono(now)),
                 ..cratestack_schema::UpdateStaffSessionInput::default()
             })
@@ -452,6 +481,7 @@ fn row_from_model(model: cratestack_schema::models::StaffSession) -> Result<Sess
         expires_at: from_chrono(model.expires_at),
         last_seen_at: from_chrono(model.last_seen_at),
         access_token: model.access_token,
+        access_token_expires_at: model.access_token_expires_at.map(from_chrono),
     })
 }
 
@@ -503,6 +533,7 @@ mod tests {
             expires_at: created.saturating_add(ABSOLUTE_LIFETIME),
             last_seen_at: last_seen,
             access_token: None,
+            access_token_expires_at: None,
         };
 
         assert!(session(created).is_live_at(created));
@@ -548,6 +579,7 @@ mod tests {
             expires_at: OffsetDateTime::UNIX_EPOCH,
             last_seen_at: OffsetDateTime::UNIX_EPOCH,
             access_token: Some("eyJhbGciOiJSUzI1NiJ9.payload.sig".to_owned()),
+            access_token_expires_at: Some(OffsetDateTime::UNIX_EPOCH + Duration::minutes(15)),
         };
 
         let rendered = format!("{row:?}");

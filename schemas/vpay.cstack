@@ -1588,6 +1588,14 @@ model StaffSession {
   // `@sensitive` for `Staff.password_hash`'s reason and more urgently: this
   // is a live bearer credential for the length of its TTL.
   access_token String? @sensitive
+  // When that token stops being accepted (migration 0040, issue #88 item 1).
+  // NULL exactly when `access_token` is — migration 0040's
+  // `staff_sessions_token_expiry_is_paired`, which is multi-column and
+  // therefore invisible to `cratestack migrate baseline`, so `postgres_smoke.rs`
+  // asserts it directly. Not `@sensitive`: an expiry is a timestamp, and
+  // redacting it would hide the one field an operator debugging a re-mint
+  // loop needs to read.
+  access_token_expires_at DateTime?
 
   // No `@relation` to `Staff`, although `staff_sessions.staff_id` is a real
   // foreign key. 0.11.1's `@relation` needs both ends declared and side-loads

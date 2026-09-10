@@ -13,6 +13,7 @@ import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
 import {
   secondsLeftInStep,
   staffPassword,
+  staffTokenExpiry,
   totpCode,
 } from "./cypress/tasks/dashboardTasks.js";
 
@@ -138,6 +139,10 @@ export default defineConfig({
         staffPassword,
         totpCode,
         secondsLeftInStep,
+        // The fourth, and the only one that reads vpay rather than a file or
+        // a hash: `access_token_expires_at` is what separates a token
+        // replaced BEFORE it expired from one replaced after a read failed.
+        staffTokenExpiry,
         dump(payload: { what: string; value: string }) {
           console.log("PROBE " + payload.what + ": " + payload.value);
           return null;

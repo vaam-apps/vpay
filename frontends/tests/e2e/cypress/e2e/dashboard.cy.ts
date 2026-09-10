@@ -19,7 +19,9 @@
  * 2. `/login/totp` — enrolment is **mandatory at first sign-in** (ADR-0017
  *    decision 1): a session never reaches `authenticated` while
  *    `staff_members.totp_secret` is `NULL`.
- * 3. the same screen — one valid code, which is what commits the enrolment.
+ * 3. the same screen — a mistyped code first, which must show the error and
+ *    keep both the session and the sealed enrolment blob (the exp36 review's
+ *    F6), and then one valid code, which is what commits the enrolment.
  * 4. `/login/password` — `staff add` sets `password_change_required`, and
  *    since 2026-09-10 the change also needs the password IN FORCE (issue #79
  *    item 3): the wrong one is refused in the browser here, and the printed
@@ -33,6 +35,15 @@
  * 5. only then `/payments`, rendered from a token minted by the
  *    authorization-code grant with PKCE, whose exchange this app's own server
  *    performed.
+ *
+ * # And one leg that is about a token rather than about a person
+ *
+ * "replaces the access token before it expires" is issue #88 item 1, and it is
+ * here rather than in a unit test because the thing it proves is a **sequence
+ * of renders across an expiry**. It depends on this stack's short
+ * `staff_auth.access_token_ttl_seconds` (`demo_staff_token_ttl`, thirty
+ * seconds) — at the shipping 900 no browser run could reach the case at all,
+ * which is why nothing ever had.
  */
 import { totpDigits, waitForNextTotpStep } from "../support/dashboard";
 
@@ -104,6 +115,26 @@ describe("the dashboard", { testIsolation: false }, () => {
     // moments later. It authenticates nothing that will exist tomorrow.
     cy.screenshot("02-enrolment", { capture: "viewport" });
 
+    // ---- leg 3a: a MISTYPED code must not sign anybody out ---------------
+    //
+    // The exp36 review's F6, in a browser. `POST /dash/v1/staff/totp` answers
+    // the same 401 for a wrong six-digit code as for a session it refuses, and
+    // `submitTotp` read every one of them as "the session is over": it cleared
+    // the session cookie AND the sealed enrolment blob, so a typo sent the
+    // person back to the email-and-password form and a first sign-in could not
+    // even be retried — the retry would have carried no secret to commit.
+    //
+    // Three assertions, and the QR is the one that would be missed: the page
+    // has to still be the ENROLMENT page, not just still be at this path.
+    cy.get("#dashboard-totp-code").type("000000");
+    cy.contains("button", /finish enrolment/i).click();
+    cy.location("pathname").should("eq", "/login/totp");
+    cy.get('[role="alert"]').should("be.visible");
+    cy.get('[data-testid="totp-qr"]').should("be.visible");
+    cy.getCookie("vpay_dash_session").should((cookie) => {
+      expect(cookie?.value ?? "", "the session cookie after a wrong code").to.not.equal("");
+    });
+
     // ---- leg 3: a code computed from what the screen showed --------------
     cy.get('[data-testid="totp-secret"]')
       .invoke("text")
@@ -115,7 +146,7 @@ describe("the dashboard", { testIsolation: false }, () => {
         return totpDigits(secret.trim());
       })
       .then((code) => {
-        cy.get("#dashboard-totp-code").type(code);
+        cy.get("#dashboard-totp-code").clear().type(code);
         cy.contains("button", /finish enrolment/i).click();
       });
 
@@ -309,6 +340,84 @@ describe("the dashboard", { testIsolation: false }, () => {
         });
       };
       check(0);
+    });
+  });
+
+  it("replaces the access token before it expires, so a long session never sees a 401", () => {
+    // ISSUE #88 ITEM 1, and the case the exp28 review's finding F4 could not
+    // have. The `/dash/v1` token's TTL is
+    // `staff_auth.access_token_ttl_seconds`; a session's bounds are twelve
+    // hours and thirty minutes idle. Until 2026-09-10 `requireStaff` ran the
+    // authorization-code leg only when the row carried NO token, so once one
+    // was written it was used until sign-out and every render past its expiry
+    // was an error box.
+    //
+    // At the shipping 900 s no browser run could reach that. This stack sets
+    // thirty (`demo_staff_token_ttl`), so the margin — 20 % of the TTL — falls
+    // at twenty-four seconds and one leg crosses both it and the expiry.
+    //
+    // **What makes this decisive.** The reactive re-mint in `dash-read.ts`
+    // still exists, so a page renders correctly whether the token was replaced
+    // early or replaced after a read failed on it. The two are told apart by
+    // `access_token_expires_at`, read from vpay itself: the assertion is that
+    // the expiry MOVED while the old one had not yet passed. Drop the margin
+    // from `gateFor` and the re-mint happens AT the expiry instead of before
+    // it — measured, and the second assertion below is the one that failed.
+    //
+    // **The waits are computed from the expiry vpay reported, not counted from
+    // here**, and that is not tidiness. A fixed `cy.wait` pays for the visit
+    // and the task that precede it out of the same window: at a twenty-second
+    // TTL that window is four seconds wide and the first version of this leg
+    // landed 300 ms inside it, which is a flake waiting for a slower machine.
+    // Targeting an instant makes the slack a stated number — 4.5 seconds.
+    const ttlSeconds = 30;
+    /** Where in the token's life the second render should land: 85 % gone. */
+    const renderAtFraction = 0.85;
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.getCookie("vpay_dash_session").then((cookie) => {
+      const session = cookie?.value ?? "";
+      expect(session, "a signed-in session").to.not.equal("");
+
+      cy.task<string | null>("staffTokenExpiry", session).then((first) => {
+        expect(first, "the session row must record when its token expires").to.be.a("string");
+        const firstExpiry = Date.parse(String(first));
+
+        // Past the 80 % margin and comfortably short of the expiry.
+        const target = firstExpiry - ttlSeconds * (1 - renderAtFraction) * 1000;
+        cy.wrap(null).then(() => {
+          cy.wait(Math.max(target - Date.now(), 0));
+        });
+        cy.visit("/payments");
+        cy.contains("h2", "Payments").should("be.visible");
+
+        cy.task<string | null>("staffTokenExpiry", session).then((second) => {
+          const secondExpiry = Date.parse(String(second));
+          expect(
+            secondExpiry,
+            "the render past the margin must have minted a NEW token; the same expiry back " +
+              "means nothing re-minted and the fifteen minutes are still there",
+          ).to.be.greaterThan(firstExpiry);
+          expect(
+            Date.now(),
+            "and it must have done so BEFORE the old token expired — that is the whole " +
+              "difference between this and the reactive retry in dash-read.ts",
+          ).to.be.lessThan(firstExpiry);
+        });
+
+        // And now past the ORIGINAL token's expiry entirely: the render that
+        // used to be an error box. No sign-in happens in between.
+        cy.wrap(null).then(() => {
+          cy.wait(Math.max(firstExpiry + 2000 - Date.now(), 0));
+        });
+        cy.visit("/payments");
+        cy.location("pathname").should("eq", "/payments");
+        cy.contains("h2", "Payments").should("be.visible");
+        cy.contains(staffEmail()).should("be.visible");
+        cy.get("table").should("exist");
+      });
     });
   });
 

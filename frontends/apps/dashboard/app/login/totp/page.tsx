@@ -4,12 +4,20 @@ import QRCode from 'qrcode';
 
 import { Heading, Stack, Text } from '@vpay/ui';
 
+import { dashboardConfig } from '../../../src/config/runtime';
 import { EnrolmentPanel } from '../../../src/components/enrolment-panel';
+import { ReadFailure } from '../../../src/components/read-failure';
 import { TotpForm } from '../../../src/components/totp-form';
 import { submitTotp } from '../../../src/server/actions';
 import { ENROLMENT_COOKIE } from '../../../src/server/cookies';
 import { decodePendingEnrolment, secretFrom } from '../../../src/server/enrolment';
-import { LOGIN_PATH, sessionToken } from '../../../src/server/session';
+import { totpGateFor } from '../../../src/server/gate';
+import {
+  HOME_PATH,
+  LOGIN_PATH,
+  readSessionStage,
+  sessionToken,
+} from '../../../src/server/session';
 
 /**
  * `/login/totp` — leg two, and on a first sign-in the enrolment it completes.
@@ -20,17 +28,59 @@ import { LOGIN_PATH, sessionToken } from '../../../src/server/session';
  * offering to enrol a secret it does not have. The sealed blob either is in
  * the cookie `signIn` set or it is not.
  *
- * A visitor with no session at all goes back to `/login`. That is the only
- * branch here: whether the session is at the right *stage* is vpay's
- * decision, taken when the code is presented, and duplicating it in this app
- * would be a second copy of the rule that could disagree with the first.
+ * # This page reads the session, and until 2026-09-10 it did not
+ *
+ * It rendered the code form for whatever cookie was present. That is what
+ * forced `submitTotp` to infer the session's fate from the `401` that
+ * `POST /staff/totp` answers for a **wrong code** as well as for a session it
+ * refuses — so a typo cleared the cookie and sent a staff member back to the
+ * email-and-password form (the exp36 review's F6; F1 was the same shape one
+ * route over, on `/login/password`).
+ *
+ * `GET /dash/v1/staff/session/stage` is the read, and it exists because
+ * `/staff/session` is refused at this stage. Its answer, and nothing the
+ * action returns, is what ends a session here:
+ *
+ * * a `401` — absent, expired, idle, forged, disabled — is the only thing
+ *   that sends somebody to {@link LOGIN_PATH};
+ * * a session already carrying both factors goes on to the payments list,
+ *   which is where a back button lands somebody who has finished;
+ * * a vpay that could not be reached renders the failure and keeps the
+ *   cookie, exactly as `/login/password` does (issue #88 item 2);
+ * * anything else is a live session still owed a code, which is this page.
+ *
+ * Whether the session is at the right stage to *accept* a code remains vpay's
+ * decision, taken when the code is presented. This page reads a stage to know
+ * whether the session is alive, not to duplicate that rule.
  */
 export const dynamic = 'force-dynamic';
 
 export default async function TotpPage() {
+  const { config } = dashboardConfig();
+  if (config === null) {
+    redirect(LOGIN_PATH);
+  }
+
   const token = await sessionToken();
   if (token === null) {
     redirect(LOGIN_PATH);
+  }
+
+  const { stage, failure } = await readSessionStage(config, token);
+  const gate = totpGateFor(stage, failure);
+  if (gate.kind === 'dead') {
+    redirect(LOGIN_PATH);
+  }
+  if (gate.kind === 'signed-in') {
+    redirect(HOME_PATH);
+  }
+  if (gate.kind === 'outage') {
+    return (
+      <Stack direction="column" gap="md">
+        <Heading level={2}>Enter your code</Heading>
+        <ReadFailure failure={gate.failure} />
+      </Stack>
+    );
   }
 
   const store = await cookies();

@@ -144,3 +144,50 @@ export function totpCode({ secret, skew = 0 }: TotpRequest): string {
 export function secondsLeftInStep(): number {
   return STEP_SECONDS - (Math.floor(Date.now() / 1000) % STEP_SECONDS);
 }
+
+/**
+ * When the `/dash/v1` access token on a staff session expires, as vpay
+ * reports it.
+ *
+ * `GET /dash/v1/staff/session`, called from Node with the session token the
+ * browser is holding. Three reasons it is a task and not something the spec
+ * does itself:
+ *
+ * * `access_token_expires_at` is the only observable that separates "the token
+ *   was replaced **before** it expired" from "a read failed and the reactive
+ *   retry in `dash-read.ts` covered it". Both render the same page, so a
+ *   browser assertion cannot tell them apart, and the margin is the thing
+ *   under test;
+ * * the session cookie is `httpOnly`, so a page cannot read it — `cy.getCookie`
+ *   can (Cypress reads them over CDP) and hands the value here;
+ * * the route is on vpay's origin, not the dashboard's, so a `cy.request` from
+ *   the spec would be cross-origin.
+ *
+ * Nothing is stubbed: this is the same endpoint, the same credential and the
+ * same row the app itself reads on every render.
+ */
+export async function staffTokenExpiry(sessionToken: string): Promise<string | null> {
+  const base = process.env["VPAY_BASE_URL"];
+  if (typeof base !== "string" || base.length === 0) {
+    throw new Error(
+      "dashboard.cy.ts: VPAY_BASE_URL is not set. `just test-e2e` sets it; running " +
+        "`cypress run` by hand needs it pointed at the running vpay-server.",
+    );
+  }
+  const response = await fetch(`${base}/dash/v1/staff/session`, {
+    headers: {
+      accept: "application/json",
+      // `vpay_api::staff::SESSION_HEADER`.
+      "x-vpay-staff-session": sessionToken,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `dashboard.cy.ts: GET /dash/v1/staff/session answered ${response.status}. ` +
+        "The spec asked about a session it believes is signed in, so this is a real failure " +
+        "rather than a missing fixture.",
+    );
+  }
+  const body = (await response.json()) as { access_token_expires_at?: string };
+  return body.access_token_expires_at ?? null;
+}

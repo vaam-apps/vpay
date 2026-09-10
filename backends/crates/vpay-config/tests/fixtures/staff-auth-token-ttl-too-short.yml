@@ -1,0 +1,21 @@
+# Fixture for `the_dashboard_token_ttl_is_refused_outside_its_bounds`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# `staff_auth.access_token_ttl_seconds` is bounded 10..=3600. This one is
+# NINE: one under the floor, so the document fails on that rule and on
+# nothing else.
+#
+# The floor is arithmetic rather than taste. The dashboard replaces its
+# `/dash/v1` token when a fifth of the TTL is left
+# (`frontends/apps/dashboard/src/server/gate.ts`, `REMINT_AFTER_FRACTION`),
+# so below ten seconds the margin is under two and every render on any real
+# network becomes an authorization-code leg — a credential operation per page
+# view, presenting as latency rather than as an error.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+staff_auth:
+  access_token_ttl_seconds: 9
