@@ -187,11 +187,18 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
 }
 
 /**
- * Replaces the one-time password `vpay-server staff add` printed.
+ * Replaces this staff member's password, having been shown the current one.
  *
  * Reachable only by a session that has presented both factors — vpay checks
- * that, not this app — so whoever holds the printed password cannot replace
- * it without the second factor.
+ * that, not this app. Since 2026-09-10 (issue #79 item 3) vpay also requires
+ * the password **in force**, and this action carries it: the two factors were
+ * presented once, up to twelve hours earlier, so without it the credential
+ * protecting an irreversible account takeover is the session cookie alone.
+ *
+ * vpay deletes every *other* session of this staff member on success. Nothing
+ * is needed here for that — the sessions being ended are other browsers' —
+ * and this one survives on purpose, which is why the redirect below still
+ * works.
  */
 export async function changePassword(_previous: FormState, form: FormData): Promise<FormState> {
   const { config } = dashboardConfig();
@@ -204,8 +211,18 @@ export async function changePassword(_previous: FormState, form: FormData): Prom
     redirect(LOGIN_PATH);
   }
 
+  const current = form.get('current_password');
   const next = form.get('new_password');
   const confirm = form.get('confirm_password');
+  if (typeof current !== 'string' || current.length === 0) {
+    // Refused here rather than at vpay for `signIn`'s reason — an empty
+    // string must not cost an argon2id verification — and, unlike the pair
+    // check below, this is NOT a rule this app owns: vpay refuses an absent
+    // current password with the same `401` it answers a wrong one. What this
+    // buys is a sentence that says which field is empty, which vpay
+    // deliberately will not.
+    return { error: 'Enter your current password.', requestId: null };
+  }
   if (typeof next !== 'string' || next.length === 0) {
     return { error: 'Choose a new password.', requestId: null };
   }
@@ -216,10 +233,12 @@ export async function changePassword(_previous: FormState, form: FormData): Prom
     return { error: 'The two passwords do not match.', requestId: null };
   }
 
-  const result = await postForm<{ password_change_required: boolean }>(
+  const result = await postForm<{ password_change_required: boolean; other_sessions_revoked: number }>(
     config.apiBaseUrl,
     '/dash/v1/staff/password',
-    { new_password: next },
+    // NOT trimmed, either of them, for the reason `signIn` states: a
+    // password's leading or trailing space is part of it.
+    { current_password: current, new_password: next },
     { sessionToken: token },
   );
   if (!result.ok) {

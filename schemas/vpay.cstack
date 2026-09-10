@@ -1789,3 +1789,55 @@ model InvoiceItem {
   // `bytea`, no native enum, no `int4` — which is migration 0035's discipline
   // applied to a table that also had to be readable through this layer.
 }
+
+// --- rate limiting (issue #79 item 2) -------------------------------------
+
+// `rate_limit_windows` (migration 0038) — the fixed-window attempt counters
+// the staff sign-in limiter spends from, shared by every replica.
+//
+// THE ONLY MODEL IN THIS FILE WITH NO `@@allow` ARM AND A LIVE TABLE BEHIND
+// IT, and the absence is deliberate rather than forgotten. Compare
+// `model PaymentIntent`, `model Charge` and `model Refund`, which also carry
+// none: those three are undeclared-by-necessity (every row struct carries a
+// `jsonb` column this layer cannot round-trip). This one is different, and the
+// reason is narrower — the *statement* has no builder, not the row:
+//
+//     INSERT INTO rate_limit_windows (…) VALUES (…)
+//     ON CONFLICT (id) DO UPDATE SET attempts = … + 1 …
+//     RETURNING attempts
+//
+// A CrateStack 0.12.0 `UpdateRateLimitWindowInput` carries VALUES, not
+// expressions, so `attempts = attempts + 1` cannot be rendered by any
+// generated builder — and read-then-write is exactly the race this table
+// exists to remove. `vpay_db::rate_limits` therefore holds one hand-written
+// `sqlx` statement and says so at length.
+//
+// The model is here anyway for the reason the money models are: without it
+// the drift report does not compare this table at all, and a column that
+// drifts from what the code expects is a limiter that silently stops
+// limiting. `vpay_db::rate_limits::tests::the_rate_limit_window_model_answers_no_rows_to_every_action`
+// pins the arms' absence in the direction that matters — an arm APPEARING is
+// a standing permission over a table with no caller.
+model RateLimitWindow {
+  // SHA-256 of `<action>:<dimension>:<value>`, lower-case hex. 64 characters
+  // exactly, which migration 0038 states as an equality CHECK and this
+  // states as a bound — `model StaffSession.id`'s split, for the same
+  // reason: no `@db_enforce`, so the two never have to converge on a name.
+  id String @id @length(min: 64, max: 64)
+  // The budget's KIND without its value (`sign_in:email`, `sign_in:address`,
+  // `change_password:session`). `TEXT` + a hand-named CHECK and not a native
+  // enum, for migration 0035's reason: CrateStack decodes every enum column
+  // with `try_get::<String>()`.
+  scope String @length(min: 1, max: 64)
+  window_started_at DateTime
+  // `Int` is `int8`, hence `BIGINT` in the migration: `int4` is one of the
+  // six types `map_scalar` does not map, and an unmapped column is excluded
+  // from the drift comparison outright.
+  attempts Int
+  // NO `@default(now())`, and NO `@default` anywhere in this model — 0034's
+  // rule. It costs nothing here because nothing writes this table through
+  // the generated layer, and it is kept anyway so that the day a builder can
+  // express the increment, the move is a change of statement rather than a
+  // change of schema.
+  updated_at DateTime
+}

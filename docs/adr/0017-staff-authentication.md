@@ -77,6 +77,32 @@ prints a one-time password that must be changed at first sign-in
 session whose staff row still carries that flag, so a printed password
 cannot become a long-lived credential by being ignored.
 
+*Amended 2026-09-10 (issue #79 item 3).* **`POST /staff/password` requires the
+password in force, and deletes every other session of that staff member.**
+Neither was true as delivered, and the argument for the first being absent is
+in the repository verbatim: "the session making the change has already
+presented both factors, and re-checking a password this endpoint then
+overwrites would be a second copy of that check in the wrong layer." What it
+misses is *when*. A session lives up to twelve hours (decision 2); the two
+factors were presented once, at its start. So the credential protecting an
+irreversible account takeover was **the session cookie alone** — an unattended
+browser, a stolen cookie, an XSS on the dashboard's origin — and the change
+also clears `password_change_required`, so one request bought the account.
+
+Re-presenting the current password is a *different* check from the sign-in's,
+not a second copy of it: that one authenticated a session, this one authorises
+one irreversible action inside it.
+
+The revocation half answers the other question this endpoint had never
+answered. Changing a password is what a person does when they believe somebody
+else has their account, and until this amendment it did nothing whatsoever
+about that: the other browser's `staff_sessions` row stayed `authenticated`
+with its `access_token` column intact until the absolute bound.
+`StaffSessions::delete_others` deletes every session **but the caller's own**,
+and the cascade on `oauth_authorization_codes.session_id` takes any code those
+sessions had in flight. The caller's own survives because signing somebody out
+for choosing a password would make the success case look like a failure.
+
 The table is born on CrateStack: `model StaffMember` in `schemas/vpay.cstack`
 — the *model* name decides the table name, because CrateStack 0.11.1 has no
 `@@map` and pluralises what it is given, so `model Staff` would read and write
@@ -107,11 +133,42 @@ by this ADR"), and this ADR decides it — **as an unobtainability, not as an
 invalidation.** The JWT itself stays valid until it expires; see Consequences,
 which says so rather than letting "revocation" carry more weight than it can.
 
-**Sign-in is rate limited per email and per IP**, in-process, fixed window,
-failing closed with `429`. In-process rather than durable, and a fixed window
-rather than a lockout, because a durable lockout is a denial of service an
-attacker triggers by guessing at somebody else's address. The limits are per
-replica; the honest reading of that is in Consequences.
+**Sign-in is rate limited per email and per IP**, ~~in-process~~ **in
+Postgres**, fixed window, failing closed with `429`. ~~In-process rather than
+durable, and a~~ **A** fixed window rather than a lockout, because a durable
+lockout is a denial of service an attacker triggers by guessing at somebody
+else's address. ~~The limits are per replica; the honest reading of that is in
+Consequences.~~
+
+*Amended 2026-09-10 (issue #79 item 2).* The counters are rows in
+`rate_limit_windows` (migration `0038`), so **every replica spends from one
+budget**. This ADR's Consequences called the in-process version's cost "the
+first thing to revisit if a deployment runs many replicas", and refused the
+durable alternative on the ground that it "puts a write on the unauthenticated
+path, which is a denial-of-service amplifier of a different kind". That
+objection is answered rather than overruled, and the answer is three
+properties of one statement:
+
+- the row key is the **SHA-256** of `<action>:<dimension>:<value>`, so an
+  unauthenticated caller cannot choose how wide a row is, and the address they
+  are guessing at — which for the interesting attempts has no account — is not
+  written down;
+- the count sweeps up to **32 elapsed rows** in the same statement, sixteen
+  times the two rows one attempt adds, so a caller spending fresh keys drains
+  the table faster than they fill it;
+- it is one `INSERT … ON CONFLICT (id) DO UPDATE … RETURNING attempts`, so two
+  replicas incrementing one key serialise on the row rather than racing. A
+  read-then-write would have reproduced the over-admission this change removes,
+  with a race added.
+
+**The limits are configuration**, one policy per action
+(`staff_auth.rate_limits`), defaulting to the numbers this ADR shipped — ten
+per five minutes for sign-in — and to five per five minutes for the
+current-password check decision 1 now requires. Configurable because "ten" was
+chosen for a limiter three replicas multiplied by three, and that is not
+obviously the right number for one that no longer does; **whether the shared
+default should now be lower than ten is a maintainer decision this amendment
+does not take**, and `docs/status.md` records it as open.
 
 **"Sign-in" is both legs, and it was one leg until 2026-09-07.** The limiter
 was called from `POST /staff/login` and from nowhere else, so the *second
@@ -257,12 +314,18 @@ rest of its 15-minute TTL — while this ADR, the flow document and
 and a staff member reassigned to another merchant went on reading their old
 one's.
 
-**The rate limit is per replica.** Three replicas admit three times the
-attempts a single one does. That is the honest cost of in-process limiting,
-and the alternative — a shared counter in Postgres — puts a write on the
-unauthenticated path, which is a denial-of-service amplifier of a different
-kind. It is recorded in `docs/flows/dashboard-auth.md` and is the first thing
-to revisit if a deployment runs many replicas.
+~~**The rate limit is per replica.** Three replicas admit three times the
+attempts a single one does. … It is recorded in
+`docs/flows/dashboard-auth.md` and is the first thing to revisit if a
+deployment runs many replicas.~~
+
+*Superseded 2026-09-10 (issue #79 item 2).* It was revisited; see decision 2's
+amendment. The budget is one row per key in `rate_limit_windows` and is shared
+by every replica. What remains true, and is the residual this paragraph is
+replaced by: **an attacker who straddles a window boundary still gets twice
+the limit in one instant**, because the window is fixed rather than sliding —
+and a sliding window needs a row per attempt, which is the unbounded table the
+digest key and the sweep exist to avoid.
 
 **The per-IP budget counts the transport peer, so behind a proxy every staff
 member shares one.** vpay reads no `X-Forwarded-For` and no `Forwarded`
@@ -270,8 +333,28 @@ header: both are caller-supplied on an unauthenticated route, and honouring
 either without an authenticated trusted-proxy list is a fresh bucket per
 request for an attacker. Under an Ingress the peer is the Ingress, and the
 per-IP half then bounds the deployment rather than the caller. The per-email
-half is unaffected and still bounds guessing at one account. Closing it needs
-a trusted-proxy allow-list, which this slice does not have.
+half is unaffected and still bounds guessing at one account. ~~Closing it
+needs a trusted-proxy allow-list, which this slice does not have.~~
+
+*Amended 2026-09-10 (issue #79 item 1).* It has one:
+`staff_auth.trusted_proxies`, a list of addresses and CIDR blocks.
+**`X-Forwarded-For` is read exactly when the transport peer is in that list,
+and the client address is then the first untrusted hop from the RIGHT** — the
+last value a trusted machine vouched for. Taking the leftmost entry, which is
+the shape most "get the real IP" snippets have, is whatever the caller wrote,
+and it would have handed an attacker a fresh bucket per request: the exact
+hole the paragraph above refuses to open.
+
+Four fallbacks all end at the peer, and each is a hole if it is dropped: an
+untrusted peer, an unparseable hop, a header of nothing but trusted hops, and
+an absent header. `Forwarded` (RFC 7239) is still not read, deliberately: two
+parsers over one caller-supplied string means the more permissive answer wins,
+and the more permissive answer is the one that buys a fresh bucket.
+
+**The list is empty by default and empty means the peer**, which is exactly
+what this ADR shipped — so a deployment that does not set it is in the state
+the paragraph above describes, and `vpay-server` logs that at `info` on every
+boot rather than leaving it to be discovered.
 
 *Corrected 2026-09-07 (exp24 review, finding F2).* As first delivered the
 per-IP half did not exist at all: the peer address reaches a handler only

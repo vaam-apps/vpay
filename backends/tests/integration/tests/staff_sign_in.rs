@@ -62,7 +62,8 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use time::{Duration, OffsetDateTime};
 use vpay_api::staff_auth::{StaffCredentials, totp};
 use vpay_config::{
-    Config, CurrencyEntry, DashboardClient, Deployment, HostEntry, ProviderHost, StaffAuth,
+    Config, CurrencyEntry, DashboardClient, Deployment, HostEntry, ProviderHost, RateLimitPolicy,
+    RateLimits, StaffAuth,
 };
 use vpay_db::{NewPaymentIntent, NewStaff, Repositories};
 
@@ -113,6 +114,15 @@ struct Harness {
     repositories: Arc<dyn Repositories>,
     base_url: String,
     credentials: StaffCredentials,
+    /// Everything a **second** server over the same database needs, for
+    /// `Harness::replica`. Kept rather than rebuilt so that a replica is
+    /// this deployment's own second process — same signing key, same
+    /// registrations, same `staff_auth` — and not a different deployment
+    /// that happens to share a schema.
+    server_pem: String,
+    jwks_a: Value,
+    jwks_b: Value,
+    staff_auth: StaffAuth,
 }
 
 impl Harness {
@@ -253,7 +263,15 @@ impl Harness {
             .post_form(
                 "/dash/v1/staff/password",
                 Some(&session),
-                &[("new_password", NEW_PASSWORD)],
+                &[
+                    // The printed one-time password, re-presented. Required
+                    // since 2026-09-10 (issue #79 item 3) — including on the
+                    // very first change, because "the caller knows the
+                    // password in force" is the property, and on a first
+                    // sign-in the password in force is the printed one.
+                    ("current_password", ONE_TIME_PASSWORD),
+                    ("new_password", NEW_PASSWORD),
+                ],
             )
             .await?;
         anyhow::ensure!(status == 200, "password: {status} {body}");
@@ -308,6 +326,65 @@ impl Harness {
             .context("reading the stored TOTP secret")?
             .get("totp_secret");
         Ok(totp::Totp::new(self.credentials.open_secret(&sealed)?))
+    }
+
+    /// Password + TOTP for an account that is **already enrolled**, at the
+    /// TOTP step `step`: the session token.
+    ///
+    /// `step` is a parameter and not `now`, and that is the whole reason this
+    /// helper exists. `Staff::record_totp_step` is a compare-and-swap that
+    /// admits only a *strictly greater* step, so two sign-ins inside one
+    /// 30-second window are a replay and the second is refused — correctly.
+    /// A case that needs two live sessions therefore authenticates the second
+    /// one at `step + 1`, which `Totp::verify`'s one-step skew accepts and
+    /// the guard records. The alternative is a `sleep(30)` in a test suite.
+    async fn authenticate(&self, password: &str, step: i64) -> anyhow::Result<String> {
+        let (status, body) = self
+            .post_form(
+                "/dash/v1/staff/login",
+                None,
+                &[("email", STAFF_EMAIL), ("password", password)],
+            )
+            .await?;
+        anyhow::ensure!(status == 200, "login: {status} {body}");
+        let session = field(&body, "session")
+            .as_str()
+            .context("a session token")?
+            .to_owned();
+
+        let totp = self.enrolled_totp().await?;
+        let (status, body) = self
+            .post_form(
+                "/dash/v1/staff/totp",
+                Some(&session),
+                &[("code", &totp.code_at_step(step))],
+            )
+            .await?;
+        anyhow::ensure!(status == 200, "totp: {status} {body}");
+        Ok(session)
+    }
+
+    /// A **second vpay process over the same database**, on its own port.
+    ///
+    /// The whole subject of the shared-budget case: same signing key, same
+    /// registrations, same `staff_auth` block, different port. That is what a
+    /// deployment scaled to two replicas is, and it is what an in-process
+    /// rate limiter cannot bound — each replica would have its own
+    /// `HashMap` and its own full budget.
+    ///
+    /// The returned `JoinHandle` is held by the caller so the task outlives
+    /// the call; dropping it aborts the server mid-test.
+    async fn replica(&self) -> anyhow::Result<(String, tokio::task::JoinHandle<()>)> {
+        let (jwks_a, jwks_b, staff_auth) = (
+            self.jwks_a.clone(),
+            self.jwks_b.clone(),
+            self.staff_auth.clone(),
+        );
+        let served = serve(&self.repositories, &self.server_pem, move |base_url| {
+            config_with(base_url, jwks_a, jwks_b, staff_auth)
+        })
+        .await?;
+        Ok((served.base_url, served.server))
     }
 
     /// A signed-in session all the way to a `/dash/v1` bearer token.
@@ -368,7 +445,7 @@ struct SignedIn {
     totp: totp::Totp,
 }
 
-fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
+fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, staff_auth: StaffAuth) -> Config {
     Config {
         deployment: Deployment {
             name: "staff-sign-in".to_owned(),
@@ -418,18 +495,41 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             scope: DASHBOARD_SCOPE.to_owned(),
             client_secret: None,
         }),
-        staff_auth: StaffAuth {
-            password_pepper: Some(PEPPER.to_owned()),
-            // Thirty-two bytes, base64url. Any 32 bytes will do; what matters
-            // is that the suite's own `StaffCredentials` uses the same value,
-            // because opening the enrolment blob is how a test learns the
-            // TOTP secret it must generate codes from.
-            totp_encryption_key: Some(URL_SAFE_NO_PAD.encode([9_u8; 32])),
-        },
+        staff_auth,
+    }
+}
+
+/// The `staff_auth` block every case starts from: both secrets, **no trusted
+/// proxies** and the shipping limits.
+///
+/// Empty `trusted_proxies` is the shipping default and is what ADR-0017
+/// shipped — the transport peer is the client address and no header is read.
+/// A case that wants the other half of issue #79 item 1 passes an allow-list
+/// of its own; a case that wants a tighter budget passes its own
+/// `RateLimits`. Both are spelled out per case rather than defaulted here, so
+/// that reading a test tells you which deployment it is about.
+fn staff_auth_with(trusted_proxies: Vec<String>, rate_limits: RateLimits) -> StaffAuth {
+    StaffAuth {
+        password_pepper: Some(PEPPER.to_owned()),
+        // Thirty-two bytes, base64url. Any 32 bytes will do; what matters
+        // is that the suite's own `StaffCredentials` uses the same value,
+        // because opening the enrolment blob is how a test learns the
+        // TOTP secret it must generate codes from.
+        totp_encryption_key: Some(URL_SAFE_NO_PAD.encode([9_u8; 32])),
+        trusted_proxies,
+        rate_limits,
     }
 }
 
 async fn harness() -> anyhow::Result<Harness> {
+    harness_with(staff_auth_with(Vec::new(), RateLimits::default())).await
+}
+
+/// A harness over a deployment whose `staff_auth` block is `staff_auth`.
+///
+/// One function, and `harness()` is the shipping-defaults call of it, so
+/// there is no second boot path a case could accidentally take.
+async fn harness_with(staff_auth: StaffAuth) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
     let (container, repositories, _pool) = migrated_postgres().await?;
@@ -437,10 +537,13 @@ async fn harness() -> anyhow::Result<Harness> {
     let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
-    let served = serve(&repositories, &server_pem, |base_url| {
-        config_with(base_url, jwks_a, jwks_b)
-    })
-    .await?;
+    let served = {
+        let (jwks_a, jwks_b, staff_auth) = (jwks_a.clone(), jwks_b.clone(), staff_auth.clone());
+        serve(&repositories, &server_pem, move |base_url| {
+            config_with(base_url, jwks_a, jwks_b, staff_auth)
+        })
+        .await?
+    };
 
     let credentials = StaffCredentials::new(PEPPER, &URL_SAFE_NO_PAD.encode([9_u8; 32]))
         .expect("the suite's own copy of the deployment secrets");
@@ -455,6 +558,10 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         base_url: served.base_url,
         credentials,
+        server_pem,
+        jwks_a,
+        jwks_b,
+        staff_auth,
     })
 }
 
@@ -946,7 +1053,10 @@ async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token() ->
         .post_form(
             "/dash/v1/staff/password",
             Some(&session),
-            &[("new_password", NEW_PASSWORD)],
+            &[
+                ("current_password", ONE_TIME_PASSWORD),
+                ("new_password", NEW_PASSWORD),
+            ],
         )
         .await?;
     assert_eq!(status, 200, "{body}");
@@ -1251,9 +1361,7 @@ async fn a_deployment_without_staff_auth_serves_no_login() -> anyhow::Result<()>
     let (_b, jwks_b) = generate_key();
 
     let served = serve(&repositories, &server_pem, |base_url| {
-        let mut config = config_with(base_url, jwks_a, jwks_b);
-        config.staff_auth = StaffAuth::default();
-        config
+        config_with(base_url, jwks_a, jwks_b, StaffAuth::default())
     })
     .await?;
 
@@ -1519,5 +1627,402 @@ async fn moving_a_staff_member_to_another_merchant_refuses_their_existing_token(
         !body.to_string().contains("pi_moved_a"),
         "and the refusal must carry none of the tenant's data: {body}"
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 18
+
+/// **A spoofed `X-Forwarded-For` from an untrusted peer buys nothing**
+/// (issue #79 item 1).
+///
+/// The hole this closes is not the header being ignored — that is what
+/// ADR-0017 shipped and it is safe. It is the *fix* for it going in
+/// carelessly: a deployment that reads `X-Forwarded-For` from any peer has
+/// handed every caller a fresh rate-limit bucket per request, because the
+/// caller writes the header. The limiter then bounds nothing while reporting
+/// that it does, which is worse than not having one.
+///
+/// This case is the guard on the fix. `staff_auth.trusted_proxies` is empty —
+/// the shipping default — so every one of these requests must be counted
+/// under the transport peer, however many different client addresses the
+/// header claims.
+///
+/// **The decisive mutation** is deleting the `proxies.contains(peer)` test in
+/// `vpay_api::staff::client_address::client_address`: each request then
+/// counts under a different key, the budget never fills, and the last
+/// assertion reads `401` where it demands `429`.
+///
+/// The budget is five here rather than the shipping ten, for the same reason
+/// `two_replicas_share_one_sign_in_budget` uses five: a shorter loop is a
+/// faster test and the number is a policy, not a mechanism.
+#[tokio::test]
+async fn a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget() -> anyhow::Result<()>
+{
+    let harness = harness_with(staff_auth_with(
+        // Nobody. The peer is 127.0.0.1 and is not in this list.
+        Vec::new(),
+        RateLimits {
+            sign_in: RateLimitPolicy {
+                attempts: 5,
+                window_seconds: 300,
+            },
+            ..RateLimits::default()
+        },
+    ))
+    .await?;
+
+    let client = reqwest::Client::builder()
+        .local_address(std::net::IpAddr::from([127, 0, 0, 20]))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a client bound to a loopback source address");
+
+    // Five wrong passwords, each claiming a different client address, each on
+    // a different email so that only the ADDRESS budget can be what refuses.
+    let mut statuses = Vec::new();
+    for n in 0..6_u8 {
+        let response = client
+            .post(format!("{}/dash/v1/staff/login", harness.base_url))
+            .header("x-forwarded-for", format!("203.0.113.{n}"))
+            .form(&[
+                ("email", format!("spoofer-{n}@example.test").as_str()),
+                ("password", "wrong"),
+            ])
+            .send()
+            .await
+            .context("a spoofed-XFF sign-in attempt")?;
+        statuses.push(response.status().as_u16());
+    }
+
+    assert_eq!(
+        statuses.get(0..5),
+        Some([401, 401, 401, 401, 401].as_slice()),
+        "the first five are inside the budget and must be refused on the credential: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.last().copied(),
+        Some(429),
+        "six attempts from ONE peer must exhaust ONE budget however many client addresses the \
+         header claims. A 401 here means X-Forwarded-For is being honoured from a peer nobody \
+         named, and the per-address limit is a header away from not existing: {statuses:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 19
+
+/// **From a peer the operator named, the first untrusted hop IS the client
+/// address** — the other half of issue #79 item 1.
+///
+/// Without this the allow-list would be a feature nothing exercises: a
+/// deployment could ship it, an operator could fill it in, and the per-address
+/// budget would still be the Ingress's — which is exactly the state ADR-0017's
+/// Consequences describes and this item exists to leave.
+///
+/// `127.0.0.0/8` is the allow-list, so the loopback peer these requests
+/// arrive from is a trusted proxy and the header is read. Two claimed client
+/// addresses: one spends its whole budget, the other's first attempt must
+/// still be served.
+///
+/// **The decisive mutation** is the same one as the previous case, from the
+/// other side: with the trusted-proxy check deleted the header would be
+/// honoured *here too*, so this test alone cannot prove the check exists —
+/// the pair can, and that is why they are two tests over two deployments
+/// rather than one.
+#[tokio::test]
+async fn a_forwarded_for_header_from_a_trusted_peer_is_the_client_address() -> anyhow::Result<()> {
+    let harness = harness_with(staff_auth_with(
+        vec!["127.0.0.0/8".to_owned()],
+        RateLimits {
+            sign_in: RateLimitPolicy {
+                attempts: 5,
+                window_seconds: 300,
+            },
+            ..RateLimits::default()
+        },
+    ))
+    .await?;
+
+    let attempt = |claimed: &'static str, email: String| {
+        let base_url = harness.base_url.clone();
+        async move {
+            let response = reqwest::Client::new()
+                .post(format!("{base_url}/dash/v1/staff/login"))
+                // The shape a real proxy sends: the client, then the proxy
+                // that added itself. The rightmost hop is trusted, so the
+                // answer is the one before it.
+                .header("x-forwarded-for", format!("{claimed}, 127.0.0.1"))
+                .form(&[("email", email.as_str()), ("password", "wrong")])
+                .send()
+                .await
+                .context("a forwarded sign-in attempt")?;
+            anyhow::Ok(response.status().as_u16())
+        }
+    };
+
+    for n in 0..6_u8 {
+        let status = attempt("198.51.100.10", format!("burner-{n}@example.test")).await?;
+        let expected = if n < 5 { 401 } else { 429 };
+        assert_eq!(
+            status, expected,
+            "attempt {n} from the claimed client 198.51.100.10 (budget 5)"
+        );
+    }
+
+    assert_eq!(
+        attempt("198.51.100.11", "innocent@example.test".to_owned()).await?,
+        401,
+        "a SECOND claimed client address must have its own budget. A 429 here means the header \
+         is not being read and every caller behind this proxy shares one bucket — which is the \
+         deployment-wide lockout ADR-0017's Consequences describes"
+    );
+    assert_eq!(
+        attempt("198.51.100.10", "burner-0@example.test".to_owned()).await?,
+        429,
+        "and the exhausted client is still exhausted, so the control above did not pass because \
+         the limiter stopped working"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 20
+
+/// **Two replicas share one sign-in budget** (issue #79 item 2).
+///
+/// Two `vpay` server processes over **one** Postgres — same signing key, same
+/// registrations, same `staff_auth` — which is what a deployment scaled to
+/// two pods is. Six wrong passwords for one account, alternating between
+/// them, against a configured budget of five: the sixth is `429` whichever
+/// process serves it.
+///
+/// **The decisive mutation is the change itself.** With the in-process
+/// `Mutex<HashMap<..>>` this replaces, each process holds its own counters:
+/// replica A sees three attempts, replica B sees three, neither reaches five,
+/// and this test finds no `429` at all. That was the state ADR-0017 shipped
+/// and its Consequences described as "the first thing to revisit if a
+/// deployment runs many replicas".
+///
+/// Every attempt uses a **different source address**, so the per-address half
+/// of the budget can never be what refuses: what is asserted is that the
+/// per-**email** budget is one budget across two servers.
+///
+/// # What "two replicas" is here, exactly, and what it does not cover
+///
+/// Two `axum::serve` tasks on two ports **inside one test process**, each
+/// with its own `RouterDeps` and therefore its own `StaffLogin` and its own
+/// `SignInLimiter`. That is the state the limiter this replaces was in — one
+/// `Mutex<HashMap<..>>` per `SignInLimiter`, one `SignInLimiter` per replica
+/// — and the mutation above is measured against exactly it: giving each
+/// limiter instance its own counters makes this read `[401 × 6]`.
+///
+/// What two OS processes would additionally catch and this cannot: a counter
+/// held in a process-global `static`. There is none — `SignInLimiter` holds
+/// two policies and no state, which is the property that makes a task-level
+/// replica a faithful one — and if one ever appears, this test would go on
+/// passing while the deployment's budget went back to being per pod.
+#[tokio::test]
+async fn two_replicas_share_one_sign_in_budget() -> anyhow::Result<()> {
+    let harness = harness_with(staff_auth_with(
+        Vec::new(),
+        RateLimits {
+            sign_in: RateLimitPolicy {
+                attempts: 5,
+                window_seconds: 300,
+            },
+            ..RateLimits::default()
+        },
+    ))
+    .await?;
+    let (replica_url, _replica) = harness.replica().await?;
+    anyhow::ensure!(
+        replica_url != harness.base_url,
+        "the replica must be a second process on its own port, not the same one"
+    );
+
+    let mut statuses = Vec::new();
+    for n in 0..6_u8 {
+        // Alternating, so neither process ever serves the run of attempts
+        // that would exhaust a budget of its own.
+        let base_url = if n % 2 == 0 {
+            &harness.base_url
+        } else {
+            &replica_url
+        };
+        let response = reqwest::Client::builder()
+            .local_address(std::net::IpAddr::from([127, 0, 0, 30 + n]))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a client bound to a loopback source address")
+            .post(format!("{base_url}/dash/v1/staff/login"))
+            .form(&[("email", STAFF_EMAIL), ("password", "wrong")])
+            .send()
+            .await
+            .context("one wrong password against one of the two replicas")?;
+        statuses.push(response.status().as_u16());
+    }
+
+    assert_eq!(
+        statuses.get(0..5),
+        Some([401, 401, 401, 401, 401].as_slice()),
+        "the first five are inside the shared budget: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.last().copied(),
+        Some(429),
+        "the SIXTH wrong password must be refused by the limit, whichever process serves it. No \
+         429 at all means the counters are per process again, and a deployment's real budget is \
+         its configured one multiplied by its replica count: {statuses:?}"
+    );
+
+    // And the row that did it. `attempts` is the position of the last counted
+    // attempt, so six attempts leave six — proof that both processes
+    // incremented ONE row rather than two.
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT scope, attempts FROM rate_limit_windows WHERE scope = $1")
+            .bind("sign_in:email")
+            .fetch_all(&harness.repositories.op_store_pool())
+            .await
+            .context("reading the shared counter back")?;
+    assert_eq!(
+        rows.len(),
+        1,
+        "one account is one row, not one row per process: {rows:?}"
+    );
+    assert_eq!(
+        rows.first().map(|(_, attempts)| *attempts),
+        Some(6),
+        "every one of the six attempts landed on the same counter: {rows:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 21
+
+/// **A password change needs the current password, and ends every other
+/// session of that staff member** (issue #79 item 3).
+///
+/// Two things were true of `POST /dash/v1/staff/password` until 2026-09-10,
+/// and each is a case below:
+///
+/// 1. it took no current password. The credential protecting an irreversible
+///    account takeover was therefore **the session cookie alone** — the two
+///    factors it rests on were presented once, up to twelve hours earlier.
+/// 2. it revoked nothing. Changing a password is what a person does when they
+///    believe somebody else has their account, and the other browser's
+///    session row stayed authenticated with its `access_token` column intact
+///    until the absolute bound.
+///
+/// **The decisive mutations**, one per half: delete the `verify_password` of
+/// `current_password` and the first two assertions read `200`; delete the
+/// `delete_others` call and the last one reads `200` where it demands `401`.
+///
+/// The second session authenticates at `step + 1` — see `Harness::authenticate`
+/// for why a suite cannot sign the same person in twice inside one TOTP step.
+#[tokio::test]
+async fn changing_a_password_needs_the_current_one_and_ends_every_other_session()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    const THIRD_PASSWORD: &str = "a-third-and-even-longer-password";
+
+    // One browser: enrols, and replaces the printed password with
+    // NEW_PASSWORD (presenting the printed one, which is now required).
+    let mine = harness.sign_in().await?;
+
+    // A second browser, signed in as the same person with the password that
+    // is now in force. This is the session the change must end.
+    let step = totp::step_at(OffsetDateTime::now_utc().unix_timestamp());
+    let theirs = harness.authenticate(NEW_PASSWORD, step + 1).await?;
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&theirs), None)
+        .await?;
+    anyhow::ensure!(status == 200, "the second session must start live: {body}");
+
+    // (1) No current password at all.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/password",
+            Some(&mine.session),
+            &[("new_password", THIRD_PASSWORD)],
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a password change with no current password must be refused. A 200 here means a stolen \
+         session cookie is a permanent account takeover: {body}"
+    );
+
+    // (2) The wrong one.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/password",
+            Some(&mine.session),
+            &[
+                ("current_password", "not-the-current-password"),
+                ("new_password", THIRD_PASSWORD),
+            ],
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a wrong current password is the same 401: {body}"
+    );
+
+    // A refused change revokes nothing — otherwise the refusal would be a
+    // denial of service anyone holding a session token could fire.
+    let (status, _) = harness
+        .get_json("/dash/v1/staff/session", Some(&theirs), None)
+        .await?;
+    assert_eq!(
+        status, 200,
+        "a REFUSED change must not end anybody's session"
+    );
+
+    // (3) The right one.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/password",
+            Some(&mine.session),
+            &[
+                ("current_password", NEW_PASSWORD),
+                ("new_password", THIRD_PASSWORD),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "other_sessions_revoked"),
+        &Value::from(1),
+        "the change reports what it ended: {body}"
+    );
+
+    // The other browser's next render.
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&theirs), None)
+        .await?;
+    assert_eq!(
+        status, 401,
+        "the OTHER session must be gone. A 200 here means changing a password does nothing \
+         about the person you changed it because of: {body}"
+    );
+
+    // The caller's own session survives: signing somebody out for choosing a
+    // password would make the success case look like a failure.
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&mine.session), None)
+        .await?;
+    assert_eq!(
+        status, 200,
+        "the session that made the change stays: {body}"
+    );
+
+    // And the new password is the one in force.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/login",
+            None,
+            &[("email", STAFF_EMAIL), ("password", NEW_PASSWORD)],
+        )
+        .await?;
+    assert_eq!(status, 401, "the replaced password is refused: {body}");
     Ok(())
 }

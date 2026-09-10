@@ -38,6 +38,7 @@ use crate::jobs::Jobs;
 use crate::migrations::Migrations;
 use crate::payment_intents::PaymentIntents;
 use crate::provider_requests::ProviderRequests;
+use crate::rate_limits::RateLimits;
 use crate::refunds::Refunds;
 use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
@@ -657,6 +658,7 @@ pub trait Repositories:
     + Migrations
     + PaymentIntents
     + ProviderRequests
+    + RateLimits
     + Refunds
     + Settlement
     + SigningKeys

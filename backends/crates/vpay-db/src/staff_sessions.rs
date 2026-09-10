@@ -268,6 +268,37 @@ pub trait StaffSessions {
     ///
     /// [`DbError::Persistence`].
     async fn delete(&self, id: &str) -> Result<bool, DbError>;
+
+    /// Deletes every session of `staff_id` **except** `keep_id`, and answers
+    /// how many went.
+    ///
+    /// The write that makes a password change mean something (issue #79
+    /// item 3). Replacing a password while somebody else's browser holds a
+    /// live session of the same account changes nothing about that browser:
+    /// the session was authenticated before the change and its `access_token`
+    /// column is still readable. Whoever the password was changed *because
+    /// of* keeps reading `/dash/v1` until the absolute bound twelve hours
+    /// later.
+    ///
+    /// `keep_id` and not "all of them", because the caller is one of them.
+    /// Signing out the browser that just chose a new password would make the
+    /// success case look like a failure, and a person who has just proved
+    /// two factors and their current password is the one caller here whose
+    /// session is known good.
+    ///
+    /// The cascade on `oauth_authorization_codes.session_id` applies to each
+    /// deleted row, exactly as it does for [`StaffSessions::delete`], so a
+    /// code another browser had in flight dies with its session.
+    ///
+    /// `delete_many` for [`StaffSessions::delete`]'s measured reason —
+    /// `delete_exec.rs` turns "matched no row" into
+    /// `CratestackError::Forbidden`, and "there were no other sessions" is
+    /// the ordinary case here, not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`].
+    async fn delete_others(&self, staff_id: &str, keep_id: &str) -> Result<usize, DbError>;
 }
 
 #[async_trait]
@@ -383,6 +414,26 @@ impl StaffSessions for crate::repository::PgRepositories {
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
 
         Ok(summary.ok == 1)
+    }
+
+    async fn delete_others(&self, staff_id: &str, keep_id: &str) -> Result<usize, DbError> {
+        let summary = self
+            .cs
+            .staff_session()
+            .delete_many()
+            .where_(staff_session::staff_id().eq(staff_id.to_owned()))
+            // `ne` and not "delete then re-create": the caller's own session
+            // must survive the statement, not survive a gap in it. A delete
+            // of everything followed by an insert would leave the person who
+            // changed their password signed out for the width of two
+            // statements, and signed out for good if the process died between
+            // them.
+            .where_(staff_session::id().ne(keep_id.to_owned()))
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
+
+        Ok(summary.ok)
     }
 }
 

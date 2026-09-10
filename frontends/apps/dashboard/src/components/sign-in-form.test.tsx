@@ -90,14 +90,34 @@ describe('the code form', () => {
 });
 
 describe('the password-change form', () => {
-  it('asks for the new password twice and for no current one', () => {
-    // No "current password" field: the session has already presented both
-    // factors, and re-checking a password this endpoint then overwrites
-    // would be a second copy of that check in the wrong layer.
+  it('asks for the CURRENT password and for the new one twice', () => {
+    // This test asserted the opposite until 2026-09-10 — "and for no current
+    // one" — quoting the argument the endpoint itself carried: the session
+    // has already presented both factors. It had, once, up to twelve hours
+    // earlier, which made the session cookie on its own the credential for an
+    // irreversible account takeover (issue #79 item 3).
+    //
+    // The field is what makes the change need something the browser does not
+    // already have. Deleting it from `password-form.tsx` fails here, and
+    // `changing_a_password_needs_the_current_one_and_ends_every_other_session`
+    // is the end-to-end half against a real vpay.
     render(<PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    expect(screen.getByLabelText('Current password')).toBeInTheDocument();
     expect(screen.getByLabelText('New password')).toBeInTheDocument();
     expect(screen.getByLabelText('Repeat it')).toBeInTheDocument();
-    expect(screen.queryByLabelText(/current/i)).toBeNull();
+  });
+
+  it('lets a password manager offer the stored password rather than a new one', () => {
+    // `autoComplete="new-password"` on the current-password field makes a
+    // manager generate a fresh value into it, which is unusable for exactly
+    // the people who use one.
+    const { container } = render(<PasswordForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    expect(
+      (container.querySelector('#dashboard-current-password') as HTMLInputElement).autocomplete,
+    ).toBe('current-password');
+    expect(
+      (container.querySelector('#dashboard-new-password') as HTMLInputElement).autocomplete,
+    ).toBe('new-password');
   });
 
   it('hints the server own minimum length', () => {

@@ -779,6 +779,33 @@ fn staff_login(
          server-side sessions, and tokens whose audience is this client id"
     );
 
+    // Parsed here rather than in `vpay_config`, for `StaffCredentials::new`'s
+    // reason: the syntax is decided where the matching is. An entry that does
+    // not parse takes the login down with it rather than narrowing the list
+    // silently — a typo'd allow-list is a per-address budget that has quietly
+    // become the whole deployment's again, which is the failure this field
+    // exists to fix and the one nobody would notice.
+    let trusted_proxies = match vpay_api::staff::client_address::TrustedProxies::parse(
+        &config.staff_auth.trusted_proxies,
+    ) {
+        Ok(proxies) => proxies,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "staff_auth.trusted_proxies is unusable; /dash/v1 mounts its READ surface \
+                 and NO staff login"
+            );
+            return None;
+        }
+    };
+    if trusted_proxies.is_empty() {
+        tracing::info!(
+            "staff_auth.trusted_proxies is empty: the sign-in rate limiter counts the \
+             TRANSPORT PEER. Behind a reverse proxy that is one budget for the whole \
+             deployment (ADR-0017 Consequences); name the proxy to count the caller"
+        );
+    }
+
     Some(Arc::new(vpay_api::staff::StaffLogin {
         credentials,
         dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
@@ -787,7 +814,8 @@ fn staff_login(
             key,
             Arc::clone(repositories),
         )),
-        limiter: Arc::new(vpay_api::staff::rate_limit::SignInLimiter::new()),
+        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(config.staff_auth.rate_limits),
+        trusted_proxies,
         issuer_label: config.deployment.name.clone(),
     }))
 }

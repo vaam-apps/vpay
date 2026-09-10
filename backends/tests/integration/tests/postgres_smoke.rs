@@ -169,8 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 37,
-        "all thirty-seven migrations under backends/migrations should be recorded as applied \
+        applied, 38,
+        "all thirty-eight migrations under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -232,7 +232,15 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          a PARTIAL index predicate depends on; it drops no column DEFAULT \
          and renames no hand-written CHECK, and 0037's own header says why \
          for each. account_kind and direction, on the ledger tables, are \
-         the two native enums left)"
+         the two native enums left, \
+         and issue #79's 0038, which creates rate_limit_windows -- the \
+         fixed-window attempt counters the staff sign-in limiter spends \
+         from, moved out of one process's memory so that every replica \
+         shares one budget. Born with a schemas/vpay.cstack model like every \
+         table since 0034, and the first whose model carries NO @@allow arm \
+         on purpose: the count is one INSERT ... ON CONFLICT DO UPDATE ... \
+         RETURNING attempts, because the increment is an expression over the \
+         row's own column and a generated Update input carries values)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2113,7 +2121,28 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     the mirror of the undeclared-CHECK one: a generated `migrate diff`
 ///     would emit `ADD CONSTRAINT … FOREIGN KEY` for ten constraints that
 ///     already exist. Nothing runs `migrate diff` here, so it is latent.
-const EXPECTED_DRIFT_CHANGES: u32 = 167;
+///
+/// **167 -> 172 on 2026-09-10** (issue #79 item 2): `rate_limit_windows`
+/// (migration `0038`) adds exactly five lines, and *which* five is the whole
+/// report on that table — four `CHECK … exists in the live database but is
+/// not declared in the schema` and one `index … exists in the live database
+/// but is not declared`.
+///
+/// **Not one column-level line.** No `column … type differs`, no `column …
+/// default value differs`, no undeclared column: `model RateLimitWindow`
+/// declares all five columns and the table was shaped so it could — `TEXT`,
+/// `TIMESTAMPTZ` and `BIGINT` only, no `jsonb`, no `bytea`, no `int4`, no
+/// native enum, no `DEFAULT`. It is the best ratio any table in this schema
+/// has managed (compare `customers`' one table for +10 and `invoices`' one
+/// for the bulk of S4b's +26), and the reason is stated in migration `0038`'s
+/// header rather than left to be inferred.
+///
+/// The five it does cost are the two permanent classes every modelled table
+/// here pays: 0.11.1/0.12.0's grammar has no hand-named-CHECK declaration and
+/// no index declaration, so a `CHECK` and an `INDEX` are invisible to the
+/// schema in one direction and visible to the live introspection in the
+/// other.
+const EXPECTED_DRIFT_CHANGES: u32 = 172;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2163,7 +2192,12 @@ const EXPECTED_DRIFT_CHANGES: u32 = 167;
 /// in. Three tables for +26 changes — a worse ratio than ADR-0017's three for
 /// +17, and the difference is entirely indexes and CHECKs on `invoices`,
 /// which has six of the first and eight of the second.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 23;
+/// **23 -> 24 on 2026-09-10** (issue #79 item 2): `rate_limit_windows` joins
+/// the list declared-and-differing, in the shape `customers` joined it in.
+/// One table for +5 changes — see `EXPECTED_DRIFT_CHANGES` for why that is
+/// the floor a modelled table can reach and not a sign this one is compared
+/// less than the others.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -2215,6 +2249,14 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 23;
 /// was shaped for: no `jsonb`, no `bytea`, no `int2`/`int4`, so every one of
 /// its columns is compared. It is the second table in this schema (after
 /// migration 0035's three) that costs this constant nothing at all.
+/// **Still 19 after migration 0038 (2026-09-10)**, and that is the assertion
+/// that makes `EXPECTED_DRIFT_CHANGES`' +5 mean what it says.
+/// `rate_limit_windows` contributes nothing here: `attempts` is `BIGINT` and
+/// not `INT` precisely so that it is compared rather than excluded —
+/// `currencies.exponent` had to be widened by migration 0032 to buy the same
+/// thing after the fact, and a table born with a model does not repeat that.
+/// It is the third table in this schema (after 0035's three and
+/// `invoice_items`) to cost this constant nothing at all.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of

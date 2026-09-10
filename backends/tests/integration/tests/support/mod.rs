@@ -370,7 +370,17 @@ pub(crate) fn staff_login_for(
             signing_key,
             Arc::clone(repositories),
         )),
-        limiter: Arc::new(vpay_api::staff::rate_limit::SignInLimiter::new()),
+        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(config.staff_auth.rate_limits),
+        // The suite's own `staff_auth.trusted_proxies`, parsed exactly as
+        // `main.rs` parses it. `expect` rather than a fallible return,
+        // because a suite that wrote an unparseable allow-list has a bug in
+        // its fixture and must say so rather than quietly booting a server
+        // that trusts nobody — which is the shape every OTHER suite is in,
+        // and would make a trusted-proxy assertion pass for the wrong reason.
+        trusted_proxies: vpay_api::staff::client_address::TrustedProxies::parse(
+            &config.staff_auth.trusted_proxies,
+        )
+        .expect("the suite's staff_auth.trusted_proxies are parseable"),
         issuer_label: config.deployment.name.clone(),
     }))
 }
