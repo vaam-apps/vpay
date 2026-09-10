@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Select } from './select';
@@ -57,10 +57,22 @@ describe('Select', () => {
 
     // The selected item is the one the keyboard lands on, not the first.
     expect(english.getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(english);
+    // `waitFor`, not a bare `expect`: Base UI moves focus onto the
+    // highlighted item AFTER the listbox is in the document, so
+    // `findByRole('listbox')` above can resolve a tick before focus lands.
+    // Written as a bare assertion this passed on vitest 3 and failed six
+    // runs in ten on vitest 4 (exp41 review) — the schedule changed, the
+    // component did not. What is asserted is unchanged: focus must reach
+    // this item, and `waitFor` still fails, naming the element it found
+    // instead, if it never does.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(english);
+    });
 
     fireEvent.keyDown(list, { key: 'ArrowDown', code: 'ArrowDown' });
-    expect(document.activeElement).toBe(french);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(french);
+    });
     unmount();
   });
 });
