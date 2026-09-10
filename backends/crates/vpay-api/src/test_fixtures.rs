@@ -142,10 +142,39 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // Neither URL configured, which is the registration a merchant that
         // never pays an invoice through vpay has — and the one that makes
         // `POST /v1/invoices/{id}/pay` with an empty body answer the `400`
-        // naming both parameters. `config_with_invoice_defaults` below is the
-        // fixture for the other half.
+        // naming both parameters. [`config_with_invoice_defaults`] below is
+        // the fixture for the other half.
         invoices: vpay_config::InvoiceDefaults::default(),
     }
+}
+
+/// A `Config` whose one merchant has configured its `pay` forwarding URLs
+/// (issue #91, D2) — the other half of [`merchant`]'s registration.
+///
+/// `livemode` is a parameter and not a constant because the second validation
+/// `POST /v1/invoices/{id}/pay` performs is only *visible* under livemode: a
+/// configured `http://` URL is refused at boot by `vpay_config`'s
+/// `validate_invoice_urls`, so the request path's own `checked_forward_url`
+/// on the configured value can never fire in a deployment that started. A
+/// fixture is the only place that belt can be shown to exist, and a test that
+/// could not build a livemode `ResourceConfig` could not show it. Note that
+/// this fixture deliberately does NOT go through `Config::validate_all`.
+///
+/// Added 2026-09-11 by the exp47 review. [`merchant`]'s comment has named
+/// this function since the branch landed and no such function existed.
+pub(crate) fn config_with_invoice_defaults(
+    livemode: bool,
+    success_url: Option<&str>,
+    cancel_url: Option<&str>,
+) -> Config {
+    let mut client = merchant("acme-cameroon", &["payments:write"]);
+    client.invoices = vpay_config::InvoiceDefaults {
+        success_url: success_url.map(str::to_owned),
+        cancel_url: cancel_url.map(str::to_owned),
+    };
+    let mut config = config_with(PUBLIC_BASE_URL, vec![client]);
+    config.deployment.livemode = livemode;
+    config
 }
 
 /// A `Config` with the given base URL and merchants and nothing else — no

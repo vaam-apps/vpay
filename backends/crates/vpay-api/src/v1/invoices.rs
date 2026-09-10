@@ -1597,7 +1597,186 @@ fn metadata_value_too_long() -> ApiError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{METADATA_MAX_KEYS, parse_due_date, validated_metadata};
+    use super::{METADATA_MAX_KEYS, PayParams, forward_urls, parse_due_date, validated_metadata};
+    use crate::ResourceConfig;
+    use crate::test_fixtures::config_with_invoice_defaults;
+
+    const MERCHANT: &str = "acme-cameroon-tenant";
+
+    /// `forward_urls` over a `ResourceConfig` built from `config`.
+    fn resolve(
+        config: &vpay_config::Config,
+        success_url: Option<&str>,
+        cancel_url: Option<&str>,
+    ) -> Result<(String, String), crate::ApiError> {
+        let resource_config =
+            ResourceConfig::from_config(config).expect("the fixture projects onto the port");
+        forward_urls(
+            &PayParams {
+                success_url: success_url.map(str::to_owned),
+                cancel_url: cancel_url.map(str::to_owned),
+            },
+            &resource_config,
+            MERCHANT,
+        )
+    }
+
+    /// A **malformed URL on the request does not fall back to the configured
+    /// one.** It is refused, naming the parameter the caller sent.
+    ///
+    /// This is the shape of the bug D2 could have introduced and no delivered
+    /// case covered: `present(sent).or_else(|| present(configured))` resolves
+    /// the *request's* value whenever it is non-blank, so a
+    /// `success_url=javascript:alert(1)` reaches `checked_forward_url` and is
+    /// refused there — rather than being quietly replaced by the merchant's
+    /// configured page, which would turn a caller's mistake into a silent
+    /// redirect somewhere else and hide the mistake forever.
+    ///
+    /// The blank case is the deliberate exception and is asserted beside it:
+    /// `success_url=` is what a client templating an optional field emits,
+    /// and `present` treats it as absent, so the configured value wins.
+    #[test]
+    fn a_malformed_url_on_the_request_is_refused_rather_than_replaced_by_the_default() {
+        let config = config_with_invoice_defaults(
+            false,
+            Some("https://shop.acme.example/thanks"),
+            Some("https://shop.acme.example/basket"),
+        );
+
+        let error = resolve(&config, Some("javascript:alert(1)"), None)
+            .expect_err("a scheme a payer may not be sent to is refused");
+        assert_eq!(
+            error.param(),
+            Some("success_url"),
+            "the refusal names what the caller sent, not what the operator configured"
+        );
+
+        // Blank is absent — the one case where the configured value wins over
+        // something the request carried.
+        assert_eq!(
+            resolve(&config, Some("   "), None).expect("blank falls back"),
+            (
+                "https://shop.acme.example/thanks".to_owned(),
+                "https://shop.acme.example/basket".to_owned()
+            )
+        );
+    }
+
+    /// One configured and one sent resolve **independently**, and the `400`
+    /// names only what is genuinely absent.
+    #[test]
+    fn each_url_resolves_on_its_own_and_the_refusal_names_only_what_is_missing() {
+        let only_success = config_with_invoice_defaults(false, Some("https://a.example/ok"), None);
+        assert_eq!(
+            resolve(&only_success, None, Some("https://b.example/cancelled"))
+                .expect("one from the file, one from the request"),
+            (
+                "https://a.example/ok".to_owned(),
+                "https://b.example/cancelled".to_owned()
+            )
+        );
+
+        let error = resolve(&only_success, None, None).expect_err("cancel_url is nowhere");
+        assert_eq!(error.param(), Some("cancel_url"));
+        let message = format!("{error}");
+        assert!(
+            message.contains("`cancel_url`") && !message.contains("`success_url`"),
+            "a merchant that configured half is told about the other half only: {message}"
+        );
+    }
+
+    /// The refusal naming **both** parameters survives `ApiError`'s
+    /// 200-character ceiling — asserted on the **envelope**, not on `Display`.
+    ///
+    /// `bounded_message` truncates the public `error.message` at 200
+    /// characters and appends `…`. The clause that says these may be
+    /// configured once instead of sent every time is the last one in the
+    /// sentence, so it is the first casualty if the message ever grows — and
+    /// the whole point of D2 is what it says. `Display` carries a
+    /// 41-character `invalid request parameter …` prefix that never reaches a
+    /// caller, so this reads the JSON a merchant actually receives.
+    #[tokio::test]
+    async fn the_refusal_naming_both_urls_reaches_the_wire_untruncated() {
+        use axum::response::IntoResponse as _;
+
+        let error = resolve(&config_with_invoice_defaults(false, None, None), None, None)
+            .expect_err("neither configured nor sent");
+        let bytes = axum::body::to_bytes(error.into_response().into_body(), usize::MAX)
+            .await
+            .expect("reading the envelope succeeds");
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("the envelope is JSON");
+        let message = envelope
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .expect("a 400 carries a message")
+            .to_owned();
+
+        assert!(
+            message.contains("`success_url`") && message.contains("`cancel_url`"),
+            "one refusal names both missing parameters: {message}"
+        );
+        assert!(
+            message.contains("`merchant_clients[].invoices`"),
+            "the clause that says a merchant may configure these once must survive: {message}"
+        );
+        assert!(
+            !message.contains('…'),
+            "the message is past the 200-character ceiling and lost its tail ({} characters): \
+             {message}",
+            message.chars().count()
+        );
+        assert_eq!(
+            envelope
+                .get("error")
+                .and_then(|error| error.get("param"))
+                .and_then(serde_json::Value::as_str),
+            Some("success_url"),
+            "`param` names the first absent one, so a client can still point at a field"
+        );
+    }
+
+    /// **A configured URL is validated on the request path too**, and
+    /// livemode is where that second check is visible.
+    ///
+    /// `vpay_config`'s `validate_invoice_urls` refuses `http://` under
+    /// `deployment.livemode` at boot, so a deployment carrying one never
+    /// starts and this belt can never fire in production. That is exactly why
+    /// it needs a test: the argument for keeping it is that a *configured*
+    /// value and a *passed* one must be admitted by one rule, and the cheapest
+    /// way to lose that is for someone to notice the boot check and delete the
+    /// request-time one as redundant.
+    ///
+    /// **The decisive mutation:** drop the two `checked_forward_url` calls in
+    /// `forward_urls` — or apply them only to the value the request carried —
+    /// and this case passes an `http://` page to a livemode payer.
+    #[test]
+    fn a_configured_url_is_held_to_the_livemode_https_rule_at_request_time_as_well() {
+        let livemode = config_with_invoice_defaults(
+            true,
+            Some("http://shop.acme.example/thanks"),
+            Some("https://shop.acme.example/basket"),
+        );
+        let error = resolve(&livemode, None, None)
+            .expect_err("a livemode payer is not forwarded over plaintext");
+        assert_eq!(error.param(), Some("success_url"));
+
+        // And the same pair is fine off livemode, so this is the https rule
+        // firing rather than the fixture being malformed.
+        assert!(
+            resolve(
+                &config_with_invoice_defaults(
+                    false,
+                    Some("http://shop.acme.example/thanks"),
+                    Some("https://shop.acme.example/basket"),
+                ),
+                None,
+                None
+            )
+            .is_ok()
+        );
+    }
 
     /// `due_date` is unix seconds, and the three ways it can be wrong each
     /// name the parameter rather than the body.
