@@ -858,6 +858,19 @@ async fn a_customer_with_no_name_email_or_phone_is_refused_by_the_database() -> 
 /// A CHECK that named eight columns would pass a `contains` and fail exactly
 /// one iteration of this.
 ///
+/// # Each column is held back TWICE, and the second way is the one that got in
+///
+/// First as another value (`'Ada Ngo'`), then as `NULL` — and until
+/// 2026-09-11 the second was not tried and the constraint did not refuse it.
+/// A CHECK is violated only when its expression evaluates to FALSE, and
+/// `name = '[redacted]'` over a NULL `name` is NULL, which passes. So the
+/// `=` spelling of this constraint accepted an `anonymized_at` row with a
+/// NULL identifier column: exactly the state a missed assignment produces
+/// first, because the columns an erasure most easily misses are the ones the
+/// payer never filled in. `0041` now spells it `IS NOT DISTINCT FROM`.
+/// Reverting that spelling fails the NULL half of this loop and nothing
+/// else.
+///
 /// The literal is `vpay_db::REDACTED` and not a string spelled here, so this
 /// is also the proof that the Rust constant and the migration agree —
 /// `the_redaction_marker_is_the_one_the_migration_enforces` in `vpay-db`
@@ -904,46 +917,54 @@ async fn an_anonymised_customer_carries_the_marker_in_every_identifier_column() 
     .await
     .context("a fully marked anonymised customer is the shape the erasure writes")?;
 
-    for held_back in IDENTIFIERS {
-        // One column left as the payer's real value; the other eight marked.
-        // This is a partially-completed erasure, and it is what the CHECK
-        // exists to make unrepresentable.
-        let values = IDENTIFIERS
-            .iter()
-            .map(|column| {
-                if *column == held_back {
-                    "'Ada Ngo'".to_owned()
-                } else {
-                    format!("'{marker}'")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+    // The two ways one column can be left out of an erasure. `'Ada Ngo'` is
+    // the payer's value surviving; `NULL` is the assignment simply not
+    // happening on a column the payer never filled in — which is the more
+    // likely of the two and the one the `=` spelling of this CHECK admitted.
+    for held_back_as in ["'Ada Ngo'", "NULL"] {
+        for held_back in IDENTIFIERS {
+            // One column left un-marked; the other eight marked. This is a
+            // partially-completed erasure, and it is what the CHECK exists to
+            // make unrepresentable.
+            let values = IDENTIFIERS
+                .iter()
+                .map(|column| {
+                    if *column == held_back {
+                        held_back_as.to_owned()
+                    } else {
+                        format!("'{marker}'")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
 
-        let outcome = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at, \
-             anonymized_at, {columns}) \
-             VALUES ('cus_partial000000000000', 'merchant_a', false, '{{}}'::jsonb, now(), \
-             now(), {values})"
-        )))
-        .execute(&pool)
-        .await;
+            let outcome = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at, \
+                 anonymized_at, {columns}) \
+                 VALUES ('cus_partial000000000000', 'merchant_a', false, '{{}}'::jsonb, now(), \
+                 now(), {values})"
+            )))
+            .execute(&pool)
+            .await;
 
-        let Err(error) = outcome else {
-            panic!(
-                "`{held_back}` survived an anonymisation and Postgres accepted the row: the \
-                 payer was told they were erased and vpay kept one of their identifiers"
+            let Err(error) = outcome else {
+                panic!(
+                    "`{held_back}` survived an anonymisation as {held_back_as} and Postgres \
+                     accepted the row: the payer was told they were erased and vpay kept a \
+                     column the erasure claims to have written"
+                );
+            };
+            assert_eq!(
+                error
+                    .as_database_error()
+                    .expect("a database-level error")
+                    .constraint(),
+                Some("anonymized_customers_carry_the_marker"),
+                "`{held_back}` held back as {held_back_as} must be refused by the marker CHECK \
+                 specifically, not by a length bound or a NOT NULL that happens to fire on the \
+                 same row"
             );
-        };
-        assert_eq!(
-            error
-                .as_database_error()
-                .expect("a database-level error")
-                .constraint(),
-            Some("anonymized_customers_carry_the_marker"),
-            "`{held_back}` must be refused by the marker CHECK specifically, not by a length \
-             bound or a NOT NULL that happens to fire on the same row"
-        );
+        }
     }
 
     Ok(())

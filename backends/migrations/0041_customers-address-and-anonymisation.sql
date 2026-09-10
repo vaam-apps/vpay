@@ -104,6 +104,20 @@ ALTER TABLE customers
 -- identifier_column` in postgres_smoke.rs is what proves they do, by writing
 -- the Rust constant into a real row.
 --
+-- WHY `IS NOT DISTINCT FROM` AND NOT `=`
+--
+-- A CHECK is violated only when its expression evaluates to FALSE; NULL
+-- passes. `name = '[redacted]'` with a NULL `name` is NULL, so the `=`
+-- spelling of this constraint accepted exactly the row it is written to
+-- refuse: `anonymized_at` set, `address_line2` (or `name`, or any of the
+-- nine) left NULL. That is not a theoretical hole. It is the FIRST state a
+-- missed assignment produces, because the columns an erasure most easily
+-- misses are the ones a payer never filled in, and the whole argument for
+-- writing all nine unconditionally is that "which fields did this payer
+-- fill in?" is itself information about them. `IS NOT DISTINCT FROM` is
+-- FALSE rather than NULL when one side is NULL, so the constraint now says
+-- what its comment always claimed.
+--
 -- Multi-column, therefore invisible to `cratestack migrate baseline` in both
 -- directions (`introspect/postgres/constraints.rs` filters
 -- `array_length(c.conkey, 1) = 1`), exactly as `at_least_one_identifier` is.
@@ -111,15 +125,15 @@ ALTER TABLE customers
 -- line.
 ALTER TABLE customers ADD CONSTRAINT anonymized_customers_carry_the_marker CHECK (
     anonymized_at IS NULL OR (
-        name = '[redacted]'
-        AND email = '[redacted]'
-        AND phone = '[redacted]'
-        AND address_line1 = '[redacted]'
-        AND address_line2 = '[redacted]'
-        AND address_city = '[redacted]'
-        AND address_state = '[redacted]'
-        AND address_postal_code = '[redacted]'
-        AND address_country = '[redacted]'
+        name IS NOT DISTINCT FROM '[redacted]'
+        AND email IS NOT DISTINCT FROM '[redacted]'
+        AND phone IS NOT DISTINCT FROM '[redacted]'
+        AND address_line1 IS NOT DISTINCT FROM '[redacted]'
+        AND address_line2 IS NOT DISTINCT FROM '[redacted]'
+        AND address_city IS NOT DISTINCT FROM '[redacted]'
+        AND address_state IS NOT DISTINCT FROM '[redacted]'
+        AND address_postal_code IS NOT DISTINCT FROM '[redacted]'
+        AND address_country IS NOT DISTINCT FROM '[redacted]'
     )
 );
 
@@ -208,6 +222,6 @@ COMMENT ON COLUMN customers.address_country IS
 COMMENT ON COLUMN customers.anonymized_at IS
     'When DELETE /v1/customers/{id} or sweep_idle_customers erased this payer''s identifiers, or NULL for a live customer. NOT a soft-delete flag: by the time this is non-NULL every identifier column on the row is the literal [redacted], which anonymized_customers_carry_the_marker enforces. A customer with no payment history is still hard-deleted and never reaches this state; one an intent, session or invoice references cannot be deleted (NO ACTION) and is anonymised instead, so the payment record survives with no payer on it.';
 COMMENT ON CONSTRAINT anonymized_customers_carry_the_marker ON customers IS
-    'A row that says the payer was erased holds no identifier of theirs: all nine identifier columns are the literal [redacted]. Written unconditionally, including components the payer never filled in, because which fields a record had is itself information about the person. Multi-column, therefore invisible to cratestack migrate baseline in both directions; postgres_smoke.rs asserts it directly, against the Rust constant vpay_db::customers::REDACTED.';
+    'A row that says the payer was erased holds no identifier of theirs: all nine identifier columns are the literal [redacted], and none of them is NULL. Written unconditionally, including components the payer never filled in, because which fields a record had is itself information about the person. Spelled with IS NOT DISTINCT FROM rather than =, because a CHECK passes when its expression is NULL and the = spelling admitted every partial erasure that left a column NULL. Multi-column, therefore invisible to cratestack migrate baseline in both directions; postgres_smoke.rs asserts it directly, against the Rust constant vpay_db::customers::REDACTED, holding back each column first as a value and then as a NULL.';
 COMMENT ON TABLE customers IS
     'A merchant-owned record of a payer they expect to see again (S4a). Personal data. DELETE /v1/customers/{id} and the twelve-month sweep_idle_customers job hard-delete a customer with no payment history and ANONYMISE one that has any (0041): every identifier column becomes [redacted], anonymized_at is stamped, metadata (the merchant''s own data) stays, and the NO ACTION foreign keys keep the payment record intact with no payer on it. Never soft-deleted — an anonymised row is not the record of the person. No cross-merchant identity: nothing here is unique across merchant_id, deliberately.';
