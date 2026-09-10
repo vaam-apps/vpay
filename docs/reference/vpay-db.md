@@ -1869,10 +1869,29 @@ and the worker's `--worker-concurrency` (default 4, operator-settable). At the
 default it fits (4 + 4 ≤ 10). At a concurrency of 10 it does not, and the path
 that would queue on `ACQUIRE_TIMEOUT` is the `Existing` branch — i.e. crash
 recovery, the one that only runs when something has already gone wrong.
-Nothing enforces the relationship and nothing measures it; it is listed as a
+~~Nothing enforces the relationship and nothing measures it; it is listed as a
 maintainer decision in
 [../plans/exp18-notes/opus-review.md](../plans/exp18-notes/opus-review.md) §3
-rather than decided by a persistence-layer swap.
+rather than decided by a persistence-layer swap.~~ **Both halves of that
+sentence stopped being true on 2026-09-10 (issue #63).** `vpay-server worker`
+refuses a `--worker-concurrency` above `MAX_CONNECTIONS / 2` at boot, as exit
+78, before it opens the pool — which is the only reason `MAX_CONNECTIONS` is
+`pub` — and the ratio is measured against a real pool by
+`the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper`
+in `backends/tests/integration/tests/webhooks.rs`.
+
+What that measurement says, and it is not what the arithmetic above assumes:
+five simultaneous fan-outs on the `Existing` branch fit the pool with the
+lease reaper still running alongside, and the reaper only starves when all ten
+connections are pinned. Two connections per fan-out is a *peak*, held for the
+width of the policy probe rather than the width of the transaction, and
+`fan_out_events` is a **singleton** job — one row, claimed under a lease — so
+a worker process has at most one fan-out in flight however high the
+concurrency is set. `MAX_CONNECTIONS / 2` is therefore the conservative
+ceiling the issue chose, not a measured cliff; the reasoning, and the one
+question left open (whether the reaper and gauge loops should be reserved out
+of it), is in
+[../plans/exp45-worker-pool-bound-notes/opus-review.md](../plans/exp45-worker-pool-bound-notes/opus-review.md).
 
 #### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
 

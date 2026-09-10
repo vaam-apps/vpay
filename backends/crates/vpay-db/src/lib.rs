@@ -100,7 +100,6 @@ mod health;
 mod migrations;
 mod persistence;
 mod pool;
-pub use pool::MAX_CONNECTIONS;
 mod schema;
 mod signing_keys;
 // The audit `sqlx::AssertSqlSafe` demands, as a test rather than a comment.
@@ -136,7 +135,7 @@ pub use payment_intents::{
 // this crate has a `CratestackError` to classify or a reason to build a
 // system context.
 pub use persistence::PersistenceError;
-pub use pool::{connect, connect_lazy};
+pub use pool::{MAX_CONNECTIONS, connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
 pub use rate_limits::RateLimits;
 pub use refunds::{RefundRow, Refunds};

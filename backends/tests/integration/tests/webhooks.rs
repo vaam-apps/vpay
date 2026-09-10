@@ -3340,3 +3340,231 @@ async fn a_host_that_resolves_to_a_private_address_is_refused_and_an_unresolvabl
         row.response_excerpt
     );
 }
+
+/// The number `vpay-server worker`'s boot guard enforces, measured against a
+/// real pool instead of derived on paper (issue #63).
+///
+/// # What the guard is
+///
+/// `worker::boot` refuses a `--worker-concurrency` above
+/// `vpay_db::MAX_CONNECTIONS / 2`, because `create_in_tx` on the `Existing`
+/// branch holds **two** pooled connections at once: its own transaction's, and
+/// the one CrateStack's `upsert_do_nothing_authorize.rs` takes to re-check the
+/// update policy (docs/reference/vpay-db.md § CrateStack). That arithmetic was
+/// written down in `docs/plans/exp18-notes/opus-review.md` §3 and never run.
+/// This runs it.
+///
+/// # The three things it measures, and why each is here
+///
+/// 1. **The ceiling is what the code says it is.** `max_safe` is computed from
+///    the exported constant, not typed in, so raising `MAX_CONNECTIONS`
+///    without revisiting this case cannot leave a stale 5 behind.
+/// 2. **At the ceiling, nothing queues.** `max_safe` transactions are opened
+///    and held on a barrier — so every one of them really is holding a
+///    connection — and then asked for their second *simultaneously*, while the
+///    lease reaper, the crash-recovery path issue #63 names, runs its own
+///    query against the same pool. All of it completes.
+/// 3. **The failure it guards against is real, and this is its control.** With
+///    all `MAX_CONNECTIONS` connections pinned, that same reaper call fails,
+///    and fails by *timing out* rather than with some other error. Without
+///    this half, step 2 passing would be equally consistent with a pool that
+///    is not bounded at all.
+///
+/// # What it therefore says about the number, which is not what the issue said
+///
+/// The issue's arithmetic — at a concurrency of 10, ten fan-outs want twenty
+/// of these ten connections — describes a state a worker cannot reach:
+/// `fan_out_events` is a **singleton** job (`vpay_worker::jobs::FANOUT_DEDUPE_KEY`,
+/// one row, claimed under a lease), so at most **one** fan-out is in flight
+/// per process however high `--worker-concurrency` is set, and the second
+/// connection is held for the width of the policy probe rather than the width
+/// of the transaction. That is why step 2 passes with the reaper alongside.
+///
+/// `MAX_CONNECTIONS / 2` is therefore a *conservative* ceiling rather than a
+/// measured cliff, and this case is what keeps that sentence honest: step 3
+/// shows the cliff exists, step 2 shows the ceiling is on the safe side of it.
+///
+/// **How far on the safe side was measured, 2026-09-10**, with this same
+/// shape run at several widths (the probe is in
+/// `docs/plans/exp45-worker-pool-bound-notes/opus-review.md`, not in this
+/// file):
+///
+/// ```text
+/// simultaneous fan-outs   4       5       6       8       10
+/// slowest second acquire  10 ms   7 ms    0.8 ms  1.8 ms  5.002 s (timeout)
+/// lease reaper            ok      ok      ok      ok      timed out
+/// ```
+///
+/// Nothing queues until **`MAX_CONNECTIONS`** transactions are open at once —
+/// not `MAX_CONNECTIONS / 2` — because the second connection is released as
+/// soon as the policy probe answers, so one free connection serves every
+/// waiting probe in milliseconds. The measured cliff is therefore *higher*
+/// than the guard's ceiling, which is the direction that makes the guard safe
+/// to keep. Whether it should be tightened instead to `(MAX_CONNECTIONS - 2) / 2`,
+/// reserving one connection each for the reaper and the gauge loop, was asked
+/// and answered by the `n = 5` column: the reaper was served in 1.2 ms. Moving
+/// either number is the maintainer's, in
+/// `docs/plans/exp45-worker-pool-bound-notes/opus-review.md`.
+///
+/// # Why the transactions are driven here rather than through `handle_fan_out`
+///
+/// Because the singleton is exactly the point: `handle_fan_out` cannot be made
+/// to run `max_safe` times at once through the queue, and a version of this
+/// test that pretended otherwise would be measuring a state that does not
+/// exist. What is driven instead is `create_in_tx` at the same seam
+/// `fan_out_one` uses, in the same transaction shape, with the same
+/// already-committed row underneath it.
+#[tokio::test]
+async fn the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper()
+{
+    /// The lease the reaper is asked to enforce. Long enough that it reaps
+    /// nothing in this test: the answer under scrutiny is whether the query
+    /// runs at all, not what it finds.
+    const LEASE: Duration = Duration::from_secs(300);
+
+    let h = harness().await.expect("harness");
+    let pool_max = usize::try_from(vpay_db::MAX_CONNECTIONS).expect("MAX_CONNECTIONS fits a usize");
+    let max_safe = pool_max / 2;
+    assert!(
+        max_safe > 0,
+        "a pool of {pool_max} leaves no concurrency for the guard to allow"
+    );
+
+    // Every task needs its own event carrying an already-committed delivery
+    // for the same endpoint: that committed row is what makes the second
+    // `create_in_tx` take the `Existing` branch — the two-connection one —
+    // rather than inserting.
+    let url = format!("{}/webhooks", h.receiver_url);
+    let mut event_ids = Vec::with_capacity(max_safe);
+    for i in 0..max_safe {
+        let event = insert_event(h.repositories.as_ref(), MERCHANT_A, &format!("pi_pool_{i}"))
+            .await
+            .expect("an event to fan out");
+        let staged_id = event.id.clone();
+        let staged_url = url.clone();
+        h.repositories
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let created = tx
+                        .create_in_tx(&staged_id, ENDPOINT_ID, &staged_url)
+                        .await?;
+                    assert!(
+                        created.is_some(),
+                        "the first creation must insert, or the re-run below is not on the \
+                         Existing branch and this test measures nothing"
+                    );
+                    Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+            .expect("the delivery this test re-creates");
+        event_ids.push(event.id);
+    }
+
+    // ---- at the ceiling: `max_safe` fan-outs, simultaneously ----
+    //
+    // Two barriers rather than a sleep. `open` releases only once every task
+    // holds a transaction, so the `create_in_tx` calls below really do ask for
+    // their second connection at the same time rather than tidily one after
+    // another; `finish` keeps those transactions open until the reaper's own
+    // query has been answered.
+    let open = Arc::new(tokio::sync::Barrier::new(max_safe + 1));
+    let finish = Arc::new(tokio::sync::Barrier::new(max_safe + 1));
+    let mut fan_outs = Vec::with_capacity(max_safe);
+    for event_id in event_ids {
+        let repositories = Arc::clone(&h.repositories);
+        let open = Arc::clone(&open);
+        let finish = Arc::clone(&finish);
+        let url = url.clone();
+        fan_outs.push(tokio::spawn(async move {
+            repositories
+                .transaction(|tx| {
+                    Box::pin(async move {
+                        open.wait().await;
+                        let again = tx.create_in_tx(&event_id, ENDPOINT_ID, &url).await;
+                        finish.wait().await;
+                        // Abandoned rather than committed: the connections are
+                        // the point, and a rollback leaves the fixture as the
+                        // assertions below expect it.
+                        Ok::<_, anyhow::Error>(TxOutcome::Abandon(again))
+                    })
+                })
+                .await
+                .map(TxOutcome::into_inner)
+        }));
+    }
+
+    open.wait().await;
+    let started = std::time::Instant::now();
+    let reaped = h.repositories.reap_expired_leases(LEASE).await;
+    let waited = started.elapsed();
+    finish.wait().await;
+
+    assert!(
+        reaped.is_ok(),
+        "at the guard's maximum concurrency the crash-recovery reaper must still get a \
+         connection; it answered {reaped:?} after {waited:?}"
+    );
+    for fan_out in fan_outs {
+        let created = fan_out
+            .await
+            .expect("a fan-out task must not panic")
+            .expect("a fan-out transaction at the guard's maximum must not fail to open")
+            .expect("a re-creation at the guard's maximum must not fail");
+        assert!(
+            created.is_none(),
+            "a re-creation over a committed row is the Existing branch, which answers None"
+        );
+    }
+
+    // ---- the control: a pool with nothing left ----
+    //
+    // `MAX_CONNECTIONS` transactions, all pinned. This is the state issue
+    // #63's arithmetic fears, staged directly rather than through a
+    // concurrency the queue cannot actually produce.
+    let pinned = Arc::new(tokio::sync::Barrier::new(pool_max + 1));
+    let release = Arc::new(tokio::sync::Barrier::new(pool_max + 1));
+    let mut holders = Vec::with_capacity(pool_max);
+    for _ in 0..pool_max {
+        let repositories = Arc::clone(&h.repositories);
+        let pinned = Arc::clone(&pinned);
+        let release = Arc::clone(&release);
+        holders.push(tokio::spawn(async move {
+            repositories
+                .transaction(|_tx| {
+                    Box::pin(async move {
+                        pinned.wait().await;
+                        release.wait().await;
+                        Ok::<_, anyhow::Error>(TxOutcome::Abandon(()))
+                    })
+                })
+                .await
+        }));
+    }
+
+    pinned.wait().await;
+    let started = std::time::Instant::now();
+    let starved = h.repositories.reap_expired_leases(LEASE).await;
+    let waited = started.elapsed();
+    release.wait().await;
+    for holder in holders {
+        holder
+            .await
+            .expect("a holding task must not panic")
+            .expect("a pinned transaction must not fail");
+    }
+
+    let error = starved.expect_err(
+        "with every pooled connection held, the reaper cannot run: if this is Ok, the pool is no \
+         longer bounded by MAX_CONNECTIONS and the boot guard is guarding nothing",
+    );
+    assert!(
+        error.to_string().contains("timed out"),
+        "the failure must be the acquire timeout, not some other storage error: {error}"
+    );
+    assert!(
+        waited >= Duration::from_secs(4),
+        "the reaper must have waited out `pool.rs`'s ACQUIRE_TIMEOUT (5 s) before failing, which \
+         is what makes this a starved pool rather than a refused query; it waited {waited:?}"
+    );
+}
