@@ -1364,10 +1364,20 @@ a replay is most confusing without one: the second call would otherwise answer
 `404` for a deletion that succeeded, which a merchant retrying a timed-out
 request cannot tell from "somebody else deleted it".
 
-The `409` for a customer with payment history is decided by the **foreign
-key**, not by a preceding `SELECT`. A count-then-delete would let a concurrent
-`POST /v1/payment_intents` commit a reference between the two, and the
-customer a merchant is about to take a payment from would be erased.
+**There is no `409` on this route since 2026-09-10.** A customer with payment
+history is anonymised rather than refused (migration `0041`, issues #68 and
+#96 item 2), so `DELETE` succeeds or answers the uniform `404`.
+
+What the `409` used to express is still enforced, and still by the **foreign
+key** rather than by a preceding `SELECT`: a payment is never detached from
+its payer. `vpay_db::customers::erase_in_tx` reads `NOT (UNREFERENCED)` under
+the row lock to choose between hard-deleting and anonymising, and that lock
+does not stop a concurrent `POST /v1/payment_intents` inserting a reference —
+an insert takes only a share lock on the customer. So the branch can be wrong
+by one race, in exactly one direction, and the database catches it: the hard
+delete raises `23503`, the whole transaction rolls back, and the retry takes
+the other branch. The opposite race cannot happen, because history is never
+removed. A count-then-delete would have had no such backstop.
 
 ## The rail callback route (`provider_callback.rs`)
 

@@ -278,9 +278,13 @@ pub const V1_ROUTES: &[V1Route] = &[
     // Three methods on one path, which no other resource here has. `POST` is
     // the update (Stripe's spelling — there is no `PUT` and no `PATCH` in
     // that API, so a merchant's existing client sends a `POST`), and `DELETE`
-    // is the hard delete: a customer is personal data, and the only honest
-    // answer to "remove this" is to remove it. `required_scopes` reads the
-    // method, so `DELETE` needs `payments:write` like every other change.
+    // is the erasure: a customer is personal data, and the only honest answer
+    // to "remove this" is to remove it. Since migration `0041` that is a hard
+    // delete for a customer nothing references and an anonymisation in place
+    // for one an intent, a session or an invoice does — the payment record is
+    // never detached from its payer, but the payer is still gone from it
+    // (`v1::customers`' header). `required_scopes` reads the method, so
+    // `DELETE` needs `payments:write` like every other change.
     V1Route {
         path: "/customers/{id}",
         methods: &["GET", "POST", "DELETE"],

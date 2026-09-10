@@ -1,9 +1,10 @@
 //! `/v1/customers` — create, retrieve, update, list, delete.
 //!
 //! The merchant-owned record of a payer they expect to see again (S4a). It is
-//! Stripe's `customer`, narrowed: `id`, `name`, `email`, `phone`, `metadata`,
-//! `created`, `livemode`, and nothing else. `docs/flows/customers.md` is the
-//! long version of everything below; this header is the short one.
+//! Stripe's `customer`, narrowed: `id`, `name`, `email`, `phone`, `address`,
+//! `metadata`, `created`, `livemode` — and `deleted`, which appears only on an
+//! erased one. `docs/flows/customers.md` is the long version of everything
+//! below; this header is the short one.
 //!
 //! **Tenancy.** Every query takes the [`MerchantScope`] the authentication
 //! middleware resolved. A merchant asking for another merchant's `cus_…` gets
@@ -23,21 +24,36 @@
 //!    `2376XXXXXXXX` form a rail is given, through
 //!    [`super::account_holders::canonical_msisdn`], so vpay never holds two
 //!    spellings of one payer.
-//! 2. **`DELETE` is a hard delete.** No `deleted_at`, no status column, no
-//!    tombstone. A row that says "this person asked to be forgotten" is still
-//!    the record of that person.
-//! 3. **A customer with payment history cannot be deleted.** The foreign keys
-//!    migration `0034` adds are `NO ACTION`, so an intent or a session
-//!    pinning the customer refuses both this route and the retention sweep.
-//!    That is a deliberate trade and not a bug: the payment record survives,
-//!    and "delete this customer" is therefore not a complete erasure of the
-//!    payer. [`delete`] answers a `409` that says so.
+//! 2. **`DELETE` erases the payer; it never flags them.** There is no
+//!    `deleted_at` and no tombstone, because a row that says "this person
+//!    asked to be forgotten" is still the record of that person. Since
+//!    migration `0041` the erasure has two shapes and neither is a soft
+//!    delete: a customer nothing references is **hard-deleted** and a later
+//!    `GET` is a `404`; one an intent, a session or an invoice references is
+//!    **anonymised** — the row stays, every identifier on it becomes
+//!    `[redacted]`, and a later `GET` answers `200` with `deleted: true`.
+//!    `anonymized_customers_carry_the_marker` is what makes the second a
+//!    database invariant rather than two call sites remembering.
+//! 3. **A customer with payment history is never *detached* from it.** The
+//!    foreign keys migration `0034` adds are `NO ACTION` and stay that way,
+//!    so the payment record survives the erasure with no payer on it. What
+//!    changed on 2026-09-10 (issues #68, #96 item 2) is what happens instead
+//!    of refusing: this route used to answer a `409` advising the merchant
+//!    to clear `name`, `email` and `phone` — advice
+//!    `at_least_one_identifier` refuses, so it could never be followed. The
+//!    `409` is gone; [`delete`] now always succeeds or answers the uniform
+//!    `404`, and the erasure covers every copy of the payer vpay kept
+//!    outside `customers` too (`vpay_db::customers::erase_in_tx`).
+//!
+//!    The one `409` left on this resource is the opposite fact: an **erased**
+//!    customer cannot be updated or attached to a new payment ([`delete`]'s
+//!    own doc, and `erased_customer`).
 //!
 //! # What is *not* here
 //!
 //! The twelve-month retention sweep is `vpay_worker::handlers`' —
-//! `sweep_idle_customers`, a job kind of its own. This module never deletes
-//! on a timer and has no idea what the horizon is.
+//! `sweep_idle_customers`, a job kind of its own. This module never erases on
+//! a timer and has no idea what the horizon is.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
