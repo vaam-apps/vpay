@@ -1607,6 +1607,22 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
 /// migration, and migration `0041` contains the word `[redacted]` — not any
 /// payer's data, but a scan that matched it would be matching vpay's own
 /// source.
+///
+/// # The two limits of this scan, stated rather than left to be assumed
+///
+/// **It is `table_schema = 'public'` only**, so the `authkestra.*` tables
+/// (migration `0006`) are outside it. Those are the OAuth provider's —
+/// clients, codes, device codes, DPoP jtis, refresh tokens — and every
+/// subject in them is a *merchant's* credential, never a payer's; a payer
+/// never authenticates to vpay. Widening the scan would make it assert about
+/// a schema this erasure has no statement for and no reason to.
+///
+/// **It is a substring search for literals a fixture wrote**, so it can only
+/// find a copy of something this test put in. That is what makes the
+/// `before` half load-bearing: a column that holds a payer identifier this
+/// fixture never writes is invisible here, which is exactly how
+/// `charges.failure_raw` survived until 2026-09-11. When a new column can
+/// hold one, the fixture is the thing to change.
 async fn scan_for(
     pool: &PgPool,
     literals: &[&str],
