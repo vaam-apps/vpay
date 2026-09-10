@@ -201,6 +201,37 @@ value nothing in this repository sends, and validating it needs a full
 `just test-e2e`. Maintainer decision — recorded on the stub's own page, where
 a person driving the demo will meet it, rather than only in a `metadata` block.
 
+## The gate, recipe by recipe
+
+`just ci` end to end on `a7e4c35`, rebased onto `origin/master` `2c5ef8b`,
+exit code read from a file: **exit 0**.
+
+| recipe | result |
+|---|---|
+| `fmt-check` | clean |
+| `clippy` (`--workspace --all-targets -D warnings`) | clean |
+| `verify` | **twelve gates ok**; `verify-docs` is advisory and never fails |
+| `test-rust` | **1669 run, 1669 passed, 0 skipped**, 25 m 20 s |
+| `test-doc` | **111 passed, 1 ignored** (`sdks/rust`'s README block, pre-existing) |
+| `verify-ignored` | 0 ignored (expected 0), 45 binaries (expected 45), **1669** total |
+| `test-web` | **1284 passed** — checkout 507, dashboard 172, `sdks/nodejs` 208, `sdks/stripe-js` 146, shop 102, ui 74, config 63, tokens 8, api-client 4 |
+| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+
+Beyond `just ci`, on the review's own compose project (`exp43-review`, ports
+13900-13902/18900-18902, torn down; the maintainer's `vpay-demo` never
+addressed): `just demo-up` + `just demo-walk` exit 0, six payments, **58 s**;
+`just test-e2e` exit 0, **19 tests, 19 passing**; `shop-hosted.cy.ts` ×5,
+**20 of 20**.
+
+**Five runs of `just ci` on this tree died before that green** — three the
+implementer's, two the review's — every one on
+`postgres:16-alpine container starts … container startup timeout`, a different
+test each time, never an assertion, on a host at load average 10-16 from other
+agents' work. Both of the review's named tests were re-run in isolation and
+passed in 9.2 s and 3.1 s. The green was taken by waiting for the host's load
+average to fall below five and then starting; that is written into
+`docs/status.md` rather than left as folklore.
+
 ## Findings
 
 | # | severity | finding | disposition |

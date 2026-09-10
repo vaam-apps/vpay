@@ -2743,23 +2743,28 @@ WireMock cannot escape an attribute).
   it would have read before this change. The Orange pay case now asserts both
   controls point back through the rail's container.
 
-**The gate, at the delivered commit.** `just ci` end to end, exit 0, with
-containers: `verify` **twelve gates ok**; `test-rust` **1663 tests run, 1663
-passed, 0 skipped** (1658 before — this change adds five: four conformance
-cases and one arithmetic case in `confirm_rails`), 21 m 15 s; `test-doc`
-**111 passed, 1 ignored** (the ignored one is `sdks/rust`'s README block and
-is pre-existing); `verify-ignored` **0 ignored (expected 0), 45 test binaries
-(expected 45), 1663 total**; `test-web` **781 passed** across the three web
-suites (checkout 507, dashboard 172, shop 102); `deny` `advisories ok, bans
-ok, licenses ok, sources ok`; `fmt-check` and `clippy` clean.
+**The gate, at the reviewed head** (`just ci`, end to end, containers, exit
+code read from a file, 2026-09-10 on `a7e4c35` rebased onto `origin/master`
+`2c5ef8b`, which carries #99 and #101): **exit 0**. `verify` **twelve gates
+ok** (the `verify-docs` report is advisory and never fails); `test-rust`
+**1669 tests run, 1669 passed, 0 skipped**, 25 m 20 s; `test-doc` **111
+passed, 1 ignored** (the ignored one is `sdks/rust`'s README block and is
+pre-existing); `verify-ignored` **0 ignored (expected 0), 45 test binaries
+(expected 45), 1669 total**; `test-web` **1284 passed** across the nine web
+suites (checkout 507, dashboard 172, `sdks/nodejs` 208, `sdks/stripe-js` 146,
+shop 102, ui 74, config 63, tokens 8, api-client 4); `deny` `advisories ok,
+bans ok, licenses ok, sources ok`; `fmt-check` and `clippy` clean.
 
-*(Three earlier runs of the same gate on the same tree died on a
-`postgres:16-alpine … container startup timeout` — a different test each
-time, never an assertion, on a host carrying a load average of 8-10 from
-unrelated work. Each was checked rather than retried blind: the named test
-passed in isolation in under four seconds. Recorded because "flaky" is a
-claim, and the evidence for it is that the failure moved and the failing
-assertion never existed.)*
+*(The delivered commit's block said 1663 tests and is superseded rather than
+wrong: it predates the rebase onto #101. **Five runs of this gate on this tree
+died before that green**, three the implementer's and two the review's, every
+one of them on `postgres:16-alpine container starts … container startup
+timeout` — a different test each time, never an assertion, on a host carrying
+a load average between 10 and 16 from unrelated work. Each was checked rather
+than retried blind: `the_printed_password_cannot_reach_dash_v1` and
+`every_credential_failure_on_the_checkout_surface_is_the_identical_404` both
+pass in isolation in 9.2 s and 3.1 s. The green above was taken by waiting for
+the host's load average to fall below five and then starting.)*
 
 **Measured beyond `just ci`, on a throwaway compose project
 (`exp43-orange-stub-race`, ports 13700-13702/18700-18702, torn down; the
