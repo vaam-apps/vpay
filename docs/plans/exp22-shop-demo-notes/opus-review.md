@@ -276,6 +276,12 @@ Each was applied, the named suite run, and the mutation reverted.
   review did not try to make them: fixing the stub is a maintainer decision
   (D1), and `shop-hosted.cy.ts`'s Orange case reaching `paid` in 64.6 s is
   exactly the race the branch documents, not evidence against it.
+  *(Taken and closed on 2026-09-10 — issue #58, notes in
+  [../exp43-orange-stub-race-notes/opus.md](../exp43-orange-stub-race-notes/opus.md)
+  and [../exp43-orange-stub-race-notes/opus-review.md](../exp43-orange-stub-race-notes/opus-review.md).
+  The stub grew a bounded payer's window and the page's links now route back
+  through the container. The sentence above is left as written because it was
+  true when it was written.)*
 * **`payer_declined` is still emitted by no adapter** (the branch's D2);
   nothing here changed that.
 * `frontends/apps/checkout` was not touched or reviewed — exp21 owns it.
