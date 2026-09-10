@@ -518,8 +518,14 @@ review adds nine (plus this row), and
 [plans/exp46-customer-address-notes/opus-review.md](plans/exp46-customer-address-notes/opus-review.md)
 says what each one is for and what it was found by).
 
-**`just ci` exit 0 on the review head (`603fc7a`)**, recipe by recipe, exit
-code read from a file: `fmt-check` (both halves — `cargo fmt` and
+**`just ci` exit 0 on the review head**, recipe by recipe, exit code read from
+a file — run twice, at `603fc7a` (1180 s) and again at `c1f2286` (1110 s),
+because the second added this row and a doc must not be described by a gate
+that ran before it. The branch head is **one docs-only commit later than
+`c1f2286`** — this paragraph, which cannot describe the run that precedes it
+without saying so. `fmt-check`, `clippy` and `verify`'s twelve gates were
+re-run on that head; `test-rust` was not, and nothing in that commit is
+compiled by anything. The numbers below are `c1f2286`'s: `fmt-check` (both halves — `cargo fmt` and
 `pnpm exec prettier --check .`, the second a gate only since #109);
 `clippy` `-D warnings`; `verify`, all twelve gates (`verify-links` **1069
 links in 210 tracked files**, `verify-status` 1 declared unimplemented item,
