@@ -43,7 +43,7 @@ dispatched, and steps 4 onward are `vpay_api::boot` calls both modes make.
 | 5 | Build the one outbound HTTP client the rails share | `vpay_provider::http::client_with_timeouts` |
 | 6 | Key this binary's linked adapters by `providers.code` | `vpay_api::boot::adapters_by_code` |
 | 7 | Load, resolve `${ENV}` in, and validate the YAML | `vpay_api::boot::load_config` → `vpay_config::Config::load` |
-| 8 | Join the YAML's rails against the linked adapters | `vpay_api::boot::boot_seeds` |
+| 8 | Join the YAML's rails against the linked adapters, and refuse an incoherent one | `vpay_api::boot::boot_seeds` |
 | 9 | Connect to Postgres and run migrations | `vpay_api::boot::open_migrated_database` |
 | 10 | Reconcile `currencies` and `providers` (boot step 4 of the flow doc) | `vpay_api::boot::reconcile_reference_tables` |
 | 11 | Everything binary-specific (signing key, listeners, the job loop) | each `main.rs` |
@@ -68,6 +68,18 @@ connection and a migration run the process is about to throw away.
 `vpay-server/tests/cli.rs`'s `a_provider_code_with_no_linked_adapter_is_exit_78`
 needs no container precisely because of that placement, so moving `boot_seeds`
 below the connect would break it.
+
+**Step 8 is also where a self-contradicting adapter is refused** (2026-09-10,
+issue #61): a configured rail whose `Capabilities` declare
+`supports_partial_refunds` without `supports_refunds` is
+`ConfigError::IncoherentCapabilities`, exit `78`, before step 9 opens a pool.
+The same rail used to reach step 10 and break migration 0002's
+`partial_refunds_imply_refunds` CHECK, which is exit `1` — a supervisor being
+told to page someone about a healthy database. It is not something a YAML can
+cause (a capability set is the adapter's, not the file's); it is a linking
+mistake, and this is the step that would otherwise pass it on.
+`backends/tests/integration/tests/boot_coherence.rs` measures both numbers in
+this order, against a real Postgres.
 
 **Connect and migrate before binding a listener.** A server that binds its port
 before proving the database is reachable and up to date would start accepting

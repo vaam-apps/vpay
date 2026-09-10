@@ -1491,7 +1491,15 @@ expected_ignored := "0"
 # `sdks/stripe-compat` is the same shape in the TypeScript half of the tree.
 # If that feature is ever switched on by default, this number becomes 46 in
 # the same commit.
-expected_suites := "45"
+#
+# **45 -> 46 on 2026-09-10 (issue #61)**: one new binary,
+# `backends/tests/integration/tests/boot_coherence.rs`. Its own file rather
+# than a case in `postgres_smoke.rs`, whose module header says in the first
+# paragraph that no test double is used anywhere in it — that suite drives raw
+# SQL against the schema, and the new one has to *declare* an incoherent
+# capability set through the real `ProviderAdapter` port to ask which layer
+# refuses it first. It is one test and it starts one container.
+expected_suites := "46"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

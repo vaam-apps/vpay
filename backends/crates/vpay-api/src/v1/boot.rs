@@ -82,14 +82,24 @@ pub fn adapters_by_code(
 ///
 /// # Errors
 ///
-/// [`ConfigError::ProviderWithoutAdapter`] for a configured rail the calling
-/// binary links no code for. That is now the *only* error this returns: it
-/// also returned [`ConfigError::Validation`] for "a currency exponent that
-/// does not fit the column" until migration 0032 widened
-/// `currencies.exponent` to `BIGINT` and `CurrencySeed::exponent` to `i64`.
-/// Every `u32` fits an `i64`, so that arm became unreachable *by type*
-/// rather than merely unreached, and a `try_from` kept for it would have
-/// been an error path no input could take — see the conversion below.
+/// Two, and both are [`Category::Configuration`] — exit **78**, "fix the
+/// deploy" — at every call site:
+///
+/// * [`ConfigError::ProviderWithoutAdapter`] for a configured rail the
+///   calling binary links no code for;
+/// * [`ConfigError::IncoherentCapabilities`] for a configured rail whose
+///   adapter declares `supports_partial_refunds` without `supports_refunds`
+///   (issue #61, 2026-09-10) — see the check itself for why boot is where
+///   that is caught.
+///
+/// **This paragraph said the first was "now the *only* error this returns"
+/// until the second one landed**, which is the drift a `# Errors` section
+/// exists to make visible. It also returned [`ConfigError::Validation`] for
+/// "a currency exponent that does not fit the column" until migration 0032
+/// widened `currencies.exponent` to `BIGINT` and `CurrencySeed::exponent` to
+/// `i64`. Every `u32` fits an `i64`, so that arm became unreachable *by
+/// type* rather than merely unreached, and a `try_from` kept for it would
+/// have been an error path no input could take — see the conversion below.
 pub fn boot_seeds(
     config: &Config,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
@@ -128,6 +138,25 @@ pub fn boot_seeds(
                 }
             })?;
             let capabilities = adapter.capabilities();
+            // Issue #61. Refused here, where it is a `ConfigError` and the
+            // process exits 78, rather than two steps later where migration
+            // 0002's `partial_refunds_imply_refunds` CHECK refuses the row
+            // and the process exits 1 — "page someone", about a database
+            // that is working perfectly. Both numbers are measured, in
+            // `main`'s order and against a real Postgres, by
+            // `backends/tests/integration/tests/boot_coherence.rs`.
+            //
+            // Every *configured* rail, `enabled` or not: `enabled` is a
+            // column on the row this seed becomes, not a reason to skip
+            // writing it. A rail this binary links but the YAML does not
+            // name writes no row at all, and `vpay-server`'s own
+            // `no_adapter_advertises_partial_without_full_refunds` covers
+            // the whole linked list.
+            if !capabilities.is_coherent() {
+                return Err(ConfigError::IncoherentCapabilities {
+                    code: provider.code.clone(),
+                });
+            }
             Ok(ProviderSeed {
                 code: provider.code.clone(),
                 display_name: display_name_for(&provider.code),
@@ -365,7 +394,7 @@ mod tests {
 
     use super::*;
 
-    /// A rail with a code and a flow, and nothing else.
+    /// A rail with a code and a declared capability set, and nothing else.
     ///
     /// **Not a test double of an adapter.** It implements the real port so
     /// [`boot_seeds`] can be exercised on the two flow shapes without
@@ -379,10 +408,32 @@ mod tests {
     /// *declaration* that a real code path is unbuilt, tracked by
     /// `cargo xtask verify-status` against `docs/status.md`, and a fixture
     /// in a unit test has no business adding a row to that page.
+    ///
+    /// It carries the whole [`Capabilities`] rather than a [`ProviderFlow`]
+    /// alone since issue #61 gave [`boot_seeds`] a capability rule to
+    /// enforce. The incoherent rail is then this same type with two booleans
+    /// changed, which is the difference under test; a second `#[cfg(test)]`
+    /// adapter — the shape this started as — left its other four fields free
+    /// to drift away from the rail every other case in this module uses.
     #[derive(Debug)]
     struct TestRail {
         code: &'static str,
-        flow: ProviderFlow,
+        capabilities: Capabilities,
+    }
+
+    /// What a rail that contradicts itself about nothing declares: both
+    /// refund shapes, callbacks, no allowlist. Only `flow` varies between
+    /// the two rails [`two_rails`] builds, because the flow is the only part
+    /// of a capability set the join projects into a column.
+    const fn coherent(flow: ProviderFlow) -> Capabilities {
+        Capabilities {
+            flow,
+            supports_refunds: true,
+            supports_partial_refunds: true,
+            delivers_callbacks: true,
+            requires_ip_allowlist: false,
+            supports_account_holder_lookup: false,
+        }
     }
 
     #[async_trait::async_trait]
@@ -392,14 +443,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> Capabilities {
-            Capabilities {
-                flow: self.flow,
-                supports_refunds: true,
-                supports_partial_refunds: true,
-                delivers_callbacks: true,
-                requires_ip_allowlist: false,
-                supports_account_holder_lookup: false,
-            }
+            self.capabilities
         }
 
         async fn submit(
@@ -470,11 +514,11 @@ mod tests {
         adapters_by_code(vec![
             Box::new(TestRail {
                 code: "mtn_momo",
-                flow: ProviderFlow::Push,
+                capabilities: coherent(ProviderFlow::Push),
             }),
             Box::new(TestRail {
                 code: "orange_money",
-                flow: ProviderFlow::Redirect,
+                capabilities: coherent(ProviderFlow::Redirect),
             }),
         ])
     }
@@ -669,6 +713,66 @@ mod tests {
             credentials: BTreeMap::new(),
             connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
             request_timeout: vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// Boot step 4 refuses a configured rail whose adapter contradicts
+    /// itself, and says so as a **configuration** failure — exit `78`, "fix
+    /// the deploy" — rather than letting the seed reach migration 0002's
+    /// `partial_refunds_imply_refunds` CHECK, which answers exit `1` about a
+    /// database that is working perfectly (issue #61). Both numbers are
+    /// measured against a real Postgres, in `main`'s order, by
+    /// `boot_refuses_an_incoherent_rail_as_78_before_the_check_can_answer_it_as_1`
+    /// in `backends/tests/integration/tests/boot_coherence.rs`; what is
+    /// checked here is the refusal itself, which needs no container.
+    ///
+    /// **The message is asserted, not only the variant.** The message is the
+    /// whole of what an operator gets, and a variant match alone passes with
+    /// the provider code and the rule deleted from it — measured, by
+    /// emptying `#[error(…)]` to `"configuration error"` and watching the
+    /// original of this test stay green.
+    ///
+    /// **Both `enabled` values**, because `enabled` is a column on the row
+    /// this seed becomes and not a reason to skip writing it: a disabled
+    /// incoherent rail reaches the same CHECK, so narrowing the guard to
+    /// `provider.enabled && !coherent` would be a hole rather than an
+    /// optimisation.
+    #[test]
+    fn a_provider_with_incoherent_capabilities_is_a_config_error() {
+        for enabled in [true, false] {
+            let adapters = adapters_by_code(vec![Box::new(TestRail {
+                code: "broken_rail",
+                capabilities: Capabilities {
+                    supports_refunds: false,
+                    supports_partial_refunds: true,
+                    ..coherent(ProviderFlow::Push)
+                },
+            })]);
+            let mut config = config_with(&["broken_rail"]);
+            config
+                .providers
+                .get_mut(0)
+                .expect("the fixture configures one rail")
+                .enabled = enabled;
+
+            let error = boot_seeds(&config, &adapters)
+                .expect_err("a rail that refunds partially but not at all must be refused");
+
+            let ConfigError::IncoherentCapabilities { code } = &error else {
+                panic!("expected IncoherentCapabilities, got {error:?} (enabled: {enabled})");
+            };
+            assert_eq!(code, "broken_rail");
+
+            let message = error.to_string();
+            assert!(
+                message.contains("broken_rail"),
+                "the message must name the rail an operator has to go and look at: {message}"
+            );
+            assert!(
+                message.contains("partial_refunds_imply_refunds"),
+                "the message must name the rule that was broken, spelled the way the migration \
+                 and the database's own error spell it: {message}"
+            );
         }
     }
 }

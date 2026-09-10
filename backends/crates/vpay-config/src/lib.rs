@@ -900,6 +900,40 @@ pub enum ConfigError {
         client_id: String,
     },
 
+    /// A configured provider's adapter declares `supports_partial_refunds`
+    /// without `supports_refunds` — the one rule
+    /// `vpay_provider::Capabilities::is_coherent` encodes, and the one
+    /// migration 0002's `partial_refunds_imply_refunds` CHECK enforces on
+    /// the `providers` table.
+    ///
+    /// **Not a rule about the YAML, despite living in this enum.** A
+    /// capability set is a property of an adapter's *code* (ADR-0002):
+    /// nothing an operator can write in `application.yml` makes a coherent
+    /// rail incoherent, `Config::validate_all` does not run this check,
+    /// and a provider that reaches it is a **linking** mistake — a binary
+    /// that shipped with an adapter whose own capability table contradicts
+    /// itself. The variant is in this enum rather than in `vpay-api` so that
+    /// it inherits the one `Classify` impl below: what an operator needs to
+    /// be told is "fix the deploy" (exit `78`), and the answer it replaced
+    /// was the CHECK's exit `1`, which says "page someone" about a database
+    /// that is working perfectly.
+    ///
+    /// The message names the constraint the way the migration, the
+    /// database's own error text and `Capabilities::is_coherent`'s doc all
+    /// name it, so one grep finds every layer with an opinion on it. Issue
+    /// #61.
+    #[error(
+        "provider {code} declares incoherent capabilities: supports_partial_refunds without \
+         supports_refunds, which breaks partial_refunds_imply_refunds (the rule \
+         vpay_provider::Capabilities::is_coherent encodes, mirrored by the CHECK of that name \
+         on the providers table)"
+    )]
+    IncoherentCapabilities {
+        /// The `providers[].code` from the YAML — the entry to remove or the
+        /// adapter to go and fix, which is the whole of what boot can say.
+        code: String,
+    },
+
     /// `webhooks.allow_private_targets: true` under
     /// `deployment.livemode: true`.
     ///
