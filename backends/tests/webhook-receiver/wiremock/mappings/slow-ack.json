@@ -1,0 +1,46 @@
+{
+  "mappings": [
+    {
+      "name": "a merchant's receiver that acknowledges six seconds late",
+      "priority": 1,
+      "request": { "method": "POST", "urlPath": "/slow-ack" },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 6000,
+        "headers": { "Content-Type": "application/json" },
+        "jsonBody": { "received": true }
+      },
+      "metadata": {
+        "why": [
+          "THE ONLY WAY a test can be sure a worker is mid-delivery when it signals it.",
+          "worker_kill9.rs's third scenario sends SIGTERM to a worker whose deliver_webhook",
+          "job is inside its POST, and 'inside' has to be an interval something outside the",
+          "process can observe: WireMock journals a request when it MATCHES it, before it",
+          "serves any fixedDelayMilliseconds, so POST /__admin/requests/count reports this",
+          "request while the sender is still blocked on the response. Same technique, and",
+          "the same justification, as the mtn tree's requesttopay-kill9.json.",
+          "",
+          "SIX SECONDS, and the number is chosen against two shipping budgets rather than",
+          "against a stopwatch. It is BELOW vpay_worker::webhooks::WEBHOOK_REQUEST_TIMEOUT",
+          "(10 s), so the acknowledgement always arrives before the delivery client's own",
+          "deadline and the drain has something to finish; and it is BELOW the worker's",
+          "--shutdown-grace-seconds in that test (20 s), so the drain can never run out of",
+          "time. Both comparisons are const assertions in worker_kill9.rs against the",
+          "shipping constants, so lowering either budget breaks the build rather than",
+          "making that test flaky.",
+          "",
+          "A DEDICATED PATH, not a delay on /webhooks: tests/webhooks.rs asserts exact",
+          "ladder timings against this same receiver tree, and a six-second pause on the",
+          "path it uses would slow every one of those tests and improve none of them.",
+          "Priority 1 beats any-post-200.json's catch-all (priority 10) on this path only,",
+          "which is also why nothing else in the repository -- including compose.e2e.yml's",
+          "wiremock-webhook, which mounts this same directory -- sees any change.",
+          "",
+          "200 with a JSON body for the same reason the catch-all has one: handle_deliver",
+          "treats any 2xx as delivered and records the first part of the body in",
+          "webhook_deliveries.response_excerpt, which an operator reads."
+        ]
+      }
+    }
+  ]
+}
