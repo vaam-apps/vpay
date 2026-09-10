@@ -258,6 +258,30 @@ of vpay refused this app, which is a deployment problem and not a fact about
 the person. The decisive mutation is widening `refusalFor` to `status >= 400`,
 which turns four cases in `gate.test.ts` red.
 
+> **`refusalFor` is about the SESSION READ, and only about it.** *Recorded
+> 2026-09-10 by the exp36 review.* "`401` means the session is over" holds
+> because `GET /staff/session` and `/oauth/authorize` have nothing else to
+> refuse. On a route that also refuses a **credential** the same `401` means
+> two things and a caller cannot tell them apart, which is the price of "every
+> refusal is one answer" — so on such a route it must end nothing.
+> `changePassword` learned that the hard way (finding F1) and no longer
+> clears the cookie on one.
+>
+> **`submitTotp` still does, and this review left it alone.** A wrong
+> six-digit code is a `401` there, so a mistyped code sends a person back to
+> the email-and-password form rather than telling them. That behaviour is
+> older than this change and its comment does not name the case — it lists
+> "gone, expired, idle, at the wrong stage" and not "wrong code", which is the
+> commonest of the five. It is not a hole (a session that is genuinely over is
+> also refused, and the extra sign-in bounds code guessing rather than
+> loosening it), and unlike `changePassword` it cannot simply be dropped:
+> `/login/totp` reads no session on render — only the cookie's presence — so
+> with the cookie kept, a session that really is over leaves the person
+> retyping codes at a form that will never accept one. Closing it means giving
+> that page the session read `PasswordPage` already has. Left open on purpose,
+> and written down rather than quietly fixed in a review that was not asked
+> for it.
+
 **There is one route that is not a page**, and it exists for a Next rule
 rather than for a person: `GET /signed-out` clears the session cookie and
 redirects to `/login`. A page may not write a cookie — `cookies().set` throws

@@ -182,6 +182,27 @@ obviously the right number for one that no longer does; **whether the shared
 default should now be lower than ten is a maintainer decision this amendment
 does not take**, and `docs/status.md` records it as open.
 
+*Reviewed 2026-09-10 (exp36 review).* **Ten stays**, and the argument that
+settles it is one nobody had made. The case for lowering is that the budget
+got stricter by becoming shared, so there is now headroom to spend. But the
+per-**address** half is the one that would be spent, and with
+`staff_auth.trusted_proxies` empty — the default, and the state of every
+deployment behind a proxy that has not been reconfigured — that half is shared
+by *everybody*. Lowering the shared number therefore makes a proxy-fronted
+deployment lock its whole staff out faster, which is the opposite of what
+"the budget got stricter" is being offered as a reason for. The rationale for
+ten was never about replicas: it is that a person who mistypes a generated
+one-time password twice and then fetches it from a terminal must not be
+locked out of their own first login, and nothing about that changed. Against
+argon2id, ten per five minutes is 2,880 guesses a day at one account; against
+a 130-bit printed password it is nothing; against six TOTP digits with three
+live it is under one percent a year.
+
+**The decision stays open all the same**, and deliberately: the number is
+configuration now, so a deployment that measures its own traffic can move it
+without a release and without this ADR. What the review takes is the default,
+not the choice.
+
 **"Sign-in" is both legs, and it was one leg until 2026-09-07.** The limiter
 was called from `POST /staff/login` and from nowhere else, so the *second
 factor* — six digits, three of them live at any instant given the one-step

@@ -231,6 +231,17 @@ limiter three replicas multiplied by three, and it is not obvious that it is
 still the right number now that they do not. **Whether the shared default
 should now be below ten is a maintainer decision and has not been taken.**
 
+*Reviewed 2026-09-10 (exp36 review): ten stays.* The case for lowering is that
+the budget got stricter by becoming shared, so there is headroom. The half
+that would be spent is the per-**address** one, and with `trusted_proxies`
+empty — the default — that half is shared by everybody behind the proxy, so
+lowering it makes a proxy-fronted deployment lock its whole staff out faster.
+The reason for ten was never replicas: it is that a person who mistypes a
+printed one-time password twice must not be locked out of their first login,
+and that has not changed. The number is configuration, so a deployment that
+measures its own traffic still moves it without a release; the review takes
+the default, not the choice.
+
 **Failing closed is part of the contract.** Every count returns a `Result` and
 a database failure is a refusal, never an allowance: a limiter that answered
 "allowed" when it could not count would have been removed by the very attack

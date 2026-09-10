@@ -185,3 +185,65 @@ counts before it knows the answer), and the budget is the **session's**, so a
 second browser of the same person still has its own. The second is what stops
 a thief with a stolen cookie from locking the owner out of their own sign-in,
 and it was an argument in a doc comment and nothing else.
+
+## The two calls the implementer surfaced, judged
+
+### The shared default sign-in budget: **ten stays**
+
+The brief asked for this to be decided with ADR-0017's rationale in front of
+it. The case for lowering is the one the implementer stated: the budget got
+strictly stricter by becoming shared, so there is headroom to spend.
+
+The argument that settles it against lowering had not been made. **The half
+that would be spent is the per-address one**, and with
+`staff_auth.trusted_proxies` empty — the default, and the state of every
+deployment behind a proxy that has not been reconfigured — that half is shared
+by *everybody*. Lowering the shared number therefore makes a proxy-fronted
+deployment lock its whole staff out faster, which is the opposite of what
+"the budget got stricter" is being offered as a reason for.
+
+And the reason for ten was never replicas: it is that a person who mistypes a
+generated one-time password twice and then fetches it from a terminal must not
+be locked out of their own first login. Nothing about that changed. What ten
+buys an attacker, shared: 2,880 guesses a day at one account behind argon2id;
+nothing at all against a 130-bit printed password; under one percent a year
+against six TOTP digits with three live.
+
+**The item stays open in `docs/status.md` all the same, and that is the point
+of it being configuration.** A deployment that measures its own traffic moves
+it without a release and without an ADR. The review takes the *default*, not
+the choice.
+
+### `VPAY_DASHBOARD_PUBLIC_ORIGIN`: set now, required later
+
+See F3. Set where it is consumed and proven (`compose.e2e.yml`), named and
+shape-checked where it is not (the chart). Kept optional, because required
+belongs with the dashboard Deployment this chart does not write.
+
+## Left open on purpose
+
+### `submitTotp` signs a person out for a mistyped code · **nit / misleading comment**
+
+The same `401`-means-two-things shape as F1, one route over. A wrong six-digit
+code is a `401`, and `submitTotp` clears the session cookie on any `401` from
+`/staff/totp` — so a mistyped code sends somebody back to the email-and-
+password form rather than telling them. The comment there lists "gone,
+expired, idle, at the wrong stage" and not "wrong code", which is the
+commonest of the five.
+
+**Not fixed, and not because it is small.** It predates this branch, it is not
+a hole (the extra sign-in bounds code guessing rather than loosening it), and
+unlike `changePassword` the two lines cannot simply be dropped:
+`/login/totp` reads no session on render, only the cookie's presence, so with
+the cookie kept a session that really *is* over leaves the person retyping
+codes at a form that will never accept one. Closing it means giving that page
+the session read `PasswordPage` already has — a change to a route this brief
+did not cover, in a review that would then be unreviewed. Recorded in
+`docs/flows/dashboard.md` beside `refusalFor`.
+
+### Proactive token re-mint (#88 item 1)
+
+Still not done, and the implementer's account of why is accurate: the reactive
+re-mint in `dash-read.ts` exists and works, and a proactive one needs a
+`staff_sessions.access_token_expires_at` column, an API field, a `gateFor`
+arm and a configurable TTL. This review did not attempt it either.
