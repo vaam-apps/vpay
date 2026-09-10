@@ -199,7 +199,7 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
     // concurrency of 4 with MAX_CONNECTIONS=10 it fits; at 10 it would not,
     // and crash recovery would queue on ACQUIRE_TIMEOUT. Refuse it here, not
     // at the first crash.
-    let pool_max = u32::from(MAX_CONNECTIONS) as usize;
+    let pool_max = MAX_CONNECTIONS as usize;
     let max_safe = pool_max / 2;
     if concurrency > max_safe {
         return Err(ConfigError::WorkerConcurrencyExceedsPoolSize {
