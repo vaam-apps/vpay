@@ -680,14 +680,18 @@ issues #67/#68/#96's address and erasure).**
 nine with no container plus two container-backed ones for the transaction
 seam.
 
-**The retention promise is complete as of 2026-09-10.** Before migration
-`0041` a customer with payment history could not be deleted, so the payer's
-`name`, `email` and `phone` survived every "deletion" — and so did every copy
-in `events.data`, `charges.payer_ref` and `idempotency_keys.response_body`,
-which no code named. `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
-is the evidence: it scans every `text`, `varchar` and `jsonb` column
-`information_schema` reports, finds three fixture literals before the
-`DELETE` and none after.
+**The retention promise is complete as of 2026-09-10, with the two windows
+above stated (2026-09-11).** Before migration `0041` a customer with payment
+history could not be deleted, so the payer's `name`, `email` and `phone`
+survived every "deletion" — and so did every copy in `events.data`,
+`charges.payer_ref` and `idempotency_keys.response_body`, which no code named.
+The review of 2026-09-11 found two more the same way the first four were
+missed — `charges.failure_raw` and `refunds.failure_raw`, the rail's own words
+about the payer — and they are redacted in the same transaction as the rest.
+`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` is the
+evidence: it scans every `text`, `varchar` and `jsonb` column
+`information_schema` reports in `public`, finds four fixture literals in seven
+named places before the `DELETE` and none anywhere after.
 
 **What is not built, and is a gap rather than a decision against it:**
 
@@ -695,9 +699,13 @@ is the evidence: it scans every `text`, `varchar` and `jsonb` column
   merchant received `name`, `email`, `phone` and `address` in
   `customer.created` and in every `customer.updated`, over signed bodies to
   endpoints they configured, before the erasure. vpay redacts _its_ stored
-  copy of those bodies and cannot reach theirs. A deployment answering a
-  payer's erasure request has to tell the merchant separately; there is no
-  `customer.redacted` fan-out and no design for one.
+  copy of those bodies and cannot reach theirs. What vpay does do is **tell
+  them** — `customer.deleted`, in the erasure's transaction, carrying the
+  `cus_…` and the instant — and the review of 2026-09-11 declined to add a
+  second `customer.redacted` type saying the same thing. What is missing is a
+  contract obliging the merchant to act on it, which is a data processing
+  agreement and a maintainer's decision. See "Two windows the erasure does
+  not close" above.
 - **No `email` filter on the list.** Stripe's takes one. A filter on a payer
   identifier turns the list into a lookup, and a lookup by email over a table
   holding one merchant's payers is one scoping mistake away from being a

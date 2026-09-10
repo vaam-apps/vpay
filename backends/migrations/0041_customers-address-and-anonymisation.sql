@@ -106,9 +106,14 @@ ALTER TABLE customers
 --
 -- WHY `IS NOT DISTINCT FROM` AND NOT `=`
 --
+-- (This paragraph spells the marker WITHOUT quotes, as the rest of this
+-- file's prose does, because `the_redaction_marker_is_the_one_the_migration_
+-- enforces` counts the quoted form and expects exactly nine — one per
+-- identifier column of the CHECK below. A tenth in a comment fails it.)
+--
 -- A CHECK is violated only when its expression evaluates to FALSE; NULL
--- passes. `name = '[redacted]'` with a NULL `name` is NULL, so the `=`
--- spelling of this constraint accepted exactly the row it is written to
+-- passes. Comparing a NULL name to the marker with `=` yields NULL, so the
+-- `=` spelling of this constraint accepted exactly the row it is written to
 -- refuse: `anonymized_at` set, `address_line2` (or `name`, or any of the
 -- nine) left NULL. That is not a theoretical hole. It is the FIRST state a
 -- missed assignment produces, because the columns an erasure most easily

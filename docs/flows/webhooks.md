@@ -248,11 +248,21 @@ rather than arguing because that body is the only
 `payment_intent.payment_failed` in the system rendered by `vpay-api` instead
 of by `vpay_db::settlement`.
 
-`customer.created` and `customer.updated` are still asserted at the `events`
-row and no further. The fan-out is type-agnostic — it reads by `seq` and
-branches on nothing, and has now been observed carrying four types — so "they
-would deliver too" remains an argument for those two, and it is written here
-in those words.
+`customer.created` **has** now been driven to the receiver, and
+`customer.updated` has not. That happened sideways, on 2026-09-11: the
+sabotage review of the customer erasure needed a delivery in flight when a
+payer was erased, so
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`
+takes a real `customer.created` through the shipping fan-out and the shipping
+delivery handler, reads the bytes out of the WireMock receiver's journal
+twice, and asserts what changed between them. It is recorded here rather than
+left as a side effect, because "which types have been observed on a wire" is
+the number this section exists to keep honest — it is five now, not four.
+
+`customer.updated` is still asserted at the `events` row and no further. The
+fan-out is type-agnostic — it reads by `seq` and branches on nothing — so
+"it would deliver too" remains an argument for that one, and it is written
+here in those words.
 
 **Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
 `events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and
