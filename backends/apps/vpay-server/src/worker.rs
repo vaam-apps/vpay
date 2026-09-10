@@ -51,6 +51,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use metrics_exporter_prometheus::PrometheusHandle;
 use vpay_config::{CommonArgs, ShutdownSignals, WorkerArgs};
+use vpay_db::MAX_CONNECTIONS;
 use vpay_provider::ProviderAdapter;
 use vpay_worker::{Drain, EndpointRegistry, RecoveryPolicy};
 
@@ -181,9 +182,10 @@ pub(crate) async fn run(
 /// # Errors
 ///
 /// A missing flag, an invalid YAML file, a rail with no linked adapter, a
-/// concurrency of zero, an unreachable database, a migration that will not
-/// apply, or a reconcile that cannot take its lock. Each carries a typed leaf
-/// so `exit_code_for` can tell `78` from `69`.
+/// concurrency of zero or one this deployment's connection pool cannot serve
+/// (issue #63), an unreachable database, a migration that will not apply, or a
+/// reconcile that cannot take its lock. Each carries a typed leaf so
+/// `exit_code_for` can tell `78` from `69`.
 async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> {
     let config = vpay_api::boot::load_config(common.config.as_deref(), &common.profile)
         .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
@@ -192,6 +194,36 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
         .concurrency()
         .map_err(StartupError::UnusableConcurrency)?;
     tracing::info!(concurrency, "job loop concurrency");
+
+    // Issue #63, and it is here — after the flag is parsed, before the pool is
+    // opened — because a knob this process cannot serve should cost
+    // milliseconds, not a Postgres connection and a migration run.
+    //
+    // `MAX_CONNECTIONS / 2` is the ceiling because `create_in_tx` on the
+    // already-exists branch holds two of these connections at once: its own
+    // transaction's, and the one CrateStack's update-policy re-check takes
+    // from the same pool (docs/reference/vpay-db.md § CrateStack). The
+    // measurement behind the number, including what it is *not* — the
+    // `fan_out_events` job is a singleton, so one process never has more than
+    // one fan-out in flight — is
+    // `the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper`
+    // in `backends/tests/integration/tests/webhooks.rs`. The ceiling is
+    // deliberately the conservative one; see docs/flows/crash-safety.md.
+    //
+    // Read from the constant rather than repeated: `MAX_CONNECTIONS` is not
+    // configurable anywhere (`vpay_db::connect` is the only pool this process
+    // opens, and it passes the constant straight to `PgPoolOptions`), so
+    // raising it is a code change that moves this ceiling with it.
+    let pool_max = MAX_CONNECTIONS as usize;
+    let max_safe = pool_max / 2;
+    if concurrency > max_safe {
+        return Err(StartupError::WorkerConcurrencyExceedsPoolSize {
+            concurrency,
+            pool_max,
+            max_safe,
+        }
+        .into());
+    }
 
     // Boot step 4's inputs, before the database is touched — over the same
     // `vpay_server::adapters` the serve path joins against. Both modes

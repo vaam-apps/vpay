@@ -249,6 +249,9 @@ still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 | `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false` | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer |
 | `checkout-templated-when-enabled` | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment |
 | `networkpolicy-database` | NetworkPolicy enabled with no database destination, or with two | Locks the server away from its own database, and the symptom blames the database |
+| `worker-concurrency-pool` | `worker.concurrency` above 5 | `vpay-server worker` refuses it at boot (exit 78, issue #63): its pool holds 10 connections and one webhook fan-out can hold two. Without the guard the release installs and CrashLoopBackOffs — including on a `helm upgrade` of a working one. The 5 is a literal here; the pool size is a constant in the image, and the chart exposes none |
+| `rails-egress-except` | `networkPolicy.egress.rails` names a CIDR the `except` list does not fit inside | *This row and the one below were missing from this table until 2026-09-10; both guards have existed and fired since 2026-09-03* |
+| `extra-env-collision` | `server.extraEnv` / `worker.extraEnv` / `checkout.extraEnv` sets a name the chart already sets | Kubernetes keeps the last entry with a given name, so the chart's own value is silently replaced |
 
 `deploy/helm/vpay/ci/guards/<guard>.yaml` is one values file per guard, each
 violating exactly that guard. `just helm-check` renders each and fails unless
@@ -364,7 +367,7 @@ the reasoning; this table is maintained by hand and can drift from it.
 | `server.nodeSelector` / `.tolerations` / `.affinity` | empty | Scheduling pass-throughs |
 | `server.extraEnv` | `[]` | Extra core/v1 `EnvVar` objects |
 | `worker.replicaCount` | `1` | >1 is safe: jobs are leased with `FOR UPDATE SKIP LOCKED` |
-| `worker.concurrency` | `4` | `VPAY_WORKER_CONCURRENCY`; `vpay-server worker` refuses 0 |
+| `worker.concurrency` | `4` | `VPAY_WORKER_CONCURRENCY`; `vpay-server worker` refuses 0, and refuses anything above **5** — `vpay_db::MAX_CONNECTIONS / 2` (issue #63, `worker-concurrency-pool` guard). More throughput is more `worker.replicaCount`, not more concurrency |
 | `worker.resources` | as server | Same caveat |
 | `worker.podAnnotations` / `.nodeSelector` / `.tolerations` / `.affinity` / `.extraEnv` | empty | |
 | `shutdownGraceSeconds` | `25` | `VPAY_SHUTDOWN_GRACE_SECONDS` |
@@ -519,10 +522,12 @@ Written 2026-09-03, step 6 block B.
 * `helm lint` passes on the defaults and on `ci/values-full.yaml`.
 * `helm template` renders 6 objects with the defaults and 14 with
   `ci/values-full.yaml`.
-* All 15 guards fire on their own values file, each with its own name in the
-  message, and `just helm-check` also checks that the fifteen names it expects
-  are exactly the fifteen files on disk — so deleting a guard *and* its values
-  file fails rather than passing quietly. Proven negatively too, which is the
+* All **19** guards fire on their own values file, each with its own name in
+  the message, and `just helm-check` also checks that the nineteen names it
+  expects are exactly the nineteen files on disk — so deleting a guard *and*
+  its values file fails rather than passing quietly. (**This said "15" until
+  2026-09-10** and had been wrong since the sixteenth landed; `worker-concurrency-pool`
+  makes it nineteen. Measured: `19 guards, all fired by name (19 expected)`.) Proven negatively too, which is the
   only thing that says these are checks rather than decoration: disabling the
   `grace-period` and `rate-limit-ordering` guards makes `just helm-check`
   fail, and so — verified in the Step 6 review pass, by neutering each `fail`

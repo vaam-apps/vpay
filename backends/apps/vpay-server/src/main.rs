@@ -136,6 +136,40 @@ enum StartupError {
     /// spellings, because the message is the entire fix.
     #[error("{0}")]
     UnusableConcurrency(String),
+
+    /// `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY` is above what
+    /// `vpay_db::MAX_CONNECTIONS` can serve (issue #63).
+    ///
+    /// **Here rather than in `vpay_config::ConfigError`, for this enum's own
+    /// stated reason**: the rule joins a flag to a *persistence* constant, and
+    /// `vpay-config` neither depends on `vpay-db` nor should learn what a
+    /// connection pool is in order to carry the sentence. It is also
+    /// mode-specific, exactly like [`Self::UnusableConcurrency`] beside it.
+    ///
+    /// All three numbers are in the message because each is a different fix:
+    /// `concurrency` is what was asked for, `max_safe` is what to write
+    /// instead, and `pool_max` is the number that would have to move to make a
+    /// higher concurrency legal — and that one is a constant in this build, so
+    /// the honest answer to "I need more throughput" is another replica.
+    /// Both spellings of the knob appear for [`Self::MissingDatabaseUrl`]'s
+    /// reason.
+    #[error(
+        "--worker-concurrency / VPAY_WORKER_CONCURRENCY is {concurrency}, but this build's \
+         database pool holds {pool_max} connections and one webhook fan-out can hold two of \
+         them at once (its transaction, plus the pooled connection CrateStack's update-policy \
+         re-check takes on the already-exists branch), so the ceiling is {max_safe}. Set it to \
+         {max_safe} or less and add worker replicas for more throughput: a worker that cannot \
+         get a connection waits out the pool's acquire timeout, and one of the paths that \
+         waits is crash recovery (docs/flows/crash-safety.md)"
+    )]
+    WorkerConcurrencyExceedsPoolSize {
+        /// What `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY` asked for.
+        concurrency: usize,
+        /// `vpay_db::MAX_CONNECTIONS`, read rather than repeated.
+        pool_max: usize,
+        /// The highest concurrency this pool serves: `pool_max / 2`.
+        max_safe: usize,
+    },
 }
 
 impl vpay_core::error::Classify for StartupError {

@@ -1871,6 +1871,38 @@ mod worker {
         wait_for_line, wait_with_timeout, with_live_postgres,
     };
 
+    /// A log line with its ANSI escape sequences removed.
+    ///
+    /// `tracing_subscriber`'s text formatter colours *field names and the `=`
+    /// between them* — and it does so when stdout is a pipe, not only on a
+    /// terminal, because this binary never calls `.with_ansi(false)`. A field
+    /// therefore reaches this file as
+    /// `\x1b[3mconcurrency\x1b[0m\x1b[2m=\x1b[0m5`, so the obvious
+    /// `line.contains("concurrency=5")` is a substring that is never present
+    /// and an assertion that can only fail. Matching on the *message* text
+    /// works without this (it carries no escapes); matching on a `name=value`
+    /// pair does not, which is what this exists for.
+    ///
+    /// Hand-rolled rather than a crate: the sequences here are all
+    /// `ESC [ … m`, and adding a dependency to a test helper that skips to the
+    /// next `m` would be the larger change.
+    fn strip_ansi(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for escaped in chars.by_ref() {
+                    if escaped == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     /// The binary under test, already carrying the subcommand word.
     ///
     /// It is `super::bin()` plus `worker`, rather than a second
@@ -2027,6 +2059,126 @@ mod worker {
         assert!(
             stderr.contains("--worker-concurrency") && stderr.contains("VPAY_WORKER_CONCURRENCY"),
             "the refusal must name both spellings of the knob to turn, got: {stderr}"
+        );
+    }
+
+    /// The ceiling itself **boots**, for real, against a real database.
+    ///
+    /// `vpay_db::MAX_CONNECTIONS / 2` is 5, and this is the case that says the
+    /// guard's own boundary is not off by one: 5 must be accepted, log its
+    /// concurrency, and go on to connect. A container is the point — the
+    /// unreachable-database shortcut its sibling below uses would prove only
+    /// that the *guard* did not fire, and a guard that refused 5 and a guard
+    /// that refused 6 both leave that assertion green as long as the exit code
+    /// happens to match.
+    ///
+    /// **It reads STDOUT, and through [`strip_ansi`], and neither is
+    /// incidental.** Worker logs go to stdout (`main.rs`'s `logs_to_stderr` —
+    /// the whole reason that function is named), so a version of this case
+    /// that asserted on stderr asserts on an empty string; and the text
+    /// formatter colours `concurrency=5`, so a plain substring match on it
+    /// never fires. The first draft of this test made the first mistake, was
+    /// never run, and failed the moment it was; writing it a second way found
+    /// the second.
+    ///
+    /// The concurrency is set through the **environment**, not the flag, for
+    /// `a_zero_worker_concurrency_from_the_environment_is_refused_by_name_as_exit_78`'s
+    /// reason: `VPAY_WORKER_CONCURRENCY` is the spelling a Helm chart uses.
+    #[test]
+    fn a_worker_concurrency_at_the_pools_ceiling_boots_and_logs_that_concurrency() {
+        with_live_postgres(|database_url| {
+            let mut cmd = bin();
+            cmd.env("VPAY_WORKER_CONCURRENCY", "5")
+                .env("VPAY_LOG_FORMAT", "text")
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", valid_config_path());
+            #[cfg_attr(not(unix), allow(unused_mut))]
+            let (mut guard, rx) = spawn_and_capture_stdout(cmd);
+
+            let accepted = wait_for_line(
+                &rx,
+                |l| l.contains("job loop concurrency"),
+                Duration::from_secs(20),
+            )
+            .expect("a concurrency of exactly MAX_CONNECTIONS / 2 must be accepted and logged");
+            assert!(
+                strip_ansi(&accepted).contains("concurrency=5"),
+                "the accepted concurrency must be the 5 that was asked for, got: {accepted}"
+            );
+            // And the boot did not merely get past the guard: it reached the
+            // step *after* it. Without this, a guard that exited 78 one line
+            // later would still leave the assertion above green.
+            let connected = wait_for_line(
+                &rx,
+                |l| l.contains("database connected and migrations applied"),
+                Duration::from_secs(20),
+            );
+            assert!(
+                connected.is_some(),
+                "the worker must boot on past the concurrency guard at the ceiling"
+            );
+
+            #[cfg(unix)]
+            {
+                send_sigterm(&guard.0);
+                let exit = guard.0.wait().expect("wait for graceful shutdown");
+                assert!(
+                    exit.success(),
+                    "expected exit 0 after SIGTERM, got {exit:?}"
+                );
+            }
+        });
+    }
+
+    /// One past the ceiling is refused at boot, by name, as exit 78.
+    ///
+    /// `vpay_db::MAX_CONNECTIONS` is 10, so 6 is the first concurrency this
+    /// process cannot serve: one webhook fan-out on the already-exists branch
+    /// holds two pooled connections at once, and the path that would wait out
+    /// the acquire timeout is crash recovery (issue #63,
+    /// docs/flows/crash-safety.md).
+    ///
+    /// **`78` and not `1`**, for `a_zero_worker_concurrency_…`'s reason: an
+    /// operator whose Helm values carry a number too large must not be told
+    /// this is a vpay bug. **`78` and not `69`** is the mutation this case
+    /// exists for — delete the check in `worker::boot` and this exits `69`
+    /// (unreachable database), because nothing else in the boot sequence looks
+    /// at the number. Measured 2026-09-10; it is the only case in the
+    /// workspace that fails on that edit.
+    ///
+    /// All three numbers are asserted, with `&&` rather than `||`, because
+    /// each is a different half of the fix and an `||` passes while two of
+    /// them are missing — the same trap
+    /// `a_missing_database_url_is_exit_78_naming_the_problem` records. No
+    /// database is needed: the refusal happens before the pool is opened,
+    /// which is *why* an unreachable URL is supplied rather than omitted —
+    /// with no `DATABASE_URL` at all a regression would exit 78 for the wrong
+    /// reason and this case could not tell.
+    #[test]
+    fn a_worker_concurrency_above_the_pools_ceiling_is_refused_by_name_as_exit_78() {
+        let output = bin()
+            .env("VPAY_WORKER_CONCURRENCY", "6")
+            .env("VPAY_LOG_FORMAT", "text")
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
+            .env("VPAY_CONFIG", valid_config_path())
+            .output()
+            .expect("spawn vpay-server worker");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "a concurrency the connection pool cannot serve is a deploy to fix (exit 78), not a \
+             vpay bug (exit 1) and not an unreachable database (exit 69); stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("--worker-concurrency") && stderr.contains("VPAY_WORKER_CONCURRENCY"),
+            "the refusal must name both spellings of the knob to turn, got: {stderr}"
+        );
+        assert!(
+            stderr.contains('6') && stderr.contains("10") && stderr.contains('5'),
+            "the refusal must name what was asked for (6), the pool it has to fit (10) and what \
+             to write instead (5), got: {stderr}"
         );
     }
 

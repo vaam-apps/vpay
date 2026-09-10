@@ -498,4 +498,48 @@ transaction and uses the commit path as its control).
   so what is proven is that the recovery table is executed correctly, not that
   the rails behave as these documents claim.
 
+## Worker concurrency and the pool
+
+**New 2026-09-10 (issue #63).** `vpay-server worker` refuses a
+`--worker-concurrency` above `vpay_db::MAX_CONNECTIONS / 2` — 5 with the
+pool this build ships — at boot, as a configuration error (exit 78), before
+it opens the pool. `worker::a_worker_concurrency_above_the_pools_ceiling_is_refused_by_name_as_exit_78`
+and its sibling at the ceiling are the two subprocess cases; deleting the
+check makes the first exit 69 instead.
+
+Why there is a ceiling at all: since 2026-09-06 `WebhookDeliveries::create_in_tx`
+runs through CrateStack's `.upsert(..).do_nothing()`, and on the
+already-exists branch — the branch a **re-run of a crashed fan-out** takes —
+it holds two pooled connections at once, its own transaction's plus the one
+the update-policy re-check takes. Every other write in `vpay-db` needs one.
+A pool with nothing left does not fail fast: callers wait out
+`ACQUIRE_TIMEOUT` (5 s) and then fail, and one of the callers is the lease
+reaper, which is what frees jobs a killed worker left behind.
+
+**What the ceiling is not.** It is arithmetic taken at its most cautious, not
+a cliff measured at 5, and the difference is worth stating because the next
+person to move either number will read this paragraph:
+
+| simultaneous fan-outs on the re-run branch | 4 | 5 | 6 | 8 | 10 |
+|---|---|---|---|---|---|
+| slowest second acquire | 10 ms | 7 ms | 0.8 ms | 1.8 ms | **5.002 s, timed out** |
+| lease reaper, running alongside | ok | ok | ok | ok | **timed out** |
+
+Measured 2026-09-10 against a real Postgres by
+`the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper`
+(`backends/tests/integration/tests/webhooks.rs`) and the probe recorded in
+[../plans/exp45-worker-pool-bound-notes/opus-review.md](../plans/exp45-worker-pool-bound-notes/opus-review.md).
+Nothing queues until **`MAX_CONNECTIONS`** transactions are open at once,
+because the second connection is released as soon as the policy probe
+answers. Two more facts point the same way: `fan_out_events` is a
+**singleton** job, so one worker process has at most one fan-out in flight
+however high the concurrency is set, and a worker's other DB users (the claim
+loop, the reaper, the gauge) hold one connection each.
+
+So the guard refuses configurations that would in fact have worked, and that
+is the direction chosen deliberately: the failure it prevents is a hang on
+the recovery path, which is the path that only runs when something has
+already gone wrong. Raising throughput means `worker.replicaCount`, not a
+bigger number here — each replica brings its own pool.
+
 See [../status.md](../status.md).

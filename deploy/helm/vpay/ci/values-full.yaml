@@ -39,7 +39,13 @@ server:
     example.vpay/rendered-by: ci
 worker:
   replicaCount: 2
-  concurrency: 8
+  # 5, not the 8 this file carried until 2026-09-10: `vpay-server worker`
+  # refuses anything above `vpay_db::MAX_CONNECTIONS / 2` at boot (exit 78,
+  # issue #63), so the "everything turned on" example was an example of a
+  # release that installs and then CrashLoopBackOffs. It is the ceiling rather
+  # than the default because this file exists to exercise the far end of every
+  # value, and the `worker-concurrency-pool` guard is what found it.
+  concurrency: 5
 
 config:
   profile: production

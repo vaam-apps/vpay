@@ -42,12 +42,26 @@ use crate::repository::{PgRepositories, Repositories};
 /// specifically, since that is the branch that re-creates an existing
 /// delivery.
 ///
-/// Nothing here enforces the relationship between this constant and that
-/// flag, and nothing measures it under load. It is written down because the
-/// next person to move either number needs to know the ratio changed, and it
-/// is reserved for the maintainer in
-/// `docs/plans/exp18-notes/opus-review.md` §3 rather than decided here.
-const MAX_CONNECTIONS: u32 = 10;
+/// ~~Nothing here enforces the relationship between this constant and that
+/// flag, and nothing measures it under load.~~ **Both changed on 2026-09-10
+/// (issue #63).** `vpay-server worker` refuses at boot a
+/// `--worker-concurrency` above `MAX_CONNECTIONS / 2` — which is why this
+/// constant is `pub`, and the only reason it is — and
+/// `the_boot_guards_maximum_concurrency_fits_the_pool_and_a_saturated_one_starves_the_reaper`
+/// (`backends/tests/integration/tests/webhooks.rs`) measures both ends of the
+/// ratio against a real pool: at the ceiling nothing queues, and with all ten
+/// connections held the lease reaper waits out `ACQUIRE_TIMEOUT` and fails.
+///
+/// The arithmetic above is still the *conservative* reading of that
+/// measurement rather than a cliff a worker can reach on its own:
+/// `fan_out_events` is a singleton job, so one process has at most one
+/// fan-out in flight whatever the concurrency, and the second connection is
+/// held only for the width of the policy probe. Whether the ceiling should
+/// instead be `(MAX_CONNECTIONS - 2) / 2` — the lease reaper and the gauge
+/// loop each want a connection of their own — remains the maintainer's, in
+/// `docs/plans/exp45-worker-pool-bound-notes/opus-review.md`; this file
+/// decides neither number.
+pub const MAX_CONNECTIONS: u32 = 10;
 
 /// How long a caller waits for a connection to become available from
 /// [`sqlx::PgPool::acquire`] before giving up (`PgPoolOptions::acquire_timeout`).
