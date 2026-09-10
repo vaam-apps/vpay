@@ -2839,7 +2839,21 @@ maintainer's `vpay-demo` stack was not touched):**
 - **The click arming deleted (`payer-paid` / `payer-gave-up`):**
   `shop-hosted.cy.ts`'s Orange **cancel** case fails — `Expected to find
   element: [data-outcome="failed"], but never found it` — because the charge
-  settles `paid`. 1 failing, 3 passing.
+  settles `paid`. 1 failing, 3 passing. **It also fails in
+  `backends/tests/conformance`**, which the sabotage review re-ran on
+  2026-09-10 and the delivered note did not claim: with those two mappings
+  removed (12 → 10), `the_payers_exit_from_the_hosted_page_decides_the_charge::case_2_cancel`
+  fails in 1.5 s on `cancel: expected Some(PayerTimeout), got Succeeded {
+  provider_txn_id: Some("stub-txn") }` — and `case_1_pay` **still passes**,
+  because a click nobody noticed still falls through to the catch-all
+  `SUCCESS` and `paid` is what that case asserts. So the click arming has a
+  cheap gate as well as an expensive one, and the pay/cancel asymmetry the
+  notes found in the browser is a property of the assertion rather than of
+  the browser.
+- **The stub's `id="stub-limits"` section deleted** (the review's own
+  mutation, on its own assertion, because an assertion never seen red is not
+  a gate): `the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry`
+  fails on "the stub's limits must be visible ON the stub's page".
 - **The page's links pointed straight at the merchant again** (the shape
   before this change): both `the_payers_exit…` cases fail on "the page's
   control must go through the rail's own container".

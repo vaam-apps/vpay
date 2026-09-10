@@ -251,6 +251,35 @@ weakened; the two the branch rewrote
 `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`)
 are strictly stronger, and this review added one assertion and removed none.
 
+## The two mutations this review ran itself
+
+Both applied to the committed tree, run, and reverted; `git status --porcelain`
+is empty afterwards and the full suite is back to 51/51 in 57 s.
+
+| mutation | what fails |
+|---|---|
+| **the `id="stub-limits"` section deleted from the page** | `the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry` — "the stub's limits must be visible ON the stub's page". The assertion this review added had never been seen red, which is the state CLAUDE.md names; it has now |
+| **the click arming deleted** (`payer-paid` and `payer-gave-up` removed, 12 mappings → 10) | `the_payers_exit_from_the_hosted_page_decides_the_charge::case_2_cancel`, on `cancel: expected Some(PayerTimeout), got Succeeded { provider_txn_id: Some("stub-txn") }` — **and `case_1_pay` still passes**, because a charge whose click was never noticed falls through to the catch-all `SUCCESS` and `paid` is what that case asserts |
+
+The second row is the useful one and it is **stronger than the delivered
+claim**. `docs/status.md` recorded this mutation as failing only
+`shop-hosted.cy.ts`'s cancel case, in a browser, on a compose stack. It fails
+in `backends/tests/conformance` too, in 1.5 seconds, with no worker and no
+browser — so the click arming has a cheap gate as well as an expensive one.
+And the asymmetry the delivered notes found in Cypress ("the pay case asserts
+`paid` and a lost race still produces `paid`") turns out to be a property of
+the *assertion*, not of the browser: it holds inside the Rust suite as well.
+The cancel case is the gate on this branch at every level.
+
+The implementer's own three mutations were **not** re-run. They are recorded in
+`opus.md` with the failing assertions quoted, the mapping mutations were
+applied to a `.e2e` copy for the browser runs and the committed file restored
+byte for byte, and this review re-derived the same properties from the mappings
+and from the stub's journal instead. The one shape worth flagging is that the
+"chain deleted" mutation is claimed to fail six of seven conformance cases;
+this review did not check the six, and the three properties/three gates split
+it rests on is confirmed by §1 and §2 independently.
+
 ## The brief's own mutation expectation, again
 
 The delivered notes correct the task brief's "shorten the chain to zero → the
