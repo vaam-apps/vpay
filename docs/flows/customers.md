@@ -236,9 +236,19 @@ and that is not a promise two call sites remember, it is migration `0041`'s
 All nine are written, including components the payer never filled in, because
 _which fields a record carried is itself information about the person_.
 
+The constraint is spelled `IS NOT DISTINCT FROM '[redacted]'`, not `=`, and
+that is not a stylistic choice. **A CHECK is violated only when its expression
+evaluates to FALSE, and `name = '[redacted]'` over a NULL `name` is NULL,
+which passes.** So the `=` spelling accepted an `anonymized_at` row with a
+NULL identifier column — the first state a missed assignment produces, since
+the columns an erasure most easily misses are the ones nobody filled in. The
+review caught it on 2026-09-11 by holding each of the nine back as `NULL` as
+well as as a value; both halves are in
+`an_anonymised_customer_carries_the_marker_in_every_identifier_column`.
+
 `at_least_one_identifier` was **not** relaxed for this and does not need to
 be: the marker is not NULL. It now also backstops the erasure in the one
-direction that matters — an erasure that NULLed the three identifiers rather
+direction that matters — an erasure that NULLed all three identifiers rather
 than marking them is refused outright.
 
 ### The erasure covers every copy vpay kept, not just the row
@@ -346,6 +356,48 @@ paragraph this section replaces called the surviving identifiers "a trade, and
 it is stated rather than implied". It was stated; it was also not a trade
 anybody had chosen, and it exempted from the twelve-month retention promise
 exactly the payers vpay had taken money from.
+
+### Two windows the erasure does not close, stated rather than implied
+
+**One: a response body stored a few milliseconds after the erasure.** Every
+write under `/v1` carries an `Idempotency-Key`, and the response is stored in
+`idempotency_keys.response_body` for 24 hours **after** the handler's
+transaction commits — `PostRequest::finish`, in `vpay_api::v1::payment_intents`.
+A `POST /v1/customers/{id}` that commits, then loses the race to a `DELETE`
+that erases the same customer, then stores its own response, writes the
+payer's identifiers back into a table the erasure has already swept. The two
+transactions serialise on the customer's row lock, so the window is only the
+gap between one committing and its `finish` write — but it is real, it is not
+closed, and the bound on it is `sweep_expired`'s deletion of every row past
+`expires_at`: **24 hours**.
+
+It is left open rather than closed because closing it belongs in the generic
+idempotency store, which knows nothing about customers, and a resource-shaped
+exception there is a worse thing to own than a bounded window somebody can
+read about. Found by the review, 2026-09-11; it is a maintainer's call
+whether 24 hours is acceptable.
+
+**Two: vpay cannot erase the merchant's copy, and there is deliberately no
+second event type for it.** The merchant received the payer's details in
+`customer.created` and in every `customer.updated`, over signed bodies to
+endpoints they configured. That copy is in their database, vpay cannot reach
+it, and no mechanism vpay could ship would change that.
+
+What vpay can do is **tell them**, and it already does: `customer.deleted` is
+emitted in the erasure's own transaction, on both branches, and it carries the
+`cus_…` in `data.object.id` and the instant of the erasure as the event's own
+`created`. That is the whole of the signal a merchant needs to find their row
+and erase it — the mapping from `cus_…` to their user is theirs, and they had
+to keep it to use the object at all.
+
+The review considered adding a `customer.redacted` type saying the same thing
+and **declined** (2026-09-11), for [webhooks.md](webhooks.md)'s standing rule:
+a second label for one transition is a type a Stripe-shaped handler has no
+branch for, and it would read as an enforcement vpay cannot perform. What is
+missing is not a mechanism; it is a **contract**. Whether a merchant is
+obliged to act on `customer.deleted` — and within what window — is a data
+processing agreement, not a webhook, and it is a maintainer's decision. It is
+not made here.
 
 ### What is logged, and by whom
 
