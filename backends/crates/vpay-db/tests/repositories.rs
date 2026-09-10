@@ -6450,6 +6450,133 @@ async fn a_refund_against_an_unpaid_invoice_records_nothing_on_it() -> anyhow::R
     Ok(())
 }
 
+/// **The concurrency claim, measured.** Two refunds settling *at the same
+/// time* against one invoice add up, and an over-refund is still refused —
+/// by the statement, against the other transaction's committed value.
+///
+/// # Why this case exists beside the sequential one
+///
+/// `add_refund_for_intent_in_tx`'s doc comment, migration `0042`'s header,
+/// `docs/reference/vpay-db.md` and `docs/flows/invoices.md` all make the same
+/// claim in the same words: "two refunds settling concurrently add up … the
+/// second blocks on the row lock and re-evaluates against the first's
+/// committed value". Every other refund case in this file settles one refund
+/// after another has returned, and a sequential case cannot tell a guard that
+/// holds under contention from one that has simply never been contended —
+/// which is `docs/plans/exp32-invoices-notes/opus-review.md`'s recorded
+/// lesson about wire tests with sequential calls. Until this case existed the
+/// claim was prose.
+///
+/// # The two pairs
+///
+/// * 3,000 and 1,500 against a 5,000 bill, `tokio::join!`ed: **both** commit
+///   and the committed total is 4,500. A lost update is the failure this
+///   rules out.
+/// * 3,000 and 3,000 against a second 5,000 bill: **exactly one** commits.
+///   The loser is refused by `refunded_at_most_paid` — evaluated against the
+///   winner's committed 3,000, which is only true because the increment is an
+///   expression over the row's own column — and is left `pending`, with its
+///   `succeeded` flip rolled back inside the same transaction.
+///
+/// **The decisive mutations.** Change the increment in
+/// `vpay_db::invoices::add_refund_for_intent_in_tx` to `amount_refunded = $2`
+/// and the first pair commits 1,500 or 3,000 instead of 4,500. Compute the
+/// new total in Rust from a `SELECT` earlier in the same transaction and the
+/// second pair commits 6,000 against a 5,000 bill, because both reads saw
+/// zero — the case the sequential one cannot fail on.
+#[tokio::test]
+async fn two_refunds_settling_concurrently_add_up_and_the_over_refund_still_loses()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // Two invoices, and their ids are deliberately different lengths:
+    // `open_invoice_for` derives the invoice number from `invoice_id.len()`,
+    // and two same-length ids under one merchant collide on
+    // `invoices_merchant_number_key` rather than proving anything about
+    // refunds.
+    for (intent, charge, invoice, suffix) in [
+        ("pi_race", "ch_race", "in_race", "race"),
+        ("pi_race_over", "ch_race_over", "in_race_over", "race_over"),
+    ] {
+        live_charge(
+            repositories.as_ref(),
+            intent,
+            charge,
+            "processing",
+            "submitted",
+        )
+        .await?;
+        open_invoice_for(&pool, invoice, intent).await?;
+        settle_invoice(repositories.as_ref(), charge, invoice, suffix).await?;
+        assert_eq!(
+            invoice_state(&pool, invoice).await?,
+            ("paid".to_owned(), 5000, 0),
+            "each pair starts from a bill the settlement really paid"
+        );
+    }
+
+    // Pair one: 3,000 + 1,500 = 4,500, which fits.
+    pending_refund(&pool, "re_race_a", "pi_race", 3000).await?;
+    pending_refund(&pool, "re_race_b", "pi_race", 1500).await?;
+    let (first, second) = tokio::join!(
+        repositories.apply_refund_succeeded("re_race_a"),
+        repositories.apply_refund_succeeded("re_race_b"),
+    );
+    assert!(
+        first.is_ok() && second.is_ok(),
+        "two refunds that fit must both commit even when they race: {first:?} {second:?}"
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_race").await?,
+        4500,
+        "the increment is an expression over the row's own column, so a concurrent pair adds \
+         up; a total read first would have lost one of the two"
+    );
+    assert_eq!(refund_status(&pool, "re_race_a").await?, "succeeded");
+    assert_eq!(refund_status(&pool, "re_race_b").await?, "succeeded");
+
+    // Pair two: 3,000 + 3,000 against 5,000. Exactly one may commit, and the
+    // one that does not must be refused by the database rather than clamped.
+    pending_refund(&pool, "re_race_c", "pi_race_over", 3000).await?;
+    pending_refund(&pool, "re_race_d", "pi_race_over", 3000).await?;
+    let (left, right) = tokio::join!(
+        repositories.apply_refund_succeeded("re_race_c"),
+        repositories.apply_refund_succeeded("re_race_d"),
+    );
+    let winners = usize::from(left.is_ok()) + usize::from(right.is_ok());
+    assert_eq!(
+        winners, 1,
+        "exactly one of two racing refunds that cannot both fit may commit: {left:?} {right:?}"
+    );
+    assert_eq!(
+        invoice_amount_refunded(&pool, "in_race_over").await?,
+        3000,
+        "the loser reached the invoice with nothing: `refunded_at_most_paid` was evaluated \
+         against the winner's COMMITTED value, which is the whole of the concurrency claim"
+    );
+    let settled = [
+        refund_status(&pool, "re_race_c").await?,
+        refund_status(&pool, "re_race_d").await?,
+    ];
+    assert_eq!(
+        settled
+            .iter()
+            .filter(|status| *status == "succeeded")
+            .count(),
+        1,
+        "one refund settled and one did not: {settled:?}"
+    );
+    assert_eq!(
+        settled.iter().filter(|status| *status == "pending").count(),
+        1,
+        "and the loser is still `pending` — its `succeeded` flip was rolled back with the \
+         invoice write it could not make, so a retry finds it exactly where it was: {settled:?}"
+    );
+
+    Ok(())
+}
+
 /// A settlement that fails **after** the invoice flip leaves the invoice
 /// `open` and writes no `invoice.paid`.
 ///
