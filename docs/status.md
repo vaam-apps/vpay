@@ -612,6 +612,16 @@ and is not one.
 the container-free guard that closes it, and it fires on that same drift in
 **6 ms**.
 
+**The review's own case failed the gate once, and the fix is in the same
+branch.** After ten green runs on its own, the fourth scenario failed its
+first full `just ci` on *"a succeeded delivery's job must be deleted"* — a
+race the review introduced, not one in the worker: `record_success` commits
+the delivery row and `Jobs::finish` deletes the job in the next statement, so
+`succeeded` is observable a moment before "no job". That one read is now
+bounded (2 s) instead of instant; the assertion is the same and a job left
+behind still fails. Six runs of the whole `worker_kill9` binary since, all
+green.
+
 **One run in the review's own was a flake, and it was the host.** The clean
 case failed once with *"no webhook delivery was in flight within 50s"* on a
 machine at load average 15 running two other agents' suites — the victim's

@@ -159,6 +159,26 @@ run. The mechanism was not chased down — it is a property of the shipping loop
 and not of this case — and the two-worker staging, which is the delivered
 case's own, does not have it: 10 runs, 10 passed.
 
+## The review's own case failed the gate once, and why that is in here
+
+The first full `just ci` on the head carrying the fourth scenario failed it —
+*"a succeeded delivery's job must be deleted"* — after ten green runs of the
+case on its own. The race is the review's, not the shipping code's:
+`vpay_worker::webhooks` records the receiver's answer and then finishes the
+job, two statements, so a delivery row reads `succeeded` a moment before its
+job disappears. Standalone the moment never landed; inside a full suite,
+sharing a host with 1649 other tests, it did.
+
+Fixed by bounding that one read (`JOB_DELETION_TIMEOUT`, 2 s) rather than
+deleting it: the assertion is unchanged and a job genuinely left behind still
+fails the case. The clean case reads the same fact without a wait and is
+correct to, because there the process holding the job has already exited,
+which is strictly later than the delete.
+
+It is recorded here because it is the exact failure this review exists to
+catch, and it was caught by running the project's own gate rather than by
+reading the code.
+
 ## What this review did NOT do
 
 - **No shipping code was changed.** Every mutation above was applied to

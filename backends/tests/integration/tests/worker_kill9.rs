@@ -334,6 +334,15 @@ const DELIVERY_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(50);
 /// fresh worker's `job loop running`, rather than estimating one.
 const RESTART_DELIVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long the delete that follows a successful delivery is given.
+///
+/// `vpay_worker::webhooks` records the receiver's answer and then finishes
+/// the job, in that order and in two statements, so "succeeded" is observable
+/// before "no job". Two seconds is three orders of magnitude more than the
+/// gap and still short enough that a job genuinely left behind fails the case
+/// rather than hanging it.
+const JOB_DELETION_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How long the signalled worker is given to be gone.
 ///
 /// Its own drain budget plus margin: a worker still alive after this has
@@ -2489,10 +2498,23 @@ async fn a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_th
         "still 0: the aborted attempt was never recorded as a failure, so the redelivery is \
          the ladder's first rung and not its second"
     );
-    assert!(
-        delivery_job(&pool, delivery.id).await?.is_none(),
-        "a succeeded delivery's job must be deleted"
-    );
+    // **Bounded, not instant, and the difference was measured.**
+    // `record_success` commits the delivery row and `Jobs::finish` deletes
+    // the job in the *next* statement, so there is a window — small, and
+    // wide enough to fail this once inside a full `cargo nextest` run — in
+    // which the row already reads `succeeded` and the job is still there.
+    // The assertion is the same one: a finished delivery leaves no job
+    // behind. The case above reads it without a wait because there the
+    // process holding the job has already exited, which is strictly later.
+    let deadline = Instant::now() + JOB_DELETION_TIMEOUT;
+    while let Some(job) = delivery_job(&pool, delivery.id).await? {
+        assert!(
+            Instant::now() < deadline,
+            "a succeeded delivery's job must be deleted within {JOB_DELETION_TIMEOUT:?}, not \
+             left in the queue: {job:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // ---- the merchant was told twice, and both are real ---------------
     let event_id = event_id_for(&pool, &created.id).await?;
