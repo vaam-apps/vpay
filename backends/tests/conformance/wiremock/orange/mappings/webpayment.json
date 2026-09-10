@@ -79,9 +79,29 @@
           "payment_url now carries the two URLs it was given as query parameters, which is",
           "what lets stub-hosted-page.json render links to them. See that file for why a stub",
           "may do this and the real Orange page does not."
+        ],
+        "window": [
+          "ARMS THE PAYER'S WINDOW (2026-09-10, issue #58). An accepted submit puts",
+          "`orange-hosted-page-payer` into `submitted`, which is the state",
+          "stub-hosted-page.json answers the FIRST transactionstatus PENDING from.",
+          "",
+          "It is armed HERE, by the charge existing, rather than by the payer's",
+          "browser reaching the hosted page, because those two events are 44 ms and",
+          "449 ms out of the same submit and which of them lands first depends on",
+          "where in its one-second idle sleep `vpay_worker`'s run loop happened to",
+          "be. Arming on the page would be a race the demo would usually win; arming",
+          "here is not a race at all, and buys the page's GET the whole first rung of",
+          "`vpay_worker::poll_delay` to land in.",
+          "",
+          "It also means every Orange charge submitted through this stub resets that",
+          "scenario, so no charge inherits a payer state from the one before it.",
+          "The full state machine, its priorities and what each of them must not",
+          "displace are documented in stub-hosted-page.json."
         ]
       },
       "priority": 5,
+      "scenarioName": "orange-hosted-page-payer",
+      "newScenarioState": "submitted",
       "request": {
         "method": "POST",
         "urlPathPattern": "/orange-money-webpay/[^/]+/v1/webpayment",

@@ -2602,6 +2602,149 @@ Capabilities being real matters more than it sounds: `orange_money` declares
 `supports_refunds: false`, and that flag — not a rail-specific branch — is what
 makes the core refuse a refund on that rail.
 
+#### The Orange stub's hosted page grew a payer's window (2026-09-10, issue #58)
+
+**This is a change to a stub, and to nothing else.** No adapter, no handler,
+no ladder and no configuration moved; `vpay-adapter-orange-money`'s status
+table, `vpay_api`'s confirm handler and `vpay_worker::poll_delay` are byte for
+byte what they were. What changed is
+`backends/tests/conformance/wiremock/orange/mappings/` — the directory
+`compose.yml`, `compose.e2e.yml`, `compose.demo.yml` and both Rust suites all
+bind-mount, which is why one PR had to make four suites green.
+
+**What was wrong.** The demo's three documented Orange test numbers
+(`237600000000`, `237600000102`, `237600000400`) were advertised on the shop's
+own checkout panel and in `examples/shop/README.md`, and **could not be
+reached from a browser**. The confirm handler enqueues the first status query
+at `now()`, the worker's idle sleep is one second, and the stub's priority-10
+catch-all answered `SUCCESS` — measured on the demo stack on 2026-09-06 from
+the stub's own request journal: submit at T, first `transactionstatus` at
+T+449 ms, the payer's form at T+11.96 s, and the order came back **paid** for
+`237600000400`. That is a false green on a payment demo, which is the failure
+mode `CLAUDE.md` names first. exp22 found it, wrote it down in five places and
+left the fix as a maintainer decision.
+
+**What the stub does now.** One WireMock scenario,
+`orange-hosted-page-payer`: an accepted `webpayment` arms it, the first
+`transactionstatus` is answered `PENDING` **unconditionally**, and the second
+falls back to the answer the catch-all always gave. If a payer's browser loads
+the hosted page — at any point — it arms a **bounded chain of four more
+`PENDING` answers**, which on `poll_delay`'s rungs is 10 + 20 + 30 + 45 =
+**105 seconds** of thinking time, after which the page **expires**
+(`EXPIRED` → `payer_timeout`). The page's `#pay` and `#cancel` links, which
+used to point straight at the merchant's URL and so were invisible to the
+stub, now go through the container and `302` on: `#pay` arms `SUCCESS`,
+`#cancel` arms `EXPIRED`, and the test-number form arms what it always did.
+
+**Why the unconditional rung, and what it costs.** Arming only on the page's
+`GET` is a race — 44 ms against 449 ms out of the same submit, decided by
+where in its one-second sleep the worker was — and a browser that usually wins
+is a flaky gate. One `PENDING` that depends on nothing but the submit turns
+that 400 ms margin into ten seconds. It is the **whole** cost of this change:
+an Orange charge answered by the catch-all settles one rung later than it did.
+Nothing else moved, and that is a property of the priority ladder rather than
+a hope — the two new unconditional mappings sit at priority 6, *below*
+`demo-outcomes.json`'s amount-keyed mappings (4), so `just demo-walk`'s 5001
+and 5002 outcomes are still terminal on the first rung; and the payer-driven
+mappings sit at 3, *below* `transactionstatus.json`'s `order_id`-keyed cases
+(1), so every conformance reference case is untouched.
+
+**Deliberately not done:** the one-line change to the confirm handler's
+`run_at = now()`. An immediate first poll is a property
+([flows/crash-safety.md](flows/crash-safety.md) — a charge is asked about as
+soon as it exists), and slowing it to make a demo comfortable is what ADR-0003
+exists to refuse. Also not done: a `CANCELLED` rail status. Orange documents
+five and that is not one of them, so a payer who cancels gets `EXPIRED` →
+`payer_timeout`, and the shop's README and the demo runbook now say so where
+they used to say the order stayed open.
+
+**A wrong comment corrected while doing it.** `stub-hosted-page.json` claimed
+WireMock's double stache HTML-escapes and that the form's hidden inputs relied
+on it. Driven against `wiremock/wiremock:3.9.2` with a return URL of
+`https://m.test/back?q="x"&y=<z>`, it does not: the value reaches the
+attribute unescaped, quotes and all. The two new hrefs are safe because they
+percent-encode with WireMock's `urlEncode` helper instead of relying on the
+stache; the *form* is still vulnerable to a return URL containing a double
+quote, which is now written down in the mapping rather than mis-described, and
+is not fixed here (a GET form's hidden input must carry the decoded value, and
+WireMock cannot escape an attribute).
+
+**Proven by**, all against real containers:
+
+- `backends/tests/conformance` — **51 tests, 51 passed, 0 skipped** (47 before
+  this change). The four new ones:
+  `a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles` (the
+  unconditional rung is exactly one, so a stub that answered `PENDING` for
+  ever would fail here rather than hang a suite at a distance),
+  `the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry`, and
+  `the_payers_exit_from_the_hosted_page_decides_the_charge` × 2 — which
+  follows the href **the page rendered** rather than one the test built, so
+  pointing the links back at the merchant fails it.
+  `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`
+  gained the assertion that was impossible before: that the charge is still
+  `Pending` while the payer is typing.
+- `backends/tests/integration` — `confirm_rails`
+  `the_stub_hosted_page_links_to_the_return_url_the_submit_carried` now
+  asserts the **`302` `Location`** of each control rather than its `href`,
+  which is the stronger of the two; and
+  `the_pending_chain_gives_a_payer_at_least_thirty_seconds` reads the chain
+  out of the mapping *file* and multiplies it against
+  `vpay_worker::poll_delay`, so shortening either alone fails. `webhooks` and
+  `provider_callback` re-run and green.
+- `frontends/tests/e2e` — `shop-hosted.cy.ts` gained a fourth case, "the payer
+  cancels on the rail's own page and the order reaches `failed`", which
+  `waitForOrderStatus` fails the moment it ever reads `paid` — which is what
+  it would have read before this change. The Orange pay case now asserts both
+  controls point back through the rail's container.
+
+**Measured beyond `just ci`, on a throwaway compose project
+(`exp43-orange-stub-race`, ports 13700-13702/18700-18702, torn down; the
+maintainer's `vpay-demo` stack was not touched):**
+
+- `just demo-up` + `just demo-walk` — **exit 0, six payments on two rails**,
+  every one settled by the worker asking the rail and evidenced by a signed
+  webhook. The one number in it that moved is the point: the settling Orange
+  outcome now settles after **41** of the demo's own polls where it used to
+  settle on the first, and the two amount-keyed Orange outcomes (5001, 5002)
+  still settle after **2**, unchanged — which is the priority argument above,
+  measured rather than asserted.
+- `just test-e2e` — **19 Cypress tests, 19 passing, 0 failing**:
+  `checkout.cy.ts` (1), `dashboard.cy.ts` (8), `shop-hosted.cy.ts` (**4**, one
+  of them new), `shop-embedded.cy.ts` (6). The Orange legs are the ones this
+  change is about: "the payer pays on the rail's own page" 15.9 s and "the
+  payer cancels on the rail's own page and the order reaches `failed`" 5.4 s.
+
+**Three mutations, run and reverted.**
+
+- **The chain deleted (four rungs and the expiry):** conformance **6 of 7**
+  window cases fail — the three `a_test_number_typed…` cases on `left:
+  Succeeded { provider_txn_id: Some("stub-txn") }, right: Pending`, the
+  boundedness case, and both `the_payers_exit…`; and
+  `the_pending_chain_gives_a_payer_at_least_thirty_seconds` fails with "no
+  PENDING chain in …".
+- **The click arming deleted (`payer-paid` / `payer-gave-up`):**
+  `shop-hosted.cy.ts`'s Orange **cancel** case fails — `Expected to find
+  element: [data-outcome="failed"], but never found it` — because the charge
+  settles `paid`. 1 failing, 3 passing.
+- **The page's links pointed straight at the merchant again** (the shape
+  before this change): both `the_payers_exit…` cases fail on "the page's
+  control must go through the rail's own container".
+
+**And one measured negative result, which corrects the task brief.** The brief
+expected "shorten the chain to zero → the browser case FAILS (paid before the
+click)". It does not. Run twice — chain deleted, and the whole window deleted
+so the stub answered exactly as it did before — `shop-hosted.cy.ts` was
+**green both times**, and the stub's own journal says why: submit at T, the
+page at T+0.05 s, `transactionstatus` → SUCCESS at T+0.29 s, the payer's click
+at T+0.53 s. That is the original bug reproduced *under a green spec*, because
+the pay case asserts `paid` and a lost race still produces `paid`. A human
+takes ~12 s to reach that form; Cypress clicks in ~60 ms, so a browser spec is
+always inside the window whether or not there is one. The browser therefore
+gates the **click arming** (the cancel case, where a lost race is red), the
+conformance suite gates **that there is a bounded window**, and the
+integration case gates **how many seconds it is worth**. Three properties,
+three gates, none of them redundant.
+
 ---
 
 ## Frontend

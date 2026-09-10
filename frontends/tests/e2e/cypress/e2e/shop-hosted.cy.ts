@@ -139,12 +139,31 @@ describe("the shop, paid on vpay's hosted page", () => {
     });
 
     // Orange's own hosted page — a WireMock mapping (D7), not a vpay page.
-    // Its two links are the `return_url` and `cancel_url` THAT submit
+    // Its two links `302` to the `return_url` and `cancel_url` THAT submit
     // carried, which since Step 9 lane 2 is vpay's own return page for this
     // session, carrying the `t=` return token.
+    //
+    // **This click now decides the charge, and until 2026-09-10 it decided
+    // nothing** (vpay issue #58). The stub used to answer the very first
+    // `transactionstatus` `SUCCESS`, about 449 ms after the submit, so this
+    // charge was already `paid` by the time the page below had rendered —
+    // the spec passed, and it was passing for a reason that had nothing to
+    // do with the payer. The stub now answers `PENDING` while a payer is on
+    // the page, and the two controls point back at the stub itself so it can
+    // tell a payer who paid from one who wandered off. See
+    // `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`.
     cy.origin(orangeOrigin(), () => {
       cy.get("#pay", { timeout: 60_000 }).should("be.visible");
-      cy.get("#cancel").should("exist");
+      // Both controls go back through the rail's own container. A link
+      // straight to the merchant is a payer the rail never hears from
+      // again, which is the shape this had before and the reason its test
+      // numbers did not work from a browser.
+      cy.get("#pay")
+        .invoke("attr", "href")
+        .should("match", /^\/stub-hosted-page\/[^/]+\/pay\?/u);
+      cy.get("#cancel")
+        .invoke("attr", "href")
+        .should("match", /^\/stub-hosted-page\/[^/]+\/cancel\?/u);
       cy.get("#pay").click();
     });
 
@@ -171,6 +190,70 @@ describe("the shop, paid on vpay's hosted page", () => {
     });
   });
 
+  it("Orange redirect: the payer cancels on the rail's own page and the order reaches `failed`", () => {
+    // **The other half of vpay issue #58, and the one that could not be
+    // written at all before 2026-09-10.**
+    //
+    // Until then the rail stub's `#cancel` link pointed straight at the
+    // `cancel_url` the submit carried, so a payer who clicked it never
+    // touched the stub again — and the stub, asked for a status it had not
+    // been steered on, answered `SUCCESS`. A payer who cancelled was paid.
+    // The comment on the case above says so, because it was true.
+    //
+    // The link now goes to `/stub-hosted-page/{token}/cancel` on the rail's
+    // own container, which arms `EXPIRED` and *then* `302`s to the same URL.
+    // `EXPIRED` and not a `CANCELLED` of this repository's invention: Orange
+    // documents five statuses and that is not one of them
+    // (`docs/flows/adapter-orange-money.md`), so a payer who abandons the
+    // page is a page that ended unpaid, which is `payer_timeout`.
+    //
+    // Nothing here stubs anything. The order moves because `vpay-worker`
+    // asked the rail, the rail said `EXPIRED`, vpay emitted
+    // `payment_intent.payment_failed`, and this shop's webhook handler
+    // verified the signature and wrote its own database.
+    buyOnVpaysPage();
+
+    cy.origin(checkoutOrigin(), () => {
+      cy.get('[data-screen="select_rail"]', { timeout: 60_000 }).should(
+        "be.visible",
+      );
+      cy.get('button[data-rail="orange_money"]').click();
+      cy.get('[data-screen="ready_redirect"]').should("be.visible");
+      cy.get('[data-testid="continue"]').click();
+    });
+
+    cy.origin(orangeOrigin(), () => {
+      cy.get("#cancel", { timeout: 60_000 }).should("be.visible");
+      cy.get("#cancel").click();
+    });
+
+    // `cancel_url` and `return_url` are the same value on this rail, so the
+    // payer lands back on vpay's return page either way and the page polls
+    // until the rail's status query settles. What differs from the case
+    // above is the outcome it settles on.
+    cy.origin(checkoutOrigin(), () => {
+      cy.url({ timeout: 60_000 }).should("include", "/return");
+      cy.get('[data-outcome="failed"]', { timeout: 120_000 }).should(
+        "be.visible",
+      );
+      cy.get('[data-testid="outcome-body"]').should("not.be.empty");
+      cy.get('[data-outcome="failed"] button').click();
+    });
+
+    // A hosted session sends every non-success to the merchant's
+    // `cancel_url` (`forwardKindFor(session, paid)` with `paid === false`).
+    cy.url({ timeout: 60_000 }).should("include", "/cancelled");
+    cy.get('[data-testid="cancelled-message"]').should("be.visible");
+
+    orderIdFromUrl().then((orderId) => {
+      // `waitForOrderStatus` fails the moment it ever reads `paid` — which
+      // is precisely what this spec would have read before the stub grew a
+      // payer's window, and is the assertion that makes this case a gate on
+      // the fix rather than a description of it.
+      waitForOrderStatus(orderId, "failed");
+    });
+  });
+
   it("a payment that does not succeed lands on the shop's cancel_url, and the order never becomes `paid`", () => {
     // WHY A DECLINE AND NOT THE RAIL PAGE'S "Cancel" LINK. The plan's third
     // hosted case is spelled '"Cancel" → the shop's cancelled page with the
@@ -179,12 +262,20 @@ describe("the shop, paid on vpay's hosted page", () => {
     //
     //  1. vpay's hosted page has no cancel control. Its only exits are the
     //     outcome screen's forward and closing the tab.
-    //  2. The Orange stub's "Cancel" link is the `cancel_url` THAT SUBMIT
-    //     carried, and `vpay_adapter_orange_money` sends the charge's single
-    //     `return_url` as both `return_url` and `cancel_url` — so the link
-    //     goes to vpay's return page, and the stub's `transactionstatus`
-    //     mapping answers SUCCESS for any order_id it is not steered on. A
-    //     payer who "cancels" on the stub is therefore paid anyway.
+    //  2. The Orange stub's "Cancel" link went straight to the `cancel_url`
+    //     THAT SUBMIT carried, and `vpay_adapter_orange_money` sends the
+    //     charge's single `return_url` as both — so the link went to vpay's
+    //     return page, the stub never heard about the click, and its
+    //     `transactionstatus` mapping answered SUCCESS for any order_id it
+    //     was not steered on. A payer who "cancelled" on the stub was paid
+    //     anyway.
+    //
+    //     **The second one stopped being true on 2026-09-10** (vpay issue
+    //     #58): the stub's Cancel link now goes through the stub, which arms
+    //     `EXPIRED` before forwarding, and the case below this one drives
+    //     exactly that. This case stays as it is — it is the MTN half of the
+    //     same property, and a decline at the rail and an abandonment at the
+    //     rail's page are two different things arriving at one `cancel_url`.
     //
     // What actually reaches `cancel_url` is `forwardKindFor(session, paid)`
     // with `paid === false`: a hosted session sends every non-success there.

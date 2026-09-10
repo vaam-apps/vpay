@@ -1859,6 +1859,324 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     }
 }
 
+// ---------------------------------------------------------------------------
+// The redirect rail's hosted page, and the payer's window on it (issue #58).
+// ---------------------------------------------------------------------------
+
+/// How many `transactionstatus` polls the stub answers `PENDING` while a payer
+/// is standing on its hosted page, before it gives up on them and expires the
+/// page.
+///
+/// It is the length of the chain of scenario states in
+/// `wiremock/orange/mappings/stub-hosted-page.json`, and it is a **const here
+/// and a chain there**, which means this file alone cannot stop the two
+/// drifting: shorten the chain and change this number to match and every case
+/// below still passes. What cannot be satisfied that way is
+/// `the_pending_chain_gives_a_payer_at_least_thirty_seconds` in
+/// `backends/tests/integration/tests/confirm_rails.rs`, which reads the
+/// mapping file itself and multiplies it out against `vpay_worker::poll_delay`.
+/// That is where the *size* of this number is argued; here it only has to be
+/// the same number the stub uses.
+const PENDING_POLLS_ON_THE_HOSTED_PAGE: usize = 4;
+
+/// The `href` of the link with this `id` on the stub's hosted page.
+///
+/// Deliberately parsed out of the rendered page rather than constructed:
+/// the property under test in [`the_payers_exit_from_the_hosted_page_decides_the_charge`]
+/// is that *the page's own control* is what reaches the stub. Building the URL
+/// here would leave that case passing for a page whose links had been pointed
+/// straight back at the merchant again — which is exactly the state this
+/// change moved away from, and exactly the mutation the case is armed against.
+fn href_of(page: &str, id: &str) -> String {
+    let anchor = format!(r#"<a id="{id}" href=""#);
+    let (_, rest) = page
+        .split_once(&anchor)
+        .unwrap_or_else(|| panic!("no link with id={id} on the page: {page}"));
+    let (href, _) = rest
+        .split_once('"')
+        .unwrap_or_else(|| panic!("unterminated href for id={id}: {page}"));
+    // The one entity the template writes by hand, between this container's own
+    // two query parameters. Everything else in the href is percent-encoded, so
+    // nothing else can appear escaped — see the mapping's own comment, which
+    // records that WireMock 3.9.2 does not escape a stache at all.
+    href.replace("&amp;", "&")
+}
+
+/// A charge on the redirect rail as `submit` leaves it: the `pay_token` the
+/// rail minted, and the merchant's own return URL.
+///
+/// Returns the charge, the page's path-and-query on the stub, and the page
+/// itself. Shared by the four cases below because each of them needs the same
+/// three steps first — submit, follow the `payment_url`, read the page — and
+/// a copy of them in each would be four places for the arming step to be
+/// dropped from.
+async fn a_payer_lands_on_the_rails_page(rail: &Rail) -> (ChargeRef, String, String) {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let mut charge = ChargeRef {
+        reference_id: Uuid::new_v4(),
+        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
+        payer_ref: None,
+        ref_extra: BTreeMap::new(),
+        return_url: Some(RETURN_URL.to_owned()),
+    };
+
+    let submitted = rail
+        .adapter
+        .submit(&charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| panic!("the submit is accepted, got {error:?}"));
+    // What `vpay_api`'s confirm handler commits before it answers: a redirect
+    // rail's status read is addressed by the `pay_token` the rail handed back,
+    // not by the reference we generated, and a charge that has not stored it
+    // cannot be asked about at all (`crash-safety.md`). Taken from the submit
+    // rather than manufactured, because that is the value under test.
+    charge.ref_extra = submitted.ref_extra.clone();
+    let redirect = submitted
+        .redirect_url
+        .as_deref()
+        .expect("a redirect rail's submit carries a URL");
+
+    // The rail's own URL, on the container actually serving it — the same
+    // substitution `the_stub_hosted_page_links_to_the_return_url_the_submit_carried`
+    // makes, and for the same reason: `payment_url` names the fixed
+    // `localhost:8082` that `compose.yml` publishes, which a container on a
+    // random mapped port is not. The path and query carry the meaning.
+    let (_, path_and_query) = redirect
+        .split_once("/stub-hosted-page/")
+        .unwrap_or_else(|| panic!("the payment_url must be the stub's page: {redirect}"));
+
+    let page = http
+        .get(format!(
+            "{}/stub-hosted-page/{path_and_query}",
+            rail.stub_origin
+        ))
+        .send()
+        .await
+        .expect("the stub's hosted page answers")
+        .text()
+        .await
+        .expect("the page body is readable");
+
+    (charge, path_and_query.to_owned(), page)
+}
+
+/// `query_status`, insisting the rail answered rather than failed.
+async fn status_of(rail: &Rail, charge: &ChargeRef, what: &str) -> ChargeStatus {
+    rail.adapter
+        .query_status(charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{what}: a documented outcome is an answer, not a transport failure: {error:?}")
+        })
+}
+
+/// **The charge nobody is paying still settles**, one rung later than it used
+/// to — which is the whole price of the payer's window, and the thing this
+/// case exists to keep bounded.
+///
+/// `stub-hosted-page.json` answers the *first* `transactionstatus` after an
+/// accepted submit `PENDING` unconditionally, so that a payer's browser has
+/// the whole first rung of `vpay_worker::poll_delay` (ten seconds) to reach
+/// the hosted page in rather than the ~400 ms it had before. That is a
+/// deliberate cost paid by every Orange charge in this repository, and the
+/// mutation it must not become is "PENDING for ever": a stub that never
+/// settled a charge nobody had looked at would hang `worker_e2e`, the demo
+/// and every reconciliation case, slowly and at a distance.
+///
+/// So: exactly one `PENDING`, then the answer the catch-all always gave.
+///
+/// Orange only. There is no hosted page on a push rail, so there is no window
+/// to open and MTN's timings are untouched by all of this.
+#[tokio::test]
+async fn a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles() {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let mut charge = ChargeRef {
+        reference_id: Uuid::new_v4(),
+        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
+        payer_ref: None,
+        ref_extra: BTreeMap::new(),
+        return_url: Some(RETURN_URL.to_owned()),
+    };
+    let submitted = rail
+        .adapter
+        .submit(&charge, &rail.config)
+        .await
+        .expect("the submit is accepted");
+    charge.ref_extra = submitted.ref_extra.clone();
+
+    assert_eq!(
+        status_of(&rail, &charge, "the first poll").await,
+        ChargeStatus::Pending,
+        "the rung that removes the race must be answered even though no browser \
+         has been anywhere near this charge"
+    );
+    let settled = status_of(&rail, &charge, "the second poll").await;
+    assert!(
+        matches!(settled, ChargeStatus::Succeeded { .. }),
+        "a charge nobody is paying must still settle on the next rung, got {settled:?}"
+    );
+}
+
+/// **The payer's window is bounded.** A payer who lands on the rail's page and
+/// then does nothing gets `PENDING` a fixed number of times and then the page
+/// expires — `EXPIRED`, which is `payer_timeout`.
+///
+/// Both halves are the point:
+///
+/// * `PENDING` at all, because that is what did not happen before 2026-09-10
+///   and is why the demo's Orange test numbers did not work from a browser
+///   (issue #58). Shorten the chain to zero and the first assertion below
+///   fails on a `Succeeded`.
+/// * bounded, because the alternative shape — arm on the page's `GET` and
+///   disarm on the way out — has no way to disarm for a payer who closes the
+///   tab, and would leave that charge polling `PENDING` up the whole
+///   twenty-four-hour ladder in `docs/flows/reconciler.md`. Delete the
+///   expiry mapping and the last assertion fails on a `Pending`.
+///
+/// It says nothing about *how long* the chain is in seconds; that belongs
+/// with the ladder and is asserted in `backends/tests/integration`.
+#[tokio::test]
+async fn the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry() {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let (charge, _, page) = a_payer_lands_on_the_rails_page(&rail).await;
+    assert!(
+        page.contains(r#"<a id="pay""#),
+        "the payer must have something to click: {page}"
+    );
+
+    for poll in 1..=PENDING_POLLS_ON_THE_HOSTED_PAGE {
+        let status = status_of(&rail, &charge, &format!("poll {poll}")).await;
+        assert_eq!(
+            status,
+            ChargeStatus::Pending,
+            "poll {poll} of {PENDING_POLLS_ON_THE_HOSTED_PAGE}: a payer is on the page and \
+             this charge is not settled"
+        );
+    }
+
+    match status_of(&rail, &charge, "the poll after the chain").await {
+        ChargeStatus::Failed { code, raw } => {
+            assert_eq!(
+                code,
+                FailureCode::PayerTimeout,
+                "a page a payer never finished is a page that aged out"
+            );
+            assert!(
+                !raw.is_empty(),
+                "the rail's own word must reach an operator"
+            );
+        }
+        other => panic!("the chain must be bounded; got {other:?} on the poll after it"),
+    }
+}
+
+/// **The payer's own exit decides the charge**, and it is the *page's* links
+/// that carry them there.
+///
+/// This is the half of issue #58 the bounded chain alone does not give. A
+/// chain that ran to its end whatever the payer did would settle a paid
+/// charge as `payer_timeout` a minute and a half after the payer clicked
+/// "Pay". So each of the page's two controls arms a terminal answer, and the
+/// very next status query gets it:
+///
+/// | the payer clicked | the rail then says | the core reads |
+/// |---|---|---|
+/// | `#pay` | `SUCCESS` | `Succeeded` |
+/// | `#cancel` | `EXPIRED` | `Failed(payer_timeout)` |
+///
+/// `EXPIRED` for a cancel, and not a `CANCELLED` of this repository's own
+/// invention: Orange documents five statuses and that is not one of them
+/// (`docs/flows/adapter-orange-money.md`). A payer who abandons the page is a
+/// page that ends unpaid.
+///
+/// Two mutations this is armed against, and neither is subtle:
+///
+/// * point the page's links back at the return URL — which is what they were
+///   until 2026-09-10 — and the link never touches the stub, nothing is
+///   armed, and the `Pay` case fails on the `Pending` the chain keeps giving.
+///   The href is *parsed out of the page* rather than built here precisely so
+///   that this is what happens.
+/// * drop the arming and keep the redirect, and the `Cancel` case fails: the
+///   chain carries on as though nobody had clicked anything.
+#[rstest]
+#[case::pay("pay", None)]
+#[case::cancel("cancel", Some(FailureCode::PayerTimeout))]
+#[tokio::test]
+async fn the_payers_exit_from_the_hosted_page_decides_the_charge(
+    #[case] link_id: &str,
+    #[case] expected_decline: Option<FailureCode>,
+) {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let (charge, _, page) = a_payer_lands_on_the_rails_page(&rail).await;
+
+    assert_eq!(
+        status_of(&rail, &charge, link_id).await,
+        ChargeStatus::Pending,
+        "{link_id}: the payer is still reading the page"
+    );
+
+    // The page's own control, followed the way a browser would — except that
+    // `vpay_provider::http::client` does not follow redirects, which is a
+    // reqwest default it removes on purpose and is exactly what this needs:
+    // the 302's `Location` is assertable, and nothing in this suite serves it.
+    let href = href_of(&page, link_id);
+    assert!(
+        href.starts_with("/stub-hosted-page/"),
+        "{link_id}: the page's control must go through the rail's own container — a link \
+         straight to the merchant is a payer the rail never hears from again: {href}"
+    );
+    let clicked = http
+        .get(format!("{}{href}", rail.stub_origin))
+        .send()
+        .await
+        .expect("the stub answers the payer's click");
+    assert_eq!(
+        clicked.status().as_u16(),
+        302,
+        "{link_id}: the rail sends the payer back"
+    );
+    assert_eq!(
+        clicked
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok()),
+        Some(RETURN_URL),
+        "{link_id}: back to the URL THIS submit carried, not a constant"
+    );
+
+    let status = status_of(&rail, &charge, link_id).await;
+    match (expected_decline, status) {
+        (None, ChargeStatus::Succeeded { .. }) => {}
+        (Some(expected), ChargeStatus::Failed { code, raw }) => {
+            assert_eq!(code, expected, "{link_id} mapped to {code}");
+            assert!(
+                !raw.is_empty(),
+                "{link_id}: the rail's own status must be carried through for an operator"
+            );
+        }
+        (expected, other) => {
+            panic!("{link_id}: expected {expected:?}, got {other:?}")
+        }
+    }
+}
+
 /// The **redirect** rail's answer to the same question: a payer typing a
 /// documented test number on the rail's own page, and the charge failing the
 /// way that number says it should.
@@ -1872,28 +2190,29 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
 /// Orange's page after the charge is already submitted, and vpay learns the
 /// outcome only from `transactionstatus`. So the demo steers Orange from the
 /// stub's **hosted page** — a form that arms a scenario and redirects — and
-/// this case drives exactly that path: submit, follow the `payment_url`, post
-/// the form, then ask the adapter.
+/// this case drives exactly that path: submit, follow the `payment_url`, ask
+/// once while the payer is still on the page, post the form, then ask again.
 ///
-/// What it proves, and what it deliberately does not:
+/// What it proves:
 ///
-/// * **Proves** that the four mappings added for the shop's Orange test
-///   numbers are wired to each other — the page renders the form, `/pay`
-///   arms the scenario and answers a 302 to the URL *this* submit carried,
-///   and the next `query_status` maps to the code the shop's README
-///   advertises. Delete any one of them and this fails.
-/// * **Does not prove** anything about timing, and that is the whole of what
-///   this case cannot see. There is no worker here, so nothing is racing the
-///   payer. In the demo stack something is: the confirm handler enqueues the
-///   `poll_charge` job with `run_at = now()` — `poll_delay(0)` is the delay
-///   before the *second* attempt, not the first — so the first
-///   `transactionstatus` lands about a second after the submit and the
-///   catch-all `SUCCESS` settles the charge before a payer can reach the
-///   form. Measured 2026-09-06: T+449 ms against T+11.96 s. **So these
-///   numbers do not work from a browser today**, which is written up in
-///   `demo-outcomes.json`, in `examples/shop/README.md` and in
-///   `docs/plans/exp22-shop-demo-notes/opus.md`. What this case proves is
-///   that the mappings themselves are wired to each other correctly.
+/// * that the mappings added for the shop's Orange test numbers are wired to
+///   each other — the page renders the form, `/pay` arms the scenario and
+///   answers a 302 to the URL *this* submit carried, and the next
+///   `query_status` maps to the code the shop's README advertises. Delete any
+///   one of them and this fails.
+/// * that the payer had a charge left to decide when they got there. The
+///   `Pending` assertion below is the one that was impossible before
+///   2026-09-10: this stub answered the first `transactionstatus` `SUCCESS`,
+///   about 449 ms after the submit against the ~12 s a payer took to reach
+///   the form (measured on the demo stack on 2026-09-06), and a run that
+///   typed `237600000400` came back **paid**. Shorten the payer's window to
+///   nothing and that assertion fails here, in a suite with no worker in it —
+///   which is the point of asserting it here rather than only in a browser.
+///
+/// What it still does not prove is anything about the *wall clock*: there is
+/// no worker in this suite and nothing is racing the payer. The seconds are
+/// argued in `backends/tests/integration` against `vpay_worker::poll_delay`,
+/// and watched happen in `frontends/tests/e2e`.
 ///
 /// Orange only, for the mirror of the reason its MTN counterpart is MTN only:
 /// there is no hosted page on a push rail for a payer to type into.
@@ -1912,52 +2231,9 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
         Duration::from_secs(10),
     )
     .await;
-
-    let mut charge = ChargeRef {
-        reference_id: Uuid::new_v4(),
-        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
-        payer_ref: None,
-        ref_extra: BTreeMap::new(),
-        return_url: Some(RETURN_URL.to_owned()),
-    };
-
-    let submitted = rail
-        .adapter
-        .submit(&charge, &rail.config)
-        .await
-        .unwrap_or_else(|error| panic!("msisdn {msisdn}: the submit is accepted, got {error:?}"));
-    // What `vpay_api`'s confirm handler commits before it answers: a redirect
-    // rail's status read is addressed by the `pay_token` the rail handed back,
-    // not by the reference we generated, and a charge that has not stored it
-    // cannot be asked about at all (`crash-safety.md`). Taken from the submit
-    // rather than manufactured, because that is the value under test.
-    charge.ref_extra = submitted.ref_extra.clone();
-    let redirect = submitted
-        .redirect_url
-        .as_deref()
-        .unwrap_or_else(|| panic!("msisdn {msisdn}: a redirect rail's submit carries a URL"));
-
-    // The rail's own URL, on the container actually serving it — the same
-    // substitution `the_stub_hosted_page_links_to_the_return_url_the_submit_carried`
-    // makes, and for the same reason: `payment_url` names the fixed
-    // `localhost:8082` that `compose.yml` publishes, which a container on a
-    // random mapped port is not. The path and query carry the meaning.
-    let (_, path_and_query) = redirect
-        .split_once("/stub-hosted-page/")
-        .unwrap_or_else(|| panic!("msisdn {msisdn}: the payment_url must be the stub's page"));
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let (charge, path_and_query, page) = a_payer_lands_on_the_rails_page(&rail).await;
 
-    let page = http
-        .get(format!(
-            "{}/stub-hosted-page/{path_and_query}",
-            rail.stub_origin
-        ))
-        .send()
-        .await
-        .expect("the stub's hosted page answers")
-        .text()
-        .await
-        .expect("the page body is readable");
     assert!(
         page.contains(r#"<button id="pay-with-number" type="submit">"#),
         "msisdn {msisdn}: the page must carry the form a payer types a test number into: {page}"
@@ -1967,15 +2243,16 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
         "msisdn {msisdn}: the form must carry THIS charge's return URL, not a constant: {page}"
     );
 
+    assert_eq!(
+        status_of(&rail, &charge, msisdn).await,
+        ChargeStatus::Pending,
+        "msisdn {msisdn}: the charge must still be undecided while the payer is typing — \
+         this is the assertion issue #58 was about"
+    );
+
     let (token, query) = path_and_query
         .split_once('?')
         .unwrap_or_else(|| panic!("msisdn {msisdn}: the payment_url carries its two URLs"));
-    // The same client, and no special policy: `vpay_provider::http::client`
-    // does not follow redirects — a *removal* of a reqwest default it makes
-    // on purpose, because a followed redirect replays every header reqwest
-    // does not consider sensitive. Which is exactly what this assertion
-    // needs: the 302's `Location` is the merchant's own return URL, and
-    // nothing in this suite serves it.
     let submitted_form = http
         .get(format!(
             "{}/stub-hosted-page/{token}/pay?{query}&msisdn={msisdn}",
@@ -1998,13 +2275,7 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
         "msisdn {msisdn}: back to the URL THIS submit carried, not a constant"
     );
 
-    let status = rail
-        .adapter
-        .query_status(&charge, &rail.config)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("msisdn {msisdn}: a documented outcome is an answer, not a transport failure: {error:?}")
-        });
+    let status = status_of(&rail, &charge, msisdn).await;
     match (expected_decline, status) {
         (None, ChargeStatus::Succeeded { .. }) => {}
         (Some(expected), ChargeStatus::Failed { code, raw }) => {

@@ -223,27 +223,41 @@ core defines and nothing emits.
 Typed on **the rail's own** payment page, after vpay redirects you: Orange is
 a redirect rail, so vpay never sees the number.
 
-> **These do not work from a browser today.** The table below is what the stub
-> would answer, not what you will see. Measured on the demo stack on
-> 2026-09-06: vpay's confirm handler enqueues the first status query at
-> `now()` — `poll_delay(0)` is the delay before the **second** attempt, not
-> the first — and the worker's idle sleep is one second, so the stub's
-> catch-all `SUCCESS` settles the charge long before a payer can reach this
-> form. A run that typed `237600000400` came back **paid**: the submit was at
-> T, the first `transactionstatus` at T+449 ms, and the form submission at
-> T+12 s.
+> **These work from a browser, and did not until 2026-09-10.** The rail's
+> page gives a payer a bounded window and this table is what you will see
+> inside it. Measured on the demo stack on 2026-09-06, before the fix: vpay's
+> confirm handler enqueues the first status query at `now()` — `poll_delay(0)`
+> is the delay before the **second** attempt, not the first — and the worker's
+> idle sleep is one second, so the stub's catch-all `SUCCESS` settled the
+> charge long before a payer could reach the form. A run that typed
+> `237600000400` came back **paid**: the submit was at T, the first
+> `transactionstatus` at T+449 ms, and the form submission at T+12 s.
+> ([vpay issue #58](https://github.com/vaam-apps/vpay/issues/58).)
 >
-> The mappings themselves are right, and are proven at the adapter level by
-> `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`
-> in `backends/tests/conformance`, which drives the same page and the same
-> form against a real WireMock container and does not race a worker. What is
-> missing is a way for the stub to answer `PENDING` while a payer is on the
-> page — a change to a stub four suites share, one of which (Cypress) cannot
-> be run from this branch's environment. The options are written up in
-> [`../../docs/plans/exp22-shop-demo-notes/opus.md`](../../docs/plans/exp22-shop-demo-notes/opus.md).
+> What closed it is in the **stub**, not in vpay: nothing in the confirm
+> handler or the poll ladder moved, because an immediate first poll is a
+> deliberate property (`docs/flows/crash-safety.md` — a charge is asked about
+> as soon as it exists) and slowing it to make a demo comfortable is the class
+> of change ADR-0003 exists to refuse. Instead
+> `backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json`
+> answers `PENDING`:
 >
-> MTN's numbers are unaffected: a push rail takes the number in the
-> merchant's own submit, so there is no window to lose.
+> - **once, unconditionally**, from the moment the charge is submitted — which
+>   is what makes the rest deterministic rather than a race the browser
+>   usually wins, and is the one thing this costs every Orange charge (a rung
+>   of the ladder, ten seconds);
+> - **four more times** once a payer has actually loaded the page, which on
+>   `vpay_worker::poll_delay`'s rungs is about 105 seconds of thinking time,
+>   after which the page **expires** and the order is `failed` with
+>   `payer_timeout`.
+>
+> Clicking **Pay** or **Cancel** on the rail's page ends the window at once —
+> both now go through the stub, which is how it learns you acted. Cancel is
+> `EXPIRED` too, because Orange documents no `CANCELLED` and this repository
+> will not invent one.
+>
+> MTN's numbers are unaffected by any of it: a push rail takes the number in
+> the merchant's own submit, so there was never a window to lose.
 
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |
@@ -265,11 +279,15 @@ Three outcomes this rail **cannot** express, stated rather than faked:
   minute.
 
 **`cancelled` is reachable from no number at all, and never was — it is not a
-rail outcome.** Clicking "cancel" on the rail's page is a navigation: the
-order stays `unpaid` and the charge may still settle. The order becomes
-`cancelled` when the shop cancels its PaymentIntent (the button on the order
-page) and vpay delivers `payment_intent.canceled` — which, since 2026-09-10,
-it does. See the note under "Failure outcomes" above.
+rail outcome.** Clicking "cancel" on the rail's page ends the payment, but
+what the rail then reports is `EXPIRED`, so the order becomes **`failed`**
+with `payer_timeout`, exactly as the `237600000102` row does. (Until
+2026-09-10 it did not even do that: the Cancel link went straight back to the
+merchant, the stub never learned the payer had clicked it, and the charge
+settled `paid` anyway.) The order becomes `cancelled` when the _shop_ cancels
+its PaymentIntent — the button on the order page — and vpay delivers
+`payment_intent.canceled`, which since 2026-09-10 it does. See the note under
+"Failure outcomes" above.
 
 ### Which rail can pay for what
 
@@ -470,6 +488,21 @@ cases) and `a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_
 (Orange, three cases) in `backends/tests/conformance`, which drive the real
 adapters against real WireMock containers. A test in this package could only
 have asserted that the table says what it says.
+
+That the payer gets a **turn** at all is three more cases in the same suite,
+added with issue #58 on 2026-09-10:
+`a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles` (the
+unconditional rung, and that it is only one),
+`the_hosted_pages_pending_chain_is_bounded_and_ends_in_an_expiry` (the four
+polls, and the expiry after them) and
+`the_payers_exit_from_the_hosted_page_decides_the_charge` (Pay → `SUCCESS`,
+Cancel → `EXPIRED`, each armed by _the page's own link_, parsed out of the
+rendered page so that pointing it back at the merchant fails the case). How
+many seconds that is worth is
+`the_pending_chain_gives_a_payer_at_least_thirty_seconds` in
+`backends/tests/integration`, which multiplies the chain out of the mapping
+file against `vpay_worker::poll_delay`. Watched happen in a real browser by
+the two Orange cases in `frontends/tests/e2e/cypress/e2e/shop-hosted.cy.ts`.
 
 **Not covered by unit tests:** `ZenStackShopStore` (`PrismaShopStore` until
 2026-09-06). The tests run against an

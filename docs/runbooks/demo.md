@@ -692,23 +692,38 @@ Two things to know before you drive them:
   the rail stub's own hosted page**, in the "Or pay with one of the demo's
   test numbers" form beside the Pay link — Orange is a redirect rail and vpay
   never sees a number.
-- **Orange's numbers do not work from a browser today.** vpay's confirm
+- **Orange's numbers work from a browser, and did not until 2026-09-10**
+  ([issue #58](https://github.com/vaam-apps/vpay/issues/58)). vpay's confirm
   handler enqueues the first status query at `now()` — `poll_delay(0)` is the
-  delay before the *second* attempt — and the worker's idle sleep is a
-  second, so the stub's catch-all answers `SUCCESS` and the order is **paid**
-  before you can reach the form, whatever number you were about to type.
+  delay before the *second* attempt — and the worker's idle sleep is a second,
+  so the stub's catch-all used to answer `SUCCESS` and the order was **paid**
+  before you could reach the form, whatever number you were about to type.
   Measured on 2026-09-06 from the stub's own journal: submit at T, first
   `transactionstatus` at T+449 ms, the form at T+12 s, order `paid` for
-  `237600000400`. Check the order page's `failure_code`; do not read the walk
-  as working. The mappings are right and are proven at the adapter level; what
-  is missing, and why it was not added, is in
-  [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).
-  MTN's numbers are unaffected — a push rail carries the number in the
-  merchant's own submit, so there is no window to lose.
+  `237600000400`.
+
+  What changed is the **stub**, not vpay: nothing about the first poll moved,
+  because a charge being asked about as soon as it exists is a deliberate
+  property (`docs/flows/crash-safety.md`). The rail stub now answers `PENDING`
+  once from the submit and four more times once your browser has actually
+  loaded its page — about 105 seconds on the worker's ladder — and then
+  `EXPIRED`. So: **type the number and press the button; do not leave the tab
+  and come back after two minutes**, or you will get `payer_timeout` whatever
+  you typed, which is also what the Cancel link now gives you. None of those
+  seconds is a fact about Orange — see
+  [../flows/adapter-orange-money.md](../flows/adapter-orange-money.md).
+
+  MTN's numbers are unaffected by any of it — a push rail carries the number
+  in the merchant's own submit, so there was never a window to lose.
 
 The one outcome no *number* reaches is `cancelled`, because it is not a rail
-outcome at all. Clicking "cancel" on the rail's page is a navigation and
-leaves the order open. The order page's "Cancel this payment" button reaches
+outcome at all. Clicking "cancel" on the rail's page ends the payment, but
+what the rail then reports is `EXPIRED`, so the order comes back **`failed`**
+with `payer_timeout` — Orange documents no `CANCELLED` and the stub will not
+invent one. (Before 2026-09-10 that link went straight back to the merchant,
+the stub never learned you had clicked it, and the order came back `paid`.)
+
+The order page's "Cancel this payment" button reaches
 `POST /v1/payment_intents/{id}/cancel`, the intent becomes `canceled` at vpay,
 and **since 2026-09-10 vpay emits one `payment_intent.canceled` in that same
 transaction** ([issue #57](https://github.com/vaam-apps/vpay/issues/57)) — so
