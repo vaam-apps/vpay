@@ -37,6 +37,15 @@ the paragraph explaining why the customer update cannot use a timestamp
 equality, and `docs/status.md`'s migration count was left stale by a
 deliberate decision the review reverses.
 
+**And one of this review's own tests was vacuous in one direction when first
+written**, caught by its own mutation (R3) and rewritten. That is recorded
+here rather than quietly fixed, because it is the same class of defect this
+review is here to find.
+
+All of it is fixed on `6bed3d0`, where `just ci` is nine recipes at exit 0
+(1636 Rust tests, 0 skipped; 109 doctests; 1262 web) and `just test-e2e` is
+exit 0 with 18 Cypress tests.
+
 All six are fixed on this head. Nothing was weakened; the two assertions this
 review touched were both tightened.
 
@@ -239,7 +248,42 @@ R4 and the `now()`/ordering assertions, not evidence in their own right.
 ## Gates
 
 Recipe by recipe, each run separately, exit codes read from
-`exp37-review-gate.tsv` rather than from a banner. `GATES_TABLE`
+`exp37-review-gate.tsv` rather than from a banner, on the final head `6bed3d0` (echoed to
+`exp37-review-ci-head.txt` before the run started).
+
+| Recipe | Exit | Wall |
+|---|---|---|
+| `fmt-check` | 0 | 0 s |
+| `clippy` | 0 | 2 s (warm) |
+| `verify` | 0 | 7 s |
+| `test-rust` | 0 | 1154 s |
+| `test-doc` | 0 | 6 s |
+| `verify-ignored` | 0 | 1 s |
+| `lint-web` | 0 | 22 s |
+| `test-web` | 0 | 13 s |
+| `deny` | 0 | 0 s |
+
+* `Summary [1140.389s] 1636 tests run: 1636 passed, 0 skipped` — **1633 → 1636**,
+  the three cases this review added. A pre-change baseline was run first on the
+  rebased head: `1633 tests run: 1633 passed, 0 skipped`.
+* `verify-ignored: 0 ignored (expected 0), 45 test binaries (expected 45),
+  1636 total (minimum 1080)` — no binary added or dropped.
+* `test-doc`: **109 passed, 1 ignored**, a separate runner and a separate
+  count.
+* `test-web`: **1262** vitest cases across nine packages, 0 skipped
+  (`frontends/apps/checkout` 507, `sdks/nodejs` 208, `frontends/apps/dashboard`
+  150, `sdks/stripe-js` 146, `examples/shop` 102, `@vpay/ui` 74,
+  `@vpay/config` 63, `@vpay/tokens` 8, `@vpay/api-client` 4).
+* `verify`'s twelve gates, each with its own number: `verify-status` 1
+  unimplemented item; `verify-errors` 18 error types, 16 `#[from]` variants;
+  `verify-sdk-parity` **450 proving tests, 33 dated gaps, 32 SDK methods across
+  35 rows**; `verify-links` 1030 links in 193 files; `verify-serde` 83 types,
+  16 exempted; `verify-repositories` 4 concrete implementations named by none
+  of 82 files outside `vpay-db`; `verify-migrations` **38 migration files**,
+  all matching the manifest; `check-schema` **ok under cratestack 0.12.0**, the
+  version this repository pins — the implementer's run had 0.11.1 on PATH and
+  said so.
+
 
 `just test-e2e` — **exit 0** on `ff7a8e8`, read from
 `exp37-review-e2e-exit.txt`. **18 Cypress tests across four specs, 18 passing,
