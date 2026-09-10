@@ -279,9 +279,13 @@ break quietly:
 
 ## 4. Gates
 
-`just ci` was run to completion three times: once on the draft's head as
-delivered, once after this review's documentation edits but before the F1 fix,
-and once on the final head. All three under Node 22.23.2 (`.nvmrc`),
+`just ci` was started six times and reached the end three times. Two runs died in
+`test-rust` on the same rootless-Docker container-creation timeout, on a machine
+carrying other agents' testcontainers; neither is a result, and both are
+recorded rather than dropped, and a fourth (run 5) died on an unrelated
+shutdown-timing case that had passed on the identical Rust twenty minutes
+earlier — this branch changes no Rust at all, and `test-rust`'s 1658/1658 is
+reproduced on both green runs. All six under Node 22.23.2 (`.nvmrc`),
 `CARGO_BUILD_JOBS=4`, `DOCKER_HOST=unix:///run/user/1000/docker.sock`, exit code
 read from a file rather than from a banner.
 
@@ -289,22 +293,27 @@ read from a file rather than from a banner.
 | --- | --- | --- | --- |
 | 1 | `b5be024` | **100** | `test-rust`, at `checkout_sessions::a_confirm_past_the_horizon_…` — **an environment failure, not a code one**: `Error: the MTN stub container starts / Caused by: failed to create a container: Timeout error` after 255 s, on a box carrying other agents' testcontainers at load ≈ 10. 1411 of 1412 run passed; a `docker run --rm alpine true` smoke immediately afterwards exited 0. Not counted as a result |
 | 2 | `b5be024` + this review's doc edits | **1** | **`test-web`, `@vpay/ui`** — finding F1. Everything before it passed; see the numbers below |
-| 3 | final head | see below | — |
+| 3 | the F1 fix's head | **100** | `test-rust` again, again on `failed to create a container: Timeout error` (the MTN wiremock stub), this time under `checkout_sessions::the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled` after 245 s. A different test from run 1, the same cause: 95 containers on the daemon, load ≈ 9, other agents' testcontainers alongside. 1437 of 1438 run passed. Not counted as a result |
+| 4 | the F1 fix's head | **0** | ran to the end — the gate for the code change |
+| 5 | this documentation commit's head | **100** | `test-rust`, `vpay-server::cli` `worker::a_valid_config_lets_the_worker_boot` — `expected exit 0 after SIGTERM, got unix_wait_status(256)`, a shutdown-timing case that had passed on the identical Rust in run 4 minutes earlier. Environment again; 1323 of 1324 run passed. Not counted as a result |
+| 6 | this documentation commit's head | **0** | ran to the end, every number identical to run 4 |
 
-Recipe by recipe, from run 2 (which is the draft's source tree) and confirmed on
-run 3:
+Recipe by recipe, from run 6 — the green one on the final head — with run 2's
+numbers noted where they differ. Runs 4 and 6 agree on every number below;
+the last commit in this branch is this file, so its own row was written from
+run 4 and confirmed by run 6.
 
 | recipe | result |
 | --- | --- |
 | `fmt-check` | ok |
 | `clippy` | ok, no warnings |
-| `verify` | **the twelve gates**, all ok, plus the advisory `verify-docs` report. `verify-status` 1 unimplemented item; `verify-errors` 19 error types; `verify-sdk-parity` 450 proving tests / 33 dated gaps; `verify-links` 1033 links in 195 tracked markdown files (197 once this review's two notes files are tracked); `verify-npm-scope` 2 publishable packages; `verify-serde` 85 types; `verify-repositories` 4 implementations, no generated schema exported; `verify-toolchain` `1.98.0`; `verify-migrations` 39 files |
-| `test-rust` | **1658 run, 1658 passed, 0 skipped** (3 slow), 1860 s — equal to `master`'s, as it must be: this branch touches no Rust |
+| `verify` | **the twelve gates**, all ok, plus the advisory `verify-docs` report. `verify-status` 1 unimplemented item; `verify-errors` 19 error types; `verify-sdk-parity` 450 proving tests / 33 dated gaps; `verify-links` **1036 links in 197 tracked markdown files** (1033 in 195 before this review's two notes files were tracked); `verify-npm-scope` 2 publishable packages; `verify-serde` 85 types; `verify-repositories` 4 implementations, no generated schema exported; `verify-toolchain` `1.98.0`; `verify-migrations` 39 files |
+| `test-rust` | **1658 run, 1658 passed, 0 skipped** (1513 s on run 4, 1466 s on run 6) — equal to `master`'s, as it must be: this branch touches no Rust |
 | `test-doc` | **111 passed, 1 ignored** |
 | `verify-ignored` | `0 ignored (expected 0), 45 test binaries (expected 45), 1658 total (minimum 1080)` |
 | `lint-web` | ok — `build-sdk-node`, then `pnpm -r typecheck`, then `pnpm -r lint`, 15 of 15 packages |
-| `test-web` | run 2: **failed** at `@vpay/ui` (F1). Final: **1284 passed, 0 skipped, across 95 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1 |
-| `deny` | run 3 only — run 2 never reached it |
+| `test-web` | run 2: **failed** at `@vpay/ui` (F1). Runs 4 and 6: **1284 passed, 0 skipped, across 96 files** — `@vpay/checkout` 507/24, `@vaam-apps/vpay-sdk` 208/9, `@vpay/dashboard` 172/21, `@vaam-apps/vpay-stripe-js` 146/9, `@vpay-examples/shop` 102/12, `@vpay/ui` 74/18, `@vpay/config` 63/1, `@vpay/tokens` 8/1, `@vpay/api-client` 4/1 |
+| `deny` | `advisories ok, bans ok, licenses ok, sources ok` (runs 4 and 6 — run 2 never reached it) |
 
 Not in `just ci`, run separately:
 
