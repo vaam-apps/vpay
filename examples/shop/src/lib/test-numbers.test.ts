@@ -175,6 +175,125 @@ describe("the stubs that honour the numbers", () => {
   }
 });
 
+/**
+ * The `PRODUCED_FAILURE_CODES` an adapter declares, read out of its Rust
+ * source.
+ *
+ * The same technique `failures.test.ts` uses on `vpay-core/src/failure.rs`,
+ * and for the same reason: a hand-maintained expected list here would agree
+ * with itself forever. This one is pointed at the *adapters*, because the
+ * question this file asks is not "what codes exist" but "what codes can this
+ * rail actually reach" — and those are different questions with different
+ * answers per rail, which is the whole subject of issue #59.
+ */
+function producedCodes(crate: string): Set<string> {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        `../../../../backends/crates/${crate}/src/mapping.rs`,
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const start = source.indexOf("pub const PRODUCED_FAILURE_CODES");
+  expect(start, `${crate} has no PRODUCED_FAILURE_CODES`).toBeGreaterThan(-1);
+  const end = source.indexOf("];", start);
+  expect(end, `${crate}'s PRODUCED_FAILURE_CODES is unterminated`).toBeGreaterThan(start);
+  return new Set(
+    [...source.slice(start, end).matchAll(/FailureCode::(\w+)/gu)].map((match) =>
+      // `InsufficientFunds` → `insufficient_funds`, the spelling `/v1` uses.
+      (match[1] ?? "").replace(/(?<!^)([A-Z])/gu, "_$1").toLowerCase(),
+    ),
+  );
+}
+
+/** The crate behind each rail this table describes. */
+const ADAPTER_CRATE: Readonly<Record<RailCode, string>> = {
+  mtn_momo: "vpay-adapter-mtn-momo",
+  orange_money: "vpay-adapter-orange-money",
+};
+
+describe("the panel promises only outcomes the rail can actually reach", () => {
+  // The check that did not exist, and whose absence *is* issue #59. Two
+  // copies of a table agreeing (above) proves they were copied from each
+  // other; a table agreeing with the stubs proves a number is steered.
+  // Neither says the outcome the number is steered to is one the rail's
+  // adapter can produce — so this file was able to promise buyers an
+  // outcome, and to explain at length why a *different* outcome was
+  // impossible, while the impossible one was the one with copy written for
+  // it.
+  for (const entry of TEST_NUMBERS) {
+    const crate = ADAPTER_CRATE[entry.rail];
+
+    it(`only promises ${entry.rail} outcomes its adapter declares`, () => {
+      const produced = producedCodes(crate);
+      // Sanity on the parse: a regex that matched nothing would make every
+      // assertion below vacuous, and pass.
+      expect(produced.size, `${crate} declares no codes`).toBeGreaterThan(0);
+
+      for (const number of entry.numbers) {
+        if (number.failureCode === null) {
+          continue;
+        }
+        expect(
+          produced.has(number.failureCode),
+          `${entry.rail} ${number.msisdn} promises ${number.failureCode}, which ` +
+            `${crate}'s PRODUCED_FAILURE_CODES does not list`,
+        ).toBe(true);
+      }
+    });
+
+    it(`calls nothing unreachable on ${entry.rail} that its adapter can produce`, () => {
+      const produced = producedCodes(crate);
+      for (const gap of entry.cannotExpress) {
+        // The direction that was wrong. `payer_declined` sat here for MTN
+        // with a paragraph of justification, and MTN publishes
+        // `PAYMENT_NOT_APPROVED`; the paragraph was about the adapter's
+        // table, which is a thing this repository controls.
+        expect(
+          produced.has(gap.outcome),
+          `${entry.rail} claims it cannot express ${gap.outcome}, but ` +
+            `${crate}'s PRODUCED_FAILURE_CODES lists it`,
+        ).toBe(false);
+      }
+    });
+  }
+
+  it("measures the two rails against each other, and finds them different", () => {
+    // The single fact the panel exists to teach a merchant, pinned as a
+    // number so that neither side can quietly drift to the other. MTN
+    // reaches the whole taxonomy; Orange reaches three of it.
+    expect(producedCodes(ADAPTER_CRATE.mtn_momo).size).toBe(11);
+    expect(producedCodes(ADAPTER_CRATE.orange_money).size).toBe(3);
+    expect([...producedCodes(ADAPTER_CRATE.orange_money)].sort()).toEqual([
+      "payer_timeout",
+      "provider_account_blocked",
+      "provider_error",
+    ]);
+  });
+
+  it("gives every rail a number for payer_declined, or says it cannot", () => {
+    // The specific regression issue #59 is: a code with buyer copy, SDK
+    // types and a place in the core, reachable from nothing. Either a rail
+    // has a number that reaches it, or that rail says in `cannotExpress`
+    // that it cannot — silence is what this repository had, and silence is
+    // what reads as a promise.
+    for (const entry of TEST_NUMBERS) {
+      const promised = entry.numbers.some(
+        (number) => number.failureCode === "payer_declined",
+      );
+      const disclaimed = entry.cannotExpress.some(
+        (gap) => gap.outcome === "payer_declined",
+      );
+      expect(
+        promised !== disclaimed,
+        `${entry.rail}: payer_declined is ${promised ? "both promised and disclaimed" : "neither promised nor disclaimed"}`,
+      ).toBe(true);
+    }
+  });
+});
+
 describe("the table itself", () => {
   it("names only failure codes the shop has copy for", () => {
     for (const entry of TEST_NUMBERS) {

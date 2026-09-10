@@ -184,6 +184,7 @@ handset.
 | `237600000000` | Pays. Any number not listed below does the same.                              | `paid`   | —                      | `SUCCESSFUL`                    |
 | `237600000101` | Declined — the wallet has too little money                                    | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
 | `237600000102` | The prompt expires — nobody enters the PIN                                    | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
+| `237600000103` | Refused on the handset — the payer said no                                    | `failed` | `payer_declined`       | `PAYMENT_NOT_APPROVED`          |
 | `237600000400` | Refused at submit — the rail has no such account, before any charge is polled | `failed` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
 | `237600000503` | The rail is unavailable                                                       | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
 
@@ -212,11 +213,23 @@ row moves. Pinned by`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_ca
 `events` table stays empty" to an exact one-element list — the mutation it
 > is armed against is the insert being dropped again.
 
-**No number produces `payer_declined` on this rail.** MTN documents no reason
-for a payer who answered the prompt and refused it — its nine-row table has
-none — so no MSISDN can produce one. `FailureCode::PayerDeclined` is
-currently produced by **no adapter in this repository**; it is a code the
-core defines and nothing emits.
+**`237600000103` is new on 2026-09-10, and it closes the one gap this table
+used to describe.** Until then this paragraph said that no number produced
+`payer_declined`, that MTN documented no reason for a payer who answered the
+prompt and refused it, and that `FailureCode::PayerDeclined` was "produced by
+no adapter in this repository". The last of those was true. The middle one
+was not: MTN publishes `PAYMENT_NOT_APPROVED` and `APPROVAL_REJECTED` in the
+`ErrorReason.code` enum of the Collection API's OpenAPI components document,
+and this repository's nine-row table had simply never been compared against
+the seventeen codes MTN lists ([issue
+#59](https://github.com/vaam-apps/vpay/issues/59)). A true statement about
+our adapter had been written as a statement about the rail.
+
+**MTN now reaches all eleven of the core's codes**
+(`vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES`), so this rail lists no
+outcome it cannot express. The five numbers above are the ones worth walking
+a demo through, not the whole vocabulary; the full per-rail table is in
+[`docs/flows/failures.md`](../../docs/flows/failures.md).
 
 #### Orange Money (`orange_money`)
 
@@ -282,8 +295,14 @@ a redirect rail, so vpay never sees the number.
 | `237600000102` | The payment window expires                       | `failed` | `payer_timeout`  | `EXPIRED`     |
 | `237600000400` | Refused, with no reason the rail will name       | `failed` | `provider_error` | `FAILED`      |
 
-Three outcomes this rail **cannot** express, stated rather than faked:
+Four outcomes this rail **cannot** express, stated rather than faked:
 
+- `payer_declined` — clicking **Cancel** on Orange's page ends the payment,
+  but what the rail reports is `EXPIRED`, so it arrives as `payer_timeout`
+  exactly as an abandoned page does. Orange documents five statuses and
+  `CANCELLED` is not one, so "said no" and "never answered" are a distinction
+  this rail does not make and this repository will not invent.
+  `237600000103` on MTN is where you see `payer_declined`.
 - `insufficient_funds` — Orange's documented statuses are `INITIATED`,
   `PENDING`, `SUCCESS`, `EXPIRED` and `FAILED`, and it documents no
   sub-reason for `FAILED`. A stub answering `NOT_ENOUGH_FUNDS` would be this

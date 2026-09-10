@@ -293,6 +293,108 @@
           "starts in `Started` in every container, and one answer disarms it."
         ]
       }
+    },
+    {
+      "name": "demo: a confirm the PAYER WILL REFUSE, armed by MSISDN",
+      "scenarioName": "mtn-demo-declined",
+      "newScenarioState": "declined-armed",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "matches": "237600000103"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "Added 2026-09-10 (exp48, issue #59) so examples/shop's test-number panel can",
+          "reach `payer_declined` -- the ONE core failure code that, until this mapping,",
+          "no number on either rail could produce. The shop's README said so in as many",
+          "words: 'FailureCode::PayerDeclined is currently produced by no adapter in this",
+          "repository'. That was true, and it was the wrong thing to be true: the core",
+          "defined the code, both SDKs' types listed it and the shop had written buyer",
+          "copy for it.",
+          "",
+          "DIGITS ONLY, and no hex twin, for the same reason `237600000503` above has",
+          "none: the hex `237600000f0x` family predates the checkout page's MSISDN",
+          "validator and is kept only because it was already working. This number is new,",
+          "so it is only ever the form a payer can actually type",
+          "(frontends/apps/checkout/src/lib/msisdn.ts refuses letters). `103` continues",
+          "the 1xx family, which is this stub's block for outcomes decided at the STATUS",
+          "QUERY -- as against `400`, whose refusal happens at the submit.",
+          "",
+          "202, the ordinary accepted submit, for the reason the pairs above give: this",
+          "mapping exists to MOVE THE SCENARIO, and the confirm must be indistinguishable",
+          "from a settling one right up to the point the worker polls.",
+          "",
+          "No requiredScenarioState, and the same strictly-sequential coupling: see the",
+          "decline pair's comment above, which explains all four properties in full."
+        ]
+      }
+    },
+    {
+      "name": "demo: the armed refusal answers PAYMENT_NOT_APPROVED once, then disarms",
+      "scenarioName": "mtn-demo-declined",
+      "requiredScenarioState": "declined-armed",
+      "newScenarioState": "Started",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "PAYMENT_NOT_APPROVED",
+            "message": "The payment was not approved by the payer"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_declined (vpay_adapter_mtn_momo::mapping::FAILURE_REASONS,",
+          "docs/flows/adapter-mtn-momo.md).",
+          "",
+          "PAYMENT_NOT_APPROVED IS MTN'S OWN WORD AND IS NOT INVENTED HERE. It is one of",
+          "the seventeen values of `ErrorReason.code` in the Collection API's OpenAPI",
+          "components document, retrieved 2026-09-10 from the developer portal -- the",
+          "citation is in vpay_adapter_mtn_momo::mapping's module header and the full",
+          "seventeen are snapshotted in that module's PUBLISHED_ERROR_REASONS.",
+          "",
+          "What MTN does NOT publish is which of its operations return which reason:",
+          "ErrorReason is the whole Collection API's error schema, not requesttopay's. So",
+          "the row this stub drives is a deliberate assumption in the safe direction, the",
+          "same one docs/flows/adapter-mtn-momo.md records for the 404 on basicuserinfo.",
+          "If MTN never sends it the row is dead code; if MTN does send it, a buyer reads",
+          "'the payment was refused on the handset' instead of 'the rail refused and did",
+          "not say why'.",
+          "",
+          "THE DIFFERENCE FROM ...102 (COULD_NOT_PERFORM_TRANSACTION -> payer_timeout) IS",
+          "THE WHOLE POINT OF HAVING BOTH: a payer who never answered and a payer who",
+          "answered and said no are different events, and a demo that could only show the",
+          "first was a demo whose panel promised an outcome no number could reach.",
+          "",
+          "The object-shaped `reason`, like the expiry pair above; the decline pair uses",
+          "the bare string, so one demo run still exercises both of MTN's documented",
+          "shapes.",
+          "",
+          "The four properties that keep the decline mapping above from swallowing",
+          "anything else apply here unchanged: priority 4 is below the reference-keyed",
+          "status mappings and above the catch-all, the scenario starts in `Started` in",
+          "every container, and one answer disarms it."
+        ]
+      }
     }
   ]
 }
