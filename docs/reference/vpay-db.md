@@ -535,11 +535,11 @@ product document; this section is why the code is shaped the way it is.
 
 ### Two of eight methods go through CrateStack, and one column decides which
 
-| Method                                                                                                                                                                        |                                                  |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `touch_last_used`                                                                                                                                                             | **CrateStack** — `update_many(..).set(..)`       |
-| the hard-delete branch of `erase_in_tx`                                                                                                                                       | **CrateStack** — `delete_many(..).run_in_tx(..)` |
-| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `erase_idle`, and the anonymise branch and four redactions of `erase_in_tx` | hand-written `sqlx`                              |
+| Method                                                                                                                                                                                |                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `touch_last_used`                                                                                                                                                                     | **CrateStack** — `update_many(..).set(..)`       |
+| the hard-delete branch of `erase_in_tx`                                                                                                                                               | **CrateStack** — `delete_many(..).run_in_tx(..)` |
+| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `erase_idle`, and the anonymise branch and six trailing statements of `erase_in_tx` | hand-written `sqlx`                              |
 
 _(The table read `create`, `update` and "two of seven" until 2026-09-10. The
 two pooled writers are gone: `POST /v1/customers` and
@@ -612,7 +612,7 @@ count at three, and
 `an_invoiced_customer_is_anonymised_rather_than_deleted` is the behavioural
 half.
 
-### The erasure is five statements in one transaction, and four of them are not about `customers`
+### The erasure is seven statements in one transaction, and six of them are not about `customers`
 
 `erase_in_tx` is the whole of issue #68, and the shape is what the issue got
 wrong. The issue asks for identifiers to be redacted "on retained intents and
@@ -621,9 +621,21 @@ customer deletion were `events.data` — every `customer.*` body ever written,
 in a table nothing prunes — `charges.payer_ref`/`payer_ref_masked`, reachable
 from a customer only _through_ an intent, and
 `idempotency_keys.response_body`, the exact JSON a `POST /v1/customers`
-answered. All three are rewritten in the transaction that erases the row,
-because "vpay erased this payer" may not be true of one table and false of
-three.
+answered. The sabotage review of 2026-09-11 added two more found the same way:
+`charges.failure_raw` and `refunds.failure_raw`, which are not identifier
+columns and hold identifiers anyway — the rail's message kept verbatim, and a
+rail refusing a collection names the subscriber. All five are rewritten in the
+transaction that erases the row, because "vpay erased this payer" may not be
+true of one table and false of four.
+
+The seventh statement is not about a copy of the payer at all: rewriting
+`events.data` changes the bytes a webhook delivery already mid-ladder would
+re-render, and `webhook_deliveries.payload_sha256` is the digest the first
+signed attempt recorded. So the deliveries of those events that are still
+`pending` or `failed` have that column cleared in the same transaction, and
+the next attempt signs and sends the redacted body. Without it the erasure
+dead-letters exactly the delivery that announces it — measured, not argued,
+in `an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`.
 
 The `events` and `idempotency_keys` statements share one `const
 REDACT_CUSTOMER_KEY` — a `CASE` over `jsonb_each`'s key, naming the four
@@ -635,10 +647,11 @@ rule is shared. That is the half that could drift, and the half a test can
 read: `the_event_redaction_names_the_identifiers_and_spares_the_merchants_data`
 asserts both directions of it in milliseconds.
 
-`provider_requests` and `webhook_deliveries` need no statement, and that is a
-property of migrations `0016` and `0022` rather than an omission: the first
-stores a status code, an attempt number and an operator-facing `error_kind`
-and no bodies at all; the second a `payload_sha256` and not the payload.
+`provider_requests` needs no statement, and that is a property of migration
+`0016` rather than an omission: it stores a status code, an attempt number and
+an operator-facing `error_kind` and no bodies at all. `webhook_deliveries`
+holds no copy either — `0022` keeps a `payload_sha256` and not the payload —
+and gets its statement for the opposite reason to a leak, above.
 
 ### The customer writes are transactional, and there is no pooled variant
 
@@ -1532,9 +1545,10 @@ issue #45, **39 since 2026-09-06**, when `refunds::list_for_intent` and
 and **45 since the same day**, when `customers` landed with S4a
 (`insert_in_tx`, `get_for_merchant`, `update_in_tx`, `list_page`,
 `idle_since`, `erase_idle` and, since migration `0041`, `erase_in_tx`'s
-branch query, its anonymising `UPDATE` and two of its three redaction
-statements — the third is a plain `&'static str`; `touch_last_used` and the
-hard-delete branch go through CrateStack and build no string at all).
+branch query, its anonymising `UPDATE` and two of its five redaction
+statements — the other three are plain `&'static str` and need no wrapper;
+`touch_last_used` and the hard-delete branch go through CrateStack and build
+no string at all).
 `EXPECTED_ASSERT_SITES` went **56 -> 60** in that change, a net +4 over five
 additions and one removal, and its own doc comment enumerates them. Taking the
 `String` **by value** rather than `AssertSqlSafe(&sql)` is
