@@ -978,7 +978,9 @@ pub enum ConfigError {
     /// The message names both the configured concurrency, the pool size, and
     /// the safe limit, so the operator can adjust either the concurrency or
     /// the pool size if the constraint needs to be relaxed.
-    #[error("worker concurrency {concurrency} exceeds pool size (max {max_safe}, pool {pool_max}); pass --worker-concurrency {max_safe} or VPAY_WORKER_CONCURRENCY={max_safe}")]
+    #[error(
+        "worker concurrency {concurrency} exceeds pool size (max {max_safe}, pool {pool_max}); pass --worker-concurrency {max_safe} or VPAY_WORKER_CONCURRENCY={max_safe}"
+    )]
     WorkerConcurrencyExceedsPoolSize {
         /// The value of `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY`.
         concurrency: usize,
