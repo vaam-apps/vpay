@@ -100,6 +100,7 @@ mod health;
 mod migrations;
 mod persistence;
 mod pool;
+pub use pool::MAX_CONNECTIONS;
 mod schema;
 mod signing_keys;
 // The audit `sqlx::AssertSqlSafe` demands, as a test rather than a comment.

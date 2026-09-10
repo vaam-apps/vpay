@@ -50,7 +50,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use metrics_exporter_prometheus::PrometheusHandle;
-use vpay_config::{CommonArgs, ShutdownSignals, WorkerArgs};
+use vpay_config::{CommonArgs, ConfigError, ShutdownSignals, WorkerArgs};
+use vpay_db::MAX_CONNECTIONS;
 use vpay_provider::ProviderAdapter;
 use vpay_worker::{Drain, EndpointRegistry, RecoveryPolicy};
 
@@ -192,6 +193,22 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
         .concurrency()
         .map_err(StartupError::UnusableConcurrency)?;
     tracing::info!(concurrency, "job loop concurrency");
+
+    // Issue #63: a fan-out on the Existing branch holds two connections, so
+    // the maximum safe concurrency is MAX_CONNECTIONS / 2. At the default
+    // concurrency of 4 with MAX_CONNECTIONS=10 it fits; at 10 it would not,
+    // and crash recovery would queue on ACQUIRE_TIMEOUT. Refuse it here, not
+    // at the first crash.
+    let pool_max = u32::from(MAX_CONNECTIONS) as usize;
+    let max_safe = pool_max / 2;
+    if concurrency > max_safe {
+        return Err(ConfigError::WorkerConcurrencyExceedsPoolSize {
+            concurrency,
+            pool_max,
+            max_safe,
+        }
+        .into());
+    }
 
     // Boot step 4's inputs, before the database is touched — over the same
     // `vpay_server::adapters` the serve path joins against. Both modes

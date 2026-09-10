@@ -47,7 +47,7 @@ use crate::repository::{PgRepositories, Repositories};
 /// next person to move either number needs to know the ratio changed, and it
 /// is reserved for the maintainer in
 /// `docs/plans/exp18-notes/opus-review.md` §3 rather than decided here.
-const MAX_CONNECTIONS: u32 = 10;
+pub const MAX_CONNECTIONS: u32 = 10;
 
 /// How long a caller waits for a connection to become available from
 /// [`sqlx::PgPool::acquire`] before giving up (`PgPoolOptions::acquire_timeout`).
