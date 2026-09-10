@@ -106,18 +106,32 @@ Again on **2026-09-08** for the fifteen invoice rows (S4b's resource, built in
 both SDKs a day after the server). Four things about those are worth stating
 rather than leaving to be discovered.
 
-**`invoices.mark_uncollectible` is spelled snake_case in the Node SDK**, and it
-is the only method in `@vaam-apps/vpay-sdk` that is. Stripe's own Node SDK says
-`markUncollectible`, so a merchant arriving from Stripe will notice. The rule
-that decided it is the same one that made `customers.del` `del` in Rust — one
-capability, one name — applied in the direction the languages allow: Rust
-*cannot* spell `markUncollectible` (`non_snake_case` is a rustc lint, not a
-preference), so the snake_case spelling is the only one legal in both. Two
-spellings would be two rows here for one capability, each showing a ⛔ in the
-column that does not use its spelling: a matrix reporting a divergence where
-there is none. **This is a naming decision an SDK maintainer may want to
-revisit**, and it is recorded here rather than buried in a diff because
-renaming a public method later is a breaking change.
+**`invoices.mark_uncollectible` is the row's spelling and `markUncollectible`
+is the Node SDK's**, and it is the only capability in this document the two
+SDKs spell differently. `sdks/rust` *cannot* spell `markUncollectible`
+(`non_snake_case` is a rustc lint, not a preference) and
+`@vaam-apps/vpay-sdk` should not spell `mark_uncollectible` — Stripe's own
+Node SDK, which merchants arrive from, says `markUncollectible`, and the
+other spelling would be the one snake_case method in a camelCase package.
+
+It was `mark_uncollectible` in the Node SDK for one day (2026-09-08), because
+the gate keyed a row on one spelling verbatim and two rows for one capability
+would each show a ⛔ in the column not using its spelling — a matrix reporting
+a divergence where there is none. That is the gate deciding a public API's
+spelling because it could not read two, and ADR-0015 decision 1 says the
+opposite in as many words: parity is *"per capability, with the same wire
+semantics — not per method name"*, and its alternatives reject method-name
+parity outright. So the gate learned the distinction instead:
+`PARITY_COLUMN_SPELLINGS` in `.xtask/src/main.rs` carries the one entry,
+`(sdks/nodejs, invoices.markUncollectible, invoices.mark_uncollectible)`, and
+is read in **both** directions — an entry that exempts nothing fails the
+build, the way ADR-0016's serde exemption table is. A table and not a rule
+("TypeScript may camel-case any row") deliberately: a rule would make every
+future divergence silent, where an entry here is one line a reviewer is shown.
+
+**The path is not renamed and cannot be**: the route is
+`POST /v1/invoices/{id}/mark_uncollectible`, and both SDKs' proving tests
+assert that path by name.
 
 **The object is a `line_item` and the route is `/v1/invoice_items`**, and both
 spellings are the wire's. Stripe has two objects where vpay has one. Both SDKs

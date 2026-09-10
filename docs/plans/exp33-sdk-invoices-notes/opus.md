@@ -11,7 +11,7 @@ Thirteen capabilities in each merchant SDK, mirroring
 | | `sdks/rust` | `sdks/nodejs` |
 |---|---|---|
 | accessor | `client.invoices()` / `client.invoice_items()` | `client.invoices` / `client.invoiceItems` |
-| invoice | `create` `retrieve` `update` `list` `del` `finalize` `void` `mark_uncollectible` `pay` | same, and `mark_uncollectible` is spelled snake_case — see below |
+| invoice | `create` `retrieve` `update` `list` `del` `finalize` `void` `mark_uncollectible` `pay` | same, and `mark_uncollectible` is spelled snake_case — see below (**superseded 2026-09-08 by the review: it is `markUncollectible`**) |
 | line | `create` `retrieve` `update` `del` | same |
 | object | `Invoice` (18 keys), `InvoiceLine`, `InvoiceStatus`, `InvoiceStatusTransitions`, `DeletedInvoice`, `DeletedInvoiceItem` | the same six |
 | events | four `KnownEventType` variants + `Event::invoice()` | four union members + `isInvoiceEvent` |
@@ -21,7 +21,7 @@ an invoice's lines are read off the invoice.
 
 ## Four things that had to be decided rather than copied
 
-**1. `mark_uncollectible`, not `markUncollectible`, in the Node SDK.** The one
+**1. `mark_uncollectible`, not `markUncollectible`, in the Node SDK.** ~~Reversed by the review on 2026-09-08 — see `opus-review.md`; the gate was taught a per-column spelling table instead.~~ The one
 snake_case method in `@vaam-apps/vpay-sdk`. Stripe's own Node SDK says
 `markUncollectible`; `sdks/rust` cannot spell that (`non_snake_case` is a
 rustc lint, not a preference); and

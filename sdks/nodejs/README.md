@@ -685,8 +685,10 @@ none of them touches the network:
   *clear it*, an unmentioned field is absent, and a patch that mentions
   nothing sends nothing); the list's two cursors and two filters; the
   `DELETE` with its key and no body; that `finalize`, `void` and
-  `mark_uncollectible` each `POST` an **empty** body to its own path while
-  still sending a content type; that a refused transition arrives as a
+  `markUncollectible` each `POST` an **empty** body to its own path while
+  still sending a content type (the third method is camelCase and its route,
+  `/v1/invoices/{id}/mark_uncollectible`, is not — the case asserts the path
+  by name); that a refused transition arrives as a
   `VpayApiError` carrying the server's `409` whole; that `invoices.pay` sends
   both URLs and answers an invoice still `"open"` with a `payment_intent` and
   a `hosted_invoice_url`; the four `invoiceItems` methods, including that

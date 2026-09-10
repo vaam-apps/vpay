@@ -2720,7 +2720,7 @@ describe("invoices", () => {
       starting_after: "in_0",
       customer: "cus_1",
       // The filter a merchant reconciling write-offs uses, because
-      // `mark_uncollectible` emits no event.
+      // `markUncollectible` emits no event.
       status: "uncollectible",
     });
     expect(page.has_more).toBe(true);
@@ -2758,8 +2758,13 @@ describe("invoices", () => {
 
   /**
    * **The three transitions that take no parameters** — `finalize`, `void`
-   * and `mark_uncollectible` — each POST an **empty body** to its own path
+   * and `markUncollectible` — each POST an **empty body** to its own path
    * and still carry an `Idempotency-Key`.
+   *
+   * The third method is camelCase and its **path is not**: the route is
+   * `/v1/invoices/{id}/mark_uncollectible`, and the loop below asserts that
+   * path by name, so renaming the method and carrying the wire along with it
+   * fails here.
    *
    * One case for the three because the property is the same one, and each
    * path is asserted separately so a method posting to the wrong one fails
@@ -2773,7 +2778,7 @@ describe("invoices", () => {
 
     await client.invoices.finalize("in_123", { idempotencyKey: "idem_fin" });
     await client.invoices.void("in_123", { idempotencyKey: "idem_void" });
-    await client.invoices.mark_uncollectible("in_123", {
+    await client.invoices.markUncollectible("in_123", {
       idempotencyKey: "idem_unc",
     });
 

@@ -214,21 +214,26 @@ export class InvoicesResource {
    * webhook and a merchant reconciling write-offs reads them with
    * `list({ status: "uncollectible" })`.
    *
-   * # `mark_uncollectible` and not `markUncollectible`
+   * # `markUncollectible` here, `mark_uncollectible` in `sdks/rust`
    *
-   * The only snake_case method in this package, and Stripe's own Node SDK
-   * spells it `markUncollectible`, so a merchant arriving from Stripe will
-   * notice. It is spelled this way because `sdks/rust` **cannot** spell the
-   * other one — `non_snake_case` is a rustc lint, not a preference — and
-   * ADR-0015's parity is per capability with one name per capability, which
-   * is the rule that made `customers.del` `del` in Rust too. There the two
-   * languages could both take the JavaScript spelling; here only one
-   * spelling is legal in both, so this is the one. Two spellings would be
-   * two rows in `docs/sdks/parity.md` for one capability, each showing a gap
-   * in the column that does not use its spelling — a matrix that reported a
-   * divergence where there is none.
+   * The only capability the two SDKs spell differently, and the difference is
+   * each language's own casing rather than a divergence: `sdks/rust` may not
+   * spell `markUncollectible` (`non_snake_case` is a rustc lint, not a
+   * preference) and this package should not spell `mark_uncollectible` —
+   * Stripe's own Node SDK, which merchants arrive from, says
+   * `markUncollectible`, and the other spelling would be the one snake_case
+   * method in a camelCase package.
+   *
+   * [ADR-0015](../../../docs/adr/0015-sdk-parity.md) decision 1 is that
+   * parity is **per capability, not per method name**, and its alternatives
+   * reject method-name parity in as many words. Until 2026-09-08
+   * `verify-sdk-parity` could not express that — it keyed a row on one
+   * spelling — and this method was named `mark_uncollectible` to satisfy the
+   * gate. It is `markUncollectible` now because the gate learned the
+   * distinction instead: `PARITY_COLUMN_SPELLINGS` in `.xtask/src/main.rs`
+   * carries the one entry, and an entry that exempts nothing fails the build.
    */
-  async mark_uncollectible(
+  async markUncollectible(
     id: string,
     options?: RequestOptions,
   ): Promise<Invoice> {
