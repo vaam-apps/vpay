@@ -5,16 +5,17 @@
 //! exercised by writing the state a crash leaves, not by killing a process
 //! […] Nothing in this repository kills a process mid-confirm" — and calls
 //! the resulting claim "a weaker claim than 'a `SIGKILL` at each point
-//! resolves cleanly'". This file is the stronger claim, for three of the
+//! resolves cleanly'". This file is the stronger claim, for four of the
 //! moments that matter:
 //!
 //! | Signalled | While | Resolved by |
 //! |---|---|---|
 //! | `vpay-server worker` | its status query is in flight | the next worker's boot reap, then the ladder |
 //! | `vpay-server` | its `requesttopay` submit is in flight (kill point 2) | the worker's recovery table |
-//! | `vpay-server worker` (`SIGTERM`) | its webhook delivery is in flight | **the drain itself** — the job is finished, not re-run |
+//! | `vpay-server worker` (`SIGTERM`, 20 s grace) | its webhook delivery is in flight | **the drain itself** — the job is finished, not re-run |
+//! | `vpay-server worker` (`SIGTERM`, 2 s grace) | the same | **a restarted worker** — the lease comes back and the send happens again |
 //!
-//! The third row is a different property from the first two and is here
+//! The last two rows are a different property from the first two and are here
 //! rather than in a suite of its own because it is the same question asked of
 //! the other signal: `SIGKILL` asks "what does a process that cannot clean up
 //! leave behind?", `SIGTERM` asks "does the cleanup a process *is* given the
@@ -23,6 +24,13 @@
 //! assertion string says "a worker with nothing in flight", and the
 //! outstanding-work half was a hand measurement recorded in
 //! `docs/flows/crash-safety.md` that nothing re-ran.
+//!
+//! They differ in one number — the drain's budget against the receiver's
+//! delay — and that is deliberate: the two arms of `Drain` are what a
+//! deployment's `terminationGracePeriodSeconds` chooses between, so the pair
+//! is one experiment with the knob turned each way rather than two unrelated
+//! cases. The clean arm is exactly-once at the receiver; the timed-out arm is
+//! at-least-once, and says so.
 //!
 //! Nothing here is simulated except the passage of time (see
 //! [`age_the_dead_workers_lease`] and [`age_the_crashed_charge`], the two
@@ -36,13 +44,15 @@
 //! rather than merely unsuccessful, so a process that chose to exit(1) on its
 //! own could not stand in for one that was killed.
 //!
-//! The SIGTERM case adds one more real thing and no more simulation: a second
+//! The SIGTERM cases add one more real thing and no more simulation: a second
 //! WireMock container standing in for the **merchant's receiver**, reached
 //! over HTTP at the URL `merchant_clients[].webhooks[].url` names, exactly as
-//! `tests/webhooks.rs` reaches it (ADR-0006). Its exit status is asserted to
-//! be a plain `0` with **no** signal, because `vpay-server worker` catches
-//! SIGTERM: a process that had died *of* the signal would be the regression,
-//! not the behaviour.
+//! `tests/webhooks.rs` reaches it (ADR-0006). Each signalled worker's exit
+//! status is asserted to carry **no** signal, because `vpay-server worker`
+//! catches SIGTERM: a process that had died *of* the signal drained nothing
+//! and would be the regression, not the behaviour. The code itself is the
+//! thing the two cases disagree about — `0` for a drain that finished, `1`
+//! for one that ran out of grace.
 //!
 //! # How a crash is made observable at all
 //!
@@ -169,7 +179,7 @@ const SLOW_SUBMIT_MSISDN: &str = "237600000cf9";
 /// would put a second unbounded wait inside the same test. It continues the
 /// `0ce9`/`0cf9` convention of the two above, with `c15` naming the signal
 /// (SIGTERM is 15) rather than a rail behaviour; no mapping mentions it, and
-/// [`the_sigterm_scenario_confirms_with_an_msisdn_that_arms_no_rail_mapping`]
+/// [`the_sigterm_scenarios_confirm_with_an_msisdn_that_arms_no_rail_mapping`]
 /// is what keeps that true if one ever does.
 const SIGTERM_MSISDN: &str = "237600000c15";
 
@@ -200,13 +210,25 @@ const RECEIVER_PATH: &str = "/slow-ack";
 /// shipping budgets on either side of it.
 const RECEIVER_ACK_DELAY: Duration = Duration::from_secs(6);
 
-/// `--shutdown-grace-seconds` for every worker this file spawns.
+/// `--shutdown-grace-seconds` for every worker this file spawns except the
+/// one whose case is *about* the grace period running out.
 ///
-/// Named once, here, and read by [`spawn_worker`]: the SIGTERM scenario's
+/// Named once, here, and passed to [`spawn_worker`]: the SIGTERM scenario's
 /// whole outcome is a comparison against this value, so a copy of it in the
 /// environment block would be a copy that could drift out from under the
 /// assertion below.
 const SHUTDOWN_GRACE_SECONDS: u64 = 20;
+
+/// `--shutdown-grace-seconds` for the victim of
+/// [`a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`],
+/// the one case that wants the other arm.
+///
+/// **Below** [`RECEIVER_ACK_DELAY`] rather than above it, and by a factor of
+/// two rather than by a second: the drain has to run out *while the receiver
+/// is still holding its answer*, and the margin is what makes which arm runs
+/// a fact about arithmetic rather than about how loaded the machine is. The
+/// third `const` assertion below keeps the factor.
+const TIMED_OUT_GRACE_SECONDS: u64 = 2;
 
 /// **The delivery must be answerable before the delivery client gives up.**
 ///
@@ -230,6 +252,19 @@ const _: () = assert!(
 const _: () = assert!(
     RECEIVER_ACK_DELAY.as_secs() < SHUTDOWN_GRACE_SECONDS,
     "the drain must outlast the receiver, or the exit code under test changes"
+);
+
+/// **And for the timed-out case, the drain must run out first — with room.**
+///
+/// The mirror image of the assertion above, for the one case that asserts
+/// exit `1`. `<` alone would be satisfied by five seconds against six, which
+/// is a stopwatch; the factor of two is the statement that the receiver is
+/// still seconds away from answering when the grace period expires. Measured
+/// on this branch: the signal lands ~65 ms into the delay, so the drain
+/// expires with ~4 s of the receiver's answer still to come.
+const _: () = assert!(
+    TIMED_OUT_GRACE_SECONDS * 2 < RECEIVER_ACK_DELAY.as_secs(),
+    "the grace period must expire while the receiver is still holding its answer"
 );
 
 /// The `Vpay-Signature` tolerance the SDKs default to
@@ -289,6 +324,15 @@ const IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(20);
 /// estimating it — the *precision* the scenario needs is in
 /// [`RECEIVER_ACK_DELAY`], not here.
 const DELIVERY_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(50);
+
+/// How long the worker booted *after* a timed-out drain is given to finish
+/// what that drain handed back.
+///
+/// Its boot plus one delivery. The released job is claimable the instant the
+/// lease is cleared — `Jobs::release_all` leaves `run_at` alone, deliberately
+/// — so this bounds a wait that normally ends within a few seconds of the
+/// fresh worker's `job loop running`, rather than estimating one.
+const RESTART_DELIVERY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long the signalled worker is given to be gone.
 ///
@@ -431,6 +475,36 @@ fn shipping_binary(package: &str) -> PathBuf {
     path
 }
 
+/// Strips ANSI colour escapes from a line a spawned binary wrote.
+///
+/// `tracing_subscriber::fmt` colours its output unconditionally —
+/// `vpay-server` has no `--no-colour` and this file will not grow one to make
+/// a test easier, because the binary under test is the binary that ships. So
+/// the escapes come off here, where they are noise. It matters for an
+/// assertion about a *field*: a worker's `released` field is written
+/// `\x1b[3mreleased\x1b[0m\x1b[2m=\x1b[0m1`, so `contains("released=1")` is
+/// false about a line that says exactly that. Message text carries no escapes
+/// either way, so every assertion that predates this reads the same string it
+/// always did — and a failure message now prints a log a human can read.
+fn without_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(character) = chars.next() {
+        if character != '\u{1b}' {
+            out.push(character);
+            continue;
+        }
+        // CSI: `ESC [ <parameters> <final byte>`, the final byte in
+        // `@`..=`~`. Everything tracing emits is one of these.
+        for character in chars.by_ref() {
+            if character != '[' && ('\u{40}'..='\u{7e}').contains(&character) {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// A spawned shipping binary, its captured output, and a `Drop` that never
 /// leaks it.
 ///
@@ -473,7 +547,7 @@ impl Proc {
                 for line in std::io::BufReader::new(stream).lines() {
                     match line {
                         Ok(line) => {
-                            if tx.send(line).is_err() {
+                            if tx.send(without_ansi(&line)).is_err() {
                                 break;
                             }
                         }
@@ -568,6 +642,17 @@ impl Proc {
     /// here is the order the process wrote them in.
     fn said(&self, needle: &str) -> Option<usize> {
         self.seen.iter().position(|line| line.contains(needle))
+    }
+
+    /// The first absorbed line containing `needle`, whole.
+    ///
+    /// [`Self::said`] answers "in what order"; this one answers "with what
+    /// *fields*" — `released=1` on the timed-out drain's warning is the
+    /// process's own count of the leases it handed back, and reading it off
+    /// the line is what makes that assertion about the shipping code rather
+    /// than about the test's view of the database.
+    fn line(&self, needle: &str) -> Option<String> {
+        self.seen.iter().find(|line| line.contains(needle)).cloned()
     }
 
     /// `SIGKILL`, and the exit status it produced.
@@ -1236,7 +1321,7 @@ async fn age_the_crashed_charge(pool: &PgPool, charge_id: &str) -> anyhow::Resul
 /// `--observability-bind 127.0.0.1:0` because two workers run in this file
 /// and a fixed port would collide (a `:0` port is a real configuration —
 /// `vpay-server/tests/cli.rs`'s `worker` module uses it too).
-fn spawn_worker(name: &'static str, database_url: &str, config: &Path) -> Proc {
+fn spawn_worker(name: &'static str, database_url: &str, config: &Path, grace_seconds: u64) -> Proc {
     let mut cmd = Command::new(shipping_binary("vpay-server"));
     cmd.arg("worker")
         .env("DATABASE_URL", database_url)
@@ -1246,17 +1331,31 @@ fn spawn_worker(name: &'static str, database_url: &str, config: &Path) -> Proc {
         .env("RUST_LOG", "info")
         .env("VPAY_WORKER_CONCURRENCY", "1")
         .env("VPAY_OBSERVABILITY_BIND", "127.0.0.1:0")
-        .env(
-            "VPAY_SHUTDOWN_GRACE_SECONDS",
-            SHUTDOWN_GRACE_SECONDS.to_string(),
-        );
+        .env("VPAY_SHUTDOWN_GRACE_SECONDS", grace_seconds.to_string());
     Proc::spawn(name, cmd)
 }
 
 /// Boots a worker and returns it once its loop is running, or fails naming
 /// what the process actually said.
 fn boot_worker(name: &'static str, database_url: &str, config: &Path) -> Proc {
-    let mut worker = spawn_worker(name, database_url, config);
+    boot_worker_with_grace(name, database_url, config, SHUTDOWN_GRACE_SECONDS)
+}
+
+/// [`boot_worker`] with the drain budget chosen by the caller.
+///
+/// The parameter exists for exactly one caller — the case that asserts
+/// `Drain::TimedOut` — and the two values it is ever given are the two
+/// constants at the top of this file, each `const`-asserted against
+/// [`RECEIVER_ACK_DELAY`]. The alternative was a second spawn with its own
+/// environment block, and a second copy of `VPAY_SHUTDOWN_GRACE_SECONDS` is
+/// exactly the drift [`SHUTDOWN_GRACE_SECONDS`]'s doc comment warns about.
+fn boot_worker_with_grace(
+    name: &'static str,
+    database_url: &str,
+    config: &Path,
+    grace_seconds: u64,
+) -> Proc {
+    let mut worker = spawn_worker(name, database_url, config, grace_seconds);
     if worker
         .wait_for_line("job loop running", BOOT_TIMEOUT)
         .is_none()
@@ -2119,19 +2218,357 @@ async fn a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exac
     Ok(())
 }
 
+/// The other arm of the drain, under a real signal: the grace period runs
+/// out with the delivery still in flight.
+///
+/// Everything the case above asserts is about `Drain::Clean`. This one is
+/// the same staging, differing in one number — [`TIMED_OUT_GRACE_SECONDS`]
+/// instead of [`SHUTDOWN_GRACE_SECONDS`] — and in signalling **both**
+/// workers rather than one. It is here because until it existed **no
+/// signalled shipping process reached the `Drain::TimedOut` branch in any
+/// suite**. `worker_e2e.rs`'s
+/// `a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds`
+/// drives `run_loop` in-process, which proves the function and not the
+/// binary: it cannot show the exit code, and the exit code is the whole
+/// reason `vpay-server worker` has that branch (`worker.rs`: "a supervisor
+/// or a `docker inspect` that *does* read the code should be able to tell
+/// 'in-flight work was cut off' from 'everything finished'").
+///
+/// Three things are asserted that the clean case cannot be:
+///
+/// 1. the process exits **1**, and is not killed by the signal;
+/// 2. its own warning says `released=1` — the lease handed back, counted by
+///    the shipping code rather than inferred from the database — and the job
+///    is in the queue unleased, which is what makes it claimable at once
+///    rather than after a five-minute reaper;
+/// 3. a **restarted** worker then finishes it. That is the half of
+///    `docs/flows/crash-safety.md`'s hand measurement the clean case
+///    deliberately does not stage (a worker booted after a clean drain has
+///    nothing left to claim, so the lease would be respected vacuously);
+///    here there *is* work outstanding, by construction, so the restart is
+///    the only thing that can finish it.
+///
+/// **And the merchant is told twice, which is the point rather than a
+/// blemish.** The receiver had already recorded the aborted POST; nothing
+/// recorded that it had, because the task was aborted before any answer came
+/// back to record. So the redelivery is byte-identical and
+/// `webhook_deliveries.attempt` is still `0` — the evidence that a first
+/// attempt happened at all lives in `jobs.attempts`, and this case asserts
+/// both numbers so that the gap is written down rather than discovered.
+/// A timed-out drain is at-least-once at the receiver. `docs/flows/webhooks.md`
+/// is why that is survivable — every event carries `Vpay-Event-Id` and a
+/// merchant is told to dedupe on it — and this is the case that shows the
+/// duplicate is real.
+#[tokio::test]
+async fn a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back()
+-> anyhow::Result<()> {
+    let (_postgres, repositories, pool, database_url, _mtn, mtn_url) = containers().await?;
+    let receiver = vpay_testkit::containers::start_wiremock(&receiver_mappings_dir())
+        .await
+        .context("the merchant's webhook receiver container starts")?;
+    let receiver_url = format!(
+        "http://127.0.0.1:{}",
+        receiver
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the receiver's mapped port")?
+    );
+    let endpoint_url = format!("{receiver_url}{RECEIVER_PATH}");
+    let workspace = Workspace::new();
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+
+    let mut captured: Option<Config> = None;
+    let served = support::serve(&repositories, &server_pem, |base_url| {
+        let config = config_with_receiver(base_url, &mtn_url, jwks_a, &endpoint_url);
+        captured = Some(config.clone());
+        config
+    })
+    .await?;
+    let config_path = workspace.write_config(&captured.expect("the harness built a configuration"));
+
+    // ---- two workers, exactly as above ---------------------------------
+    //
+    // Two rather than one, and the reason is measured rather than argued: a
+    // one-worker staging of this same case failed to reach the in-flight
+    // state inside `DELIVERY_IN_FLIGHT_TIMEOUT` on four attempts out of six
+    // on the machine this was written on, with the settlement poll waiting
+    // tens of seconds behind the singleton jobs a single
+    // `--worker-concurrency 1` task also has to run. Whatever the mechanism
+    // — it was not chased down, because it is a property of the shipping
+    // loop and not of this case — the staging above does not have it, so
+    // this case is that one with the drain budget moved and nothing else.
+    let mut first = boot_worker_with_grace(
+        "worker-1",
+        &database_url,
+        &config_path,
+        TIMED_OUT_GRACE_SECONDS,
+    );
+    let mut second = boot_worker_with_grace(
+        "worker-2",
+        &database_url,
+        &config_path,
+        TIMED_OUT_GRACE_SECONDS,
+    );
+
+    let client = sdk_client(&served.base_url, &pem_a);
+    let created = client
+        .payment_intents()
+        .create(create_params(), RequestOptions::new())
+        .await
+        .map_err(|e| anyhow::anyhow!("creating the intent: {e}"))?;
+    client
+        .payment_intents()
+        .confirm(
+            &created.id,
+            ConfirmPaymentIntentParams::mtn_momo(SIGTERM_MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("confirming the intent: {e}"))?;
+    let charge = charge_for(&pool, &created.id).await?;
+
+    let deadline = Instant::now() + DELIVERY_IN_FLIGHT_TIMEOUT;
+    let (delivery, owner) = loop {
+        if let Some(found) = delivery_in_flight(&pool, &receiver_url).await? {
+            break found;
+        }
+        if Instant::now() >= deadline {
+            let posts = receiver_posts(&receiver_url).await?.len();
+            let rows = deliveries(&pool).await?;
+            panic!(
+                "no webhook delivery was in flight within {DELIVERY_IN_FLIGHT_TIMEOUT:?} (the \
+                 receiver saw {posts} POSTs on {RECEIVER_PATH}; deliveries: {rows:?}); \
+                 signalling a worker now would prove nothing\n{}\n{}",
+                first.log(),
+                second.log()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let first_pid = first.pid();
+    let second_pid = second.pid();
+    let (mut victim, mut other) = if owner.contains(&format!("/{first_pid}/")) {
+        (first, second)
+    } else if owner.contains(&format!("/{second_pid}/")) {
+        (second, first)
+    } else {
+        panic!(
+            "the delivery's lease is held by `{owner}`, which is neither worker this test \
+             started (pids {first_pid} and {second_pid})\n{}\n{}",
+            first.log(),
+            second.log()
+        )
+    };
+
+    // ---- the signal, and a grace period too short for the receiver -----
+    //
+    // **Both** processes are signalled, in the same breath, because that is
+    // what stopping a Deployment does — and because the assertions below are
+    // about a lease that has been handed back and is being held by nobody. A
+    // co-runner left alive would claim it the instant it was released, which
+    // is correct behaviour and would make "the lease came back" unreadable.
+    // It cannot steal it *before* the release either: a signalled worker
+    // stops claiming the moment it sees the signal, seconds before the
+    // victim's grace period expires.
+    victim.sigterm();
+    other.sigterm();
+    let Some(exit) = victim.wait_within(SIGTERM_EXIT_TIMEOUT) else {
+        panic!(
+            "the signalled worker was still alive {SIGTERM_EXIT_TIMEOUT:?} after SIGTERM\n{}",
+            victim.log()
+        )
+    };
+    victim.absorb_until_closed(LOG_FLUSH_TIMEOUT);
+    let transcript = victim.log();
+    let Some(other_exit) = other.wait_within(SIGTERM_EXIT_TIMEOUT) else {
+        panic!(
+            "the co-running worker was still alive {SIGTERM_EXIT_TIMEOUT:?} after SIGTERM\n{}",
+            other.log()
+        )
+    };
+    assert_eq!(
+        other_exit.code(),
+        Some(0),
+        "the co-runner had nothing of this delivery in flight, so its own drain is clean: \
+         {other_exit:?}\n{}",
+        other.log()
+    );
+
+    assert_eq!(
+        exit.code(),
+        Some(1),
+        "a drain that ran out of grace exits 1. A 0 here means the receiver answered before \
+         {TIMED_OUT_GRACE_SECONDS}s were up and this run tested the *clean* drain instead — \
+         which the case above already covers. Lower TIMED_OUT_GRACE_SECONDS or raise \
+         RECEIVER_ACK_DELAY rather than relaxing this. Got {exit:?}\n{transcript}"
+    );
+    assert_eq!(
+        exit.signal(),
+        None,
+        "the 1 must be the process's own `std::process::exit(1)`, not a death by signal: \
+         {exit:?}\n{transcript}"
+    );
+    assert!(
+        victim.said(WEBHOOK_DELIVERED).is_none(),
+        "the delivery was aborted mid-flight, so nothing may have recorded it as \
+         delivered\n{transcript}"
+    );
+    assert!(
+        victim.said(SHUTDOWN_COMPLETE).is_none(),
+        "`{SHUTDOWN_COMPLETE}` is the `Drain::Clean` arm's line and this is the other \
+         arm\n{transcript}"
+    );
+    let warning = victim
+        .line(DRAIN_TIMED_OUT)
+        .unwrap_or_else(|| panic!("the worker never logged `{DRAIN_TIMED_OUT}`\n{transcript}"));
+    assert!(
+        warning.contains("released=1"),
+        "the warning must count the lease it handed back — that count is what an operator \
+         reads to know work was cut off rather than finished: `{warning}`"
+    );
+
+    // ---- what it left behind: work, claimable, by anyone ---------------
+    let job = delivery_job(&pool, delivery.id)
+        .await?
+        .expect("a timed-out drain leaves its job in the queue; only a finish deletes it");
+    assert_eq!(
+        job.locked_by, None,
+        "the lease must be handed back rather than left on a process that no longer exists; \
+         a held lease would sit unclaimable until the five-minute reaper noticed"
+    );
+    assert_eq!(
+        job.attempts, 1,
+        "`attempts` is incremented by the claim, so the attempt that was cut off still counts \
+         — which is what stops a job that reliably kills its worker from retrying forever"
+    );
+    let rows = deliveries(&pool).await?;
+    let cut_off = rows.first().expect("the delivery row survives the drain");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        cut_off.state, "pending",
+        "the drain aborted the task before any answer came back, so nothing settled the row"
+    );
+    assert_eq!(cut_off.status_code, None);
+    assert_eq!(
+        cut_off.attempt, 0,
+        "`attempt` counts *recorded* failures, and an aborted task records none. The cut-off \
+         attempt is invisible here on purpose — `jobs.attempts` above is where it shows"
+    );
+    assert_eq!(
+        receiver_posts(&receiver_url).await?.len(),
+        1,
+        "one POST so far: the one the drain cut off, which the receiver had already recorded"
+    );
+
+    // ---- and a restarted worker finishes it ---------------------------
+    //
+    // The half of the hand measurement in `docs/flows/crash-safety.md` that
+    // the clean case cannot stage. Here there is outstanding work by
+    // construction, so a worker that booted and did nothing would fail this.
+    let fresh = boot_worker("worker-restarted", &database_url, &config_path);
+    let deadline = Instant::now() + RESTART_DELIVERY_TIMEOUT;
+    let settled_delivery = loop {
+        let rows = deliveries(&pool).await?;
+        if let [delivery] = rows.as_slice()
+            && delivery.state == "succeeded"
+        {
+            break delivery.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the restarted worker did not finish the released delivery within \
+             {RESTART_DELIVERY_TIMEOUT:?}: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(settled_delivery.status_code, Some(200));
+    assert_eq!(
+        settled_delivery.attempt, 0,
+        "still 0: the aborted attempt was never recorded as a failure, so the redelivery is \
+         the ladder's first rung and not its second"
+    );
+    assert!(
+        delivery_job(&pool, delivery.id).await?.is_none(),
+        "a succeeded delivery's job must be deleted"
+    );
+
+    // ---- the merchant was told twice, and both are real ---------------
+    let event_id = event_id_for(&pool, &created.id).await?;
+    let posts = receiver_posts(&receiver_url).await?;
+    assert_eq!(
+        posts.len(),
+        2,
+        "**at-least-once, stated rather than glossed.** The receiver had already taken the \
+         POST the drain cut off; vpay never learned that, so the restarted worker sent it \
+         again. A merchant dedupes on `Vpay-Event-Id`, which is why both carry the same one: \
+         {posts:?}"
+    );
+    for post in &posts {
+        assert_eq!(post.url, RECEIVER_PATH);
+        assert_eq!(post.header("vpay-event-id"), Some(event_id.as_str()));
+        let signature = post
+            .header("vpay-signature")
+            .unwrap_or_else(|| panic!("the delivery carried no Vpay-Signature: {post:?}"));
+        let verified =
+            vpay_sdk::webhooks::verify(&post.body, signature, RECEIVER_SECRET, SIGNATURE_TOLERANCE)
+                .expect("both POSTs must verify under the configured secret");
+        assert_eq!(verified.id, event_id);
+    }
+    let [first_post, second_post] = posts.as_slice() else {
+        unreachable!("exactly two POSTs, just asserted")
+    };
+    assert_eq!(
+        first_post.body, second_post.body,
+        "byte-identical: the redelivery renders the same event, so a merchant that dedupes \
+         cannot tell them apart by content and must use the id"
+    );
+
+    // ---- exactly once where it matters: the money ---------------------
+    //
+    // The duplicate is a webhook, not a payment. The same four records the
+    // other three scenarios assert say so.
+    assert_eq!(charge_count(&pool, &created.id).await?, 1);
+    let settled = charge_for(&pool, &created.id).await?;
+    assert_eq!(settled.state, "succeeded");
+    let (status, received) = stored_intent(&pool, &created.id).await?;
+    assert_eq!(status, "succeeded");
+    assert_eq!(
+        received, AMOUNT,
+        "amount_received must be the amount, once — the cut-off drain must not have doubled it"
+    );
+    assert_eq!(
+        event_types(&pool, &created.id).await?,
+        vec!["payment_intent.succeeded".to_owned()],
+        "one event, delivered twice — not two events"
+    );
+    assert!(poll_job(&pool, &charge.id).await?.is_none());
+    assert_eq!(
+        journal_count(&mtn_url, submits()).await?,
+        1,
+        "the payer's handset must have buzzed once"
+    );
+    assert_one_reference(&pool, &charge.id, charge.provider_reference_id).await;
+
+    stop_worker_cleanly(fresh);
+    served.server.abort();
+    Ok(())
+}
+
 /// [`SIGTERM_MSISDN`] must go on arming nothing in the shared rail tree.
 ///
-/// The case above depends on the rail being *boring* for that number: an
+/// Both cases above depend on the rail being *boring* for that number: an
 /// ordinary 202 and the catch-all `SUCCESSFUL`. If a later mapping ever keys
 /// on it — the way `requesttopay.json` keys a `PAYER_NOT_FOUND` on
-/// `237600000400` — that case would stop settling and the failure would be
+/// `237600000400` — those cases would stop settling and the failure would be
 /// read as a drain bug. A file scan rather than a comment, because a comment
 /// asking a future author to check something is not a check.
 ///
 /// It needs no container and is in this file rather than in the conformance
 /// suite because the *dependency* is this file's.
 #[test]
-fn the_sigterm_scenario_confirms_with_an_msisdn_that_arms_no_rail_mapping() {
+fn the_sigterm_scenarios_confirm_with_an_msisdn_that_arms_no_rail_mapping() {
     let dir = mappings_dir("mtn");
     let mut mentions = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("the mtn mapping directory is readable") {
@@ -2159,9 +2596,8 @@ fn the_sigterm_scenario_confirms_with_an_msisdn_that_arms_no_rail_mapping() {
     }
     assert!(
         mentions.is_empty(),
-        "{SIGTERM_MSISDN} is matched on by {mentions:?}. \
-         a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once \
-         needs the rail to be ordinary for it: pick a fresh documentation MSISDN for that \
-         case, or point it at whatever the new mapping now returns"
+        "{SIGTERM_MSISDN} is matched on by {mentions:?}. Both SIGTERM scenarios need the rail \
+         to be ordinary for it: pick a fresh documentation MSISDN for them, or point them at \
+         whatever the new mapping now returns"
     );
 }

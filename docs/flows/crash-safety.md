@@ -187,6 +187,10 @@ that was killed.
 - **`a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exactly_once`**
   — the third scenario, added 2026-09-10 for issue #85, and about the *other*
   signal. It is described under "The graceful stop" below.
+- **`a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`**
+  — the fourth, added by that change's review the same day: the same staging
+  with the drain budget below the receiver's delay instead of above it, so the
+  *other* arm of `Drain` runs. Also described below.
 
 **Two clocks are simulated in that file, and nothing else is.**
 `age_the_dead_workers_lease` moves `jobs.locked_at` ten minutes back, guarded on
@@ -209,8 +213,9 @@ rail is a WireMock container in both.
 **Status: implemented, and driving payments. Updated 2026-09-03 (Step 4);
 re-verified 2026-09-07 twice — for issue #77, and again for migration `0037`
 (S5, the money tables through CrateStack); extended 2026-09-10 (issue #85)
-with the SIGTERM scenario, which is the first automated case in this
-repository that signals a shipping process holding outstanding work.**
+with **two** SIGTERM scenarios, one per arm of `Drain`, which are the first
+automated cases in this repository that signal a shipping process holding
+outstanding work.**
 
 **Nothing in this document's behaviour changed for `0037` either, and the
 migration is the reason to say so explicitly.** It converted
@@ -320,13 +325,53 @@ undelivered while no worker ran and was delivered in ~6 s, signed, by the
 same container restarted. Details in
 [../plans/exp30-single-binary-notes/opus-review.md](../plans/exp30-single-binary-notes/opus-review.md).
 
-**What the new case does not cover, plainly.** It asserts the *clean* drain
-only. `Drain::TimedOut` — the grace period elapsing with a job still in
-flight, exit `1`, leases handed back — is proven by
-`a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds`
-(`worker_e2e.rs`) against `run_loop` in-process, not by a signalled shipping
-binary; and no case restarts a worker after a graceful stop, which is the one
-half of the hand measurement that is still only a measurement.
+### The other arm: a drain that runs out, and the restart that finishes the job
+
+`a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_the_lease_back`
+is the same staging with the drain budget moved to the *other* side of the
+receiver's delay — `--shutdown-grace-seconds 2` against a 6 s
+acknowledgement, a third `const` assertion keeping the factor of two — and
+**both** workers signalled at once, the way stopping a Deployment does it. It
+was written by the review of the case above (2026-09-10), out of the gap that
+case's notes disclosed: until it existed, no *signalled shipping process*
+reached the `Drain::TimedOut` branch anywhere. `worker_e2e.rs`'s
+`a_drain_that_runs_out_of_grace_releases_every_lease_it_still_holds` drives
+`run_loop` in-process, which proves the function and cannot show an exit code.
+
+What it asserts, and what the clean case cannot:
+
+- the victim exits **1** — its own `std::process::exit(1)`, not a death by
+  signal — with no `graceful shutdown complete, exiting` and no
+  `webhook delivered`;
+- its warning carries `released=1`, the shipping code's own count of the
+  leases it handed back, and the `deliver_webhook` job is in the queue
+  **unleased** with `attempts = 1`, so it is claimable at once rather than
+  after the five-minute reaper;
+- a **restarted** worker then finishes it — the half of the hand measurement
+  below that the clean case deliberately does not stage, because after a clean
+  drain there is nothing left for a fresh worker to claim and the lease would
+  be respected vacuously;
+- and **the merchant is told twice**. The receiver had already received the
+  POST the drain aborted; nothing recorded that, because the task was killed
+  before any answer came back — so `webhook_deliveries.attempt` is still `0`
+  after the redelivery and the only trace of the first attempt is
+  `jobs.attempts`. Both POSTs are asserted: byte-identical bodies, both
+  verifying under the endpoint secret, both carrying the same
+  `Vpay-Event-Id`. **A timed-out drain is at-least-once at the receiver**, and
+  [webhooks.md](webhooks.md)'s dedupe advice is what makes that survivable.
+  The money is unaffected and the case says so on the same four records: one
+  charge, one event, `amount_received` once, one submit.
+
+Two mutations, both measured 2026-09-10 rather than argued: skip
+`release_all` on the timed-out path and the case fails on `released=0`; make
+the `Drain::TimedOut` arm exit `0` and it fails `left: Some(0)  right:
+Some(1)`.
+
+**What the two SIGTERM cases still do not cover, plainly.** `SIGINT`, which
+`vpay_config::signal` handles identically and no case sends. Orange Money —
+both are `mtn_momo`, like the two `SIGKILL` cases. And a real rail or a real
+merchant endpoint: the rail and the receiver are WireMock containers, which
+is the limit every case on this page carries.
 
 **What was already true (Step 3), unchanged.**
 `POST /v1/payment_intents/{id}/confirm`
