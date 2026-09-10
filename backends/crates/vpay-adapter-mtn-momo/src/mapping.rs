@@ -221,8 +221,10 @@ pub const PRODUCED_FAILURE_CODES: [FailureCode; 11] = [
 /// Naming the path in a comment would not fail when the path is deleted;
 /// naming it here means the sum has to keep adding up.
 #[cfg(test)]
-const NON_TABLE_FAILURE_CODES: [FailureCode; 2] =
-    [FailureCode::ProviderAccountBlocked, FailureCode::ProviderError];
+const NON_TABLE_FAILURE_CODES: [FailureCode; 2] = [
+    FailureCode::ProviderAccountBlocked,
+    FailureCode::ProviderError,
+];
 
 /// Maps one of MTN's `reason`/`code` strings onto the core taxonomy.
 ///

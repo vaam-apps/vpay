@@ -8,7 +8,7 @@ narrated. It is [issue #11](https://github.com/vaam-apps/vpay/issues/11)'s
 
 **Status, stated before anything else.** Every command and every line of
 output on this page was run on 2026-09-03/04 on the authoring machine. Two
-things it does _not_ claim:
+things it does *not* claim:
 
 - ~~**`just demo` end to end has not been observed green on that machine.**~~
   **Updated 2026-09-04.** When this page was first written, four of six
@@ -21,10 +21,10 @@ things it does _not_ claim:
   page claims about green runs:**
   **one green run from nothing exists** (lane A's rebased branch, 2026-09-04,
   **without** lane G; the race is timing-dependent and did not fire, so it is a
-  green _pre-fix_ run and not evidence for the fix) — six outcomes for six,
+  green *pre-fix* run and not evidence for the fix) — six outcomes for six,
   exit 0, zero `write_matched_no_row`; **lane A's own earlier count was two
   greens in six attempts and zero for three from nothing**; **lane G did not
-  re-run the demo**. **Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in):** `just demo` from nothing **six times, four green** (six outcomes for six each, exit 0; the first green is the paste in `docs/runbooks/demo.md` §4). The two failures were not the race: in both, the VM's Postgres answered single statements in 14–36 s while the host's I/O pressure was above 50 % (a second VM and two reviewer builds), and the worker's log shows the settlement and the webhook landing _after_ the demo's 120 s / 30 s budgets — a `DELETE FROM jobs` at 18 s and a `COMMIT` at 14.6 s in one, `INSERT`s at 5 s each in the other. `write_matched_no_row` appeared in no run's server or worker log. The plan's bar of three from nothing is met in count, not consecutively, which is why the row stays 🟡 and this sentence says both.
+  re-run the demo**. **Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in):** `just demo` from nothing **six times, four green** (six outcomes for six each, exit 0; the first green is the paste in `docs/runbooks/demo.md` §4). The two failures were not the race: in both, the VM's Postgres answered single statements in 14–36 s while the host's I/O pressure was above 50 % (a second VM and two reviewer builds), and the worker's log shows the settlement and the webhook landing *after* the demo's 120 s / 30 s budgets — a `DELETE FROM jobs` at 18 s and a `COMMIT` at 14.6 s in one, `INSERT`s at 5 s each in the other. `write_matched_no_row` appeared in no run's server or worker log. The plan's bar of three from nothing is met in count, not consecutively, which is why the row stays 🟡 and this sentence says both.
 - **Step 9's additions are green from nothing three consecutive times.**
   Lane 4 first ran `just demo_port=18080 demo` on the authoring host on
   2026-09-04 (host port 8080 was held by an unrelated project, which is what
@@ -71,14 +71,14 @@ just demo-down          # containers AND volumes
 `just demo` is a composition of two recipes that also exist on their own, so
 nothing on this page runs a path the one-liner does not:
 
-| Recipe             | What it does                                                                                                                                                                       |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just demo-up`     | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz`                                                                                                       |
-| `just demo-walk`   | run `examples/merchant-demo` against a stack that is already up                                                                                                                    |
-| `just demo-status` | what is running, under which project, on which host ports                                                                                                                          |
-| `just demo-down`   | stop the stack and delete its volumes                                                                                                                                              |
-| `just demo`        | `demo-up` then `demo-walk`                                                                                                                                                         |
-| `just demo-staff`  | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](#6-signing-in-to-the-dashboard)) |
+| Recipe | What it does |
+|---|---|
+| `just demo-up` | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz` |
+| `just demo-walk` | run `examples/merchant-demo` against a stack that is already up |
+| `just demo-status` | what is running, under which project, on which host ports |
+| `just demo-down` | stop the stack and delete its volumes |
+| `just demo` | `demo-up` then `demo-walk` |
+| `just demo-staff` | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](#6-signing-in-to-the-dashboard)) |
 
 **`just demo-walk` takes about a minute** — 58 s measured on 2026-09-10, six
 payments, of which two wait a ten-second rung of `vpay_worker::poll_delay` (the
@@ -92,17 +92,17 @@ output: each run mints fresh idempotency keys and fresh intents.
 **Three variables**, and they are the whole of the no-collision story
 ([§7](#7-two-demos-on-one-machine)):
 
-| Variable             | Default     | What it moves                                                                                               |
-| -------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
-| `demo_project`       | `vpay-demo` | the Compose project name — containers, network, `pgdata` volume, **and the generated Orange stub mappings** |
-| `demo_port`          | `8080`      | the host port `vpay-server` is published on                                                                 |
-| `demo_receiver_port` | `8083`      | the host port the merchant webhook receiver is published on                                                 |
-| `demo_orange_port`   | `8082`      | the host port the Orange rail stub is published on — the host in every redirect URL a payer follows         |
-| `demo_checkout_port` | `3080`      | the host port **vpay's own payment page** is published on                                                   |
-| `demo_shop_port`     | `3001`      | the host port **the demo shop** is published on                                                             |
+| Variable | Default | What it moves |
+|---|---|---|
+| `demo_project` | `vpay-demo` | the Compose project name — containers, network, `pgdata` volume, **and the generated Orange stub mappings** |
+| `demo_port` | `8080` | the host port `vpay-server` is published on |
+| `demo_receiver_port` | `8083` | the host port the merchant webhook receiver is published on |
+| `demo_orange_port` | `8082` | the host port the Orange rail stub is published on — the host in every redirect URL a payer follows |
+| `demo_checkout_port` | `3080` | the host port **vpay's own payment page** is published on |
+| `demo_shop_port` | `3001` | the host port **the demo shop** is published on |
 
 Six now, not three, and the last three arrived with Step 9. `demo_orange_port`
-was a _checked_ value until then — 8082 was the only one that worked, because
+was a *checked* value until then — 8082 was the only one that worked, because
 the stub's `payment_url` comes from a committed mapping that spells it — and
 is now a real variable: `gen-demo-keys` writes a per-project copy of those
 mappings with the port substituted, and the demo mounts the copy. See
@@ -140,7 +140,7 @@ mentions a port**, which is why the check exists.
 
 Readiness is `docker compose up --wait` on healthchecks, not a sleep. Postgres
 and all three WireMock containers carry one; WireMock's `/__admin/health` means
-"the admin API is up _and_ the mappings under `/home/wiremock` have been
+"the admin API is up *and* the mappings under `/home/wiremock` have been
 loaded", which a TCP probe cannot distinguish from a JVM that has merely bound
 its port.
 
@@ -153,7 +153,7 @@ as `.github/workflows/ci.yml`'s e2e job does.
 
 **That poll is load-bearing, and the paste below proves it**: Compose prints
 `Container vpay-demo-vpay-server-1 Healthy` for a container that has no
-healthcheck at all — for those it reports _running_, in a progress line that
+healthcheck at all — for those it reports *running*, in a progress line that
 says "Healthy" — and the very next line is a `curl` that got
 `(52) Empty reply from server` because the server had not finished binding. A
 demo that trusted `--wait` alone for those two services would fail in the
@@ -171,56 +171,56 @@ gen-demo-keys: wrote .e2e/demo-merchant/oauth-signing-key.pem (3072-bit RSA, mod
 gen-demo-keys: wrote .e2e/application-demo.yml — client_id=demo-merchant kid=aZbYeC696RJXBacNAF3GOCe2P6e4eOSX9g9gETeOoGs
 demo-up: project vpay-demo, server :18080, receiver :18083
 [... docker buildx output elided ...]
- Image vpay-demo-vpay-server Built
- Image vpay-demo-vpay-worker Built
- Volume vpay-demo_pgdata Creating
- Volume vpay-demo_pgdata Creating
- Network vpay-demo_default Creating
- Network vpay-demo_default Creating
- Volume vpay-demo_pgdata Created
- Volume vpay-demo_pgdata Created
- Network vpay-demo_default Created
- Network vpay-demo_default Created
- Container vpay-demo-wiremock-mtn-1 Creating
- Container vpay-demo-wiremock-webhook-1 Creating
- Container vpay-demo-wiremock-orange-1 Creating
- Container vpay-demo-postgres-1 Creating
- Container vpay-demo-postgres-1 Created
- Container vpay-demo-wiremock-webhook-1 Created
- Container vpay-demo-vpay-worker-1 Creating
- Container vpay-demo-wiremock-mtn-1 Created
- Container vpay-demo-wiremock-orange-1 Created
- Container vpay-demo-vpay-server-1 Creating
- Container vpay-demo-vpay-worker-1 Created
- Container vpay-demo-vpay-server-1 Created
- Container vpay-demo-wiremock-orange-1 Starting
- Container vpay-demo-postgres-1 Starting
- Container vpay-demo-wiremock-webhook-1 Starting
- Container vpay-demo-wiremock-mtn-1 Starting
- Container vpay-demo-wiremock-orange-1 Started
- Container vpay-demo-postgres-1 Started
- Container vpay-demo-wiremock-webhook-1 Started
- Container vpay-demo-postgres-1 Waiting
- Container vpay-demo-wiremock-mtn-1 Started
- Container vpay-demo-postgres-1 Waiting
- Container vpay-demo-postgres-1 Healthy
- Container vpay-demo-vpay-server-1 Starting
- Container vpay-demo-postgres-1 Healthy
- Container vpay-demo-vpay-worker-1 Starting
- Container vpay-demo-vpay-server-1 Started
- Container vpay-demo-vpay-worker-1 Started
- Container vpay-demo-vpay-server-1 Waiting
- Container vpay-demo-vpay-worker-1 Waiting
- Container vpay-demo-wiremock-mtn-1 Waiting
- Container vpay-demo-wiremock-orange-1 Waiting
- Container vpay-demo-postgres-1 Waiting
- Container vpay-demo-wiremock-webhook-1 Waiting
- Container vpay-demo-vpay-server-1 Healthy
- Container vpay-demo-wiremock-webhook-1 Healthy
- Container vpay-demo-vpay-worker-1 Healthy
- Container vpay-demo-postgres-1 Healthy
- Container vpay-demo-wiremock-mtn-1 Healthy
- Container vpay-demo-wiremock-orange-1 Healthy
+ Image vpay-demo-vpay-server Built 
+ Image vpay-demo-vpay-worker Built 
+ Volume vpay-demo_pgdata Creating 
+ Volume vpay-demo_pgdata Creating 
+ Network vpay-demo_default Creating 
+ Network vpay-demo_default Creating 
+ Volume vpay-demo_pgdata Created 
+ Volume vpay-demo_pgdata Created 
+ Network vpay-demo_default Created 
+ Network vpay-demo_default Created 
+ Container vpay-demo-wiremock-mtn-1 Creating 
+ Container vpay-demo-wiremock-webhook-1 Creating 
+ Container vpay-demo-wiremock-orange-1 Creating 
+ Container vpay-demo-postgres-1 Creating 
+ Container vpay-demo-postgres-1 Created 
+ Container vpay-demo-wiremock-webhook-1 Created 
+ Container vpay-demo-vpay-worker-1 Creating 
+ Container vpay-demo-wiremock-mtn-1 Created 
+ Container vpay-demo-wiremock-orange-1 Created 
+ Container vpay-demo-vpay-server-1 Creating 
+ Container vpay-demo-vpay-worker-1 Created 
+ Container vpay-demo-vpay-server-1 Created 
+ Container vpay-demo-wiremock-orange-1 Starting 
+ Container vpay-demo-postgres-1 Starting 
+ Container vpay-demo-wiremock-webhook-1 Starting 
+ Container vpay-demo-wiremock-mtn-1 Starting 
+ Container vpay-demo-wiremock-orange-1 Started 
+ Container vpay-demo-postgres-1 Started 
+ Container vpay-demo-wiremock-webhook-1 Started 
+ Container vpay-demo-postgres-1 Waiting 
+ Container vpay-demo-wiremock-mtn-1 Started 
+ Container vpay-demo-postgres-1 Waiting 
+ Container vpay-demo-postgres-1 Healthy 
+ Container vpay-demo-vpay-server-1 Starting 
+ Container vpay-demo-postgres-1 Healthy 
+ Container vpay-demo-vpay-worker-1 Starting 
+ Container vpay-demo-vpay-server-1 Started 
+ Container vpay-demo-vpay-worker-1 Started 
+ Container vpay-demo-vpay-server-1 Waiting 
+ Container vpay-demo-vpay-worker-1 Waiting 
+ Container vpay-demo-wiremock-mtn-1 Waiting 
+ Container vpay-demo-wiremock-orange-1 Waiting 
+ Container vpay-demo-postgres-1 Waiting 
+ Container vpay-demo-wiremock-webhook-1 Waiting 
+ Container vpay-demo-vpay-server-1 Healthy 
+ Container vpay-demo-wiremock-webhook-1 Healthy 
+ Container vpay-demo-vpay-worker-1 Healthy 
+ Container vpay-demo-postgres-1 Healthy 
+ Container vpay-demo-wiremock-mtn-1 Healthy 
+ Container vpay-demo-wiremock-orange-1 Healthy 
 demo-up: waiting for http://localhost:18080/healthz
 ```
 
@@ -585,11 +585,12 @@ a phone number and Orange sends you to the rail's stub page. The steering
 numbers are the same ones the walkthrough uses, with one difference that
 matters:
 
-| What you want            | Type this MSISDN | Why not the one the demo prints                                                                                                                                                                                                     |
-| ------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The payment succeeds     | `237600000100`   | The page validates Cameroon E.164 — `237`, then `6`, then eight **digits** — and correctly refuses `237600000ce0`, which has hex letters in it. Both numbers enter the same WireMock scenario by the same mapping (Step 9, lane 2b) |
-| The payer has no balance | `237600000101`   | as above, twin of `237600000f01`                                                                                                                                                                                                    |
-| The prompt expires       | `237600000102`   | as above, twin of `237600000f02`                                                                                                                                                                                                    |
+| What you want | Type this MSISDN | Why not the one the demo prints |
+|---|---|---|
+| The payment succeeds | `237600000100` | The page validates Cameroon E.164 — `237`, then `6`, then eight **digits** — and correctly refuses `237600000ce0`, which has hex letters in it. Both numbers enter the same WireMock scenario by the same mapping (Step 9, lane 2b) |
+| The payer has no balance | `237600000101` | as above, twin of `237600000f01` |
+| The prompt expires | `237600000102` | as above, twin of `237600000f02` |
+| The payer refuses the prompt | `237600000103` | New 2026-09-10 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)); digits-only and no hex twin, because the hex family predates the page's validator. It arms `mtn-demo-declined`, which answers `FAILED`/`PAYMENT_NOT_APPROVED` → `payer_declined` — a code that until that day no rail could produce |
 
 For Orange, pick it in the selector and follow the redirect: you land on the
 **rail's** stub hosted page on `demo_orange_port`, which has a Pay link and a
@@ -620,7 +621,7 @@ watched working:** vpay serves `Content-Security-Policy: frame-ancestors <that
 list>` on the page, and the page independently compares its own framer against
 the same list. It is the second that a browser has been observed performing —
 [checkout.md](checkout.md) §5 has the measurement, and Cypress strips the
-header before a browser ever sees it. To _see_ the embedded mode working rather
+header before a browser ever sees it. To *see* the embedded mode working rather
 than read about it, use the shop's own embedded page (below): it is a
 registered origin and the demo merchant's `demo-merchant` is not.
 
@@ -684,16 +685,17 @@ because between them they are most of what a merchant actually has to build.
 - **The surface switch** (Redirect / Popup / Embedded) starts on whatever
   `SHOP_CHECKOUT_MODE` names — `hosted` by default, and the demo stack does
   not set it. A real merchant picks one in configuration and ships no switch;
-  this one exists so a reader can see each. Redirect and Popup are the _same_
+  this one exists so a reader can see each. Redirect and Popup are the *same*
   hosted session: the popup opens `session.url` in a window the shop owns, and
   the shop's own return page — running inside that window — tells the opener
   and closes it.
 - **The test numbers** are documentation MSISDNs the rail stubs are configured
   to answer particular things for. `237600000000` (or anything unlisted) pays;
   `237600000101` is insufficient funds on MTN; `237600000102` is a timeout on
-  either rail; `237600000400` is a refusal on either; `237600000503` is an
-  unavailable rail on MTN. The full table, including the three outcomes Orange
-  **cannot** express, is on the page itself and in
+  either rail; `237600000103` is a payer who refuses the prompt on MTN;
+  `237600000400` is a refusal on either; `237600000503` is an unavailable rail
+  on MTN. The full table, including the **four** outcomes Orange cannot
+  express, is on the page itself and in
   [../../examples/shop/README.md](../../examples/shop/README.md).
 
 Two things to know before you drive them:
@@ -705,7 +707,7 @@ Two things to know before you drive them:
 - **Orange's numbers work from a browser, and did not until 2026-09-10**
   ([issue #58](https://github.com/vaam-apps/vpay/issues/58)). vpay's confirm
   handler enqueues the first status query at `now()` — `poll_delay(0)` is the
-  delay before the _second_ attempt — and the worker's idle sleep is a second,
+  delay before the *second* attempt — and the worker's idle sleep is a second,
   so the stub's catch-all used to answer `SUCCESS` and the order was **paid**
   before you could reach the form, whatever number you were about to type.
   Measured on 2026-09-06 from the stub's own journal: submit at T, first
@@ -737,7 +739,7 @@ Two things to know before you drive them:
   [../status.md](../status.md) §"The Orange stub's hosted page grew a payer's
   window" for the measurements.
 
-The one outcome no _number_ reaches is `cancelled`, because it is not a rail
+The one outcome no *number* reaches is `cancelled`, because it is not a rail
 outcome at all. Clicking "cancel" on the rail's page ends the payment, but
 what the rail then reports is `EXPIRED`, so the order comes back **`failed`**
 with `payer_timeout` — Orange documents no `CANCELLED` and the stub will not
@@ -751,13 +753,13 @@ transaction** ([issue #57](https://github.com/vaam-apps/vpay/issues/57)) — so
 the fan-out delivers it and the shop's webhook handler moves the order to
 `cancelled` from the signed event, exactly as it does for every other status.
 
-_(This paragraph said the opposite until 2026-09-10, and the measurement
+*(This paragraph said the opposite until 2026-09-10, and the measurement
 behind it was right at the time: on 2026-09-06 the intent's row really did
 become `canceled` with the `events` table unchanged, because the vocabulary
 carried `payment_intent.canceled` and nothing wrote it. The shop's code did
 not change when the event arrived — that is the point of settling from
 events. Written up in
-[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).)_
+[../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md).)*
 
 ### One currency, and what it is not saying
 
@@ -767,7 +769,7 @@ rejects XAF** ([../flows/money.md](../flows/money.md)), which is why
 `config/application.yml` still puts `mtn_momo` on `currency: EUR` and why
 `application-sandbox.yml` inherits it.
 
-What changed is the _demo overlay_ — `.e2e/application-demo.yml`, which `just
+What changed is the *demo overlay* — `.e2e/application-demo.yml`, which `just
 gen-demo-keys` writes — and only it. That stack does not talk to MTN's sandbox;
 it talks to a WireMock host whose mappings match on no currency at all. The demo
 shop prices its catalogue in XAF, offers a payer both rails, and `vpay_api`'s
@@ -794,7 +796,7 @@ edited back to EUR, which is the one state the check exists to catch.
   expired on MTN; succeeded, expired and refused on Orange. Every intent's
   public fields are printed from the object the API actually returned.
 - **The response and the stored row agree.** Every create and every confirm is
-  followed by a retrieve, and the two must be the _same object_ (bar
+  followed by a retrieve, and the two must be the *same object* (bar
   `client_secret`, which `confirm` omits by design). A status rendered but not
   committed fails the run.
 - **The failure taxonomy, not merely "it failed".** Each failing outcome
@@ -804,11 +806,11 @@ edited back to EUR, which is the one state the check exists to catch.
   ([../flows/failures.md](../flows/failures.md))
 - **Settlement is the worker asking the rail.** Nothing in the demo fakes an
   approval. The `vpay-worker` container claims the `poll_charge` job the
-  confirm committed _in the same transaction as the charge_, asks the stub over
+  confirm committed *in the same transaction as the charge*, asks the stub over
   HTTP, and commits the charge, the intent and one event together.
 - **The webhook a merchant actually receives.** Read out of the receiver's own
   request journal (`GET /__admin/requests` — the merchant-side view, not
-  vpay's belief about what it sent), matched on `Vpay-Event-Id` _and_ the
+  vpay's belief about what it sent), matched on `Vpay-Event-Id` *and* the
   intent id in the body, `Stripe-Signature` asserted byte-identical to
   `Vpay-Signature`, and the recorded bytes verified with
   `vpay_sdk::webhooks::verify` — the same call a merchant's handler makes. The
@@ -833,7 +835,7 @@ edited back to EUR, which is the one state the check exists to catch.
   `POST` carrying it). **Nothing rewrites stored state to force an outcome.**
 - **That a payer can complete Orange's hosted page.** The demo prints the URL
   and does not open it; the stub then answers the status query as though the
-  payer had finished. Since Step 9 that URL _is_ openable — the stub is
+  payer had finished. Since Step 9 that URL *is* openable — the stub is
   published and serves a page with a Pay link and a Cancel link — but nothing
   in `just demo` clicks it.
 - **That vpay's own checkout page works.** Step 5 mints two sessions and
@@ -912,12 +914,12 @@ become a variable: the dashboard app's own `VPAY_DASHBOARD_REDIRECT_URI`, the
 overlay disagreed with its app would answer every sign-in with a 400 at
 `/authorize` naming `redirect_uri`. `just gen-demo-keys` writes the overlay
 from the same variable and regenerates one that names a different port, so
-they cannot drift — that is the whole reason a _generated_ overlay makes this
+they cannot drift — that is the whole reason a *generated* overlay makes this
 possible at all.
 
 1. **Work email and password.** `ada@example.test` and the contents of the
    file above.
-2. **Set up your authenticator.** This is a _first_ sign-in, and enrolment is
+2. **Set up your authenticator.** This is a *first* sign-in, and enrolment is
    mandatory — a session never reaches `authenticated` while
    `staff_members.totp_secret` is `NULL`. Scan the QR with any TOTP app, or
    type the base32 key shown beneath it. Nothing is written to your account
@@ -958,7 +960,7 @@ overlay to match.
   the column is written the value appears.
 - **The list has a "Methods" column and no "Rail" column.**
   `GET /dash/v1/payment_intents` returns no charge, so the only rail-shaped
-  value there is the set of rails the intent _may_ be confirmed against. The
+  value there is the set of rails the intent *may* be confirmed against. The
   rail that actually took it is on the detail page.
 - **There is no page count.** The API serves cursors and a `has_more`, and no
   count anywhere.
@@ -1069,7 +1071,7 @@ worth knowing why because the fix is a file nobody looks at. The stub's
 `http://localhost:8082`: WireMock renders a response from the current request
 alone, and vpay's submit arrives over the compose network as
 `wiremock-orange:8080`, so the stub cannot learn what the host published it
-on. Step 9's lane 2 therefore made `gen-demo-keys` _check_ the pair and refuse
+on. Step 9's lane 2 therefore made `gen-demo-keys` *check* the pair and refuse
 any `demo_orange_port` but 8082 — correct, and it meant two demos collided on
 that port with no way out but editing a committed file.
 
@@ -1115,7 +1117,7 @@ gen-demo-keys: wrote .e2e/application-demo.yml — client_id=demo-merchant kid=e
 
 Because the two stacks want different `demo_port`s, bringing the second one up
 **regenerates the shared merchant key pair**. The first stack's server still
-holds the _old_ public JWK in memory, so its walkthrough then fails at step 2:
+holds the *old* public JWK in memory, so its walkthrough then fails at step 2:
 
 ```console
 ✘ step 2 (access token): the token endpoint refused this merchant with HTTP 401: {"error":"invalid_client","error_description":"Client authentication failed"}
@@ -1123,7 +1125,7 @@ holds the _old_ public JWK in memory, so its walkthrough then fails at step 2:
 
 So: **two demos brought up in sequence coexist and both serve; the older one's
 `demo-walk` stops working from the moment the newer one's `demo-up` runs.**
-Bring the second stack up _before_ you start walking the first, or accept that
+Bring the second stack up *before* you start walking the first, or accept that
 only the most recently generated key pair authenticates.
 
 The fix is to key the `.e2e/` artefacts on `demo_project` the way the Compose
@@ -1131,7 +1133,7 @@ project is keyed. It was **not** done in Step 8: `.e2e/demo-merchant/oauth-signi
 is a literal in `.github/workflows/ci.yml` (twice), in `just stripe-compat`, in
 `examples/merchant-stripe-node/index.mjs`, in `sdks/stripe-compat`, and as the
 default of `examples/merchant-demo`'s `VPAY_PRIVATE_KEY_FILE`, and a mistake
-there fails _silently_ as `invalid_client`. See `docs/plans/step8-notes/lane-a.md`.
+there fails *silently* as `invalid_client`. See `docs/plans/step8-notes/lane-a.md`.
 
 **Step 9 did not fix it either, and it now has a second key pair in it.**
 `.e2e/` after a demo:
@@ -1155,12 +1157,12 @@ explicit here. They are made explicit.
 
 ### 8.1 The rustls `CryptoProvider` panic — **closed**
 
-`docs/status.md`, row _"rustls `CryptoProvider` process default, for
-`authkestra_resource::jwt::Jwks::fetch`"_: **✅, closed 2026-09-02.** Both
+`docs/status.md`, row *"rustls `CryptoProvider` process default, for
+`authkestra_resource::jwt::Jwks::fetch`"*: **✅, closed 2026-09-02.** Both
 binaries call `rustls::crypto::ring::default_provider().install_default()` as
 the second thing in `run()`, before tracing init, so no client construction can
 precede it. The workspace pins reqwest with `rustls-no-provider`, under which
-`ClientBuilder::build()` _panics_ if no process default was installed — an
+`ClientBuilder::build()` *panics* if no process default was installed — an
 application may install one, a library may not.
 
 A unit test per binary asserts `CryptoProvider::get_default()` is `Some`
@@ -1177,7 +1179,7 @@ this page is one** — six confirms and thirty-odd authenticated calls through a
 
 `deny.toml`'s `[advisories] ignore` list, with its reasoning in full at
 `deny.toml:14-49`. The "Marvin Attack": a timing side-channel in the `rsa`
-crate's PKCS#1 v1.5 _decryption_.
+crate's PKCS#1 v1.5 *decryption*.
 
 - **There is no patched release.** The advisory has carried no fixed version
   since 2023, and `rsa` is an unconditional, non-optional dependency of
@@ -1185,7 +1187,7 @@ crate's PKCS#1 v1.5 _decryption_.
   cannot be feature-gated away, and `authkestra-op` signs RS256 only.
 - **The exposure is on-topic, not incidental**: this is the crate that signs
   the tokens the walkthrough above obtained. What limits it is that the attack
-  needs a _decryption_ oracle, and vpay's use is JWT signing and verification.
+  needs a *decryption* oracle, and vpay's use is JWT signing and verification.
 - **Accepted deliberately by the maintainer on 2026-08-09.** The entry genuinely
   fires — `cargo deny -L info check advisories` reports
   `note[advisory-ignored]` against `rsa v0.9.10`. Revisit if a fixed `rsa`
@@ -1233,7 +1235,7 @@ walkthrough attempts on 2026-09-03/04: two green (six outcomes for six, exit
 3. The worker is entitled to claim that job at once — `IDLE_SLEEP` is **1 s**
    (`vpay-worker/src/run_loop.rs:69`), and zero if it is already busy. It finds
    a charge in `submitting` and applies the crash-recovery table, whose
-   precondition is "the process died". Nothing distinguishes _that_ from a
+   precondition is "the process died". Nothing distinguishes *that* from a
    confirm still in flight.
 4. Whichever branch it takes moves the charge, so the confirm's CAS matches no
    row and the merchant gets a `500` — with `alert: true`, so it pages.
@@ -1245,10 +1247,10 @@ six runs lost it.
 Two distinct bad outcomes were observed in the database, and the second is the
 serious one:
 
-| Rail              | Branch                                                                                                                                         | What the merchant got | What the database holds                                                                                                                                                                                                                                              |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MTN (push)        | `RecoveryAction::Advance` — "the rail answered and the state update was lost"                                                                  | `500`                 | intent `succeeded`, and a `payment_intent.succeeded` webhook **was delivered**                                                                                                                                                                                       |
-| Orange (redirect) | `RecoveryAction::FailDeadOrder` (`vpay-worker/src/recovery.rs:179`, taken **unconditionally** for `ProviderFlow::Redirect`, with no age check) | `500`                 | charge `failed`, `failure_code = provider_unavailable`, `failure_raw` = _"the rail's submit response was lost before its token could be committed; the payer was never handed a redirect URL…"_ — **while the confirm was in flight and holding exactly that token** |
+| Rail | Branch | What the merchant got | What the database holds |
+|---|---|---|---|
+| MTN (push) | `RecoveryAction::Advance` — "the rail answered and the state update was lost" | `500` | intent `succeeded`, and a `payment_intent.succeeded` webhook **was delivered** |
+| Orange (redirect) | `RecoveryAction::FailDeadOrder` (`vpay-worker/src/recovery.rs:179`, taken **unconditionally** for `ProviderFlow::Redirect`, with no age check) | `500` | charge `failed`, `failure_code = provider_unavailable`, `failure_raw` = *"the rail's submit response was lost before its token could be committed; the payer was never handed a redirect URL…"* — **while the confirm was in flight and holding exactly that token** |
 
 So on a push rail a merchant is told the confirm failed and is then sent a
 `succeeded` webhook; on a redirect rail a **live order is killed** and
@@ -1275,7 +1277,7 @@ rebased branch, 2026-09-04, **without** lane G — it was rebased onto `068d8b7`
 master plus lanes B and D, and lane G merged later as `53f7a7e`; the race is
 timing-dependent and did not fire), lane A's own earlier count was two greens
 in six attempts and zero for three from nothing, lane G did not re-run the
-demo. **Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in):** `just demo` from nothing **six times, four green** (six outcomes for six each, exit 0; the first green is the paste in `docs/runbooks/demo.md` §4). The two failures were not the race: in both, the VM's Postgres answered single statements in 14–36 s while the host's I/O pressure was above 50 % (a second VM and two reviewer builds), and the worker's log shows the settlement and the webhook landing _after_ the demo's 120 s / 30 s budgets — a `DELETE FROM jobs` at 18 s and a `COMMIT` at 14.6 s in one, `INSERT`s at 5 s each in the other. `write_matched_no_row` appeared in no run's server or worker log. The plan's bar of three from nothing is met in count, not consecutively, which is why the row stays 🟡 and this sentence says both. **What proves the fix is lane G's
+demo. **Run on the merged branch, 2026-09-04, in the `vpay-ci` VM (code as of `4b5a9d7`, lanes G and H in):** `just demo` from nothing **six times, four green** (six outcomes for six each, exit 0; the first green is the paste in `docs/runbooks/demo.md` §4). The two failures were not the race: in both, the VM's Postgres answered single statements in 14–36 s while the host's I/O pressure was above 50 % (a second VM and two reviewer builds), and the worker's log shows the settlement and the webhook landing *after* the demo's 120 s / 30 s budgets — a `DELETE FROM jobs` at 18 s and a `COMMIT` at 14.6 s in one, `INSERT`s at 5 s each in the other. `write_matched_no_row` appeared in no run's server or worker log. The plan's bar of three from nothing is met in count, not consecutively, which is why the row stays 🟡 and this sentence says both. **What proves the fix is lane G's
 tests, not the demo** (`docs/status.md`'s confirm/worker race row).
 
 **Two things this section must still be read as saying.** The line references in
@@ -1314,19 +1316,19 @@ still up, and whose is that other stack".
 
 ## 11. When something goes wrong
 
-| Symptom                                                                            | Cause                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `500 api_error` on a confirm                                                       | Was [§9](#9-the-known-flake-a-real-defect-the-demo-found)'s confirm/worker race until it was fixed on 2026-09-04. If you see one now — check the log line's `code`: `write_matched_no_row` means that race is back and is worth reporting, anything else is a different fault.                                          |
-| `invalid_client` at step 2                                                         | Either another `demo-up` regenerated the shared key pair ([§7](#7-two-demos-on-one-machine)), or `deployment.public_base_url` disagrees with `VPAY_BASE_URL`. Step 1 prints a note when it can see the second one coming.                                                                                               |
-| `/healthz` never answers in 120 s                                                  | `demo-up` prints `docker compose ps` and the last 80 server log lines. Exit 78 there means a config or CLI prerequisite is missing.                                                                                                                                                                                     |
-| `port is already allocated`                                                        | Something holds one of the five published ports. Pass the matching variable — `demo_port=`, `demo_receiver_port=`, `demo_orange_port=`, `demo_checkout_port=`, `demo_shop_port=`. Since Step 9 every one of them is free to move; `demo_orange_port` was fixed at 8082 before that ([§7](#7-two-demos-on-one-machine)). |
-| `vpay-shop` exits in `prisma migrate deploy` with `database "shop" does not exist` | A `pgdata` volume created before Step 9. The init script runs only on an empty data directory — `just demo-down` (which is `down -v`), then `just demo`.                                                                                                                                                                |
-| `rail 'mtn_momo' settles in EUR; this PaymentIntent is XAF` on a confirm           | The overlay predates Step 9's XAF `providers` block. `just gen-demo-keys` says so by name and regenerates; if it does not, `rm -f .e2e/application-demo.yml` and re-run it.                                                                                                                                             |
-| The hosted `url` step 5 printed does not load                                      | Check `demo_checkout_port` against `docker ps`, and `checkout.public_base_url` in `.e2e/application-demo.yml` — they must be the same port. `gen-demo-keys` regenerates the overlay when the variable changes, so this means something edited the overlay by hand.                                                      |
-| The embedded page is blank, or a merchant's iframe refuses it                      | `shop-merchant`'s `checkout_origins` in the overlay must name the origin doing the framing. The browser's console says so; no server log does.                                                                                                                                                                          |
-| An order in the shop never turns `paid`                                            | The shop only ever writes that from vpay's webhook. `docker compose … logs vpay-shop \| grep 'vpay webhook'` — no line means the delivery has not arrived (check `vpay-worker`), a `400` means the secrets in the overlay and on `vpay-shop` disagree.                                                                  |
-| The shop answers `invalid_client` on checkout                                      | `VPAY_OAUTH_AUDIENCE` on `vpay-shop` must name vpay's **own** token endpoint (`http://localhost:{demo_port}/v1/oauth/token`), not the URL the shop POSTs to. Both compose files set it; an overlay whose `deployment.public_base_url` moved without it is the failure Step 9's lane 6 found.                            |
-| The walkthrough hangs on settlement                                                | `docker compose … logs vpay-worker`. A worker that is not running fails the step in under two minutes with a message saying so.                                                                                                                                                                                         |
+| Symptom | Cause |
+|---|---|
+| `500 api_error` on a confirm | Was [§9](#9-the-known-flake-a-real-defect-the-demo-found)'s confirm/worker race until it was fixed on 2026-09-04. If you see one now — check the log line's `code`: `write_matched_no_row` means that race is back and is worth reporting, anything else is a different fault. |
+| `invalid_client` at step 2 | Either another `demo-up` regenerated the shared key pair ([§7](#7-two-demos-on-one-machine)), or `deployment.public_base_url` disagrees with `VPAY_BASE_URL`. Step 1 prints a note when it can see the second one coming. |
+| `/healthz` never answers in 120 s | `demo-up` prints `docker compose ps` and the last 80 server log lines. Exit 78 there means a config or CLI prerequisite is missing. |
+| `port is already allocated` | Something holds one of the five published ports. Pass the matching variable — `demo_port=`, `demo_receiver_port=`, `demo_orange_port=`, `demo_checkout_port=`, `demo_shop_port=`. Since Step 9 every one of them is free to move; `demo_orange_port` was fixed at 8082 before that ([§7](#7-two-demos-on-one-machine)). |
+| `vpay-shop` exits in `prisma migrate deploy` with `database "shop" does not exist` | A `pgdata` volume created before Step 9. The init script runs only on an empty data directory — `just demo-down` (which is `down -v`), then `just demo`. |
+| `rail 'mtn_momo' settles in EUR; this PaymentIntent is XAF` on a confirm | The overlay predates Step 9's XAF `providers` block. `just gen-demo-keys` says so by name and regenerates; if it does not, `rm -f .e2e/application-demo.yml` and re-run it. |
+| The hosted `url` step 5 printed does not load | Check `demo_checkout_port` against `docker ps`, and `checkout.public_base_url` in `.e2e/application-demo.yml` — they must be the same port. `gen-demo-keys` regenerates the overlay when the variable changes, so this means something edited the overlay by hand. |
+| The embedded page is blank, or a merchant's iframe refuses it | `shop-merchant`'s `checkout_origins` in the overlay must name the origin doing the framing. The browser's console says so; no server log does. |
+| An order in the shop never turns `paid` | The shop only ever writes that from vpay's webhook. `docker compose … logs vpay-shop \| grep 'vpay webhook'` — no line means the delivery has not arrived (check `vpay-worker`), a `400` means the secrets in the overlay and on `vpay-shop` disagree. |
+| The shop answers `invalid_client` on checkout | `VPAY_OAUTH_AUDIENCE` on `vpay-shop` must name vpay's **own** token endpoint (`http://localhost:{demo_port}/v1/oauth/token`), not the URL the shop POSTs to. Both compose files set it; an overlay whose `deployment.public_base_url` moved without it is the failure Step 9's lane 6 found. |
+| The walkthrough hangs on settlement | `docker compose … logs vpay-worker`. A worker that is not running fails the step in under two minutes with a message saying so. |
 
 What the demo actually sent a rail is one command:
 

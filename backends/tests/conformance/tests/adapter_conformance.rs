@@ -623,7 +623,11 @@ fn documented_declines(rail: RailUnderTest) -> Vec<DocumentedDecline> {
             row(0x0f05, "PAYMENT_NOT_APPROVED", FailureCode::PayerDeclined),
             row(0x0f06, "APPROVAL_REJECTED", FailureCode::PayerDeclined),
             row(0x0f07, "PAYER_NOT_FOUND", FailureCode::InvalidPayer),
-            row(0x0f08, "PAYER_LIMIT_REACHED", FailureCode::PayerLimitReached),
+            row(
+                0x0f08,
+                "PAYER_LIMIT_REACHED",
+                FailureCode::PayerLimitReached,
+            ),
             row(
                 0x0f09,
                 "SENDER_ACCOUNT_NOT_ACTIVE",

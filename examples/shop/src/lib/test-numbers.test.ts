@@ -199,11 +199,15 @@ function producedCodes(crate: string): Set<string> {
   const start = source.indexOf("pub const PRODUCED_FAILURE_CODES");
   expect(start, `${crate} has no PRODUCED_FAILURE_CODES`).toBeGreaterThan(-1);
   const end = source.indexOf("];", start);
-  expect(end, `${crate}'s PRODUCED_FAILURE_CODES is unterminated`).toBeGreaterThan(start);
+  expect(
+    end,
+    `${crate}'s PRODUCED_FAILURE_CODES is unterminated`,
+  ).toBeGreaterThan(start);
   return new Set(
-    [...source.slice(start, end).matchAll(/FailureCode::(\w+)/gu)].map((match) =>
-      // `InsufficientFunds` → `insufficient_funds`, the spelling `/v1` uses.
-      (match[1] ?? "").replace(/(?<!^)([A-Z])/gu, "_$1").toLowerCase(),
+    [...source.slice(start, end).matchAll(/FailureCode::(\w+)/gu)].map(
+      (match) =>
+        // `InsufficientFunds` → `insufficient_funds`, the spelling `/v1` uses.
+        (match[1] ?? "").replace(/(?<!^)([A-Z])/gu, "_$1").toLowerCase(),
     ),
   );
 }

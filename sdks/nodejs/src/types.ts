@@ -32,6 +32,23 @@ export interface NextAction {
  * The closed failure-code vocabulary `vpay_core::failure` owns
  * (docs/flows/failures.md). Adapters map rail-specific error strings into
  * this list; merchants integrate against it once.
+ *
+ * **Not every rail can produce every code.** The list is the *core's*, and it
+ * does not shrink when a rail is added — but a merchant branching on all
+ * eleven should know that on the two MVP rails, MTN MoMo reaches all of them
+ * and Orange Money reaches three (`payer_timeout`,
+ * `provider_account_blocked`, `provider_error`). Orange documents five
+ * statuses and no sub-reason for `FAILED`, so its protocol has no way to say
+ * "not enough funds"; a payer who cancels on its hosted page arrives as
+ * `payer_timeout`, because the rail does not distinguish that from an
+ * abandoned page. The table, code by code with the rail reason that produces
+ * it and the conformance case that proves it, is
+ * `docs/flows/failures.md` § "Which rail can produce which code".
+ *
+ * `payer_declined` in particular was produced by **no** adapter until
+ * 2026-09-10 (vpay issue #59), while being typed here and given buyer copy by
+ * `examples/shop`. It is now MTN's `PAYMENT_NOT_APPROVED` /
+ * `APPROVAL_REJECTED`.
  */
 export type FailureCode =
   | "insufficient_funds"
