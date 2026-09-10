@@ -1,15 +1,15 @@
-'use client';
+"use client";
 
-import { Select as BaseSelect } from '@base-ui/react/select';
-import { cva, type VariantProps } from 'class-variance-authority';
+import { Select as BaseSelect } from "@base-ui/react/select";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-const trigger = cva('select w-full', {
+const trigger = cva("select w-full", {
   variants: {
-    size: { sm: 'select-sm', md: '' },
+    size: { sm: "select-sm", md: "" },
   },
-  defaultVariants: { size: 'md' },
+  defaultVariants: { size: "md" },
 });
 
 /**
@@ -31,8 +31,10 @@ const trigger = cva('select w-full', {
  * and would emit the dead rule from this very sentence. `--anchor-width` is
  * set by Base UI on `Select.Positioner`.
  */
-const POPUP_CLASS = 'menu w-(--anchor-width) rounded-box border border-base-300 bg-base-100 p-1 shadow-lg';
-const ITEM_CLASS = 'cursor-pointer rounded-box px-3 py-2 outline-none data-[highlighted]:bg-base-200';
+const POPUP_CLASS =
+  "menu w-(--anchor-width) rounded-box border border-base-300 bg-base-100 p-1 shadow-lg";
+const ITEM_CLASS =
+  "cursor-pointer rounded-box px-3 py-2 outline-none data-[highlighted]:bg-base-200";
 
 export interface SelectItem {
   value: string;
@@ -50,13 +52,13 @@ export interface SelectProps extends VariantProps<typeof trigger> {
   name?: string;
   id?: string;
   className?: string;
-  'aria-label'?: string;
+  "aria-label"?: string;
   /**
    * The id of a VISIBLE element naming this control. Preferred over
    * `aria-label`: a name only a screen reader can read leaves a sighted
    * payer looking at an unlabelled combobox.
    */
-  'aria-labelledby'?: string;
+  "aria-labelledby"?: string;
 }
 
 /**
@@ -80,8 +82,8 @@ export function Select({
   name,
   id,
   className,
-  'aria-label': ariaLabel,
-  'aria-labelledby': ariaLabelledBy,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
 }: SelectProps) {
   return (
     <BaseSelect.Root

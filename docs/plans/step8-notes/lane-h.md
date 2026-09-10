@@ -9,13 +9,13 @@ Branch `claude/step8-review-r1`, on the gate head `753cfb0`. This lane fixes
 what Step 8's correctness review confirmed against lanes B, C, D and G, and
 records the two findings it deliberately did **not** fix.
 
-| # | Finding | Commit |
-|---|---|---|
-| F1 | The recovery window compared Postgres' `created_at` against the **worker host's** clock, so a worker ≥60 s fast made lane G's guard a silent no-op | `5ba6b11` |
-| F3 | `RecoveryAction::Wait` rescheduled at `poll_delay(0)`, and every reschedule spends a rung, so a crashed charge burned ~6 rungs waiting the window out | `605f4da` |
-| F4 | The callback route's pull-forward matched any unleased future job, so an anonymous caller drove rail traffic at their own rate — and the module doc said the opposite | `6987e31` |
-| F6 | The SSRF classifier let `192.88.99.0/24`, `2001:1::/32`, `2001:2::/48` and `2001:20::/28` through as ordinary public addresses | `8508b31` |
-| F5, F7 | Recorded below, **not fixed** | — |
+| #      | Finding                                                                                                                                                               | Commit    |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| F1     | The recovery window compared Postgres' `created_at` against the **worker host's** clock, so a worker ≥60 s fast made lane G's guard a silent no-op                    | `5ba6b11` |
+| F3     | `RecoveryAction::Wait` rescheduled at `poll_delay(0)`, and every reschedule spends a rung, so a crashed charge burned ~6 rungs waiting the window out                 | `605f4da` |
+| F4     | The callback route's pull-forward matched any unleased future job, so an anonymous caller drove rail traffic at their own rate — and the module doc said the opposite | `6987e31` |
+| F6     | The SSRF classifier let `192.88.99.0/24`, `2001:1::/32`, `2001:2::/48` and `2001:20::/28` through as ordinary public addresses                                        | `8508b31` |
+| F5, F7 | Recorded below, **not fixed**                                                                                                                                         | —         |
 
 ---
 
@@ -49,12 +49,12 @@ being measured.
 One test, `worker_recovery::a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window`,
 run four times on the same containers.
 
-| # | Tree | Result |
-|---|---|---|
-| 0 | The fix, unmodified | `PASS [ 27.149s] 1 test run: 1 passed` |
-| 1 | The **pre-fix** subtraction with the reviewer's skew: `charge_age = (now_utc() + 61s) - created_at` | `FAIL`, `left: Finished  right: Rescheduled(10s)` |
-| 2 | The fix intact, **+61 s injected into every host-clock read left in `handlers.rs`** (both `enqueue_in_tx` run_ats and `scan_live_charges`' cutoff) | `PASS [184.704s] 1 test run: 1 passed (1 slow)` |
-| 3 | The fix intact, **guard deleted** (`if charge_age < window` → `let _ = charge_age;`) | `FAIL`, `left: Finished  right: Rescheduled(10s)` |
+| #   | Tree                                                                                                                                               | Result                                            |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| 0   | The fix, unmodified                                                                                                                                | `PASS [ 27.149s] 1 test run: 1 passed`            |
+| 1   | The **pre-fix** subtraction with the reviewer's skew: `charge_age = (now_utc() + 61s) - created_at`                                                | `FAIL`, `left: Finished  right: Rescheduled(10s)` |
+| 2   | The fix intact, **+61 s injected into every host-clock read left in `handlers.rs`** (both `enqueue_in_tx` run_ats and `scan_live_charges`' cutoff) | `PASS [184.704s] 1 test run: 1 passed (1 slow)`   |
+| 3   | The fix intact, **guard deleted** (`if charge_age < window` → `let _ = charge_age;`)                                                               | `FAIL`, `left: Finished  right: Rescheduled(10s)` |
 
 Mutation 1's failure is the reviewer's own reproduction, and it is **the same
 line lane G recorded for deleting the guard** — which is the point: a host
@@ -72,7 +72,7 @@ it is recorded rather than fixed — see §5.
 - `vpay_worker::handlers::tests::the_age_is_measured_by_the_database_and_not_by_this_host`
   — a row written at the epoch, read by a statement whose `now()` was five
   seconds later, must be five seconds old. The second half is what makes it
-  decisive rather than tautological: the age the *host* clock produces for the
+  decisive rather than tautological: the age the _host_ clock produces for the
   same row is measured too, and asserted to be past the 24-hour horizon, so an
   implementation that reached for `now_utc()` would escalate this charge to
   `unresolved` on its first poll and fail the case.
@@ -120,7 +120,7 @@ authenticated `query_status` within about a second.
 `pull_forward_in_tx` now takes a `floor` and refuses a job already due within
 it (`AND run_at > now() + $2`). The caller passes
 `vpay_api::provider_callback::PULL_FORWARD_FLOOR` — ten seconds, the ladder's
-own fastest rung. The floor is a *parameter* because how often a rail is asked
+own fastest rung. The floor is a _parameter_ because how often a rail is asked
 anything is not `vpay-db`'s policy (ADR-0002), and it is spelled out in
 `vpay-api` rather than read from `vpay_worker::poll_delay` because the
 dependency runs the other way; `the_pull_forward_floor_is_the_poll_ladders_first_rung`
@@ -132,7 +132,7 @@ wording suggests.** A charge the queue was about to ask about anyway costs a
 caller nothing — that is the common case, because it is where every charge sits
 immediately after a poll. But the rungs grow (20 s, 30 s, 45 s …) while the
 floor stays at ten, so a charge parked further out is still brought forward by
-every callback — which is what the route is *for* — and a caller repeating
+every callback — which is what the route is _for_ — and a caller repeating
 against one live charge can still hold it at roughly one status query per
 worker claim. **There is no rate limit**, per charge or per source. What stands
 between the route and rail traffic is that the caller must know a v4
@@ -145,7 +145,7 @@ say the route runs **two statements** (`enqueue_in_tx` + `pull_forward_in_tx`),
 not "exactly one write".
 
 **The cost, stated where it is paid:** a rail's callback arriving while the
-charge sits on the ladder's *first* rung no longer settles it early — it
+charge sits on the ladder's _first_ rung no longer settles it early — it
 settles at that rung, up to ten seconds later than before. That is a real
 reduction in what lane C shipped, and it is asserted rather than implied
 (`a_callback_does_not_accelerate_a_poll_that_is_already_about_to_run`: 202,
@@ -174,7 +174,7 @@ Each has a row in `every_refused_range_is_classified_in_both_families` — a row
 rather than a test of its own, following that case's own reasoning that a
 missing range should read as a missing row — including `2001:2f:ffff::1` for
 the far end of the `/28`. `192.88.98.255` and `192.88.100.1` went into the
-*deliverable* table, so the `/24` is pinned from both sides.
+_deliverable_ table, so the `/24` is pinned from both sides.
 
 **Left to the maintainer:** these three IPv6 prefixes sit inside `2001::/23`,
 the block RFC 2928 gave IANA for IETF protocol assignments as a whole.
@@ -202,18 +202,18 @@ event" are the same thing while replay does not exist.
 Not fixed here: the remedy is a replay path (or an `ssrf_blocked` state that is
 retryable a bounded number of times), which is a design decision about a
 merchant-visible delivery state machine and belongs with whoever owns
-`docs/flows/webhooks.md`. **Recommendation:** treat the *resolution* half the
+`docs/flows/webhooks.md`. **Recommendation:** treat the _resolution_ half the
 way an unresolvable host is already treated — an ordinary failed attempt on
 `delivery_delay` — and keep the permanent refusal for an address that
 classifies as private on every attempt of the ladder. That distinction is
 already made once in this code (`a_host_that_resolves_to_a_private_address_is_refused_and_an_unresolvable_one_retries`),
 which is why it is worth naming rather than inventing.
 
-### F7 — the 202s are not indistinguishable in *time*
+### F7 — the 202s are not indistinguishable in _time_
 
 `POST /provider/{code}/callback` answers `202` for a reference it has a charge
 for and `202` for one it does not, deliberately, so the route is not an oracle.
-The two are not the same *duration*: the unknown-reference path returns after
+The two are not the same _duration_: the unknown-reference path returns after
 one indexed `SELECT`, and the known-reference path additionally opens a
 transaction and runs two statements. That is a timing oracle for "does this
 deployment hold a charge with this rail reference".
@@ -234,7 +234,7 @@ three places, all of them scheduling rather than deciding.
   the skew — which is what the 184 s was — but no decision is made from it, and
   `vpay-api`'s confirm path does the same thing on the same column.
 - `scan_live_charges` computes `cutoff = now_utc() - 10 min` and compares it
-  against `charges.updated_at`, which Postgres wrote. This *is* the same
+  against `charges.updated_at`, which Postgres wrote. This _is_ the same
   cross-clock defect as F1, in the mildest possible direction: a fast worker
   considers a charge unattended sooner, and every re-enqueue it produces is
   `ON CONFLICT DO NOTHING`. It was left alone because it is outside the four
@@ -254,7 +254,7 @@ three places, all of them scheduling rather than deciding.
 
 with
 
-> **The fix is a minimum charge age**: `recovery_step` answers `RecoveryAction::Wait` — write nothing, ask nothing, come back once when the charge is old enough — for any `submitting` charge younger than `RecoveryPolicy::not_found_window` (60 s, three times the 20 s rail request timeout), measured from `charges.created_at` because the `SubmitAttempt::Never` branch has no `provider_requests` row to measure from. One predicate in the pure function, reached by both callers through the `recovery_action` helper they already shared. **Two defects in that first shape were found by Step 8's own correctness review and fixed the same day (lane H).** The age was `OffsetDateTime::now_utc() - charges.created_at` — the worker *host's* clock minus Postgres' — so a worker sixty seconds fast measured every charge as a minute older than it was and the guard became a silent no-op, exactly on the deployment whose fleet clocks had drifted; injecting `+61 s` at the old site failed `a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window` with the identical line deleting the guard produces (`left: Finished  right: Rescheduled(10s)`). The age now comes from `Charges::get_by_id_as_of`, which selects `now()` on the same statement that reads the row, and `recovery_step` takes durations rather than instants so no caller can supply the wrong clock; with the fix, +61 s of host skew injected into every remaining host-clock read in `handlers.rs` leaves that case passing. `past_the_horizon` took the same subtraction and now takes the same age. And `Wait` rescheduled at `poll_delay(0)`: every reschedule is re-claimed, `Jobs::claim` increments `attempts`, and `poll_delay` is indexed by it, so a genuinely crashed charge burned six rungs waiting the window out and started its real recovery at `poll_delay(6)`. `Wait` now carries `window - age` (clamped into `[0, window]`) and reschedules **once**, so the wait costs one claim and the first real rung after a crash is `poll_delay(1)`, twenty seconds.
+> **The fix is a minimum charge age**: `recovery_step` answers `RecoveryAction::Wait` — write nothing, ask nothing, come back once when the charge is old enough — for any `submitting` charge younger than `RecoveryPolicy::not_found_window` (60 s, three times the 20 s rail request timeout), measured from `charges.created_at` because the `SubmitAttempt::Never` branch has no `provider_requests` row to measure from. One predicate in the pure function, reached by both callers through the `recovery_action` helper they already shared. **Two defects in that first shape were found by Step 8's own correctness review and fixed the same day (lane H).** The age was `OffsetDateTime::now_utc() - charges.created_at` — the worker _host's_ clock minus Postgres' — so a worker sixty seconds fast measured every charge as a minute older than it was and the guard became a silent no-op, exactly on the deployment whose fleet clocks had drifted; injecting `+61 s` at the old site failed `a_young_push_charge_is_not_advanced_until_it_is_older_than_the_window` with the identical line deleting the guard produces (`left: Finished  right: Rescheduled(10s)`). The age now comes from `Charges::get_by_id_as_of`, which selects `now()` on the same statement that reads the row, and `recovery_step` takes durations rather than instants so no caller can supply the wrong clock; with the fix, +61 s of host skew injected into every remaining host-clock read in `handlers.rs` leaves that case passing. `past_the_horizon` took the same subtraction and now takes the same age. And `Wait` rescheduled at `poll_delay(0)`: every reschedule is re-claimed, `Jobs::claim` increments `attempts`, and `poll_delay` is indexed by it, so a genuinely crashed charge burned six rungs waiting the window out and started its real recovery at `poll_delay(6)`. `Wait` now carries `window - age` (clamped into `[0, window]`) and reschedules **once**, so the wait costs one claim and the first real rung after a crash is `poll_delay(1)`, twenty seconds.
 
 **And replace** the cost sentence
 
@@ -286,7 +286,7 @@ with
 said until 2026-09-04 (Step 8 review, finding 4)**" — up to the end of the row
 — with
 
-> **What it also does, and nothing said until 2026-09-04 (Step 8 review, finding 4): it is the first unauthenticated route this repo publishes to a network** — `compose.demo.yml` maps the whole `vpay-server` port to the host (`${VPAY_DEMO_PORT:-8080}:8080`, bound on `0.0.0.0`), so anyone on the same LAN as a demo or e2e stack can post a rail notification at it without a credential. **What that buys them was overstated and is now measured.** The module used to claim it was "bounded by what the ladder was going to do anyway"; it was not, and since 2026-09-04 (lane H) the pull-forward refuses a job due within the ladder's own fastest rung, so a POST about a charge the queue was about to ask about anyway changes no row and causes no rail request at all. Past that rung it is **not** bounded: the ladder's rungs grow (20 s, 30 s, 45 s …) while the floor stays at ten, so a caller repeating against one live charge can hold it at roughly one authenticated `query_status` per worker claim. **There is no rate limit, per charge or per source.** What is left standing is that the caller must know a v4 `provider_reference_id` for a live charge *on this deployment*, that each accepted POST buys exactly one authenticated status query — which settles the charge the rail actually names or nothing at all — that the body is bounded at 16 KiB, and that no charge or intent state is ever written ([flows/provider-port.md](../../flows/provider-port.md): the route is a hint that never moves state). It remains unauthenticated write access to a job's `run_at`, and **a real deployment must front this path** (rate limit, IP allowlist, or a reverse proxy) rather than publish it as the demo does. The floor also has a cost, stated: a rail calling back while the charge sits on the ladder's first rung no longer settles it early — it settles at that rung, up to ten seconds later than before
+> **What it also does, and nothing said until 2026-09-04 (Step 8 review, finding 4): it is the first unauthenticated route this repo publishes to a network** — `compose.demo.yml` maps the whole `vpay-server` port to the host (`${VPAY_DEMO_PORT:-8080}:8080`, bound on `0.0.0.0`), so anyone on the same LAN as a demo or e2e stack can post a rail notification at it without a credential. **What that buys them was overstated and is now measured.** The module used to claim it was "bounded by what the ladder was going to do anyway"; it was not, and since 2026-09-04 (lane H) the pull-forward refuses a job due within the ladder's own fastest rung, so a POST about a charge the queue was about to ask about anyway changes no row and causes no rail request at all. Past that rung it is **not** bounded: the ladder's rungs grow (20 s, 30 s, 45 s …) while the floor stays at ten, so a caller repeating against one live charge can hold it at roughly one authenticated `query_status` per worker claim. **There is no rate limit, per charge or per source.** What is left standing is that the caller must know a v4 `provider_reference_id` for a live charge _on this deployment_, that each accepted POST buys exactly one authenticated status query — which settles the charge the rail actually names or nothing at all — that the body is bounded at 16 KiB, and that no charge or intent state is ever written ([flows/provider-port.md](../../flows/provider-port.md): the route is a hint that never moves state). It remains unauthenticated write access to a job's `run_at`, and **a real deployment must front this path** (rate limit, IP allowlist, or a reverse proxy) rather than publish it as the demo does. The floor also has a cost, stated: a rail calling back while the charge sits on the ladder's first rung no longer settles it early — it settles at that rung, up to ten seconds later than before
 
 **Correction 2026-09-05 — the link destination in the block above is no
 longer verbatim.** `cargo xtask verify-links` reads a blockquote as this
@@ -372,26 +372,26 @@ blocks (including the 6to4 relay anycast `192.88.99.0/24`).
 Run in `/home/selast/dev/vpay/.claude/worktrees/step8-review-r1` with
 `DOCKER_HOST=unix:///run/user/1000/docker.sock` and `CARGO_BUILD_JOBS=4`.
 
-| Command | Result |
-|---|---|
-| `cargo fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo nextest run -p vpay-worker -p vpay-db -p vpay-api` | **371 tests run: 371 passed, 0 skipped** (was 368: +1 `vpay-worker` age case, +1 `vpay-worker` wait case, +1 `vpay-db` clock case) |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(worker_recovery) \| binary(worker_kill9) \| binary(provider_callback) \| binary(confirm_rails)'` | see §8a |
-| `just verify` | see §8a |
-| `just verify-ignored` | see §8a |
-| `just test-doc` | see §8a |
+| Command                                                                                                                                                  | Result                                                                                                                             |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all --check`                                                                                                                                | clean                                                                                                                              |
+| `cargo clippy --workspace --all-targets -- -D warnings`                                                                                                  | clean                                                                                                                              |
+| `cargo nextest run -p vpay-worker -p vpay-db -p vpay-api`                                                                                                | **371 tests run: 371 passed, 0 skipped** (was 368: +1 `vpay-worker` age case, +1 `vpay-worker` wait case, +1 `vpay-db` clock case) |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(worker_recovery) \| binary(worker_kill9) \| binary(provider_callback) \| binary(confirm_rails)'` | see §8a                                                                                                                            |
+| `just verify`                                                                                                                                            | see §8a                                                                                                                            |
+| `just verify-ignored`                                                                                                                                    | see §8a                                                                                                                            |
+| `just test-doc`                                                                                                                                          | see §8a                                                                                                                            |
 
 ### 8a. Counts, from the final run on this branch
 
 - `cargo fmt --all --check` — clean.
 - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
 - `cargo nextest run -p vpay-worker -p vpay-db -p vpay-api --no-fail-fast
-  --retries 2` — **371 tests run: 371 passed, 0 skipped, 0 ignored** (1 slow,
+--retries 2` — **371 tests run: 371 passed, 0 skipped, 0 ignored** (1 slow,
   **no flakes**). `vpay-worker` 75, `vpay-db` 82, `vpay-api` 214.
 - `cargo nextest run -p vpay-tests-integration -E 'binary(worker_recovery) |
-  binary(worker_kill9) | binary(provider_callback) | binary(confirm_rails)'
-  --no-fail-fast --retries 2 -j 1` — **43 tests run: 43 passed, 0 skipped**
+binary(worker_kill9) | binary(provider_callback) | binary(confirm_rails)'
+--no-fail-fast --retries 2 -j 1` — **43 tests run: 43 passed, 0 skipped**
   (5 slow, **no flakes**, 810 s). `worker_recovery` 23, `provider_callback`
   11, `confirm_rails` 7, `worker_kill9` 2.
 - `just verify` — `verify-no-mocks` ok; `verify-status` ok (1 unimplemented

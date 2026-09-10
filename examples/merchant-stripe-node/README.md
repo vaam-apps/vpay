@@ -49,13 +49,13 @@ everywhere — the OP's issuer is derived from it.
 Steps 3–5 are what `just demo_port=18080 stripe-compat` does for the
 conformance suite; run that first and this example can start at step 6.
 
-| Variable | Default |
-|---|---|
-| `VPAY_BASE_URL` | `http://localhost:18080` |
-| `VPAY_MERCHANT_CLIENT_ID` | `demo-merchant` |
+| Variable                         | Default                                    |
+| -------------------------------- | ------------------------------------------ |
+| `VPAY_BASE_URL`                  | `http://localhost:18080`                   |
+| `VPAY_MERCHANT_CLIENT_ID`        | `demo-merchant`                            |
 | `VPAY_MERCHANT_PRIVATE_KEY_PATH` | `.e2e/demo-merchant/oauth-signing-key.pem` |
 
-## How it reaches `succeeded`, and what this file does *not* do
+## How it reaches `succeeded`, and what this file does _not_ do
 
 `processing` is a push rail's one success state at confirm time: the rail has
 the request and the payer would now approve it on their handset. What moves it
@@ -65,9 +65,9 @@ committed in the charge's own transaction — enqueued with `run_at = now()`, so
 the first poll is immediate — asks the MTN WireMock host over HTTP whether the
 payer approved, and settles the charge in one transaction when the rail says
 yes. `vpay_worker::poll_delay`'s ladder (10 s, 20 s, 30 s, …) is what governs
-the *re*-polls after a `PENDING`.
+the _re_-polls after a `PENDING`.
 
-This example only *watches*, through `paymentIntents.retrieve`. That is
+This example only _watches_, through `paymentIntents.retrieve`. That is
 deliberate: it is the only thing a merchant integration can see, and a program
 that read the database behind the API it exists to demonstrate would be proving
 something else. It fails, rather than hanging, if the window closes with the

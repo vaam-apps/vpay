@@ -20,18 +20,18 @@
  * way round: an operator who mounted nothing must be able to *see* that from
  * the log, rather than from a payment page that looks finished.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync } from "node:fs";
 
 import {
   DEFAULT_RUNTIME_CONFIG,
   assembleRuntimeConfig,
   type RuntimeConfig,
-} from './settings';
+} from "./settings";
 
 /** Where `branding.yaml` is mounted, unless `VPAY_CHECKOUT_BRANDING_FILE` says otherwise. */
-export const DEFAULT_BRANDING_PATH = '/etc/vpay/checkout/branding.yaml';
+export const DEFAULT_BRANDING_PATH = "/etc/vpay/checkout/branding.yaml";
 /** Where `config.yaml` is mounted, unless `VPAY_CHECKOUT_CONFIG_FILE` says otherwise. */
-export const DEFAULT_CONFIG_PATH = '/etc/vpay/checkout/config.yaml';
+export const DEFAULT_CONFIG_PATH = "/etc/vpay/checkout/config.yaml";
 
 /**
  * Bracket notation, for the reason `env.ts` gives at length: Next inlines
@@ -40,7 +40,9 @@ export const DEFAULT_CONFIG_PATH = '/etc/vpay/checkout/config.yaml';
  */
 function pathFrom(variable: string, fallback: string): string {
   const value = process.env[variable];
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : fallback;
 }
 
 /**
@@ -50,16 +52,22 @@ function pathFrom(variable: string, fallback: string): string {
  * deployment that configured nothing, the second is a broken mount — so they
  * produce different log lines even though they produce the same defaults.
  */
-function readIfPresent(path: string): { text: string | null; problem: string | null } {
+function readIfPresent(path: string): {
+  text: string | null;
+  problem: string | null;
+} {
   try {
-    return { text: readFileSync(path, 'utf8'), problem: null };
+    return { text: readFileSync(path, "utf8"), problem: null };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (code === 'ENOENT') {
+    if (code === "ENOENT") {
       return { text: null, problem: `no file at ${path} — using defaults` };
     }
     const detail = error instanceof Error ? error.message : String(error);
-    return { text: null, problem: `${path} could not be read (${detail}) — using defaults` };
+    return {
+      text: null,
+      problem: `${path} could not be read (${detail}) — using defaults`,
+    };
   }
 }
 
@@ -75,8 +83,12 @@ export function readRuntimeConfig(paths?: {
   brandingFile?: string;
   configFile?: string;
 }): { config: RuntimeConfig; problems: readonly string[] } {
-  const brandingFile = paths?.brandingFile ?? pathFrom('VPAY_CHECKOUT_BRANDING_FILE', DEFAULT_BRANDING_PATH);
-  const configFile = paths?.configFile ?? pathFrom('VPAY_CHECKOUT_CONFIG_FILE', DEFAULT_CONFIG_PATH);
+  const brandingFile =
+    paths?.brandingFile ??
+    pathFrom("VPAY_CHECKOUT_BRANDING_FILE", DEFAULT_BRANDING_PATH);
+  const configFile =
+    paths?.configFile ??
+    pathFrom("VPAY_CHECKOUT_CONFIG_FILE", DEFAULT_CONFIG_PATH);
 
   const branding = readIfPresent(brandingFile);
   const checkout = readIfPresent(configFile);
@@ -115,7 +127,12 @@ export function runtimeConfig(): RuntimeConfig {
     // Not reachable through `readIfPresent`, which catches its own IO. This
     // is the belt: whatever else goes wrong, a payment page renders.
     const detail = error instanceof Error ? error.message : String(error);
-    result = { config: DEFAULT_RUNTIME_CONFIG, problems: [`configuration could not be loaded (${detail}) — using defaults`] };
+    result = {
+      config: DEFAULT_RUNTIME_CONFIG,
+      problems: [
+        `configuration could not be loaded (${detail}) — using defaults`,
+      ],
+    };
   }
   for (const problem of result.problems) {
     // eslint-disable-next-line no-console -- the loud log line this feature exists for. Server-side, at start, and it names files and keys only: nothing here has ever touched a session, a payer or a credential.

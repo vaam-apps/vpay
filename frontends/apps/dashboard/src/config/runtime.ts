@@ -17,7 +17,7 @@
  * configuration change is a pod restart, exactly as it is for `vpay-server`
  * (ADR-0003).
  */
-import { assembleConfig, type AssembledConfig } from './settings';
+import { assembleConfig, type AssembledConfig } from "./settings";
 
 let memo: AssembledConfig | null = null;
 

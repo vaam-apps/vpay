@@ -132,7 +132,10 @@ describe("the dashboard", { testIsolation: false }, () => {
     cy.get('[role="alert"]').should("be.visible");
     cy.get('[data-testid="totp-qr"]').should("be.visible");
     cy.getCookie("vpay_dash_session").should((cookie) => {
-      expect(cookie?.value ?? "", "the session cookie after a wrong code").to.not.equal("");
+      expect(
+        cookie?.value ?? "",
+        "the session cookie after a wrong code",
+      ).to.not.equal("");
     });
 
     // ---- leg 3: a code computed from what the screen showed --------------
@@ -161,7 +164,9 @@ describe("the dashboard", { testIsolation: false }, () => {
     // case the field exists for: without the check a stolen session cookie
     // was an account takeover in one request. vpay answers the same 401 it
     // answers for every credential refusal, and the page stays put.
-    cy.get("#dashboard-current-password").type("not-the-printed-password", { log: false });
+    cy.get("#dashboard-current-password").type("not-the-printed-password", {
+      log: false,
+    });
     cy.get("#dashboard-new-password").type(NEW_PASSWORD, { log: false });
     cy.get("#dashboard-confirm-password").type(NEW_PASSWORD, { log: false });
     cy.contains("button", "Set password").click();
@@ -170,10 +175,16 @@ describe("the dashboard", { testIsolation: false }, () => {
 
     // Then the right one.
     cy.task<string>("staffPassword").then((printed) => {
-      cy.get("#dashboard-current-password").clear().type(printed, { log: false });
+      cy.get("#dashboard-current-password")
+        .clear()
+        .type(printed, { log: false });
     });
-    cy.get("#dashboard-new-password").clear().type(NEW_PASSWORD, { log: false });
-    cy.get("#dashboard-confirm-password").clear().type(NEW_PASSWORD, { log: false });
+    cy.get("#dashboard-new-password")
+      .clear()
+      .type(NEW_PASSWORD, { log: false });
+    cy.get("#dashboard-confirm-password")
+      .clear()
+      .type(NEW_PASSWORD, { log: false });
     cy.contains("button", "Set password").click();
 
     // ---- leg 5: signed in, on a token the code exchange minted -----------
@@ -207,7 +218,9 @@ describe("the dashboard", { testIsolation: false }, () => {
     cy.get("body")
       .invoke("html")
       .should((html: string) => {
-        expect(html, "the rendered page").to.not.match(/eyJ[A-Za-z0-9_-]{10,}\./);
+        expect(html, "the rendered page").to.not.match(
+          /eyJ[A-Za-z0-9_-]{10,}\./,
+        );
       });
   });
 
@@ -315,7 +328,9 @@ describe("the dashboard", { testIsolation: false }, () => {
     // charge at all — where a dash would prove nothing.
     cy.visit("/payments");
     cy.get("table tbody tr").then(($rows) => {
-      const ids = [...$rows].map((row) => row.getAttribute("data-payment-id") ?? "");
+      const ids = [...$rows].map(
+        (row) => row.getAttribute("data-payment-id") ?? "",
+      );
       // Walk the list until one has a charge.
       const check = (index: number): void => {
         if (index >= ids.length) {
@@ -382,7 +397,10 @@ describe("the dashboard", { testIsolation: false }, () => {
       expect(session, "a signed-in session").to.not.equal("");
 
       cy.task<string | null>("staffTokenExpiry", session).then((first) => {
-        expect(first, "the session row must record when its token expires").to.be.a("string");
+        expect(
+          first,
+          "the session row must record when its token expires",
+        ).to.be.a("string");
         const firstExpiry = Date.parse(String(first));
 
         // Past the 80 % margin and comfortably short of the expiry.

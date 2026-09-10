@@ -1,7 +1,7 @@
 # `vpay-api` reference
 
 Why the code in `backends/crates/vpay-api` looks the way it does. The crate's
-own doc comments say *what* each item is and link here; this page carries the
+own doc comments say _what_ each item is and link here; this page carries the
 reasoning, the ports, the measurements and the history that a reader needs
 once — not on every `cargo doc` build.
 
@@ -50,23 +50,23 @@ code is shaped the way it is.
 Three groups, and which group a path falls into is the whole security boundary
 of this process:
 
-| Path | Auth | Why |
-|---|---|---|
-| `GET /healthz` | none | A probe must answer before anything is configured, and it reveals only whether Postgres is reachable. It is the *readiness* probe; liveness is `/livez` on the observability port. |
-| `POST /v1/oauth/token` | none | The credential *is* the request body (RFC 7523 `client_assertion`). Requiring a bearer token to get a bearer token is circular. |
-| `GET /v1/oauth/.well-known/openid-configuration` | none | How a client that has never spoken to vpay finds the token endpoint. |
-| `GET /v1/oauth/jwks.json` | none | How a verifier that has never spoken to vpay learns the public keys. Same circularity. |
-| **anything else under `/v1/oauth`** | none | The OP subtree is public by design; its own `.fallback(not_found)` answers the honest 404 rather than letting the path escape to the outer router. |
-| `GET /v1/browser/payment_intents/{id}` | none | A payer's browser has no merchant credential. The payment intent's own `client_secret` is what authorises it — see `vpay_api::browser`. |
-| `POST /v1/browser/payment_intents/{id}/confirm` | none | The same. |
-| **anything else under `/v1/browser`** | none | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token. |
-| **everything else under `/v1`** | `AuthenticatedMerchant` | The merchant API. |
-| `GET /dash/v1/payment_intents` | `require_dashboard_token` | The staff dashboard's payments list. Mounted **only** when `dashboard_client` is configured; otherwise the path falls through to the outer 404. See [the dashboard surface](#the-dashboard-surface-dash). |
-| `GET /dash/v1/payment_intents/{id}` | `require_dashboard_token` | The payment detail: the intent, its charge, its refunds, its event timeline. |
-| **anything else under `/dash/v1`** | `require_dashboard_token` | Its own `.fallback(not_found)`, for the OP nest's reason — and every non-read method is refused by the boundary before the router matches. |
-| `POST /provider/{code}/callback` | **none, and none is possible** | A payment rail telling us something happened. Neither MTN nor Orange signs a callback or sends a shared secret, so there is no credential to check — which is exactly why the handler may not write charge or intent state. See [the rail callback route](#the-rail-callback-route-provider_callbackrs). |
-| **anything else under `/provider`** | none | Its own `.fallback(not_found)`, for the OP nest's reason. |
-| anything else | none | The honest 404. |
+| Path                                             | Auth                           | Why                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`                                   | none                           | A probe must answer before anything is configured, and it reveals only whether Postgres is reachable. It is the _readiness_ probe; liveness is `/livez` on the observability port.                                                                                                                       |
+| `POST /v1/oauth/token`                           | none                           | The credential _is_ the request body (RFC 7523 `client_assertion`). Requiring a bearer token to get a bearer token is circular.                                                                                                                                                                          |
+| `GET /v1/oauth/.well-known/openid-configuration` | none                           | How a client that has never spoken to vpay finds the token endpoint.                                                                                                                                                                                                                                     |
+| `GET /v1/oauth/jwks.json`                        | none                           | How a verifier that has never spoken to vpay learns the public keys. Same circularity.                                                                                                                                                                                                                   |
+| **anything else under `/v1/oauth`**              | none                           | The OP subtree is public by design; its own `.fallback(not_found)` answers the honest 404 rather than letting the path escape to the outer router.                                                                                                                                                       |
+| `GET /v1/browser/payment_intents/{id}`           | none                           | A payer's browser has no merchant credential. The payment intent's own `client_secret` is what authorises it — see `vpay_api::browser`.                                                                                                                                                                  |
+| `POST /v1/browser/payment_intents/{id}/confirm`  | none                           | The same.                                                                                                                                                                                                                                                                                                |
+| **anything else under `/v1/browser`**            | none                           | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token.                                                                                                                                         |
+| **everything else under `/v1`**                  | `AuthenticatedMerchant`        | The merchant API.                                                                                                                                                                                                                                                                                        |
+| `GET /dash/v1/payment_intents`                   | `require_dashboard_token`      | The staff dashboard's payments list. Mounted **only** when `dashboard_client` is configured; otherwise the path falls through to the outer 404. See [the dashboard surface](#the-dashboard-surface-dash).                                                                                                |
+| `GET /dash/v1/payment_intents/{id}`              | `require_dashboard_token`      | The payment detail: the intent, its charge, its refunds, its event timeline.                                                                                                                                                                                                                             |
+| **anything else under `/dash/v1`**               | `require_dashboard_token`      | Its own `.fallback(not_found)`, for the OP nest's reason — and every non-read method is refused by the boundary before the router matches.                                                                                                                                                               |
+| `POST /provider/{code}/callback`                 | **none, and none is possible** | A payment rail telling us something happened. Neither MTN nor Orange signs a callback or sends a shared secret, so there is no credential to check — which is exactly why the handler may not write charge or intent state. See [the rail callback route](#the-rail-callback-route-provider_callbackrs). |
+| **anything else under `/provider`**              | none                           | Its own `.fallback(not_found)`, for the OP nest's reason.                                                                                                                                                                                                                                                |
+| anything else                                    | none                           | The honest 404.                                                                                                                                                                                                                                                                                          |
 
 `/livez` and `/metrics` are **not** in that table and are not served by this
 router at all. They belong to `vpay_api::observability`, on
@@ -95,7 +95,7 @@ which is the production behaviour and not a placeholder: `/v1/payment_intents`,
 `/v1/events`, `/v1/checkout/sessions` and — since 2026-09-05, issue #45 —
 `GET /v1/refunds/{id}` are real, and `POST /v1/refunds` and `/v1/balance` are
 not implemented and are therefore not routed ([status.md](../status.md)).
-The refund pair is the one place a *read* is mounted without its create, and
+The refund pair is the one place a _read_ is mounted without its create, and
 `v1::refunds`' own module doc carries the argument: creating a refund needs
 `ProviderAdapter::refund`, which no adapter implements, while reading one is
 the authoritative read every other money movement on this surface has. The
@@ -116,7 +116,7 @@ The authentication layer is `require_merchant_token` via `from_fn_with_state`
 `from_extractor_with_state`), mounted with `Router::layer` on the nested router
 so that it wraps that router's fallback too. `route_layer` is the wrong tool and
 axum says so: it does not apply to a fallback by design, so an unmatched
-`/v1/...` path would answer an *unauthenticated* 404 and tell an anonymous
+`/v1/...` path would answer an _unauthenticated_ 404 and tell an anonymous
 caller which `/v1` resources exist. When this nest had no routes at all, axum
 refused that spelling outright ("Adding a route_layer before any routes is a
 no-op"); now that it has routes, the swap would compile and be silently wrong,
@@ -135,7 +135,7 @@ path "falls through to the outer router's fallback and answers an
 unauthenticated 404". Measured, it did not: with no fallback on the OP router,
 axum flattens that nest's three routes into the outer path table and registers
 no `/v1/oauth/{*rest}` entry at all, so `GET /v1/oauth/not_a_route` matched
-`/v1/{*rest}` — the *authenticated* nest — and answered **401**. Removing the
+`/v1/{*rest}` — the _authenticated_ nest — and answered **401**. Removing the
 `.fallback(not_found)` reproduces it, and `the_oauth_nest_answers_its_own_404`
 fails with `left: 401, right: 404`.
 
@@ -148,7 +148,7 @@ prefix: every `/v1/oauth/...` path is served by the OP router, unmatched ones
 included, and that is a property a test checks rather than an accident of
 registration order.
 
-A *known* OP path with the wrong method — `GET /v1/oauth/token` — gets axum's
+A _known_ OP path with the wrong method — `GET /v1/oauth/token` — gets axum's
 own bare `405`, not this crate's envelope. Left as-is deliberately: 405 is the
 correct status, and turning it into the 404 envelope would tell an integrator
 the path does not exist when it does. The gap is that its body is empty rather
@@ -158,13 +158,13 @@ renderer exists for the whole surface, not one route at a time.
 ### Middleware order
 
 `ServiceBuilder` applies layers outside-in, so the list below is the order a
-*request* traverses them, and the reverse of the order a response does. All five
+_request_ traverses them, and the reverse of the order a response does. All five
 are load-bearing in that order:
 
 1. `discard_unusable_request_id` — removes a caller's `x-request-id` unless it
    is short and plain enough to carry (`is_usable_request_id`). It must be
    first, and above the minting layer specifically: step 2 only mints when the
-   header is *absent*, so this step's removal is exactly what causes a fresh id
+   header is _absent_, so this step's removal is exactly what causes a fresh id
    to be minted for a caller whose own id was not usable.
 2. `SetRequestIdLayer` — mints an `x-request-id` (a v4 UUID, via
    `MakeRequestUuid`) on the request, **unless the caller already sent one that
@@ -227,7 +227,7 @@ uses.
 ### Why vpay writes its own handlers
 
 `authkestra-axum` ships `axum_token_handler`/`axum_discovery_handler` and vpay
-does not use them, for three reasons that are all about *not* serving surface
+does not use them, for three reasons that are all about _not_ serving surface
 this deployment does not implement:
 
 1. Its router helpers mount the authorization-code, device and userinfo
@@ -242,7 +242,7 @@ this deployment does not implement:
    would put a second error-rendering path next to `ApiError`
    ([ADR-0011](../adr/0011-error-modelling.md) wants one).
 
-What vpay does *not* re-implement is the protocol itself: `token::token_handler`
+What vpay does _not_ re-implement is the protocol itself: `token::token_handler`
 calls `authkestra_op`'s own `handle_token` directly, and the status mapping it
 applies is copied from `authkestra-axum-0.7.1/src/op.rs::axum_token_handler`.
 
@@ -299,9 +299,9 @@ a drift is visible without a download:
 ```
 
 `token_handler` and its `token_error_status` are together that, with `resp`/`err`
-renamed. Note what is *not* copied: the same file's
+renamed. Note what is _not_ copied: the same file's
 `axum_device_authorization_handler` maps `"invalid_client" |
-"unauthorized_client"` to 401, and matching *that* arm here would be a bug —
+"unauthorized_client"` to 401, and matching _that_ arm here would be a bug —
 vpay serves no device-authorization endpoint, and RFC 6749 §5.2 makes
 `unauthorized_client` a 400 on the token endpoint.
 
@@ -315,7 +315,7 @@ things are left out, each on purpose:
   (`MerchantOp::new`), and `authkestra_op`'s `NoDpopReplayStore` fails closed —
   so a `DPoP` header would be answered `invalid_dpop_proof` rather than
   honoured. Calling `handle_token` (which passes `None`) means a `DPoP` header
-  is *ignored* instead, and the client gets a plain Bearer token it can actually
+  is _ignored_ instead, and the client gets a plain Bearer token it can actually
   use. Neither behaviour is DPoP support; ignoring it is the one that does not
   fail a request over an unsupported extension.
 - **No mTLS client certificate.** vpay does not terminate TLS in this process
@@ -376,7 +376,7 @@ payment-processing route.
 The other half of `get_key` — carried over from the original unchanged,
 deliberately (`jwt.rs` ~181-193): when the cached JWKS does **not** hold the
 requested `kid`, it calls `refresh()` unconditionally — "in case of rotation" —
-and `refresh()` holds the cache's write lock *across* the HTTP GET. On top of
+and `refresh()` holds the cache's write lock _across_ the HTTP GET. On top of
 that, key resolution happens **before** the signature is verified, so nothing
 about the token has been checked at that point.
 
@@ -384,7 +384,7 @@ Unthrottled, that makes an unauthenticated request with a random `kid` in its
 header a remote control for two things at once: one loopback
 `GET /v1/oauth/jwks.json` per request (which in this deployment is a Postgres
 `SELECT`, so the amplification lands on the database), and a write lock held
-across that round trip, which blocks every *legitimate* validation in the
+across that round trip, which blocks every _legitimate_ validation in the
 process for its duration. `JwtValidator::validate` closes both by deciding,
 before it delegates, whether this `kid` is one the process has ever seen a valid
 token for; `UNKNOWN_KID_REFRESH_INTERVAL`'s own doc comment states the throttle
@@ -393,7 +393,7 @@ and the trade-off it makes.
 ### A sharp edge in `jsonwebtoken`'s default audience validation
 
 `jsonwebtoken::Validation::validate_aud` defaults to `true`, but the check it
-gates only runs *if the token has an `aud` claim at all* — confirmed by reading
+gates only runs _if the token has an `aud` claim at all_ — confirmed by reading
 `jsonwebtoken-11.0.0/src/validation.rs`: the doc comment on `validate_aud`
 itself says "Validation only happens if `aud` claim is present", and the
 `_ => {}` fallthrough arm of `validate`'s `match (claims.aud, options.aud.as_ref())`
@@ -404,7 +404,7 @@ module is required to fail closed on (a missing claim, not merely a wrong one).
 
 The fix is not to hand-roll audience comparison: `JwtValidator::new` calls
 `set_required_spec_claims(&["exp", "aud", "iss"])`, which makes the `aud`
-claim's mere *presence* mandatory — a token with no audience is rejected as a
+claim's mere _presence_ mandatory — a token with no audience is rejected as a
 missing required claim before the comparison logic ever runs — and
 `set_audience` continues to do the real membership check with the library's own
 (tested) logic. Covered by `a_token_with_no_audience_claim_at_all_is_rejected`.
@@ -423,7 +423,7 @@ its own `jwks_cache` (a port of the `pub` `JwksCache`/`validate_jwt_generic`
 pair) and builds its own `jsonwebtoken::Validation`, so every field — including
 `validate_aud` and `required_spec_claims` — stays under this module's control
 from construction onward. `ValidationConfigBuilder` does expose
-`.audience()`/`.audiences()`, so the *audience* half of the sibling project's
+`.audience()`/`.audiences()`, so the _audience_ half of the sibling project's
 problem would not necessarily recur through `JwtStrategy` either — but the
 `required_spec_claims` fix above has no equivalent builder method at all, which
 alone would have forced hand-rolling (or living with the gap) had `JwtStrategy`
@@ -441,7 +441,7 @@ carries the shape decisions.
 ~~**Read the first paragraph of `dash/mod.rs` before anything else**: no
 client of this deployment can obtain a token for this surface.~~ **Corrected
 2026-09-07** ([ADR-0017](../adr/0017-staff-authentication.md)): the
-authorization-code grant *is* served, for the dashboard client and nothing
+authorization-code grant _is_ served, for the dashboard client and nothing
 else, and `vpay_api::staff` is the eight unauthenticated routes that produce
 the `Identity` `authkestra-op` takes as a parameter and authenticates nobody
 for. What follows describes a resource server that now has an issuer.
@@ -470,7 +470,7 @@ login: `default_handle_authorization_code` mints with `aud = <client_id>` and
 has **no requested-audience path at all**
 (`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so no token from the
 only grant that can produce a dashboard credential would ever have carried it.
-ADR-0017 changed the *validator* to expect what the grant produces rather than
+ADR-0017 changed the _validator_ to expect what the grant produces rather than
 forking the handler, and `Surface::audience()` is gone —
 `JwtValidator::new` takes the audience as a value, because it is configuration
 now and not a constant.
@@ -483,7 +483,7 @@ now and not a constant.
   staff grant stamps one — so **no machine client may read this surface**, by
   construction rather than by a list. That is a tightening over what stood
   before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it;
-- the claim is *compared*, never *used*. The `MerchantScope` still comes from
+- the claim is _compared_, never _used_. The `MerchantScope` still comes from
   the binding, so a forged claim buys a `403` rather than another merchant's
   rows.
 
@@ -499,7 +499,7 @@ read it as a client id again without saying so.
 
 The boot rule
 (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`) is the other
-half and neither is sufficient alone: it stops a *merchant* registration from
+half and neither is sufficient alone: it stops a _merchant_ registration from
 being able to request the dashboard client's id at `/v1/oauth/token` at all.
 That was a real hole before 2026-09-06 — `handle_client_credentials` honours
 any requested audience `allowed_audiences` permits, and nothing restricted
@@ -524,7 +524,7 @@ be, because they exist to produce the credential that layer checks, and a
 `/dash/v1/staff/login` behind a bearer-token requirement is a login nobody can
 reach.
 
-`Router::layer` wraps the routes *and the fallback* present when it is called,
+`Router::layer` wraps the routes _and the fallback_ present when it is called,
 so `dash::routes`' own `.fallback(not_found)` stays inside: an unmatched
 `/dash/v1/...` path answers exactly what it answered before this module
 existed. `staff::routes` deliberately carries no fallback of its own, because
@@ -545,7 +545,7 @@ refused everything would answer 401 and invite a caller to go looking for a
 credential this deployment could never issue — and it would make "I forgot to
 configure the dashboard" indistinguishable from "my token is wrong".
 
-`require_dashboard_token` *also* answers 404 when the validator or the
+`require_dashboard_token` _also_ answers 404 when the validator or the
 binding is absent. The two are redundant on purpose and the redundancy was
 measured: mutating either one alone leaves the 404 intact, and only mutating
 both makes `a_deployment_with_no_dashboard_client_mounts_no_dash_nest` fail
@@ -588,7 +588,7 @@ Three things the detail deliberately omits:
 `payer_ref_masked` **is** rendered, and is `null` on every row this system
 has ever written — nothing populates the column (`open_attempt` stores
 `None`). It is rendered from the column rather than derived in the renderer
-on purpose: deriving a mask would mean reading the *unmasked* value into a
+on purpose: deriving a mask would mean reading the _unmasked_ value into a
 staff surface, and the failure mode to avoid is this field quietly becoming
 the unmasked number because the masked one was empty.
 
@@ -631,7 +631,7 @@ panicked at boot inside its own image — see `vpay_provider::http` for the full
 account of that failure.
 
 `JwksCache::with_client` (authkestra#301) looks like the seam for this and is
-not: it is a consuming builder that *replaces* the client `new` has already
+not: it is a consuming builder that _replaces_ the client `new` has already
 constructed, so `JwksCache::new(..).with_client(..)` still runs the panicking
 line first. That was verified against the real binary, not inferred — with
 `vpay_provider::http::client` wired in through `with_client`, `vpay-server`
@@ -645,7 +645,7 @@ repository can apply to a pinned published crate.
 Everything cryptographic stays where it was. The keys are still authkestra's
 `Jwks`/`Jwk`, still fetched by authkestra's `Jwks::fetch_with`, still converted
 by authkestra's `Jwk::to_decoding_key`, and the signature is still checked by
-`jsonwebtoken::decode`. What is ported is the cache's *policy* — when to
+`jsonwebtoken::decode`. What is ported is the cache's _policy_ — when to
 re-fetch — which is a dozen lines and is pinned by `resource_auth`'s existing
 tests (the fetch-count, TTL, rotation and throttle cases all assert on this
 behaviour through a real wiremock JWKS).
@@ -720,7 +720,7 @@ Not deviations, and worth stating because they look like ones:
 The Stripe-style bracket-nested `application/x-www-form-urlencoded` decoder, and
 the two extractors (`VpayForm`, `VpayQuery`) that put it in front of a handler.
 
-This is the *reading* half of a wire contract whose writing half already ships in
+This is the _reading_ half of a wire contract whose writing half already ships in
 two SDKs — `sdks/rust/src/form.rs` and `sdks/nodejs/src/form.ts`, which are
 byte-for-byte identical to each other by test. It is therefore a deliberate
 port, not a general-purpose form parser: every rule below is chosen because it
@@ -730,7 +730,7 @@ merchant's request means one thing to their SDK and another to us.
 
 ### Why not `serde_urlencoded` (what `axum::Form` uses)
 
-It is a *flat* decoder: `metadata[order_id]=1234` becomes a key literally
+It is a _flat_ decoder: `metadata[order_id]=1234` becomes a key literally
 spelled `metadata[order_id]`, and `payment_method_types[0]=a` with
 `payment_method_types[1]=b` becomes two unrelated fields. Nesting is the whole
 encoding here ([merchant-auth.md](../flows/merchant-auth.md)'s table), so the
@@ -758,7 +758,7 @@ curl documentation use `[]`.
 
 ### Brackets are split before segments are decoded, and that ordering is load-bearing
 
-The encoder escapes a `[` *inside* a key segment as `%5B` precisely so it cannot
+The encoder escapes a `[` _inside_ a key segment as `%5B` precisely so it cannot
 be mistaken for nesting, and its own test
 `escapes_a_bracket_that_appears_inside_a_key_segment` pins `metadata[a%5Bb]=v`.
 Decoding the whole key first would turn that back into `metadata[a[b]` and the
@@ -840,26 +840,26 @@ Each step is a named function in the source (`load_confirmable_intent`,
 `confirm_once` is the sequence and nothing else, so "what order do these
 happen in" is answerable by reading a dozen lines.
 
-Step 6 has three shapes, and which one runs is decided by the *error's* own
+Step 6 has three shapes, and which one runs is decided by the _error's_ own
 classification rather than by anything this file knows about rails:
 
-* **the rail accepted it** — one transaction moves the charge to `submitted`
+- **the rail accepted it** — one transaction moves the charge to `submitted`
   with the rail's key material and the intent to `processing`/`requires_action`,
   it commits, and only then is a response built (`persist_submitted`, and
   crash-safety.md's "the commit is the gate on the redirect");
-* **the rail declined it** (`ProviderError::Rejected`) — one transaction fails
+- **the rail declined it** (`ProviderError::Rejected`) — one transaction fails
   the charge with its `failure_code` and stamps `last_payment_error` on the
   intent, which stays `requires_payment_method` because the lifecycle has no
   `failed` status; the merchant gets the `409` `charge_declined`;
-* **anything else** — we do not know what the rail did, so *nothing* moves. The
+- **anything else** — we do not know what the rail did, so _nothing_ moves. The
   `submitting` charge row and the status-less `provider_requests` row stay
   behind on purpose: they are exactly the state a crash between steps 4 and 6
   would leave, and are what the recovery pass reads.
 
 `Malformed` is the one arm where "no answer" is not literally true — bytes came
 back, they just did not parse — and it is grouped with the unknown cases
-deliberately. What the recovery table decides is whether to go and *ask the
-rail*, and an unparseable answer is exactly as unknown as a lost one: "every
+deliberately. What the recovery table decides is whether to go and _ask the
+rail_, and an unparseable answer is exactly as unknown as a lost one: "every
 ambiguity resolves toward 'find out', never 'give up'".
 
 ### What the checkout session says, and where the payer comes back to (`v1/return_trip.rs`)
@@ -875,29 +875,29 @@ payer holding a stale checkout link could pay anyway, and the settlement's own
 session, leaving `expired`/`unpaid` under a `succeeded` intent and a merchant
 holding a webhook that said the opposite.
 
-* The refusal is `ApiError::CheckoutSessionNotOpen`, `Category::Conflict`
+- The refusal is `ApiError::CheckoutSessionNotOpen`, `Category::Conflict`
   (409, `invalid_request_error`, `Retry::Never`), with **two codes** chosen by
   the state: `checkout_session_expired` and `checkout_session_complete`. Not
   the category default `invalid_state`, for the reason
   `idempotency_key_in_flight` is not `idempotency_key_in_use` — a merchant
   must be able to tell "your payer walked away" from "this intent is already
   processing". Not one code plus a `param` either: `param` on this API names a
-  *request parameter* (`ApiError::param` renders it only for `InvalidParam`),
+  _request parameter_ (`ApiError::param` renders it only for `InvalidParam`),
   and the request that trips this carries no reference to a session at all.
-* It fires on **both** surfaces, because it lives in `confirm_once`, which
+- It fires on **both** surfaces, because it lives in `confirm_once`, which
   both share. That is deliberate rather than incidental: `/v1`'s confirm is
   not authenticated by the payer's `client_secret` at all, so a merchant
   server that kept confirming after its own systems recorded the checkout as
   abandoned would produce exactly the contradiction the browser refusal
   prevents.
-* An `open` session past `expires_at` that no sweep has reached is expired
+- An `open` session past `expires_at` that no sweep has reached is expired
   **on the read**, and the read writes nothing. Same rule and same reasoning
   as `browser::checkout_sessions::authenticate`'s sixth refusal: a worker that
   is down must not be the difference between a payer being able to pay and
   not, and a confirm is the wrong place to repair a row — flipping it here
   would emit no `checkout.session.expired` and would skip the `NOT EXISTS`
   live-charge guard the sweep's transaction carries.
-* An intent with **no** session is unaffected, and an intent whose session was
+- An intent with **no** session is unaffected, and an intent whose session was
   expired and replaced by a new open one is payable through the new one:
   `CheckoutSessions::find_latest_by_intent` reads the newest row, and
   `checkout_sessions_one_open_per_intent` is what makes "an open session is
@@ -914,10 +914,10 @@ admit the confirm and then submit it to the rail with no return URL at all.
 question has two answers and they belong to different owners, which is why it
 is a trait and not two lines inside the confirm:
 
-* a charge driven by a **checkout session** returns to vpay's own return page
+- a charge driven by a **checkout session** returns to vpay's own return page
   for that session, because vpay has to poll the intent before it can forward
   the payer to the merchant's `success_url` or `cancel_url`;
-* every other charge returns to the merchant's own `charges.return_url` — the
+- every other charge returns to the merchant's own `charges.return_url` — the
   URL they sent on `confirm`, already validated by `checked_return_url` and
   already echoed back to them as `next_action.redirect_to_url.return_url`.
   This is what closes [browser-checkout.md](../flows/browser-checkout.md)'s D4
@@ -928,13 +928,13 @@ no charge row, no `provider_requests` row and no job — and after
 `load_confirmable_intent`, never before it, because this answer is not the
 uniform 404 and asking it first would let a caller learn that some other
 tenant's intent has a checkout session on it. (Until Step 9's lane 1b it ran
-*after* `open_attempt` and handed its answer straight to the adapter; the
+_after_ `open_attempt` and handed its answer straight to the adapter; the
 value now goes into `charges.return_url` before the charge is committed, so
 what the rail is told is the value that would survive a crash rather than a
 second read that could differ from what was made durable.)
 
 `CheckoutSessionGate`'s shipping impl is `SessionGate`, which holds the
-repositories *and* `ResourceConfig::checkout_public_base_url()` — both, because
+repositories _and_ `ResourceConfig::checkout_public_base_url()` — both, because
 the URL needs a row (`CheckoutSessions::find_latest_by_intent`) and a configured
 origin, and `CheckoutSessionRow::return_page_url` is the one place the two are
 joined. It was a blanket impl over `dyn Repositories` answering `None` for every
@@ -954,7 +954,7 @@ the silent failure this seam exists to prevent: the payer is forwarded one step
 too early and nothing reports it. The refusal fires for a push rail too, which
 would have ignored the URL, because the deployment's checkout page is gone
 either way and an outage that depended on which rail a payer picked would be
-worse to debug than one that does not. It is reached only *after* the session
+worse to debug than one that does not. It is reached only _after_ the session
 has admitted the confirm, so an expired session on a deployment that has lost
 its checkout page still answers `checkout_session_expired` — the more specific
 and more actionable of the two.
@@ -973,12 +973,12 @@ responsibility.
 ### Idempotency
 
 Every `POST` needs an `Idempotency-Key` (Step 2's D7). The key is claimed
-*atomically* — one `INSERT … ON CONFLICT`, in `vpay_db`'s `Idempotency::claim` —
+_atomically_ — one `INSERT … ON CONFLICT`, in `vpay_db`'s `Idempotency::claim` —
 so two concurrent requests carrying one key cannot both proceed, and the loser is
 told "in progress" rather than being allowed to create a second intent. A claim
 is always ended, on every path: stored (the response is replayable) or released
 (the retry must re-execute). "Every path" is meant literally, including the ones
-that fail *after* the work was done: a body that cannot be read back, a body
+that fail _after_ the work was done: a body that cannot be read back, a body
 that is not JSON, and a failed write to `idempotency_keys` each release before
 returning, because the alternative is the key staying `in_flight` until it
 expires and every retry under it being answered "still in progress".
@@ -987,7 +987,7 @@ The claim is carried as the `claim_id` the claim minted, never as the key alone:
 an expired claim is reclaimable, so addressing the row by key would let a request
 that stalled past its window overwrite or delete the claim that replaced it.
 
-The refusal of unsupported Stripe parameters runs *before* the claim, where the
+The refusal of unsupported Stripe parameters runs _before_ the claim, where the
 body is decoded — so a refused confirm stores nothing and leaves the key unspent,
 exactly as a body that fails to decode already does. Running it first is safe
 because the check is config-independent (it reads the body alone), so a genuine
@@ -1013,7 +1013,7 @@ dance is exactly how one of the two ends up leaving a merchant's key stuck
 `create` refuses three things with a `409` and not a `400`: an intent that is
 not `requires_payment_method`, an intent that already has a charge, and an
 intent that already has an open session. All three are facts about an
-*object's state* rather than about the request's shape. The third is checked
+_object's state_ rather than about the request's shape. The third is checked
 twice on purpose: `find_open_by_intent` first, so the merchant gets a sentence
 naming the session in the way, and then the partial unique index, which is the
 actual guard — between that read and the insert a concurrent create can commit
@@ -1031,28 +1031,28 @@ are the backstop for a writer that forgets, not the primary guard.
 
 ### The credential ladder
 
-| Route | Presents | May read |
-|---|---|---|
-| `GET /v1/checkout/sessions/{id}` | a merchant bearer token | the session, `client_secret` and `url` (which carries `?key=` and `#client_secret`) |
-| `GET /v1/browser/checkout/sessions/{id}` | `key` + the **session's** `client_secret` | the session, `payment_intent` expanded **with the intent's own `client_secret`** |
-| `GET /v1/browser/checkout/sessions/{id}/return` | `key` + the session's `return_token` | the session, `payment_intent` expanded **without** it |
-| `GET /v1/browser/checkout/origins` | `key` alone | the tenant's `checkout_origins` |
+| Route                                           | Presents                                  | May read                                                                            |
+| ----------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GET /v1/checkout/sessions/{id}`                | a merchant bearer token                   | the session, `client_secret` and `url` (which carries `?key=` and `#client_secret`) |
+| `GET /v1/browser/checkout/sessions/{id}`        | `key` + the **session's** `client_secret` | the session, `payment_intent` expanded **with the intent's own `client_secret`**    |
+| `GET /v1/browser/checkout/sessions/{id}/return` | `key` + the session's `return_token`      | the session, `payment_intent` expanded **without** it                               |
+| `GET /v1/browser/checkout/origins`              | `key` alone                               | the tenant's `checkout_origins`                                                     |
 
 The escalation this closes, read upwards: `return_token` (a query-string value
 that reaches access logs) → the session read → the intent's `client_secret` →
 `confirm`. Every hop is refused, and two of them are worth stating because
 they are easy to reintroduce:
 
-* **The two browser reads are separate path patterns, not one handler with
+- **The two browser reads are separate path patterns, not one handler with
   two optional parameters.** Each builds only the expected value it accepts,
   so a return token cannot open the session read.
-* **Neither browser read renders the session's `url`.** It carries the
+- **Neither browser read renders the session's `url`.** It carries the
   session's own `client_secret` in its fragment, so echoing it on the return
   read would hand the weaker credential's holder the stronger one. It costs
-  the page nothing: a payer on the session read is already *at* that URL, and
+  the page nothing: a payer on the session read is already _at_ that URL, and
   a payer on the return page has no use for it.
 
-The choice is expressed as a *type* — `ExpandableIntent::Expanded` versus
+The choice is expressed as a _type_ — `ExpandableIntent::Expanded` versus
 `::ExpandedWithSecret` — rather than as a field one handler clears, so a route
 that wanted to render a credential has to say the word.
 
@@ -1063,7 +1063,7 @@ explains.
 
 The origins route answers `200 {"origins": []}` for an unknown key rather than
 a 404, which is the same confidentiality property arrived at from the other
-side: an empty list is also what a *registered* tenant with no origins gets,
+side: an empty list is also what a _registered_ tenant with no origins gets,
 so the two are indistinguishable and nobody can enumerate a deployment's
 merchants by trying keys. It is also the fail-closed answer — no origins means
 no embedding.
@@ -1073,10 +1073,10 @@ no embedding.
 Stripe's `expand` shape (`model::ExpandableIntent`, `#[serde(untagged)]`: a
 string or an object, no discriminator).
 
-* `/v1/checkout/sessions` — **the id**. A merchant already holds the intent
+- `/v1/checkout/sessions` — **the id**. A merchant already holds the intent
   they created, so expanding would put a second, possibly stale copy of every
   amount on the wire, multiplied by the page size on the list.
-* `/v1/browser/checkout/sessions/{id}` and `.../return` — **the object**.
+- `/v1/browser/checkout/sessions/{id}` and `.../return` — **the object**.
   vpay's own page has only a session id and a session secret; it needs the
   amount, the currency, the status, `payment_method_types` (which rails to
   offer), `next_action` and `last_payment_error` before it can paint anything,
@@ -1092,7 +1092,7 @@ credential.
 
 Every URL vpay mints for the checkout app carries `?key={pk}`, because all
 three browser routes authenticate by it and the return page cannot use a
-fragment — a payer arrives there from a URL the *rail* replays.
+fragment — a payer arrives there from a URL the _rail_ replays.
 
 `create` takes an optional `publishable_key`. Named and registered to this
 tenant → that one; omitted → the tenant's **first configured key**, in the
@@ -1168,7 +1168,7 @@ And deliberately **not** left to the expiry sweep
 The sweep leaves a session with a live charge `open` on purpose, it runs at
 most once an hour, and a deployment whose worker was down would keep answering
 these reads for the length of the outage. The sweep makes `status` honest to a
-*merchant*; the read is what refuses a payer credential.
+_merchant_; the read is what refuses a payer credential.
 
 **`status = 'open'` gates the intent's `client_secret`, and nothing else.**
 That credential is handed over so the page can drive
@@ -1183,7 +1183,7 @@ copy it holds.
 ### `merchant.name`, and why there is a fallback
 
 Both browser reads render `merchant: { name }` — the one fact about the
-merchant a payer is shown, and a member `frontends/apps/checkout` *requires*:
+merchant a payer is shown, and a member `frontends/apps/checkout` _requires_:
 its `isSessionEnvelope` guard refuses a session envelope without it, so a
 server that rendered nothing made every session read `error.unexpected`. The
 field is `name` and not `display_name` because that is what the guard reads;
@@ -1211,7 +1211,7 @@ field. The page paints a neutral heading for the absent case.
 `GET /v1/account_holders`, mounted 2026-09-05 for
 [issue #47](https://github.com/vaam-apps/vpay/issues/47).
 [../flows/account-holder-lookup.md](../flows/account-holder-lookup.md) is the
-process and the policy; this section is why the *code* is shaped the way it
+process and the policy; this section is why the _code_ is shaped the way it
 is.
 
 ### The handler matches the port's result rather than `?`-ing it
@@ -1219,7 +1219,7 @@ is.
 Every other `/v1` handler that reaches a rail writes
 `adapter.submit(..).await?` and lets `ApiError`'s `#[from]` and `Classify`
 do the rest. This one matches, and the reason is the counter: `error` and
-`not_found` are two *different* outcomes on
+`not_found` are two _different_ outcomes on
 `vpay_account_holder_lookups_total`, and a `?` would leave the failure arm
 invisible — "a merchant is asking a rail that is not answering" is exactly the
 rate an operator wants, and it is the one thing a route with no persistence
@@ -1233,7 +1233,7 @@ derives the status (ADR-0011).
 
 There is nothing to scope: no query runs, no row is read, and the answer is a
 property of the rail. The extractor is bound anyway, because it is what makes
-the *authentication* boundary structural rather than remembered —
+the _authentication_ boundary structural rather than remembered —
 `MerchantScope::from_request_parts` fails closed with a paging 500 when the
 middleware is not mounted, so a refactor that dropped the layer would fail
 here instead of serving an unauthenticated identity lookup on a route that
@@ -1250,7 +1250,7 @@ Telling them apart would let a merchant enumerate which rails a deployment has
 configured but switched off, and the fix is the same for all three.
 
 It is a `400` and not the `409` `ProviderError::Unsupported` classifies to,
-because the rail is never *called*: ADR-0002 asks the core to branch on the
+because the rail is never _called_: ADR-0002 asks the core to branch on the
 capability first, and at that point the wrong thing is the merchant's
 parameter, which is what `param` should name.
 
@@ -1289,7 +1289,7 @@ writing the column is a change to the charge path, not to this route, and
 
 Five routes, and three decisions worth reading before the code.
 [`../flows/customers.md`](../flows/customers.md) is the product document —
-what a customer *is*, and the privacy rules around it. This is why the module
+what a customer _is_, and the privacy rules around it. This is why the module
 is shaped the way it is.
 
 ### The one-of rule is decided above the statement, and has to be
@@ -1302,8 +1302,8 @@ API decides it and the constraint is the backstop, exactly as
 
 On **create** that is a fact about the request. On **update** it is not: the
 request may say only `phone=`, and whether that leaves the customer nameless
-depends on the *stored* row. `validate_update` therefore takes the row, and
-computes what each field will be *after* the patch — the patch's value where
+depends on the _stored_ row. `validate_update` therefore takes the row, and
+computes what each field will be _after_ the patch — the patch's value where
 it says something, the stored value where it does not. The case that a naive
 "count the stored identifiers" check gets wrong is a patch that clears one and
 adds another in the same request, and
@@ -1346,7 +1346,7 @@ Three call sites resolve a merchant-supplied `customer=cus_…` — an intent's
 create, a session's create, and (off the intent's own column) the confirm
 path — and every one makes the same three decisions: refuse a malformed id
 with a `400` naming `customer`, refuse a customer that is not this merchant's
-with the *same* `400` and the same sentence, and record the use.
+with the _same_ `400` and the same sentence, and record the use.
 
 The stamp is the half that is easy to leave out and impossible to notice
 missing. A customer a merchant uses on every order but which nothing stamps is
@@ -1406,7 +1406,7 @@ polled right now and that poll will see the answer; a job already at or before
 `now()` needs nothing (which is what makes a burst of duplicate callbacks free
 rather than a row-lock queue); and a **parked** job — `run_at = 'infinity'` —
 stays parked, because the whole point of a dead letter is that its
-`dedupe_key` keeps scans *and callbacks* from re-creating work a human has to
+`dedupe_key` keeps scans _and callbacks_ from re-creating work a human has to
 look at first.
 
 Since Step 8's review it refuses a fourth: a job **already due within
@@ -1431,15 +1431,15 @@ that found it is the reason the floor exists. What is true:
   statements against `jobs`, no row changed, and **no rail request**. That
   covers the common case, because the ladder's first rung is where a charge
   sits immediately after its first poll.
-- A charge parked *further out* than the floor is still brought forward by
+- A charge parked _further out_ than the floor is still brought forward by
   every callback, and that is what the route is for. It is also the residual:
   the rungs grow (20 s, 30 s, 45 s, …) while the floor stays at ten, so a
   caller repeating against one live charge can hold it at roughly one
   authenticated `query_status` per worker claim. **There is no rate limit** —
   not per charge, not per source — and [status.md](../status.md) says so.
 - What actually stands between the route and rail traffic is therefore: the
-  caller must know a v4 `provider_reference_id` for a live charge *on this
-  deployment*; the work each accepted POST buys is one authenticated status
+  caller must know a v4 `provider_reference_id` for a live charge _on this
+  deployment_; the work each accepted POST buys is one authenticated status
   query, which settles the charge the rail names or nothing at all; the body
   is bounded at 16 KiB; and nothing here writes charge or intent state under
   any circumstances.
@@ -1470,7 +1470,7 @@ makes about an unauthenticated surface. So the two 202s — "queued" and "never
 heard of it" — are the same response, and the second is logged at `info` where
 an operator debugging a misregistered callback host will find it.
 
-An unknown *rail code* is different and stays a 404: it is a statement about
+An unknown _rail code_ is different and stays a 404: it is a statement about
 this deployment's route table, which is public (a merchant learns the same set
 from `payment_method_types`), and a rail whose code nobody linked is not a rail
 that is going to retry. The handler produces it by calling `crate::not_found`
@@ -1484,7 +1484,7 @@ the bodies.
 `CallbackRef::ref_extra` is **discarded**. Orange's `parse_callback` carries a
 `notif_token`, and sometimes a `pay_token`, out of the notification, and
 `docs/flows/adapter-orange-money.md` names repairing a charge whose
-`ref_extra` write was lost as a thing a callback *could* do. It is not done
+`ref_extra` write was lost as a thing a callback _could_ do. It is not done
 here, and doing it would need the stored `notif_token` compared against the
 received one first — which nothing implements. Merging an unauthenticated
 request's rail key material onto the row would corrupt the token the next
@@ -1512,7 +1512,7 @@ It used to live in both binaries — and until 2026-09-07 there were two.
 `vpay-worker-bin`'s carried verbatim copies of `adapters_by_code`, `boot_seeds`,
 `flow_label` and `display_name_for` — about 150 lines each, with comments
 explaining that the duplication was deliberate. It was not safe: the two
-processes reconcile the *same two tables* in the same database, so a change to
+processes reconcile the _same two tables_ in the same database, so a change to
 one copy and not the other is a rollout where `providers.display_name` or
 `providers.flow` flips back and forth depending on which binary restarted last,
 with nothing to report it. The previous arrangement had no drift guard of any
@@ -1536,7 +1536,7 @@ root now, and `SHIPPING_PACKAGES` in `.xtask` is still an array.
 
 `adapters_by_code` is where `vpay_provider_requests_total` and
 `vpay_provider_request_duration_seconds` get their one seam. The wrap happens
-there rather than in the binary's `adapters()` list because that list *was*
+there rather than in the binary's `adapters()` list because that list _was_
 deliberately duplicated per binary (until #77) and a metric mounted in a
 duplicated list is one the copies eventually disagree about. The reason has
 outlived the duplication and the wrap stays where it is: everything that
@@ -1551,6 +1551,6 @@ that exists only outside production
 ([ADR-0006](../adr/0006-no-mocks-in-main-processes.md)); it is the shipping
 process measuring itself.
 
-The conformance suite constructs adapters directly and is therefore *not*
+The conformance suite constructs adapters directly and is therefore _not_
 measured, which is correct: it exercises one adapter against a stub, and its
 counts would say nothing about a deployment.

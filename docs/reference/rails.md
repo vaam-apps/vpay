@@ -1,8 +1,8 @@
 # Rails: the port crate and its two adapters
 
 Why the code under `backends/crates/vpay-provider` and
-`backends/crates/vpay-adapter-*` looks the way it does. The *contract* is
-[`docs/flows/provider-port.md`](../flows/provider-port.md); the *decision* to
+`backends/crates/vpay-adapter-*` looks the way it does. The _contract_ is
+[`docs/flows/provider-port.md`](../flows/provider-port.md); the _decision_ to
 have a port at all is [ADR-0002](../adr/0002-provider-port.md); each rail's
 wire is [`adapter-mtn-momo.md`](../flows/adapter-mtn-momo.md) and
 [`adapter-orange-money.md`](../flows/adapter-orange-money.md). This page is the
@@ -15,31 +15,31 @@ Every claim here is either pinned by a named test or marked as unproven.
 
 ## What the port carries, and what each adapter keeps
 
-Three things belong to *every* rail rather than to any one of them, so the port
+Three things belong to _every_ rail rather than to any one of them, so the port
 crate holds them once. The corollary of ADR-0002's "rail-specific code lives
 inside an adapter" is that **cross-rail** code must not live inside one: two
 adapters each holding their own copy of a decision this consequential is two
 copies that can disagree, and a third rail is a third copy someone has to
 remember to write.
 
-| In `vpay-provider` | Why it cannot live in an adapter |
-|---|---|
-| `http` — the outbound client, and `read_rail_body` | An adapter must not build its own client (below), and "an oversize body is not a decline" is a rule about payments, not about a rail |
-| `token` — `CachedToken`, `fingerprint`, `usable_until` | A cache that could hand merchant B the bearer minted for merchant A is a cross-tenant leak with no rail-specific content |
-| `measured` — the counter and histogram | A metric mounted per adapter is a metric the third rail forgets |
+| In `vpay-provider`                                     | Why it cannot live in an adapter                                                                                                     |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `http` — the outbound client, and `read_rail_body`     | An adapter must not build its own client (below), and "an oversize body is not a decline" is a rule about payments, not about a rail |
+| `token` — `CachedToken`, `fingerprint`, `usable_until` | A cache that could hand merchant B the bearer minted for merchant A is a cross-tenant leak with no rail-specific content             |
+| `measured` — the counter and histogram                 | A metric mounted per adapter is a metric the third rail forgets                                                                      |
 
 And what stays per-rail, deliberately:
 
-| In each adapter | Why it must not be shared |
-|---|---|
+| In each adapter                                         | Why it must not be shared                                                                                                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The refresh margin (`REFRESH_MARGIN` / `EXPIRY_MARGIN`) | Two separately reasoned numbers that happen to agree at 60 s today. `CachedToken` has **no default** — each adapter passes its own, pinned by `the_margin_is_the_callers_and_this_type_supplies_none` |
-| MTN's `ASSUMED_LIFETIME` | MTN may omit `expires_in`; Orange does not, and treats its absence as "use once, do not cache" |
-| `mapping.rs` — the `FailureCode` tables | Each rail's own vocabulary. A shared table would be a guess about a rail nobody has read |
-| `wire.rs` — the rail's own casing | See "serde" below |
-| Orange's `token_url` derivation | Orange serves OAuth from the host root and the payment API under a path; MTN's token endpoint is under its base URL |
-| `Capabilities` | The whole point of the port: the core branches on these values, never on a provider code |
+| MTN's `ASSUMED_LIFETIME`                                | MTN may omit `expires_in`; Orange does not, and treats its absence as "use once, do not cache"                                                                                                        |
+| `mapping.rs` — the `FailureCode` tables                 | Each rail's own vocabulary. A shared table would be a guess about a rail nobody has read                                                                                                              |
+| `wire.rs` — the rail's own casing                       | See "serde" below                                                                                                                                                                                     |
+| Orange's `token_url` derivation                         | Orange serves OAuth from the host root and the payment API under a path; MTN's token endpoint is under its base URL                                                                                   |
+| `Capabilities`                                          | The whole point of the port: the core branches on these values, never on a provider code                                                                                                              |
 
-### serde: `rename_all` is for *our* wire, never a rail's
+### serde: `rename_all` is for _our_ wire, never a rail's
 
 The workspace convention is that every type modelling vpay's own wire or config
 carries `#[serde(rename_all = "snake_case")]`, so a field added as `payTo`
@@ -53,7 +53,7 @@ rule and not an oversight:
   masked by the per-field `#[serde(rename)]` attributes on the fields that have
   one, and a silent wire break on the fields that do not.
 - Orange's bodies happen to be snake_case today, which makes the attribute
-  *more* dangerous there, not less: it would read as a promise that these names
+  _more_ dangerous there, not less: it would read as a promise that these names
   are ours to normalise, and the day Orange sends one that is not snake_case
   the attribute would quietly rename it away from the rail's own spelling.
 
@@ -74,7 +74,7 @@ which is why no call site changed.
 The cost, stated rather than hidden: `vpay-provider` is no longer a pure
 interface crate — it links reqwest, rustls and webpki-roots, so a future
 non-HTTP rail (a USSD gateway, a file drop) compiles a TLS stack it never uses.
-No *binary* grew; both already resolved all three. A separate `vpay-http` crate
+No _binary_ grew; both already resolved all three. A separate `vpay-http` crate
 was rejected for the workspace member, `deny.toml` entry and second `sdks/rust`
 twin note it would have added.
 
@@ -84,7 +84,7 @@ The runtime image is `FROM scratch` ([ADR-0004](../adr/0004-musl-mimalloc.md)):
 no glibc, no shell, no OS certificate store. reqwest is pinned at 0.13 with
 `rustls-no-provider`, and on that version it no longer offers a vendored-roots
 feature — it builds a `rustls_platform_verifier::Verifier`, i.e. it reads the
-*platform* trust store. It does so **eagerly, inside `ClientBuilder::build()`**,
+_platform_ trust store. It does so **eagerly, inside `ClientBuilder::build()`**,
 not lazily at connect time, and when the store turns up empty the verifier
 returns `General("No CA certificates were loaded from the system")`, which
 `Client::new()` converts into a panic.
@@ -94,13 +94,13 @@ That is not hypothetical. `JwtValidator::new` used to reach
 `vpay-server` panicked at boot inside its own image while passing every test on
 machines that happen to have `/etc/ssl`. The JWKS URL it was about to fetch was
 plain `http://` over loopback — TLS was never going to be negotiated — so the
-failure had nothing to do with the request and everything to do with *when* the
+failure had nothing to do with the request and everything to do with _when_ the
 trust store is read.
 
 `http::client` therefore hands reqwest a finished `rustls::ClientConfig` built
 from Mozilla's vendored bundle. That takes reqwest's `TlsBackend::BuiltRustls`
 branch, which consults neither the platform verifier nor the process-wide
-`CryptoProvider` — so it also cannot hit the *other* panic the
+`CryptoProvider` — so it also cannot hit the _other_ panic the
 `rustls-no-provider` pin exposes ("No rustls crypto provider is configured"),
 whether or not the binary installed a default provider first.
 
@@ -120,7 +120,7 @@ different ADR.
 
 reqwest's default is `redirect::Policy::limited(10)`, and on a cross-host hop it
 strips exactly three headers: `Authorization`, `Cookie` and
-`Proxy-Authorization`. Every *other* header is replayed at the new host — and a
+`Proxy-Authorization`. Every _other_ header is replayed at the new host — and a
 rail adapter's headers are precisely the ones not on that list: MTN's
 `Ocp-Apim-Subscription-Key`, `X-Target-Environment`, `X-Reference-Id` and
 `X-Callback-Url` — while a 307/308 replays the request **body**, which on
@@ -156,7 +156,7 @@ construct it.
 ### The twin in `sdks/rust`
 
 `sdks/rust/src/client.rs` has a near-identical `rustls_client_config`, and it
-stays a separate copy on purpose: `vpay-sdk` is what a *merchant* compiles into
+stays a separate copy on purpose: `vpay-sdk` is what a _merchant_ compiles into
 their own process, so making it depend on a server crate would drag axum, sqlx
 and the whole OP into a merchant's build. The SDK's copy also carries a
 constraint this one does not — a library inside someone else's process may
@@ -192,7 +192,7 @@ nobody sets is a knob nobody has tested. The conformance suite builds a
 `ProviderConfig` directly and is the one caller that overrides them.
 
 The request budget is generous rather than tight on purpose. A push rail's
-`submit` returns as soon as the rail has *accepted* the request, but
+`submit` returns as soon as the rail has _accepted_ the request, but
 "accepted" can involve the rail's own upstream; a deadline that fires early on
 a rail that did in fact accept the charge leaves a payer prompted for a charge
 we recorded as a transport failure — exactly the ambiguity
@@ -231,7 +231,7 @@ again.
 
 ### Why it is keyed at all
 
-`ProviderAdapter` takes `&ProviderConfig` *per call*, so one `Adapter` value can
+`ProviderAdapter` takes `&ProviderConfig` _per call_, so one `Adapter` value can
 legitimately be handed two different merchants' credentials for the same rail. A
 cache keyed by nothing would hand merchant B the token minted for merchant A —
 money moving on the wrong account, and no test of a single-merchant deployment
@@ -242,7 +242,7 @@ the ones being used now.
 A single slot rather than a map keyed by fingerprint: a map would be an
 unbounded, never-evicted cache of bearer tokens keyed by credentials, which is a
 worse thing to hold in memory than one token re-minted when the configuration it
-belongs to changes. The fingerprint is what makes the single slot *safe*; it is
+belongs to changes. The fingerprint is what makes the single slot _safe_; it is
 not what makes it fast.
 
 ### The two invariants that were each a real defect
@@ -259,14 +259,14 @@ the shape of each.
    (`the_lifetime_is_measured_from_the_send_not_from_the_answer`.)
 2. **The secret half of the credentials is in the fingerprint** — MTN hashes
    `api_key`, Orange hashes `client_secret`. A secret is rotated precisely when
-   the old one must stop working *now*; hashing only the identifier meant the
+   the old one must stop working _now_; hashing only the identifier meant the
    fingerprint still matched after a rotation, the cache still hit, and the
    bearer minted from a revoked secret kept being sent until it aged out (up to
    an hour) or the rail answered 401.
    (`rotating_only_the_secret_evicts_the_cached_bearer`,
    `different_credentials_fingerprint_differently`.)
 
-Hashing a secret is safe here *because* it is a digest: the cache holds a
+Hashing a secret is safe here _because_ it is a digest: the cache holds a
 SHA-256, never credential material. Each field is length-prefixed, so `("ab",
 "c")` and `("a", "bc")` cannot collide by concatenating differently — the whole
 point of the key being that distinct credentials are distinct.
@@ -274,7 +274,7 @@ point of the key being that distinct credentials are distinct.
 
 ### Why the margin is per-rail
 
-`usable_until` subtracts a margin the *caller* supplies; the shared type has no
+`usable_until` subtracts a margin the _caller_ supplies; the shared type has no
 default. The two are 60 s today and are not the same number: MTN's is reasoned
 from "the clock that matters is MTN's and we cannot see it — the round trip, a
 retry, and any skew have to fit inside it", Orange's from "a token that expires
@@ -285,7 +285,7 @@ default would let one rail silently inherit the other's reasoning.
 Each adapter pins its own:
 `the_refresh_margin_mtn_applies_is_sixty_seconds_of_the_rails_own_lifetime` and
 `the_expiry_margin_orange_applies_is_sixty_seconds_of_the_rails_own_lifetime`.
-Both fail if the constant changes. Neither can detect a *swap* between two
+Both fail if the constant changes. Neither can detect a _swap_ between two
 constants that are numerically equal — what rules that out is structural: the
 shared type supplies no margin, so each call site names one.
 
@@ -304,9 +304,9 @@ into backups and replicas for no benefit. Re-minting after a restart costs one
 round trip.
 
 Nothing renders a token or a credential: `CachedToken`'s `Debug` is hand-written
-to redact the value, header values are marked *sensitive* (via reqwest's
+to redact the value, header values are marked _sensitive_ (via reqwest's
 `basic_auth`/`bearer_auth`, which is also why the base64 is not hand-rolled),
-and every configuration error names the *key* that was wrong, never its value.
+and every configuration error names the _key_ that was wrong, never its value.
 (`debugging_a_cached_token_does_not_print_it`,
 `debugging_the_adapter_does_not_print_the_token`,
 `debugging_credentials_does_not_print_them`,
@@ -319,7 +319,7 @@ and every configuration error names the *key* that was wrong, never its value.
 A **push** rail in the sense [`provider-port.md`](../flows/provider-port.md)
 gives the word: the payer is prompted on their own handset, we supply the
 reference (`X-Reference-Id`) so a submit is idempotent on an id that exists in
-our database *before* the call, and status is queryable by that same reference
+our database _before_ the call, and status is queryable by that same reference
 indefinitely — which is what the poll ladder is built on.
 
 **A 409 is a success.** MTN answers `RESOURCE_ALREADY_EXIST` when it has already
@@ -329,7 +329,7 @@ turn a safe retry into a lost payment.
 (`a_duplicate_reference_is_a_success_not_an_error`,
 `duplicate_submit_reports_submitted_not_an_error`.)
 
-**A 500 is not automatically retryable.** Several *logical* errors arrive as
+**A 500 is not automatically retryable.** Several _logical_ errors arrive as
 HTTP 500 with a `code` in the body, three of which are our own misconfiguration
 and will never succeed. The body's `code` is read before anything is decided.
 (`a_500_that_names_our_misconfiguration_is_never_retried`.)
@@ -339,19 +339,18 @@ and will never succeed. The body's `code` is read before anything is decided.
 charge it is about to accept, and failing it here would lose a payment still in
 flight. (`no_record_of_a_reference_is_not_a_failure`.)
 
-**Refunds are not built.** MTN refunds are the *Disbursements* product — a
+**Refunds are not built.** MTN refunds are the _Disbursements_ product — a
 different subscription key, a separately-scoped token, and a `transfer` call
 this adapter does not make. No deployment of this system holds those
-credentials. `supports_refunds` stays `true` because the rail *does* support
+credentials. `supports_refunds` stays `true` because the rail _does_ support
 refunds; it is we who have not built them, so the answer is
 `ProviderError::NotImplemented("mtn_momo::refund")` and it is listed in
 [`status.md`](../status.md). Answering `Unsupported` would be a lie about the
 rail.
 
-The 401 path is the adapter's only retry: nothing else is resent, least of all a
-500. Resending after a 401 is safe on both calls that use it — `submit` carries
+The 401 path is the adapter's only retry: nothing else is resent, least of all a 500. Resending after a 401 is safe on both calls that use it — `submit` carries
 our own `X-Reference-Id`, so a duplicate is a 409 the caller reads as success,
-and `query_status` is a read. A *freshly minted* token being refused means the
+and `query_status` is a read. A _freshly minted_ token being refused means the
 credentials are wrong rather than stale, which pages.
 
 ---
@@ -360,7 +359,7 @@ credentials are wrong rather than stale, which pages.
 
 Implements `submit`, `query_status` and `parse_callback` against the three calls
 transcribed in [`adapter-orange-money.md`](../flows/adapter-orange-money.md).
-`refund` is deliberately *not* overridden: Orange documents no refund API for
+`refund` is deliberately _not_ overridden: Orange documents no refund API for
 Web Payment, so the port's default `ProviderError::Unsupported` is the
 permanent, correct answer and `Capabilities::supports_refunds` is what the core
 branches on. It is not `NotImplemented`, because there is nothing to build.
@@ -397,7 +396,7 @@ Inventing a lifetime is a guess that expresses itself as intermittent 401s under
 load; the honest cost of not guessing is one extra token call per payment call
 on a rail that has never been observed to omit the field.
 
-**`parse_callback` fails closed.** A `notif_token` is *required*: it is the only
+**`parse_callback` fails closed.** A `notif_token` is _required_: it is the only
 thing distinguishing Orange's notification from an unauthenticated POST by
 anyone who can guess an `order_id`, and comparing it against the stored one is
 the caller's job (this adapter holds no state). Returning a `CallbackRef` with
@@ -429,7 +428,7 @@ have done so since Step 3, derived by
 adjacent decision about rail-keyed configuration). Until Step 8 lane C that
 address answered a 404, because nothing mounted the route.
 
-What was missing was not the header; it was any way to *notice* it going away.
+What was missing was not the header; it was any way to _notice_ it going away.
 Polling settles a payment perfectly well on its own, so an adapter that quietly
 stopped sending its callback URL would have passed every conformance case,
 settled every payment in `backends/tests/integration`, and been discovered by
@@ -444,12 +443,12 @@ It is now asserted twice, from both directions:
   accepted submit. Measured: removing MTN's `.header(CALLBACK_URL_HEADER, …)`
   fails `submit_returns_a_reference_and_a_flow_shaped_result` with
   `Config("mtn_momo: requesttopay answered HTTP 404 Not Found; check
-  base_url")`, and pointing Orange's `notif_url` at `config.base_url` fails the
+base_url")`, and pointing Orange's `notif_url` at `config.base_url` fails the
   same case with Orange's own 404. Both restored (2026-09-04).
 - `the_submit_tells_the_rail_where_to_call_back` reads WireMock's request
   journal and asserts the URL the rail received is the configured one
-  **verbatim** — the half that catches an adapter sending *some* URL rather
-  than *this* one.
+  **verbatim** — the half that catches an adapter sending _some_ URL rather
+  than _this_ one.
 
 The host is left free in the mapping matchers (`.+`) because it genuinely
 varies: the stub's own origin under test, an ingress in production, and MTN
@@ -460,7 +459,7 @@ derivation in `vpay-config`, and neither crate compiles against the other.
 
 ---
 
-## The payer's return URL is the *core's* answer, not a rail's
+## The payer's return URL is the _core's_ answer, not a rail's
 
 A redirect rail hands the payer to a page vpay does not control, and it has to
 be told where to send them back. Until 2026-09-04
@@ -482,7 +481,7 @@ the order matters:
 - **The core fills it.** `vpay_api::v1::return_trip::return_url_for_charge`
   answers with vpay's own return page when a checkout session drives the
   charge and with the merchant's committed `charges.return_url` otherwise. The
-  value handed to the rail is read off the *committed row*, not recomputed, so
+  value handed to the rail is read off the _committed row_, not recomputed, so
   what the rail is told is what would survive a crash
   ([crash-safety.md](../flows/crash-safety.md)).
 - **The adapter decides whether its rail has a use for it.** Orange sends it
@@ -523,17 +522,17 @@ under `/stub-hosted-page/{pay_token}` since Step 3, and until Step 9 nothing
 served it — a payer following the URL vpay handed them got WireMock's 404.
 `stub-hosted-page.json` now serves it as HTML with a Pay link and a Cancel
 link, so the redirect leg can be finished by a browser (ADR-0006: it is a stub
-of the *rail's* page, a WireMock host in configuration, and never a stub of a
+of the _rail's_ page, a WireMock host in configuration, and never a stub of a
 vpay page).
 
 It differs from Orange in one way, and the mapping says so at length rather
-than leaving it to be discovered. The real rail *stores* `return_url` and
+than leaving it to be discovered. The real rail _stores_ `return_url` and
 `cancel_url` against the `pay_token` at submit and renders them from its own
 state; WireMock's response templating can only read the current request, and
 there is no helper that reaches into the journal for the POST that minted the
 token. So the submit's `payment_url` carries the two URLs as query parameters
 and the page templates them back out. The pairing is preserved — these are the
-bytes *that* submit sent — but nothing here demonstrates that Orange would
+bytes _that_ submit sent — but nothing here demonstrates that Orange would
 accept a `return_url` it had not been told about, and nothing in this
 repository claims it would.
 
@@ -566,7 +565,7 @@ skipped, 0 ignored** — 13 cases over both rails plus the same 4, the new one
 being `the_submit_tells_the_rail_where_to_send_the_payer_back`.
 
 **Not proven by the return-trip work either.** No payer has been redirected
-anywhere by this repository: the *page* that receives one is
+anywhere by this repository: the _page_ that receives one is
 `frontends/apps/checkout`, which is Step 9 lane 3's, and vpay serves no route
 at a return URL of its own. What is built and proven here is the rail half —
 the value reaches the rail, and the rail's stub page links to it.

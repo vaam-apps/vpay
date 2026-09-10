@@ -10,11 +10,11 @@
  * dictionary in place, updating `document.documentElement.lang` so assistive
  * technology follows.
  */
-'use client';
+"use client";
 
-import { Select, Stack, Text } from '@vpay/ui';
+import { Select, Stack, Text } from "@vpay/ui";
 
-import { LOCALES, type Locale, type Translate } from '../i18n/index';
+import { LOCALES, type Locale, type Translate } from "../i18n/index";
 
 export function LocaleSwitch({
   t,
@@ -25,8 +25,8 @@ export function LocaleSwitch({
   locale: Locale;
   onChange: (locale: Locale) => void;
 }) {
-  const id = 'vpay-locale';
-  const labelId = 'vpay-locale-label';
+  const id = "vpay-locale";
+  const labelId = "vpay-locale-label";
   return (
     <Stack gap="sm">
       {/*
@@ -42,7 +42,7 @@ export function LocaleSwitch({
         entry-screens.png` does not.
       */}
       <Text as="span" id={labelId} size="sm" tone="muted">
-        {t('locale.label')}
+        {t("locale.label")}
       </Text>
       <Select
         id={id}
@@ -52,7 +52,7 @@ export function LocaleSwitch({
         onValueChange={(next) => onChange(next as Locale)}
         items={LOCALES.map((candidate) => ({
           value: candidate,
-          label: t(candidate === 'fr' ? 'locale.fr' : 'locale.en'),
+          label: t(candidate === "fr" ? "locale.fr" : "locale.en"),
         }))}
       />
     </Stack>

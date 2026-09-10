@@ -25,7 +25,7 @@
 // that is not.
 
 /** The two spellings vpay emits, in the order this app prefers them. */
-const REQUEST_ID_HEADERS = ['request-id', 'x-request-id'] as const;
+const REQUEST_ID_HEADERS = ["request-id", "x-request-id"] as const;
 
 /** A call that did not succeed, in the words a screen can render. */
 export interface ApiFailure {
@@ -38,12 +38,14 @@ export interface ApiFailure {
 }
 
 /** Success or {@link ApiFailure} — never a thrown error for a refusal. */
-export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: ApiFailure };
+export type ApiResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: ApiFailure };
 
 /** `POST /dash/v1/staff/login`'s answer (`vpay_api::staff::LoginResponse`). */
 export interface LoginResponse {
   readonly session: string;
-  readonly next: 'totp' | 'totp_enrolment';
+  readonly next: "totp" | "totp_enrolment";
   readonly otpauth_uri?: string;
   readonly enrolment?: string;
 }
@@ -96,7 +98,7 @@ export interface SessionResponse {
  * no second factor, so vpay publishes nothing about the person here.
  */
 export interface SessionStageResponse {
-  readonly stage: 'pending_totp' | 'authenticated';
+  readonly stage: "pending_totp" | "authenticated";
 }
 
 /** `POST /dash/v1/oauth/token`'s answer. */
@@ -110,12 +112,15 @@ export interface TokenResponse {
 /** One `payment_intent`, as `/dash/v1` renders it (no `client_secret`). */
 export interface PaymentIntentObject {
   readonly id: string;
-  readonly object: 'payment_intent';
+  readonly object: "payment_intent";
   readonly amount: number;
   readonly currency: string;
   readonly status: string;
   readonly payment_method_types: readonly string[];
-  readonly last_payment_error: { readonly code?: string; readonly message?: string } | null;
+  readonly last_payment_error: {
+    readonly code?: string;
+    readonly message?: string;
+  } | null;
   readonly description: string | null;
   readonly customer: string | null;
   readonly created: number;
@@ -131,7 +136,7 @@ export interface PaymentIntentList {
 
 /** The charge, as `/dash/v1`'s detail read renders it. */
 export interface ChargeSummary {
-  readonly object: 'charge';
+  readonly object: "charge";
   readonly id: string;
   readonly provider_code: string;
   readonly provider_reference_id: string;
@@ -163,7 +168,7 @@ export interface RefundObject {
 
 /** One line of the timeline. */
 export interface TimelineEvent {
-  readonly object: 'event';
+  readonly object: "event";
   readonly id: string;
   readonly type: string;
   readonly object_id: string;
@@ -172,7 +177,7 @@ export interface TimelineEvent {
 
 /** `GET /dash/v1/payment_intents/{id}`'s envelope. */
 export interface PaymentDetail {
-  readonly object: 'dashboard.payment_detail';
+  readonly object: "dashboard.payment_detail";
   readonly payment_intent: PaymentIntentObject;
   readonly charge: ChargeSummary | null;
   readonly refunds: readonly RefundObject[];
@@ -180,7 +185,7 @@ export interface PaymentDetail {
 }
 
 /** The header vpay takes a staff session token in (`vpay_api::staff::SESSION_HEADER`). */
-export const SESSION_HEADER = 'x-vpay-staff-session';
+export const SESSION_HEADER = "x-vpay-staff-session";
 
 /** The request id from either spelling, or `null`. */
 function requestIdOf(response: Response): string | null {
@@ -206,7 +211,10 @@ async function failureOf(response: Response): Promise<ApiFailure> {
   try {
     const body: unknown = await response.json();
     const envelope = (body as { error?: { message?: unknown } } | null)?.error;
-    if (typeof envelope?.message === 'string' && envelope.message.trim().length > 0) {
+    if (
+      typeof envelope?.message === "string" &&
+      envelope.message.trim().length > 0
+    ) {
       message = envelope.message.trim();
     }
   } catch {
@@ -230,7 +238,7 @@ function authHeaders(options: CallOptions): Record<string, string> {
     headers[SESSION_HEADER] = options.sessionToken;
   }
   if (options.bearer !== undefined) {
-    headers['authorization'] = `Bearer ${options.bearer}`;
+    headers["authorization"] = `Bearer ${options.bearer}`;
   }
   return headers;
 }
@@ -268,17 +276,17 @@ export async function postForm<T>(
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'application/json',
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
         ...authHeaders(options),
       },
       body: new URLSearchParams(body).toString(),
       // Every one of these is a credential step. A cached sign-in is not a
       // thing that can be allowed to exist.
-      cache: 'no-store',
-      redirect: 'error',
+      cache: "no-store",
+      redirect: "error",
     });
   } catch (error) {
     return { ok: false, failure: unreachable(error) };
@@ -302,13 +310,13 @@ export async function getJson<T>(
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
-      method: 'GET',
-      headers: { accept: 'application/json', ...authHeaders(options) },
+      method: "GET",
+      headers: { accept: "application/json", ...authHeaders(options) },
       // A dashboard that showed a cached payment would be worse than one
       // that showed none: an operator reads it to decide whether something
       // is still happening.
-      cache: 'no-store',
-      redirect: 'error',
+      cache: "no-store",
+      redirect: "error",
     });
   } catch (error) {
     return { ok: false, failure: unreachable(error) };
@@ -344,15 +352,15 @@ export async function authorizeRedirect(
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl}/dash/v1/oauth/authorize?${search}`, {
-      method: 'GET',
-      headers: { accept: 'application/json', [SESSION_HEADER]: sessionToken },
-      cache: 'no-store',
-      redirect: 'manual',
+      method: "GET",
+      headers: { accept: "application/json", [SESSION_HEADER]: sessionToken },
+      cache: "no-store",
+      redirect: "manual",
     });
   } catch (error) {
     return { ok: false, failure: unreachable(error) };
   }
-  const location = response.headers.get('location');
+  const location = response.headers.get("location");
   if (response.status !== 302 || location === null) {
     if (!response.ok) {
       return { ok: false, failure: await failureOf(response) };
@@ -361,7 +369,7 @@ export async function authorizeRedirect(
       ok: false,
       failure: {
         status: response.status,
-        message: 'The authorization endpoint did not answer with a redirect.',
+        message: "The authorization endpoint did not answer with a redirect.",
         requestId: requestIdOf(response),
       },
     };

@@ -330,9 +330,7 @@
     {
       "name": "a payer is on the page: PENDING (2 of 4)",
       "metadata": {
-        "why": [
-          "Poll 2 of 4 while a payer is on the page."
-        ]
+        "why": ["Poll 2 of 4 while a payer is on the page."]
       },
       "scenarioName": "orange-hosted-page-payer",
       "requiredScenarioState": "payer-on-page-2",
@@ -353,9 +351,7 @@
     {
       "name": "a payer is on the page: PENDING (3 of 4)",
       "metadata": {
-        "why": [
-          "Poll 3 of 4 while a payer is on the page."
-        ]
+        "why": ["Poll 3 of 4 while a payer is on the page."]
       },
       "scenarioName": "orange-hosted-page-payer",
       "requiredScenarioState": "payer-on-page-3",
@@ -376,9 +372,7 @@
     {
       "name": "a payer is on the page: PENDING (4 of 4)",
       "metadata": {
-        "why": [
-          "Poll 4 of 4 while a payer is on the page."
-        ]
+        "why": ["Poll 4 of 4 while a payer is on the page."]
       },
       "scenarioName": "orange-hosted-page-payer",
       "requiredScenarioState": "payer-on-page-4",

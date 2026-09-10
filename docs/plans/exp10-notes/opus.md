@@ -7,24 +7,24 @@ pinned toolchain (`rust-toolchain.toml`, 1.95.0). The `cratestack` CLI was on
 
 ## What changed
 
-| file | change |
-|---|---|
-| `docs/adr/0016-engineering-standards.md` | new. The six standards, each with rationale, what enforces it, what is left to review; the serde exemption table the gate reads; the migration rule |
-| `AGENTS.md` | new "Standards" section — the six rules an agent applies on every change, pointing at the ADR; the gate count corrected seven → nine |
-| `.xtask/src/main.rs` | `verify-serde` and `verify-repositories`; a shared declaration scanner (`declarations`, `declaration_shape`, `attribute_block_before`, `blank_cfg_test_items`); `verify-docs` gains two report lines; module docs, `verify-all`, `help` |
-| `justfile` | two recipes, both in `verify` after `check-schema` and before `verify-docs`; the header's invariant list and the `verify` preamble renumber seven → nine |
-| `.github/workflows/ci.yml` | `self-checks` gains `just verify-serde` and `just verify-repositories`, through the justfile rather than a copy of the command |
-| 6 files under `backends/crates/*/src` | 13 `#[serde(rename_all = "snake_case")]` attributes added |
-| `backends/crates/vpay-db/src/client_assertion.rs`, `lib.rs` | `SqlClientAssertionStore` is `pub(crate)`; `vpay_db::client_assertion_store(pool) -> impl ClientAssertionStore` replaces it as the public surface |
-| `backends/crates/vpay-api/src/op/mod.rs`, `op/token.rs` | the call site and two doc links |
-| `backends/crates/vpay-db/tests/repositories.rs`, `backends/tests/integration/tests/{client_store,merchant_token_flow}.rs` | the same rename in the two suites that constructed the store |
-| `docs/status.md` | the two gates, the two report lines, the measured counts |
-| `docs/reference/vpay-db.md`, `docs/roadmap.md` | the two live documents that named `vpay_db::SqlClientAssertionStore` as a path a caller can write |
+| file                                                                                                                      | change                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/adr/0016-engineering-standards.md`                                                                                  | new. The six standards, each with rationale, what enforces it, what is left to review; the serde exemption table the gate reads; the migration rule                                                                                     |
+| `AGENTS.md`                                                                                                               | new "Standards" section — the six rules an agent applies on every change, pointing at the ADR; the gate count corrected seven → nine                                                                                                    |
+| `.xtask/src/main.rs`                                                                                                      | `verify-serde` and `verify-repositories`; a shared declaration scanner (`declarations`, `declaration_shape`, `attribute_block_before`, `blank_cfg_test_items`); `verify-docs` gains two report lines; module docs, `verify-all`, `help` |
+| `justfile`                                                                                                                | two recipes, both in `verify` after `check-schema` and before `verify-docs`; the header's invariant list and the `verify` preamble renumber seven → nine                                                                                |
+| `.github/workflows/ci.yml`                                                                                                | `self-checks` gains `just verify-serde` and `just verify-repositories`, through the justfile rather than a copy of the command                                                                                                          |
+| 6 files under `backends/crates/*/src`                                                                                     | 13 `#[serde(rename_all = "snake_case")]` attributes added                                                                                                                                                                               |
+| `backends/crates/vpay-db/src/client_assertion.rs`, `lib.rs`                                                               | `SqlClientAssertionStore` is `pub(crate)`; `vpay_db::client_assertion_store(pool) -> impl ClientAssertionStore` replaces it as the public surface                                                                                       |
+| `backends/crates/vpay-api/src/op/mod.rs`, `op/token.rs`                                                                   | the call site and two doc links                                                                                                                                                                                                         |
+| `backends/crates/vpay-db/tests/repositories.rs`, `backends/tests/integration/tests/{client_store,merchant_token_flow}.rs` | the same rename in the two suites that constructed the store                                                                                                                                                                            |
+| `docs/status.md`                                                                                                          | the two gates, the two report lines, the measured counts                                                                                                                                                                                |
+| `docs/reference/vpay-db.md`, `docs/roadmap.md`                                                                            | the two live documents that named `vpay_db::SqlClientAssertionStore` as a path a caller can write                                                                                                                                       |
 
 `docs/flows/*.md` Status sections: **none changed, and this was checked rather
 than assumed.** `grep -rn -i 'rename_all\|serde\|PgRepositories\|SqlClientAssertionStore' docs/flows/`
 matches nothing; no flow document makes a claim these two gates could falsify.
-`docs/reference/rails.md` §"serde: `rename_all` is for *our* wire, never a
+`docs/reference/rails.md` §"serde: `rename_all` is for _our_ wire, never a
 rail's" already stated standard 3 correctly and was left verbatim — the ADR
 cites it rather than restating it.
 
@@ -33,14 +33,14 @@ cites it rather than restating it.
 Measured with the gate itself on the unmodified base tree, with an exemption
 table containing zero rows:
 
-| | count |
-|---|---|
-| serialisable types under `backends/crates/*/src` | 64 |
-| carrying `rename_all = "snake_case"` or renaming every member | 36 |
-| **violations before** | **28** |
-| fixed by adding the attribute | 13 |
-| exempted with a reason | 15 |
-| **violations after** | **0** |
+|                                                               | count  |
+| ------------------------------------------------------------- | ------ |
+| serialisable types under `backends/crates/*/src`              | 64     |
+| carrying `rename_all = "snake_case"` or renaming every member | 36     |
+| **violations before**                                         | **28** |
+| fixed by adding the attribute                                 | 13     |
+| exempted with a reason                                        | 15     |
+| **violations after**                                          | **0**  |
 
 `cargo xtask verify-serde` now prints
 `49 serialisable type(s) spell the workspace's wire convention, 15 exempted`.
@@ -51,18 +51,18 @@ doc, in `vpay-adapter-orange-money/src/wire.rs`'s module doc, and in a comment
 above `vpay_core::Currency`. Four correct statements of the same rule, in four
 files, checked by nobody. Every one of the 15 exemptions is a case one of
 those four paragraphs had already argued for; the gate did not discover them,
-it made them enforceable and made *deleting* one a build failure.
+it made them enforceable and made _deleting_ one a build failure.
 
 ### The 13 fixed, and why none of them moved a wire
 
-| type | file |
-|---|---|
+| type                                                               | file                                        |
+| ------------------------------------------------------------------ | ------------------------------------------- |
 | `SessionCredential`, `ReturnCredential`, `OriginsQuery`, `Origins` | `vpay-api/src/browser/checkout_sessions.rs` |
-| `PayerCredential`, `BrowserConfirmParams` | `vpay-api/src/browser/mod.rs` |
-| `CheckoutMerchantObject`, `CheckoutSessionForPayer` | `vpay-api/src/model.rs` |
-| `RawClaims` | `vpay-api/src/resource_auth.rs` |
-| `WebhookPolicy` | `vpay-config/src/config.rs` |
-| `PollChargePayload`, `ResubmitPayload`, `DeliverWebhookPayload` | `vpay-worker/src/jobs.rs` |
+| `PayerCredential`, `BrowserConfirmParams`                          | `vpay-api/src/browser/mod.rs`               |
+| `CheckoutMerchantObject`, `CheckoutSessionForPayer`                | `vpay-api/src/model.rs`                     |
+| `RawClaims`                                                        | `vpay-api/src/resource_auth.rs`             |
+| `WebhookPolicy`                                                    | `vpay-config/src/config.rs`                 |
+| `PollChargePayload`, `ResubmitPayload`, `DeliverWebhookPayload`    | `vpay-worker/src/jobs.rs`                   |
 
 All thirteen are **structs with named fields**, and every field of every one of
 them is already snake_case in Rust — which is what rustc's own
@@ -76,7 +76,7 @@ This is the claim most worth attacking in this branch, so here is how it was
 checked rather than asserted: the attribute was added only to
 `DeclShape::NamedFields` declarations (the gate reports the shape, and the
 message for an enum says "does not rename every **variant**"); no enum was
-fixed, because `rename_all` on an enum *does* change the wire — `PollCharge`
+fixed, because `rename_all` on an enum _does_ change the wire — `PollCharge`
 would become `poll_charge`. The four enums in the 28 are all exempted instead,
 three of them `#[serde(untagged)]` and one already carrying
 `rename_all = "UPPERCASE"`.
@@ -89,7 +89,7 @@ three of them `#[serde(untagged)]` and one already carrying
   `TransactionStatusResponse`, `TokenResponse` and `CallbackBody` in
   `vpay-adapter-orange-money`. MTN's bodies are camelCase and the per-field
   `rename`s are what make them exact; Orange's happen to be snake_case, which
-  makes the attribute *more* dangerous there and not less, because it would
+  makes the attribute _more_ dangerous there and not less, because it would
   read as a promise that those names are ours to normalise.
 - **`#[serde(untagged)]` (4):** `ExpiresIn` and `Reason` and `Scalar` in
   `vpay-adapter-mtn-momo`, `ExpandableIntent` in `vpay-api`. A variant name of
@@ -125,12 +125,12 @@ reads it from.
 
 ## Standard 5 (repositories) — before and after
 
-| | count |
-|---|---|
-| concrete implementations found in `vpay-db` | 3 |
-| source files scanned outside `vpay-db` | 65 |
-| **violations before** | **2** |
-| **violations after** | **0** |
+|                                             | count |
+| ------------------------------------------- | ----- |
+| concrete implementations found in `vpay-db` | 3     |
+| source files scanned outside `vpay-db`      | 65    |
+| **violations before**                       | **2** |
+| **violations after**                        | **0** |
 
 The 3 are `PgRepositories`, `PendingTransaction` and
 `SqlClientAssertionStore`. The 2 violations were both
@@ -150,7 +150,7 @@ in that crate; a newtype wrapper would have been a second public type to name.
 The gate has **no exemption mechanism**, and that is the deliberate half of
 the design: there is no exception today, and an escape hatch nobody needs is
 the one that gets used. `Repositories::op_store_pool` (Step 7's decision 9)
-stays exactly as it was — it is a decision about a raw *pool*, not a licence
+stays exactly as it was — it is a decision about a raw _pool_, not a licence
 to name an implementation type.
 
 ### The set is derived, not listed
@@ -159,17 +159,17 @@ Two signals unioned, both read out of `vpay-db`'s own source:
 
 - a declaration whose body holds a `PgPool` or a `Transaction` — it owns a
   connection, so it is an implementation and not a row struct;
-- a type on the right of `impl <a trait `vpay-db` declares `pub`> for …`.
+- a type on the right of `impl <a trait `vpay-db`declares`pub`> for …`.
 
 Neither alone is enough, and this is measured rather than argued:
-`SqlClientAssertionStore` implements a *foreign* trait
+`SqlClientAssertionStore` implements a _foreign_ trait
 (`authkestra_op::client_assertion::ClientAssertionStore`), so the second
 signal cannot see it; a hypothetical implementation that reaches its pool
 through another type would be invisible to the first. The unit tests pin which
 signal catches which.
 
 **One false positive the first draft had, and how it was found.** The first
-version of the impl scanner counted a *blanket* impl's target:
+version of the impl scanner counted a _blanket_ impl's target:
 `impl<S: TransactionSource + ?Sized> UnitOfWork for S` in
 `vpay-db/src/repository.rs` put the single letter `S` into the set of
 "concrete implementations", and `S` appears in a generic bound throughout
@@ -202,7 +202,7 @@ so, with the number.
 ```
 
 `comment` counts `//` lines that are neither `///` nor `//!` — the in-file
-kind standard 6 asks for fewer of, and deliberately *not* `doc`, which is the
+kind standard 6 asks for fewer of, and deliberately _not_ `doc`, which is the
 documentation the same standard asks for more of. **0 `#[doc = include_str!]`
 modules is the honest number**: the externalised-module-doc habit does not
 exist in this tree yet, and printing zero is more useful than not printing it.
@@ -220,12 +220,12 @@ Every one below was applied to the real tree, run through **`just verify`**
 unit test that drives the same case over a synthetic tree, so the mutation is
 reproducible without editing production code.
 
-| # | mutation | `just verify` | what it printed | unit test |
-|---|---|---|---|---|
-| M1 | delete `#[serde(rename_all = "snake_case")]` from `DeliverWebhookPayload` (`vpay-worker/src/jobs.rs`), a type with no exemption | **exit 1** | ``backends/crates/vpay-worker/src/jobs.rs:241: `DeliverWebhookPayload` derives serde but carries no `#[serde(rename_all = "snake_case")]`, does not rename every field, and is not in docs/adr/0016-engineering-standards.md's exemption table`` | `serde_tests::deleting_the_attribute_is_visible_to_the_gate_itself` |
-| M2 | add `use vpay_db::PgRepositories;` to `vpay-api/src/op/mod.rs` | **exit 1** | ``backends/crates/vpay-api/src/op/mod.rs:27: `PgRepositories` is a concrete repository implementation in `vpay-db`; name the trait instead`` | `repository_tests::a_consumer_naming_a_concrete_type_fails_the_gate_itself` |
-| M3 | delete the exemption row for `Currency`, which still needs it | **exit 1** | ``backends/crates/vpay-core/src/money.rs:32: `Currency` derives serde but carries no … and is not in … the exemption table`` | `serde_tests::deleting_a_needed_exemption_fails` |
-| M4 | add an exemption row for `PollChargePayload`, which complies | **exit 1** | ``docs/adr/0016-engineering-standards.md:137: `PollChargePayload` (backends/crates/vpay-worker/src/jobs.rs:141) is exempted but complies — delete the row`` | `serde_tests::an_exemption_for_a_complying_type_fails` |
+| #   | mutation                                                                                                                        | `just verify` | what it printed                                                                                                                                                                                                                                  | unit test                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| M1  | delete `#[serde(rename_all = "snake_case")]` from `DeliverWebhookPayload` (`vpay-worker/src/jobs.rs`), a type with no exemption | **exit 1**    | ``backends/crates/vpay-worker/src/jobs.rs:241: `DeliverWebhookPayload` derives serde but carries no `#[serde(rename_all = "snake_case")]`, does not rename every field, and is not in docs/adr/0016-engineering-standards.md's exemption table`` | `serde_tests::deleting_the_attribute_is_visible_to_the_gate_itself`         |
+| M2  | add `use vpay_db::PgRepositories;` to `vpay-api/src/op/mod.rs`                                                                  | **exit 1**    | ``backends/crates/vpay-api/src/op/mod.rs:27: `PgRepositories` is a concrete repository implementation in `vpay-db`; name the trait instead``                                                                                                     | `repository_tests::a_consumer_naming_a_concrete_type_fails_the_gate_itself` |
+| M3  | delete the exemption row for `Currency`, which still needs it                                                                   | **exit 1**    | ``backends/crates/vpay-core/src/money.rs:32: `Currency` derives serde but carries no … and is not in … the exemption table``                                                                                                                     | `serde_tests::deleting_a_needed_exemption_fails`                            |
+| M4  | add an exemption row for `PollChargePayload`, which complies                                                                    | **exit 1**    | ``docs/adr/0016-engineering-standards.md:137: `PollChargePayload` (backends/crates/vpay-worker/src/jobs.rs:141) is exempted but complies — delete the row``                                                                                      | `serde_tests::an_exemption_for_a_complying_type_fails`                      |
 
 M3 and M4 together are the two-directional property: the table cannot be
 satisfied by adding rows and cannot be satisfied by removing them. A fifth
@@ -263,7 +263,7 @@ verify-repositories: ok — 3 concrete implementation(s) in backends/crates/vpay
 verify: ok — the nine gates above passed; the verify-docs report is advisory
 ```
 
-*(The `verify-docs` report prints between `verify-repositories` and the final
+_(The `verify-docs` report prints between `verify-repositories` and the final
 line and is elided here; it is reproduced under "Standard 6" above. This is
 the command's real output, re-captured 2026-09-05 after the review's commits.
 An earlier revision of this file abbreviated four of these lines and rendered
@@ -271,7 +271,7 @@ An earlier revision of this file abbreviated four of these lines and rendered
 numbers count this branch's own documents**, so they move whenever a file or a
 link is added here — that first revision read `697 ... 121`, and adding the
 ADR's links and `opus-review.md` is the whole difference. A transcript pasted
-into a tracked document is a claim about the tree that contains it.)*
+into a tracked document is a claim about the tree that contains it.)_
 
 - `just docs-check` (`verify-status`, `verify-links`): ok.
 - `just fmt-check`: ok.
@@ -318,15 +318,15 @@ implementations named by none of the 65 consumer files.
 
 Re-run on the rebased tree, in full:
 
-| gate | result |
-|---|---|
-| `just verify` | **exit 0**, nine gates |
-| `just docs-check` | ok |
-| `just fmt-check` | ok |
-| `just clippy` | ok, no warning |
-| `cargo test -p xtask` | **184 passed, 0 failed, 0 ignored** |
-| `actionlint .github/workflows/ci.yml` | ok |
-| `just test-rust` | **1260 run, 1260 passed, 0 skipped** (1001s, containers) |
+| gate                                  | result                                                   |
+| ------------------------------------- | -------------------------------------------------------- |
+| `just verify`                         | **exit 0**, nine gates                                   |
+| `just docs-check`                     | ok                                                       |
+| `just fmt-check`                      | ok                                                       |
+| `just clippy`                         | ok, no warning                                           |
+| `cargo test -p xtask`                 | **184 passed, 0 failed, 0 ignored**                      |
+| `actionlint .github/workflows/ci.yml` | ok                                                       |
+| `just test-rust`                      | **1260 run, 1260 passed, 0 skipped** (1001s, containers) |
 
 `verify-docs`' advisory baseline is unchanged by the rebase: **1789 in-file
 comment lines against 15157 code lines (11.8%) and 0 `#[doc = include_str!]`
@@ -335,10 +335,10 @@ modules**.
 The two decisive mutations were re-run against the rebased tree, not assumed
 to still hold:
 
-| # | mutation | `just verify` | what it printed |
-|---|---|---|---|
-| M1 | delete `#[serde(rename_all = "snake_case")]` from `DeliverWebhookPayload` (`vpay-worker/src/jobs.rs:241`), a type with no exemption | **exit 1** | ``backends/crates/vpay-worker/src/jobs.rs:241: `DeliverWebhookPayload` derives serde but carries no `#[serde(rename_all = "snake_case")]`, does not rename every field, and is not in docs/adr/0016-engineering-standards.md's exemption table (ADR-0016, standard 3)`` |
-| M2 | add `use vpay_db::PgRepositories;` to `vpay-api/src/op/mod.rs` | **exit 1** | ``backends/crates/vpay-api/src/op/mod.rs:27: `PgRepositories` is a concrete repository implementation in `vpay-db`; name the trait instead (ADR-0016, standard 5)`` |
+| #   | mutation                                                                                                                            | `just verify` | what it printed                                                                                                                                                                                                                                                         |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | delete `#[serde(rename_all = "snake_case")]` from `DeliverWebhookPayload` (`vpay-worker/src/jobs.rs:241`), a type with no exemption | **exit 1**    | ``backends/crates/vpay-worker/src/jobs.rs:241: `DeliverWebhookPayload` derives serde but carries no `#[serde(rename_all = "snake_case")]`, does not rename every field, and is not in docs/adr/0016-engineering-standards.md's exemption table (ADR-0016, standard 3)`` |
+| M2  | add `use vpay_db::PgRepositories;` to `vpay-api/src/op/mod.rs`                                                                      | **exit 1**    | ``backends/crates/vpay-api/src/op/mod.rs:27: `PgRepositories` is a concrete repository implementation in `vpay-db`; name the trait instead (ADR-0016, standard 5)``                                                                                                     |
 
 Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
 `git status` is clean at `3326d6e`.
@@ -346,8 +346,8 @@ Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
 ## What I did not do
 
 - **No `docs/reference/<crate>.md` was written or moved, and no comment was
-  deleted.** Standard 6's "externalise the documentation" half is *measured*
-  by this branch and not *applied* by it. The `include_str` column is 0 for
+  deleted.** Standard 6's "externalise the documentation" half is _measured_
+  by this branch and not _applied_ by it. The `include_str` column is 0 for
   every crate, which is the accurate state.
 - **Standard 4 has no gate**, and the ADR says so in its own section rather
   than in a footnote. Nothing here measures SOLID or DRY.
@@ -363,7 +363,7 @@ Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
   gate does not parse — and each is still counted as a member that has to be
   renamed under the "rename every field" alternative. So a struct mixing one
   of them with explicit renames needs the blanket attribute or a row. Every
-  such miss is in the direction that *fails* a compliant type rather than
+  such miss is in the direction that _fails_ a compliant type rather than
   passing a non-compliant one, which is the safe direction. Six types in
   `backends/crates/*/src` carry a `#[serde(flatten)]` field
   (`PaymentIntentWithSecret`, `CheckoutSessionForPayer`,
@@ -371,17 +371,17 @@ Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
   `v1::payment_intents`' `CreateParams` and `ConfirmParams`); all six take the
   blanket attribute, so none is affected. No type uses the two-sided
   `rename`, and none mixes `skip` with explicit renames.
-  *(`flatten` and the two-sided `rename` were added to this list on review,
+  _(`flatten` and the two-sided `rename` were added to this list on review,
   2026-09-05; the original named only `skip`. A first draft of this bullet
   said "one type" — it is six, counted with
-  `grep -rn 'serde(flatten)' backends/crates --include='*.rs' | grep /src/`.)*
+  `grep -rn 'serde(flatten)' backends/crates --include='*.rs' | grep /src/`.)_
 - **`verify-serde` sees `derive`d implementations only.** A hand-written
   `impl Serialize for X` is invisible to it. That is the rule as ADR-0016
   states it ("every type **deriving** `Serialize`/`Deserialize`"), and the
   four such impls in the workspace are `model.rs`'s `object_tag!` unit structs,
   which serialise one fixed string and have no field names to rename. A
   hand-written impl over a struct with named fields would not be caught.
-  *(Recorded on review, 2026-09-05.)*
+  _(Recorded on review, 2026-09-05.)_
 - **Neither gate scans `sdks/rust`, `examples/`, `backends/tests` or a crate's
   own `tests/`.** The serde rule is about `backends/crates/*/src` because that
   is where vpay's wire is defined; a test fixture names nothing a merchant can
@@ -393,11 +393,11 @@ Both were reverted with `git checkout --`, `just verify` returns to `ok`, and
   lists only `vpay-api`, `vpay-worker`, both binaries and
   `backends/tests/integration`), so the scope has no live hole, but a new
   crate outside those two directories that took the dependency would not be
-  scanned. *(`examples/` added to this list on review, 2026-09-05.)*
+  scanned. _(`examples/` added to this list on review, 2026-09-05.)_
 - **`docs/plans/*` and `docs/roadmap.md`'s "Original text, for the record"
   block still spell `vpay_db::SqlClientAssertionStore`, and were left
   alone.** They are dated records of what was built on the day they were
-  written, and this repository's convention is to correct a false *claim*, not
+  written, and this repository's convention is to correct a false _claim_, not
   to rewrite history. The two live statements that named the path as something
   a caller can write — `docs/reference/vpay-db.md` and `docs/roadmap.md`'s
   Postgres-over-Redis rationale — were updated.

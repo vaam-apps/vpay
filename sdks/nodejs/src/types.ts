@@ -605,11 +605,7 @@ export type ListCustomersParams = {
  * found.
  */
 export type InvoiceStatus =
-  | "draft"
-  | "open"
-  | "paid"
-  | "void"
-  | "uncollectible";
+  "draft" | "open" | "paid" | "void" | "uncollectible";
 
 /**
  * One line on an invoice — the `line_item` object.

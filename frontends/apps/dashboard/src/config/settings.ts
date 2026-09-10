@@ -90,18 +90,18 @@ export interface AssembledConfig {
 }
 
 /** vpay's base URL, as this server reaches it. */
-export const API_BASE_URL_VAR = 'VPAY_DASH_API';
+export const API_BASE_URL_VAR = "VPAY_DASH_API";
 /** The registered dashboard client id. */
-export const CLIENT_ID_VAR = 'VPAY_DASHBOARD_CLIENT_ID';
+export const CLIENT_ID_VAR = "VPAY_DASHBOARD_CLIENT_ID";
 /** The registered redirect URI, byte for byte. */
-export const REDIRECT_URI_VAR = 'VPAY_DASHBOARD_REDIRECT_URI';
+export const REDIRECT_URI_VAR = "VPAY_DASHBOARD_REDIRECT_URI";
 /** The registered read-only scope. */
-export const SCOPE_VAR = 'VPAY_DASHBOARD_SCOPE';
+export const SCOPE_VAR = "VPAY_DASHBOARD_SCOPE";
 /**
  * The origin a browser reaches this dashboard on. **Optional** — see
  * [`DashboardConfig.publicOrigin`].
  */
-export const PUBLIC_ORIGIN_VAR = 'VPAY_DASHBOARD_PUBLIC_ORIGIN';
+export const PUBLIC_ORIGIN_VAR = "VPAY_DASHBOARD_PUBLIC_ORIGIN";
 
 /**
  * A value that is present and not whitespace, or `null`.
@@ -111,7 +111,7 @@ export const PUBLIC_ORIGIN_VAR = 'VPAY_DASHBOARD_PUBLIC_ORIGIN';
  * meant to set, and honouring it would send `client_id=` to `/authorize`.
  */
 function present(value: string | undefined): string | null {
-  if (typeof value !== 'string') {
+  if (typeof value !== "string") {
     return null;
   }
   const trimmed = value.trim();
@@ -131,19 +131,22 @@ function present(value: string | undefined): string | null {
  * slash, a lower-cased host) would make this app disagree with the server
  * about a string whose whole job is to be identical.
  */
-export function assembleConfig(env: Readonly<Record<string, string | undefined>>): AssembledConfig {
+export function assembleConfig(
+  env: Readonly<Record<string, string | undefined>>,
+): AssembledConfig {
   const problems: ConfigProblem[] = [];
 
   const apiBaseUrl = present(env[API_BASE_URL_VAR]);
   if (apiBaseUrl === null) {
     problems.push({
       variable: API_BASE_URL_VAR,
-      detail: "vpay's base URL, as this server reaches it. Nothing can be read without it.",
+      detail:
+        "vpay's base URL, as this server reaches it. Nothing can be read without it.",
     });
   } else if (!isAbsoluteHttpUrl(apiBaseUrl)) {
     problems.push({
       variable: API_BASE_URL_VAR,
-      detail: 'must be an absolute http:// or https:// URL.',
+      detail: "must be an absolute http:// or https:// URL.",
     });
   }
 
@@ -160,7 +163,7 @@ export function assembleConfig(env: Readonly<Record<string, string | undefined>>
     problems.push({
       variable: REDIRECT_URI_VAR,
       detail:
-        'one of dashboard_client.redirect_uris, byte for byte. It is matched exactly and is never visited.',
+        "one of dashboard_client.redirect_uris, byte for byte. It is matched exactly and is never visited.",
     });
   }
 
@@ -168,7 +171,8 @@ export function assembleConfig(env: Readonly<Record<string, string | undefined>>
   if (scope === null) {
     problems.push({
       variable: SCOPE_VAR,
-      detail: "dashboard_client.scope — the one read-only scope this deployment's registration grants.",
+      detail:
+        "dashboard_client.scope — the one read-only scope this deployment's registration grants.",
     });
   }
 
@@ -187,7 +191,7 @@ export function assembleConfig(env: Readonly<Record<string, string | undefined>>
     // appends is one `/` and not two. `//dash/v1/...` is a different path to
     // axum, and it answers this crate's 404 envelope.
     config: {
-      apiBaseUrl: apiBaseUrl.replace(/\/+$/, ''),
+      apiBaseUrl: apiBaseUrl.replace(/\/+$/, ""),
       clientId,
       redirectUri,
       scope,
@@ -205,7 +209,7 @@ export function assembleConfig(env: Readonly<Record<string, string | undefined>>
 function isAbsoluteHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
   }

@@ -13,28 +13,28 @@ plan).
 `frontends/apps/checkout`, a new Next 15 App Router app — 59 tracked files,
 ~6 900 lines of TypeScript, of which about half are tests.
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | The app itself: `output: 'standalone'`, no server actions, no cookies, `outputFileTracingRoot` at the repo root | `frontends/apps/checkout/next.config.ts` |
-| 2 | Routes `/c/[id]` (hosted), `/e/[id]` (embedded), `/c/[id]/return` — all `force-dynamic` | `app/c/[id]/page.tsx`, `app/e/[id]/page.tsx`, `app/c/[id]/return/page.tsx` |
-| 3 | Every security header, in one place: `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` on every response; `Content-Security-Policy: frame-ancestors …` derived per request | `middleware.ts`, `src/lib/csp.ts` |
-| 4 | The origins lookup (`GET {VPAY_API_URL}/v1/browser/checkout/origins?key=…`), server-side, fail-closed four ways | `middleware.ts`, `src/lib/api.ts` (`fetchCheckoutOrigins`) |
-| 5 | The browser client for the two checkout reads — never `@vpay/api-client` | `src/lib/api.ts` (`BrowserCheckoutApi`) |
-| 6 | The state machine: a pure reducer, 12 states, 10 events | `src/lib/machine.ts` |
-| 7 | The controller: confirm/poll through `@vpay/stripe-js`, the redirect decision, `vpay:complete` after a session re-read | `src/lib/controller.ts` |
-| 8 | The return page's own machine and controller — no confirm transition, because it holds no intent secret | `src/lib/return.ts` |
-| 9 | Child half of the `postMessage` protocol: `vpay:resize` (first paint + ResizeObserver), `vpay:complete`, `vpay:redirect`; explicit target origin, inbound origin filter | `src/lib/frame.ts` |
-| 10 | Origin logic: `originOf`, `normalizeOrigins`, `resolveParentOrigin` | `src/lib/origins.ts` |
-| 11 | Entry decision (embed check first, then credentials) | `src/lib/entry.ts` |
-| 12 | D6 URL reading: secret from the fragment, publishable key from the query, `client_secret` in a query string **ignored** | `src/lib/link.ts` |
-| 13 | `{CHECKOUT_SESSION_ID}` substitution and the outcome→URL rule | `src/lib/forward.ts` |
-| 14 | Cameroon E.164 MSISDN normalisation | `src/lib/msisdn.ts` |
-| 15 | Minor-unit money rendering, no floating point anywhere in it | `src/lib/money.ts` |
-| 16 | Rail→page-flow map (D9), with the offered list read off the intent | `src/lib/rails.ts` |
-| 17 | `fr`/`en` dictionaries, `Accept-Language` negotiation, `{name}` interpolation | `src/i18n/{en,fr,index}.ts` |
-| 18 | Every screen as pure React, plus the two client containers | `src/components/*.tsx` |
-| 19 | 22 Storybook stories with the a11y addon, hosted in `@vpay/ui`'s existing Storybook | `src/components/checkout-screens.stories.tsx`, `frontends/packages/ui/.storybook/main.ts` |
-| 20 | A `node:http` stub of all five routes, in the wire contract's shapes | `src/testing/browser-stub.ts` |
+| #   | Thing                                                                                                                                                                                                                 | Where                                                                                     |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 1   | The app itself: `output: 'standalone'`, no server actions, no cookies, `outputFileTracingRoot` at the repo root                                                                                                       | `frontends/apps/checkout/next.config.ts`                                                  |
+| 2   | Routes `/c/[id]` (hosted), `/e/[id]` (embedded), `/c/[id]/return` — all `force-dynamic`                                                                                                                               | `app/c/[id]/page.tsx`, `app/e/[id]/page.tsx`, `app/c/[id]/return/page.tsx`                |
+| 3   | Every security header, in one place: `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` on every response; `Content-Security-Policy: frame-ancestors …` derived per request | `middleware.ts`, `src/lib/csp.ts`                                                         |
+| 4   | The origins lookup (`GET {VPAY_API_URL}/v1/browser/checkout/origins?key=…`), server-side, fail-closed four ways                                                                                                       | `middleware.ts`, `src/lib/api.ts` (`fetchCheckoutOrigins`)                                |
+| 5   | The browser client for the two checkout reads — never `@vpay/api-client`                                                                                                                                              | `src/lib/api.ts` (`BrowserCheckoutApi`)                                                   |
+| 6   | The state machine: a pure reducer, 12 states, 10 events                                                                                                                                                               | `src/lib/machine.ts`                                                                      |
+| 7   | The controller: confirm/poll through `@vpay/stripe-js`, the redirect decision, `vpay:complete` after a session re-read                                                                                                | `src/lib/controller.ts`                                                                   |
+| 8   | The return page's own machine and controller — no confirm transition, because it holds no intent secret                                                                                                               | `src/lib/return.ts`                                                                       |
+| 9   | Child half of the `postMessage` protocol: `vpay:resize` (first paint + ResizeObserver), `vpay:complete`, `vpay:redirect`; explicit target origin, inbound origin filter                                               | `src/lib/frame.ts`                                                                        |
+| 10  | Origin logic: `originOf`, `normalizeOrigins`, `resolveParentOrigin`                                                                                                                                                   | `src/lib/origins.ts`                                                                      |
+| 11  | Entry decision (embed check first, then credentials)                                                                                                                                                                  | `src/lib/entry.ts`                                                                        |
+| 12  | D6 URL reading: secret from the fragment, publishable key from the query, `client_secret` in a query string **ignored**                                                                                               | `src/lib/link.ts`                                                                         |
+| 13  | `{CHECKOUT_SESSION_ID}` substitution and the outcome→URL rule                                                                                                                                                         | `src/lib/forward.ts`                                                                      |
+| 14  | Cameroon E.164 MSISDN normalisation                                                                                                                                                                                   | `src/lib/msisdn.ts`                                                                       |
+| 15  | Minor-unit money rendering, no floating point anywhere in it                                                                                                                                                          | `src/lib/money.ts`                                                                        |
+| 16  | Rail→page-flow map (D9), with the offered list read off the intent                                                                                                                                                    | `src/lib/rails.ts`                                                                        |
+| 17  | `fr`/`en` dictionaries, `Accept-Language` negotiation, `{name}` interpolation                                                                                                                                         | `src/i18n/{en,fr,index}.ts`                                                               |
+| 18  | Every screen as pure React, plus the two client containers                                                                                                                                                            | `src/components/*.tsx`                                                                    |
+| 19  | 22 Storybook stories with the a11y addon, hosted in `@vpay/ui`'s existing Storybook                                                                                                                                   | `src/components/checkout-screens.stories.tsx`, `frontends/packages/ui/.storybook/main.ts` |
+| 20  | A `node:http` stub of all five routes, in the wire contract's shapes                                                                                                                                                  | `src/testing/browser-stub.ts`                                                             |
 
 The only file outside `frontends/apps/checkout` that this lane touched is
 `frontends/packages/ui/.storybook/main.ts` (one added glob, so the checkout
@@ -49,14 +49,14 @@ It is committed.
 
 ## 2. Counts, measured
 
-| Gate | Result |
-|---|---|
-| `pnpm install --frozen-lockfile` | ok (after the lockfile commit) |
-| `pnpm -r typecheck` (`just lint-web`) | ok, 15 projects |
-| `just test-web` (`pnpm -r test`) | **271 tests in 16 files for `@vpay/checkout`, all passing, 0 skipped and 0 ignored**; `@vpay/ui` 3, everything else unchanged |
-| `pnpm --filter @vpay/checkout build` | ok — `.next/standalone/frontends/apps/checkout/server.js` present |
-| `pnpm --filter @vpay/ui build-storybook` | ok — 23 checkout entries in `storybook-static/index.json` (22 stories + the autodocs page) |
-| `just audit-web` | see §8 |
+| Gate                                     | Result                                                                                                                        |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`         | ok (after the lockfile commit)                                                                                                |
+| `pnpm -r typecheck` (`just lint-web`)    | ok, 15 projects                                                                                                               |
+| `just test-web` (`pnpm -r test`)         | **271 tests in 16 files for `@vpay/checkout`, all passing, 0 skipped and 0 ignored**; `@vpay/ui` 3, everything else unchanged |
+| `pnpm --filter @vpay/checkout build`     | ok — `.next/standalone/frontends/apps/checkout/server.js` present                                                             |
+| `pnpm --filter @vpay/ui build-storybook` | ok — 23 checkout entries in `storybook-static/index.json` (22 stories + the autodocs page)                                    |
+| `just audit-web`                         | see §8                                                                                                                        |
 
 There is no `it.skip`, no `describe.skip` and no `--passWithNoTests` in this
 app: `vitest run` fails if it finds no tests.
@@ -108,7 +108,7 @@ app: `vitest run` fails if it finds no tests.
 - **Environment variables are read with bracket notation.** Next replaces
   `process.env.NEXT_PUBLIC_FOO` (dot access) with a literal at build time,
   which would bake one deployment's API URL into lane 4's image.
-  `env.test.ts` sets the variable *after* import and reads it back;
+  `env.test.ts` sets the variable _after_ import and reads it back;
   additionally, `grep -rl "localhost:8080" .next/server .next/static` after a
   build with that value set found nothing.
 - **A missing `NEXT_PUBLIC_VPAY_API_URL` throws** rather than defaulting. A
@@ -235,7 +235,7 @@ the same `2376000000xx` documentation block) keyed to the same scenario.
 - **Storybook's a11y addon is configured but nothing gates on it.**
   `build-storybook` proves the stories compile; it does not run axe. No
   automated accessibility gate exists in this repository, and this lane did
-  not add one. What *is* asserted, in vitest: every control is a native
+  not add one. What _is_ asserted, in vitest: every control is a native
   focusable element with an accessible name, the live region is mounted from
   first render, focus moves to the new screen's heading, and the MSISDN error
   is tied to its field with `aria-describedby`/`aria-invalid`.
@@ -301,11 +301,11 @@ Tests  1 failed | 11 passed (12)
 
 Add to `docs/status.md`'s **Frontend** table:
 
-| `frontends/apps/checkout` (the hosted/embedded payment page) | 🟡 | **New 2026-09-04 (Step 9, lane 3).** A Next 15 App Router app, `output: 'standalone'`, no server actions and no cookies, serving `/c/{cs_id}` (hosted), `/e/{cs_id}?key=pk` (embedded) and `/c/{cs_id}/return?t=…` (the return trip, top-level in both modes). Every response carries `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; `Content-Security-Policy: frame-ancestors 'none'` on the hosted and return pages, and on the embedded page the merchant's registered origins resolved **server-side** by `middleware.ts` from `GET {VPAY_API_URL}/v1/browser/checkout/origins?key=…` — fail-closed on a missing key, a missing `VPAY_API_URL`, a failed lookup and an empty list alike, all four proven in `src/middleware.test.ts` against the shipping middleware function. The page reads the session, shows the amount (integer minor units, no floating point anywhere in the conversion), the merchant name and a rail selector **only when the intent offers more than one rail this page can drive**; MTN collects a Cameroon E.164 MSISDN and confirms and polls through `@vpay/stripe-js`; Orange confirms with `redirect: 'if_required'` and then either navigates top-level or asks its parent to (`{type:'vpay:redirect'}`) when framed. `fr` and `en`, chosen from `Accept-Language` server-side, switchable in the page **without navigating** — a `?lang=` link would drop the URL fragment the session credential lives in. **271 vitest tests in 16 files, 0 skipped**, including a `node:http` stub of all five browser routes, both guard directions of the origin check, and a test that no `console.*` call, no navigation and no `postMessage` ever carries a secret. **🟡, and for one reason: no browser has ever rendered this page.** Every test is vitest and jsdom; the CSP is proven *sent*, not proven *enforced*; the routes it speaks to do not exist yet (lane 1). See `docs/plans/step9-notes/lane-3.md` §5 |
+| `frontends/apps/checkout` (the hosted/embedded payment page) | 🟡 | **New 2026-09-04 (Step 9, lane 3).** A Next 15 App Router app, `output: 'standalone'`, no server actions and no cookies, serving `/c/{cs_id}` (hosted), `/e/{cs_id}?key=pk` (embedded) and `/c/{cs_id}/return?t=…` (the return trip, top-level in both modes). Every response carries `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; `Content-Security-Policy: frame-ancestors 'none'` on the hosted and return pages, and on the embedded page the merchant's registered origins resolved **server-side** by `middleware.ts` from `GET {VPAY_API_URL}/v1/browser/checkout/origins?key=…` — fail-closed on a missing key, a missing `VPAY_API_URL`, a failed lookup and an empty list alike, all four proven in `src/middleware.test.ts` against the shipping middleware function. The page reads the session, shows the amount (integer minor units, no floating point anywhere in the conversion), the merchant name and a rail selector **only when the intent offers more than one rail this page can drive**; MTN collects a Cameroon E.164 MSISDN and confirms and polls through `@vpay/stripe-js`; Orange confirms with `redirect: 'if_required'` and then either navigates top-level or asks its parent to (`{type:'vpay:redirect'}`) when framed. `fr` and `en`, chosen from `Accept-Language` server-side, switchable in the page **without navigating** — a `?lang=` link would drop the URL fragment the session credential lives in. **271 vitest tests in 16 files, 0 skipped**, including a `node:http` stub of all five browser routes, both guard directions of the origin check, and a test that no `console.*` call, no navigation and no `postMessage` ever carries a secret. **🟡, and for one reason: no browser has ever rendered this page.** Every test is vitest and jsdom; the CSP is proven _sent_, not proven _enforced_; the routes it speaks to do not exist yet (lane 1). See `docs/plans/step9-notes/lane-3.md` §5 |
 
 Add to the same table:
 
-| Checkout Storybook stories (a11y addon) | 🟡 | **New 2026-09-04 (Step 9, lane 3).** 22 stories covering every screen the checkout state machine can be in — loading, rail selector, MSISDN form and its rejection, Orange prompt, confirming, waiting (with and without a failed poll), redirecting, succeeded/failed/canceled, forwarding, expired, embedding refused, no drivable rail, invalid link — in both locales for the two busiest, plus three return-page screens. They are built by `pnpm --filter @vpay/ui build-storybook` (CI's `web` job) from the *same* literal states `checkout-view.test.tsx` asserts against, so a screen cannot have a story without a test or a test without a story. 🟡 because the a11y addon is configured but **nothing runs axe in CI**: `build-storybook` proves the stories compile |
+| Checkout Storybook stories (a11y addon) | 🟡 | **New 2026-09-04 (Step 9, lane 3).** 22 stories covering every screen the checkout state machine can be in — loading, rail selector, MSISDN form and its rejection, Orange prompt, confirming, waiting (with and without a failed poll), redirecting, succeeded/failed/canceled, forwarding, expired, embedding refused, no drivable rail, invalid link — in both locales for the two busiest, plus three return-page screens. They are built by `pnpm --filter @vpay/ui build-storybook` (CI's `web` job) from the _same_ literal states `checkout-view.test.tsx` asserts against, so a screen cannot have a story without a test or a test without a story. 🟡 because the a11y addon is configured but **nothing runs axe in CI**: `build-storybook` proves the stories compile |
 
 ## 8. `just audit-web`
 

@@ -543,7 +543,7 @@ customers or invoices), run by `just test-sdk-rust`:
   required fields (`customer` and `currency` — the second was optional for one
   day, and a running vpay answers `400` without it); the
   `GET`s that carry the lines; the update's three states (`due_date=` is
-  *clear it*, an unmentioned field is absent); the list's two cursors and two
+  _clear it_, an unmentioned field is absent); the list's two cursors and two
   filters; the `DELETE` with its key and no body; that `finalize`, `void` and
   `mark_uncollectible` each `POST` an **empty** body to its own path; that a
   refused transition arrives as `Error::Api` with the server's `409` message
@@ -570,29 +570,29 @@ Each of these was checked to **fail** when the behaviour it names is broken —
 by making the change and running the suite, not by reading the test. The list
 is exact, because a mutation list nobody re-ran is worth less than no list:
 
-| Mutation                                                          | What fails                                                                                                                     |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| release the cache mutex before the token fetch (no single-flight) | `concurrent_first_calls_share_one_token_request` — 8 token requests against `.expect(1)`                                       |
-| regenerate the `Idempotency-Key` on the retry                     | all three `a_reauthed_*` tests                                                                                                 |
-| send an empty body on the retry                                   | `a_reauthed_post_replays_the_callers_own_idempotency_key_and_body`, `a_reauthed_confirm_replays_its_nested_body_byte_for_byte` |
-| clear the token cache unconditionally on a `401`                  | `a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`                                                |
-| HMAC over `t` re-rendered as a number                             | `the_hmac_covers_the_literal_t_text_not_a_re_rendered_number`                                                                  |
-| accept any `t` that parses as an integer                          | `a_t_that_is_not_a_run_of_decimal_digits_is_malformed`, `a_malformed_header_is_rejected`                                       |
-| hard-fail on a header part with no `=`                            | `an_unparseable_part_and_an_unknown_key_are_both_ignored`                                                                      |
-| keep an empty `v1=` as a signature candidate                      | `an_empty_v1_is_never_treated_as_a_match`                                                                                      |
-| tolerance `>` → `>=`                                              | `a_timestamp_exactly_on_the_tolerance_boundary_is_accepted`                                                                    |
-| drop either amount check                                          | `an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_request`                                                     |
-| interpolate a path id unescaped                                   | `an_id_with_url_metacharacters_is_percent_encoded_into_the_path`, `confirm_and_cancel_encode_the_id_too`                       |
-| truncate a body prefix without backing off a character            | `bounded_prefix_cuts_on_a_character_boundary…`, `an_oversized_multibyte_error_body_is_cut_on_a_character_boundary`             |
-| let reqwest configure TLS itself                                  | both `tests/tls.rs` tests — with the exact `No rustls crypto provider is configured` panic                                     |
-| hard-code the assertion `jti`                                     | `mints_a_fresh_jti_on_every_call`                                                                                              |
-| remove the token cache                                            | the caching test                                                                                                               |
-| remove the `401` retry                                            | both re-auth tests                                                                                                             |
-| change the assertion's `sub`, or drop its `kid`                   | the OP-conformance tests                                                                                                       |
-| revert the escaping rule to RFC 3986's                            | the Node-parity tests                                                                                                          |
+| Mutation                                                           | What fails                                                                                                                      |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| release the cache mutex before the token fetch (no single-flight)  | `concurrent_first_calls_share_one_token_request` — 8 token requests against `.expect(1)`                                        |
+| regenerate the `Idempotency-Key` on the retry                      | all three `a_reauthed_*` tests                                                                                                  |
+| send an empty body on the retry                                    | `a_reauthed_post_replays_the_callers_own_idempotency_key_and_body`, `a_reauthed_confirm_replays_its_nested_body_byte_for_byte`  |
+| clear the token cache unconditionally on a `401`                   | `a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`                                                 |
+| HMAC over `t` re-rendered as a number                              | `the_hmac_covers_the_literal_t_text_not_a_re_rendered_number`                                                                   |
+| accept any `t` that parses as an integer                           | `a_t_that_is_not_a_run_of_decimal_digits_is_malformed`, `a_malformed_header_is_rejected`                                        |
+| hard-fail on a header part with no `=`                             | `an_unparseable_part_and_an_unknown_key_are_both_ignored`                                                                       |
+| keep an empty `v1=` as a signature candidate                       | `an_empty_v1_is_never_treated_as_a_match`                                                                                       |
+| tolerance `>` → `>=`                                               | `a_timestamp_exactly_on_the_tolerance_boundary_is_accepted`                                                                     |
+| drop either amount check                                           | `an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_request`                                                      |
+| interpolate a path id unescaped                                    | `an_id_with_url_metacharacters_is_percent_encoded_into_the_path`, `confirm_and_cancel_encode_the_id_too`                        |
+| truncate a body prefix without backing off a character             | `bounded_prefix_cuts_on_a_character_boundary…`, `an_oversized_multibyte_error_body_is_cut_on_a_character_boundary`              |
+| let reqwest configure TLS itself                                   | both `tests/tls.rs` tests — with the exact `No rustls crypto provider is configured` panic                                      |
+| hard-code the assertion `jti`                                      | `mints_a_fresh_jti_on_every_call`                                                                                               |
+| remove the token cache                                             | the caching test                                                                                                                |
+| remove the `401` retry                                             | both re-auth tests                                                                                                              |
+| change the assertion's `sub`, or drop its `kid`                    | the OP-conformance tests                                                                                                        |
+| revert the escaping rule to RFC 3986's                             | the Node-parity tests                                                                                                           |
 | collapse `UpdateInvoiceParams`' `Option<Option<T>>` to `Option<T>` | `an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire` — `due_date=` vanishes and a due date becomes unclearable |
-| delete any `KnownEventType::Invoice*` variant                     | `the_four_invoice_event_types_are_known_and_their_payloads_decode`                                                              |
-| drop the `check_amount` call in `invoice_items().create()`        | `an_invoice_lines_unit_amount_is_refused_before_any_request`                                                                    |
+| delete any `KnownEventType::Invoice*` variant                      | `the_four_invoice_event_types_are_known_and_their_payloads_decode`                                                              |
+| drop the `check_amount` call in `invoice_items().create()`         | `an_invoice_lines_unit_amount_is_refused_before_any_request`                                                                    |
 
 What this does **not** prove: **that TLS works.** Nothing in this repository
 serves TLS — `wiremock` is plaintext HTTP and no test reaches the network — so

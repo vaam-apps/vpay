@@ -29,18 +29,18 @@ Every **multi-column** CHECK in the database is invisible to it, in both
 directions. Read straight out of `pg_constraint` on the live database
 (`cardinality(conkey) > 1`), there are exactly ten:
 
-| Table | Constraint | Columns | In the report? |
-|---|---|---|---|
-| `checkout_sessions` | `urls_match_ui_mode` | 4 | no |
-| `idempotency_keys` | `complete_has_a_response` | 4 | no |
-| `payment_intents` | `no_over_refund` | 3 | no |
-| `jobs` | `lock_is_paired` | 2 | no |
-| `oauth_signing_keys` | `active_key_has_no_expiry` | 2 | no |
-| `oauth_signing_keys` | `expiry_after_creation` | 2 | no |
-| `payment_intents` | `lpe_paired` | 2 | no |
-| `provider_requests` | `response_is_paired` | 2 | no |
-| `providers` | `partial_refunds_imply_refunds` | 2 | no |
-| `refunds` | `failure_paired` | 2 | no |
+| Table                | Constraint                      | Columns | In the report? |
+| -------------------- | ------------------------------- | ------- | -------------- |
+| `checkout_sessions`  | `urls_match_ui_mode`            | 4       | no             |
+| `idempotency_keys`   | `complete_has_a_response`       | 4       | no             |
+| `payment_intents`    | `no_over_refund`                | 3       | no             |
+| `jobs`               | `lock_is_paired`                | 2       | no             |
+| `oauth_signing_keys` | `active_key_has_no_expiry`      | 2       | no             |
+| `oauth_signing_keys` | `expiry_after_creation`         | 2       | no             |
+| `payment_intents`    | `lpe_paired`                    | 2       | no             |
+| `provider_requests`  | `response_is_paired`            | 2       | no             |
+| `providers`          | `partial_refunds_imply_refunds` | 2       | no             |
+| `refunds`            | `failure_paired`                | 2       | no             |
 
 Ten multi-column CHECKs, zero reported. Meanwhile single-column CHECKs on the
 **same two modelled tables** are reported one line away:
@@ -62,16 +62,16 @@ matches the schema exactly"
 (https://cratestack.dev/tooling/migrate-baseline). On this database, a
 **green `--strict` run would say nothing whatever about the over-refund guard or
 the refund-capability coherence rule** — the two constraints the migrations
-added precisely *because* the grammar could not express them are exactly the two
+added precisely _because_ the grammar could not express them are exactly the two
 a clean drift report cannot vouch for. Anyone who later wires `migrate baseline
 --strict` in as a schema gate should know that before trusting it.
 
 This is the evidence for the `@@check(expr)` ask, and it is stronger evidence
 than the report naming them would have been: the grammar cannot express them
-*and* the drift tool cannot see them, so nothing in the CrateStack toolchain
+_and_ the drift tool cannot see them, so nothing in the CrateStack toolchain
 would ever notice their absence.
 
-## How the report represents the things it *can* see
+## How the report represents the things it _can_ see
 
 `Destructiveness`-derived severities, as documented: `[safe]`, `[lossy]`,
 `[blocking]`. Some observations worth recording, since they explain the shape of
@@ -80,7 +80,7 @@ the 86:
 - **A Postgres enum column introspects as `Scalar("String")`.** Every enum-typed
   column the schema models is reported as a type difference —
   `column `status` type differs (live: Scalar("String"), schema:
-  Enum("IntentStatus"))` — for `status`, `flow`, `state`, `failure_code`,
+Enum("IntentStatus"))` — for `status`, `flow`, `state`, `failure_code`,
   `account`, `direction`. Six of the 86. The schema is not wrong here; the
   introspection does not round-trip a `CREATE TYPE ... AS ENUM`.
 - **A synthetic CHECK name is minted for an enum column the schema does not
@@ -92,18 +92,18 @@ the 86:
   (`charges.created_at`, `payment_intents.created_at`,
   `ledger_transactions.created_at`, `ledger_transactions.id`,
   `ledger_entries.id`). Measured directly: switching a model's `DateTime
-  @default(dbgenerated())` to `@default(now())` against a `DEFAULT now()` column
+@default(dbgenerated())` to `@default(now())` against a `DEFAULT now()` column
   makes the difference disappear. `@default(dbgenerated("now()"))` is rejected —
   "cratestack's `dbgenerated()` takes no argument".
 - **18 columns are excluded from the comparison entirely.** The report's own
   trailing block: `18 column(s) have a Postgres type cratestack could not
-  confidently map to a `.cstack` scalar — excluded from the comparison above,
-  review manually`. Every one is `jsonb`, `int2`/`int4` or `bytea`. This is a
-  blind spot *in the measurement*, so the test pins it too: if it grows, the 86
+confidently map to a `.cstack` scalar — excluded from the comparison above,
+review manually`. Every one is `jsonb`, `int2`/`int4` or `bytea`. This is a
+  blind spot _in the measurement_, so the test pins it too: if it grows, the 86
   can fall for a reason that has nothing to do with the schema improving.
 - **The `authkestra.*` tables are invisible**, because baseline introspects the
   connection's own schema and they live in `authkestra`. `disabled_clients`,
-  `oauth_signing_keys` and `oauth_client_assertion_jtis` are *not* in that
+  `oauth_signing_keys` and `oauth_client_assertion_jtis` are _not_ in that
   category — they are `public` tables, so the schema header's "and the
   authkestra tables" does not account for them. Measuring rather than copying
   the header's list is what surfaced that.
@@ -316,7 +316,7 @@ total)`, `no_over_refund` mentioned nowhere,
 tool cannot see it.**
 
 That exposed a real weakness in the test as first drafted:
-`assert!(!stdout.contains("no_over_refund"))` is satisfied *both* when the
+`assert!(!stdout.contains("no_over_refund"))` is satisfied _both_ when the
 report is blind and when the constraint has been deleted. So the test was
 changed to read `pg_constraint` first and assert the full set of ten
 multi-column CHECKs exists in the live database, and only then that none of
@@ -332,7 +332,7 @@ assertion `left == right` failed: the multi-column CHECK constraints backends/mi
   right: [… ("payment_intents", "lpe_paired"), ("payment_intents", "no_over_refund"), ("provider_requests", "response_is_paired"), …]
 ```
 
-Note what the *same* failing run still printed: `--strict refuses to baseline
+Note what the _same_ failing run still printed: `--strict refuses to baseline
 with 86 pending drift change(s)`. The count is unmoved. The `pg_constraint`
 assertion is what notices.
 
@@ -346,7 +346,9 @@ change(s) total)`. The table's one change was swapped for another —
 disabled_clients:
   [lossy] table `disabled_clients` exists in the live database but is not declared in the schema
 ```
+
 became
+
 ```
 disabled_clients:
   [safe] column `disabled_at` default value differs from the schema
@@ -383,12 +385,12 @@ mutation was a legal schema, not a broken one.
 
 Measured on a host running three other agents' container suites concurrently.
 
-| Step | Wall clock |
-|---|---|
-| `cargo build --tests -p vpay-tests-integration` (cold) | 1m 04s |
-| The new test, first run (cold container image state) | 42.99s |
-| The new test, warm | 1.4s – 2.0s |
-| `migrate baseline --strict` itself, by hand | well under 1s |
+| Step                                                   | Wall clock    |
+| ------------------------------------------------------ | ------------- |
+| `cargo build --tests -p vpay-tests-integration` (cold) | 1m 04s        |
+| The new test, first run (cold container image state)   | 42.99s        |
+| The new test, warm                                     | 1.4s – 2.0s   |
+| `migrate baseline --strict` itself, by hand            | well under 1s |
 
 ## What this does not establish
 

@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 
-import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from './cookies';
-import { LOGIN_PATH } from './session';
+import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from "./cookies";
+import { LOGIN_PATH } from "./session";
 
 /**
  * The response that removes a dead session cookie and sends a browser to the
@@ -83,7 +83,10 @@ export function signedOutResponse(headers?: Headers): NextResponse {
     // deletion whose `path` or `secure` differs from the original leaves the
     // original in place — the browser treats them as different cookies —
     // which is the drift `COOKIE_ATTRIBUTES` exists to stop (`cookies.ts`).
-    response.cookies.set(SESSION_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+    response.cookies.set(SESSION_COOKIE, "", {
+      ...COOKIE_ATTRIBUTES,
+      maxAge: 0,
+    });
   }
   return response;
 }
@@ -108,9 +111,9 @@ export function isNavigation(headers?: Headers): boolean {
   if (headers === undefined) {
     return true;
   }
-  if ((headers.get('sec-purpose') ?? '').includes('prefetch')) {
+  if ((headers.get("sec-purpose") ?? "").includes("prefetch")) {
     return false;
   }
-  const destination = headers.get('sec-fetch-dest');
-  return destination === null || destination === 'document';
+  const destination = headers.get("sec-fetch-dest");
+  return destination === null || destination === "document";
 }

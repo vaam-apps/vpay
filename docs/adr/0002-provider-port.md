@@ -10,7 +10,7 @@ vpay ships MTN MoMo and Orange Money, and expects more Central African rails. If
 
 ## Decision
 
-Define one `ProviderAdapter` trait (`backends/crates/vpay-provider`). The core owns the payment lifecycle, ledger, reconciliation and failure taxonomy; an adapter owns exactly one rail's wire protocol. Providers are rows in a table, never enum variants — adding a rail is an INSERT plus an adapter crate, never a schema migration. The core branches on capability *values* (`flow`, `supports_refunds`), never on a provider code.
+Define one `ProviderAdapter` trait (`backends/crates/vpay-provider`). The core owns the payment lifecycle, ledger, reconciliation and failure taxonomy; an adapter owns exactly one rail's wire protocol. Providers are rows in a table, never enum variants — adding a rail is an INSERT plus an adapter crate, never a schema migration. The core branches on capability _values_ (`flow`, `supports_refunds`), never on a provider code.
 
 ## Consequences
 

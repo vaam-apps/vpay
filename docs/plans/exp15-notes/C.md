@@ -7,7 +7,7 @@ Docker. Every command below was run; every number is pasted, not paraphrased.
 ## 0. The defect, measured before anything was written
 
 `cargo xtask verify-sdk-parity` read `docs/sdks/parity.md` and checked whether
-what the document *said* was true. It could not check what the document did
+what the document _said_ was true. It could not check what the document did
 not say. Measured on the base commit, deleting the whole `refunds.create` row
 (line 115):
 
@@ -46,10 +46,10 @@ everything downstream reads code and only code.
 
 ### The naming convention, decided and written into `parity.md`'s header
 
-| Source | Read as |
-|---|---|
+| Source                                                  | Read as                     |
+| ------------------------------------------------------- | --------------------------- |
 | Rust `impl <Resource>Resource { pub async fn <method>(` | `<resource_snake>.<method>` |
-| Node exported `<Resource>Resource` class methods | `<resource_snake>.<method>` |
+| Node exported `<Resource>Resource` class methods        | `<resource_snake>.<method>` |
 
 Resource names map by snake_case in both languages. One alias table entry:
 `checkout_sessions` → `checkout.sessions`, because that is what
@@ -59,7 +59,7 @@ members and namespace accessors (Rust `CheckoutResource::sessions`, a
 `pub fn`, not a `pub async fn`; Node `CheckoutResource.sessions`, a field) are
 not capabilities.
 
-A row is a **capability row** when its first cell *opens* with a code span of
+A row is a **capability row** when its first cell _opens_ with a code span of
 that shape. Opening with it is load-bearing: `parity.md` also carries rows
 that mention a dotted code span mid-sentence — the `checkout.session.expired`
 event-type rows — and reading one of those as a capability would demand an SDK
@@ -88,7 +88,7 @@ All 13 already had rows. Sixteen capability rows name fourteen distinct
 capabilities (`account_holders.retrieve` and `checkout.sessions.create` each
 have two rows); the fourteenth, `events.retrieve`, is ⛔/⛔ dated 2026-09-03
 and is exactly the planned-gap case. **So the two directions are recorded here
-as newly *enforced*, not as newly *discovered defects*.** Nothing in
+as newly _enforced_, not as newly _discovered defects_.** Nothing in
 `parity.md`'s cells was changed and no gap row was added — a finding that did
 not exist is not written down as if it had.
 
@@ -100,16 +100,16 @@ mutation was run against `refunds.create` instead.
 
 Verified reverted with `git status --porcelain` after each.
 
-| # | Mutation | Result |
-|---|---|---|
-| 1 | delete the `refunds.create` row | **FAIL**, `sdks/rust/src/resources.rs:705: `refunds.create` is shipped and has no row` |
-| 2 | add `pub async fn frobnicate(` to a Rust resource | **FAIL**, `sdks/rust/src/resources.rs:705: `refunds.frobnicate` …` |
-| 2b | add `async frobnicate(` to the Node `RefundsResource` | **FAIL**, `sdks/nodejs/src/resources/refunds.ts:14: `refunds.frobnicate` …` |
-| 3 | add a `payments.teleport` row with two ✅ cells | **FAIL**, `docs/sdks/parity.md:116: row `payments.teleport` names a method no SDK declares` |
-| 4 | rename a named proving test | **FAIL** (the pre-existing direction, preserved) |
-| 5 | the same `payments.teleport` row rewritten ⛔/⛔ with a date | **PASS**, exit 0, 30 dated gaps |
-| 6 | rename `create` → `creat` on the **Rust** `RefundsResource` | **FAIL**, one problem: `refunds.creat` is shipped and has no row |
-| 7 | rename it on **both** SDKs | **FAIL**, two problems, one per direction |
+| #   | Mutation                                                     | Result                                                                                      |
+| --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| 1   | delete the `refunds.create` row                              | **FAIL**, `sdks/rust/src/resources.rs:705: `refunds.create` is shipped and has no row`      |
+| 2   | add `pub async fn frobnicate(` to a Rust resource            | **FAIL**, `sdks/rust/src/resources.rs:705: `refunds.frobnicate` …`                          |
+| 2b  | add `async frobnicate(` to the Node `RefundsResource`        | **FAIL**, `sdks/nodejs/src/resources/refunds.ts:14: `refunds.frobnicate` …`                 |
+| 3   | add a `payments.teleport` row with two ✅ cells              | **FAIL**, `docs/sdks/parity.md:116: row `payments.teleport` names a method no SDK declares` |
+| 4   | rename a named proving test                                  | **FAIL** (the pre-existing direction, preserved)                                            |
+| 5   | the same `payments.teleport` row rewritten ⛔/⛔ with a date | **PASS**, exit 0, 30 dated gaps                                                             |
+| 6   | rename `create` → `creat` on the **Rust** `RefundsResource`  | **FAIL**, one problem: `refunds.creat` is shipped and has no row                            |
+| 7   | rename it on **both** SDKs                                   | **FAIL**, two problems, one per direction                                                   |
 
 Every mutation was re-run against the committed tree, with the exit code
 printed each time: 1, 1, 1, 1, 1, 0 for mutations 1–5 and 6.
@@ -147,7 +147,7 @@ Two of them exist against a specific failure mode rather than for coverage:
 - `deleting_a_whole_row_fails_and_names_the_method_it_stopped_recording` is
   §0's measurement as a regression test.
 
-The lexer was written *because* of a measured failure, not defensively: the
+The lexer was written _because_ of a measured failure, not defensively: the
 first implementation matched braces without reading comments, and a doc
 comment carrying a lone `{` ran the matcher off the end of the fixture and
 silently enumerated **nothing** from that resource — the exact shape of
@@ -170,13 +170,13 @@ contained one.
 
 All on this tree, this branch:
 
-| Command | Result |
-|---|---|
-| `just verify` | ten gates, all ok |
-| `cargo test -p xtask` | 208 passed, 0 failed, 0 ignored (was 194) |
-| `just fmt-check` | ok |
-| `just clippy` | ok (one `redundant_closure` on new code, fixed) |
-| `just docs-check` | see below |
+| Command               | Result                                          |
+| --------------------- | ----------------------------------------------- |
+| `just verify`         | ten gates, all ok                               |
+| `cargo test -p xtask` | 208 passed, 0 failed, 0 ignored (was 194)       |
+| `just fmt-check`      | ok                                              |
+| `just clippy`         | ok (one `redundant_closure` on new code, fixed) |
+| `just docs-check`     | see below                                       |
 
 **Updated 2026-09-06 by the review pass:** every row above was re-run and
 still holds, plus `just verify-ignored` (`0 ignored (expected 0), 42 test
@@ -265,7 +265,7 @@ vacuity guard failed immediately:
 This is the guard doing exactly the job it was written for, one commit
 earlier than expected. The `expected` list was written against a tree with 13
 methods; #51 added a fourteenth to both SDKs. Nothing about the gate changed
-and nothing about #51 was wrong — the *fact this tree asserts* changed, and
+and nothing about #51 was wrong — the _fact this tree asserts_ changed, and
 because the assertion names the capabilities rather than counting them, it
 said so, named the SDK and printed both lists. Had it asserted `len() == 13`,
 or merely "non-empty", the rebase would have been silently green with the
@@ -275,15 +275,15 @@ relax later.
 
 **What was re-measured, in the same commit as the list:**
 
-| | Before the rebase | After |
-|---|---|---|
-| `verify-sdk-parity` proving tests | 350 | **354** |
-| dated gaps | 28 | **28** |
-| SDK methods enumerated | 13 | **14** |
-| capability rows | 16 | **17** |
-| `cargo test -p xtask` | 211 passed, 0 ignored | **211 passed, 0 ignored** |
-| `just verify-ignored` total | 1336 | **1351** |
-| test binaries / `expected_suites` | 42 | **43** (set by #51, not by this branch) |
+|                                   | Before the rebase     | After                                   |
+| --------------------------------- | --------------------- | --------------------------------------- |
+| `verify-sdk-parity` proving tests | 350                   | **354**                                 |
+| dated gaps                        | 28                    | **28**                                  |
+| SDK methods enumerated            | 13                    | **14**                                  |
+| capability rows                   | 16                    | **17**                                  |
+| `cargo test -p xtask`             | 211 passed, 0 ignored | **211 passed, 0 ignored**               |
+| `just verify-ignored` total       | 1336                  | **1351**                                |
+| test binaries / `expected_suites` | 42                    | **43** (set by #51, not by this branch) |
 
 The success line on the rebased tree, in full:
 
@@ -304,11 +304,11 @@ record false. Each now carries the re-measured number alongside it instead.
 **Three decisive mutations re-run on the rebased tree**, each applied, run and
 reverted, all exit 1:
 
-| Mutation | Result |
-|---|---|
-| delete the `refunds.retrieve` row | **exit 1**, `sdks/rust/src/resources.rs:726: \`refunds.retrieve\` is shipped and has no row` |
-| `pub async fn frobnicate(` added to `PaymentIntentsResource` | **exit 1**, `sdks/rust/src/resources.rs:512` |
-| a `b'}'` byte literal *then* the same method, same `impl` (the lexer fix) | **exit 1**, `sdks/rust/src/resources.rs:516` |
+| Mutation                                                                  | Result                                                                                       |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| delete the `refunds.retrieve` row                                         | **exit 1**, `sdks/rust/src/resources.rs:726: \`refunds.retrieve\` is shipped and has no row` |
+| `pub async fn frobnicate(` added to `PaymentIntentsResource`              | **exit 1**, `sdks/rust/src/resources.rs:512`                                                 |
+| a `b'}'` byte literal _then_ the same method, same `impl` (the lexer fix) | **exit 1**, `sdks/rust/src/resources.rs:516`                                                 |
 
 The third is the one that matters: before the `end_of_literal` reuse, the
 byte literal's brace truncated the enclosing `impl` and every method after it
@@ -317,15 +317,15 @@ vanished, so this mutation passed. It does not now.
 **The full gate on the rebased tree**, every command run rather than
 reconstructed:
 
-| Command | Result |
-|---|---|
-| `just verify` | `verify: ok — the ten gates above passed`, exit 0 |
+| Command                         | Result                                                                                              |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `just verify`                   | `verify: ok — the ten gates above passed`, exit 0                                                   |
 | `cargo xtask verify-sdk-parity` | `ok — 354 proving test(s) …, 28 dated gap(s), 14 SDK method(s) enumerated across 17 row(s)`, exit 0 |
-| `cargo test -p xtask` | **211 passed, 0 failed, 0 ignored** |
-| `just docs-check` | exit 0 |
-| `just fmt-check` | exit 0 |
-| `just clippy` | exit 0 |
-| `just verify-ignored` | `0 ignored (expected 0), 43 test binaries (expected 43), 1351 total (minimum 1080)`, exit 0 |
+| `cargo test -p xtask`           | **211 passed, 0 failed, 0 ignored**                                                                 |
+| `just docs-check`               | exit 0                                                                                              |
+| `just fmt-check`                | exit 0                                                                                              |
+| `just clippy`                   | exit 0                                                                                              |
+| `just verify-ignored`           | `0 ignored (expected 0), 43 test binaries (expected 43), 1351 total (minimum 1080)`, exit 0         |
 
 **`verify-ignored` failed once before it passed, and the cause was not this
 branch.** The first run died linking the `browser_checkout` test binary with
@@ -339,7 +339,7 @@ and anyone who hits it should clean that crate rather than go looking for a
 defect in the gate.
 
 **One expectation not met, and it is a design decision rather than a defect.**
-The first mutation fails naming *one* SDK's `file:line`, not both. `shipped`
+The first mutation fails naming _one_ SDK's `file:line`, not both. `shipped`
 is a `BTreeMap` keyed by capability and the comment above it says why —
 "first declaration wins, so the reported `file:line` is stable rather than
 dependent on column order" — so a capability both SDKs declare yields one

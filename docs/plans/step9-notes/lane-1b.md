@@ -9,34 +9,34 @@ Branch `claude/step9-lane-1b-integration`, on top of `74a2be8` (the gate with
 lanes 5, 2, 3, 2b and 1 merged). Six commits, each its own subject and each
 with a measured guard-failure proof:
 
-| # | Commit | Subject |
-|---|---|---|
-| 1 | `25734d6` | wire the return trip to the checkout session |
-| 2 | `04e98a7` | expire checkout sessions past their horizon |
-| 3 | `0b7e86f` | refuse a checkout origin a browser would not recognise (F5) |
-| 4 | `8ab0201` | render the merchant's display name on both browser reads (F2) |
-| 5 | `a0818e0` | a confirm under an open checkout session needs no `return_url` (F3) |
-| 6 | `125be53` | the browser reads end at the horizon, and the secret at `open` (F4) |
+| #   | Commit    | Subject                                                             |
+| --- | --------- | ------------------------------------------------------------------- |
+| 1   | `25734d6` | wire the return trip to the checkout session                        |
+| 2   | `04e98a7` | expire checkout sessions past their horizon                         |
+| 3   | `0b7e86f` | refuse a checkout origin a browser would not recognise (F5)         |
+| 4   | `8ab0201` | render the merchant's display name on both browser reads (F2)       |
+| 5   | `a0818e0` | a confirm under an open checkout session needs no `return_url` (F3) |
+| 6   | `125be53` | the browser reads end at the horizon, and the secret at `open` (F4) |
 
 ## 1. What landed
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | `SessionReturnPage` — the shipping `ReturnUrlSource`, holding the repositories **and** `checkout.public_base_url`; replaced lane 2's blanket `impl … for dyn Repositories` that answered `None` for every intent | `backends/crates/vpay-api/src/v1/return_trip.rs` |
-| 2 | `ApiError::CheckoutNotConfigured(CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP)` — a third sentence under lane 1's code, for a session-driven confirm on a deployment that serves no checkout page | `backends/crates/vpay-api/src/error.rs:216` (the constant), `:455` (the variant's "three gaps, one code") |
-| 3 | The resolution point **moved**: the session's return page is written into `charges.return_url` before the charge is committed, and `submit_to_rail` reads the committed row. `return_url_for_charge` is gone; the precedence lives in `payer_instrument` | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`confirm_once`, `resolve_rail`, `payer_instrument`, `submit_to_rail`) |
-| 4 | A redirect confirm under an **open** session needs no `return_url`, and ignores one that is sent (debug log, no error). No session → today's rule, unchanged | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`payer_instrument`) |
-| 5 | `CheckoutSessions::expire_due(now) -> u64` — open sessions past `expires_at` with no live charge → `expired`, `payment_status` untouched | `backends/crates/vpay-db/src/checkout_sessions.rs` (trait + `PgRepositories` impl) |
-| 6 | The worker's hourly housekeeping sweep runs it as a fourth statement, with `checkout_sessions = <count>` on the same log line. **No new `jobs.kind`, no migration** | `backends/crates/vpay-worker/src/handlers.rs` (`sweep_expired`) |
-| 7 | `merchant_clients[].display_name` — optional, non-blank, ≤ 80 characters, validated at boot, sample in `config/application.yml` | `backends/crates/vpay-config/src/oauth.rs` (the field), `config.rs` (`validate_display_name`, `DISPLAY_NAME_MAX_CHARS`), `lib.rs` (`ConfigError::MalformedDisplayName`) |
-| 8 | `ResourceConfig::merchant_display_name`, `model::CheckoutMerchantObject`, `model::CheckoutSessionForPayer`, and `merchant: { name }` on **both** browser session reads | `vpay-api/src/v1/mod.rs`, `src/model.rs`, `src/browser/checkout_sessions.rs` (`for_payer`) |
-| 9 | Both browser reads answer the uniform 404 once `now() >= expires_at`, whatever the `status`; the session read renders the intent's `client_secret` only while `status = 'open'` | `backends/crates/vpay-api/src/browser/checkout_sessions.rs` (`authenticate`, `retrieve`), `v1/checkout_sessions.rs` (`OPEN`) |
-| 10 | `ConfigError::NonCanonicalCheckoutOrigin` — the raw text must equal `parsed.origin().ascii_serialization()`, and the message names what to write instead | `backends/crates/vpay-config/src/config.rs` (`validate_checkout_origins`), `lib.rs` (the variant) |
-| 11 | Two nits: the caller-supplied publishable key in both browser log lines bounded to 40 characters (`bounded`); the origins route's module doc states that a key **with** origins is distinguishable from an unknown one, and why that is accepted | `backends/crates/vpay-api/src/browser/checkout_sessions.rs` |
-| 12 | Two config fixtures | `backends/crates/vpay-config/tests/fixtures/{checkout-origin-non-canonical,merchant-display-name-too-long}.yml` |
-| 13 | Eleven new tests, three retired | `confirm_rails.rs` (+3), `checkout_sessions.rs` (+4), `vpay-config` (+2), `vpay-api` (+2, −3) |
-| 14 | Reference pages | `docs/reference/vpay-api.md` (rewritten §"Where the payer comes back to", new §§"What ends a browser read" and "`merchant.name`, and why there is a fallback"), `vpay-db.md` (new §"`expire_due` is the same guard on a clock"), `vpay-worker.md` (new §"The housekeeping sweep retires a fourth thing"), `vpay-config.md` (new §§"An origin must be spelled the way a browser spells it" and "`merchant_clients[].display_name`") |
-| 15 | Counter | `justfile`: `min_tests` 1050 → 1080. `expected_suites` unchanged at 42 — every case landed in a binary that already existed |
+| #   | Thing                                                                                                                                                                                                                                                    | Where                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `SessionReturnPage` — the shipping `ReturnUrlSource`, holding the repositories **and** `checkout.public_base_url`; replaced lane 2's blanket `impl … for dyn Repositories` that answered `None` for every intent                                         | `backends/crates/vpay-api/src/v1/return_trip.rs`                                                                                                                                                                                                                                                                                                                                                                                   |
+| 2   | `ApiError::CheckoutNotConfigured(CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP)` — a third sentence under lane 1's code, for a session-driven confirm on a deployment that serves no checkout page                                                               | `backends/crates/vpay-api/src/error.rs:216` (the constant), `:455` (the variant's "three gaps, one code")                                                                                                                                                                                                                                                                                                                          |
+| 3   | The resolution point **moved**: the session's return page is written into `charges.return_url` before the charge is committed, and `submit_to_rail` reads the committed row. `return_url_for_charge` is gone; the precedence lives in `payer_instrument` | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`confirm_once`, `resolve_rail`, `payer_instrument`, `submit_to_rail`)                                                                                                                                                                                                                                                                                                        |
+| 4   | A redirect confirm under an **open** session needs no `return_url`, and ignores one that is sent (debug log, no error). No session → today's rule, unchanged                                                                                             | `backends/crates/vpay-api/src/v1/payment_intents.rs` (`payer_instrument`)                                                                                                                                                                                                                                                                                                                                                          |
+| 5   | `CheckoutSessions::expire_due(now) -> u64` — open sessions past `expires_at` with no live charge → `expired`, `payment_status` untouched                                                                                                                 | `backends/crates/vpay-db/src/checkout_sessions.rs` (trait + `PgRepositories` impl)                                                                                                                                                                                                                                                                                                                                                 |
+| 6   | The worker's hourly housekeeping sweep runs it as a fourth statement, with `checkout_sessions = <count>` on the same log line. **No new `jobs.kind`, no migration**                                                                                      | `backends/crates/vpay-worker/src/handlers.rs` (`sweep_expired`)                                                                                                                                                                                                                                                                                                                                                                    |
+| 7   | `merchant_clients[].display_name` — optional, non-blank, ≤ 80 characters, validated at boot, sample in `config/application.yml`                                                                                                                          | `backends/crates/vpay-config/src/oauth.rs` (the field), `config.rs` (`validate_display_name`, `DISPLAY_NAME_MAX_CHARS`), `lib.rs` (`ConfigError::MalformedDisplayName`)                                                                                                                                                                                                                                                            |
+| 8   | `ResourceConfig::merchant_display_name`, `model::CheckoutMerchantObject`, `model::CheckoutSessionForPayer`, and `merchant: { name }` on **both** browser session reads                                                                                   | `vpay-api/src/v1/mod.rs`, `src/model.rs`, `src/browser/checkout_sessions.rs` (`for_payer`)                                                                                                                                                                                                                                                                                                                                         |
+| 9   | Both browser reads answer the uniform 404 once `now() >= expires_at`, whatever the `status`; the session read renders the intent's `client_secret` only while `status = 'open'`                                                                          | `backends/crates/vpay-api/src/browser/checkout_sessions.rs` (`authenticate`, `retrieve`), `v1/checkout_sessions.rs` (`OPEN`)                                                                                                                                                                                                                                                                                                       |
+| 10  | `ConfigError::NonCanonicalCheckoutOrigin` — the raw text must equal `parsed.origin().ascii_serialization()`, and the message names what to write instead                                                                                                 | `backends/crates/vpay-config/src/config.rs` (`validate_checkout_origins`), `lib.rs` (the variant)                                                                                                                                                                                                                                                                                                                                  |
+| 11  | Two nits: the caller-supplied publishable key in both browser log lines bounded to 40 characters (`bounded`); the origins route's module doc states that a key **with** origins is distinguishable from an unknown one, and why that is accepted         | `backends/crates/vpay-api/src/browser/checkout_sessions.rs`                                                                                                                                                                                                                                                                                                                                                                        |
+| 12  | Two config fixtures                                                                                                                                                                                                                                      | `backends/crates/vpay-config/tests/fixtures/{checkout-origin-non-canonical,merchant-display-name-too-long}.yml`                                                                                                                                                                                                                                                                                                                    |
+| 13  | Eleven new tests, three retired                                                                                                                                                                                                                          | `confirm_rails.rs` (+3), `checkout_sessions.rs` (+4), `vpay-config` (+2), `vpay-api` (+2, −3)                                                                                                                                                                                                                                                                                                                                      |
+| 14  | Reference pages                                                                                                                                                                                                                                          | `docs/reference/vpay-api.md` (rewritten §"Where the payer comes back to", new §§"What ends a browser read" and "`merchant.name`, and why there is a fallback"), `vpay-db.md` (new §"`expire_due` is the same guard on a clock"), `vpay-worker.md` (new §"The housekeeping sweep retires a fourth thing"), `vpay-config.md` (new §§"An origin must be spelled the way a browser spells it" and "`merchant_clients[].display_name`") |
+| 15  | Counter                                                                                                                                                                                                                                                  | `justfile`: `min_tests` 1050 → 1080. `expected_suites` unchanged at 42 — every case landed in a binary that already existed                                                                                                                                                                                                                                                                                                        |
 
 ## 2. Decisions taken in this lane, and why
 
@@ -48,11 +48,11 @@ with a measured guard-failure proof:
   merchant's `charges.return_url`, is exactly the failure lane 2's note
   warned about: the payer is forwarded one step too early, the session never
   reaches `complete`, and nothing reports it. The refusal is loud and, since
-  the lookup now runs *before* `open_attempt`, costs no charge row. It fires
+  the lookup now runs _before_ `open_attempt`, costs no charge row. It fires
   for a **push** rail too, which would have ignored the URL: the deployment's
   checkout page is gone either way, and an outage that depended on which rail
   a payer picked would be worse to debug than one that does not.
-- **The return URL is resolved *before* the charge is written, not between the
+- **The return URL is resolved _before_ the charge is written, not between the
   write and the rail call.** Lane 2 put it after `open_attempt` so the value
   would be "what would survive a crash"; writing it into the row satisfies
   that more strongly and fixes three things at once — the worker's
@@ -86,7 +86,7 @@ with a measured guard-failure proof:
   enforces it.** The sweep leaves a session with a live charge `open` on
   purpose, it runs at most once an hour, and a deployment whose worker was
   down would keep answering those reads for the length of the outage. The
-  sweep makes `status` honest to a *merchant*; the read is what refuses a
+  sweep makes `status` honest to a _merchant_; the read is what refuses a
   payer credential. The integration test runs **no worker** and asserts the
   row still says `open`, so it cannot pass for the sweep's reason.
 - **The horizon ends both reads whatever the `status`, and `status` gates only
@@ -101,12 +101,12 @@ with a measured guard-failure proof:
   lane 3's own note (§4a) states the shape. Rendering `display_name` would
   have made every session read `error.unexpected` on the page. **This is a
   deliberate departure from the brief's wording**, taken because the page is
-  the consumer and its guard is the contract; the *configuration* key is
+  the consumer and its guard is the contract; the _configuration_ key is
   `display_name`, as the brief asked.
 - **The fallback for a merchant with no configured name is the tenant id, and
   that is a real trade-off.** Lane 1 declined to render `merchant_id` under a
   display-name key, calling it the plausible-looking fabrication AGENTS.md's
-  second rule forbids (§3b), and that concern is right about *inventing* a
+  second rule forbids (§3b), and that concern is right about _inventing_ a
   name. What settles it here is that the page's contract makes the member
   required: the choice is not between a name and nothing, it is between the
   operator's own label for the tenant and a page that refuses to paint.
@@ -119,7 +119,7 @@ with a measured guard-failure proof:
 - **A non-canonical checkout origin is refused, not normalised.** Normalising
   would make the configuration file and the running policy two different
   documents. The message names the canonical spelling, which is why it is its
-  own variant: the useful part of it is a *value*, and
+  own variant: the useful part of it is a _value_, and
   `MalformedCheckoutOrigin`'s reason is a `&'static str`.
 - **The bounded publishable key in the log lines is a bound, not a
   redaction.** A publishable key is public by design and the whole value of
@@ -161,27 +161,27 @@ Host: the lane worktree, `CARGO_BUILD_JOBS=4`,
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`, container suites with
 `--retries 2 -j 1`.
 
-| Gate | Result |
-|---|---|
-| `cargo +nightly fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets --all-features --locked` | clean, no new `#[allow]`/`#[expect]` |
-| `cargo nextest run -p vpay-db -p vpay-api -p vpay-config -p vpay-worker --retries 2 -j 1` | **496 run, 496 passed, 0 skipped** (119.7 s) |
+| Gate                                                                                                                                                                    | Result                                                                                                                                         |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo +nightly fmt --all --check`                                                                                                                                      | clean                                                                                                                                          |
+| `cargo clippy --workspace --all-targets --all-features --locked`                                                                                                        | clean, no new `#[allow]`/`#[expect]`                                                                                                           |
+| `cargo nextest run -p vpay-db -p vpay-api -p vpay-config -p vpay-worker --retries 2 -j 1`                                                                               | **496 run, 496 passed, 0 skipped** (119.7 s)                                                                                                   |
 | `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(confirm_rails) \| binary(worker_recovery) \| binary(worker_e2e)' --retries 2 -j 1` | **55 run, 55 passed, 0 skipped** (200.0 s) — `checkout_sessions` 17 (was 13), `confirm_rails` 12 (was 9), `worker_recovery` 23, `worker_e2e` 3 |
-| `just verify` | ok — `verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity` pass; `verify-docs` is the advisory report |
-| `just verify-ignored` | **0 ignored (expected 0), 42 test binaries (expected 42), 1129 total (minimum 1080)** |
-| `just test-doc` | **82 doctests passed, 1 ignored** (the ignored one is `vpay_sdk`'s and pre-existing) |
+| `just verify`                                                                                                                                                           | ok — `verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity` pass; `verify-docs` is the advisory report                       |
+| `just verify-ignored`                                                                                                                                                   | **0 ignored (expected 0), 42 test binaries (expected 42), 1129 total (minimum 1080)**                                                          |
+| `just test-doc`                                                                                                                                                         | **82 doctests passed, 1 ignored** (the ignored one is `vpay_sdk`'s and pre-existing)                                                           |
 
 `cargo xtask verify-errors` is green with the new `ConfigError` variants: both
 are on an enum that already `impl Classify`.
 
 **Flakes, reported as flakes.** Two, neither in code this lane changed:
 
-* `checkout_sessions::a_declined_payment_leaves_the_session_expired_and_failed`
+- `checkout_sessions::a_declined_payment_leaves_the_session_expired_and_failed`
   failed twice and passed on the third try (`FLAKY 3/3`) in one intermediate
   run, and passed first time in every run since, including the final gate. Its
   subject is lane 1's settlement flip.
-* One run of a single-test filter failed with `container is not ready:
-  container startup timeout` after 185 s, with no assertion reached. The host
+- One run of a single-test filter failed with `container is not ready:
+container startup timeout` after 185 s, with no assertion reached. The host
   had 87 leftover `Created` testcontainers at the time. It passed on the next
   attempt. This is the environment, not the suite.
 
@@ -190,15 +190,15 @@ are on an enum that already `impl Classify`.
 Each mutation was applied, the named test run, the file restored from a copy
 taken first, and `git status --porcelain` confirmed empty afterwards.
 
-| # | Mutation | Test | Observed |
-|---|---|---|---|
-| 1 | `SessionReturnPage::session_return_url` answers `Ok(None)` again (lane 2's body) | `a_session_driven_confirm_sends_vpays_return_page_to_the_rail` | **FAIL** — the rail was told `https://shop.example/order/1234/return` instead of `…/c/cs_…/return?t=…&key=…`; a payer it redirected would land on the merchant's site with the session still open. `a_direct_confirm_sends_the_merchants_return_url_to_the_rail` still passed, which is correct |
-| 2 | Delete the `NOT EXISTS` live-charge clause from `CheckoutSessions::expire_due` | `the_housekeeping_sweep_expires_a_stale_session_and_spares_a_paying_one` | **FAIL** — the paying session came back `("expired", "unpaid")` while its charge was still live and the rail could still take the payment |
-| 3 | Remove the session branch from `payer_instrument` | `a_browser_confirm_under_a_session_needs_no_return_url` | **FAIL** — `400 invalid_request`, `param: return_url`, "This payment method redirects the payer, so a `return_url` is required." — i.e. vpay's own checkout page refused |
-| 4 | Disable the `expires_at` check in `browser::checkout_sessions::authenticate` | `both_browser_reads_stop_at_the_horizon_whatever_the_status` | **FAIL** — `200` for a session an hour past its horizon, rendering it in full |
-| 5 | Render `ExpandableIntent::ExpandedWithSecret` unconditionally on the session read | `the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled` | **FAIL** — a `complete` session re-issued `pi_…_secret_…` |
-| 6 | Blank the name in `browser::checkout_sessions::for_payer` | `both_browser_reads_carry_the_merchants_display_name` | **FAIL** — `Some("")` against `Some("Boutique Acme Cameroun")` |
-| 7 | Disable the canonical comparison in `validate_checkout_origins` | `a_checkout_origin_must_be_spelled_the_way_a_browser_spells_it` and `every_checkout_rule_refuses_its_own_fixture` | **FAIL, both** — `https://Shop.example:443` accepted, and `checkout-origin-non-canonical.yml` loaded |
+| #   | Mutation                                                                          | Test                                                                                                              | Observed                                                                                                                                                                                                                                                                                        |
+| --- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `SessionReturnPage::session_return_url` answers `Ok(None)` again (lane 2's body)  | `a_session_driven_confirm_sends_vpays_return_page_to_the_rail`                                                    | **FAIL** — the rail was told `https://shop.example/order/1234/return` instead of `…/c/cs_…/return?t=…&key=…`; a payer it redirected would land on the merchant's site with the session still open. `a_direct_confirm_sends_the_merchants_return_url_to_the_rail` still passed, which is correct |
+| 2   | Delete the `NOT EXISTS` live-charge clause from `CheckoutSessions::expire_due`    | `the_housekeeping_sweep_expires_a_stale_session_and_spares_a_paying_one`                                          | **FAIL** — the paying session came back `("expired", "unpaid")` while its charge was still live and the rail could still take the payment                                                                                                                                                       |
+| 3   | Remove the session branch from `payer_instrument`                                 | `a_browser_confirm_under_a_session_needs_no_return_url`                                                           | **FAIL** — `400 invalid_request`, `param: return_url`, "This payment method redirects the payer, so a `return_url` is required." — i.e. vpay's own checkout page refused                                                                                                                        |
+| 4   | Disable the `expires_at` check in `browser::checkout_sessions::authenticate`      | `both_browser_reads_stop_at_the_horizon_whatever_the_status`                                                      | **FAIL** — `200` for a session an hour past its horizon, rendering it in full                                                                                                                                                                                                                   |
+| 5   | Render `ExpandableIntent::ExpandedWithSecret` unconditionally on the session read | `the_session_read_stops_handing_out_the_intents_secret_once_it_is_settled`                                        | **FAIL** — a `complete` session re-issued `pi_…_secret_…`                                                                                                                                                                                                                                       |
+| 6   | Blank the name in `browser::checkout_sessions::for_payer`                         | `both_browser_reads_carry_the_merchants_display_name`                                                             | **FAIL** — `Some("")` against `Some("Boutique Acme Cameroun")`                                                                                                                                                                                                                                  |
+| 7   | Disable the canonical comparison in `validate_checkout_origins`                   | `a_checkout_origin_must_be_spelled_the_way_a_browser_spells_it` and `every_checkout_rule_refuses_its_own_fixture` | **FAIL, both** — `https://Shop.example:443` accepted, and `checkout-origin-non-canonical.yml` loaded                                                                                                                                                                                            |
 
 Proofs 1, 4 and 5 are the security-relevant ones: 1 is a payer forwarded one
 step too early with nothing reporting it, 4 is a written-down credential that

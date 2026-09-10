@@ -1,12 +1,12 @@
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Meta, StoryObj } from "@storybook/react-vite";
 
-import { Table } from './table';
+import { Table } from "./table";
 
 const meta = {
-  title: 'Primitives/Table',
+  title: "Primitives/Table",
   component: Table,
-  parameters: { layout: 'padded' },
-  tags: ['autodocs'],
+  parameters: { layout: "padded" },
+  tags: ["autodocs"],
 } satisfies Meta<typeof Table>;
 
 export default meta;
@@ -35,6 +35,24 @@ function Rows() {
   );
 }
 
-export const Default: Story = { render: () => <Table><Rows /></Table> };
-export const Zebra: Story = { render: () => <Table zebra><Rows /></Table> };
-export const Small: Story = { render: () => <Table size="sm"><Rows /></Table> };
+export const Default: Story = {
+  render: () => (
+    <Table>
+      <Rows />
+    </Table>
+  ),
+};
+export const Zebra: Story = {
+  render: () => (
+    <Table zebra>
+      <Rows />
+    </Table>
+  ),
+};
+export const Small: Story = {
+  render: () => (
+    <Table size="sm">
+      <Rows />
+    </Table>
+  ),
+};

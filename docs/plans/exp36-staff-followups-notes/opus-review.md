@@ -100,10 +100,10 @@ deployment could not check.
 
 **The mutation:** restore `headers.get(..)`.
 
-| Level | As delivered | Fixed |
-|---|---|---|
+| Level                                                                       | As delivered                                        | Fixed                                              |
+| --------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
 | unit — `a_repeated_header_is_one_chain_and_the_callers_line_is_not_the_end` | `Some(198.51.100.99)`, the address the caller chose | `Some(203.0.113.7)`, the one the proxy vouched for |
-| socket — `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget` | `[401, 401, 401, 401, 401, 401]` — no `429` at all | `[401 × 5, 429]` |
+| socket — `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget`   | `[401, 401, 401, 401, 401, 401]` — no `429` at all  | `[401 × 5, 429]`                                   |
 
 ### F3 — the configured origin was configured nowhere · **rule-break**
 
@@ -119,7 +119,7 @@ true of a code path no run of `just test-e2e` had ever taken.
 - `compose.e2e.yml` sets it to
   `http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}`, the same variable the
   publication and `VPAY_DASHBOARD_REDIRECT_URI` are keyed to. This one is
-  *consumed*, and it is proven by the e2e run: a wrong value refuses every
+  _consumed_, and it is proven by the e2e run: a wrong value refuses every
   server action, so a green `dashboard.cy.ts` is the assertion.
 - The chart gets `dashboard.publicOrigin` (values, schema, README) and an
   eighteenth guard, `dashboard-public-origin`, on its **shape** — a trailing
@@ -131,7 +131,7 @@ true of a code path no run of `just test-e2e` had ever taken.
   `dashboard-not-templated` guard exists to refuse.
 
 **Kept optional, deliberately.** The brief asked for it to be set "so a later
-pass can make it required". It is set; required is the *later* pass, and it
+pass can make it required". It is set; required is the _later_ pass, and it
 belongs with the Deployment, because a required value on a workload nothing
 renders fails a deployment for a setting nothing reads.
 
@@ -158,11 +158,11 @@ ADR-0017 refuses by name, arrived at by accident.
 Three cases in `vpay-db/tests/repositories.rs`, each measured against its
 mutation:
 
-| Case | Mutation | As mutated |
-|---|---|---|
-| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended` | `attempts = attempts + 1`, dropping the reset arm | `5` where it demands `1` |
-| `the_rate_limit_table_grows_by_one_window_and_is_then_swept` | the sweep matches nothing | **1040 rows** where it demands ≤ 60 |
-| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | — | pins that `scope` separates nothing, so a caller who stopped hashing it into the `id` would merge two budgets and never notice |
+| Case                                                                   | Mutation                                          | As mutated                                                                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `an_elapsed_rate_limit_window_is_replaced_rather_than_extended`        | `attempts = attempts + 1`, dropping the reset arm | `5` where it demands `1`                                                                                                       |
+| `the_rate_limit_table_grows_by_one_window_and_is_then_swept`           | the sweep matches nothing                         | **1040 rows** where it demands ≤ 60                                                                                            |
+| `the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label` | —                                                 | pins that `scope` separates nothing, so a caller who stopped hashing it into the `id` would merge two budgets and never notice |
 
 **And the bound is now stated as it is.** Migration 0038 and the module both
 say a caller spending fresh keys "drains the table faster than they fill it".
@@ -197,15 +197,15 @@ and it was an argument in a doc comment and nothing else.
 Measured against a booted stack, firing the real `signIn` action id with
 chosen headers (config = `VPAY_DASHBOARD_PUBLIC_ORIGIN`):
 
-| config | `Origin` | `Host` | `X-Forwarded-Host` | result |
-|---|---|---|---|---|
-| `http://localhost:13200` | same | honest | — | reaches the action |
-| `http://localhost:13200` | `https://evil.example` | `evil.example` | `evil.example` | **refused by vpay** |
-| `http://localhost:13200` | absent | honest | — | **refused by vpay** |
-| *(unset)* | `https://evil.example` | honest | `evil.example` | **refused by vpay** |
-| *(unset)* | same | honest | — | reaches the action |
-| `http://localhost:13200` | same | `vpay-dashboard.internal` | `localhost:13200` | reaches the action |
-| `http://localhost:13200` | same | `vpay-dashboard.internal` | — | **refused by NEXT**, `500` |
+| config                   | `Origin`               | `Host`                    | `X-Forwarded-Host` | result                     |
+| ------------------------ | ---------------------- | ------------------------- | ------------------ | -------------------------- |
+| `http://localhost:13200` | same                   | honest                    | —                  | reaches the action         |
+| `http://localhost:13200` | `https://evil.example` | `evil.example`            | `evil.example`     | **refused by vpay**        |
+| `http://localhost:13200` | absent                 | honest                    | —                  | **refused by vpay**        |
+| _(unset)_                | `https://evil.example` | honest                    | `evil.example`     | **refused by vpay**        |
+| _(unset)_                | same                   | honest                    | —                  | reaches the action         |
+| `http://localhost:13200` | same                   | `vpay-dashboard.internal` | `localhost:13200`  | reaches the action         |
+| `http://localhost:13200` | same                   | `vpay-dashboard.internal` | —                  | **refused by NEXT**, `500` |
 
 Rows 2 and 4 are issue #88 item 4 proven live, and they are the two Next's own
 check **accepts**: in row 2 all three headers agree, and in row 4 `Origin`
@@ -223,7 +223,7 @@ request. Aborting the action.
 
 So **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and not sufficient
 behind a proxy that rewrites `Host`** — the proxy must also send
-`X-Forwarded-Host`. The prose read as though this check had *replaced* Next's,
+`X-Forwarded-Host`. The prose read as though this check had _replaced_ Next's,
 and an operator following it would have set the variable, gone on getting
 `500`s, and had nothing pointing at the cause: the message names neither this
 app's sentence nor the variable. Row 6 is that same deployment with an
@@ -246,7 +246,7 @@ The argument that settles it against lowering had not been made. **The half
 that would be spent is the per-address one**, and with
 `staff_auth.trusted_proxies` empty — the default, and the state of every
 deployment behind a proxy that has not been reconfigured — that half is shared
-by *everybody*. Lowering the shared number therefore makes a proxy-fronted
+by _everybody_. Lowering the shared number therefore makes a proxy-fronted
 deployment lock its whole staff out faster, which is the opposite of what
 "the budget got stricter" is being offered as a reason for.
 
@@ -259,7 +259,7 @@ against six TOTP digits with three live.
 
 **The item stays open in `docs/status.md` all the same, and that is the point
 of it being configuration.** A deployment that measures its own traffic moves
-it without a release and without an ADR. The review takes the *default*, not
+it without a release and without an ADR. The review takes the _default_, not
 the choice.
 
 ### `VPAY_DASHBOARD_PUBLIC_ORIGIN`: set now, required later
@@ -283,7 +283,7 @@ commonest of the five.
 a hole (the extra sign-in bounds code guessing rather than loosening it), and
 unlike `changePassword` the two lines cannot simply be dropped:
 `/login/totp` reads no session on render, only the cookie's presence, so with
-the cookie kept a session that really *is* over leaves the person retyping
+the cookie kept a session that really _is_ over leaves the person retyping
 codes at a form that will never accept one. Closing it means giving that page
 the session read `PasswordPage` already has — a change to a route this brief
 did not cover, in a review that would then be unreviewed. Recorded in
@@ -300,34 +300,34 @@ arm and a configurable TTL. This review did not attempt it either.
 
 Everything the brief asked to be broken into, and what happened.
 
-| Attack | Result |
-|---|---|
-| Untrusted peer sends `X-Forwarded-For: 1.2.3.4` | keyed on the peer — `429` on the sixth of six differently-claimed addresses |
-| Trusted peer, chain `a, b, c` with two trusted proxies at the right | the first untrusted hop **from the right**, which is the last value a trusted machine vouched for |
-| Garbage hop (`unknown`) | ends the walk at the peer |
-| Absent header from a trusted peer | the peer, not a shared unknown key — the bug the implementer found stays fixed |
-| **Repeated `X-Forwarded-For` field lines** | **BROKEN — F2.** The first line only was read; the caller's own line was the whole chain |
-| Non-ASCII field line | ends at the peer (added by F2's fix; it would otherwise have been stepped over) |
-| IPv6, port-suffixed and `[v6]:port` hops | parsed; v4-mapped v6 deliberately does not match a v4 block |
-| Two server processes, one database, sixth wrong attempt | `429` from either, one row carrying `attempts = 6` |
-| **The window rolls over** | **UNTESTED — F4.** Now run: with the reset arm dropped it reads 5 where it demands 1 |
-| A success does not reset another key's budget | pinned; and the `scope` column separates nothing, which is now pinned too |
-| **Table growth after 1000 attempts** | **1000 rows** inside one window, and 40 attempts past the boundary drain them. Bounded — but "drains faster than they fill" is only true in the limit, which the docs now say |
-| Limiter writes exhausting the pool | two sequential single-statement counts per attempt, one connection at a time, returned before the next; the sweep is `LIMIT 32` on an indexed column. Bounded by the pool, not by the caller |
-| `change_password` wrong current → `401` | yes |
-| **…and counted against the budget** | **UNTESTED — F5.** Now run: `429` on the fourth against a budget of three |
-| `change_password` correct → other sessions gone, this one survives | yes, on their next render |
-| The one-time-password path still forces the change | yes — and `dashboard.cy.ts` leg 4 now proves it **in a browser**, which it never had |
-| **A wrong current password in a browser** | **BROKEN — F1.** Signed the person out |
-| vpay stopped, a render | `200`, "vpay could not be reached (fetch failed).", **no `Set-Cookie`** — the cookie survives |
-| …with the request id | **no.** A connection failure has `requestId: null` by construction (`api.ts`'s `unreachable`). Only a vpay that *answered* carries one; the claim is true of a `5xx` and not of a refused connection |
-| A `401` from a live session check | `307 → /signed-out` |
-| Cross-site POST, matching `Host`, foreign `Origin` | refused |
-| `X-Forwarded-Host` spoof | ignored — refused both with the variable set and unset |
-| `VPAY_DASHBOARD_PUBLIC_ORIGIN` set, `Host` rewritten by a proxy | accepted **if** the proxy sends `X-Forwarded-Host`; **F7** if it does not |
-| Migration 0038 applied in order with the other 37 | `schema_migrates_cleanly_on_an_empty_database`, 38 recorded. 0038 only `CREATE`s, so it reads and writes nothing that existed |
-| A policy for every action invoked | three scopes, three `Budget` variants, one CHECK — and all three are now spent by a test |
-| Drift re-derived under 0.12.0 | 172 / 24 / 19, as claimed |
+| Attack                                                              | Result                                                                                                                                                                                               |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Untrusted peer sends `X-Forwarded-For: 1.2.3.4`                     | keyed on the peer — `429` on the sixth of six differently-claimed addresses                                                                                                                          |
+| Trusted peer, chain `a, b, c` with two trusted proxies at the right | the first untrusted hop **from the right**, which is the last value a trusted machine vouched for                                                                                                    |
+| Garbage hop (`unknown`)                                             | ends the walk at the peer                                                                                                                                                                            |
+| Absent header from a trusted peer                                   | the peer, not a shared unknown key — the bug the implementer found stays fixed                                                                                                                       |
+| **Repeated `X-Forwarded-For` field lines**                          | **BROKEN — F2.** The first line only was read; the caller's own line was the whole chain                                                                                                             |
+| Non-ASCII field line                                                | ends at the peer (added by F2's fix; it would otherwise have been stepped over)                                                                                                                      |
+| IPv6, port-suffixed and `[v6]:port` hops                            | parsed; v4-mapped v6 deliberately does not match a v4 block                                                                                                                                          |
+| Two server processes, one database, sixth wrong attempt             | `429` from either, one row carrying `attempts = 6`                                                                                                                                                   |
+| **The window rolls over**                                           | **UNTESTED — F4.** Now run: with the reset arm dropped it reads 5 where it demands 1                                                                                                                 |
+| A success does not reset another key's budget                       | pinned; and the `scope` column separates nothing, which is now pinned too                                                                                                                            |
+| **Table growth after 1000 attempts**                                | **1000 rows** inside one window, and 40 attempts past the boundary drain them. Bounded — but "drains faster than they fill" is only true in the limit, which the docs now say                        |
+| Limiter writes exhausting the pool                                  | two sequential single-statement counts per attempt, one connection at a time, returned before the next; the sweep is `LIMIT 32` on an indexed column. Bounded by the pool, not by the caller         |
+| `change_password` wrong current → `401`                             | yes                                                                                                                                                                                                  |
+| **…and counted against the budget**                                 | **UNTESTED — F5.** Now run: `429` on the fourth against a budget of three                                                                                                                            |
+| `change_password` correct → other sessions gone, this one survives  | yes, on their next render                                                                                                                                                                            |
+| The one-time-password path still forces the change                  | yes — and `dashboard.cy.ts` leg 4 now proves it **in a browser**, which it never had                                                                                                                 |
+| **A wrong current password in a browser**                           | **BROKEN — F1.** Signed the person out                                                                                                                                                               |
+| vpay stopped, a render                                              | `200`, "vpay could not be reached (fetch failed).", **no `Set-Cookie`** — the cookie survives                                                                                                        |
+| …with the request id                                                | **no.** A connection failure has `requestId: null` by construction (`api.ts`'s `unreachable`). Only a vpay that _answered_ carries one; the claim is true of a `5xx` and not of a refused connection |
+| A `401` from a live session check                                   | `307 → /signed-out`                                                                                                                                                                                  |
+| Cross-site POST, matching `Host`, foreign `Origin`                  | refused                                                                                                                                                                                              |
+| `X-Forwarded-Host` spoof                                            | ignored — refused both with the variable set and unset                                                                                                                                               |
+| `VPAY_DASHBOARD_PUBLIC_ORIGIN` set, `Host` rewritten by a proxy     | accepted **if** the proxy sends `X-Forwarded-Host`; **F7** if it does not                                                                                                                            |
+| Migration 0038 applied in order with the other 37                   | `schema_migrates_cleanly_on_an_empty_database`, 38 recorded. 0038 only `CREATE`s, so it reads and writes nothing that existed                                                                        |
+| A policy for every action invoked                                   | three scopes, three `Budget` variants, one CHECK — and all three are now spent by a test                                                                                                             |
+| Drift re-derived under 0.12.0                                       | 172 / 24 / 19, as claimed                                                                                                                                                                            |
 
 ## An observation, not a finding
 
@@ -357,16 +357,16 @@ test 1190, re-run clean) and twice after the fixes. The third run failed on
 names nothing under `sdks/`). It passed 5/5 in isolation and passed on the
 re-run; recorded as a flake seen once, not fixed and not hidden.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | clean (`cargo fmt -p vpay-api -p vpay-db -p vpay-tests-integration`, never `just fmt`) |
-| `clippy` | clean, `--workspace --all-targets -D warnings` |
-| `verify` | ok — the twelve gates; `check-schema` under cratestack **0.12.0** from the scratchpad's private bin, `verify-migrations` 38 files, `verify-links` 1010 links in 191 files |
-| `test-rust` | **1627 passed, 0 skipped, 0 ignored** (from 1619) |
-| `test-doc` | 109 doctests, 1 ignored (`sdks/rust`'s `ReadmeDoctests`, pre-existing) |
-| `verify-ignored` | 0 ignored (expected 0), 45 binaries (expected 45), 1627 total (min 1080) |
-| `lint-web`, `test-web` | clean; dashboard **172**, checkout 507, shop 102, node SDK 190, stripe-js 146, ui 74, config 63, tokens 8, api-client 4 |
-| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+| Recipe                 | Result                                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`            | clean (`cargo fmt -p vpay-api -p vpay-db -p vpay-tests-integration`, never `just fmt`)                                                                                    |
+| `clippy`               | clean, `--workspace --all-targets -D warnings`                                                                                                                            |
+| `verify`               | ok — the twelve gates; `check-schema` under cratestack **0.12.0** from the scratchpad's private bin, `verify-migrations` 38 files, `verify-links` 1010 links in 191 files |
+| `test-rust`            | **1627 passed, 0 skipped, 0 ignored** (from 1619)                                                                                                                         |
+| `test-doc`             | 109 doctests, 1 ignored (`sdks/rust`'s `ReadmeDoctests`, pre-existing)                                                                                                    |
+| `verify-ignored`       | 0 ignored (expected 0), 45 binaries (expected 45), 1627 total (min 1080)                                                                                                  |
+| `lint-web`, `test-web` | clean; dashboard **172**, checkout 507, shop 102, node SDK 190, stripe-js 146, ui 74, config 63, tokens 8, api-client 4                                                   |
+| `deny`                 | advisories ok, bans ok, licenses ok, sources ok                                                                                                                           |
 
 `just helm-check` (CI's `deploy` job, not part of `just ci`): lint, render,
 **18 guards all fired by name (18 expected)**, rate limit, kubeconform 23
@@ -377,11 +377,11 @@ resources valid.
 `demo_orange_port=13082`, `demo_checkout_port=13180`, `demo_shop_port=13001`
 — the maintainer's `vpay-demo` on 8080/3000/3001/3080 untouched throughout:
 
-| Run | Tree | `dashboard.cy.ts` | Total |
-|---|---|---|---|
-| 1 | as delivered | **8 tests, 2 passing, 6 failing** | 12 / 6 / 6, exit 1 |
-| 2 | after F1 | 8 tests, 7 passing, 1 failing (the flake above) | 12 / 11 / 1, exit 1 |
-| 3 | after F1 | **8 / 8** | **12 / 12, exit 0** — plus `shop-embedded.cy.ts` 4 / 4 |
+| Run | Tree         | `dashboard.cy.ts`                               | Total                                                  |
+| --- | ------------ | ----------------------------------------------- | ------------------------------------------------------ |
+| 1   | as delivered | **8 tests, 2 passing, 6 failing**               | 12 / 6 / 6, exit 1                                     |
+| 2   | after F1     | 8 tests, 7 passing, 1 failing (the flake above) | 12 / 11 / 1, exit 1                                    |
+| 3   | after F1     | **8 / 8**                                       | **12 / 12, exit 0** — plus `shop-embedded.cy.ts` 4 / 4 |
 
 Run 1 is the evidence the implementer could not produce, and it is the reason
 this review exists. Runs 2 and 3 are the same tree; see the observation above.

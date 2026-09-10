@@ -1,11 +1,11 @@
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Meta, StoryObj } from "@storybook/react-vite";
 
-import { Heading, List, PageShell, Stack, Text } from './layout';
+import { Heading, List, PageShell, Stack, Text } from "./layout";
 
 const meta = {
-  title: 'Primitives/Layout',
-  parameters: { layout: 'padded' },
-  tags: ['autodocs'],
+  title: "Primitives/Layout",
+  parameters: { layout: "padded" },
+  tags: ["autodocs"],
 } satisfies Meta;
 
 export default meta;

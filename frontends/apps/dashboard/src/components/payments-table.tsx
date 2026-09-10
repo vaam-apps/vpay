@@ -1,9 +1,15 @@
-import Link from 'next/link';
+import Link from "next/link";
 
-import { StatusBadge, Table, Text } from '@vpay/ui';
+import { StatusBadge, Table, Text } from "@vpay/ui";
 
-import { ABSENT, asPaymentStatus, formatAmount, formatInstant, formatMethods } from '../format';
-import type { PaymentIntentObject } from '../server/api';
+import {
+  ABSENT,
+  asPaymentStatus,
+  formatAmount,
+  formatInstant,
+  formatMethods,
+} from "../format";
+import type { PaymentIntentObject } from "../server/api";
 
 export interface PaymentsTableProps {
   /** Exactly the rows `/dash/v1/payment_intents` answered with. */
@@ -72,7 +78,11 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
                   deployment holds a value newer than this bundle, and a
                   green pill on an unknown status is a claim.
                 */}
-                {status === null ? <Text as="span">{row.status}</Text> : <StatusBadge status={status} />}
+                {status === null ? (
+                  <Text as="span">{row.status}</Text>
+                ) : (
+                  <StatusBadge status={status} />
+                )}
               </td>
               <td>{formatMethods(row.payment_method_types)}</td>
             </tr>

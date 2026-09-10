@@ -59,8 +59,8 @@ class StubObjectStore {
   }
 
   put(value: unknown, key: string): StubRequest<string> {
-    if (this.mode === 'readonly') {
-      throw new Error('ReadOnlyError: a write on a readonly transaction');
+    if (this.mode === "readonly") {
+      throw new Error("ReadOnlyError: a write on a readonly transaction");
     }
     const request = new StubRequest<string>();
     request.settle(() => {
@@ -73,8 +73,8 @@ class StubObjectStore {
   }
 
   delete(key: string): StubRequest<undefined> {
-    if (this.mode === 'readonly') {
-      throw new Error('ReadOnlyError: a delete on a readonly transaction');
+    if (this.mode === "readonly") {
+      throw new Error("ReadOnlyError: a delete on a readonly transaction");
     }
     const request = new StubRequest<undefined>();
     request.settle(() => {
@@ -133,12 +133,14 @@ export function stubIndexedDb(): StubIndexedDb {
           }
           stores.set(name, new Map<string, unknown>());
         },
-        transaction(name: string, mode: IDBTransactionMode = 'readonly') {
+        transaction(name: string, mode: IDBTransactionMode = "readonly") {
           const rows = stores.get(name);
           if (rows === undefined) {
             throw new Error(`NotFoundError: no object store named ${name}`);
           }
-          return { objectStore: () => new StubObjectStore(rows, mode, requestsFail) };
+          return {
+            objectStore: () => new StubObjectStore(rows, mode, requestsFail),
+          };
         },
         close() {
           /* nothing to release */
@@ -147,7 +149,7 @@ export function stubIndexedDb(): StubIndexedDb {
       (request as { result?: unknown }).result = db;
       queueMicrotask(() => {
         if (openRefused) {
-          (request['onerror'] as Listener)?.({ target: request });
+          (request["onerror"] as Listener)?.({ target: request });
           return;
         }
         // `onupgradeneeded` fires on EVERY open here, where a real factory
@@ -155,8 +157,8 @@ export function stubIndexedDb(): StubIndexedDb {
         // the adapter's `objectStoreNames.contains` guard load-bearing, so an
         // upgrade handler that recreated the store on every open — wiping the
         // record a payer asked to keep — fails a test instead of shipping.
-        (request['onupgradeneeded'] as Listener)?.({ target: request });
-        (request['onsuccess'] as Listener)?.({ target: request });
+        (request["onupgradeneeded"] as Listener)?.({ target: request });
+        (request["onsuccess"] as Listener)?.({ target: request });
       });
       return request;
     },

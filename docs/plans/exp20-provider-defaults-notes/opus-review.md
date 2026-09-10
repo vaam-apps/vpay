@@ -14,7 +14,7 @@ three stale doc statements — one of them naming a database table that has
 never existed. Everything found is fixed on this branch; nothing was weakened
 to make a check pass.
 
-What the review *confirmed* rather than overturned is worth saying first,
+What the review _confirmed_ rather than overturned is worth saying first,
 because most of the delivered change is right: the drift arithmetic, the
 `for_update` omission, and the backward-compatibility claim in migration 0033
 all hold up under measurement.
@@ -28,10 +28,10 @@ all hold up under measurement.
 The implementer's § 1 says the brief read the earlier measurement backwards.
 Re-measured here rather than accepted:
 
-| Variant | Measured |
-|---|---|
+| Variant                                         | Measured                                                                                                                           |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | As delivered (no `@default(...)`, no `DEFAULT`) | **84 / 16 relations / 17 unmappable** (`just ci`'s own run of `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`) |
-| Migration 0033 deleted, schema edit kept | **89 / 16 / 17**, with exactly the five `providers` lines below |
+| Migration 0033 deleted, schema edit kept        | **89 / 16 / 17**, with exactly the five `providers` lines below                                                                    |
 
 ```text
 [safe] column `delivers_callbacks` default value differs from the schema
@@ -122,7 +122,7 @@ it).
 
 `config_reconcile`'s module doc said:
 
-> The *classification* is unchanged — a `23514` is still `Category::Internal`
+> The _classification_ is unchanged — a `23514` is still `Category::Internal`
 > … because `persistence::classify_cratestack` and `error::classify_write` are
 > asserted against each other
 
@@ -184,7 +184,7 @@ Error: the reconcile itself must succeed against a row that now exists
 Caused by: database error: could not serialize access due to concurrent update
 ```
 
-The snapshot is taken when the `pg_advisory_xact_lock` statement *starts* —
+The snapshot is taken when the `pg_advisory_xact_lock` statement _starts_ —
 before the holder commits — so the conflict probe cannot see the row it must
 update and the INSERT collides with it (`40001`). Every other reconcile case
 passes under that mutation, `reconcile_waits_…` and
@@ -256,7 +256,7 @@ exp20's are in the header and in `model Provider` (lines 15–64, 251–350).
 auto-merges `schemas/vpay.cstack`, `docs/status.md`,
 `vpay-db/tests/repositories.rs` and `postgres_smoke.rs` cleanly. The **one**
 conflict is `docs/reference/vpay-db.md`, where both branches rewrite the
-"runs *N* queries through the generated data layer" sentence. Whoever merges
+"runs _N_ queries through the generated data layer" sentence. Whoever merges
 second resolves one paragraph.
 
 ---
@@ -277,6 +277,7 @@ second resolves one paragraph.
    test. Both numbers are now measured in `main`'s order against a real
    Postgres by `boot_coherence.rs`; `docs/status.md` and
    `docs/flows/configuration.md` carry the decision.
+
 2. **`fn reconcile` is 249 lines** on the review head — 203 before exp20, 237
    as delivered, and the review's two comment blocks (READ COMMITTED, the
    `23514` classification) took it the rest of the way. exp17's review left the

@@ -1,6 +1,6 @@
-import { redirect } from 'next/navigation';
+import { redirect } from "next/navigation";
 
-import { alreadySignedIn, HOME_PATH, LOGIN_PATH } from '../src/server/session';
+import { alreadySignedIn, HOME_PATH, LOGIN_PATH } from "../src/server/session";
 
 /**
  * `/` — the door, and nothing else.
@@ -16,7 +16,7 @@ import { alreadySignedIn, HOME_PATH, LOGIN_PATH } from '../src/server/session';
  * nobody had written; the list exists, and every badge on it is the same
  * `StatusBadge` taking its tone from `@vpay/tokens`.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function Home() {
   redirect((await alreadySignedIn()) ? HOME_PATH : LOGIN_PATH);

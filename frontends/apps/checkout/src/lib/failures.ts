@@ -6,30 +6,31 @@
  * alternative — `t(\`failure.${code}\`)` — renders the raw code on a payment
  * page the first time a rail reports something new.
  */
-import type { FailureCode } from '@vaam-apps/vpay-stripe-js';
+import type { FailureCode } from "@vaam-apps/vpay-stripe-js";
 
-import type { MessageKey } from '../i18n/index';
+import type { MessageKey } from "../i18n/index";
 
-export const FAILURE_MESSAGES: Readonly<Record<FailureCode, MessageKey>> = Object.freeze({
-  insufficient_funds: 'failure.insufficient_funds',
-  payer_timeout: 'failure.payer_timeout',
-  payer_declined: 'failure.payer_declined',
-  invalid_payer: 'failure.invalid_payer',
-  payer_limit_reached: 'failure.payer_limit_reached',
-  payer_account_blocked: 'failure.payer_account_blocked',
-  invalid_payee: 'failure.invalid_payee',
-  payee_account_blocked: 'failure.payee_account_blocked',
-  provider_account_blocked: 'failure.provider_account_blocked',
-  provider_unavailable: 'failure.provider_unavailable',
-  provider_error: 'failure.provider_error',
-});
+export const FAILURE_MESSAGES: Readonly<Record<FailureCode, MessageKey>> =
+  Object.freeze({
+    insufficient_funds: "failure.insufficient_funds",
+    payer_timeout: "failure.payer_timeout",
+    payer_declined: "failure.payer_declined",
+    invalid_payer: "failure.invalid_payer",
+    payer_limit_reached: "failure.payer_limit_reached",
+    payer_account_blocked: "failure.payer_account_blocked",
+    invalid_payee: "failure.invalid_payee",
+    payee_account_blocked: "failure.payee_account_blocked",
+    provider_account_blocked: "failure.provider_account_blocked",
+    provider_unavailable: "failure.provider_unavailable",
+    provider_error: "failure.provider_error",
+  });
 
 /** `failure.unknown` for a code no released dictionary names — never the raw code. */
 export function failureMessage(code: FailureCode | null): MessageKey | null {
   if (code === null) {
     return null;
   }
-  return FAILURE_MESSAGES[code] ?? 'failure.unknown';
+  return FAILURE_MESSAGES[code] ?? "failure.unknown";
 }
 
 /**
@@ -56,11 +57,13 @@ export const MAX_PROVIDER_REASON = 300;
 // eslint-disable-next-line no-control-regex -- naming the control characters is the whole job: this is what strips them out of a rail's message before it is rendered.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
 
-export function providerReason(message: string | null | undefined): string | null {
-  if (typeof message !== 'string') {
+export function providerReason(
+  message: string | null | undefined,
+): string | null {
+  if (typeof message !== "string") {
     return null;
   }
-  const cleaned = message.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
+  const cleaned = message.replace(CONTROL, " ").replace(/\s+/g, " ").trim();
   if (cleaned.length === 0) {
     return null;
   }

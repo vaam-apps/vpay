@@ -387,12 +387,59 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
 
 lint: fmt-check clippy lint-web
 
+# PRETTIER, AND WHAT IS AND IS NOT ENFORCED.
+#
+# Until 2026-09-10 `just fmt` reformatted 405 tracked files and then FAILED on
+# a deliberately malformed YAML fixture, so nobody ran it; `fmt-check` checked
+# Rust only, and prettier's opinion of this repository was enforced in exactly
+# one place — `examples/shop`'s own `lint` script, which runs
+# `prettier --check` over that package. The rest of the tree was unformatted
+# and nothing said so. That is now the other way round: the tree is formatted
+# and `fmt-check` fails if it stops being.
+#
+# `.prettierrc.json` is the authority. It is at the repository root, so
+# config resolution finds it from every package including `examples/shop`,
+# whose `prettier --check` therefore cannot disagree with `just fmt`. Every
+# option in it is prettier's own default written out — so an upgrade cannot
+# silently reformat the repository — except `embeddedLanguageFormatting`,
+# which is `"off"` and must stay off. With the default `"auto"` prettier
+# rewrites the CONTENTS of fenced code blocks in markdown, and this
+# repository's markdown is largely transcripts: measured on 2026-09-10 it
+# rewrote 40 fences in 22 files, pretty-printing a one-line `tracing` log line
+# in `docs/runbooks/demo.md` into ten lines of output the server does not
+# emit, and dedenting a workflow fragment in `docs/plans/exp9-notes/opus.md`
+# so that it no longer says where it sits. A formatter that edits pasted
+# evidence is CLAUDE.md's first failure mode with a config key.
+#
+# `.prettierignore` carries the four exclusions and the reason for each: the
+# Helm Go templates, the malformed fixture, `pnpm-lock.yaml` (pnpm's, and
+# pnpm rewrites it), and `backends/migrations/*.sql` (checksummed bytes,
+# issue #76). Generated trees are covered by `.gitignore`, which prettier 3
+# reads by default.
+#
+# Two consequences worth knowing before this bites you. `fmt-check-web` needs
+# `node_modules`, so `just ci` now fails in its first seconds on a tree where
+# `pnpm install` has not been run, rather than at `lint-web` several minutes
+# in — the better failure, but a different one. And `prettier --check .` walks
+# the working tree, not the index: an UNTRACKED scratch `.ts`, `.md` or
+# `.json` left lying about fails it. `.gitignore` it or delete it; do not
+# reach for `--write` on a tree you have not looked at.
+
 fmt:
     cargo fmt --all
     pnpm exec prettier --write .
 
-fmt-check:
+fmt-check: fmt-check-rust fmt-check-web
+
+fmt-check-rust:
     cargo fmt --all -- --check
+
+# It is not in CI's `rust` job, which has no `node_modules`; CI's `web` job
+# runs THIS recipe rather than a copy of its command, so the gate and the
+# local check cannot drift.
+# prettier --check over the whole tree.
+fmt-check-web:
+    pnpm exec prettier --check .
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings

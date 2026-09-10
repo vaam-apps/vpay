@@ -16,18 +16,18 @@ unmeasured `expires_at` index as named, dated limitations.
 
 ## What landed
 
-| # | Change | Where |
-|---|---|---|
-| 1 | Migration `0029`: `type_is_a_documented_event` reopened for the eighth type; `events.type` and `events.object_id` comments re-issued | `backends/migrations/0029_events-checkout-session-expired.sql` |
-| 2 | `CheckoutSessions::due_for_expiry(now, limit)` — the read half of the sweep, same guard, `ORDER BY expires_at`, bounded | `backends/crates/vpay-db/src/checkout_sessions.rs:660` |
-| 3 | `CheckoutSessions::expire_due(id, now, event_id, event_data)` — the compare-and-swap **and** the `events` insert, one transaction; `EVENT_SESSION_EXPIRED` is the module's own constant | `backends/crates/vpay-db/src/checkout_sessions.rs:756`, impl at `:987` |
-| 4 | `CheckoutSessionObject::expired_snapshot(row)` — the 13 keys, `status: "expired"`, `url: None`, no credential; `EXPIRED` const | `backends/crates/vpay-api/src/model.rs:447`, `:526` |
-| 5 | `sweep_expired` gains `expire_due_sessions` / `expire_one_session` / `SweptSessions`, `EXPIRY_PAGE = 100`, and a full-page reschedule | `backends/crates/vpay-worker/src/handlers.rs:122`, `:875`–`:1035` |
-| 6 | `KnownEventType` (`#[non_exhaustive]`, `as_wire_str`/`from_wire`) and `Event::checkout_session()` | `sdks/rust/src/model.rs:453`, `:594`; exported at `sdks/rust/src/lib.rs:66`, `:110` |
-| 7 | `KnownEventType` union member and `isCheckoutSessionEvent` guard | `sdks/nodejs/src/types.ts:105`, `:150`; exported at `sdks/nodejs/src/index.ts:60` |
-| 8 | Two parity rows plus the shape-vs-capability note | `docs/sdks/parity.md:20`, `:112` |
-| 9 | Docs: event catalogue, both TX 1s, the lifecycle, the reference pages | `docs/flows/webhooks.md`, `docs/flows/hosted-checkout.md`, `docs/reference/vpay-db.md`, `docs/reference/vpay-worker.md` |
-| 10 | Measurement comment; **`expected_suites` and `min_tests` unchanged** | `justfile:585` |
+| #   | Change                                                                                                                                                                                  | Where                                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1   | Migration `0029`: `type_is_a_documented_event` reopened for the eighth type; `events.type` and `events.object_id` comments re-issued                                                    | `backends/migrations/0029_events-checkout-session-expired.sql`                                                          |
+| 2   | `CheckoutSessions::due_for_expiry(now, limit)` — the read half of the sweep, same guard, `ORDER BY expires_at`, bounded                                                                 | `backends/crates/vpay-db/src/checkout_sessions.rs:660`                                                                  |
+| 3   | `CheckoutSessions::expire_due(id, now, event_id, event_data)` — the compare-and-swap **and** the `events` insert, one transaction; `EVENT_SESSION_EXPIRED` is the module's own constant | `backends/crates/vpay-db/src/checkout_sessions.rs:756`, impl at `:987`                                                  |
+| 4   | `CheckoutSessionObject::expired_snapshot(row)` — the 13 keys, `status: "expired"`, `url: None`, no credential; `EXPIRED` const                                                          | `backends/crates/vpay-api/src/model.rs:447`, `:526`                                                                     |
+| 5   | `sweep_expired` gains `expire_due_sessions` / `expire_one_session` / `SweptSessions`, `EXPIRY_PAGE = 100`, and a full-page reschedule                                                   | `backends/crates/vpay-worker/src/handlers.rs:122`, `:875`–`:1035`                                                       |
+| 6   | `KnownEventType` (`#[non_exhaustive]`, `as_wire_str`/`from_wire`) and `Event::checkout_session()`                                                                                       | `sdks/rust/src/model.rs:453`, `:594`; exported at `sdks/rust/src/lib.rs:66`, `:110`                                     |
+| 7   | `KnownEventType` union member and `isCheckoutSessionEvent` guard                                                                                                                        | `sdks/nodejs/src/types.ts:105`, `:150`; exported at `sdks/nodejs/src/index.ts:60`                                       |
+| 8   | Two parity rows plus the shape-vs-capability note                                                                                                                                       | `docs/sdks/parity.md:20`, `:112`                                                                                        |
+| 9   | Docs: event catalogue, both TX 1s, the lifecycle, the reference pages                                                                                                                   | `docs/flows/webhooks.md`, `docs/flows/hosted-checkout.md`, `docs/reference/vpay-db.md`, `docs/reference/vpay-worker.md` |
+| 10  | Measurement comment; **`expected_suites` and `min_tests` unchanged**                                                                                                                    | `justfile:585`                                                                                                          |
 
 ### Shape, and the one place the brief and the codebase disagree
 
@@ -49,7 +49,7 @@ transaction is not what makes them exist, the event row's existence is.
 
 ### Why the bulk `UPDATE` became a page of transactions
 
-`events.data` is the *rendered* wire object, and only `vpay-api` can render
+`events.data` is the _rendered_ wire object, and only `vpay-api` can render
 it, so the row has to be read before the write that describes it — the order
 `Settlement::apply_succeeded` and `handlers::intent_snapshot` have had since
 Step 4. That makes the old single unbounded `UPDATE … RETURNING`-less
@@ -70,17 +70,17 @@ statement impossible. Consequences, all documented in place:
 
 ## Measured
 
-| Gate | Result |
-|---|---|
-| `cargo fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo nextest run -p vpay-db -p vpay-api -p vpay-worker -p vpay-core -p vpay-sdk` | see the report |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(webhooks) \| binary(worker_recovery)' --retries 2 -j 1` | see the report |
-| `pnpm --filter @vpay/sdk test` | 172 passed, 0 skipped (was 168) |
-| `pnpm --filter @vpay/sdk typecheck` | clean — two of the Node assertions are type-level and only this command makes them |
-| `just verify` | all four gates pass |
-| `just verify-ignored` | **1146 total, 42 test binaries, 0 ignored** (was 1137) |
-| `just test-doc` | **86 passed, 1 ignored** (was 84; the ignored one is `sdks/rust`'s README block, pre-existing) |
+| Gate                                                                                                                                         | Result                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `cargo fmt --all --check`                                                                                                                    | clean                                                                                          |
+| `cargo clippy --workspace --all-targets -- -D warnings`                                                                                      | clean                                                                                          |
+| `cargo nextest run -p vpay-db -p vpay-api -p vpay-worker -p vpay-core -p vpay-sdk`                                                           | see the report                                                                                 |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(webhooks) \| binary(worker_recovery)' --retries 2 -j 1` | see the report                                                                                 |
+| `pnpm --filter @vpay/sdk test`                                                                                                               | 172 passed, 0 skipped (was 168)                                                                |
+| `pnpm --filter @vpay/sdk typecheck`                                                                                                          | clean — two of the Node assertions are type-level and only this command makes them             |
+| `just verify`                                                                                                                                | all four gates pass                                                                            |
+| `just verify-ignored`                                                                                                                        | **1146 total, 42 test binaries, 0 ignored** (was 1137)                                         |
+| `just test-doc`                                                                                                                              | **86 passed, 1 ignored** (was 84; the ignored one is `sdks/rust`'s README block, pre-existing) |
 
 Nine new Rust cases, all in files that already existed, so `expected_suites`
 stays 42. `min_tests` stays 1080 on the justfile's own stated terms (lane E
@@ -97,10 +97,10 @@ on 2026-09-04, along with six more mutations — see
 `docs/plans/step9-notes/session-expired-review.md`, which also records the two the tests
 did **not** catch and the commits that fixed them.
 
-| # | Sabotage | Case | Result |
-|---|---|---|---|
-| 1 | Delete the `events::insert_in_tx` call from `CheckoutSessions::expire_due` (wrapped in `if false`) | `an_expiry_sweep_emits_one_event_and_one_delivery_per_endpoint` | **FAIL** — `Error: exactly one checkout.session.expired was expected: []`. The session still expires; nothing else changes. That is the silent regression the case exists for |
-| 2 | Move the flip outside the transaction — run the `UPDATE` on `self.pool`, open the transaction afterwards for the event alone | `a_failed_event_insert_leaves_the_session_open` | **FAIL** — `left: ("expired", "unpaid")`, `right: ("open", "unpaid")`, "the flip must have rolled back with the event: a session that says `expired` with no event is one no merchant will ever be told about" |
+| #   | Sabotage                                                                                                                     | Case                                                            | Result                                                                                                                                                                                                         |
+| --- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Delete the `events::insert_in_tx` call from `CheckoutSessions::expire_due` (wrapped in `if false`)                           | `an_expiry_sweep_emits_one_event_and_one_delivery_per_endpoint` | **FAIL** — `Error: exactly one checkout.session.expired was expected: []`. The session still expires; nothing else changes. That is the silent regression the case exists for                                  |
+| 2   | Move the flip outside the transaction — run the `UPDATE` on `self.pool`, open the transaction afterwards for the event alone | `a_failed_event_insert_leaves_the_session_open`                 | **FAIL** — `left: ("expired", "unpaid")`, `right: ("open", "unpaid")`, "the flip must have rolled back with the event: a session that says `expired` with no event is one no merchant will ever be told about" |
 
 After restoring, the whole `checkout_sessions` binary is **23 passed, 0
 skipped**.

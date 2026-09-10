@@ -1,11 +1,18 @@
-'use client';
+"use client";
 
-import { useActionState } from 'react';
+import { useActionState } from "react";
 
-import { Button, Field, FieldDescription, FieldLabel, Input, Stack } from '@vpay/ui';
+import {
+  Button,
+  Field,
+  FieldDescription,
+  FieldLabel,
+  Input,
+  Stack,
+} from "@vpay/ui";
 
-import { NO_ERROR, type FormAction } from '../form-state';
-import { FormAlert } from './form-alert';
+import { NO_ERROR, type FormAction } from "../form-state";
+import { FormAlert } from "./form-alert";
 
 /**
  * The shortest password vpay accepts (`vpay_api::staff::MIN_PASSWORD_CHARS`).
@@ -59,7 +66,9 @@ export function PasswordForm({ action }: PasswordFormProps) {
     <form action={submit}>
       <Stack direction="column" gap="md">
         <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-current-password">Current password</FieldLabel>
+          <FieldLabel htmlFor="dashboard-current-password">
+            Current password
+          </FieldLabel>
           <Input
             id="dashboard-current-password"
             name="current_password"
@@ -91,7 +100,9 @@ export function PasswordForm({ action }: PasswordFormProps) {
         </Field>
 
         <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-confirm-password">Repeat it</FieldLabel>
+          <FieldLabel htmlFor="dashboard-confirm-password">
+            Repeat it
+          </FieldLabel>
           <Input
             id="dashboard-confirm-password"
             name="confirm_password"
@@ -106,7 +117,7 @@ export function PasswordForm({ action }: PasswordFormProps) {
         <FormAlert error={state.error} requestId={state.requestId} />
 
         <Button type="submit" block disabled={pending}>
-          {pending ? 'Saving…' : 'Set password'}
+          {pending ? "Saving…" : "Set password"}
         </Button>
       </Stack>
     </form>

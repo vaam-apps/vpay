@@ -1,7 +1,7 @@
 # exp22 — the shop example: three integration modes, first-class failure outcomes, fake test numbers, ZenStack 3
 
 Working notes for the branch `claude/exp22-shop-demo` (base `06e27f9`).
-Written as the work happened; the parts that are *claims about what runs* are
+Written as the work happened; the parts that are _claims about what runs_ are
 in `docs/status.md` and in the flow docs, not here.
 
 ## Requests to other tracks
@@ -45,7 +45,7 @@ directory to exp21.
 > once a payer has loaded the page, after which the page expires. The
 > disarming problem the paragraph below describes is solved by routing the
 > page's `#pay` and `#cancel` links back through the stub, so a payer who
-> uses them *is* an event the container sees. Option 2 was refused for the
+> uses them _is_ an event the container sees. Option 2 was refused for the
 > reason given here. Everything below is left as written.
 
 Orange is a redirect rail: the number never reaches vpay, so the demo steers
@@ -70,12 +70,12 @@ settles, and vpay stops asking.
 **Measured on the running demo stack on 2026-09-06**, from `wiremock-orange`'s
 own request journal:
 
-| Event | Offset |
-|---|---|
-| `POST …/v1/webpayment` (the submit) | T |
-| `GET /stub-hosted-page/{token}` (the payer lands) | T + 44 ms |
-| `POST …/v1/transactionstatus` (the first poll) | **T + 449 ms** |
-| `GET /stub-hosted-page/{token}/pay?msisdn=237600000400` (the payer chooses) | T + 11.96 s |
+| Event                                                                       | Offset         |
+| --------------------------------------------------------------------------- | -------------- |
+| `POST …/v1/webpayment` (the submit)                                         | T              |
+| `GET /stub-hosted-page/{token}` (the payer lands)                           | T + 44 ms      |
+| `POST …/v1/transactionstatus` (the first poll)                              | **T + 449 ms** |
+| `GET /stub-hosted-page/{token}/pay?msisdn=237600000400` (the payer chooses) | T + 11.96 s    |
 
 The order came back **paid**. That is the false green this repository is
 written against, so it is on the shop's own checkout panel, in the README, in
@@ -85,7 +85,7 @@ which now claims these numbers work.
 Three ways to close it, each a maintainer's call:
 
 1. **Answer `PENDING` while a payer is on the page.** Arm on the hosted page's
-   `GET` — which the journal above shows arrives 405 ms *before* the first
+   `GET` — which the journal above shows arrives 405 ms _before_ the first
    poll, so it would win — and disarm on the way out. The catch is the way
    out: a payer who leaves by the `#pay` **link** never touches the stub
    again, so nothing disarms and that charge polls `PENDING` for ever. A
@@ -119,7 +119,7 @@ through the browser on the demo stack and behave as the table says.~~
 **Corrected in review, 2026-09-06.** Three of the five were driven — the run
 table below records `…0101`, `…0000` and `…0503` and no others — and one of
 the remaining two did **not** behave as the table said: `…0400` is refused on
-the *submit*, which vpay commits through `persist_decline`, which emits no
+the _submit_, which vpay commits through `persist_decline`, which emits no
 event, so the shop's order stays `unpaid` where the table promised `failed`.
 See R1 and D6 in [opus-review.md](opus-review.md).
 
@@ -208,9 +208,9 @@ pane and returns images into the transcript, and nothing in the toolchain
 writes an image file ~~(Cypress's binary is not installed —
 `CYPRESS_INSTALL_BINARY=0`, and its CDN is unreachable from here)~~. What is
 recorded instead is what each page actually said, which is the thing a
-screenshot would have been evidence *of*. **The parenthesis is wrong and was
+screenshot would have been evidence _of_. **The parenthesis is wrong and was
 corrected in review on 2026-09-06:** Cypress 15.21.1 is installed on this
-machine and runs. It writes screenshots only for *failing* tests, so a green
+machine and runs. It writes screenshots only for _failing_ tests, so a green
 run still produces none — but "the toolchain cannot run Cypress" was not the
 reason, and it was the reason given twice more in this document.
 
@@ -231,17 +231,17 @@ CLI derives that Prisma schema beside the zmodel, and `/app` is read-only.
 
 ### What was driven, and what each page said
 
-| # | Path | Result |
-|---|---|---|
-| 1 | `/checkout` | Surface switch renders all three (`hosted` marked as the configured one); test-number panel renders both rails, the five MTN rows, the three Orange rows and all four "no number produces X" notes |
-| 2 | Redirect + MTN `237600000101` | vpay: "There was not enough money in the account." Order → `failed`, `failure_code = insufficient_funds`, buyer's sentence "Not enough money in the wallet", **"Try again" offered** |
-| 3 | Redirect + MTN `237600000000` | vpay: "Payment received." Order → `paid` |
-| 4 | Redirect + MTN `237600000503` (**new**) | vpay: "The payment provider could not be reached." Order → `failed`, `failure_code = provider_unavailable` |
-| 5 | Redirect + Orange `237600000400` | Order → **`paid`**. The race in D1 above; this is where it was measured |
-| 6 | "Try again" on #4 | New order, new session (`cs_mw9ms8…` against the failed order's `cs_zj8zf2…`), payer sent to vpay's page |
-| 7 | Embedded | Frame `src` = `…/e/{cs_id}?key=pk_…#cs_…_secret_…`, `sandbox="allow-scripts allow-same-origin allow-forms"` (no `allow-top-navigation`), height grown to `179px` — so `vpay:resize` crossed the boundary. The payment **inside** the frame was not driven: vpay's `/e/` route correctly refuses to render top-level (`refused_embed`), and this browser cannot script a cross-origin frame. That is `shop-embedded.cy.ts`'s job |
-| 8 | Popup | The synthetic click carries no user activation, so `window.open` returned `null`, `CheckoutPopupBlockedError` was raised and **the fallback ran**: the order was created in `hosted` mode and the tab navigated to vpay. Which is worth having — it is the path a merchant most needs to work — but it means **the popup itself was still not opened by anything, here or in any test** |
-| 9 | "Cancel this payment" on an unpaid order | The call succeeded and the intent read `canceled` in vpay's database. No event, order still `unpaid`. D5 above |
+| #   | Path                                     | Result                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `/checkout`                              | Surface switch renders all three (`hosted` marked as the configured one); test-number panel renders both rails, the five MTN rows, the three Orange rows and all four "no number produces X" notes                                                                                                                                                                                                                              |
+| 2   | Redirect + MTN `237600000101`            | vpay: "There was not enough money in the account." Order → `failed`, `failure_code = insufficient_funds`, buyer's sentence "Not enough money in the wallet", **"Try again" offered**                                                                                                                                                                                                                                            |
+| 3   | Redirect + MTN `237600000000`            | vpay: "Payment received." Order → `paid`                                                                                                                                                                                                                                                                                                                                                                                        |
+| 4   | Redirect + MTN `237600000503` (**new**)  | vpay: "The payment provider could not be reached." Order → `failed`, `failure_code = provider_unavailable`                                                                                                                                                                                                                                                                                                                      |
+| 5   | Redirect + Orange `237600000400`         | Order → **`paid`**. The race in D1 above; this is where it was measured                                                                                                                                                                                                                                                                                                                                                         |
+| 6   | "Try again" on #4                        | New order, new session (`cs_mw9ms8…` against the failed order's `cs_zj8zf2…`), payer sent to vpay's page                                                                                                                                                                                                                                                                                                                        |
+| 7   | Embedded                                 | Frame `src` = `…/e/{cs_id}?key=pk_…#cs_…_secret_…`, `sandbox="allow-scripts allow-same-origin allow-forms"` (no `allow-top-navigation`), height grown to `179px` — so `vpay:resize` crossed the boundary. The payment **inside** the frame was not driven: vpay's `/e/` route correctly refuses to render top-level (`refused_embed`), and this browser cannot script a cross-origin frame. That is `shop-embedded.cy.ts`'s job |
+| 8   | Popup                                    | The synthetic click carries no user activation, so `window.open` returned `null`, `CheckoutPopupBlockedError` was raised and **the fallback ran**: the order was created in `hosted` mode and the tab navigated to vpay. Which is worth having — it is the path a merchant most needs to work — but it means **the popup itself was still not opened by anything, here or in any test**                                         |
+| 9   | "Cancel this payment" on an unpaid order | The call succeeded and the intent read `canceled` in vpay's database. No event, order still `unpaid`. D5 above                                                                                                                                                                                                                                                                                                                  |
 
 Three orders were placed with **no e-mail at all**; every one stored `NULL`
 and every page rendered "not given — optional, see the checkout page".
@@ -281,12 +281,12 @@ just demo_project=exp22-review demo_port=18280 demo_receiver_port=18283 \
 built the stack and ran every spec against it. **11 tests, 11 passing, 0
 failing, 0 pending, 0 skipped**, exit 0, stack torn down with `down -v`:
 
-| Spec | Tests |
-|---|---|
-| `checkout.cy.ts` | 1 — the MTN push through `@vaam-apps/vpay-stripe-js` settles to `succeeded` |
-| `dashboard.cy.ts` | 3 |
-| `shop-hosted.cy.ts` | 3 — MTN on vpay's page → `paid` via the webhook; **Orange redirect → `paid`** (64.6 s); a payment that does not succeed lands on `cancel_url` and never becomes `paid` |
-| `shop-embedded.cy.ts` | 4 — frame `src` and `frame-ancestors`, MTN inside the frame → `paid`, Orange breaking out to `return_url`, and a refusal to be framed by an unregistered origin |
+| Spec                  | Tests                                                                                                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checkout.cy.ts`      | 1 — the MTN push through `@vaam-apps/vpay-stripe-js` settles to `succeeded`                                                                                            |
+| `dashboard.cy.ts`     | 3                                                                                                                                                                      |
+| `shop-hosted.cy.ts`   | 3 — MTN on vpay's page → `paid` via the webhook; **Orange redirect → `paid`** (64.6 s); a payment that does not succeed lands on `cancel_url` and never becomes `paid` |
+| `shop-embedded.cy.ts` | 4 — frame `src` and `frame-ancestors`, MTN inside the frame → `paid`, Orange breaking out to `return_url`, and a refusal to be framed by an unregistered origin        |
 
 So the two specs this branch repaired without running are green against a
 real browser and a real stack, which is what `ce88aae`'s "**Neither spec was

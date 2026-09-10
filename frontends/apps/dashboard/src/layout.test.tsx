@@ -10,23 +10,25 @@
  * browser. jsdom would not show that, which is why this pins the attribute on
  * the rendered markup rather than trusting a render to "look right".
  */
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import type { ReactElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
 
-import RootLayout from '../app/layout';
-import { NAV_LINKS } from './nav';
+import RootLayout from "../app/layout";
+import { NAV_LINKS } from "./nav";
 
 function markup(): string {
-  return renderToStaticMarkup(RootLayout({ children: <p>content</p> }) as ReactElement);
+  return renderToStaticMarkup(
+    RootLayout({ children: <p>content</p> }) as ReactElement,
+  );
 }
 
-describe('the root layout', () => {
-  it('sets the bumblebee theme — the only theme @vpay/ui actually compiles', () => {
+describe("the root layout", () => {
+  it("sets the bumblebee theme — the only theme @vpay/ui actually compiles", () => {
     const html = markup();
     expect(html).toContain('data-theme="bumblebee"');
     expect(html).not.toContain('data-theme="corporate"');
@@ -36,22 +38,24 @@ describe('the root layout', () => {
     // Real element nesting, on the rendered markup — not the unrendered
     // element tree, which stops at `Heading`/`PageShell` (function
     // components) and never reaches the `<h1>` they render internally.
-    expect(markup()).toMatch(/<nav>[\s\S]*<h1[^>]*>vpay dashboard<\/h1>[\s\S]*<\/nav>/);
+    expect(markup()).toMatch(
+      /<nav>[\s\S]*<h1[^>]*>vpay dashboard<\/h1>[\s\S]*<\/nav>/,
+    );
   });
 
-  it('renders the brand text exactly once', () => {
+  it("renders the brand text exactly once", () => {
     const matches = markup().match(/vpay dashboard/g) ?? [];
     expect(matches).toHaveLength(1);
   });
 
-  it('renders no signed-in control — this layout is on /login too', () => {
+  it("renders no signed-in control — this layout is on /login too", () => {
     // "Sign out" in chrome shared with a page where nobody is signed in is
     // the same kind of claim as a nav entry for a page nobody wrote.
     expect(markup()).not.toMatch(/sign out/i);
   });
 });
 
-const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'app');
+const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "app");
 
 /**
  * Does `app/` actually have a page for this route?
@@ -62,8 +66,8 @@ const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'app');
  * `/payments/{id}` is served by.
  */
 function pageExists(route: string): boolean {
-  const segments = route.split('/').filter(Boolean);
-  return ['tsx', 'ts', 'jsx', 'js'].some((ext) =>
+  const segments = route.split("/").filter(Boolean);
+  return ["tsx", "ts", "jsx", "js"].some((ext) =>
     existsSync(join(APP_DIR, ...segments, `page.${ext}`)),
   );
 }
@@ -84,21 +88,25 @@ function pageExists(route: string): boolean {
  * added to the constant but rendered only in a branch this test does not
  * exercise — which is what a conditional nav would make possible.
  */
-describe('the nav links only to pages that exist', () => {
-  it('every internal href in the rendered layout has a page under app/', () => {
-    const hrefs = [...markup().matchAll(/href="([^"]*)"/g)].map((m) => m[1] ?? '');
-    const internal = hrefs.filter((h) => h.startsWith('/'));
-    const dangling = internal.filter((h) => !pageExists(h.split(/[?#]/)[0] ?? ''));
+describe("the nav links only to pages that exist", () => {
+  it("every internal href in the rendered layout has a page under app/", () => {
+    const hrefs = [...markup().matchAll(/href="([^"]*)"/g)].map(
+      (m) => m[1] ?? "",
+    );
+    const internal = hrefs.filter((h) => h.startsWith("/"));
+    const dangling = internal.filter(
+      (h) => !pageExists(h.split(/[?#]/)[0] ?? ""),
+    );
 
     expect(dangling).toEqual([]);
   });
 
-  it('every entry in NAV_LINKS has a page under app/, rendered or not', () => {
+  it("every entry in NAV_LINKS has a page under app/, rendered or not", () => {
     const dangling = NAV_LINKS.filter((link) => !pageExists(link.href));
     expect(dangling).toEqual([]);
   });
 
-  it('the nav actually renders the links it declares', () => {
+  it("the nav actually renders the links it declares", () => {
     // Otherwise the constant could pass while the layout linked elsewhere.
     const html = markup();
     for (const link of NAV_LINKS) {
@@ -106,10 +114,10 @@ describe('the nav links only to pages that exist', () => {
     }
   });
 
-  it('the helper it relies on is not vacuously true', () => {
+  it("the helper it relies on is not vacuously true", () => {
     // A negative control: if `pageExists` answered `true` for everything the
     // tests above would pass whatever the layout linked to.
-    expect(pageExists('/payments')).toBe(true);
-    expect(pageExists('/webhooks')).toBe(false);
+    expect(pageExists("/payments")).toBe(true);
+    expect(pageExists("/webhooks")).toBe(false);
   });
 });

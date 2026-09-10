@@ -23,26 +23,26 @@ the worst possible carrier for "money actually arrived".
 ### Which of them is written, and by what
 
 **Eleven of the fifteen are written, and only eleven.** Every writer below puts
-its `events` row in the *same transaction* as the transition it reports;
+its `events` row in the _same transaction_ as the transition it reports;
 there is no other shape in this repository, and TX 1 below is the reason.
 
-| Type | Written by | Since |
-|---|---|---|
-| `payment_intent.created` | — nothing | — |
-| `payment_intent.processing` | — nothing | — |
-| `payment_intent.succeeded` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-03 |
+| Type                            | Written by                                                                                                                   | Since                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `payment_intent.created`        | — nothing                                                                                                                    | —                                                                                               |
+| `payment_intent.processing`     | — nothing                                                                                                                    | —                                                                                               |
+| `payment_intent.succeeded`      | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                | 2026-09-03                                                                                      |
 | `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
-| `payment_intent.canceled` | `vpay_api::v1::payment_intents::cancel_with_event` | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
-| `charge.refunded` | — nothing | — |
-| `charge.refund.updated` | — nothing | — |
-| `checkout.session.expired` | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep | 2026-09-04 |
-| `customer.created` | `vpay_api::v1::customers::create_with_event` | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
-| `customer.updated` | `vpay_api::v1::customers::update_once`, under the row's lock | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66)) |
-| `customer.deleted` | `vpay_db::customers::delete_idle`, from the retention sweep | 2026-09-06 |
-| `invoice.created` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
-| `invoice.finalized` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
-| `invoice.paid` | `vpay_db::settlement::apply_succeeded` (TX 1) | 2026-09-07 |
-| `invoice.voided` | `vpay_api::v1::invoices::write_with_event` | 2026-09-07 |
+| `payment_intent.canceled`       | `vpay_api::v1::payment_intents::cancel_with_event`                                                                           | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57))                             |
+| `charge.refunded`               | — nothing                                                                                                                    | —                                                                                               |
+| `charge.refund.updated`         | — nothing                                                                                                                    | —                                                                                               |
+| `checkout.session.expired`      | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep                                                              | 2026-09-04                                                                                      |
+| `customer.created`              | `vpay_api::v1::customers::create_with_event`                                                                                 | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
+| `customer.updated`              | `vpay_api::v1::customers::update_once`, under the row's lock                                                                 | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
+| `customer.deleted`              | `vpay_db::customers::delete_idle`, from the retention sweep                                                                  | 2026-09-06                                                                                      |
+| `invoice.created`               | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
+| `invoice.finalized`             | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
+| `invoice.paid`                  | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                | 2026-09-07                                                                                      |
+| `invoice.voided`                | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
 
 The four with no writer are documented shapes nothing emits — events are
 written for terminal transitions only, and `created`/`processing` are
@@ -186,7 +186,7 @@ delivery, with retries: 10s → 30s → 2m → 10m → 1h → 6h → 24h
 
 Both steps matter. Fan-out inline with the state change would make the business
 transaction depend on reading the endpoint table. Fan-out without a
-`fanout_state` column would leave no way to *find* events never fanned out.
+`fanout_state` column would leave no way to _find_ events never fanned out.
 Either mistake produces a succeeded payment with no webhook.
 
 That ladder is **8 POSTs over about 31 hours** — the first attempt plus seven
@@ -200,7 +200,7 @@ on the wrong one loses the event.
 **Delivery is at-least-once, and its order is not guaranteed.** Merchants must
 dedupe by `event.id`, and must **not** assume that two events for one merchant
 arrive in the order they happened. The fan-out preserves `seq` order when it
-*creates* the jobs, and nothing preserves it afterwards: N claim tasks take N
+_creates_ the jobs, and nothing preserves it afterwards: N claim tasks take N
 different jobs concurrently (`FOR UPDATE SKIP LOCKED`), and one delivery that
 fails drops to the next rung of the ladder while later ones go out immediately.
 A receiver that decides state from arrival order will settle a payment from a
@@ -215,7 +215,7 @@ vocabulary is fifteen types of which eleven have a writer** (issues
 [#66](https://github.com/vaam-apps/vpay/issues/66)). Nothing about the
 two-step outbox changed: each new event is one more row in `events`, written
 in the transaction of the transition it describes, and TX 2 fans it out with
-no branch on `type`. What changed is *which* transitions have a writer — see
+no branch on `type`. What changed is _which_ transitions have a writer — see
 the table under "Only real Stripe event types" above, which is new and is the
 thing to read rather than counting by hand. The four pooled statements these
 replaced (`PaymentIntents::cancel`, `Customers::create`, `Customers::update`)
@@ -271,7 +271,7 @@ in configuration, reached over HTTP exactly as a merchant's endpoint would be
 
 **Updated 2026-09-04 (Step 8): since this step every delivery goes through the
 egress guard first** (`vpay_worker::ssrf`), including the ones in the compose
-stack — the sandbox profile *permits* its private receiver explicitly rather
+stack — the sandbox profile _permits_ its private receiver explicitly rather
 than the guard being absent. "No merchant endpoint has ever been POSTed to"
 stands, and so does its corollary: **no deployment has ever refused one
 either.**
@@ -282,7 +282,7 @@ merchant handler, and the sentence above is narrowed rather than retired.**
 `Vpay-Signature` header with `@vaam-apps/vpay-sdk`, dedupes by event id, marks an order
 `paid` on `payment_intent.succeeded` and `failed` on
 `payment_intent.payment_failed`, and answers `2xx` only after the write. It is
-the first thing in this repository's history to *act* on a delivery rather than
+the first thing in this repository's history to _act_ on a delivery rather than
 record it in a journal, and lane 6's Cypress specs assert an order reaching
 `paid` **only** through it — the payer's return page reads the shop's database
 and takes no decision from the return trip. What has still never happened is a
@@ -297,11 +297,11 @@ and the `events` row together, TX 2 still creates every delivery and flips
 `fanout_state` together, and `TxOutcome::Abandon` is still what a lost race
 returns. What changed is which layer issues two of the statements:
 
-| Write | Layer | Why |
-|---|---|---|
-| the `events` row in TX 1 | raw `sqlx` | `events.data` is `JSONB NOT NULL`; see below |
+| Write                               | Layer                                | Why                                                                           |
+| ----------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------- |
+| the `events` row in TX 1            | raw `sqlx`                           | `events.data` is `JSONB NOT NULL`; see below                                  |
 | `webhook_deliveries` insert in TX 2 | CrateStack `upsert(..).do_nothing()` | the `ON CONFLICT (event_id, endpoint_id) DO NOTHING` this document depends on |
-| the `fanout_state` flip in TX 2 | CrateStack `update_many(..)` | the compare-and-swap, guard included |
+| the `fanout_state` flip in TX 2     | CrateStack `update_many(..)`         | the compare-and-swap, guard included                                          |
 
 `events.data` did **not** move, and the reason is worth stating in this
 document rather than only in the reference: it is the exact object that is
@@ -311,7 +311,7 @@ anything that is not an `i64`. Merchant-authored `metadata` travels inside
 `data`. The insert therefore stays one hand-written statement in the same
 transaction — ugly and deliberate — and two tests pin the blocker: they go red
 the day somebody declares the column, which is the mistake worth catching
-before a lossy number conversion reaches a signed payload. (They do *not*
+before a lossy number conversion reaches a signed payload. (They do _not_
 notice an upstream fix on their own; the drift report's unmappable-column
 count is what does. Corrected 2026-09-06.) See
 [../reference/vpay-db.md](../reference/vpay-db.md) § CrateStack.
@@ -325,7 +325,7 @@ second.
 
 **One caveat this change adds, and it is a real one:** `events.type` is still
 closed by a hand-named database CHECK that `schemas/vpay.cstack` cannot
-express, so the drift report would report a *lower* number if the constraint
+express, so the drift report would report a _lower_ number if the constraint
 were dropped. `an_undocumented_event_type_is_refused_by_the_database` is now
 the only thing that would notice. It did not exist before 2026-09-06, and
 this document's "only real Stripe event types" rule had been resting on it.
@@ -378,7 +378,7 @@ event does not stop the page:** a failure on a single event is logged at `WARN`
 — naming the event, its merchant, its type, its attempt count and no secret —
 and the pass moves on; the page ends with a `WARN` summarising how many drained
 and how many failed. The failing event keeps `fanout_state = 'pending'`, so the
-next pass retries it, and a pass that drained *nothing* waits the idle interval
+next pass retries it, and a pass that drained _nothing_ waits the idle interval
 rather than rescheduling immediately — otherwise a page of failures would spin.
 Aborting the whole page instead — what an earlier shape did — let one merchant's
 unfannable event hold up every other merchant's webhooks behind it
@@ -388,7 +388,7 @@ the loop that drains it.
 
 **An event that can never be fanned out is abandoned after five passes, and
 alerts once.** Isolating the failure is not enough on its own: `pending_page`
-orders by `seq`, so a permanently unfannable event heads *every* subsequent
+orders by `seq`, so a permanently unfannable event heads _every_ subsequent
 page — re-alerting every five seconds and holding one of the page's hundred
 slots forever, and a hundred of them stop the drain for everyone. So each
 failure increments `events.fanout_attempts` (migration `0024`, in its own
@@ -405,7 +405,7 @@ never receive, and **nothing resurrects it** — re-arming one is a deliberate
 ([../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md)).
 
 **Delivery.** `handle_deliver` renders the event through
-`vpay_api::model::EventObject` — the *same* renderer `GET /v1/events` returns,
+`vpay_api::model::EventObject` — the _same_ renderer `GET /v1/events` returns,
 so the delivered body and the API's answer cannot disagree — signs those exact
 bytes and POSTs them with `Content-Type`, `Vpay-Signature`, `Stripe-Signature`
 and `Vpay-Event-Id`. **`Stripe-Signature` carries the same string as
@@ -477,8 +477,8 @@ in YAML (ADR-0003), keyed for fan-out on `merchant_id` and not on `client_id`;
 each carries an operator-authored `id`, unique within a merchant and refused at
 boot, stored verbatim on every delivery row so a URL correction does not orphan
 the history. Secrets are covered by **two** livemode rules, and they are a
-pair: the literal-secret rule reads the file's *text* and says the value came
-from the environment, and a 32-byte floor reads the *resolved* value and says
+pair: the literal-secret rule reads the file's _text_ and says the value came
+from the environment, and a 32-byte floor reads the _resolved_ value and says
 the environment holds something worth having — an HMAC-SHA256 key shorter than
 the hash's own output adds nothing over a 32-byte one and is what makes offline
 guessing cheap (`ConfigError::WeakWebhookSecret`,
@@ -515,7 +515,7 @@ So `https://127.0.0.1/hook`, `https://10.0.0.5/hook` and
 `https://169.254.169.254/latest/meta-data/…` all boot cleanly in livemode.
 **This is not SSRF protection and must not be described as any.** It is a guard
 against shipping a stub host into production, which is a different problem.
-What stops those three being *delivered to* is the next section, and it is a
+What stops those three being _delivered to_ is the next section, and it is a
 different mechanism at a different time.
 
 **The egress guard, at delivery time.** `vpay_worker::ssrf` runs on every
@@ -531,7 +531,7 @@ anycast `192.88.99.0/24`), every IPv6 address outside global unicast
 `2001::/32`, IETF protocol assignments `2001:1::/32`, benchmarking
 `2001:2::/48`, ORCHIDv2 `2001:20::/28` and documentation `2001:db8::/32` — and
 the **IPv4-mapped (`::ffff:10.0.0.1`) and IPv4-compatible (`::10.0.0.1`)
-spellings of all of them** — and refuses the delivery if *any* of them is not
+spellings of all of them** — and refuses the delivery if _any_ of them is not
 public, because a name answering with one public and one private address is the
 shape of a rebind and hyper would try them in order. It then builds the
 delivery client with `reqwest::ClientBuilder::resolve_to_addrs` pinned to those
@@ -546,13 +546,13 @@ resolve the hop's host freshly and be the one way back out of the pin.
 A refused target is a **permanent** delivery failure: `state = 'exhausted'` on
 the first attempt, `next_attempt_at` null, `payload_sha256` null (the guard runs
 before signing, so no bytes were signed), `response_excerpt` beginning
-`ssrf_blocked: ` and naming the address *class* — `loopback`, `link_local`,
+`ssrf_blocked: ` and naming the address _class_ — `loopback`, `link_local`,
 `private`, `cgnat`, … — and **never the address**, because the address is
 exactly what the request was trying to learn and `response_excerpt` is a column
 the merchant's operator reads. Exactly one `ERROR … alert = true` is emitted, at
 that transition, naming the endpoint id, the delivery, the event, the merchant
 and the class. The ladder is not walked: eight identical refusals over 31 hours
-tell nobody anything. A host that merely fails to **resolve** is *not* a refusal
+tell nobody anything. A host that merely fails to **resolve** is _not_ a refusal
 — it is an ordinary failed attempt recorded `delivery_target_unavailable: …`
 that walks `delivery_delay` exactly as the transport error it replaces did,
 because a resolver outage heals and a merchant must not lose an event to one.
@@ -600,7 +600,7 @@ not been claimed yet. So a delivery whose job was **deleted**, or lost to a
 (`the_backstop_re_enqueues_a_delivery_whose_job_vanished`,
 `pending_due_returns_the_deliveries_nothing_is_driving`).
 
-**It does not recover a delivery whose job was *dead-lettered*, and that is
+**It does not recover a delivery whose job was _dead-lettered_, and that is
 deliberate.** `vpay_db::Jobs::dead_letter` parks the job at
 `run_at = 'infinity'` and keeps its `dedupe_key`, so the scan's
 `ON CONFLICT (dedupe_key) DO NOTHING` insert is a no-op for exactly those
@@ -613,7 +613,7 @@ failure every ten minutes forever. What the scan does instead is emit one
 un-park is a manual `UPDATE` in
 [../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md)
 (`a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan`). A pass that
-*fails* logs `ERROR … alert = true` before rescheduling on the backoff — a
+_fails_ logs `ERROR … alert = true` before rescheduling on the backoff — a
 backstop nobody notices has stopped is a backstop that is not there.
 
 It also does **not** touch an `exhausted` row — that state is not `pending` —
@@ -646,7 +646,7 @@ attempt, because `delivery_delay(8)` is `None`. `payload_sha256` is left in
 place on purpose — it is the digest of the bytes the first signed attempt
 signed, and clearing
 it would silence the check that catches a renderer changing under a live
-delivery. The full procedure, the diagnosis queries and what *not* to do are in
+delivery. The full procedure, the diagnosis queries and what _not_ to do are in
 [../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md).
 **The transaction is proven to run and to leave the right rows; no replayed
 delivery has been observed reaching a receiver.**
@@ -684,14 +684,14 @@ delivery has been observed reaching a receiver.**
   design decision about a merchant-visible delivery state machine (a replay
   path, or a retryable `ssrf_blocked` state with a bounded ladder) and belongs
   with whoever owns this document; **lane H's recommendation** is to treat the
-  *resolution* half the way an unresolvable host is already treated — an
+  _resolution_ half the way an unresolvable host is already treated — an
   ordinary failed attempt on `delivery_delay` — and keep the permanent refusal
   for an address that classifies as private on every attempt of the ladder.
   That distinction is already made once in this code
   (`a_host_that_resolves_to_a_private_address_is_refused_and_an_unresolvable_one_retries`),
   which is why it is worth naming rather than inventing.
-- **No replay endpoint and no CLI.** `scan:deliveries` recovers a *deleted or
-  lost* job; it resurrects neither an `exhausted` delivery nor one whose job
+- **No replay endpoint and no CLI.** `scan:deliveries` recovers a _deleted or
+  lost_ job; it resurrects neither an `exhausted` delivery nor one whose job
   was dead-lettered (its `dedupe_key` is still held by the parked row), and
   nothing re-arms a `failed` event. All three are the manual `UPDATE`s in
   [../runbooks/webhook-delivery-failures.md](../runbooks/webhook-delivery-failures.md),
@@ -713,11 +713,11 @@ delivery has been observed reaching a receiver.**
   **two**, plus the two refund types: `payment_intent.created` and
   `payment_intent.processing`. Events are written for terminal transitions
   only (decision 4 of `docs/plans/2026-09-03-step4-worker.md`), and those two
-  are progress. *(This bullet named `payment_intent.canceled` as a third
+  are progress. _(This bullet named `payment_intent.canceled` as a third
   until 2026-09-10; it has a writer now — see the table above and
   [issue #57](https://github.com/vaam-apps/vpay/issues/57). It was the one
   type in this vocabulary that predated migration `0023`'s lockstep rule and
-  never acquired a writer, which is why it sat here for a week of releases.)*
+  never acquired a writer, which is why it sat here for a week of releases.)_
 - **`customer.created` and `customer.updated` were not in the vocabulary at
   all** (2026-09-06, S4a) — a different and stronger statement than the four
   above, because the database refuses a type no code writes. **Closed
@@ -739,7 +739,7 @@ delivery has been observed reaching a receiver.**
   with a horizon that suite controls; no vpay has been up for twelve months,
   and no merchant endpoint has received one.
 - **A merchant expiring its own session emits nothing.** `POST
-  /v1/checkout/sessions/{id}/expire` moves the row and writes no event, so a
+/v1/checkout/sessions/{id}/expire` moves the row and writes no event, so a
   merchant whose own systems are the ones that need telling has to tell them.
   The argument for the current shape is that the caller already knows; the
   argument against is that a merchant with several services does not
@@ -757,7 +757,7 @@ delivery has been observed reaching a receiver.**
   configured endpoint and its `deliver_webhook` jobs are proven against a real
   Postgres by `an_expiry_sweep_emits_one_event_and_one_delivery_per_endpoint`;
   the endpoints in that case are URLs nothing resolves, because what it
-  asserts is what the fan-out *created*. The delivery half is the same code
+  asserts is what the fan-out _created_. The delivery half is the same code
   every other event walks, and that has been observed against a WireMock
   receiver — but not for this type.
 

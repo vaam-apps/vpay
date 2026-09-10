@@ -14,17 +14,17 @@ just verify    # the self-checks the justfile's `verify` recipe lists — twelve
 cat docs/status.md
 ```
 
-*(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
+_(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
 said "ten" until `verify-migrations` landed on 2026-09-07.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
-moved it; that is the copy to trust, and this one now agrees with it.)*
+moved it; that is the copy to trust, and this one now agrees with it.)_
 
 `docs/status.md` tells you what is actually built. Do not infer capability from
 the presence of a file — most of this repo is scaffold, and it says so.
 
 ## The failure mode to avoid
 
-The most likely way to damage this project is to make it *look* more finished
+The most likely way to damage this project is to make it _look_ more finished
 than it is:
 
 - filling an unimplemented function with something plausible that returns a
@@ -55,7 +55,7 @@ in your summary.
 
 This repo prefers evidence over confidence:
 
-- Ran the tests? Say how many passed *and how many are ignored*. Doctests are
+- Ran the tests? Say how many passed _and how many are ignored_. Doctests are
   a separate runner and a separate count (`just test-doc`); "the tests pass"
   without one is half an answer.
 - Changed the schema? Apply it to a real Postgres and prove the constraint fires.
@@ -76,13 +76,13 @@ This repo prefers evidence over confidence:
 - `schemas/vpay.cstack` **is** wired into the build (2026-09-06). This bullet
   said the opposite — "not wired into the build, its syntax is unverified, do
   not try to make it compile" — and had been wrong in two stages: `just
-  check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
-  private `mod schema` began *compiling* the file on 2026-09-06. A syntax
+check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
+  private `mod schema` began _compiling_ the file on 2026-09-06. A syntax
   error in it is now a `cargo build` failure. Two things follow. The CLI and
   the library must stay on one version — `justfile`'s `cratestack_version`
   and `Cargo.toml`'s `cratestack = "=0.12.0"` — so bump them together. And
   the generated module is private to `vpay-db` on purpose: `cargo xtask
-  verify-repositories` fails if `mod schema` is made `pub` or re-exported,
+verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   because the module the macro creates exists in no source file and nothing
   else would object. Adding a `model` is not free either: it must match the
   live table, and `postgres_smoke.rs`'s drift test pins the exact gap. See

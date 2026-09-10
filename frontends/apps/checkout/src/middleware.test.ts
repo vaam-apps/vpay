@@ -8,16 +8,16 @@
  * `'none'` where a merchant expected its own site, is invisible until a
  * payer's browser refuses to paint.
  */
-import { NextRequest } from 'next/server';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NextRequest } from "next/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ORIGINS_TIMEOUT_MS, fetchCheckoutOrigins } from './lib/api';
-import { middleware } from '../middleware';
+import { ORIGINS_TIMEOUT_MS, fetchCheckoutOrigins } from "./lib/api";
+import { middleware } from "../middleware";
 
-const API = 'https://api.vpay.test';
+const API = "https://api.vpay.test";
 
 function request(path: string): NextRequest {
-  return new NextRequest(new URL(path, 'https://checkout.example'));
+  return new NextRequest(new URL(path, "https://checkout.example"));
 }
 
 /** A `fetch` that answers the origins route and records what it was asked. */
@@ -29,18 +29,18 @@ function originsFetch(origins: string[] | null, status = 200) {
     // A `Request` stringifies to "[object Request]"; these calls are
     // asserted against by URL.
     calls.push(
-      typeof input === 'string'
+      typeof input === "string"
         ? input
         : input instanceof URL
           ? input.href
           : input.url,
     );
     if (origins === null) {
-      throw new TypeError('network');
+      throw new TypeError("network");
     }
     return new Response(JSON.stringify({ origins }), {
       status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json" },
     });
   });
   return { impl, calls };
@@ -64,8 +64,8 @@ function neverAnswers() {
       if (signal === undefined || signal === null) {
         return;
       }
-      signal.addEventListener('abort', () => {
-        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      signal.addEventListener("abort", () => {
+        reject(new DOMException("The operation was aborted.", "AbortError"));
       });
     });
   });
@@ -73,186 +73,238 @@ function neverAnswers() {
 }
 
 beforeEach(() => {
-  process.env['VPAY_API_URL'] = API;
+  process.env["VPAY_API_URL"] = API;
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  delete process.env['VPAY_API_URL'];
+  delete process.env["VPAY_API_URL"];
 });
 
-describe('every response', () => {
-  it('carries the three constant headers on every route', async () => {
+describe("every response", () => {
+  it("carries the three constant headers on every route", async () => {
     const { impl } = originsFetch([]);
-    vi.stubGlobal('fetch', impl);
-    for (const path of ['/c/cs_1', '/c/cs_1/return?t=tok', '/e/cs_1?key=pk_1', '/_next/static/x.js']) {
+    vi.stubGlobal("fetch", impl);
+    for (const path of [
+      "/c/cs_1",
+      "/c/cs_1/return?t=tok",
+      "/e/cs_1?key=pk_1",
+      "/_next/static/x.js",
+    ]) {
       const response = await middleware(request(path));
-      expect(response.headers.get('referrer-policy'), path).toBe('no-referrer');
-      expect(response.headers.get('cache-control'), path).toBe('no-store');
-      expect(response.headers.get('x-content-type-options'), path).toBe('nosniff');
+      expect(response.headers.get("referrer-policy"), path).toBe("no-referrer");
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+      expect(response.headers.get("x-content-type-options"), path).toBe(
+        "nosniff",
+      );
     }
   });
 });
 
-describe('the hosted page', () => {
+describe("the hosted page", () => {
   it("is frame-ancestors 'none', and asks the API nothing without a key", async () => {
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/c/cs_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
     expect(calls).toEqual([]);
   });
 
-  it('resolves the origin list when the link carries a key, for the popup case', async () => {
+  it("resolves the origin list when the link carries a key, for the popup case", async () => {
     // 2026-09-06: a hosted page may be running in a popup the merchant's
     // script opened, and the origin it may `postMessage` to comes from the
     // same server-side lookup the embedded page uses.
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/c/cs_1?key=pk_test_1"));
     expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
   });
 
-  it('NEVER lets that list reach its CSP, however many origins came back', async () => {
+  it("NEVER lets that list reach its CSP, however many origins came back", async () => {
     // The decisive one. The hosted page is not framable, popup or not, and a
     // merchant registering an origin so its popup can be talked to must not
     // thereby make its hosted checkout embeddable. Deleting the
     // `embedded ? origins : []` guard in `middleware.ts` fails exactly here.
-    const { impl } = originsFetch(['https://shop.example', 'https://www.shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
-  });
-
-  it('forwards the resolved list to the route so the page can pin an opener', async () => {
-    const { impl } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1?key=pk_test_1'));
-    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
-      'https://shop.example',
+    const { impl } = originsFetch([
+      "https://shop.example",
+      "https://www.shop.example",
+    ]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/c/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
     );
   });
 
-  it('resolves the list for the RETURN page too, and still sends no frame-ancestors', async () => {
+  it("forwards the resolved list to the route so the page can pin an opener", async () => {
+    const { impl } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/c/cs_1?key=pk_test_1"));
+    expect(
+      response.headers.get("x-middleware-request-x-vpay-embed-origins"),
+    ).toBe("https://shop.example");
+  });
+
+  it("resolves the list for the RETURN page too, and still sends no frame-ancestors", async () => {
     // The return page pins an opener by a different rule (`soleOrigin`),
     // because its referrer is the RAIL's — but it needs the same list to
     // apply that rule to. Its CSP is unchanged.
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1/return?t=tok&key=pk_test_1'));
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(
+      request("/c/cs_1/return?t=tok&key=pk_test_1"),
+    );
     expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
-    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
-      'https://shop.example',
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
+    expect(
+      response.headers.get("x-middleware-request-x-vpay-embed-origins"),
+    ).toBe("https://shop.example");
+  });
+});
+
+describe("the return page", () => {
+  it("is frame-ancestors 'none' — it is top-level in both modes", async () => {
+    const { impl } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/c/cs_1/return?t=tok"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
     );
   });
 });
 
-describe('the return page', () => {
-  it("is frame-ancestors 'none' — it is top-level in both modes", async () => {
-    const { impl } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/c/cs_1/return?t=tok'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
-  });
-});
-
-describe('the embedded page', () => {
-  it('lists exactly the origins the API returned for that key', async () => {
-    const { impl, calls } = originsFetch(['https://shop.example', 'https://www.shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe(
-      'frame-ancestors https://shop.example https://www.shop.example',
+describe("the embedded page", () => {
+  it("lists exactly the origins the API returned for that key", async () => {
+    const { impl, calls } = originsFetch([
+      "https://shop.example",
+      "https://www.shop.example",
+    ]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors https://shop.example https://www.shop.example",
     );
     expect(calls).toEqual([`${API}/v1/browser/checkout/origins?key=pk_test_1`]);
   });
 
   it("is 'none' when the merchant has registered no origin", async () => {
     const { impl } = originsFetch([]);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
   });
 
   it("is 'none' when the lookup fails — fail-closed, not fail-open", async () => {
     const { impl } = originsFetch(null);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
   });
 
-  it('gives up on a lookup that never answers, and lands in the same fail-closed list', async () => {
+  it("gives up on a lookup that never answers, and lands in the same fail-closed list", async () => {
     // No fake timers: the abort has to travel through a real `AbortSignal`,
     // and the budget is a parameter precisely so this is milliseconds rather
     // than a wait.
     const { impl, started } = neverAnswers();
-    const origins = await fetchCheckoutOrigins('https://api.vpay.test', 'pk_test_1', impl, 20);
+    const origins = await fetchCheckoutOrigins(
+      "https://api.vpay.test",
+      "pk_test_1",
+      impl,
+      20,
+    );
     expect(origins).toEqual([]);
     expect(started).toHaveLength(1);
-    expect(started[0]?.signal?.aborted, 'the request was aborted, not left running').toBe(true);
+    expect(
+      started[0]?.signal?.aborted,
+      "the request was aborted, not left running",
+    ).toBe(true);
   });
 
-  it('bounds the wait at two seconds by default, on a call that names no budget', () => {
+  it("bounds the wait at two seconds by default, on a call that names no budget", () => {
     expect(ORIGINS_TIMEOUT_MS).toBe(2_000);
   });
 
   it("is 'none' when the API refuses the key", async () => {
-    const { impl } = originsFetch(['https://shop.example'], 404);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_unknown'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    const { impl } = originsFetch(["https://shop.example"], 404);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_unknown"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
   });
 
   it("is 'none' when the URL carries no key at all", async () => {
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
     expect(calls).toEqual([]);
   });
 
   it("is 'none' when VPAY_API_URL is not configured", async () => {
-    delete process.env['VPAY_API_URL'];
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    delete process.env["VPAY_API_URL"];
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
     expect(calls).toEqual([]);
   });
 
-  it('drops a malformed origin the API returned rather than putting it in the policy', async () => {
-    const { impl } = originsFetch(['*', 'https://shop.example/pay', 'https://ok.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe(
-      'frame-ancestors https://ok.example',
+  it("drops a malformed origin the API returned rather than putting it in the policy", async () => {
+    const { impl } = originsFetch([
+      "*",
+      "https://shop.example/pay",
+      "https://ok.example",
+    ]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors https://ok.example",
     );
   });
 
-  it('does not treat a nested path as the embedded route', async () => {
-    const { impl, calls } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const response = await middleware(request('/e/cs_1/extra?key=pk_test_1'));
-    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+  it("does not treat a nested path as the embedded route", async () => {
+    const { impl, calls } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const response = await middleware(request("/e/cs_1/extra?key=pk_test_1"));
+    expect(response.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'none'",
+    );
     expect(calls).toEqual([]);
   });
 
-  it('forwards the resolved origins to the route, and overwrites any header a caller sent', async () => {
-    const { impl } = originsFetch(['https://shop.example']);
-    vi.stubGlobal('fetch', impl);
-    const forged = new NextRequest(new URL('/e/cs_1?key=pk_test_1', 'https://checkout.example'), {
-      headers: { 'x-vpay-embed-origins': 'https://evil.example' },
-    });
+  it("forwards the resolved origins to the route, and overwrites any header a caller sent", async () => {
+    const { impl } = originsFetch(["https://shop.example"]);
+    vi.stubGlobal("fetch", impl);
+    const forged = new NextRequest(
+      new URL("/e/cs_1?key=pk_test_1", "https://checkout.example"),
+      {
+        headers: { "x-vpay-embed-origins": "https://evil.example" },
+      },
+    );
     const response = await middleware(forged);
     // `NextResponse.next({ request: { headers } })` carries the rewritten
     // request headers on this response header, which is how Next hands them
     // to the route handler.
-    const forwarded = response.headers.get('x-middleware-override-headers');
-    expect(forwarded).toContain('x-vpay-embed-origins');
-    expect(response.headers.get('x-middleware-request-x-vpay-embed-origins')).toBe(
-      'https://shop.example',
-    );
+    const forwarded = response.headers.get("x-middleware-override-headers");
+    expect(forwarded).toContain("x-vpay-embed-origins");
+    expect(
+      response.headers.get("x-middleware-request-x-vpay-embed-origins"),
+    ).toBe("https://shop.example");
   });
 });

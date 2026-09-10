@@ -13,11 +13,11 @@ server that reaches vpay by an internal URL could authenticate at all.**
 
 Three strings were two.
 
-| The string | What it is | Who compares it |
-|---|---|---|
-| The **token endpoint** | Where the merchant's process POSTs the token request. Must resolve from *there* — a compose service name, a private DNS name, a mesh address. | Nobody. It is a routing fact; the request either arrives or it does not. |
-| The **assertion audience** (`aud`) | What the OP calls *itself*. | `authkestra_op`'s `authenticate_client`, against `expected_audiences` = `[{deployment.public_base_url}/v1/oauth/token, {deployment.public_base_url}/v1/oauth]` (`vpay_api::op::issuer_for`). Nothing else is in that list. |
-| The **`audience` request parameter** | `vpay:v1` — the *resource server* the minted token is for. | The merchant registration's `allowed_audiences`, and later `vpay_api::resource_auth::Surface::Merchant::audience()`. |
+| The string                           | What it is                                                                                                                                    | Who compares it                                                                                                                                                                                                            |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The **token endpoint**               | Where the merchant's process POSTs the token request. Must resolve from _there_ — a compose service name, a private DNS name, a mesh address. | Nobody. It is a routing fact; the request either arrives or it does not.                                                                                                                                                   |
+| The **assertion audience** (`aud`)   | What the OP calls _itself_.                                                                                                                   | `authkestra_op`'s `authenticate_client`, against `expected_audiences` = `[{deployment.public_base_url}/v1/oauth/token, {deployment.public_base_url}/v1/oauth]` (`vpay_api::op::issuer_for`). Nothing else is in that list. |
+| The **`audience` request parameter** | `vpay:v1` — the _resource server_ the minted token is for.                                                                                    | The merchant registration's `allowed_audiences`, and later `vpay_api::resource_auth::Surface::Merchant::audience()`.                                                                                                       |
 
 Both SDKs signed `aud` as the token endpoint, i.e. as the URL they happened to
 POST to. That is correct — and only correct — when the merchant reaches vpay
@@ -43,7 +43,7 @@ was looking for `http://localhost:8080/v1/oauth/token`.
 - `compose.e2e.yml` / `compose.demo.yml`: set on `vpay-shop`.
 
 **Not named `audience` in either SDK.** That name is already taken, in both,
-by the OAuth2 `audience` *request parameter* (`vpay:v1`). Reusing it would
+by the OAuth2 `audience` _request parameter_ (`vpay:v1`). Reusing it would
 have made the assertion's `aud` default to `vpay:v1` — a different bug — and
 would have broken the existing tests that pin the two apart
 (`keeps aud on the token endpoint even when audience is overridden`,
@@ -52,18 +52,18 @@ environment variable is `VPAY_OAUTH_AUDIENCE` as briefed.
 
 ## 2. What landed
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | `assertionAudience` option; `TokenManagerOptions` carries it; `#fetchToken` signs it | `sdks/nodejs/src/auth.ts` |
-| 2 | Five tests: default unchanged, explicit audience signed without moving the request, issuer form, and the verifier-shaped refused/accepted pair | `sdks/nodejs/src/client.test.ts` |
-| 3 | `ClientBuilder::assertion_audience`, `Inner::assertion_audience`, both hand-written `Debug`s | `sdks/rust/src/client.rs` |
-| 4 | Three builder unit tests, two wire tests, three real-verifier conformance tests | `sdks/rust/src/client.rs`, `tests/token_exchange.rs`, `tests/op_conformance.rs` |
-| 5 | `percent_decode` moved into the shared test support so `op_conformance` needs no second copy | `sdks/rust/tests/support/mod.rs` |
-| 6 | One parity row, ✅/✅, naming all thirteen proving tests | `docs/sdks/parity.md` |
-| 7 | `VPAY_OAUTH_AUDIENCE` read (optional, verbatim, blank = unset) and forwarded | `examples/shop/src/server/config.ts`, `src/server/vpay.ts` |
-| 8 | Eight shop tests, config half and wire half | `examples/shop/src/server/vpay.test.ts` (new) |
-| 9 | Documented with the compose case as the worked example | `examples/shop/.env.example`, `examples/shop/README.md`, both SDK READMEs |
-| 10 | `VPAY_OAUTH_AUDIENCE` on `vpay-shop`, interpolated with the demo port in the overlay | `compose.e2e.yml`, `compose.demo.yml` |
+| #   | Thing                                                                                                                                          | Where                                                                           |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | `assertionAudience` option; `TokenManagerOptions` carries it; `#fetchToken` signs it                                                           | `sdks/nodejs/src/auth.ts`                                                       |
+| 2   | Five tests: default unchanged, explicit audience signed without moving the request, issuer form, and the verifier-shaped refused/accepted pair | `sdks/nodejs/src/client.test.ts`                                                |
+| 3   | `ClientBuilder::assertion_audience`, `Inner::assertion_audience`, both hand-written `Debug`s                                                   | `sdks/rust/src/client.rs`                                                       |
+| 4   | Three builder unit tests, two wire tests, three real-verifier conformance tests                                                                | `sdks/rust/src/client.rs`, `tests/token_exchange.rs`, `tests/op_conformance.rs` |
+| 5   | `percent_decode` moved into the shared test support so `op_conformance` needs no second copy                                                   | `sdks/rust/tests/support/mod.rs`                                                |
+| 6   | One parity row, ✅/✅, naming all thirteen proving tests                                                                                       | `docs/sdks/parity.md`                                                           |
+| 7   | `VPAY_OAUTH_AUDIENCE` read (optional, verbatim, blank = unset) and forwarded                                                                   | `examples/shop/src/server/config.ts`, `src/server/vpay.ts`                      |
+| 8   | Eight shop tests, config half and wire half                                                                                                    | `examples/shop/src/server/vpay.test.ts` (new)                                   |
+| 9   | Documented with the compose case as the worked example                                                                                         | `examples/shop/.env.example`, `examples/shop/README.md`, both SDK READMEs       |
+| 10  | `VPAY_OAUTH_AUDIENCE` on `vpay-shop`, interpolated with the demo port in the overlay                                                           | `compose.e2e.yml`, `compose.demo.yml`                                           |
 
 ## 3. The guard-failure proof
 
@@ -90,12 +90,12 @@ and `http://localhost:8080/v1/oauth`.
 And the tests are decisive, not decorative — each mutation was run, not
 reasoned about:
 
-| Mutation | Result |
-|---|---|
-| Drop the `assertionAudience` forwarding from `examples/shop/src/server/vpay.ts` | 3 of 8 fail, including "authenticates once VPAY_OAUTH_AUDIENCE names vpay's own token endpoint" |
-| Pin `assertionAudience` to `tokenEndpoint` in `resolveMerchantAuth` (Node) | 3 of 168 fail |
+| Mutation                                                                        | Result                                                                                                                       |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Drop the `assertionAudience` forwarding from `examples/shop/src/server/vpay.ts` | 3 of 8 fail, including "authenticates once VPAY_OAUTH_AUDIENCE names vpay's own token endpoint"                              |
+| Pin `assertionAudience` to `tokenEndpoint` in `resolveMerchantAuth` (Node)      | 3 of 168 fail                                                                                                                |
 | Pin `assertion_audience` to the token endpoint in `ClientBuilder::build` (Rust) | 4 of 132 fail, **two of them in `op_conformance`** — i.e. the real pinned `authkestra_op` verifier is the thing that refuses |
-| Misspell one test name in the new parity row | `verify-sdk-parity` fails naming the cell |
+| Misspell one test name in the new parity row                                    | `verify-sdk-parity` fails naming the cell                                                                                    |
 
 The Rust conformance pair is the strongest evidence here, because nothing
 about it is this repository's opinion of what the OP wants: a `Client` built
@@ -163,7 +163,7 @@ decision in ADR-0010 does not change**; nothing here is an amendment to it.
   change makes `deployment.public_base_url` configurable independently of
   `demo_port`, these two strings drift apart with no check to catch it.
 - **The Node side still has no real-verifier conformance test.** Its new
-  audience test is verifier-*shaped*: it reproduces the OP's comparison in
+  audience test is verifier-_shaped_: it reproduces the OP's comparison in
   TypeScript. That is the same standing gap `docs/sdks/parity.md` already
   records for `sdks/nodejs` ("Node cannot link the Rust verifier",
   2026-09-03); this lane did not close it and did not widen it.

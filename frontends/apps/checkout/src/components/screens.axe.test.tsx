@@ -20,16 +20,16 @@
  * Every screen in both state maps, in both locales — the screens are cheap and
  * a violation that only appears in French is exactly the one a review misses.
  */
-import { render } from '@testing-library/react';
-import { axeViolations } from '@vpay/ui/testing';
-import { describe, expect, it } from 'vitest';
+import { render } from "@testing-library/react";
+import { axeViolations } from "@vpay/ui/testing";
+import { describe, expect, it } from "vitest";
 
-import { LOCALES, translator, type Locale } from '../i18n/index';
-import type { CheckoutState } from '../lib/machine';
-import { makeBranding, makeMemoryControls } from '../testing/fixtures';
-import { CHECKOUT_SCREENS, RETURN_SCREENS } from '../testing/screen-states';
-import { CheckoutView, type CheckoutViewProps } from './checkout-view';
-import { ReturnView } from './return-view';
+import { LOCALES, translator, type Locale } from "../i18n/index";
+import type { CheckoutState } from "../lib/machine";
+import { makeBranding, makeMemoryControls } from "../testing/fixtures";
+import { CHECKOUT_SCREENS, RETURN_SCREENS } from "../testing/screen-states";
+import { CheckoutView, type CheckoutViewProps } from "./checkout-view";
+import { ReturnView } from "./return-view";
 
 const NOOP = () => undefined;
 
@@ -40,7 +40,7 @@ function renderCheckout(state: CheckoutState, locale: Locale) {
     t: translator(locale),
     locale,
     branding: makeBranding(),
-    destination: 'https://shop.example/ok?sid=cs_test_fixture000000000001',
+    destination: "https://shop.example/ok?sid=cs_test_fixture000000000001",
     defaultMsisdn: null,
     lastRail: null,
     memory: makeMemoryControls(),
@@ -55,7 +55,10 @@ function renderCheckout(state: CheckoutState, locale: Locale) {
   return render(<CheckoutView {...props} />);
 }
 
-function renderReturn(state: React.ComponentProps<typeof ReturnView>['state'], locale: Locale) {
+function renderReturn(
+  state: React.ComponentProps<typeof ReturnView>["state"],
+  locale: Locale,
+) {
   return render(
     <ReturnView
       state={state}
@@ -69,13 +72,15 @@ function renderReturn(state: React.ComponentProps<typeof ReturnView>['state'], l
   );
 }
 
-describe('every checkout screen, structurally (plan §7 row 5)', () => {
+describe("every checkout screen, structurally (plan §7 row 5)", () => {
   for (const [name, state] of Object.entries(CHECKOUT_SCREENS)) {
     for (const locale of LOCALES) {
       it(`has no structural accessibility violation: ${name} (${locale})`, async () => {
         const { container, unmount } = renderCheckout(state, locale);
         const violations = await axeViolations(container);
-        expect(violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`)).toEqual([]);
+        expect(
+          violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`),
+        ).toEqual([]);
         unmount();
       });
     }
@@ -86,7 +91,9 @@ describe('every checkout screen, structurally (plan §7 row 5)', () => {
       it(`has no structural accessibility violation: return/${name} (${locale})`, async () => {
         const { container, unmount } = renderReturn(state, locale);
         const violations = await axeViolations(container);
-        expect(violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`)).toEqual([]);
+        expect(
+          violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`),
+        ).toEqual([]);
         unmount();
       });
     }

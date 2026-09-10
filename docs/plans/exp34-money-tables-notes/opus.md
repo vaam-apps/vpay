@@ -89,10 +89,10 @@ so in its own comment.
 
 ### 2.4 The conversion moves the drift count by ZERO
 
-| Schema | Database | Report |
-|---|---|---|
+| Schema                     | Database           | Report                                 |
+| -------------------------- | ------------------ | -------------------------------------- |
 | base `schemas/vpay.cstack` | migrated to `0035` | **130** / 20 relations / 18 unmappable |
-| base `schemas/vpay.cstack` | migrated to `0037` | **130** / 20 / 18 |
+| base `schemas/vpay.cstack` | migrated to `0037` | **130** / 20 / 18                      |
 
 Exactly what `docs/reference/vpay-db.md` § "The enum conversion no report can
 see" predicts. `introspect/postgres/enums.rs` was already synthesising an
@@ -114,13 +114,13 @@ hand-run report against the constant.)
 
 Per table, before and after, same database, same CLI:
 
-| table | before | after |
-|---|---|---|
-| `payment_intents` | 31 | 19 |
-| `charges` | 23 | 16 |
-| `checkout_sessions` | 1 | 21 |
-| `refunds` | 1 | 11 |
-| everything else | unchanged | unchanged |
+| table               | before    | after     |
+| ------------------- | --------- | --------- |
+| `payment_intents`   | 31        | 19        |
+| `charges`           | 23        | 16        |
+| `checkout_sessions` | 1         | 21        |
+| `refunds`           | 1         | 11        |
+| everything else     | unchanged | unchanged |
 
 `EXPECTED_DRIFTED_RELATIONS` does not move (20). `EXPECTED_UNMAPPABLE_COLUMNS`
 does not move (18) — which is the prediction "an undeclared `jsonb` column is
@@ -163,14 +163,14 @@ Every mutation was applied to the committed tree, the named test run, and the
 tree restored with `git checkout --`. Two rounds, because the first round had
 a scaffolding bug and one genuine finding.
 
-| # | Mutation | Test | Result |
-|---|---|---|---|
-| M1 | `get_for_merchant` loses `.where_(merchant_id)` | `a_session_read_for_the_wrong_merchant_is_indistinguishable_from_a_missing_one` | **RED** |
-| M2 | `find_open_by_intent` loses `.where_(status = 'open')` | `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq` | **RED** |
-| M3 | `latest_by_intent_query` loses `.order_by(seq().desc())` | the container test above | **GREEN — not caught** (see below) |
-| M3′ | same mutation, after the fix | `the_latest_session_query_orders_by_seq_and_takes_one` | **RED**, ~1 ms, no container |
-| M4 | `model CheckoutSession` loses `@@allow("read", …)` | the unit test **and** both container tests | **RED** (all three) |
-| M5 | migration 0003 loses `CONSTRAINT no_over_refund` | `over_refund_is_rejected_by_the_database` | **RED** |
+| #   | Mutation                                                 | Test                                                                            | Result                             |
+| --- | -------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------- |
+| M1  | `get_for_merchant` loses `.where_(merchant_id)`          | `a_session_read_for_the_wrong_merchant_is_indistinguishable_from_a_missing_one` | **RED**                            |
+| M2  | `find_open_by_intent` loses `.where_(status = 'open')`   | `the_open_session_read_filters_by_status_and_the_latest_read_orders_by_seq`     | **RED**                            |
+| M3  | `latest_by_intent_query` loses `.order_by(seq().desc())` | the container test above                                                        | **GREEN — not caught** (see below) |
+| M3′ | same mutation, after the fix                             | `the_latest_session_query_orders_by_seq_and_takes_one`                          | **RED**, ~1 ms, no container       |
+| M4  | `model CheckoutSession` loses `@@allow("read", …)`       | the unit test **and** both container tests                                      | **RED** (all three)                |
+| M5  | migration 0003 loses `CONSTRAINT no_over_refund`         | `over_refund_is_rejected_by_the_database`                                       | **RED**                            |
 
 ### M3 is the finding worth carrying
 
@@ -261,11 +261,11 @@ money table moves, which is the day `create` moves and needs its own migration.
 
 ## 7. What is not claimed
 
-* No **write** on any money table runs through CrateStack. The settlement
+- No **write** on any money table runs through CrateStack. The settlement
   `UPDATE … RETURNING` with its correlated sub-select, the confirm path's
   two-row transaction, and every `jobs` insert are the raw `sqlx` they were.
-* `jobs`, `idempotency_keys` and `provider_requests` are untouched and are
+- `jobs`, `idempotency_keys` and `provider_requests` are untouched and are
   **out of scope forever unless a reason appears** — recorded in
   `docs/status.md` in those words so neither list reads as a gap.
-* `just test-e2e`, `just demo-up`/`demo-walk` and `just ci`'s web half were
+- `just test-e2e`, `just demo-up`/`demo-walk` and `just ci`'s web half were
   run as recorded in the final report; anything not recorded there was not run.

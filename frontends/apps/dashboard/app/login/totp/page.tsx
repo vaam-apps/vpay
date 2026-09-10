@@ -1,23 +1,26 @@
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
-import QRCode from 'qrcode';
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import QRCode from "qrcode";
 
-import { Heading, Stack, Text } from '@vpay/ui';
+import { Heading, Stack, Text } from "@vpay/ui";
 
-import { dashboardConfig } from '../../../src/config/runtime';
-import { EnrolmentPanel } from '../../../src/components/enrolment-panel';
-import { ReadFailure } from '../../../src/components/read-failure';
-import { TotpForm } from '../../../src/components/totp-form';
-import { submitTotp } from '../../../src/server/actions';
-import { ENROLMENT_COOKIE } from '../../../src/server/cookies';
-import { decodePendingEnrolment, secretFrom } from '../../../src/server/enrolment';
-import { totpGateFor } from '../../../src/server/gate';
+import { dashboardConfig } from "../../../src/config/runtime";
+import { EnrolmentPanel } from "../../../src/components/enrolment-panel";
+import { ReadFailure } from "../../../src/components/read-failure";
+import { TotpForm } from "../../../src/components/totp-form";
+import { submitTotp } from "../../../src/server/actions";
+import { ENROLMENT_COOKIE } from "../../../src/server/cookies";
+import {
+  decodePendingEnrolment,
+  secretFrom,
+} from "../../../src/server/enrolment";
+import { totpGateFor } from "../../../src/server/gate";
 import {
   HOME_PATH,
   LOGIN_PATH,
   readSessionStage,
   sessionToken,
-} from '../../../src/server/session';
+} from "../../../src/server/session";
 
 /**
  * `/login/totp` — leg two, and on a first sign-in the enrolment it completes.
@@ -53,7 +56,7 @@ import {
  * decision, taken when the code is presented. This page reads a stage to know
  * whether the session is alive, not to duplicate that rule.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function TotpPage() {
   const { config } = dashboardConfig();
@@ -68,13 +71,13 @@ export default async function TotpPage() {
 
   const { stage, failure } = await readSessionStage(config, token);
   const gate = totpGateFor(stage, failure);
-  if (gate.kind === 'dead') {
+  if (gate.kind === "dead") {
     redirect(LOGIN_PATH);
   }
-  if (gate.kind === 'signed-in') {
+  if (gate.kind === "signed-in") {
     redirect(HOME_PATH);
   }
-  if (gate.kind === 'outage') {
+  if (gate.kind === "outage") {
     return (
       <Stack direction="column" gap="md">
         <Heading level={2}>Enter your code</Heading>
@@ -101,11 +104,17 @@ export default async function TotpPage() {
 
   // Rendered on this server, into a data URL. The secret never travels to a
   // third-party QR service, and no markup is injected into the page.
-  const qrDataUrl = await QRCode.toDataURL(pending.otpauth, { margin: 1, width: 220 });
+  const qrDataUrl = await QRCode.toDataURL(pending.otpauth, {
+    margin: 1,
+    width: 220,
+  });
 
   return (
     <Stack direction="column" gap="lg">
-      <EnrolmentPanel qrDataUrl={qrDataUrl} secret={secretFrom(pending.otpauth)} />
+      <EnrolmentPanel
+        qrDataUrl={qrDataUrl}
+        secret={secretFrom(pending.otpauth)}
+      />
       <TotpForm action={submitTotp} enrolling />
     </Stack>
   );

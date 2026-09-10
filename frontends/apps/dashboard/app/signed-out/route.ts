@@ -1,6 +1,6 @@
-import type { NextResponse } from 'next/server';
+import type { NextResponse } from "next/server";
 
-import { signedOutResponse } from '../../src/server/signed-out';
+import { signedOutResponse } from "../../src/server/signed-out";
 
 /**
  * `GET /signed-out` — the one place a *page* can get a dead session cookie
@@ -20,7 +20,7 @@ import { signedOutResponse } from '../../src/server/signed-out';
  * message can fire, and `signed-in-bar.tsx` already says so about the sign-out
  * button.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export function GET(request: Request): NextResponse {
   return signedOutResponse(request.headers);

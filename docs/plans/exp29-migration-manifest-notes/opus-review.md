@@ -28,7 +28,7 @@ SET checksum = decode('f4d1a8e1…8ae252'::text, 'hex')
 and said, correctly about itself, that this is "the SHA-384 of
 `0028_create-checkout-sessions.sql` **in its original, unedited state**".
 
-That is the value a broken database *already holds*. The repair exists for a
+That is the value a broken database _already holds_. The repair exists for a
 database that applied the original and is being asked to boot the current
 binary; it must write the **current** file's checksum. Run as drafted the
 statement reports `UPDATE 1`, changes nothing, and the binary keeps exiting 78
@@ -36,10 +36,10 @@ statement reports `UPDATE 1`, changes nothing, and the binary keeps exiting 78
 
 Both values, and how each was obtained:
 
-| | SHA-384 | How |
-|---|---|---|
-| current (what the repair must write) | `6eeb31eeaf5e8adfe033b01c9ae7a8c579e68e543fef93d8febd41d32f6234d02e8fb63f03cb2e4137e187f59007b5ec` | read from `_sqlx_migrations.checksum` on a fresh migrated `postgres:16-alpine`; equals `sha384sum backends/migrations/0028_create-checkout-sessions.sql` |
-| original (what a broken database holds) | `f4d1a8e11606df3e3d0b3fb2a0a0483668b53813fb1baa6598ca3fdc2e105db162c4d43e8ea0e2790a4baecbce8ae252` | `git show d0b602e:backends/migrations/0028_create-checkout-sessions.sql \| sha384sum` |
+|                                         | SHA-384                                                                                            | How                                                                                                                                                      |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| current (what the repair must write)    | `6eeb31eeaf5e8adfe033b01c9ae7a8c579e68e543fef93d8febd41d32f6234d02e8fb63f03cb2e4137e187f59007b5ec` | read from `_sqlx_migrations.checksum` on a fresh migrated `postgres:16-alpine`; equals `sha384sum backends/migrations/0028_create-checkout-sessions.sql` |
+| original (what a broken database holds) | `f4d1a8e11606df3e3d0b3fb2a0a0483668b53813fb1baa6598ca3fdc2e105db162c4d43e8ea0e2790a4baecbce8ae252` | `git show d0b602e:backends/migrations/0028_create-checkout-sessions.sql \| sha384sum`                                                                    |
 
 Fixed, and the fix is executable rather than asserted:
 `the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_original`
@@ -103,7 +103,7 @@ close. It now refuses, and says a shipped migration is never deleted.
 `AGENTS.md` still said `just verify` is "**ten** gates", listed the ten by
 name, and said "Nine of the ten are `cargo xtask` commands"; `CLAUDE.md` still
 said "ten self-checks". Both are load-bearing here — AGENTS.md carries the
-count *and* the history of every gate that moved it, and its own text records
+count _and_ the history of every gate that moved it, and its own text records
 how often that count has been wrong. The new runbook was also absent from
 `docs/runbooks/README.md`'s index table. All corrected.
 
@@ -124,20 +124,20 @@ different locale.
 Against the tree, with the real gate, restoring between each. "before" is the
 draft at `5518f1a`; "after" is this branch's head.
 
-| # | Mutation | Before | After |
-|---|---|---|---|
-| M1 | edit a byte in `0001_create-currencies.sql` | FAILS, names the file | FAILS, names the file |
-| M2 | add `0099_x.sql` with no manifest line | FAILS, prints the line to add | FAILS, prints the line to add |
-| M3 | `just migrations-manifest` after M1 | REFUSED, exit 1 | REFUSED, exit 1 |
-| M4 | delete a manifest line | FAILS | FAILS |
-| M5 | reverse every manifest line | passes (order is not the contract) | passes |
-| M6 | manifest line for a file that does not exist | FAILS | FAILS |
-| M7 | put `README.md` in `backends/migrations/` | **FAILS — and is unfixable** | passes |
-| M8 | `#` comment at the top of the manifest | **FAILS as malformed** | passes |
-| M9 | edit the last migration, then the recipe | REFUSED | REFUSED |
-| M10 | manifest entry duplicated with a wrong hash | **passes** | FAILS |
-| M11 | edit a migration **and** its manifest line by hand | passes | passes — by construction; see below |
-| M12 | delete a migration file, then the recipe | line silently dropped | REFUSED |
+| #   | Mutation                                           | Before                             | After                               |
+| --- | -------------------------------------------------- | ---------------------------------- | ----------------------------------- |
+| M1  | edit a byte in `0001_create-currencies.sql`        | FAILS, names the file              | FAILS, names the file               |
+| M2  | add `0099_x.sql` with no manifest line             | FAILS, prints the line to add      | FAILS, prints the line to add       |
+| M3  | `just migrations-manifest` after M1                | REFUSED, exit 1                    | REFUSED, exit 1                     |
+| M4  | delete a manifest line                             | FAILS                              | FAILS                               |
+| M5  | reverse every manifest line                        | passes (order is not the contract) | passes                              |
+| M6  | manifest line for a file that does not exist       | FAILS                              | FAILS                               |
+| M7  | put `README.md` in `backends/migrations/`          | **FAILS — and is unfixable**       | passes                              |
+| M8  | `#` comment at the top of the manifest             | **FAILS as malformed**             | passes                              |
+| M9  | edit the last migration, then the recipe           | REFUSED                            | REFUSED                             |
+| M10 | manifest entry duplicated with a wrong hash        | **passes**                         | FAILS                               |
+| M11 | edit a migration **and** its manifest line by hand | passes                             | passes — by construction; see below |
+| M12 | delete a migration file, then the recipe           | line silently dropped              | REFUSED                             |
 
 M5 is deliberate: the manifest is a set of claims about files, and a rebase
 that interleaves two branches' appends must not fail the build.
@@ -174,7 +174,7 @@ expected to fail and then one expected to succeed.
 
 Fixed by running the refused migration on its own single-connection pool and
 closing it: **1201.285 s -> 1.619 s**, same assertions. The leak is now
-*observed* rather than inferred — while the refused connection is open the test
+_observed_ rather than inferred — while the refused connection is open the test
 asserts `count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted` is 1,
 and the failure message says a 0 means sqlx has started unlocking on the error
 path and the dedicated pool can go.
@@ -215,17 +215,17 @@ because they were checked rather than assumed:
 
 ## `just ci`, recipe by recipe (final head, exit code read from a file)
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | exit 0 |
-| `clippy` `-D warnings` | exit 0, workspace + all targets |
-| `verify` | **all eleven gates**; `verify-status` 1 declared unimplemented item; `verify-errors` 18 types; `verify-sdk-parity` 407 proving tests, 35 dated gaps; `verify-links` 920 links in 167 tracked files; `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations (see caveat); `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 impls, 80 outside files; `verify-toolchain` 1.98.0; **`verify-migrations` 35 files matching**; `verify-docs` advisory |
-| `test-rust` | **1563 run, 1563 passed, 0 skipped**, 936.9 s, 46 binaries |
-| `test-doc` | **99 passed, 1 ignored** |
-| `verify-ignored` | 0 ignored (expected 0), 46 binaries (expected 46), 1563 total (floor 1080) |
-| `lint-web` | exit 0 |
-| `test-web` | checkout 448, nodejs SDK 190, stripe-js SDK 146, shop 96, api-client 4, ui 3 |
-| `deny` | advisories, bans, licenses, sources all ok |
+| Recipe                 | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`            | exit 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `clippy` `-D warnings` | exit 0, workspace + all targets                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `verify`               | **all eleven gates**; `verify-status` 1 declared unimplemented item; `verify-errors` 18 types; `verify-sdk-parity` 407 proving tests, 35 dated gaps; `verify-links` 920 links in 167 tracked files; `verify-npm-scope` 2 publishable packages; `check-schema` 19 declarations (see caveat); `verify-serde` 73 types, 16 exempted; `verify-repositories` 4 impls, 80 outside files; `verify-toolchain` 1.98.0; **`verify-migrations` 35 files matching**; `verify-docs` advisory |
+| `test-rust`            | **1563 run, 1563 passed, 0 skipped**, 936.9 s, 46 binaries                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `test-doc`             | **99 passed, 1 ignored**                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `verify-ignored`       | 0 ignored (expected 0), 46 binaries (expected 46), 1563 total (floor 1080)                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `lint-web`             | exit 0                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `test-web`             | checkout 448, nodejs SDK 190, stripe-js SDK 146, shop 96, api-client 4, ui 3                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `deny`                 | advisories, bans, licenses, sources all ok                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `just ci` **exit 0**, read from `exp29-review-ci.exit`, not from a banner, at
 commit `02445b8` — the head, but for the commit that writes these numbers down.

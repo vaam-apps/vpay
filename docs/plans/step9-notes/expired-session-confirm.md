@@ -13,7 +13,7 @@ emits `checkout.session.expired` in the same transaction; and
 `POST /v1/checkout/sessions/{id}/expire` is the merchant's own abandon.
 
 Neither retracts the payer's credential. `docs/flows/browser-checkout.md`:
-the intent's `client_secret` is "minted once at `create` ... This *is* the
+the intent's `client_secret` is "minted once at `create` ... This _is_ the
 credential — it authorises exactly one payment intent, **for its whole life**,
 and there is no rotation endpoint". So a payer whose page loaded before the
 checkout ended could still call
@@ -30,21 +30,21 @@ intent over an `expired`/`unpaid` session, with a
 
 ## What landed
 
-| # | What | Where |
-|---|---|---|
-| 1 | `CheckoutSessions::find_latest_by_intent` — the newest session on an intent, **no `status` filter** | `backends/crates/vpay-db/src/checkout_sessions.rs:567` (trait) / `:844` (impl) |
-| 2 | `ClosedSession` (`Expired`/`Complete`) and `ApiError::CheckoutSessionNotOpen { session_id, state }`, classified | `backends/crates/vpay-api/src/error.rs:257` / `:611` |
-| 3 | `Classify` arms — `Category::Conflict`, the two codes, the two sentences | `backends/crates/vpay-api/src/error.rs:858` (`category`), `:914` (`code`), `:308` (`ClosedSession::message`) |
-| 4 | `return_trip`: `CheckoutSessionGate` / `SessionGate` / `verdict` / `admit_confirm` — one read, two answers | `backends/crates/vpay-api/src/v1/return_trip.rs:55`, `:90`, `:203`, `:263` |
-| 5 | Step 1b of the confirm, after `load_confirmable_intent` and before `open_attempt` | `backends/crates/vpay-api/src/v1/payment_intents.rs:786-805` |
-| 6 | Seven integration cases | `backends/tests/integration/tests/checkout_sessions.rs:3130` onward |
-| 7 | Four unit cases (three on `verdict`, one on the classification) | `backends/crates/vpay-api/src/v1/return_trip.rs:360`, `:405`, `:426`; `backends/crates/vpay-api/src/error.rs:1446` |
-| 8 | Reference pages | `docs/reference/vpay-api.md` § the confirm path; `docs/reference/vpay-db.md` § `find_latest_by_intent` |
+| #   | What                                                                                                            | Where                                                                                                              |
+| --- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1   | `CheckoutSessions::find_latest_by_intent` — the newest session on an intent, **no `status` filter**             | `backends/crates/vpay-db/src/checkout_sessions.rs:567` (trait) / `:844` (impl)                                     |
+| 2   | `ClosedSession` (`Expired`/`Complete`) and `ApiError::CheckoutSessionNotOpen { session_id, state }`, classified | `backends/crates/vpay-api/src/error.rs:257` / `:611`                                                               |
+| 3   | `Classify` arms — `Category::Conflict`, the two codes, the two sentences                                        | `backends/crates/vpay-api/src/error.rs:858` (`category`), `:914` (`code`), `:308` (`ClosedSession::message`)       |
+| 4   | `return_trip`: `CheckoutSessionGate` / `SessionGate` / `verdict` / `admit_confirm` — one read, two answers      | `backends/crates/vpay-api/src/v1/return_trip.rs:55`, `:90`, `:203`, `:263`                                         |
+| 5   | Step 1b of the confirm, after `load_confirmable_intent` and before `open_attempt`                               | `backends/crates/vpay-api/src/v1/payment_intents.rs:786-805`                                                       |
+| 6   | Seven integration cases                                                                                         | `backends/tests/integration/tests/checkout_sessions.rs:3130` onward                                                |
+| 7   | Four unit cases (three on `verdict`, one on the classification)                                                 | `backends/crates/vpay-api/src/v1/return_trip.rs:360`, `:405`, `:426`; `backends/crates/vpay-api/src/error.rs:1446` |
+| 8   | Reference pages                                                                                                 | `docs/reference/vpay-api.md` § the confirm path; `docs/reference/vpay-db.md` § `find_latest_by_intent`             |
 
 ### The decisions, and the arguments
 
 **Two codes, not one code with a `param`.** `checkout_session_expired` and
-`checkout_session_complete`. `param` on this API names a *request parameter* —
+`checkout_session_complete`. `param` on this API names a _request parameter_ —
 `ApiError::param()` renders it only for `InvalidParam`, whose own doc says it
 "must be a field name and never a value" — and the request that trips this
 refusal carries no reference to a session at all, so a `param` would point a
@@ -80,7 +80,7 @@ followed by a return-URL lookup running a millisecond after `expire_due`
 committed, would admit the confirm and then submit it with no return URL.
 
 **The newest session decides.** An intent can carry several sessions over its
-life (`create` refuses only an intent that already has an *open* one), so "any
+life (`create` refuses only an intent that already has an _open_ one), so "any
 session on this intent is not open" would refuse the ordinary "expire the
 abandoned checkout, offer a fresh link" flow. `find_latest_by_intent` orders
 by `seq DESC LIMIT 1`, and `checkout_sessions_one_open_per_intent` is what
@@ -110,15 +110,15 @@ checkout that was in fact paid.
 real WireMock MTN rail, the shipping router and the shipping
 `vpay_worker::run_once`:
 
-| Case | Function |
-|---|---|
-| 1 — sweep-expired -> `409 checkout_session_expired`, no charge/`provider_requests`/job, intent still `requires_payment_method` | `a_confirm_on_a_swept_session_is_refused_before_any_charge` |
-| 2 — merchant `/expire` -> the same | `a_confirm_on_a_session_the_merchant_expired_is_refused` |
-| 3 — `open` past `expires_at`, unswept -> the same, and `(status, payment_status, updated_at)` byte-equal before and after | `a_confirm_past_the_horizon_is_refused_by_the_read_and_writes_nothing` |
-| 4 — `complete` -> `409 checkout_session_complete` (staged row; see above) | `a_confirm_on_a_complete_session_is_a_different_code` |
-| 5 — no session -> `200`, and 1 charge + 1 `provider_requests` + 1 poll job | `an_intent_with_no_session_confirms_exactly_as_before` |
-| 6 — merchant `/v1` confirm -> the same `409`, and the `Idempotency-Key` replay is the **stored** body, asserted byte-equal | `the_merchant_confirm_is_refused_too_and_the_replay_is_the_stored_409` |
-| 7 — expire, create a second session, confirm -> `200` (the newest-row rule) | `a_second_session_after_an_expiry_makes_the_intent_payable_again` |
+| Case                                                                                                                           | Function                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| 1 — sweep-expired -> `409 checkout_session_expired`, no charge/`provider_requests`/job, intent still `requires_payment_method` | `a_confirm_on_a_swept_session_is_refused_before_any_charge`            |
+| 2 — merchant `/expire` -> the same                                                                                             | `a_confirm_on_a_session_the_merchant_expired_is_refused`               |
+| 3 — `open` past `expires_at`, unswept -> the same, and `(status, payment_status, updated_at)` byte-equal before and after      | `a_confirm_past_the_horizon_is_refused_by_the_read_and_writes_nothing` |
+| 4 — `complete` -> `409 checkout_session_complete` (staged row; see above)                                                      | `a_confirm_on_a_complete_session_is_a_different_code`                  |
+| 5 — no session -> `200`, and 1 charge + 1 `provider_requests` + 1 poll job                                                     | `an_intent_with_no_session_confirms_exactly_as_before`                 |
+| 6 — merchant `/v1` confirm -> the same `409`, and the `Idempotency-Key` replay is the **stored** body, asserted byte-equal     | `the_merchant_confirm_is_refused_too_and_the_replay_is_the_stored_409` |
+| 7 — expire, create a second session, confirm -> `200` (the newest-row rule)                                                    | `a_second_session_after_an_expiry_makes_the_intent_payable_again`      |
 
 Unit (ADR-0011 classification and the verdict):
 `error::tests::a_closed_checkout_session_is_its_own_409_and_not_a_lifecycle_conflict`
@@ -133,18 +133,18 @@ the_horizon_is_closed_at_the_instant_it_names, an_unknown_status_is_ours_and_pag
 
 ### Guard-failure proofs (measured 2026-09-05)
 
-| # | Sabotage | Result |
-|---|---|---|
-| 1 | Delete `verdict(&session, OffsetDateTime::now_utc())?;` from `SessionGate::admit_confirm` | `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions)' --retries 0 -j 1 --no-fail-fast` -> **26 passed, 5 failed**. Cases **1** and **6** fail as the brief asks (`a_confirm_on_a_swept_session_is_refused_before_any_charge`, `the_merchant_confirm_is_refused_too_and_the_replay_is_the_stored_409`), and so do 2, 3 and 4. Cases **5 and 7 still pass**, which is what makes the sabotage precise rather than a blanket break |
-| 2 | Make `verdict` consult `status` alone — replace the `OPEN if now < session.expires_at` arm with a bare `OPEN => Ok(())` | Exactly **case 3** fails, 30/31 pass (`a_confirm_past_the_horizon_is_refused_by_the_read_and_writes_nothing`), and both `v1::return_trip` horizon units fail |
-| 3 | Restore | `sha256sum` of `return_trip.rs` back to `72914bae…`; `git status` shows only the intended files |
+| #   | Sabotage                                                                                                                | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Delete `verdict(&session, OffsetDateTime::now_utc())?;` from `SessionGate::admit_confirm`                               | `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions)' --retries 0 -j 1 --no-fail-fast` -> **26 passed, 5 failed**. Cases **1** and **6** fail as the brief asks (`a_confirm_on_a_swept_session_is_refused_before_any_charge`, `the_merchant_confirm_is_refused_too_and_the_replay_is_the_stored_409`), and so do 2, 3 and 4. Cases **5 and 7 still pass**, which is what makes the sabotage precise rather than a blanket break |
+| 2   | Make `verdict` consult `status` alone — replace the `OPEN if now < session.expires_at` arm with a bare `OPEN => Ok(())` | Exactly **case 3** fails, 30/31 pass (`a_confirm_past_the_horizon_is_refused_by_the_read_and_writes_nothing`), and both `v1::return_trip` horizon units fail                                                                                                                                                                                                                                                                                          |
+| 3   | Restore                                                                                                                 | `sha256sum` of `return_trip.rs` back to `72914bae…`; `git status` shows only the intended files                                                                                                                                                                                                                                                                                                                                                       |
 
 ### One existing case changed, and why
 
 `a_payer_confirming_between_the_read_and_the_write_keeps_the_session`
 (Claim 14g) **failed with `409` where it expected `200`** the first time this
 change was run. It opened its window by rewriting the session's stored
-`expires_at` into the past and *then* confirming — which the new rule refuses,
+`expires_at` into the past and _then_ confirming — which the new rule refuses,
 correctly. The window is now opened the other way round, with the instant the
 sweep carries (`due_for_expiry(now + 25h)`, which `expire_due`'s own doc
 offers: "a test can sweep a future instant instead of rewriting a stored
@@ -159,7 +159,7 @@ horizon with a rail still holding the payment. The case still fails if
 `docs/status.md` was **not edited** (the brief forbids it). Line 1379 today,
 verbatim:
 
-> | Checkout Sessions — `/v1/checkout/sessions` and `/v1/browser/checkout/*` (`vpay_api::v1::checkout_sessions`, `vpay_api::browser::checkout_sessions`) | 🟡 | **New 2026-09-04 (Step 9 lane 1).** A `checkout.session` (`cs_…`, migration `0028`) a merchant creates from its server against an existing `pi_…` — `create`/`retrieve`/`list`/`expire` on `/v1` (token-authenticated, `Idempotency-Key`, tenant-scoped), and three `GET`s on `/v1/browser/checkout` for the page. **Two payer credentials, not one** (D6): `client_secret` rides in the hosted `url`'s *fragment* and buys the intent's own `client_secret`; `return_token` rides in the return page's *query string* — it must, a fragment does not survive a rail's redirect — and buys the session and its intent **without** that credential. Every failure on both browser reads is the byte-identical uniform 404, including the tenancy case, and neither read renders the `url` (it carries the stronger credential in its fragment). `create` refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session — the last enforced by a **partial unique index**, not only by the pre-check. `expire` is a compare-and-swap with a `NOT EXISTS` live-charge guard in the same statement, so a session cannot be marked abandoned while a rail may still take the payment. The settlement transaction (`vpay_db::settlement`) flips `payment_status`/`status` in the **same commit** as the intent — `paid`/`complete` on success, `failed`/`expired` on a terminal decline. Proven by `backends/tests/integration/tests/checkout_sessions.rs` — **17 container-backed cases** against real Postgres, the real WireMock MTN rail and the shipping worker loop, with twelve recorded guard-failure proofs across lanes 1 and 1b (`docs/plans/step9-notes/lane-1.md` §5, `lane-1b.md` §5). Since **2026-09-04 (lane 1b)** the return trip is wired, sessions expire on their own, and both browser reads carry `merchant: { name }` — the member vpay's own checkout page reads when it is there. Two rules that were missing from those reads are now on the **read** itself and not on any sweep: past `expires_at` both answer the uniform 404 whatever the `status` (the `return_token` travels in a query string and therefore lands in a rail's logs, so the 24-hour horizon has to bound it), and the intent's `client_secret` is rendered only while `status = 'open'` (after settlement there is nothing left to confirm). A redirect confirm on an intent an open session drives no longer requires a `return_url` and ignores one that is sent — the page has none to send, and until this it answered `400`, so the hosted Orange flow could not complete at all. Still 🟡 and not ✅: **no real rail has taken a payment through a session** — every session ever driven end to end (lane 6's Cypress specs) settled against a WireMock host |
+> | Checkout Sessions — `/v1/checkout/sessions` and `/v1/browser/checkout/*` (`vpay_api::v1::checkout_sessions`, `vpay_api::browser::checkout_sessions`) | 🟡 | **New 2026-09-04 (Step 9 lane 1).** A `checkout.session` (`cs_…`, migration `0028`) a merchant creates from its server against an existing `pi_…` — `create`/`retrieve`/`list`/`expire` on `/v1` (token-authenticated, `Idempotency-Key`, tenant-scoped), and three `GET`s on `/v1/browser/checkout` for the page. **Two payer credentials, not one** (D6): `client_secret` rides in the hosted `url`'s _fragment_ and buys the intent's own `client_secret`; `return_token` rides in the return page's _query string_ — it must, a fragment does not survive a rail's redirect — and buys the session and its intent **without** that credential. Every failure on both browser reads is the byte-identical uniform 404, including the tenancy case, and neither read renders the `url` (it carries the stronger credential in its fragment). `create` refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session — the last enforced by a **partial unique index**, not only by the pre-check. `expire` is a compare-and-swap with a `NOT EXISTS` live-charge guard in the same statement, so a session cannot be marked abandoned while a rail may still take the payment. The settlement transaction (`vpay_db::settlement`) flips `payment_status`/`status` in the **same commit** as the intent — `paid`/`complete` on success, `failed`/`expired` on a terminal decline. Proven by `backends/tests/integration/tests/checkout_sessions.rs` — **17 container-backed cases** against real Postgres, the real WireMock MTN rail and the shipping worker loop, with twelve recorded guard-failure proofs across lanes 1 and 1b (`docs/plans/step9-notes/lane-1.md` §5, `lane-1b.md` §5). Since **2026-09-04 (lane 1b)** the return trip is wired, sessions expire on their own, and both browser reads carry `merchant: { name }` — the member vpay's own checkout page reads when it is there. Two rules that were missing from those reads are now on the **read** itself and not on any sweep: past `expires_at` both answer the uniform 404 whatever the `status` (the `return_token` travels in a query string and therefore lands in a rail's logs, so the 24-hour horizon has to bound it), and the intent's `client_secret` is rendered only while `status = 'open'` (after settlement there is nothing left to confirm). A redirect confirm on an intent an open session drives no longer requires a `return_url` and ignores one that is sent — the page has none to send, and until this it answered `400`, so the hosted Orange flow could not complete at all. Still 🟡 and not ✅: **no real rail has taken a payment through a session** — every session ever driven end to end (lane 6's Cypress specs) settled against a WireMock host |
 
 What is now true of it and is not said there: a confirm on an intent whose
 Checkout Session is not `open` is refused with a `409`
@@ -171,7 +171,7 @@ an intent whose expired session was replaced by a new open one, are
 unaffected. `backends/tests/integration/tests/checkout_sessions.rs` is now
 **31 container-backed cases**, not 17. `docs/flows/hosted-checkout.md`'s "Four
 things move a session, and only four" is still true — this change moves no
-session; it reads one. But its list of what the lifecycle is *for* now has a
+session; it reads one. But its list of what the lifecycle is _for_ now has a
 fifth consequence worth a sentence there: a session that is not `open` refuses
 the confirm, which is what makes `checkout.session.expired` a promise rather
 than a notification. `docs/flows/browser-checkout.md`'s "the credential ...
@@ -181,23 +181,23 @@ list. **None of those three files was edited**, per the brief.
 
 ## Measured (2026-09-05, this worktree, `DOCKER_HOST=unix:///run/user/1000/docker.sock`)
 
-| Command | Result |
-|---|---|
-| `cargo fmt --all -- --check` | clean |
-| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
-| `cargo nextest run -p vpay-db -p vpay-api -p vpay-worker -p vpay-core` | **465 passed, 0 skipped** |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(browser_checkout) \| binary(confirm_rails) \| binary(payment_intents) \| binary(postgres_smoke)' --retries 2 -j 1` | **92 passed, 0 skipped**, no retries consumed |
-| `just verify` | ok — `verify-errors: 15 error type(s), all classified`; `verify-status`, `verify-no-mocks`, `verify-sdk-parity` ok |
-| `just verify-ignored` | **1158 total, 42 test binaries, 0 ignored** (was 1147/42/0) |
-| `just test-doc` | **86 passed, 1 ignored** (unchanged; the ignored one is `sdks/rust`'s README block) |
-| `cargo xtask verify-docs` | production functions >= 80 lines back to **9**, the base's number — `error::public_message` briefly reached 87 and the sentence was moved onto `ClosedSession::message` |
+| Command                                                                                                                                                                                                 | Result                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all -- --check`                                                                                                                                                                            | clean                                                                                                                                                                   |
+| `cargo clippy --workspace --all-targets -- -D warnings`                                                                                                                                                 | clean                                                                                                                                                                   |
+| `cargo nextest run -p vpay-db -p vpay-api -p vpay-worker -p vpay-core`                                                                                                                                  | **465 passed, 0 skipped**                                                                                                                                               |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(checkout_sessions) \| binary(browser_checkout) \| binary(confirm_rails) \| binary(payment_intents) \| binary(postgres_smoke)' --retries 2 -j 1` | **92 passed, 0 skipped**, no retries consumed                                                                                                                           |
+| `just verify`                                                                                                                                                                                           | ok — `verify-errors: 15 error type(s), all classified`; `verify-status`, `verify-no-mocks`, `verify-sdk-parity` ok                                                      |
+| `just verify-ignored`                                                                                                                                                                                   | **1158 total, 42 test binaries, 0 ignored** (was 1147/42/0)                                                                                                             |
+| `just test-doc`                                                                                                                                                                                         | **86 passed, 1 ignored** (unchanged; the ignored one is `sdks/rust`'s README block)                                                                                     |
+| `cargo xtask verify-docs`                                                                                                                                                                               | production functions >= 80 lines back to **9**, the base's number — `error::public_message` briefly reached 87 and the sentence was moved onto `ClosedSession::message` |
 
 ## Not done
 
 - **Neither merchant SDK was touched, and neither needed to be.** Checked
   rather than assumed: `sdks/nodejs/src/errors.ts` declares
   `readonly code: string | undefined` and `sdks/stripe-js/src/errors.ts`
-  declares `code?: string | undefined` — neither enumerates *server* codes.
+  declares `code?: string | undefined` — neither enumerates _server_ codes.
   `CLIENT_ERROR_CODES` in `@vpay/stripe-js` is a closed set of codes the
   **client** originates, which this is not. So there is no closed union to
   extend and no `docs/sdks/parity.md` row to add, and ADR-0015's parity rule
@@ -211,8 +211,7 @@ list. **None of those three files was edited**, per the brief.
   applied all four in the commit that lands this work; see the "Landed" note
   at the end of this file.
 - **No migration, no schema change.** `postgres_smoke` was run anyway (its
-  migration-count assertion is the gate master last failed on) and passes at
-  29.
+  migration-count assertion is the gate master last failed on) and passes at 29.
 - **No real rail.** Every assertion here settled against a
   `wiremock/wiremock` container, like everything else in this repository.
 - **Nothing proves this in a browser.** `frontends/apps/checkout` already

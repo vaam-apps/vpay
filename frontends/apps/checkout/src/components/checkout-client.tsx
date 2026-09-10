@@ -12,30 +12,34 @@
  * 2026-09-06; the outcome screen now has a button and nothing else. What
  * remains of that machinery is `forward`, called from the button's handler.
  */
-'use client';
+"use client";
 
-import { loadStripe, type Stripe } from '@vaam-apps/vpay-stripe-js';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { loadStripe, type Stripe } from "@vaam-apps/vpay-stripe-js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Branding, CheckoutSettings } from '../config/settings';
-import { pickLocale, translator, type Locale } from '../i18n/index';
-import { BrowserCheckoutApi } from '../lib/api';
-import { CheckoutController } from '../lib/controller';
-import { decideEntry } from '../lib/entry';
-import { createFrameChannel, type FrameChannel } from '../lib/frame';
-import { rememberPublishableKey } from '../lib/link';
-import { forwardKindFor, forwardTarget } from '../lib/forward';
-import { INITIAL_STATE, type CheckoutState } from '../lib/machine';
-import { browserPageMemory } from '../lib/memory-idb';
-import { memoryRecordFor, pageMemoryFor, type PageMemoryRecord } from '../lib/memory';
-import { normalizeCameroonMsisdn } from '../lib/msisdn';
-import { CheckoutView } from './checkout-view';
+import type { Branding, CheckoutSettings } from "../config/settings";
+import { pickLocale, translator, type Locale } from "../i18n/index";
+import { BrowserCheckoutApi } from "../lib/api";
+import { CheckoutController } from "../lib/controller";
+import { decideEntry } from "../lib/entry";
+import { createFrameChannel, type FrameChannel } from "../lib/frame";
+import { rememberPublishableKey } from "../lib/link";
+import { forwardKindFor, forwardTarget } from "../lib/forward";
+import { INITIAL_STATE, type CheckoutState } from "../lib/machine";
+import { browserPageMemory } from "../lib/memory-idb";
+import {
+  memoryRecordFor,
+  pageMemoryFor,
+  type PageMemoryRecord,
+} from "../lib/memory";
+import { normalizeCameroonMsisdn } from "../lib/msisdn";
+import { CheckoutView } from "./checkout-view";
 
 export interface CheckoutClientProps {
   sessionId: string;
   /** `NEXT_PUBLIC_VPAY_API_URL` — the origin `/v1/browser/...` hangs off. */
   apiBaseUrl: string;
-  mode: 'hosted' | 'embedded';
+  mode: "hosted" | "embedded";
   /** Resolved server-side from `GET /v1/browser/checkout/origins`. Empty for a hosted page. */
   allowedOrigins: readonly string[];
   /** Chosen from `Accept-Language` on the server. The switch changes it here. */
@@ -65,7 +69,8 @@ export function CheckoutClient(props: CheckoutClientProps) {
    * needed one.
    */
   const { memory: pageMemory, offered: memoryOffered } = useMemo(
-    () => pageMemoryFor(props.settings.features.pageMemory, browserPageMemory()),
+    () =>
+      pageMemoryFor(props.settings.features.pageMemory, browserPageMemory()),
     [props.settings.features.pageMemory],
   );
 
@@ -127,24 +132,28 @@ export function CheckoutClient(props: CheckoutClientProps) {
       hasOpener: window.opener !== null && window.opener !== undefined,
     });
 
-    if (decision.kind === 'refused') {
+    if (decision.kind === "refused") {
       // REAL finding, not suppressed as a false positive: `decideEntry` reads
       // `window.location`/`document.referrer`, which a Next server render
       // cannot, so the first state is settled in an effect. Fixing it properly
       // means reshaping this page's entry state machine; that is not a lint
       // pass's change.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState({ name: 'refused', reason: 'embed_not_allowed', context: null });
+      setState({ name: "refused", reason: "embed_not_allowed", context: null });
       return;
     }
-    if (decision.kind === 'error') {
-      setState({ name: 'error', error: { code: decision.code } });
+    if (decision.kind === "error") {
+      setState({ name: "error", error: { code: decision.code } });
       return;
     }
 
     // Only the publishable key, and only so the return page can find it in
     // this tab. Never the secret — see `link.ts`.
-    rememberPublishableKey(window.sessionStorage, props.sessionId, decision.key);
+    rememberPublishableKey(
+      window.sessionStorage,
+      props.sessionId,
+      decision.key,
+    );
 
     let channel: FrameChannel | null = null;
     if (decision.parentOrigin !== null) {
@@ -158,7 +167,7 @@ export function CheckoutClient(props: CheckoutClientProps) {
       // report a height to an opener anyway.
       channel = createFrameChannel({
         win: window,
-        peer: 'opener',
+        peer: "opener",
         parentOrigin: decision.openerOrigin,
       });
     }
@@ -188,7 +197,7 @@ export function CheckoutClient(props: CheckoutClientProps) {
         // integration mistake, not a payer-facing failure. The thrown value
         // is not read: it is the one place in that package that throws, and
         // its message is not for a payer.
-        setState({ name: 'error', error: { code: 'error.unexpected' } });
+        setState({ name: "error", error: { code: "error.unexpected" } });
         return;
       }
       if (disposed) {
@@ -227,12 +236,12 @@ export function CheckoutClient(props: CheckoutClientProps) {
   ]);
 
   const destination = useMemo(() => {
-    if (state.name !== 'outcome') {
+    if (state.name !== "outcome") {
       return null;
     }
     return forwardTarget(
       state.context.session,
-      forwardKindFor(state.context.session, state.kind === 'succeeded'),
+      forwardKindFor(state.context.session, state.kind === "succeeded"),
     );
   }, [state]);
 
@@ -271,14 +280,14 @@ export function CheckoutClient(props: CheckoutClientProps) {
       // Normalised here as well as in the controller, and deliberately: what
       // is stored is the canonical `2376XXXXXXXX`, and a number the page
       // would refuse to send is a number it must not keep either.
-      rememberOnSubmit(normalizeCameroonMsisdn(raw), 'mtn_momo');
+      rememberOnSubmit(normalizeCameroonMsisdn(raw), "mtn_momo");
       void controllerRef.current?.submitMsisdn(raw);
     },
     [rememberOnSubmit],
   );
 
   const onStartRedirect = useCallback(() => {
-    const rail = state.name === 'ready_redirect' ? state.rail.code : null;
+    const rail = state.name === "ready_redirect" ? state.rail.code : null;
     rememberOnSubmit(null, rail);
     void controllerRef.current?.startRedirect();
   }, [rememberOnSubmit, state]);

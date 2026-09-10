@@ -33,11 +33,11 @@ At boot, after loading the key, the server calls
 does read-decide-write in **one transaction**, so N replicas booting on the
 same Secret rotate the record once between them. Three outcomes:
 
-| The `kid` in the Secret | What happens |
-|---|---|
-| already the active row | `ActivationOutcome::AlreadyActive` — **no row is written at all** |
-| new to this database | `Rotated { previous }` — the old row is retired with `expires_at = now() + 24 h`, the new one inserted, in one transaction |
-| a row this database has **already retired** | `DbError::SigningKeyRetired` → `Category::Configuration` → **exit 78** |
+| The `kid` in the Secret                     | What happens                                                                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| already the active row                      | `ActivationOutcome::AlreadyActive` — **no row is written at all**                                                          |
+| new to this database                        | `Rotated { previous }` — the old row is retired with `expires_at = now() + 24 h`, the new one inserted, in one transaction |
+| a row this database has **already retired** | `DbError::SigningKeyRetired` → `Category::Configuration` → **exit 78**                                                     |
 
 `oauth_signing_keys` holds **public halves only** — migration `0010` dropped
 `private_key_pem` deliberately. The private key exists only in the Secret.
@@ -49,7 +49,7 @@ just-retired key keeps verifying tokens it already signed. Access tokens live
 token that could still be in flight — the only property under test
 (`the_rotation_overlap_dwarfs_the_access_token_ttl_it_has_to_cover`). Neither
 number is configurable and neither is recorded in an ADR; whether 24 h is
-*right* is an open maintainer question in [../roadmap.md](../roadmap.md).
+_right_ is an open maintainer question in [../roadmap.md](../roadmap.md).
 
 ## 2. Rotating
 
@@ -139,8 +139,8 @@ was deliberately retired is a policy decision nobody has made
 window"). It returns `DbError::SigningKeyRetired { kid, retired_at }`, which
 classifies as `Category::Configuration`, which is exit **78**.
 
-The number is the point. 78 (`EX_CONFIG`) tells a supervisor *fix the
-deploy*; 69 (`EX_UNAVAILABLE`) tells it *wait for the database*. This failure
+The number is the point. 78 (`EX_CONFIG`) tells a supervisor _fix the
+deploy_; 69 (`EX_UNAVAILABLE`) tells it _wait for the database_. This failure
 never resolves by waiting, so a 69 here would be an infinite crash loop
 against a database that is perfectly healthy.
 
@@ -174,20 +174,20 @@ rotation-policy decision the code declined to make.
 ### If the image is also being rolled back
 
 `kubectl rollout undo` changes the image, not the Secret. If a deploy rotated
-the key *and* the image, undoing it leaves the new Secret with the old image
+the key _and_ the image, undoing it leaves the new Secret with the old image
 — which is fine — while undoing the Secret as well is the case above. And
 independently: **a migration that has run is not undone by an older image.**
 There are no down-migrations here. See [release.md](release.md) §5.
 
 ## 4. Related failures that look like this one
 
-| Symptom | Cause | Where |
-|---|---|---|
+| Symptom                                         | Cause                                                                | Where                                                                                                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | exit 78, "loading the OAuth signing key from …" | Secret missing, wrong key name inside it, or an unreadable file mode | `signingKey.defaultMode` is `0440`, not `0400` — an `fsGroup`ed Secret volume is owned `root:<fsGroup>` and UID 65532 needs the group bit. Chart README |
-| exit 78, not an RSA key / under 2048 bits | wrong key material | `LoadedSigningKey::from_file` refuses both, without echoing the PEM |
-| exit 78 naming a `kid` and a retirement instant | **this runbook, §3** | |
-| exit 69 | the database, genuinely | Not a key problem. Wait, or look at Postgres |
-| Every `/v1` call 401s, nothing in the logs | issuer/audience mismatch, not a key problem | [../flows/merchant-auth.md](../flows/merchant-auth.md) |
+| exit 78, not an RSA key / under 2048 bits       | wrong key material                                                   | `LoadedSigningKey::from_file` refuses both, without echoing the PEM                                                                                     |
+| exit 78 naming a `kid` and a retirement instant | **this runbook, §3**                                                 |                                                                                                                                                         |
+| exit 69                                         | the database, genuinely                                              | Not a key problem. Wait, or look at Postgres                                                                                                            |
+| Every `/v1` call 401s, nothing in the logs      | issuer/audience mismatch, not a key problem                          | [../flows/merchant-auth.md](../flows/merchant-auth.md)                                                                                                  |
 
 ## 5. What is unproven here
 

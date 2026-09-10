@@ -1,4 +1,4 @@
-'use server';
+"use server";
 
 /**
  * The four things a staff member can actually do: sign in, present a code,
@@ -28,21 +28,26 @@
  * adding the two lines; there is no wrapper, because a wrapper around a
  * `'use server'` export changes what Next registers.
  */
-import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 
-import { dashboardConfig } from '../config/runtime';
-import type { FormState } from '../form-state';
-import { postForm, type ApiFailure, type LoginResponse, type TotpResponse } from './api';
+import { dashboardConfig } from "../config/runtime";
+import type { FormState } from "../form-state";
+import {
+  postForm,
+  type ApiFailure,
+  type LoginResponse,
+  type TotpResponse,
+} from "./api";
 import {
   COOKIE_ATTRIBUTES,
   ENROLMENT_COOKIE,
   ENROLMENT_MAX_AGE_SECONDS,
   SESSION_MAX_AGE_SECONDS,
-} from './cookies';
-import { originRefusal } from './csrf';
-import { decodePendingEnrolment, encodePendingEnrolment } from './enrolment';
-import { completeAuthorizationCode } from './oauth';
+} from "./cookies";
+import { originRefusal } from "./csrf";
+import { decodePendingEnrolment, encodePendingEnrolment } from "./enrolment";
+import { completeAuthorizationCode } from "./oauth";
 import {
   clearSessionCookie,
   HOME_PATH,
@@ -51,7 +56,7 @@ import {
   sessionToken,
   setSessionCookie,
   TOTP_PATH,
-} from './session';
+} from "./session";
 
 /** A refusal, in the shape a form renders. */
 function shown(failure: ApiFailure): FormState {
@@ -60,7 +65,7 @@ function shown(failure: ApiFailure): FormState {
 
 /** The sentence a deployment with no registration shows instead of a form. */
 const UNCONFIGURED =
-  'This deployment has no dashboard client registered, so it can sign nobody in. See the container log.';
+  "This deployment has no dashboard client registered, so it can sign nobody in. See the container log.";
 
 /**
  * A single string field out of a `FormData`, trimmed.
@@ -72,7 +77,7 @@ const UNCONFIGURED =
  */
 function field(form: FormData, name: string): string {
   const value = form.get(name);
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === "string" ? value.trim() : "";
 }
 
 /**
@@ -82,7 +87,10 @@ function field(form: FormData, name: string): string {
  * sealed enrolment secret with it when this is a first sign-in. Neither
  * value is returned to the caller: `FormState` is what a browser reads.
  */
-export async function signIn(_previous: FormState, form: FormData): Promise<FormState> {
+export async function signIn(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
   // Issue #88 item 4. First, before anything is read out of the form and
   // before any cookie is touched: a cross-origin caller must not be able to
   // spend a rate-limit unit, let alone a credential.
@@ -96,22 +104,33 @@ export async function signIn(_previous: FormState, form: FormData): Promise<Form
     return { error: UNCONFIGURED, requestId: null };
   }
 
-  const email = field(form, 'email');
-  const password = form.get('password');
-  if (email.length === 0 || typeof password !== 'string' || password.length === 0) {
+  const email = field(form, "email");
+  const password = form.get("password");
+  if (
+    email.length === 0 ||
+    typeof password !== "string" ||
+    password.length === 0
+  ) {
     // Refused here rather than at vpay, which would spend an argon2id
     // verification on an empty string. The message says nothing about which
     // of the two is missing for the same reason vpay's does not.
-    return { error: 'Enter your work email and your password.', requestId: null };
+    return {
+      error: "Enter your work email and your password.",
+      requestId: null,
+    };
   }
 
-  const result = await postForm<LoginResponse>(config.apiBaseUrl, '/dash/v1/staff/login', {
-    email,
-    // NOT trimmed: a password's leading or trailing space is part of it, and
-    // trimming one here would refuse a password this deployment accepted when
-    // `staff add` hashed it.
-    password,
-  });
+  const result = await postForm<LoginResponse>(
+    config.apiBaseUrl,
+    "/dash/v1/staff/login",
+    {
+      email,
+      // NOT trimmed: a password's leading or trailing space is part of it, and
+      // trimming one here would refuse a password this deployment accepted when
+      // `staff add` hashed it.
+      password,
+    },
+  );
   if (!result.ok) {
     return shown(result.failure);
   }
@@ -122,9 +141,9 @@ export async function signIn(_previous: FormState, form: FormData): Promise<Form
   const sealed = result.value.enrolment;
   const otpauth = result.value.otpauth_uri;
   if (
-    result.value.next === 'totp_enrolment' &&
-    typeof sealed === 'string' &&
-    typeof otpauth === 'string'
+    result.value.next === "totp_enrolment" &&
+    typeof sealed === "string" &&
+    typeof otpauth === "string"
   ) {
     store.set(ENROLMENT_COOKIE, encodePendingEnrolment({ sealed, otpauth }), {
       ...COOKIE_ATTRIBUTES,
@@ -136,7 +155,7 @@ export async function signIn(_previous: FormState, form: FormData): Promise<Form
     // only one that may ever authenticate an enrolled account — but a
     // credential blob living in a browser for no reason is one this app can
     // simply not leave behind.
-    store.set(ENROLMENT_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+    store.set(ENROLMENT_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
   }
 
   redirect(TOTP_PATH);
@@ -150,7 +169,10 @@ export async function signIn(_previous: FormState, form: FormData): Promise<Form
  * compare-and-swap. A caller that sends one for an already-enrolled account
  * has it ignored, which is why this is safe to send whenever it is present.
  */
-export async function submitTotp(_previous: FormState, form: FormData): Promise<FormState> {
+export async function submitTotp(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
   // Issue #88 item 4. First, before anything is read out of the form and
   // before any cookie is touched: a cross-origin caller must not be able to
   // spend a rate-limit unit, let alone a credential.
@@ -169,9 +191,12 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
     redirect(LOGIN_PATH);
   }
 
-  const code = field(form, 'code');
+  const code = field(form, "code");
   if (code.length === 0) {
-    return { error: 'Enter the six-digit code from your authenticator app.', requestId: null };
+    return {
+      error: "Enter the six-digit code from your authenticator app.",
+      requestId: null,
+    };
   }
 
   const store = await cookies();
@@ -182,7 +207,7 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
 
   const result = await postForm<TotpResponse>(
     config.apiBaseUrl,
-    '/dash/v1/staff/totp',
+    "/dash/v1/staff/totp",
     body,
     { sessionToken: token },
   );
@@ -212,7 +237,7 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
 
   // Enrolment is committed; the blob has no further use and outliving the
   // request is the only thing it could do wrong.
-  store.set(ENROLMENT_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+  store.set(ENROLMENT_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
 
   if (result.value.password_change_required) {
     // No token is obtained yet, and none can be: `/authorize` refuses a
@@ -241,7 +266,10 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
  * and this one survives on purpose, which is why the redirect below still
  * works.
  */
-export async function changePassword(_previous: FormState, form: FormData): Promise<FormState> {
+export async function changePassword(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
   // Issue #88 item 4. First, before anything is read out of the form and
   // before any cookie is touched: a cross-origin caller must not be able to
   // spend a rate-limit unit, let alone a credential.
@@ -260,31 +288,34 @@ export async function changePassword(_previous: FormState, form: FormData): Prom
     redirect(LOGIN_PATH);
   }
 
-  const current = form.get('current_password');
-  const next = form.get('new_password');
-  const confirm = form.get('confirm_password');
-  if (typeof current !== 'string' || current.length === 0) {
+  const current = form.get("current_password");
+  const next = form.get("new_password");
+  const confirm = form.get("confirm_password");
+  if (typeof current !== "string" || current.length === 0) {
     // Refused here rather than at vpay for `signIn`'s reason — an empty
     // string must not cost an argon2id verification — and, unlike the pair
     // check below, this is NOT a rule this app owns: vpay refuses an absent
     // current password with the same `401` it answers a wrong one. What this
     // buys is a sentence that says which field is empty, which vpay
     // deliberately will not.
-    return { error: 'Enter your current password.', requestId: null };
+    return { error: "Enter your current password.", requestId: null };
   }
-  if (typeof next !== 'string' || next.length === 0) {
-    return { error: 'Choose a new password.', requestId: null };
+  if (typeof next !== "string" || next.length === 0) {
+    return { error: "Choose a new password.", requestId: null };
   }
   if (next !== confirm) {
     // Checked here because it is the one rule vpay has no way to check: it
     // sees one password, and a mistyped pair would be a password nobody can
     // reproduce.
-    return { error: 'The two passwords do not match.', requestId: null };
+    return { error: "The two passwords do not match.", requestId: null };
   }
 
-  const result = await postForm<{ password_change_required: boolean; other_sessions_revoked: number }>(
+  const result = await postForm<{
+    password_change_required: boolean;
+    other_sessions_revoked: number;
+  }>(
     config.apiBaseUrl,
-    '/dash/v1/staff/password',
+    "/dash/v1/staff/password",
     // NOT trimmed, either of them, for the reason `signIn` states: a
     // password's leading or trailing space is part of it.
     { current_password: current, new_password: next },
@@ -349,7 +380,7 @@ export async function signOut(): Promise<void> {
   if (config !== null && token !== null) {
     await postForm<{ signed_out: boolean }>(
       config.apiBaseUrl,
-      '/dash/v1/staff/logout',
+      "/dash/v1/staff/logout",
       {},
       { sessionToken: token },
     );

@@ -140,7 +140,9 @@ async function recordedDelivery(
     const body = request.body ?? "";
     let namesThisIntent = false;
     try {
-      const parsed = JSON.parse(body) as { data?: { object?: { id?: string } } };
+      const parsed = JSON.parse(body) as {
+        data?: { object?: { id?: string } };
+      };
       namesThisIntent = parsed.data?.object?.id === paymentIntentId;
     } catch {
       namesThisIntent = false;
@@ -219,10 +221,7 @@ describe("a delivered webhook, through the real stripe package", () => {
       // worth anything: a verifier that accepted everything would also have
       // accepted the delivery above. One byte of the payload is changed and
       // the same header must now be refused.
-      const tampered = delivered.body.replace(
-        '"amount"',
-        '"amount_tampered"',
-      );
+      const tampered = delivered.body.replace('"amount"', '"amount_tampered"');
       expect(tampered).not.toBe(delivered.body);
       expect(() =>
         stripe.webhooks.constructEvent(

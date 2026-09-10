@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { Dialog } from './dialog';
+import { Dialog } from "./dialog";
 
-describe('Dialog', () => {
-  it('opens from its trigger and closes from Dialog.Close', () => {
+describe("Dialog", () => {
+  it("opens from its trigger and closes from Dialog.Close", () => {
     const onOpenChange = vi.fn();
     const { unmount } = render(
       <Dialog.Root onOpenChange={onOpenChange}>
@@ -12,18 +12,20 @@ describe('Dialog', () => {
         <Dialog.Portal>
           <Dialog.Popup>
             <Dialog.Title>Sign-in failed</Dialog.Title>
-            <Dialog.Description>Check the code and try again.</Dialog.Description>
+            <Dialog.Description>
+              Check the code and try again.
+            </Dialog.Description>
             <Dialog.Close>Dismiss</Dialog.Close>
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>,
     );
 
-    expect(screen.queryByText('Sign-in failed')).toBeNull();
-    fireEvent.click(screen.getByText('Open'));
-    expect(screen.getByRole('dialog', { name: 'Sign-in failed' })).toBeTruthy();
+    expect(screen.queryByText("Sign-in failed")).toBeNull();
+    fireEvent.click(screen.getByText("Open"));
+    expect(screen.getByRole("dialog", { name: "Sign-in failed" })).toBeTruthy();
 
-    fireEvent.click(screen.getByText('Dismiss'));
+    fireEvent.click(screen.getByText("Dismiss"));
     expect(onOpenChange).toHaveBeenCalledWith(false, expect.anything());
     unmount();
   });
@@ -36,7 +38,7 @@ describe('Dialog', () => {
    * is the one that fails if someone later swaps the primitive out for
    * daisyUI's CSS-only `modal` markup, which has neither.
    */
-  it('moves focus into the popup when it opens', async () => {
+  it("moves focus into the popup when it opens", async () => {
     const { unmount } = render(
       <Dialog.Root defaultOpen>
         <Dialog.Portal>
@@ -48,14 +50,14 @@ describe('Dialog', () => {
         </Dialog.Portal>
       </Dialog.Root>,
     );
-    const popup = screen.getByRole('dialog', { name: 'Sign-in failed' });
+    const popup = screen.getByRole("dialog", { name: "Sign-in failed" });
     await waitFor(() => {
       expect(popup.contains(document.activeElement)).toBe(true);
     });
     unmount();
   });
 
-  it('closes on Escape', () => {
+  it("closes on Escape", () => {
     const onOpenChange = vi.fn();
     const { unmount } = render(
       <Dialog.Root defaultOpen onOpenChange={onOpenChange}>
@@ -67,9 +69,9 @@ describe('Dialog', () => {
         </Dialog.Portal>
       </Dialog.Root>,
     );
-    expect(screen.getByRole('dialog', { name: 'Sign-in failed' })).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Sign-in failed" })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(onOpenChange).toHaveBeenCalledWith(false, expect.anything());
     unmount();
   });

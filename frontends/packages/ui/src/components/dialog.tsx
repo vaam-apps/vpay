@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { Dialog as BaseDialog } from '@base-ui/react/dialog';
+import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
 /**
  * A modal dialog.
@@ -17,7 +17,9 @@ import { cn } from '../cn';
 export const DialogRoot = BaseDialog.Root;
 export const DialogTrigger = BaseDialog.Trigger;
 
-export type DialogPortalProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Portal>;
+export type DialogPortalProps = React.ComponentPropsWithoutRef<
+  typeof BaseDialog.Portal
+>;
 
 export function DialogPortal({ children, ...rest }: DialogPortalProps) {
   return (
@@ -28,22 +30,41 @@ export function DialogPortal({ children, ...rest }: DialogPortalProps) {
   );
 }
 
-export type DialogPopupProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Popup>;
+export type DialogPopupProps = React.ComponentPropsWithoutRef<
+  typeof BaseDialog.Popup
+>;
 
 export function DialogPopup({ className, ...rest }: DialogPopupProps) {
-  return <BaseDialog.Popup className={cn('modal-box', className)} {...rest} />;
+  return <BaseDialog.Popup className={cn("modal-box", className)} {...rest} />;
 }
 
-export type DialogTitleProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Title>;
+export type DialogTitleProps = React.ComponentPropsWithoutRef<
+  typeof BaseDialog.Title
+>;
 
 export function DialogTitle({ className, ...rest }: DialogTitleProps) {
-  return <BaseDialog.Title className={cn('text-lg font-semibold', className)} {...rest} />;
+  return (
+    <BaseDialog.Title
+      className={cn("text-lg font-semibold", className)}
+      {...rest}
+    />
+  );
 }
 
-export type DialogDescriptionProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Description>;
+export type DialogDescriptionProps = React.ComponentPropsWithoutRef<
+  typeof BaseDialog.Description
+>;
 
-export function DialogDescription({ className, ...rest }: DialogDescriptionProps) {
-  return <BaseDialog.Description className={cn('text-sm opacity-70', className)} {...rest} />;
+export function DialogDescription({
+  className,
+  ...rest
+}: DialogDescriptionProps) {
+  return (
+    <BaseDialog.Description
+      className={cn("text-sm opacity-70", className)}
+      {...rest}
+    />
+  );
 }
 
 export const DialogClose = BaseDialog.Close;

@@ -7,16 +7,16 @@ payment to a terminal state — or to a human.
 
 Implemented in `vpay_worker::poll_delay`, tested for monotonicity.
 
-| Attempt | Delay |
-|---|---|
-| 0–5 | 10s, 20s, 30s, 45s, 60s, 90s |
-| 6–19 | 120s |
-| 20+ | 15 min, out to 24 hours |
+| Attempt | Delay                        |
+| ------- | ---------------------------- |
+| 0–5     | 10s, 20s, 30s, 45s, 60s, 90s |
+| 6–19    | 120s                         |
+| 20+     | 15 min, out to 24 hours      |
 
 ## Timers assert nothing
 
-**At `prompt_ttl_seconds` (default 900) still pending.** The *prompt* expired;
-the *transaction* did not. Set `prompt_expired_at`, clear the intent's
+**At `prompt_ttl_seconds` (default 900) still pending.** The _prompt_ expired;
+the _transaction_ did not. Set `prompt_expired_at`, clear the intent's
 `next_action`, emit `payment_intent.processing` with `expired: true` so the
 merchant's UI can stop saying "check your phone". **The intent stays
 `processing`. The charge stays live and stays polled.**
@@ -49,7 +49,7 @@ POST /provider/{code}/callback
 Mobile-money callbacks are typically unauthenticated and unsigned, unreliable,
 and sometimes duplicated. The authenticated status query is the only thing that
 moves money in the ledger. `parse_callback` returns identifiers only, so the
-port makes it *impossible* for an adapter to hand the core a status it read off
+port makes it _impossible_ for an adapter to hand the core a status it read off
 an unauthenticated request.
 
 The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
@@ -94,7 +94,7 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   charge parked further out; there is no rate limit, and
   [reference/vpay-api.md](../reference/vpay-api.md) states the true bound.
   **Two statements, in one transaction** (`enqueue_in_tx`, `ON CONFLICT DO
-  NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
+NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
   behavioural cost, stated 2026-09-04 (Step 8, lane H): a rail calling back
   while the charge sits on the ladder's first rung no longer settles it early —
   it settles at that rung, up to ten seconds later than before.** Eleven cases
@@ -113,7 +113,7 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   `RecoveryPolicy::unresolved_after` (default 24 h, measured from
   `charges.created_at`, which is written before the rail is called) moves the
   charge to `unresolved` and fails the job with `JobError::Exhausted` →
-  `RetryAfter { delay: 1 h, alert: true }`: an hourly re-poll *and* an alert,
+  `RetryAfter { delay: 1 h, alert: true }`: an hourly re-poll _and_ an alert,
   never a dead letter
   (`a_charge_past_the_horizon_is_unresolved_polled_hourly_and_alerted_never_parked`).
   **The escalation does not depend on the rail answering.** A status query that
@@ -142,7 +142,7 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   the horizon keeps its own classification and is parked or retried as itself,
   because a composite re-deciding a leaf's category is precisely what ADR-0011
   forbids (`a_poisoned_job_past_the_horizon_is_parked_rather_than_rescheduled_hourly`).
-- **What the horizon does *not* guarantee: that a 25-hour-old charge is
+- **What the horizon does _not_ guarantee: that a 25-hour-old charge is
   resent.** When the recovery table wants to resubmit a charge that is already
   past the horizon, the resubmit row commits first and the escalation second,
   in two transactions — and the escalation moves the charge to `unresolved`, so
@@ -190,9 +190,9 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   tested over the whole cartesian product, and neither call site is reached by
   any test (one is unreachable behind the terminal guard, the other needs a
   real multi-worker race). Why the worker's code is shaped the way it is — the orderings inside one poll,
-the two lease reapers, the bounded drain — is
-[../reference/vpay-worker.md](../reference/vpay-worker.md); the queue's own
-schema reasoning is [../reference/vpay-db.md](../reference/vpay-db.md).
+  the two lease reapers, the bounded drain — is
+  [../reference/vpay-worker.md](../reference/vpay-worker.md); the queue's own
+  schema reasoning is [../reference/vpay-db.md](../reference/vpay-db.md).
 
 See [../status.md](../status.md).
 

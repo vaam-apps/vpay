@@ -14,25 +14,25 @@ the re-run.
 
 ## What changed
 
-| file | change |
-|---|---|
-| `justfile` | new `cratestack_version := "0.11.1"` and a new `check-schema` recipe; `verify` gains it as the **sixth** gate, between `verify-links` and the advisory `verify-docs`; the file header and the `verify` preamble renumber five→six, sixth→seventh, seventh→eighth |
-| `.github/workflows/ci.yml` | `self-checks` gains four steps: pinned `just`, read the version pin back out of the justfile, the upstream install action pinned by commit SHA, `just check-schema` |
-| `docs/status.md` | the `schemas/*.cstack` row and the "CrateStack" section: the hand-run transcript is struck through and replaced by the gate; the CLI version, the real doc URLs, and the three mutations |
-| `schemas/vpay.cstack` | **comments only.** Its header carried the same two stale claims (`cratestack.dev/docs 404s publicly`, `Verified against CrateStack 0.10.1`) and would have contradicted `docs/status.md` the moment that was corrected. No declaration was touched |
+| file                       | change                                                                                                                                                                                                                                                           |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `justfile`                 | new `cratestack_version := "0.11.1"` and a new `check-schema` recipe; `verify` gains it as the **sixth** gate, between `verify-links` and the advisory `verify-docs`; the file header and the `verify` preamble renumber five→six, sixth→seventh, seventh→eighth |
+| `.github/workflows/ci.yml` | `self-checks` gains four steps: pinned `just`, read the version pin back out of the justfile, the upstream install action pinned by commit SHA, `just check-schema`                                                                                              |
+| `docs/status.md`           | the `schemas/*.cstack` row and the "CrateStack" section: the hand-run transcript is struck through and replaced by the gate; the CLI version, the real doc URLs, and the three mutations                                                                         |
+| `schemas/vpay.cstack`      | **comments only.** Its header carried the same two stale claims (`cratestack.dev/docs 404s publicly`, `Verified against CrateStack 0.10.1`) and would have contradicted `docs/status.md` the moment that was corrected. No declaration was touched               |
 
 `docs/flows/*.md` Status sections: **none changed, and this was checked, not
 assumed.** `grep -rn -i 'cratestack\|cstack' docs/flows/` matches only
 [../../flows/ledger.md](../../flows/ledger.md) and
 [../../flows/configuration.md](../../flows/configuration.md), and in both the
-mention is about what the `.cstack` *grammar cannot express* (cross-column
+mention is about what the `.cstack` _grammar cannot express_ (cross-column
 CHECKs) rather than about whether the file parses. Neither Status section
 makes a claim this gate could falsify.
 
 No Rust source changed, so `just fmt-check` and `just clippy` have nothing new
 to say. `.xtask/src/main.rs`'s module doc still opens "Five of these commands
 are the gates `just verify` runs" — that stays literally true (five of the
-*xtask commands* are gates; the sixth gate is not an xtask command) and was
+_xtask commands_ are gates; the sixth gate is not an xtask command) and was
 deliberately left alone rather than edited into a sentence about a recipe that
 lives elsewhere.
 
@@ -145,7 +145,7 @@ exit=1
 
 **Reverted.** One observation worth recording rather than smoothing over: the
 CLI's caret points at the wrong place (`schemas/vpay.cstack:193:66`, inside a
-*comment* thirteen lines below the offending field). The message names the
+_comment_ thirteen lines below the offending field). The message names the
 right model and the right field, so the gate is usable, but the span is not
 trustworthy — the same class of misleading pointer the schema's header already
 warns about for column-aligned fields.
@@ -229,7 +229,7 @@ Four decisions in those twelve lines, each with a reason:
    `taiki-e/install-action` and `dtolnay/rust-toolchain`.
 3. **The version pin lives in one file.** `cratestack_version` is a justfile
    variable and the workflow reads it back with `just --evaluate
-   cratestack_version` — the same trick the Rust jobs already use to read the
+cratestack_version` — the same trick the Rust jobs already use to read the
    compiler channel out of `rust-toolchain.toml`. Writing `0.11.1` in both
    files would drift silently: CI would keep passing against a release the
    local gate had stopped using.
@@ -245,13 +245,13 @@ matters only if this job ever moves to a musl runner.
 
 ## Gate results before reporting
 
-| command | result |
-|---|---|
-| `just verify` | **ok**, six gates, on this tree |
-| `just check-schema` alone | **ok** |
-| `just docs-check` | **ok** (`verify-status` + `verify-links`) |
-| `actionlint .github/workflows/ci.yml` | **clean**, exit 0 (also clean over `.github/workflows/*.yml`) |
-| `just fmt-check` | **ok** — no Rust file changed in this branch, so this proves only that nothing regressed |
+| command                               | result                                                                                   |
+| ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `just verify`                         | **ok**, six gates, on this tree                                                          |
+| `just check-schema` alone             | **ok**                                                                                   |
+| `just docs-check`                     | **ok** (`verify-status` + `verify-links`)                                                |
+| `actionlint .github/workflows/ci.yml` | **clean**, exit 0 (also clean over `.github/workflows/*.yml`)                            |
+| `just fmt-check`                      | **ok** — no Rust file changed in this branch, so this proves only that nothing regressed |
 
 ## The doc URLs, checked rather than repeated
 
@@ -259,14 +259,14 @@ matters only if this job ever moves to a musl runner.
 reference was found`. Half of that is still true. HTTP status codes, taken
 2026-09-05:
 
-| URL | status |
-|---|---|
-| `https://cratestack.dev/docs` | **404** |
-| `https://cratestack.dev/getting-started/quickstart` | 200 |
-| `https://cratestack.dev/tooling/cli-install` | 200 |
-| `https://cratestack.dev/tooling/schema-diff` | 200 |
-| `https://cratestack.dev/reference/field-attributes` | 200 |
-| `https://cratestack.dev/reference/scalars` | 200 |
+| URL                                                 | status  |
+| --------------------------------------------------- | ------- |
+| `https://cratestack.dev/docs`                       | **404** |
+| `https://cratestack.dev/getting-started/quickstart` | 200     |
+| `https://cratestack.dev/tooling/cli-install`        | 200     |
+| `https://cratestack.dev/tooling/schema-diff`        | 200     |
+| `https://cratestack.dev/reference/field-attributes` | 200     |
+| `https://cratestack.dev/reference/scalars`          | 200     |
 
 The site's own navigation lists sections under `/overview/*`,
 `/getting-started/*`, `/guides/*`, `/architecture/*`, `/tooling/*` and
@@ -302,7 +302,7 @@ names 0.11.1 as well.
 - **Nothing generates from the schema.** `schemas/vpay.cstack` is still
   excluded from the build graph. `cratestack check` parses and type-checks it;
   it does not emit a migration, a server, or a client, and `cratestack migrate
-  diff` has still never been run against a vpay Postgres. Nothing compares this
+diff` has still never been run against a vpay Postgres. Nothing compares this
   file to `backends/migrations/*.sql`, which remain the authoritative schema.
 - **`cratestack diff` is not wired in.** <https://cratestack.dev/tooling/schema-diff>
   describes a command that classifies a schema change as breaking / additive /
@@ -331,12 +331,12 @@ renumbered past the other.
 `git rebase origin/master` conflicted in three files, and the resolution kept
 **both** gates everywhere rather than choosing one:
 
-| file | conflict | resolution |
-|---|---|---|
-| `justfile` | both branches rewrote the `verify` recipe line and its preamble | `verify: … verify-links verify-npm-scope check-schema verify-docs`; both rationale paragraphs kept, `check-schema` renumbered to seventh; the header's invariant list gained the npm-scope bullet it never had, so "Seven invariants" counts seven bullets |
-| `.github/workflows/ci.yml` | both branches added steps after `verify-links` in `self-checks` | `verify-npm-scope` (master's, sixth) then this branch's four steps (`just`, the version pin, the install action, `just check-schema`), seventh. One `just` install step in the job, not two |
-| `docs/status.md` | both branches rewrote the "which gate is which number" paragraph | master's whole npm-scope block kept verbatim; the running count now reads fifth `verify-links`, sixth `verify-npm-scope`, seventh `check-schema`, eighth (opt-in) `verify-citations` |
-| `.xtask/src/main.rs` | both branches rewrote the module doc's gate count | "`just verify` runs seven gates… Six of them are commands here; the seventh, `check-schema`, is a justfile recipe" |
+| file                       | conflict                                                         | resolution                                                                                                                                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `justfile`                 | both branches rewrote the `verify` recipe line and its preamble  | `verify: … verify-links verify-npm-scope check-schema verify-docs`; both rationale paragraphs kept, `check-schema` renumbered to seventh; the header's invariant list gained the npm-scope bullet it never had, so "Seven invariants" counts seven bullets |
+| `.github/workflows/ci.yml` | both branches added steps after `verify-links` in `self-checks`  | `verify-npm-scope` (master's, sixth) then this branch's four steps (`just`, the version pin, the install action, `just check-schema`), seventh. One `just` install step in the job, not two                                                                |
+| `docs/status.md`           | both branches rewrote the "which gate is which number" paragraph | master's whole npm-scope block kept verbatim; the running count now reads fifth `verify-links`, sixth `verify-npm-scope`, seventh `check-schema`, eighth (opt-in) `verify-citations`                                                                       |
+| `.xtask/src/main.rs`       | both branches rewrote the module doc's gate count                | "`just verify` runs seven gates… Six of them are commands here; the seventh, `check-schema`, is a justfile recipe"                                                                                                                                         |
 
 `AGENTS.md` conflicted with neither side and was **wrong on both**: PR #39
 merged still saying "`just verify` is **five** gates" and naming
@@ -348,20 +348,20 @@ this branch — seven gates named individually, `verify-citations` eighth.
 Re-run in this worktree, `CARGO_BUILD_JOBS=4`, `cratestack 0.11.1` on `PATH`,
 `just 1.45.0`:
 
-| command | result |
-|---|---|
-| `just verify` | **ok, exit 0 — seven gates**: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types / 14 `#[from]`), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (684 links in 119 files), `verify-npm-scope` (2 publishable, 1 private), `check-schema` (12 model/enum declarations, datasource present, `schema OK`), then the advisory `verify-docs` |
-| `just docs-check` | **ok**, exit 0 |
-| `just fmt-check` | **ok**, exit 0 |
-| `cargo test -p xtask` | **144 passed, 0 failed, 0 ignored** |
-| `actionlint .github/workflows/ci.yml` | **clean**, exit 0 |
+| command                               | result                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                         | **ok, exit 0 — seven gates**: `verify-no-mocks`, `verify-status` (1 unimplemented item), `verify-errors` (15 types / 14 `#[from]`), `verify-sdk-parity` (342 proving tests, 26 dated gaps), `verify-links` (684 links in 119 files), `verify-npm-scope` (2 publishable, 1 private), `check-schema` (12 model/enum declarations, datasource present, `schema OK`), then the advisory `verify-docs` |
+| `just docs-check`                     | **ok**, exit 0                                                                                                                                                                                                                                                                                                                                                                                    |
+| `just fmt-check`                      | **ok**, exit 0                                                                                                                                                                                                                                                                                                                                                                                    |
+| `cargo test -p xtask`                 | **144 passed, 0 failed, 0 ignored**                                                                                                                                                                                                                                                                                                                                                               |
+| `actionlint .github/workflows/ci.yml` | **clean**, exit 0                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### The two decisive mutations, re-run after the rebase
 
-| mutation | `just verify` |
-|---|---|
-| `tags String[]` added to `model PaymentIntent` | **exit 1** at `check-schema`, with 0.11.1's list-arity refusal naming `PaymentIntent.tags`; `verify-docs` never ran (`grep -c "verify-docs: a report"` = 0) |
-| `schemas/vpay.cstack` truncated to **0 bytes** | **exit 1** at `check-schema`'s datasource assertion. The control that makes this measurement mean something: `cratestack check --schema schemas/vpay.cstack` on the *same* empty file printed `schema OK` and exited **0** |
+| mutation                                       | `just verify`                                                                                                                                                                                                              |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tags String[]` added to `model PaymentIntent` | **exit 1** at `check-schema`, with 0.11.1's list-arity refusal naming `PaymentIntent.tags`; `verify-docs` never ran (`grep -c "verify-docs: a report"` = 0)                                                                |
+| `schemas/vpay.cstack` truncated to **0 bytes** | **exit 1** at `check-schema`'s datasource assertion. The control that makes this measurement mean something: `cratestack check --schema schemas/vpay.cstack` on the _same_ empty file printed `schema OK` and exited **0** |
 
 Both were reverted; `schemas/vpay.cstack` is byte-identical to its committed
 state (`sha256 3849277…fe616`) and `git status --porcelain` is empty.

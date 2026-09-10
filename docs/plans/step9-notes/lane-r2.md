@@ -15,16 +15,16 @@ One commit per finding, each naming it.
 
 ## What landed
 
-| # | Commit | What it was | What it is now |
-|---|---|---|---|
-| 2 | `cfdc610` | `README.md:211-215` said the MTN intents are EUR and the Orange ones XAF | Mirrors `docs/runbooks/demo.md` §"One currency, and what it is not saying": both rails settle XAF **in the demo overlay only**, MTN's real sandbox rejects XAF, `config/application.yml` keeps `mtn_momo` on EUR |
-| 3 | `ec0b348` | `examples/shop/src/server/store/types.ts:13-14`, `prisma-store.ts:5-7` and `examples/shop/README.md:144` said `PrismaShopStore` "is exercised by `just demo` and lane 6's Cypress specs" | All three say what is true: verified by hand on 2026-09-04 against a real Postgres, **no automated test covers it**, and the Cypress proof is lane 6's and gets recorded in `docs/status.md` when it lands |
-| 4 | `a5a5f76` | `frontends/apps/checkout/src/testing/fixtures.ts:5-7` claimed nothing under `src/testing` is imported from `app/` or a component, while `src/components/screen-states.ts:12` imported `../testing/fixtures` | `screen-states.ts` **moved** to `src/testing/`, and a real guard ported from the shop: `src/testing/no-runtime-imports.test.ts` |
-| 5 | `da6ee9b` | root `package.json:95` said nothing else in the workspace resolves lodash | Names the three that do, and gives the measured reason the overrides stay scoped |
-| 6 | `be41fc4` | `gen-demo-keys`' XAF staleness check was `grep -q '^\s*- code: mtn_momo$'` — a presence proxy | `mtn_settles_xaf`, an awk range over the `mtn_momo` sequence item asserting `currency: XAF` inside it |
-| 8 | `4100986` | `demo-up`'s comment said six services; `demo_services` is eight | Says eight and names them (plus two more miscounts in the same recipes) |
-| 9 | `f8b65ff` | `compose.demo.yml` published five services on `0.0.0.0` | All five bound to `127.0.0.1:`, with the reason in the file |
-| 10 | `9f2d986` | `examples/shop/.env.example:33,44` disagreed with the compose stack | Matches it, and says which values must match and which are local-dev defaults |
+| #   | Commit    | What it was                                                                                                                                                                                                 | What it is now                                                                                                                                                                                                   |
+| --- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2   | `cfdc610` | `README.md:211-215` said the MTN intents are EUR and the Orange ones XAF                                                                                                                                    | Mirrors `docs/runbooks/demo.md` §"One currency, and what it is not saying": both rails settle XAF **in the demo overlay only**, MTN's real sandbox rejects XAF, `config/application.yml` keeps `mtn_momo` on EUR |
+| 3   | `ec0b348` | `examples/shop/src/server/store/types.ts:13-14`, `prisma-store.ts:5-7` and `examples/shop/README.md:144` said `PrismaShopStore` "is exercised by `just demo` and lane 6's Cypress specs"                    | All three say what is true: verified by hand on 2026-09-04 against a real Postgres, **no automated test covers it**, and the Cypress proof is lane 6's and gets recorded in `docs/status.md` when it lands       |
+| 4   | `a5a5f76` | `frontends/apps/checkout/src/testing/fixtures.ts:5-7` claimed nothing under `src/testing` is imported from `app/` or a component, while `src/components/screen-states.ts:12` imported `../testing/fixtures` | `screen-states.ts` **moved** to `src/testing/`, and a real guard ported from the shop: `src/testing/no-runtime-imports.test.ts`                                                                                  |
+| 5   | `da6ee9b` | root `package.json:95` said nothing else in the workspace resolves lodash                                                                                                                                   | Names the three that do, and gives the measured reason the overrides stay scoped                                                                                                                                 |
+| 6   | `be41fc4` | `gen-demo-keys`' XAF staleness check was `grep -q '^\s*- code: mtn_momo$'` — a presence proxy                                                                                                               | `mtn_settles_xaf`, an awk range over the `mtn_momo` sequence item asserting `currency: XAF` inside it                                                                                                            |
+| 8   | `4100986` | `demo-up`'s comment said six services; `demo_services` is eight                                                                                                                                             | Says eight and names them (plus two more miscounts in the same recipes)                                                                                                                                          |
+| 9   | `f8b65ff` | `compose.demo.yml` published five services on `0.0.0.0`                                                                                                                                                     | All five bound to `127.0.0.1:`, with the reason in the file                                                                                                                                                      |
+| 10  | `9f2d986` | `examples/shop/.env.example:33,44` disagreed with the compose stack                                                                                                                                         | Matches it, and says which values must match and which are local-dev defaults                                                                                                                                    |
 
 ---
 
@@ -47,7 +47,7 @@ and the registry). The note in `package.json` gives the real ranges.
 ## Finding 6 — the before/after, in full
 
 `gen-demo-keys` regenerates the demo overlay when it detects a stale shape.
-The XAF check was keyed on the *presence* of `- code: mtn_momo`, which every
+The XAF check was keyed on the _presence_ of `- code: mtn_momo`, which every
 overlay with a `providers:` block carries — including one edited back to
 `currency: EUR`, the one state the check exists to catch.
 
@@ -159,7 +159,7 @@ third `ui_mode`, split it then.
 ## Deferred, with owners
 
 **Finding 1 — `docs/runbooks/demo.md` §4's transcript still shows EUR.**
-Nine `5000 EUR` lines between :209 and :482. Correctly *not* fixed here: §4
+Nine `5000 EUR` lines between :209 and :482. Correctly _not_ fixed here: §4
 opens by stating the block is "Real output of `just demo` … captured
 2026-09-04 in the `vpay-ci` VM … **Verbatim and complete** from the program's
 first line to its last; nothing below was written by hand." Hand-editing EUR
@@ -181,14 +181,14 @@ file under `docs/flows/`.
 
 Run on this branch, in this worktree:
 
-| Command | Result |
-|---|---|
-| `just verify` | the four gates pass; `verify-docs` is the report above |
-| `just --summary` | parses |
-| `pnpm --filter @vpay/checkout test` | 302 passed / 17 files, 0 skipped (was 299 / 16 — the new guard is 3 cases) |
-| `pnpm --filter @vpay-examples/shop test` | 49 passed / 6 files, 0 skipped |
-| `just lint-web` | exit 0 across all fourteen TypeScript projects |
-| `docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml config` | exit 0 |
+| Command                                                                       | Result                                                                     |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `just verify`                                                                 | the four gates pass; `verify-docs` is the report above                     |
+| `just --summary`                                                              | parses                                                                     |
+| `pnpm --filter @vpay/checkout test`                                           | 302 passed / 17 files, 0 skipped (was 299 / 16 — the new guard is 3 cases) |
+| `pnpm --filter @vpay-examples/shop test`                                      | 49 passed / 6 files, 0 skipped                                             |
+| `just lint-web`                                                               | exit 0 across all fourteen TypeScript projects                             |
+| `docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml config` | exit 0                                                                     |
 
 Additionally, because they were the evidence for two findings:
 `pnpm --filter @vpay/ui build-storybook` still emits 23 checkout entries in

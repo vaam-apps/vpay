@@ -5,7 +5,7 @@
  * (`@import '@vpay/ui/styles.css';`) rather than carrying its own copy, so
  * there is exactly one place the daisyUI theme is chosen.
  */
-@import 'tailwindcss';
+@import "tailwindcss";
 
 @plugin 'daisyui' {
   themes: bumblebee --default;
@@ -48,7 +48,7 @@
  * nobody had built.
  */
 :where(:root),
-[data-theme='bumblebee'] {
+[data-theme="bumblebee"] {
   --color-error-content: oklch(32% 0.13 25.723);
   --color-info-content: oklch(37% 0.09 240.876);
   /* bumblebee's `--radius-selector: 1rem` turns a 24px checkbox into a full

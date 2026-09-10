@@ -31,14 +31,14 @@ mismatch was measured to pass the entire `just ci`.
 
 ## 2. Findings
 
-| # | Severity | Finding | Fix |
-|---|---|---|---|
-| F1 | **robustness** | Nothing enforced "bump both together". With `channel = "1.98.0"` and `backends/Dockerfile` left at `FROM rust:1.95.0-alpine3.22`, `just verify` **exited 0** and `just fmt-check` **exited 0** (mutation M1). No other `just ci` recipe reads either file — nothing here compiles the Dockerfile — so the drift is invisible until a release image is built by a compiler no local run and no CI job ever used. | `cargo xtask verify-toolchain`, the eighth gate in `just verify` and a step in CI's `self-checks`. Ten tests, four of them written from mutations of the gate itself. M2 proves it fires. |
-| F2 | misleading-claim | `justfile`'s `check-schema` rationale still said `just install-rust` omits the CrateStack CLI because *"installing it needs a newer compiler than `rust-toolchain.toml` pins"* — false after the bump, and contradicted by the recipe's own failure message fifty lines below, which the same commit had rewritten. | Sentence rewritten; the *behaviour* (`install-rust` not installing it) is left alone as a maintainer's call. |
-| F3 | rule-break | `CLAUDE.md` "Things that will waste your time" still said the pin is `1.95.0`. The implementer recorded this as a deliberate omission for want of authorisation; this review was authorised to fix it. | Corrected to `1.98.0`, with the date it moved and a pointer to the new gate. |
-| F4 | misleading-claim | `rust-toolchain.toml`'s header said the image version is *"named TWICE there — the `chef` stage and the `builder` stage that is `FROM chef` — and the two must stay identical"*. `FROM chef` names no version; the same commit's Dockerfile header and notes say (correctly) that only `chef` names it. A reader following the toolchain file would go looking for a second literal to bump. | Corrected, and it now names the gate that enforces the coupling. |
-| F5 | nit | "six architecture entries" in `backends/Dockerfile` and `docs/status.md`. `docker manifest inspect rust:1.98.0-alpine3.22` returns six *manifest* entries, of which **three are architectures** (`linux/amd64`, `linux/arm64/v8`, `linux/ppc64le`) and three are `unknown/unknown` attestation manifests. The claim's substance holds — arm64 is there, and the 1.95.0 tag's set is identical — but the number counts the wrong thing. | Both files now say what the six are. |
-| F6 | misleading-claim | `docs/status.md` said `CLAUDE.md` was *"the one place in the tree that still names the old pin as current"*. F2 was a second. | Paragraph rewritten around both, now that both are fixed. |
+| #   | Severity         | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                | Fix                                                                                                                                                                                       |
+| --- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | **robustness**   | Nothing enforced "bump both together". With `channel = "1.98.0"` and `backends/Dockerfile` left at `FROM rust:1.95.0-alpine3.22`, `just verify` **exited 0** and `just fmt-check` **exited 0** (mutation M1). No other `just ci` recipe reads either file — nothing here compiles the Dockerfile — so the drift is invisible until a release image is built by a compiler no local run and no CI job ever used.                        | `cargo xtask verify-toolchain`, the eighth gate in `just verify` and a step in CI's `self-checks`. Ten tests, four of them written from mutations of the gate itself. M2 proves it fires. |
+| F2  | misleading-claim | `justfile`'s `check-schema` rationale still said `just install-rust` omits the CrateStack CLI because _"installing it needs a newer compiler than `rust-toolchain.toml` pins"_ — false after the bump, and contradicted by the recipe's own failure message fifty lines below, which the same commit had rewritten.                                                                                                                    | Sentence rewritten; the _behaviour_ (`install-rust` not installing it) is left alone as a maintainer's call.                                                                              |
+| F3  | rule-break       | `CLAUDE.md` "Things that will waste your time" still said the pin is `1.95.0`. The implementer recorded this as a deliberate omission for want of authorisation; this review was authorised to fix it.                                                                                                                                                                                                                                 | Corrected to `1.98.0`, with the date it moved and a pointer to the new gate.                                                                                                              |
+| F4  | misleading-claim | `rust-toolchain.toml`'s header said the image version is _"named TWICE there — the `chef` stage and the `builder` stage that is `FROM chef` — and the two must stay identical"_. `FROM chef` names no version; the same commit's Dockerfile header and notes say (correctly) that only `chef` names it. A reader following the toolchain file would go looking for a second literal to bump.                                           | Corrected, and it now names the gate that enforces the coupling.                                                                                                                          |
+| F5  | nit              | "six architecture entries" in `backends/Dockerfile` and `docs/status.md`. `docker manifest inspect rust:1.98.0-alpine3.22` returns six _manifest_ entries, of which **three are architectures** (`linux/amd64`, `linux/arm64/v8`, `linux/ppc64le`) and three are `unknown/unknown` attestation manifests. The claim's substance holds — arm64 is there, and the 1.95.0 tag's set is identical — but the number counts the wrong thing. | Both files now say what the six are.                                                                                                                                                      |
+| F6  | misleading-claim | `docs/status.md` said `CLAUDE.md` was _"the one place in the tree that still names the old pin as current"_. F2 was a second.                                                                                                                                                                                                                                                                                                          | Paragraph rewritten around both, now that both are fixed.                                                                                                                                 |
 
 Nothing was found that changes behaviour of shipping code. The only source
 change in the whole branch is inside a `#[cfg(test)]` module (F-none: the
@@ -106,7 +106,7 @@ $ docker manifest inspect rust:1.98.0-alpine3.22 | jq -r '.manifests[].platform 
 
 Identical sets for `rust:1.95.0-alpine3.22` and `rust:1.98.0-alpine3.23`. Both
 of the bump's substantive claims hold — the tag exists with an arm64 entry, and
-the Alpine base did not have to move — and the *count* was wrong (F5).
+the Alpine base did not have to move — and the _count_ was wrong (F5).
 
 ### 3.5 `rust-version = "1.88"`, re-derived independently
 
@@ -186,27 +186,27 @@ this checkout.
 The review brief carried "1257 tests on master 046892a". **It is 1220.**
 Measured on both trees, each under its own pin, listing rather than running:
 
-| tree | toolchain | `cargo nextest list --workspace` | binaries |
-|---|---|---|---|
-| `046892a` (base), extracted with `git archive` into a scratch dir with its own `CARGO_TARGET_DIR` | 1.95.0 (its own `rust-toolchain.toml`) | **1220** | **42** |
-| `9694786` (this branch) | 1.98.0 | **1220** | **42** |
+| tree                                                                                              | toolchain                              | `cargo nextest list --workspace` | binaries |
+| ------------------------------------------------------------------------------------------------- | -------------------------------------- | -------------------------------- | -------- |
+| `046892a` (base), extracted with `git archive` into a scratch dir with its own `CARGO_TARGET_DIR` | 1.95.0 (its own `rust-toolchain.toml`) | **1220**                         | **42**   |
+| `9694786` (this branch)                                                                           | 1.98.0                                 | **1220**                         | **42**   |
 
 The counts are equal, as they must be: the branch adds and removes no `#[test]`
 — its only Rust change is one loop expression inside an existing test function.
 Nothing was lost; the brief's number was wrong. (`verify-ignored`'s floor is
-`min_tests = 1080` and `expected_suites = 42`, so a 37-test loss would *not*
+`min_tests = 1080` and `expected_suites = 42`, so a 37-test loss would _not_
 have been caught by the binary count — only by the floor, which 1220 clears.)
 
 ## 4. Mutations
 
-| # | Mutation | Before this review | After |
-|---|---|---|---|
-| M1 | `channel = "1.98.0"`, `FROM rust:1.95.0-alpine3.22` | `just verify` **exit 0**, `just fmt-check` **exit 0** — nothing caught it | — |
-| M2 | the same mutation, with `verify-toolchain` in place | — | `just verify` **exit 1**: `backends/Dockerfile:187: FROM rust:1.95.0-alpine3.22 builds with 1.95.0, but rust-toolchain.toml pins channel = "1.98.0"` |
-| M3a | gate's version comparison always agrees (`if true \|\| …`) | — | `a_dockerfile_left_on_the_old_compiler_fails` **FAIL** (and one more) |
-| M3b | vacuity guard removed (an empty Dockerfile accepted) | — | `a_dockerfile_with_no_rust_image_fails_rather_than_passing_vacuously` **FAIL** |
-| M3c | comment filter removed | — | **all ten still pass** — see below |
-| M3d | keyword match made case-sensitive | — | first run: **all ten passed** (a false green in this review's own test); after the fix: `a_lower_case_from_is_still_an_instruction` **FAIL** |
+| #   | Mutation                                                   | Before this review                                                        | After                                                                                                                                                |
+| --- | ---------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | `channel = "1.98.0"`, `FROM rust:1.95.0-alpine3.22`        | `just verify` **exit 0**, `just fmt-check` **exit 0** — nothing caught it | —                                                                                                                                                    |
+| M2  | the same mutation, with `verify-toolchain` in place        | —                                                                         | `just verify` **exit 1**: `backends/Dockerfile:187: FROM rust:1.95.0-alpine3.22 builds with 1.95.0, but rust-toolchain.toml pins channel = "1.98.0"` |
+| M3a | gate's version comparison always agrees (`if true \|\| …`) | —                                                                         | `a_dockerfile_left_on_the_old_compiler_fails` **FAIL** (and one more)                                                                                |
+| M3b | vacuity guard removed (an empty Dockerfile accepted)       | —                                                                         | `a_dockerfile_with_no_rust_image_fails_rather_than_passing_vacuously` **FAIL**                                                                       |
+| M3c | comment filter removed                                     | —                                                                         | **all ten still pass** — see below                                                                                                                   |
+| M3d | keyword match made case-sensitive                          | —                                                                         | first run: **all ten passed** (a false green in this review's own test); after the fix: `a_lower_case_from_is_still_an_instruction` **FAIL**         |
 
 **M3c is reported as a miss, not as a pass.** A comment's `#` displaces the
 `FROM` keyword by one character, so no comment can be read as an instruction
@@ -217,7 +217,7 @@ something.
 **M3d found a false green in this review's own work**, which is the reason it
 is written down: `a_lower_case_from_is_still_an_instruction` originally
 asserted only `expect_err`. Under a case-sensitive keyword match the lower-case
-line stopped being an instruction, the *vacuity* guard fired instead, and the
+line stopped being an instruction, the _vacuity_ guard fired instead, and the
 mutation read green. The test now asserts the message is the version mismatch.
 
 ## 5. `just ci`, recipe by recipe
@@ -226,25 +226,25 @@ Run end to end twice: once on the implementation as delivered (`9694786`), once
 on the final tree of this review. Both from a script that writes `$?` to a
 file. The first run:
 
-| Recipe | Result on `9694786` |
-|---|---|
-| `fmt-check` | clean |
-| `clippy` | clean, `--workspace --all-targets -- -D warnings` |
-| `verify` | `verify: ok — the seven gates above passed` |
-| ↳ `verify-no-mocks` | `ok — no test double reachable from a shipping binary` |
-| ↳ `verify-status` | `ok — 1 unimplemented item(s), all declared` |
-| ↳ `verify-errors` | `ok — 15 error type(s), all classified; 14 #[from] variant(s)` |
-| ↳ `verify-sdk-parity` | `ok — 342 proving test(s) …, 26 dated gap(s)` |
-| ↳ `verify-links` | `ok — 692 repository link(s) in 122 tracked markdown file(s)` |
-| ↳ `verify-npm-scope` | `ok — 2 publishable package(s) …` |
-| ↳ `check-schema` | `cratestack 0.11.1 … ok — schemas/vpay.cstack type-checks` |
-| `test-rust` | `Summary [806.131s] 1220 tests run: 1220 passed, 0 skipped` |
-| `test-doc` | 86 passed, 1 ignored, 0 failed, across 14 doc-test binaries |
-| `verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1220 total (minimum 1080)` |
-| `lint-web` | exit 0 |
-| `test-web` | every vitest suite passed |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
-| **exit** | **0** (read from the file the runner wrote, 20 min 14 s wall clock) |
+| Recipe                | Result on `9694786`                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `fmt-check`           | clean                                                                               |
+| `clippy`              | clean, `--workspace --all-targets -- -D warnings`                                   |
+| `verify`              | `verify: ok — the seven gates above passed`                                         |
+| ↳ `verify-no-mocks`   | `ok — no test double reachable from a shipping binary`                              |
+| ↳ `verify-status`     | `ok — 1 unimplemented item(s), all declared`                                        |
+| ↳ `verify-errors`     | `ok — 15 error type(s), all classified; 14 #[from] variant(s)`                      |
+| ↳ `verify-sdk-parity` | `ok — 342 proving test(s) …, 26 dated gap(s)`                                       |
+| ↳ `verify-links`      | `ok — 692 repository link(s) in 122 tracked markdown file(s)`                       |
+| ↳ `verify-npm-scope`  | `ok — 2 publishable package(s) …`                                                   |
+| ↳ `check-schema`      | `cratestack 0.11.1 … ok — schemas/vpay.cstack type-checks`                          |
+| `test-rust`           | `Summary [806.131s] 1220 tests run: 1220 passed, 0 skipped`                         |
+| `test-doc`            | 86 passed, 1 ignored, 0 failed, across 14 doc-test binaries                         |
+| `verify-ignored`      | `0 ignored (expected 0), 42 test binaries (expected 42), 1220 total (minimum 1080)` |
+| `lint-web`            | exit 0                                                                              |
+| `test-web`            | every vitest suite passed                                                           |
+| `deny`                | `advisories ok, bans ok, licenses ok, sources ok`                                   |
+| **exit**              | **0** (read from the file the runner wrote, 20 min 14 s wall clock)                 |
 
 `0 skipped` is the load-bearing part and it reproduced: the container-backed
 suites ran, with `vpay-tests-conformance::adapter_conformance` and
@@ -255,22 +255,22 @@ The second run, on the final tree of this review (`HEAD` after all six
 commits), also exited **0** — 17 min 30 s wall clock, again read from a file
 the runner wrote:
 
-| Recipe | Result on the final tree |
-|---|---|
-| `fmt-check` | clean |
-| `clippy` | clean, `--workspace --all-targets -- -D warnings` |
-| `verify` | `verify: ok — the eight gates above passed` |
-| ↳ `verify-links` | `ok — 695 repository link(s) in 123 tracked markdown file(s)` |
-| ↳ `verify-toolchain` | `ok — rust-toolchain.toml pins 1.98.0 and all 1 FROM rust: instruction(s) in backends/Dockerfile name it (rust:1.98.0-alpine3.22)` |
-| ↳ `check-schema` | **ran against the wrong CLI — see §7**; re-run against the pin: `ok — schemas/vpay.cstack type-checks under cratestack 0.11.1` |
-| `test-rust` | `Summary [961.863s] 1230 tests run: 1230 passed, 0 skipped` (1220 + the ten this review adds) |
-| `test-doc` | 86 passed, 1 ignored, 0 failed |
-| `verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1230 total (minimum 1080)` |
-| `lint-web`, `test-web` | exit 0; every vitest suite passed |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
-| **exit** | **0** |
+| Recipe                 | Result on the final tree                                                                                                           |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`            | clean                                                                                                                              |
+| `clippy`               | clean, `--workspace --all-targets -- -D warnings`                                                                                  |
+| `verify`               | `verify: ok — the eight gates above passed`                                                                                        |
+| ↳ `verify-links`       | `ok — 695 repository link(s) in 123 tracked markdown file(s)`                                                                      |
+| ↳ `verify-toolchain`   | `ok — rust-toolchain.toml pins 1.98.0 and all 1 FROM rust: instruction(s) in backends/Dockerfile name it (rust:1.98.0-alpine3.22)` |
+| ↳ `check-schema`       | **ran against the wrong CLI — see §7**; re-run against the pin: `ok — schemas/vpay.cstack type-checks under cratestack 0.11.1`     |
+| `test-rust`            | `Summary [961.863s] 1230 tests run: 1230 passed, 0 skipped` (1220 + the ten this review adds)                                      |
+| `test-doc`             | 86 passed, 1 ignored, 0 failed                                                                                                     |
+| `verify-ignored`       | `0 ignored (expected 0), 42 test binaries (expected 42), 1230 total (minimum 1080)`                                                |
+| `lint-web`, `test-web` | exit 0; every vitest suite passed                                                                                                  |
+| `deny`                 | `advisories ok, bans ok, licenses ok, sources ok`                                                                                  |
+| **exit**               | **0**                                                                                                                              |
 
-The ten new tests add no test *binary* (they are in `.xtask`, which already
+The ten new tests add no test _binary_ (they are in `.xtask`, which already
 had one), so `expected_suites` stays 42; `min_tests` is a floor and 1230
 clears it, so neither pin in `justfile` moved.
 
@@ -332,11 +332,11 @@ loud warning is the only reason anybody would notice.
 
 ## 8. What this review did not do
 
-* **No `arm64` build**, exactly as the brief allows. The arm64 half of the
+- **No `arm64` build**, exactly as the brief allows. The arm64 half of the
   manifest is evidenced only by the tag's platform list, not by a build.
-* **No CI run of any of this exists.** `actionlint` is not GitHub Actions.
-* **The 1.88 MSRV is still uncompiled** — re-derived, never built.
-* **`docs/plans/*-notes/` were not rewritten** — they are dated records.
-* **`docs/status.md`'s historical measurement sentences still say "with the
+- **No CI run of any of this exists.** `actionlint` is not GitHub Actions.
+- **The 1.88 MSRV is still uncompiled** — re-derived, never built.
+- **`docs/plans/*-notes/` were not rewritten** — they are dated records.
+- **`docs/status.md`'s historical measurement sentences still say "with the
   toolchain pinned to `1.95.0`"** and must: those runs happened on that
   compiler. None of them is a claim about the current pin.

@@ -1,4 +1,4 @@
-import { Heading, Stack, Text } from '@vpay/ui';
+import { Heading, Stack, Text } from "@vpay/ui";
 
 export interface EmptyStateProps {
   title: string;

@@ -29,13 +29,13 @@ the same scenario," in the mappings, not in the phone-number validator.
 
 ## 2. What landed
 
-| # | Thing | Where |
-|---|---|---|
-| 1 | `237600000100` — joins `mtn-e2e-poll`, same walk as `237600000ce0` (PENDING then SUCCESSFUL) | `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json` |
-| 2 | `237600000101` — arms `mtn-demo-decline`, same walk as `237600000f01` (FAILED/NOT_ENOUGH_FUNDS → `insufficient_funds`) | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json` |
-| 3 | `237600000102` — arms `mtn-demo-expiry`, same walk as `237600000f02` (FAILED/COULD_NOT_PERFORM_TRANSACTION → `payer_timeout`) | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json` |
-| 4 | `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, an `rstest` with 3 cases (`case_1_settles`, `case_2_insufficient_funds`, `case_3_payer_timeout`), MTN only | `backends/tests/conformance/tests/adapter_conformance.rs` |
-| 5 | Corrected the two mappings' own "no conformance case sends that MSISDN, so this mapping is unreachable in a conformance run" claims, which item 4 makes no longer true for the digits-only family | both mapping files, inline |
+| #   | Thing                                                                                                                                                                                             | Where                                                                         |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 1   | `237600000100` — joins `mtn-e2e-poll`, same walk as `237600000ce0` (PENDING then SUCCESSFUL)                                                                                                      | `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json` |
+| 2   | `237600000101` — arms `mtn-demo-decline`, same walk as `237600000f01` (FAILED/NOT_ENOUGH_FUNDS → `insufficient_funds`)                                                                            | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json`         |
+| 3   | `237600000102` — arms `mtn-demo-expiry`, same walk as `237600000f02` (FAILED/COULD_NOT_PERFORM_TRANSACTION → `payer_timeout`)                                                                     | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json`         |
+| 4   | `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, an `rstest` with 3 cases (`case_1_settles`, `case_2_insufficient_funds`, `case_3_payer_timeout`), MTN only                          | `backends/tests/conformance/tests/adapter_conformance.rs`                     |
+| 5   | Corrected the two mappings' own "no conformance case sends that MSISDN, so this mapping is unreachable in a conformance run" claims, which item 4 makes no longer true for the digits-only family | both mapping files, inline                                                    |
 
 **How the twin joins the scenario.** Each POST mapping's
 `matchesJsonPath` grew from `"equalTo": "237600000f01"` to
@@ -51,7 +51,7 @@ steered by anything but scenario state.
 **How the new test proves it, not just documents it.** Every existing
 wire-level case in `adapter_conformance.rs` calls `query_status` on a
 manufactured `ChargeRef` (`Rail::charge`), which fixes `payer_ref` at the
-placeholder `237600000000` and steers by *reference* instead — that is
+placeholder `237600000000` and steers by _reference_ instead — that is
 deliberately not reachable through these three mappings (see the "unreachable
 in a conformance run" corrections above). The new test instead calls
 `adapter.submit()` for real with `payer_ref: Some(msisdn)` and a fresh random
@@ -74,11 +74,11 @@ row's two MSISDNs enter the **same** scenario by the **same** mapping (one
 `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
 `backends/tests/conformance/tests/adapter_conformance.rs`.
 
-| Outcome | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario | First status query | Second status query |
-|---|---|---|---|---|---|
-| The payer approves | `237600000ce0` | `237600000100` | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING` | `SUCCESSFUL` |
-| The payer has no balance | `237600000f01` | `237600000101` | `mtn-demo-decline` (`demo-outcomes.json`) | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds` | — (terminal on the first query) |
-| The prompt expires unanswered | `237600000f02` | `237600000102` | `mtn-demo-expiry` (`demo-outcomes.json`) | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
+| Outcome                       | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario                                      | First status query                                           | Second status query             |
+| ----------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------ | ------------------------------- |
+| The payer approves            | `237600000ce0`                                                                     | `237600000100`                                                                | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING`                                                    | `SUCCESSFUL`                    |
+| The payer has no balance      | `237600000f01`                                                                     | `237600000101`                                                                | `mtn-demo-decline` (`demo-outcomes.json`)     | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds`         | — (terminal on the first query) |
+| The prompt expires unanswered | `237600000f02`                                                                     | `237600000102`                                                                | `mtn-demo-expiry` (`demo-outcomes.json`)      | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
 
 The hex family is what `examples/merchant-demo` (`Steering::Msisdn`) and
 `frontends/tests/e2e/cypress/e2e/checkout.cy.ts`
@@ -154,10 +154,10 @@ Summary [4.106s] 3 tests run: 3 passed, 30 skipped
 
 ## 6. Counts, measured
 
-| Gate | Result |
-|---|---|
-| `cargo nextest run -p vpay-tests-conformance --retries 2 -j 1` | **33 tests run: 33 passed, 0 skipped** (was 30 before this lane) |
-| `just verify` | ok — all four gates (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`) pass; `verify-docs` unchanged in shape |
-| `just verify-ignored` | `0 ignored (expected 0), 41 test binaries (expected 41), 1082 total (minimum 1000)` — the workspace total grew by 3 with this lane's new test; `expected_ignored`/`expected_suites` in the `justfile` needed no change, and the `min_tests` floor comment says explicitly that three tests is not a reason to move it |
-| `cargo fmt --all --check` | ok |
-| `cargo clippy -p vpay-tests-conformance --all-targets -- -D warnings` | ok, no warnings |
+| Gate                                                                  | Result                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo nextest run -p vpay-tests-conformance --retries 2 -j 1`        | **33 tests run: 33 passed, 0 skipped** (was 30 before this lane)                                                                                                                                                                                                                                                      |
+| `just verify`                                                         | ok — all four gates (`verify-no-mocks`, `verify-status`, `verify-errors`, `verify-sdk-parity`) pass; `verify-docs` unchanged in shape                                                                                                                                                                                 |
+| `just verify-ignored`                                                 | `0 ignored (expected 0), 41 test binaries (expected 41), 1082 total (minimum 1000)` — the workspace total grew by 3 with this lane's new test; `expected_ignored`/`expected_suites` in the `justfile` needed no change, and the `min_tests` floor comment says explicitly that three tests is not a reason to move it |
+| `cargo fmt --all --check`                                             | ok                                                                                                                                                                                                                                                                                                                    |
+| `cargo clippy -p vpay-tests-conformance --all-targets -- -D warnings` | ok, no warnings                                                                                                                                                                                                                                                                                                       |

@@ -36,7 +36,7 @@ loaded at runtime.
 **Compatible**: the payment-intent half of Stripe.js against a
 push (mobile-money) or redirect rail.
 
-| Stripe.js                                                          | `@vaam-apps/vpay-stripe-js`                                                                                                          |
+| Stripe.js                                                          | `@vaam-apps/vpay-stripe-js`                                                                                                |
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | `loadStripe(pk)`                                                   | `loadStripe(pk, { baseUrl, checkoutBaseUrl? })` — plus a required `baseUrl`; no `<script>` is downloaded                   |
 | `stripe.retrievePaymentIntent(clientSecret)`                       | same signature, same `PaymentIntentResult` shape                                                                           |
@@ -46,8 +46,8 @@ push (mobile-money) or redirect rail.
 | —                                                                  | `stripe.waitForPaymentIntent(clientSecret, { timeoutMs, intervalMs })`                                                     |
 | `stripe.createEmbeddedCheckoutPage({ fetchClientSecret })`         | `stripe.initEmbeddedCheckout({ fetchClientSecret, onComplete })` — **vpay's own page**, not Stripe's; see "Checkout" below |
 | —                                                                  | `stripe.retrieveCheckoutSession(clientSecret)`                                                                             |
-| —                                                                  | `stripe.openCheckoutPopup({ fetchCheckoutUrl, onComplete, onCancel })` — vpay's hosted page in a window your page owns   |
-| —                                                                  | `notifyCheckoutOpener({ session, status })` — the popup half, called on your own `success_url`                            |
+| —                                                                  | `stripe.openCheckoutPopup({ fetchCheckoutUrl, onComplete, onCancel })` — vpay's hosted page in a window your page owns     |
+| —                                                                  | `notifyCheckoutOpener({ session, status })` — the popup half, called on your own `success_url`                             |
 
 **Not compatible, ever** — absent by construction, not stubbed, because each
 depends on card data or on an iframe served from `js.stripe.com`:
@@ -264,7 +264,7 @@ was designed to preclude). The frame is sandboxed
 `allow-top-navigation`, which is why the redirect rail's hand-off is a
 message your page acts on rather than something the frame does itself.
 
-### The popup, and why its message comes from *your* page
+### The popup, and why its message comes from _your_ page
 
 `openCheckoutPopup` is the third surface: vpay's **hosted** page in a
 top-level window your page opened, rather than in an iframe or in the
@@ -307,7 +307,7 @@ is a consequence of a popup not being a frame:
    framer to post to and deliberately says nothing. What closes the loop is
    `success_url` — your page, running in the popup, calling
    `notifyCheckoutOpener`, which posts `{type:'vpay:complete', session,
-   status}` to `window.opener` and closes the window.
+status}` to `window.opener` and closes the window.
 2. **`completionOrigin` therefore defaults to your own origin**, not to
    `checkoutBaseUrl`. Pinning vpay's checkout origin here would accept
    nothing at all. `checkoutBaseUrl` is not consulted by this method.
@@ -382,19 +382,19 @@ Nothing on the `Stripe` object ever rejects. Every failure is
 `{ error: { type, code?, message?, param? } }` — vpay's server envelope
 passed through 1:1, or one of the three codes this package originates.
 
-| `type`                  | `code`                 | Origin                                                                                                                                                             |
-| ----------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `invalid_request_error` | `resource_missing`     | The uniform 404. **Every** credential failure renders it byte-identically: unknown publishable key, wrong `client_secret`, another merchant's key, unknown intent. |
-| `invalid_request_error` | `invalid_state`        | The intent has already been confirmed. One charge per intent, forever — retry means a new PaymentIntent.                                                           |
-| `invalid_request_error` | `checkout_session_expired` | The checkout session driving this intent is over — swept at its 24-hour horizon, expired by the merchant, or past that horizon and not yet swept. `confirmPayment` is refused before any charge is opened. Render the abandoned-checkout screen; a retry needs a **new** checkout session. |
-| `invalid_request_error` | `checkout_session_complete` | The session already finished and its intent is `succeeded`. Not an error to retry: read the session and show the outcome.                                          |
-| `invalid_request_error` | `charge_declined`      | The rail refused the payment. The charge is terminal and the intent keeps `requires_payment_method` with `last_payment_error` populated; a retry means a new PaymentIntent.                                                     |
-| `invalid_request_error` | `invalid_request`      | A parameter this package refused before sending: a malformed `clientSecret` (`param: 'clientSecret'`), an unencodable `payment_method_data`.                       |
-| `api_error`             | `provider_unavailable` | The rail. Retryable.                                                                                                                                               |
-| `api_error`             | `polling_timeout`      | **Client.** `waitForPaymentIntent` ran out of budget.                                                                                                              |
-| `api_error`             | `redirect_unavailable` | **Client.** A redirect was required and there is no `window`.                                                                                                      |
-| `api_error`             | `unexpected_response`  | **Client.** Not vpay's envelope — a proxy's HTML 502, say. Carries the status, never the body.                                                                     |
-| `api_connection_error`  | _(none)_               | **Client.** The request never landed. The absence of a code is the signal: vpay's server never sends this type.                                                    |
+| `type`                  | `code`                      | Origin                                                                                                                                                                                                                                                                                     |
+| ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `invalid_request_error` | `resource_missing`          | The uniform 404. **Every** credential failure renders it byte-identically: unknown publishable key, wrong `client_secret`, another merchant's key, unknown intent.                                                                                                                         |
+| `invalid_request_error` | `invalid_state`             | The intent has already been confirmed. One charge per intent, forever — retry means a new PaymentIntent.                                                                                                                                                                                   |
+| `invalid_request_error` | `checkout_session_expired`  | The checkout session driving this intent is over — swept at its 24-hour horizon, expired by the merchant, or past that horizon and not yet swept. `confirmPayment` is refused before any charge is opened. Render the abandoned-checkout screen; a retry needs a **new** checkout session. |
+| `invalid_request_error` | `checkout_session_complete` | The session already finished and its intent is `succeeded`. Not an error to retry: read the session and show the outcome.                                                                                                                                                                  |
+| `invalid_request_error` | `charge_declined`           | The rail refused the payment. The charge is terminal and the intent keeps `requires_payment_method` with `last_payment_error` populated; a retry means a new PaymentIntent.                                                                                                                |
+| `invalid_request_error` | `invalid_request`           | A parameter this package refused before sending: a malformed `clientSecret` (`param: 'clientSecret'`), an unencodable `payment_method_data`.                                                                                                                                               |
+| `api_error`             | `provider_unavailable`      | The rail. Retryable.                                                                                                                                                                                                                                                                       |
+| `api_error`             | `polling_timeout`           | **Client.** `waitForPaymentIntent` ran out of budget.                                                                                                                                                                                                                                      |
+| `api_error`             | `redirect_unavailable`      | **Client.** A redirect was required and there is no `window`.                                                                                                                                                                                                                              |
+| `api_error`             | `unexpected_response`       | **Client.** Not vpay's envelope — a proxy's HTML 502, say. Carries the status, never the body.                                                                                                                                                                                             |
+| `api_connection_error`  | _(none)_                    | **Client.** The request never landed. The absence of a code is the signal: vpay's server never sends this type.                                                                                                                                                                            |
 
 No message this package builds contains a `client_secret` or a publishable
 key, and there is no `console` call in the shipping source — both are pinned

@@ -18,14 +18,14 @@ rather than kept here, which is what makes signing out a revocation.
 
 ## The pages
 
-| Route              | What it does                                                             |
-| ------------------ | ------------------------------------------------------------------------ |
-| `/`                | Redirects to `/payments` or `/login`. Nothing of its own                 |
-| `/login`           | Work email + argon2id password — leg one                                 |
-| `/login/totp`      | Six digits. A **first** sign-in also renders the enrolment QR and secret |
-| `/login/password`  | Replaces the printed one-time password. Not optional — see below          |
-| `/payments`        | The bound merchant's intents; status and date filters, cursor paging     |
-| `/payments/{id}`   | Intent, charge, refunds, last error, event timeline                      |
+| Route             | What it does                                                             |
+| ----------------- | ------------------------------------------------------------------------ |
+| `/`               | Redirects to `/payments` or `/login`. Nothing of its own                 |
+| `/login`          | Work email + argon2id password — leg one                                 |
+| `/login/totp`     | Six digits. A **first** sign-in also renders the enrolment QR and secret |
+| `/login/password` | Replaces the printed one-time password. Not optional — see below         |
+| `/payments`       | The bound merchant's intents; status and date filters, cursor paging     |
+| `/payments/{id}`  | Intent, charge, refunds, last error, event timeline                      |
 
 Every one of them is `dynamic = 'force-dynamic'`, and has to be: they all read
 cookies.
@@ -54,19 +54,19 @@ that check in the wrong layer.
 
 ## How the code is laid out
 
-| Directory              | What lives there                                                                  |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `app/`                 | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone   |
-| `src/components/`      | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers` |
-| `src/server/`          | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself |
-| `src/config/`          | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once |
-| `src/format.ts`        | Money, instants, the em dash. The numbers a reader is entitled to have right      |
-| `src/payments-query.ts`| The URL's filter vocabulary ↔ the API's, and the two paging links                  |
-| `src/testing/`         | Fixtures. Imported by tests and by nothing under `app/`                            |
+| Directory               | What lives there                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone          |
+| `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`        |
+| `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself        |
+| `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once |
+| `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right              |
+| `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                         |
+| `src/testing/`          | Fixtures. Imported by tests and by nothing under `app/`                                   |
 
 The split between `src/server/` and `src/components/` is the one that matters:
 a component that fetched would be a component no test could render, and a
-`fetch` inside a component is how a page ends up unable to say *why* it is
+`fetch` inside a component is how a page ends up unable to say _why_ it is
 empty.
 
 `src/server/actions.ts` is a `'use server'` file, which may export **only async
@@ -105,7 +105,7 @@ green badge on an unfamiliar value is a claim.
 `NAV_LINKS` in [`src/nav.tsx`](src/nav.tsx) is an exported constant, and
 [`src/layout.test.tsx`](src/layout.test.tsx) checks it **three ways**: every
 entry resolves to an `app/**/page.tsx` on disk; every internal `href` in the
-*rendered* markup does too; and the nav renders what it declares. The pair of
+_rendered_ markup does too; and the nav renders what it declares. The pair of
 the first two is the point — the constant catches a link rendered only in a
 branch no test exercises, the markup catches a link written straight into the
 JSX. Adding `{ href: '/webhooks' }` fails two of the three. Measured.
@@ -139,9 +139,9 @@ merchant".
 
 **No "Rail" column on the list.** `GET /dash/v1/payment_intents` returns no
 charge, so the only rail-shaped value in that response is
-`payment_method_types` — the rails an intent *may* be confirmed against. The
+`payment_method_types` — the rails an intent _may_ be confirmed against. The
 column is headed **Methods**. A "Rail" heading over it would be wrong for every
-intent that offers two and was taken by one, and wrong *invisibly*. The detail
+intent that offers two and was taken by one, and wrong _invisibly_. The detail
 page has a real `Rail`, from `charge.provider_code`.
 
 **The masked payer is an em dash, and it is a real `null`.**
@@ -151,7 +151,7 @@ other value that could produce a mask is the payer's unmasked phone number, and
 reading that into a staff surface to make a row look populated is the trade
 this refuses. The row exists rather than being omitted so the value appears the
 day the column is written. `payment-detail.test.tsx` pins both directions, and
-`dashboard.cy.ts` walks the list until it finds a payment that *has* a charge
+`dashboard.cy.ts` walks the list until it finds a payment that _has_ a charge
 before asserting it — a dash on an intent nobody confirmed proves nothing.
 
 The **list** has no payer column at all, which is the stronger form of the same
@@ -184,11 +184,11 @@ dropped the `<main>` landmark and every other gate stayed green: `region` went
 Each of these was applied to the tree, the suite run, and the mutation
 reverted:
 
-| Mutation                                                        | Fails                                    |
-| --------------------------------------------------------------- | ---------------------------------------- |
-| `COOKIE_ATTRIBUTES.httpOnly` → `false`                          | `src/server/cookies.test.ts`             |
-| exchange a *fresh* PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts` |
-| `NAV_LINKS` gains a page nobody wrote                           | `src/layout.test.tsx`, twice             |
+| Mutation                                                                     | Fails                        |
+| ---------------------------------------------------------------------------- | ---------------------------- |
+| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts` |
+| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`   |
+| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice |
 
 `oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
 assertion is that the exchange presents the verifier whose `S256` **is** the

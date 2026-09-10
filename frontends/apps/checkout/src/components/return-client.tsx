@@ -18,19 +18,23 @@
  * about it. The opener is pinned by `soleOrigin` rather than by the referrer,
  * because the referrer here is the rail's — see `origins.ts`.
  */
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { Branding } from '../config/settings';
-import { translator, type Locale } from '../i18n/index';
-import { BrowserCheckoutApi } from '../lib/api';
-import { decideReturnEntry } from '../lib/entry';
-import { forwardKindFor, forwardTarget } from '../lib/forward';
-import { createFrameChannel, type FrameChannel } from '../lib/frame';
-import { recallPublishableKey } from '../lib/link';
-import { RETURN_INITIAL_STATE, ReturnController, type ReturnState } from '../lib/return';
-import { ReturnView } from './return-view';
+import type { Branding } from "../config/settings";
+import { translator, type Locale } from "../i18n/index";
+import { BrowserCheckoutApi } from "../lib/api";
+import { decideReturnEntry } from "../lib/entry";
+import { forwardKindFor, forwardTarget } from "../lib/forward";
+import { createFrameChannel, type FrameChannel } from "../lib/frame";
+import { recallPublishableKey } from "../lib/link";
+import {
+  RETURN_INITIAL_STATE,
+  ReturnController,
+  type ReturnState,
+} from "../lib/return";
+import { ReturnView } from "./return-view";
 
 export interface ReturnClientProps {
   sessionId: string;
@@ -58,22 +62,25 @@ export function ReturnClient(props: ReturnClientProps) {
   useEffect(() => {
     const decision = decideReturnEntry({
       search: window.location.search,
-      rememberedKey: recallPublishableKey(window.sessionStorage, props.sessionId),
+      rememberedKey: recallPublishableKey(
+        window.sessionStorage,
+        props.sessionId,
+      ),
       hasOpener: window.opener !== null && window.opener !== undefined,
       allowedOrigins: props.allowedOrigins,
     });
-    if (decision.kind === 'error') {
+    if (decision.kind === "error") {
       // REAL finding, same shape as `checkout-client.tsx`: the return trip's
       // token is read from the URL, which only the browser can do.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState({ name: 'error', error: { code: decision.code } });
+      setState({ name: "error", error: { code: decision.code } });
       return;
     }
     let channel: FrameChannel | null = null;
     if (decision.openerOrigin !== null) {
       channel = createFrameChannel({
         win: window,
-        peer: 'opener',
+        peer: "opener",
         parentOrigin: decision.openerOrigin,
       });
     }
@@ -98,12 +105,12 @@ export function ReturnClient(props: ReturnClientProps) {
   }, [props.allowedOrigins, props.apiBaseUrl, props.sessionId]);
 
   const destination = useMemo(() => {
-    if (state.name !== 'outcome') {
+    if (state.name !== "outcome") {
       return null;
     }
     return forwardTarget(
       state.context.session,
-      forwardKindFor(state.context.session, state.kind === 'succeeded'),
+      forwardKindFor(state.context.session, state.kind === "succeeded"),
     );
   }, [state]);
 

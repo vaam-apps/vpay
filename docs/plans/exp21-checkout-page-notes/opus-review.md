@@ -2,7 +2,7 @@
 
 A review of `claude/exp21-checkout-page`, rebased onto `origin/master` after
 PRs #55 #60 #62 #64 landed. The implementer's own account is
-[`opus.md`](opus.md); this file records what was *checked*, what was found, and
+[`opus.md`](opus.md); this file records what was _checked_, what was found, and
 what was left alone.
 
 The short version: the branch's design held up under attack and its unit suite
@@ -38,25 +38,25 @@ Severity: **gate-hole** (something a gate should have caught and did not),
 ### F1 — gate-hole/correctness — the page threw a hydration error in a browser
 
 `app/layout.tsx` emitted the `branding.yaml` colour inside an explicitly
-written `<head>` element. React threw **#418**, *hydration failed because the
-server rendered HTML did not match the client*, uncaught, on the hosted payment
+written `<head>` element. React threw **#418**, _hydration failed because the
+server rendered HTML did not match the client_, uncaught, on the hosted payment
 page. `shop-hosted.cy.ts`: **3 tests, 0 passing, 3 failing**, all three on the
 same error, page stuck on "Loading this payment…".
 
 Measured three ways against the shipping standalone build, each a one-second
 Cypress run against a local server:
 
-| build | `branding.yaml` | result |
-|---|---|---|
-| explicit `<head>` | mounted, `primary_color` set | **#418** |
-| explicit `<head>` | absent, so that `<head>` is empty | passes |
-| `href`/`precedence` | mounted, `primary_color` set | passes |
+| build               | `branding.yaml`                   | result   |
+| ------------------- | --------------------------------- | -------- |
+| explicit `<head>`   | mounted, `primary_color` set      | **#418** |
+| explicit `<head>`   | absent, so that `<head>` is empty | passes   |
+| `href`/`precedence` | mounted, `primary_color` set      | passes   |
 
 An explicitly rendered `<head>` is an ordinary host element whose children
 React reconciles exactly, and a Next App Router document's head is full of
 nodes React did not put there. React 19's hoisting writes the style in as a
-*resource* instead. Fixed in `664454d`; `src/layout.test.tsx` asserts the
-**element tree** (React's own hoisting produces a `<head>` in the *markup* —
+_resource_ instead. Fixed in `664454d`; `src/layout.test.tsx` asserts the
+**element tree** (React's own hoisting produces a `<head>` in the _markup_ —
 that is what hoisting is), and putting the `<head>` back fails that one case
 and nothing else.
 
@@ -68,7 +68,7 @@ the one suite that could was never run.
 
 `fetchCheckoutOrigins` is awaited by `middleware.ts` before the response
 starts. It ran for `/e/{id}` alone until this branch; it now runs for `/c/{id}`
-and `/c/{id}/return` too. A refusal or an unreachable host *rejects*, and the
+and `/c/{id}/return` too. A refusal or an unreachable host _rejects_, and the
 existing `catch` answered `[]` for both — but a peer that accepts the
 connection and then says nothing is `await` forever, and that is now the
 primary payment surface. The implementer named this gap honestly in
@@ -98,7 +98,7 @@ Fixed in `aed4a66` and `ef90ff1`:
 
 - `compose.demo.yml` said `compose.e2e.yml` mounts neither YAML file, "so the
   Cypress specs exercise the no-files path". They do not: `just test-e2e` and
-  CI's `e2e` job both add `-f compose.demo.yml`. That is the *right*
+  CI's `e2e` job both add `-f compose.demo.yml`. That is the _right_
   arrangement — it is the path that found F1 — and the comment now says so.
 - `docs/flows/hosted-checkout.md` said "the container was run by hand with
   them" and cited `opus.md`, which says "no container was run with the mounted
@@ -114,7 +114,7 @@ Fixed in `aed4a66` and `ef90ff1`:
 ### F5 — correctness — the shipped examples broke the demo
 
 `config/checkout/*.example.yaml` are mounted by `compose.demo.yml` into the
-demo *and* into `just test-e2e`'s stack. `logo_url` pointed at
+demo _and_ into `just test-e2e`'s stack. `logo_url` pointed at
 `cdn.vaam.example`, which does not resolve and never will (RFC 2606), so the
 demo payment page carried a **broken image** on every screen — visible on the
 regenerated `branded.png`, where it also pushed the operator's name onto two
@@ -176,11 +176,11 @@ hand-written CSS in the app.
 
 Each applied to the shipping source, suite run, source restored.
 
-| Mutation | Result |
-|---|---|
-| `layout.tsx`: put the explicit `<head>` back | **1 failed** (`renders NO explicit <head> element`) — and it is the case that names the browser defect |
-| `api.ts`: drop `signal: controller.signal` from the origins fetch | **1 failed** — the never-answering `fetch` hangs to vitest's own 5 s timeout |
-| `@vpay/tokens`: `checkoutOutcomeTone.failed` back to `neutral` | **2 token cases + 14 view cases failed** |
+| Mutation                                                          | Result                                                                                                 |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `layout.tsx`: put the explicit `<head>` back                      | **1 failed** (`renders NO explicit <head> element`) — and it is the case that names the browser defect |
+| `api.ts`: drop `signal: controller.signal` from the origins fetch | **1 failed** — the never-answering `fetch` hangs to vitest's own 5 s timeout                           |
+| `@vpay/tokens`: `checkoutOutcomeTone.failed` back to `neutral`    | **2 token cases + 14 view cases failed**                                                               |
 
 The implementer's own fourteen were not re-run; they are recorded in
 [`opus.md`](opus.md) §5 and the three above are the review's.
@@ -193,17 +193,17 @@ every head that followed a documentation commit, so that no run this file
 reports was made on a tree that then changed. **Every recipe exit 0 on every
 run**, with the same numbers throughout:
 
-| recipe | result |
-|---|---|
-| `fmt-check` | ok (Rust; `just fmt` also runs prettier over ~222 unrelated files and was deliberately not run) |
-| `clippy` | ok, `-D warnings` |
-| `verify` | all ten gates — `verify-links` **854 links in 153 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
-| `test-rust` | **1401 run, 1401 passed, 0 skipped** — 43 binaries, real Postgres and real WireMock rails, thirteen to seventeen minutes a run |
-| `test-doc` | **96 passed, 1 ignored** |
-| `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)** |
-| `lint-web` | ok |
-| `test-web` | `@vpay/checkout` **448 in 23 files, 0 skipped** (was 442 in 22), `@vpay/tokens` **7 in 1** (was 3), `examples/shop` 96, `sdks/stripe-js` 146, `sdks/nodejs` 180 |
-| `deny` | advisories, bans, licenses, sources ok |
+| recipe           | result                                                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`      | ok (Rust; `just fmt` also runs prettier over ~222 unrelated files and was deliberately not run)                                                                 |
+| `clippy`         | ok, `-D warnings`                                                                                                                                               |
+| `verify`         | all ten gates — `verify-links` **854 links in 153 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0                     |
+| `test-rust`      | **1401 run, 1401 passed, 0 skipped** — 43 binaries, real Postgres and real WireMock rails, thirteen to seventeen minutes a run                                  |
+| `test-doc`       | **96 passed, 1 ignored**                                                                                                                                        |
+| `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1401 total (floor 1080)**                                                                                  |
+| `lint-web`       | ok                                                                                                                                                              |
+| `test-web`       | `@vpay/checkout` **448 in 23 files, 0 skipped** (was 442 in 22), `@vpay/tokens` **7 in 1** (was 3), `examples/shop` 96, `sdks/stripe-js` 146, `sdks/nodejs` 180 |
+| `deny`           | advisories, bans, licenses, sources ok                                                                                                                          |
 
 Nothing under `backends/` is touched by this branch or by this review, so every
 Rust number is master's.

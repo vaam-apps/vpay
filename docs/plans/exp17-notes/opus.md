@@ -72,10 +72,10 @@ shape it recognises is enum membership (`= ANY (ARRAY[...])` /
 > it, introspection always reports it as opaque text.
 
 So `Raw("code ~ '^[A-Z]{3}$'::text") != Iso4217` and the diff emits a
-drop-and-add on the *same name*. Two lines before, two lines after.
+drop-and-add on the _same name_. Two lines before, two lines after.
 
 The rename was kept anyway: the database now carries the name a generated
-`migrate diff` would emit DDL against, the names are the half that *can*
+`migrate diff` would emit DDL against, the names are the half that _can_
 converge at 0.11.1, and doing this rename later means doing it on a table
 with rows. But **do not expect a CHECK rename to move
 `EXPECTED_DRIFT_CHANGES`** — that expectation is what this section exists to
@@ -85,7 +85,7 @@ correct.
 hand-named for the same reason plus two of their own: `display_name` has no
 `@db_enforce`, so its CHECK has no authored counterpart to converge on at
 all, and `postgres_smoke.rs` asserts the report still carries
-``CHECK `code_length` ...`` as its evidence that the report says *something*
+``CHECK `code_length` ...`` as its evidence that the report says _something_
 about `providers` beside the invisible cross-column CHECK.
 
 ### 1b. Why the enum conversion bought nothing, and why it was still required
@@ -105,7 +105,7 @@ Two upstream behaviours make the conversion invisible to the report:
 
 The remaining line, `column flow type differs (live: Scalar("String"), schema:
 Enum("ProviderFlow"))`, is **permanent at 0.11.1**. `enums.rs`'s own doc:
-"the `.cstack`-side enum *name* has no catalog representation to recover it
+"the `.cstack`-side enum _name_ has no catalog representation to recover it
 from, which is the same documented lossiness the design doc's §2.2 already
 calls out". Every enum-typed column in `schemas/vpay.cstack` carries one
 (`charges.state`, `charges.failure_code`, `payment_intents.status`,
@@ -128,7 +128,7 @@ is worth recording rather than smoothing.
 
 **1a.** Comment out the `ALTER COLUMN`, the `ADD CONSTRAINT` and the `DROP
 TYPE`. `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx`
-fails — but at the *seed*, because `reconcile`'s hand-written INSERT no
+fails — but at the _seed_, because `reconcile`'s hand-written INSERT no
 longer casts `$3`:
 
 ```text
@@ -137,7 +137,7 @@ Caused by: column "flow" is of type provider_flow but expression is of type text
 ```
 
 **1b.** Also restore `$3::provider_flow` in `config_reconcile`. Now it fails
-at the test's *own raw* read, because sqlx will not decode a native enum as a
+at the test's _own raw_ read, because sqlx will not decode a native enum as a
 `String` either:
 
 ```text
@@ -173,8 +173,8 @@ serialises boot against boot.
 
 Then the part the brief did not ask for and that mattered more:
 `cargo nextest run -p vpay-db --lib --test repositories` with the mutation
-still applied — **103 tests run, 103 passed, 0 skipped.** *Nothing in the
-repository caught it.* The row lock was an unguarded guard.
+still applied — **103 tests run, 103 passed, 0 skipped.** _Nothing in the
+repository caught it._ The row lock was an unguarded guard.
 
 So this change adds
 `reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer`,
@@ -189,7 +189,7 @@ which is deterministic rather than raced:
    lock (free) and blocks on the row;
 4. the blocker commits.
 
-With `.for_update()`: the *read* is what blocked, so it returns the
+With `.for_update()`: the _read_ is what blocked, so it returns the
 post-commit 3 and boot refuses with `CurrencyExponentConflict { stored: 3,
 seeded: 0 }`; the stored value stays 3.
 
@@ -209,7 +209,7 @@ With `.for_update()` restored: PASS, 4.20 s, alongside the three other
 reconcile cases.
 
 **Which guard is which, stated plainly:** the `pg_advisory_xact_lock` binds
-every writer that goes *through* `reconcile`; the row lock binds a writer
+every writer that goes _through_ `reconcile`; the row lock binds a writer
 that does not. Neither test covers the other's guard.
 
 ### Mutation 3 — delete `@@allow("create", …)` from `model Currency`
@@ -297,7 +297,7 @@ currencies.exponent`, a deliberate no-op whose `RETURNING` handed back the
 stored value.
 
 **Left to the maintainer, not decided here.** Unblocking means removing the
-five `@default(...)`s *and* `ALTER TABLE providers ALTER COLUMN ... DROP
+five `@default(...)`s _and_ `ALTER TABLE providers ALTER COLUMN ... DROP
 DEFAULT` on all five — a code generator's input-shaping rule deciding vpay's
 DDL. Removing the `@default`s without the DDL change is not an option: the
 drift report grows five `default value differs` lines.
@@ -307,7 +307,7 @@ drift report grows five `default value differs` lines.
 ## 4. Two connections, and why boot does not deadlock against itself
 
 `upsert_resolve.rs::gate_update_policy` runs `row_passes_update_policy` on
-`runtime.pool()` — a *second* pooled connection — while `reconcile`'s own
+`runtime.pool()` — a _second_ pooled connection — while `reconcile`'s own
 transaction holds one. The obvious worry is a self-deadlock, because that
 transaction has just taken `FOR UPDATE` on the same row.
 
@@ -329,11 +329,11 @@ it is not a relation predicate — so the insert branch takes one connection.
 - `CurrencySeed::exponent` and `DbError::CurrencyExponentConflict`'s
   `stored`/`seeded` are `i64`. sqlx refuses the narrowing rather than
   performing it (`mismatched types; Rust type i32 (as SQL type INT4) is not
-  compatible with SQL type INT8`), so this surfaced as a test failure rather
+compatible with SQL type INT8`), so this surfaced as a test failure rather
   than as silent truncation.
 - `vpay_api::v1::boot::boot_seeds` no longer returns `ConfigError::Validation`
-  at all. Its "exponent does not fit the column" arm became unreachable *by
-  type* — every `u32` fits an `i64` — so the `try_from` was replaced with
+  at all. Its "exponent does not fit the column" arm became unreachable _by
+  type_ — every `u32` fits an `i64` — so the `try_from` was replaced with
   `i64::from` rather than left as an error branch nothing could take. The
   real bound is unchanged and two layers up (`Config::validate_all` against
   `vpay_core::Currency::exponent`, then `currencies_exponent_range_check`).
@@ -363,7 +363,7 @@ malformed YAML and prettier refuses to parse it:
 error: Recipe `fmt` failed on line 265 with exit code 2
 ```
 
-So the recipe leaves the tree reformatted *and* reports failure. Reverted in
+So the recipe leaves the tree reformatted _and_ reports failure. Reverted in
 full here; no prettier output is in this branch. Not fixed, because it is
 unrelated to this task and the fix is a decision (add a `.prettierrc`
 matching how the tree is actually written, narrow the recipe's glob to the
@@ -386,7 +386,7 @@ by `prettier --list-different .`. `just ci` is unaffected — it runs
 - `reconcile` still owns its own transaction; the `UnitOfWork` /
   `PendingTransaction` seam is untouched.
 - `reconcile`'s provider upsert and its disable pass (`UPDATE providers SET
-  enabled = false WHERE code <> ALL($1)`) are both still raw sqlx.
+enabled = false WHERE code <> ALL($1)`) are both still raw sqlx.
 - No production path reads `providers` through CrateStack. `model Provider`'s
   `@@allow("read", …)` exists for one test, and `model Provider` has no write
   arm on purpose.

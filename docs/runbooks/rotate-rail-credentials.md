@@ -9,7 +9,7 @@ both and the mechanisms have nothing in common:
 - **§5 — a merchant's own credential**: vpay holds no merchant secret at all,
   so there is nothing to rotate. Revoking one needs the
   [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) **dual-authority
-  check** — YAML *and* the database. That check is the reason this page
+  check** — YAML _and_ the database. That check is the reason this page
   exists; [../roadmap.md](../roadmap.md) recorded that no runbook documented
   it.
 
@@ -24,10 +24,10 @@ made went to a WireMock host ([../status.md](../status.md)).
 Rail credentials live in YAML as `${VAR}` placeholders, resolved from the
 process environment at boot. From `config/application.yml`:
 
-| Rail | `settings` (printed in full by `ProviderHost`'s `Debug`) | `credentials` (redacted) |
-|---|---|---|
-| `mtn_momo` | `target_environment`, `api_user` = `${MTN_API_USER}` | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}` |
-| `orange_money` | `env`, `lang` | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}` |
+| Rail           | `settings` (printed in full by `ProviderHost`'s `Debug`) | `credentials` (redacted)                                                                                                    |
+| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `mtn_momo`     | `target_environment`, `api_user` = `${MTN_API_USER}`     | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}`                                                |
+| `orange_money` | `env`, `lang`                                            | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}` |
 
 Six rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
 (`docs/flows/webhooks.md`, Step 5) for seven **on this branch, as of
@@ -42,7 +42,7 @@ grep -o '${[A-Z_]*}' config/application.yml | sort -u
 
 All of them are supplied by the single Secret the chart's
 `rails.existingSecret` names, projected with `envFrom.secretRef` — so
-`kubectl describe pod` shows the variable *names* and never the values. A key
+`kubectl describe pod` shows the variable _names_ and never the values. A key
 the image needs and the Secret lacks is exit 78, not a missing feature.
 
 **A rail named in configuration without its required keys is exit 78 at boot,
@@ -129,7 +129,7 @@ ORDER BY sent_at DESC;
 
 **`error_kind = 'misconfigured'` is the signature of a bad credential.** It
 means the adapter refused before or because of a bad credential, header or
-`base_url` — *fix the deployment, not the mapping*. It is not
+`base_url` — _fix the deployment, not the mapping_. It is not
 `provider_unavailable` (the rail is unreachable) and not `provider_error`
 (the rail said something the adapter could not parse); see
 [provider-error-rate.md](provider-error-rate.md).
@@ -163,10 +163,10 @@ has no config hot reload.
 
 Revoking is the operation that has to be fast, and it has **two authorities**:
 
-| Authority | Where | What it decides |
-|---|---|---|
-| `merchant_clients` in YAML | `config/application.yml`, loaded at boot | **Identity.** Does this client exist; what is its public JWK, its `merchant_id`, its scopes, its audience |
-| `disabled_clients` | the database (`client_id`, `disabled_at`, `reason`) | **Subtraction only.** Never grants access; only takes it away, with no deploy |
+| Authority                  | Where                                               | What it decides                                                                                           |
+| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `merchant_clients` in YAML | `config/application.yml`, loaded at boot            | **Identity.** Does this client exist; what is its public JWK, its `merchant_id`, its scopes, its audience |
+| `disabled_clients`         | the database (`client_id`, `disabled_at`, `reason`) | **Subtraction only.** Never grants access; only takes it away, with no deploy                             |
 
 > A correct answer to "is this client allowed right now" needs **both**. YAML
 > alone is not the answer, and neither is the table.

@@ -23,7 +23,7 @@
 
 function required(name: string): string {
   const value = process.env[name];
-  if (typeof value !== 'string' || value.trim().length === 0) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(
       `${name} is not set. The vpay checkout app cannot serve a payment page without it.`,
     );
@@ -33,11 +33,13 @@ function required(name: string): string {
 
 /** The base URL the payer's browser calls. */
 export function browserApiBaseUrl(): string {
-  return required('NEXT_PUBLIC_VPAY_API_URL');
+  return required("NEXT_PUBLIC_VPAY_API_URL");
 }
 
 /** The base URL this server calls for the origins lookup. */
 export function serverApiBaseUrl(): string | null {
-  const value = process.env['VPAY_API_URL'];
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  const value = process.env["VPAY_API_URL"];
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }

@@ -1,20 +1,24 @@
-'use client';
+"use client";
 
-import { Checkbox as BaseCheckbox } from '@base-ui/react/checkbox';
-import { cva, type VariantProps } from 'class-variance-authority';
+import { Checkbox as BaseCheckbox } from "@base-ui/react/checkbox";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-const checkbox = cva('checkbox', {
+const checkbox = cva("checkbox", {
   variants: {
-    tone: { default: '', primary: 'checkbox-primary' },
-    size: { sm: 'checkbox-sm', md: '' },
+    tone: { default: "", primary: "checkbox-primary" },
+    size: { sm: "checkbox-sm", md: "" },
   },
-  defaultVariants: { tone: 'default', size: 'md' },
+  defaultVariants: { tone: "default", size: "md" },
 });
 
 export interface CheckboxProps
-  extends Omit<React.ComponentProps<typeof BaseCheckbox.Root>, 'className' | 'render' | 'nativeButton'>,
+  extends
+    Omit<
+      React.ComponentProps<typeof BaseCheckbox.Root>,
+      "className" | "render" | "nativeButton"
+    >,
     VariantProps<typeof checkbox> {
   className?: string;
 }
@@ -46,7 +50,7 @@ export function Checkbox({ tone, size, className, ...rest }: CheckboxProps) {
   );
 }
 
-export type CheckboxLabelProps = React.ComponentPropsWithoutRef<'label'>;
+export type CheckboxLabelProps = React.ComponentPropsWithoutRef<"label">;
 
 /**
  * The clickable sentence beside a {@link Checkbox}.
@@ -66,5 +70,5 @@ export function CheckboxLabel({ className, ...rest }: CheckboxLabelProps) {
   // IS the association (HTML's "labeled control" is the first labelable
   // descendant). An id here would have to be threaded through two components
   // for no gain.
-  return <label className={cn('cursor-pointer', className)} {...rest} />;
+  return <label className={cn("cursor-pointer", className)} {...rest} />;
 }

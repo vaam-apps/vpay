@@ -1,14 +1,22 @@
-import { cva, type VariantProps } from 'class-variance-authority';
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-const spinner = cva('loading loading-dots', {
-  variants: { size: { xs: 'loading-xs', sm: 'loading-sm', md: 'loading-md', lg: 'loading-lg' } },
-  defaultVariants: { size: 'md' },
+const spinner = cva("loading loading-dots", {
+  variants: {
+    size: {
+      xs: "loading-xs",
+      sm: "loading-sm",
+      md: "loading-md",
+      lg: "loading-lg",
+    },
+  },
+  defaultVariants: { size: "md" },
 });
 
 export interface SpinnerProps
-  extends Omit<React.ComponentPropsWithoutRef<'span'>, 'children'>,
+  extends
+    Omit<React.ComponentPropsWithoutRef<"span">, "children">,
     VariantProps<typeof spinner> {
   /** Accessible label. The spinner itself is `aria-hidden`. */
   label?: string;
@@ -24,7 +32,11 @@ export interface SpinnerProps
 export function Spinner({ size, label, className, ...rest }: SpinnerProps) {
   return (
     <>
-      <span aria-hidden className={cn(spinner({ size }), className)} {...rest} />
+      <span
+        aria-hidden
+        className={cn(spinner({ size }), className)}
+        {...rest}
+      />
       {label ? <span className="sr-only">{label}</span> : null}
     </>
   );

@@ -5,7 +5,7 @@
  * and one place to change. `middleware.test.ts` asserts the exact strings on
  * each of the three routes.
  */
-import { normalizeOrigins } from './origins';
+import { normalizeOrigins } from "./origins";
 
 /**
  * D6, plus the two that always travel with it.
@@ -19,16 +19,18 @@ import { normalizeOrigins } from './origins';
  * - `X-Content-Type-Options: nosniff` — nothing here is served as a
  *   guessable type.
  */
-export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'Referrer-Policy': 'no-referrer',
-  'Cache-Control': 'no-store',
-  'X-Content-Type-Options': 'nosniff',
-});
+export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze(
+  {
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  },
+);
 
 /** The CSP source list for `frame-ancestors`. Empty means `'none'`. */
 export function frameAncestors(origins: readonly string[]): string {
   const normalized = normalizeOrigins(origins);
-  return normalized.length === 0 ? "'none'" : normalized.join(' ');
+  return normalized.length === 0 ? "'none'" : normalized.join(" ");
 }
 
 /**
@@ -57,16 +59,18 @@ export const CSP_FRAME_ANCESTORS_NONE = "frame-ancestors 'none'";
  * — the whole point is that this value came from vpay's own API on the
  * server side of this request.
  */
-export const EMBED_ORIGINS_HEADER = 'x-vpay-embed-origins';
+export const EMBED_ORIGINS_HEADER = "x-vpay-embed-origins";
 
 /** Serialises an origin list for {@link EMBED_ORIGINS_HEADER}. */
 export function encodeOriginsHeader(origins: readonly string[]): string {
-  return normalizeOrigins(origins).join(' ');
+  return normalizeOrigins(origins).join(" ");
 }
 
 /** Reads {@link EMBED_ORIGINS_HEADER} back. An absent or empty header is an empty list. */
-export function decodeOriginsHeader(value: string | null | undefined): readonly string[] {
-  if (typeof value !== 'string' || value.trim().length === 0) {
+export function decodeOriginsHeader(
+  value: string | null | undefined,
+): readonly string[] {
+  if (typeof value !== "string" || value.trim().length === 0) {
     return Object.freeze([]);
   }
   return normalizeOrigins(value.trim().split(/\s+/));

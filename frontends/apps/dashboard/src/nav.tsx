@@ -1,6 +1,6 @@
-import Link from 'next/link';
+import Link from "next/link";
 
-import { Heading, PageShell, Stack } from '@vpay/ui';
+import { Heading, PageShell, Stack } from "@vpay/ui";
 
 /**
  * Every internal link the persistent chrome renders, in one array.
@@ -23,9 +23,10 @@ import { Heading, PageShell, Stack } from '@vpay/ui';
  * does nothing. Signing out is on the pages behind the session
  * (`SignedInBar`), for the same reason.
  */
-export const NAV_LINKS: readonly { readonly href: string; readonly label: string }[] = [
-  { href: '/payments', label: 'Payments' },
-];
+export const NAV_LINKS: readonly {
+  readonly href: string;
+  readonly label: string;
+}[] = [{ href: "/payments", label: "Payments" }];
 
 /**
  * The brand and the nav, as one `<nav>` landmark.

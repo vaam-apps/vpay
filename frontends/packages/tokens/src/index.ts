@@ -6,22 +6,25 @@
  */
 
 export const PAYMENT_STATUS = [
-  'requires_payment_method',
-  'requires_action',
-  'processing',
-  'succeeded',
-  'canceled',
+  "requires_payment_method",
+  "requires_action",
+  "processing",
+  "succeeded",
+  "canceled",
 ] as const;
 
 export type PaymentStatus = (typeof PAYMENT_STATUS)[number];
 
 /** daisyUI semantic colour per status. */
-export const statusTone: Record<PaymentStatus, 'neutral' | 'info' | 'warning' | 'success' | 'error'> = {
-  requires_payment_method: 'neutral',
-  requires_action: 'warning',
-  processing: 'info',
-  succeeded: 'success',
-  canceled: 'warning',
+export const statusTone: Record<
+  PaymentStatus,
+  "neutral" | "info" | "warning" | "success" | "error"
+> = {
+  requires_payment_method: "neutral",
+  requires_action: "warning",
+  processing: "info",
+  succeeded: "success",
+  canceled: "warning",
 };
 
 /**
@@ -34,7 +37,7 @@ export const statusTone: Record<PaymentStatus, 'neutral' | 'info' | 'warning' | 
  * means "awaiting a payment method" rather than "this failed". These three
  * are what one payer is told at the end of one attempt.
  */
-export const CHECKOUT_OUTCOME = ['succeeded', 'failed', 'canceled'] as const;
+export const CHECKOUT_OUTCOME = ["succeeded", "failed", "canceled"] as const;
 
 export type CheckoutOutcome = (typeof CHECKOUT_OUTCOME)[number];
 
@@ -60,11 +63,11 @@ export type CheckoutOutcome = (typeof CHECKOUT_OUTCOME)[number];
  */
 export const checkoutOutcomeTone: Record<
   CheckoutOutcome,
-  'neutral' | 'info' | 'warning' | 'success' | 'error'
+  "neutral" | "info" | "warning" | "success" | "error"
 > = {
-  succeeded: 'success',
-  failed: 'error',
-  canceled: 'warning',
+  succeeded: "success",
+  failed: "error",
+  canceled: "warning",
 };
 
 /**
@@ -75,9 +78,9 @@ export const checkoutOutcomeTone: Record<
  * a payment is nearly done. See docs/flows/payment-lifecycle.md.
  */
 export const statusLabel: Record<PaymentStatus, string> = {
-  requires_payment_method: 'Awaiting payment method',
-  requires_action: 'Awaiting payer on the rail',
-  processing: 'In flight — not yet decided',
-  succeeded: 'Succeeded',
-  canceled: 'Canceled',
+  requires_payment_method: "Awaiting payment method",
+  requires_action: "Awaiting payer on the rail",
+  processing: "In flight — not yet decided",
+  succeeded: "Succeeded",
+  canceled: "Canceled",
 };

@@ -19,7 +19,7 @@
  * shown to a payer and they are not on the JSON endpoint: a payer cannot
  * fix a mounted file, and the paths in them are the operator's business.
  */
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml } from "yaml";
 
 /** The look of the page: who is serving it, and in what colours. */
 export interface Branding {
@@ -132,7 +132,10 @@ const MAX_SUPPORT_CONTACT = 200;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 /** A YAML document as a plain object, or `null` with a problem for anything else. */
-function documentOf(source: string | null, file: string): Parsed<Record<string, unknown> | null> {
+function documentOf(
+  source: string | null,
+  file: string,
+): Parsed<Record<string, unknown> | null> {
   if (source === null) {
     return { value: null, problems: [] };
   }
@@ -140,16 +143,22 @@ function documentOf(source: string | null, file: string): Parsed<Record<string, 
   try {
     parsed = parseYaml(source);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : 'unparseable';
-    return { value: null, problems: [`${file}: not valid YAML (${detail}) — using defaults`] };
+    const detail = error instanceof Error ? error.message : "unparseable";
+    return {
+      value: null,
+      problems: [`${file}: not valid YAML (${detail}) — using defaults`],
+    };
   }
   // An empty document parses to `null`, and that is a legitimate file: it
   // says "mounted, nothing overridden". A scalar or a list is not.
   if (parsed === null || parsed === undefined) {
     return { value: null, problems: [] };
   }
-  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { value: null, problems: [`${file}: top level is not a mapping — using defaults`] };
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      value: null,
+      problems: [`${file}: top level is not a mapping — using defaults`],
+    };
   }
   return { value: parsed as Record<string, unknown>, problems: [] };
 }
@@ -165,7 +174,7 @@ function stringField(
   if (raw === undefined || raw === null) {
     return null;
   }
-  if (typeof raw !== 'string') {
+  if (typeof raw !== "string") {
     problems.push(`${file}: ${key} is not a string — ignored`);
     return null;
   }
@@ -190,7 +199,12 @@ function stringField(
  * there is a document this page did not write; `public_base_url` is compared
  * against a browser's own origin, which only an absolute URL can be.
  */
-function urlField(raw: unknown, key: string, file: string, problems: string[]): string | null {
+function urlField(
+  raw: unknown,
+  key: string,
+  file: string,
+  problems: string[],
+): string | null {
   const text = stringField(raw, key, file, 2048, problems);
   if (text === null) {
     return null;
@@ -202,7 +216,7 @@ function urlField(raw: unknown, key: string, file: string, problems: string[]): 
     problems.push(`${file}: ${key} is not an absolute URL — ignored`);
     return null;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     problems.push(`${file}: ${key} is not http or https — ignored`);
     return null;
   }
@@ -217,7 +231,10 @@ function urlField(raw: unknown, key: string, file: string, problems: string[]): 
  * the log saying so (written by `runtime.ts`, which is the layer that knows
  * whether the file was absent or unreadable).
  */
-export function parseBranding(source: string | null, file = 'branding.yaml'): Parsed<Branding> {
+export function parseBranding(
+  source: string | null,
+  file = "branding.yaml",
+): Parsed<Branding> {
   const document = documentOf(source, file);
   const problems = [...document.problems];
   if (document.value === null) {
@@ -225,24 +242,38 @@ export function parseBranding(source: string | null, file = 'branding.yaml'): Pa
   }
   const raw = document.value;
 
-  const primaryRaw = stringField(raw['primary_color'], 'primary_color', file, 32, problems);
+  const primaryRaw = stringField(
+    raw["primary_color"],
+    "primary_color",
+    file,
+    32,
+    problems,
+  );
   let primaryColor: string | null = null;
   if (primaryRaw !== null) {
     if (HEX_COLOR.test(primaryRaw)) {
       primaryColor = primaryRaw.toLowerCase();
     } else {
-      problems.push(`${file}: primary_color is not a #rrggbb hex colour — ignored`);
+      problems.push(
+        `${file}: primary_color is not a #rrggbb hex colour — ignored`,
+      );
     }
   }
 
   return {
     value: {
-      displayName: stringField(raw['display_name'], 'display_name', file, MAX_DISPLAY_NAME, problems),
-      logoUrl: urlField(raw['logo_url'], 'logo_url', file, problems),
+      displayName: stringField(
+        raw["display_name"],
+        "display_name",
+        file,
+        MAX_DISPLAY_NAME,
+        problems,
+      ),
+      logoUrl: urlField(raw["logo_url"], "logo_url", file, problems),
       primaryColor,
       supportContact: stringField(
-        raw['support_contact'],
-        'support_contact',
+        raw["support_contact"],
+        "support_contact",
         file,
         MAX_SUPPORT_CONTACT,
         problems,
@@ -258,19 +289,19 @@ const RAIL_CODE = /^[a-z0-9_]+$/;
 /** `config.yaml`'s `checkout:` mapping → {@link CheckoutSettings}. */
 export function parseCheckoutSettings(
   source: string | null,
-  file = 'config.yaml',
+  file = "config.yaml",
 ): Parsed<CheckoutSettings> {
   const document = documentOf(source, file);
   const problems = [...document.problems];
   if (document.value === null) {
     return { value: DEFAULT_CHECKOUT_SETTINGS, problems };
   }
-  const section: unknown = document.value['checkout'];
+  const section: unknown = document.value["checkout"];
   if (section === undefined || section === null) {
     problems.push(`${file}: no checkout: section — using defaults`);
     return { value: DEFAULT_CHECKOUT_SETTINGS, problems };
   }
-  if (typeof section !== 'object' || Array.isArray(section)) {
+  if (typeof section !== "object" || Array.isArray(section)) {
     problems.push(`${file}: checkout: is not a mapping — using defaults`);
     return { value: DEFAULT_CHECKOUT_SETTINGS, problems };
   }
@@ -278,9 +309,18 @@ export function parseCheckoutSettings(
 
   return {
     value: {
-      publicBaseUrl: urlField(raw['public_base_url'], 'checkout.public_base_url', file, problems),
-      allowedMethods: allowedMethodsField(raw['allowed_methods'], file, problems),
-      features: featuresField(raw['features'], file, problems),
+      publicBaseUrl: urlField(
+        raw["public_base_url"],
+        "checkout.public_base_url",
+        file,
+        problems,
+      ),
+      allowedMethods: allowedMethodsField(
+        raw["allowed_methods"],
+        file,
+        problems,
+      ),
+      features: featuresField(raw["features"], file, problems),
     },
     problems,
   };
@@ -300,7 +340,7 @@ function allowedMethodsField(
   }
   const codes: string[] = [];
   for (const entry of raw) {
-    if (typeof entry !== 'string' || !RAIL_CODE.test(entry)) {
+    if (typeof entry !== "string" || !RAIL_CODE.test(entry)) {
       problems.push(
         `${file}: checkout.allowed_methods has an entry that is not a rail code — ignored`,
       );
@@ -314,26 +354,36 @@ function allowedMethodsField(
     // Refused rather than honoured. An empty allow-list is indistinguishable
     // in YAML from a list someone meant to fill in, and honouring it would
     // refuse every payment on the deployment with no error anywhere.
-    problems.push(`${file}: checkout.allowed_methods is empty — ignored, every rail stays on offer`);
+    problems.push(
+      `${file}: checkout.allowed_methods is empty — ignored, every rail stays on offer`,
+    );
     return null;
   }
   return Object.freeze(codes);
 }
 
-function featuresField(raw: unknown, file: string, problems: string[]): CheckoutFeatures {
+function featuresField(
+  raw: unknown,
+  file: string,
+  problems: string[],
+): CheckoutFeatures {
   if (raw === undefined || raw === null) {
     return DEFAULT_CHECKOUT_SETTINGS.features;
   }
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    problems.push(`${file}: checkout.features is not a mapping — using defaults`);
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    problems.push(
+      `${file}: checkout.features is not a mapping — using defaults`,
+    );
     return DEFAULT_CHECKOUT_SETTINGS.features;
   }
-  const value: unknown = (raw as Record<string, unknown>)['page_memory'];
+  const value: unknown = (raw as Record<string, unknown>)["page_memory"];
   if (value === undefined || value === null) {
     return DEFAULT_CHECKOUT_SETTINGS.features;
   }
-  if (typeof value !== 'boolean') {
-    problems.push(`${file}: checkout.features.page_memory is not true or false — using the default`);
+  if (typeof value !== "boolean") {
+    problems.push(
+      `${file}: checkout.features.page_memory is not true or false — using the default`,
+    );
     return DEFAULT_CHECKOUT_SETTINGS.features;
   }
   return Object.freeze({ pageMemory: value });

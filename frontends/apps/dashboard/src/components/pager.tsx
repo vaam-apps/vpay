@@ -1,6 +1,6 @@
-import Link from 'next/link';
+import Link from "next/link";
 
-import { Stack, Text } from '@vpay/ui';
+import { Stack, Text } from "@vpay/ui";
 
 export interface PagerProps {
   /** Href for the previous page, or `null` on the first one. */

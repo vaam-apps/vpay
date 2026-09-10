@@ -23,20 +23,20 @@ it:
 
 Every claim in `opus.md` was re-run rather than read.
 
-| claim | verdict | how |
-|---|---|---|
-| 114 tracked `*.md` scanned | **true** | `git ls-files '*.md' \| wc -l` → 114 at `2a97e53` |
-| 672 repository links checked | **true, and independently corroborated** | `cargo xtask verify-links` → 672. An independent oracle written against **markdown-it-py 3.0.0** (a real CommonMark implementation), applying the same skip/strip/resolve rules, reports **672** — exact agreement |
-| 5 broken links found on `master` | **true, and independently corroborated** | the same oracle on a detached worktree at `2b37f47` reports **5 broken**, and they are the five the notes name, file for file |
-| 5 fixed | **true** — but see finding **F1**; they were quotations | |
-| 39 unique ids resolve (24 runs, 14 PRs, 1 issue) | **true** | `cargo xtask verify-citations` re-run live → `39 unique id(s) … all resolve against vaam-apps/vpay`, 24 `run`, 14 `PR`, 1 `issue` |
-| 90 → 126 xtask tests, 0 skipped | **true** | `cargo nextest run -p xtask` → `126 tests run: 126 passed, 0 skipped` at `2a97e53` |
-| `verify-links` added to CI's `self-checks` job | **true** | `.github/workflows/ci.yml` gains a `verify-links` step between `verify-sdk-parity` and `verify-docs`, matching the justfile comment's order exactly. `actionlint` (`/home/selast/go/bin/actionlint`) exits 0 |
-| the four-backtick fence regression | **true, and the number is exact** | deleting the info-string clause from `fence_marker` makes the gate print `ok — 591` instead of `672` and fails `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence` |
-| the run pattern is any standalone 11-digit token | **true, but its justification is not** — finding **F3** | |
-| an uncued `#n` is deliberately unchecked | **true**, and `an_uncued_hash_number_is_not_a_citation` pins the tree's actual set | |
-| the pasted citation run | **stale** — finding **F6** | the per-id counts in `opus.md` are from before that file grew (`33929374661` 35 vs 40 measured, `PR 17` 2 vs 5). The 39-unique total is right |
-| `just test-rust` 1202/1202 | see §4 | |
+| claim                                            | verdict                                                                            | how                                                                                                                                                                                                                |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 114 tracked `*.md` scanned                       | **true**                                                                           | `git ls-files '*.md' \| wc -l` → 114 at `2a97e53`                                                                                                                                                                  |
+| 672 repository links checked                     | **true, and independently corroborated**                                           | `cargo xtask verify-links` → 672. An independent oracle written against **markdown-it-py 3.0.0** (a real CommonMark implementation), applying the same skip/strip/resolve rules, reports **672** — exact agreement |
+| 5 broken links found on `master`                 | **true, and independently corroborated**                                           | the same oracle on a detached worktree at `2b37f47` reports **5 broken**, and they are the five the notes name, file for file                                                                                      |
+| 5 fixed                                          | **true** — but see finding **F1**; they were quotations                            |                                                                                                                                                                                                                    |
+| 39 unique ids resolve (24 runs, 14 PRs, 1 issue) | **true**                                                                           | `cargo xtask verify-citations` re-run live → `39 unique id(s) … all resolve against vaam-apps/vpay`, 24 `run`, 14 `PR`, 1 `issue`                                                                                  |
+| 90 → 126 xtask tests, 0 skipped                  | **true**                                                                           | `cargo nextest run -p xtask` → `126 tests run: 126 passed, 0 skipped` at `2a97e53`                                                                                                                                 |
+| `verify-links` added to CI's `self-checks` job   | **true**                                                                           | `.github/workflows/ci.yml` gains a `verify-links` step between `verify-sdk-parity` and `verify-docs`, matching the justfile comment's order exactly. `actionlint` (`/home/selast/go/bin/actionlint`) exits 0       |
+| the four-backtick fence regression               | **true, and the number is exact**                                                  | deleting the info-string clause from `fence_marker` makes the gate print `ok — 591` instead of `672` and fails `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence`                                   |
+| the run pattern is any standalone 11-digit token | **true, but its justification is not** — finding **F3**                            |                                                                                                                                                                                                                    |
+| an uncued `#n` is deliberately unchecked         | **true**, and `an_uncued_hash_number_is_not_a_citation` pins the tree's actual set |                                                                                                                                                                                                                    |
+| the pasted citation run                          | **stale** — finding **F6**                                                         | the per-id counts in `opus.md` are from before that file grew (`33929374661` 35 vs 40 measured, `PR 17` 2 vs 5). The 39-unique total is right                                                                      |
+| `just test-rust` 1202/1202                       | see §4                                                                             |                                                                                                                                                                                                                    |
 
 The environment finding `opus.md` reports (a first `just test-rust` in a fresh
 worktree fails the Node-SDK signature parity test with `tsc: not found`,
@@ -52,46 +52,46 @@ verify-links` or `verify-citations` run over the real repository, rebuilt
 first — `cargo nextest run -p xtask` does **not** rebuild `target/debug/xtask`,
 which is a trap worth writing down.
 
-| # | mutation | caught by | result |
-|---|---|---|---|
-| 1 | existence check always succeeds (`if false && !files.contains(…)`) | 4 unit tests | `a_file_that_is_present_but_untracked_does_not_satisfy_a_link`, `a_fragment_does_not_excuse_a_missing_file`, `a_reference_definition_is_checked`, `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence`. **Not** by the gate, and cannot be: the tree has no broken link to miss |
-| 2 | stop masking fenced blocks | 2 unit tests **and** the gate | `a_link_inside_a_fenced_block_is_not_a_link`, `an_inner_fence_with_an_info_string_does_not_close_the_block`; the gate exits 1 with 8 false failures |
-| 3 | stop parsing reference definitions | 1 unit test | `a_reference_definition_is_checked`. The gate does not notice — there is not one reference definition in the tree, which `opus.md` discloses |
-| 4 | break `#fragment` / `:line` stripping | 1 unit test **and** the gate | `a_fragment_and_a_line_suffix_resolve_to_the_file_itself`; the gate exits 1 with 15 false failures |
-| 5 | delete `fence_marker`'s info-string-backtick clause | 1 unit test | `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence`; the gate silently drops to 591 links. This is `opus.md`'s own M4, reproduced exactly |
-| 6 | remove `verify-links` from `just verify` | **nothing** | expected, and pre-existing: no gate checks the justfile against `.github/workflows/ci.yml`, which the justfile's own comment admits ("the only thing keeping this comment honest is someone reading the workflow beside it"). CI would still run the step, so the branch-protection gate holds |
-| 7 | `verify-citations` prints "skipped" and exits 0 when `gh` is missing | **nothing, as delivered** — finding **F2**; a guard now exists | |
-| 8 | one broken relative link appended to `docs/roadmap.md` | the gate | exit 1, `docs/roadmap.md:1388: ../nope/does-not-exist.md -> nope/does-not-exist.md` |
-| 9 | an invented run id (eleven nines) and a pull request numbered 99999 in `docs/roadmap.md` | the gate | exit 1, both reported `HTTP 404` with `docs/roadmap.md:1388` |
-| 10 | untracked `scratch.md` holding a broken link | correctly **not scanned** | gate still `ok — 672 … 114` |
-| 11 | link to a file present on disk but never staged | the gate | exit 1, `docs/roadmap.md:1388: untracked-target.md -> docs/untracked-target.md`. This is the right answer and the reason `git ls-files` is used |
+| #   | mutation                                                                                 | caught by                                                      | result                                                                                                                                                                                                                                                                                         |
+| --- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | existence check always succeeds (`if false && !files.contains(…)`)                       | 4 unit tests                                                   | `a_file_that_is_present_but_untracked_does_not_satisfy_a_link`, `a_fragment_does_not_excuse_a_missing_file`, `a_reference_definition_is_checked`, `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence`. **Not** by the gate, and cannot be: the tree has no broken link to miss   |
+| 2   | stop masking fenced blocks                                                               | 2 unit tests **and** the gate                                  | `a_link_inside_a_fenced_block_is_not_a_link`, `an_inner_fence_with_an_info_string_does_not_close_the_block`; the gate exits 1 with 8 false failures                                                                                                                                            |
+| 3   | stop parsing reference definitions                                                       | 1 unit test                                                    | `a_reference_definition_is_checked`. The gate does not notice — there is not one reference definition in the tree, which `opus.md` discloses                                                                                                                                                   |
+| 4   | break `#fragment` / `:line` stripping                                                    | 1 unit test **and** the gate                                   | `a_fragment_and_a_line_suffix_resolve_to_the_file_itself`; the gate exits 1 with 15 false failures                                                                                                                                                                                             |
+| 5   | delete `fence_marker`'s info-string-backtick clause                                      | 1 unit test                                                    | `a_backtick_run_whose_info_string_holds_backticks_opens_no_fence`; the gate silently drops to 591 links. This is `opus.md`'s own M4, reproduced exactly                                                                                                                                        |
+| 6   | remove `verify-links` from `just verify`                                                 | **nothing**                                                    | expected, and pre-existing: no gate checks the justfile against `.github/workflows/ci.yml`, which the justfile's own comment admits ("the only thing keeping this comment honest is someone reading the workflow beside it"). CI would still run the step, so the branch-protection gate holds |
+| 7   | `verify-citations` prints "skipped" and exits 0 when `gh` is missing                     | **nothing, as delivered** — finding **F2**; a guard now exists |                                                                                                                                                                                                                                                                                                |
+| 8   | one broken relative link appended to `docs/roadmap.md`                                   | the gate                                                       | exit 1, `docs/roadmap.md:1388: ../nope/does-not-exist.md -> nope/does-not-exist.md`                                                                                                                                                                                                            |
+| 9   | an invented run id (eleven nines) and a pull request numbered 99999 in `docs/roadmap.md` | the gate                                                       | exit 1, both reported `HTTP 404` with `docs/roadmap.md:1388`                                                                                                                                                                                                                                   |
+| 10  | untracked `scratch.md` holding a broken link                                             | correctly **not scanned**                                      | gate still `ok — 672 … 114`                                                                                                                                                                                                                                                                    |
+| 11  | link to a file present on disk but never staged                                          | the gate                                                       | exit 1, `docs/roadmap.md:1388: untracked-target.md -> docs/untracked-target.md`. This is the right answer and the reason `git ls-files` is used                                                                                                                                                |
 
 Additionally, and not as mutations:
 
 - **`gh` genuinely absent** (`PATH` holding only `git`): exit **1**,
   `verify-citations needs the GitHub CLI and cannot run without it … This
-  command never skips`. Correct.
+command never skips`. Correct.
 - **`gh` present but unauthenticated** (`GH_TOKEN` garbage): exit **1**,
   `gh: Bad credentials (HTTP 401) … Run 'gh auth status'`. Correct.
 - **The 403/429 abort is reachable and reads correctly.** Simulated with a
   `gh` shim on `PATH` that answers every `api -i` with `HTTP/2.0 403`: the run
   stops at the first id with `GitHub refused … rate limited or out of scope
-  for this token. Nothing was concluded about the remaining citations`. On a
+for this token. Nothing was concluded about the remaining citations`. On a
   normal run it is not reachable — the command makes 40 authenticated
   requests against a 5 000/hour limit — which is the right side of the
   trade-off to be on.
 
 ## 3. Findings
 
-| # | severity | where | fixed |
-|---|---|---|---|
-| F1 | correctness / misleading-claim | `docs/plans/step8-notes/lane-c.md`, `lane-h.md`, `docs/status.md` | yes |
-| F2 | rule-break (an unguarded "never skips") | `.xtask/src/main.rs` `verify_citations` | yes |
-| F3 | robustness / misleading-claim | `.xtask/src/main.rs` `run_id_citations` | yes |
-| F4 | robustness (latent) | `.xtask/src/main.rs` `mask_non_links` | documented, not fixed — reasoning below |
-| F5 | nit (a false failure) | `.xtask/src/main.rs` `ancestor_directories` | yes |
-| F6 | nit (stale measurement) | `docs/plans/exp6-notes/opus.md` | yes |
-| F7 | nit (stale reference) | `docs/plans/step9-notes/release-claims.md` §5 | yes |
+| #   | severity                                | where                                                             | fixed                                   |
+| --- | --------------------------------------- | ----------------------------------------------------------------- | --------------------------------------- |
+| F1  | correctness / misleading-claim          | `docs/plans/step8-notes/lane-c.md`, `lane-h.md`, `docs/status.md` | yes                                     |
+| F2  | rule-break (an unguarded "never skips") | `.xtask/src/main.rs` `verify_citations`                           | yes                                     |
+| F3  | robustness / misleading-claim           | `.xtask/src/main.rs` `run_id_citations`                           | yes                                     |
+| F4  | robustness (latent)                     | `.xtask/src/main.rs` `mask_non_links`                             | documented, not fixed — reasoning below |
+| F5  | nit (a false failure)                   | `.xtask/src/main.rs` `ancestor_directories`                       | yes                                     |
+| F6  | nit (stale measurement)                 | `docs/plans/exp6-notes/opus.md`                                   | yes                                     |
+| F7  | nit (stale reference)                   | `docs/plans/step9-notes/release-claims.md` §5                     | yes                                     |
 
 ### F1 — the five "broken links" were quotations, and the fix altered them
 
@@ -99,13 +99,13 @@ All five sit inside blockquotes that quote Markdown belonging in another
 directory, and every destination was **already correct where that text
 lives**:
 
-| notes site, as written | the applied text |
-|---|---|
-| `lane-c.md:175` `(adapter-orange-money.md)` | `docs/flows/reconciler.md:173` |
-| `lane-c.md:181` `(reconciler.md)` | `docs/flows/crash-safety.md:320` |
-| `lane-c.md:189` `(reconciler.md)` | `docs/flows/crash-safety.md:320` |
-| `lane-h.md:289` `(flows/provider-port.md)` | `docs/status.md:1449` |
-| `lane-h.md:332` `(../reference/vpay-api.md)` | `docs/flows/reconciler.md:95` |
+| notes site, as written                       | the applied text                 |
+| -------------------------------------------- | -------------------------------- |
+| `lane-c.md:175` `(adapter-orange-money.md)`  | `docs/flows/reconciler.md:173`   |
+| `lane-c.md:181` `(reconciler.md)`            | `docs/flows/crash-safety.md:320` |
+| `lane-c.md:189` `(reconciler.md)`            | `docs/flows/crash-safety.md:320` |
+| `lane-h.md:289` `(flows/provider-port.md)`   | `docs/status.md:1449`            |
+| `lane-h.md:332` `(../reference/vpay-api.md)` | `docs/flows/reconciler.md:95`    |
 
 `lane-c.md:108` says "Each is quoted verbatim as it stands today, with the
 replacement". After the fix it is not, and a reader who pastes the replacement
@@ -145,11 +145,11 @@ That sentence is the whole justification for widening the pattern away from
 the brief's `run <11 digits>` cue, and it is true of tracked Markdown, not of
 the tree:
 
-| token | where | what it is |
-|---|---|---|
-| `01753401600` | `backends/crates/vpay-worker/src/signing.rs:243`, `sdks/rust/src/webhooks.rs:44,347,353,354` | a zero-padded webhook timestamp |
-| `01700000100` | `sdks/nodejs/src/webhooks.test.ts:180,198` | the same, in the Node SDK |
-| a French MSISDN (`+33` and a nine-digit mobile number, eleven digits with no separators) | `frontends/apps/checkout/src/lib/msisdn.test.ts:32` | a phone number |
+| token                                                                                    | where                                                                                        | what it is                      |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------- |
+| `01753401600`                                                                            | `backends/crates/vpay-worker/src/signing.rs:243`, `sdks/rust/src/webhooks.rs:44,347,353,354` | a zero-padded webhook timestamp |
+| `01700000100`                                                                            | `sdks/nodejs/src/webhooks.test.ts:180,198`                                                   | the same, in the Node SDK       |
+| a French MSISDN (`+33` and a nine-digit mobile number, eleven digits with no separators) | `frontends/apps/checkout/src/lib/msisdn.test.ts:32`                                          | a phone number                  |
 
 **This document is the proof, and it cost a gate failure to get.** The first
 draft of the table above printed that MSISDN as digits.
@@ -167,7 +167,7 @@ again, which is the second time it did so while this paragraph was written.)
 
 — a true sentence about a test fixture, reported as a false claim about this
 repository's history. It is spelled in words above for that reason. The two
-zero-padded timestamps *are* printed as digits, two rows up, and the same run
+zero-padded timestamps _are_ printed as digits, two rows up, and the same run
 ignores them: that is the fix in this branch working on the document that
 describes it.
 
@@ -193,7 +193,7 @@ is checked and reported broken when it is not a link:
 
 - a fence inside a blockquote (`> ```): `fence_marker` trims spaces only;
 - a four-space indented code block: `fence_marker` correctly refuses to
-  *open* on that indent, but nothing masks the body;
+  _open_ on that indent, but nothing masks the body;
 - HTML `<pre>`/`<code>`: only `mask_html_comments` would see it, and it looks
   for `<!--`.
 
@@ -222,7 +222,7 @@ paragraph, `release-claims-review.md`'s M2/M3 rows) and missed two more in the
 same file: `release-claims.md` §5's gates table ("**It does not check
 links.**") and the paragraph beneath it that justifies the throwaway link
 script. Both read as present tense about the repository. Struck through and
-dated like the others. `release-claims-review.md`'s F4 *evidence* cell is left
+dated like the others. `release-claims-review.md`'s F4 _evidence_ cell is left
 as written — it quotes what the command printed on the day, inside a finding
 about that day.
 
@@ -236,28 +236,27 @@ in place with a dated note rather than silently replaced.
 Run in this worktree, pinned toolchain, `CARGO_BUILD_JOBS=4`,
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`, `VPAY_REQUIRE_NODE=1`.
 
-| command | result |
-|---|---|
-| `just fmt-check` | ok |
-| `just clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | ok — the workspace includes `.xtask`, so the four new tests are linted too |
-| `just verify` | ok — five gates: `verify-no-mocks`; `verify-status` (1 unimplemented item); `verify-errors` (15 types, 14 `#[from]` variants); `verify-sdk-parity` (342 proving tests, 26 dated gaps); **`verify-links` — 676 links in 115 files** |
-| `just docs-check` | ok — `verify-status` and `verify-links`, no echo |
-| `just docs-check-citations` | ok — **39 unique ids** (24 runs, 14 PRs, 1 issue) over 115 files, all resolving against `vaam-apps/vpay` |
-| `cargo nextest run -p xtask` | **130 run, 130 passed, 0 skipped** (126 as delivered) |
-| `just test-rust` | **1206 run, 1206 passed, 0 skipped** (1202 as delivered, +4 here) |
-| `just test-doc` | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1206 total (minimum 1080)` |
-| `just lint-web` | ok — `eslint . --max-warnings 0` across every package |
-| `just test-web` | ok — **723** tests in 8 packages (302 `@vpay/checkout`, 172 `@vpay/sdk`, 119 stripe-js, 63 config, 57 `examples/shop`, 4 api-client, 3 tokens, 3 ui) |
-| `just deny` | `advisories ok, bans ok, licenses ok, sources ok` |
-| `actionlint` (`/home/selast/go/bin/actionlint`) | exit 0 over all of `.github/workflows/` |
-| **`just ci` end to end** | **exit 0**, on the final tree, full log kept |
+| command                                                                 | result                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just fmt-check`                                                        | ok                                                                                                                                                                                                                                 |
+| `just clippy` (`cargo clippy --workspace --all-targets -- -D warnings`) | ok — the workspace includes `.xtask`, so the four new tests are linted too                                                                                                                                                         |
+| `just verify`                                                           | ok — five gates: `verify-no-mocks`; `verify-status` (1 unimplemented item); `verify-errors` (15 types, 14 `#[from]` variants); `verify-sdk-parity` (342 proving tests, 26 dated gaps); **`verify-links` — 676 links in 115 files** |
+| `just docs-check`                                                       | ok — `verify-status` and `verify-links`, no echo                                                                                                                                                                                   |
+| `just docs-check-citations`                                             | ok — **39 unique ids** (24 runs, 14 PRs, 1 issue) over 115 files, all resolving against `vaam-apps/vpay`                                                                                                                           |
+| `cargo nextest run -p xtask`                                            | **130 run, 130 passed, 0 skipped** (126 as delivered)                                                                                                                                                                              |
+| `just test-rust`                                                        | **1206 run, 1206 passed, 0 skipped** (1202 as delivered, +4 here)                                                                                                                                                                  |
+| `just test-doc`                                                         | **86 passed, 0 failed, 1 ignored** — the ignored one is `sdks/rust`'s README block and is pre-existing                                                                                                                             |
+| `just verify-ignored`                                                   | `0 ignored (expected 0), 42 test binaries (expected 42), 1206 total (minimum 1080)`                                                                                                                                                |
+| `just lint-web`                                                         | ok — `eslint . --max-warnings 0` across every package                                                                                                                                                                              |
+| `just test-web`                                                         | ok — **723** tests in 8 packages (302 `@vpay/checkout`, 172 `@vpay/sdk`, 119 stripe-js, 63 config, 57 `examples/shop`, 4 api-client, 3 tokens, 3 ui)                                                                               |
+| `just deny`                                                             | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                                                                                                  |
+| `actionlint` (`/home/selast/go/bin/actionlint`)                         | exit 0 over all of `.github/workflows/`                                                                                                                                                                                            |
+| **`just ci` end to end**                                                | **exit 0**, on the final tree, full log kept                                                                                                                                                                                       |
 
 Counts moved because this review's own notes are a tracked Markdown file: 114
 files / 672 links as delivered, 115 / 676 with this document in the index. The
 independent markdown-it-py oracle agrees with the gate at every step of that
 (672 → 673 → 676).
-
 
 ## 5. Verdict
 
@@ -297,7 +296,6 @@ would both have done their job on the day they landed. The verdict is
 therefore "safe, but three claims short of honest" — and in a repository whose
 stated failure mode is looking more finished than it is, that is exactly the
 distance worth closing before merge.
-
 
 ## 6. What this review did not check
 

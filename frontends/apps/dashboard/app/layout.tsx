@@ -1,14 +1,14 @@
-import type { Metadata } from 'next';
+import type { Metadata } from "next";
 
-import { PageShell } from '@vpay/ui';
+import { PageShell } from "@vpay/ui";
 
-import { PrimaryNav } from '../src/nav';
+import { PrimaryNav } from "../src/nav";
 
-import './globals.css';
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'vpay dashboard',
-  description: 'Observability for vpay. Administration is YAML.',
+  title: "vpay dashboard",
+  description: "Observability for vpay. Administration is YAML.",
 };
 
 /**
@@ -32,7 +32,11 @@ export const metadata: Metadata = {
  * address — belongs to the pages behind the gate (`SignedInBar`) and not to
  * chrome shared with a page where nobody is signed in.
  */
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en" data-theme="bumblebee">
       <body>

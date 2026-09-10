@@ -19,7 +19,7 @@ musl-native for whichever architecture Docker pulled, and hardcoding
 `x86_64-unknown-linux-musl` on an arm64 host would force a cross-compile
 needing a GNU-compatible cross-linker no `rust:*-alpine` image ships — it
 "fails outright". So the Dockerfile passes `--target` set to the builder's
-*own* host triple, read from `rustc -vV` at build time. That is never a
+_own_ host triple, read from `rustc -vV` at build time. That is never a
 cross-compile, and it is not what ADR-0004 says.
 
 Step 6 then decided to publish arm64 (step-6 decision (8)), built on native

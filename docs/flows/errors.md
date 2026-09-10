@@ -52,22 +52,22 @@ through.
 derived from it unless a leaf error overrides one column with a comment
 saying why.
 
-| Category | Whose problem | HTTP | Stripe `type` | default `code` | Retry | Severity | Exit |
-|---|---|---|---|---|---|---|---|
-| `InvalidRequest` | caller | 400 | `invalid_request_error` | `invalid_request` | never | info | 64 |
-| `Authentication` | caller | 401 | `authentication_error` | `invalid_token` | never | info | 77 |
-| `Forbidden` | caller | 403 | `invalid_request_error` | `forbidden` | never | info | 77 |
-| `NotFound` | caller | 404 | `invalid_request_error` | `resource_missing` | never | info | 1 |
-| `Conflict` | caller (state) | 409 | `invalid_request_error` | `invalid_state` | never | info | 1 |
-| `Idempotency` | caller | 400 | `idempotency_error` | `idempotency_key_in_use` | never | info | 64 |
-| `RateLimited` | caller (pace) | 429 | `rate_limit_error` | `rate_limit` | after backoff | warn | 1 |
-| `Rail` | the rail | 502 | `api_error` | `provider_unavailable` | after backoff | warn | 69 |
-| `Storage` | us (Postgres) | 503 | `api_error` | `service_unavailable` | after backoff | error | 69 |
-| `Configuration` | operator | 500 | `api_error` | `misconfigured` | never | error | 78 |
-| `NotImplemented` | us (honest stub) | 501 | `api_error` | `not_implemented` | never | error | 1 |
-| `Internal` | us (a bug) | 500 | `api_error` | `internal_error` | never | **page** | 1 |
+| Category         | Whose problem    | HTTP | Stripe `type`           | default `code`           | Retry         | Severity | Exit |
+| ---------------- | ---------------- | ---- | ----------------------- | ------------------------ | ------------- | -------- | ---- |
+| `InvalidRequest` | caller           | 400  | `invalid_request_error` | `invalid_request`        | never         | info     | 64   |
+| `Authentication` | caller           | 401  | `authentication_error`  | `invalid_token`          | never         | info     | 77   |
+| `Forbidden`      | caller           | 403  | `invalid_request_error` | `forbidden`              | never         | info     | 77   |
+| `NotFound`       | caller           | 404  | `invalid_request_error` | `resource_missing`       | never         | info     | 1    |
+| `Conflict`       | caller (state)   | 409  | `invalid_request_error` | `invalid_state`          | never         | info     | 1    |
+| `Idempotency`    | caller           | 400  | `idempotency_error`     | `idempotency_key_in_use` | never         | info     | 64   |
+| `RateLimited`    | caller (pace)    | 429  | `rate_limit_error`      | `rate_limit`             | after backoff | warn     | 1    |
+| `Rail`           | the rail         | 502  | `api_error`             | `provider_unavailable`   | after backoff | warn     | 69   |
+| `Storage`        | us (Postgres)    | 503  | `api_error`             | `service_unavailable`    | after backoff | error    | 69   |
+| `Configuration`  | operator         | 500  | `api_error`             | `misconfigured`          | never         | error    | 78   |
+| `NotImplemented` | us (honest stub) | 501  | `api_error`             | `not_implemented`        | never         | error    | 1    |
+| `Internal`       | us (a bug)       | 500  | `api_error`             | `internal_error`         | never         | **page** | 1    |
 
-The `default code` column is the *default*, and two categories now answer
+The `default code` column is the _default_, and two categories now answer
 with more than it. **`Category::Idempotency` carries
 `idempotency_key_in_use` (a key replayed with a different body) and
 `idempotency_key_in_flight` (a key whose first request has not finished).**
@@ -78,7 +78,7 @@ is an ADR-level change and is deliberately left as a maintainer decision;
 `ApiError::IdempotencyKeyInFlight`'s doc comment records it, and
 `a_key_still_in_flight_is_a_different_code_from_a_key_reused_and_from_a_conflict`
 pins the three answers apart. Do not edit the table's cell for this: the row
-is transcribed literally into `vpay-core`'s own test, and the *default* is
+is transcribed literally into `vpay-core`'s own test, and the _default_ is
 still `idempotency_key_in_use`.
 
 **`Category::Conflict` gained two codes on 2026-09-05:
@@ -91,12 +91,12 @@ already processing". `409`, `invalid_request_error`, `Retry::Never` and
 `Severity::Info` all come from the category and none of them is overridden —
 only the `code` and the sentence are the variant's own, which is ADR-0011's
 shape. Two codes rather than one code with a `param`, because `param` on this
-API names a *request parameter* and the request that trips this refusal
+API names a _request parameter_ and the request that trips this refusal
 carries no reference to a session at all; the choice between them is carried
 by a two-variant `ClosedSession` enum rather than by the row's `status`
 string, so `Classify::code`'s match stays total and `open` is a state the
 error cannot be constructed in. As above, do not edit the table's cell: the
-row is transcribed literally into `vpay-core`'s own test, and the *default* is
+row is transcribed literally into `vpay-core`'s own test, and the _default_ is
 still `invalid_state`. (`Conflict` also carries `resource_conflict` from
 `DbError::UniqueViolation` and `charge_declined` from
 `ProviderError::Rejected` — both in the leaf table below, both with their own
@@ -104,7 +104,7 @@ reasons.)
 
 **Three categories that were unreachable are now reachable from a real
 request path** (2026-09-03, Step 2): `NotFound` → `resource_missing` (an
-unknown `pi_…`, *and* another merchant's — byte-identical, so the API is not
+unknown `pi_…`, _and_ another merchant's — byte-identical, so the API is not
 an id oracle), `Conflict` → `invalid_state` (a confirm or cancel the
 lifecycle forbids), and `Forbidden` → `forbidden` (a token without
 `payments:read`/`payments:write`). `NotImplemented` → `not_implemented`
@@ -121,31 +121,31 @@ Exit codes follow `sysexits.h` where one fits (`EX_CONFIG` 78,
 
 ## How each leaf classifies itself
 
-| Leaf | Variant(s) | Category | Note |
-|---|---|---|---|
-| `MoneyError` | `Negative`, `CurrencyMismatch` | `InvalidRequest` | the amount or currency came from a caller |
-| | `Overflow` | `Internal` | integer minor units overflowing `i64` is a bug, not a request |
-| `UnknownCurrency` | | `InvalidRequest` | |
-| `LedgerError` | `Unbalanced`, `TooFewEntries` | `Internal` | the core builds transactions; an unbalanced one is our bug |
-| | `Money(..)` | delegates | |
-| `ConfigError` | all | `Configuration` | `MissingPath` too: an operator forgot `--config` |
-| `DbError` | `Connect`, `Healthcheck`, `Query` | `Storage` | |
-| | `Migrate` | `Configuration` | a broken migration is a deploy problem, not a transient one |
-| | `UniqueViolation` (SQLSTATE `23505`) | `Conflict`, code `resource_conflict` | **not** `invalid_state`: the object is not in a forbidden *state*, it already exists. A merchant must be able to tell "you already did this" from "this intent cannot be cancelled now" (`integrity_violations_are_the_callers_problem_not_a_storage_outage`) |
-| | `ForeignKeyViolation` (SQLSTATE `23503`) | `InvalidRequest`, code `invalid_reference` | the request named a currency, provider or object that does not exist; no retry of the same request can succeed |
-| | `WriteMatchedNoRow` | `Internal` | a compare-and-swap this crate's own caller set up matched nothing — nobody outside vpay can cause it (`the_two_invariant_refusals_classify_as_ours_not_the_callers`) |
-| `ProviderError` | `Transport { context, source }`, `Malformed { context, source }` | `Rail` | retried by the poll ladder. **Changed 2026-09-03 (Step 7): both are struct variants** carrying the adapter's own sentence in `context` and the library error underneath as a real `#[source]` (`RailFailure::Http(reqwest::Error)` / `RailFailure::Body(HttpBodyError)`), instead of one `String` both adapters used to `format!` the foreign error into. `Display` still renders `context` alone, so the body cap and the rail's name stay in the one-line message; the leaf reaches a log through `vpay_core::error::source_chain` and a caller through `Error::source()` — see below |
-| `RailFailure` | `Http(reqwest::Error)`, `Body(HttpBodyError)` | `Rail` | the cause a `Transport`/`Malformed` was raised from; classified so `verify-errors` can check it, never consulted on its own. `Http` is a send that never completed, `Body` a read that failed or ran past `MAX_RAIL_BODY_BYTES` — the two the port's own `read_rail_body` distinguishes |
-| | `Rejected { code, .. }` | `Conflict` with `Retry::NewAttempt`; envelope `code` is the constant `charge_declined`; severity from the `FailureCode`'s own policy (`provider_account_blocked` pages, `provider_unavailable`/`provider_error` warn, the rest info) | a rail *decision*, not a rail failure — see below. The `FailureCode` itself is in the public message, never reused as the envelope `code`, because `provider_unavailable` already means "502, retrying" when `Transport` emits it |
-| | `Config` | `Configuration` | |
-| | `Unsupported` | `Conflict`, severity `Error` | 409 because the request cannot proceed; logged at `Error` because reaching it means the core skipped the capability check it is supposed to branch on |
-| | `NotImplemented(..)` | `NotImplemented` | |
-| `AuthRejection` | all three | `Authentication` | one category, one status, one `type`; the three codes/messages say only whether a header was present and well-formed, never anything about the token — not an oracle |
+| Leaf              | Variant(s)                                                       | Category                                                                                                                                                                                                                             | Note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MoneyError`      | `Negative`, `CurrencyMismatch`                                   | `InvalidRequest`                                                                                                                                                                                                                     | the amount or currency came from a caller                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+|                   | `Overflow`                                                       | `Internal`                                                                                                                                                                                                                           | integer minor units overflowing `i64` is a bug, not a request                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `UnknownCurrency` |                                                                  | `InvalidRequest`                                                                                                                                                                                                                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `LedgerError`     | `Unbalanced`, `TooFewEntries`                                    | `Internal`                                                                                                                                                                                                                           | the core builds transactions; an unbalanced one is our bug                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+|                   | `Money(..)`                                                      | delegates                                                                                                                                                                                                                            |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `ConfigError`     | all                                                              | `Configuration`                                                                                                                                                                                                                      | `MissingPath` too: an operator forgot `--config`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `DbError`         | `Connect`, `Healthcheck`, `Query`                                | `Storage`                                                                                                                                                                                                                            |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|                   | `Migrate`                                                        | `Configuration`                                                                                                                                                                                                                      | a broken migration is a deploy problem, not a transient one                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+|                   | `UniqueViolation` (SQLSTATE `23505`)                             | `Conflict`, code `resource_conflict`                                                                                                                                                                                                 | **not** `invalid_state`: the object is not in a forbidden _state_, it already exists. A merchant must be able to tell "you already did this" from "this intent cannot be cancelled now" (`integrity_violations_are_the_callers_problem_not_a_storage_outage`)                                                                                                                                                                                                                                                                                                                           |
+|                   | `ForeignKeyViolation` (SQLSTATE `23503`)                         | `InvalidRequest`, code `invalid_reference`                                                                                                                                                                                           | the request named a currency, provider or object that does not exist; no retry of the same request can succeed                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+|                   | `WriteMatchedNoRow`                                              | `Internal`                                                                                                                                                                                                                           | a compare-and-swap this crate's own caller set up matched nothing — nobody outside vpay can cause it (`the_two_invariant_refusals_classify_as_ours_not_the_callers`)                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `ProviderError`   | `Transport { context, source }`, `Malformed { context, source }` | `Rail`                                                                                                                                                                                                                               | retried by the poll ladder. **Changed 2026-09-03 (Step 7): both are struct variants** carrying the adapter's own sentence in `context` and the library error underneath as a real `#[source]` (`RailFailure::Http(reqwest::Error)` / `RailFailure::Body(HttpBodyError)`), instead of one `String` both adapters used to `format!` the foreign error into. `Display` still renders `context` alone, so the body cap and the rail's name stay in the one-line message; the leaf reaches a log through `vpay_core::error::source_chain` and a caller through `Error::source()` — see below |
+| `RailFailure`     | `Http(reqwest::Error)`, `Body(HttpBodyError)`                    | `Rail`                                                                                                                                                                                                                               | the cause a `Transport`/`Malformed` was raised from; classified so `verify-errors` can check it, never consulted on its own. `Http` is a send that never completed, `Body` a read that failed or ran past `MAX_RAIL_BODY_BYTES` — the two the port's own `read_rail_body` distinguishes                                                                                                                                                                                                                                                                                                 |
+|                   | `Rejected { code, .. }`                                          | `Conflict` with `Retry::NewAttempt`; envelope `code` is the constant `charge_declined`; severity from the `FailureCode`'s own policy (`provider_account_blocked` pages, `provider_unavailable`/`provider_error` warn, the rest info) | a rail _decision_, not a rail failure — see below. The `FailureCode` itself is in the public message, never reused as the envelope `code`, because `provider_unavailable` already means "502, retrying" when `Transport` emits it                                                                                                                                                                                                                                                                                                                                                       |
+|                   | `Config`                                                         | `Configuration`                                                                                                                                                                                                                      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|                   | `Unsupported`                                                    | `Conflict`, severity `Error`                                                                                                                                                                                                         | 409 because the request cannot proceed; logged at `Error` because reaching it means the core skipped the capability check it is supposed to branch on                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+|                   | `NotImplemented(..)`                                             | `NotImplemented`                                                                                                                                                                                                                     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `AuthRejection`   | all three                                                        | `Authentication`                                                                                                                                                                                                                     | one category, one status, one `type`; the three codes/messages say only whether a header was present and well-formed, never anything about the token — not an oracle                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **A rail failure keeps its cause.** Before Step 7, `ProviderError::Transport`
 and `Malformed` were `Transport(String)`/`Malformed(String)`, so every
 adapter flattened `reqwest`'s error with `format!`. `reqwest`'s own `Display`
-for a timeout is *"error sending request for url (…)"* — the word *timeout*
+for a timeout is _"error sending request for url (…)"_ — the word _timeout_
 is one link further down the chain — so MTN's log line named the URL and not
 the fault. Orange had noticed and hand-walked `Error::source()` into a
 `String`, which is the same information rebuilt by hand at one of the two
@@ -163,12 +163,12 @@ operator sees for a timeout is now
 out`. `a_transport_failures_source_chain_reaches_the_reqwest_error`
 (`vpay-adapter-mtn-momo`) fails if anyone goes back to `format!`.
 
-A `serde_json` parse failure is deliberately *not* attached as a source: its
+A `serde_json` parse failure is deliberately _not_ attached as a source: its
 own text is the whole diagnostic and belongs in `context`, where a one-line
 log shows it.
 
 Two constructors per variant, and which one a call site reaches for is the
-whole of the decision: `transport`/`malformed` when the rail *answered*
+whole of the decision: `transport`/`malformed` when the rail _answered_
 (badly) and there is no library error to attach, `transport_from`/
 `malformed_from` when there is. All four carry a doctest asserting that
 `Display` renders `context` alone while the cause stays reachable through
@@ -179,14 +179,14 @@ back to `format!`.
 rustdoc.** `ProviderAdapter`'s trait doc carries it and each of the four
 methods carries an `# Errors` section naming its own set;
 `#![warn(clippy::missing_errors_doc)]` on `vpay-provider` makes a method that
-loses one fail `cargo clippy -- -D warnings` (it covers trait *definition*
+loses one fail `cargo clippy -- -D warnings` (it covers trait _definition_
 methods, verified by deleting one). The three rows worth knowing without
 reading it:
 
 - `parse_callback` raises `Malformed` and nothing else. It touches no
   network, holds no credential and reads no configuration, so there is no
   transport to fail and no decision to relay.
-- `query_status` raises `Rejected` **only** when the rail refuses *our*
+- `query_status` raises `Rejected` **only** when the rail refuses _our_
   partner credentials. A declined charge is `Ok(ChargeStatus::Failed)` and a
   rail with no record is `Ok(ChargeStatus::NotFound)` — neither is an error.
 - `submit` never raises `Unsupported`: a rail that cannot take a payment is
@@ -199,17 +199,17 @@ prevent; the worker reads `Classify` exclusively.
 
 **A body that fails mid-stream now says so.** Both adapters used to map
 `HttpBodyError::Read(reqwest::Error)` onto `RailFailure::Http`, whose
-`Display` is *"sending the request"* — describing a stage that had already
+`Display` is _"sending the request"_ — describing a stage that had already
 succeeded. `vpay_provider::http::read_rail_body`, which is now the one
 bounded read both adapters call, keeps the `HttpBodyError` and the chain
-reads *"reading the response"*. Both classify `Category::Rail`; only the text
+reads _"reading the response"_. Both classify `Category::Rail`; only the text
 an operator reads changed.
 
 **`ProviderError::Rejected` is the seam between system errors and business
 outcomes.** A rail declining a charge is not a system failure: the worker
 records it as the charge's `failure_code` and the intent returns to
 `requires_payment_method` with `last_payment_error` populated. It is
-classified here only so that a path which *does* surface it as an error
+classified here only so that a path which _does_ surface it as an error
 (an adapter conformance test, a synchronous refund) answers coherently.
 
 ## Composite errors
@@ -231,7 +231,7 @@ log     = at err.severity() (alert=true when Page), with the full Display + sour
 
 The full chain goes to the log; only `public_message()` goes to the
 merchant. The two envelope renderers are `pub(crate)`, so a handler
-*cannot* build one by hand — "one renderer" is structural, not a
+_cannot_ build one by hand — "one renderer" is structural, not a
 convention. (ADR-0011 names the renderer `error_envelope`; the production
 one is its sibling `error_envelope_with_param`, and `error_envelope`
 survives only as a test-side wrapper. The ADR's claim — one renderer,
@@ -244,11 +244,11 @@ and `LedgerError` and adds job-level variants (`Poisoned`, `Exhausted`).
 Its `decision(attempt)` is derived from `Classify::retry` and
 `Classify::severity` alone:
 
-| `retry()` | Decision |
-|---|---|
+| `retry()`      | Decision                                                                                                                                                                                                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AfterBackoff` | `RetryAfter { delay, alert }`: re-run after `poll_delay(attempt)` ([reconciler.md](reconciler.md)) — or after `UNRESOLVED_POLL_INTERVAL` (one hour) for `Exhausted` — with `alert = true` when severity is `Error` or above, so a human is paged while the loop keeps going |
-| `NewAttempt` | `Terminal`: this job is over; the intent's own state machine decides what a new attempt means |
-| `Never` | `DeadLetter`: nothing the loop can do will change the outcome — park it for a human |
+| `NewAttempt`   | `Terminal`: this job is over; the intent's own state machine decides what a new attempt means                                                                                                                                                                               |
+| `Never`        | `DeadLetter`: nothing the loop can do will change the outcome — park it for a human                                                                                                                                                                                         |
 
 `Exhausted` is the reconciler's `unresolved` state: the 24-hour horizon
 passed with no terminal answer. Per [reconciler.md](reconciler.md) that is
@@ -274,15 +274,15 @@ dead database is still a config problem), and exits with
 
 ## What can go wrong
 
-| Failure | Where it surfaces | What holds |
-|---|---|---|
-| A new error type forgets `impl Classify` | `cargo xtask verify-errors` fails `just verify`: it finds every `pub` type in `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection`, outside `#[cfg(test)]` blocks and `tests/` directories, and requires an impl in the same crate that is itself outside test code | nothing unclassified reaches a boundary — within that scan; the SDKs and `backends/apps` are outside it by design |
-| A library crate adds `anyhow` to `[dependencies]` | same check | `anyhow` stays at the edge |
-| A composite grows a `#[from]` leaf and an existing `_ =>` arm answers for it | same check, extended 2026-09-03 (Step 7): for every `#[from]` variant, each `Classify` method that *discriminates* on `self` must name `Self::<Variant>` explicitly. Five spellings count as discriminating — `match self`, `match *self`, `match &self`, `if let Self::`, `matches!(self` — because searching only for `match self` made the rule opt-out: an `if let` ladder's trailing `else` answers for an unnamed leaf exactly as a `_ =>` arm does. Proven live by deleting `ApiError`'s `Self::Db(e) => e.code()` arm and watching `verify-errors` refuse, and by `a_from_variant_swallowed_by_an_if_let_ladder_is_reported`, which fails if the list is narrowed back | composites do not re-classify — the leaf's own `code`/`retry`/`severity`/`public_message` reach the boundary instead of the category default |
-| A handler hand-builds an envelope with the wrong status | the renderers are `pub(crate)` to `vpay-api`, so code outside the crate cannot call them at all; inside the crate, `error_envelope_with_param` has one production caller (`ApiError::into_response`) and a second is a review finding | one status per category |
-| A leaf's `Display` includes a secret | the existing redaction tests (`Debug` on `ProviderHost`, `CommonArgs`, SDK `Credentials`) — extend them when adding a payload that could carry one | secrets never reach a log |
-| A `public_message()` override leaks a table or host name | test in `vpay-core` for the generic messages; add one per override | merchants see nothing internal |
-| Two boundaries disagree on retry | impossible by construction — both read `Classify::retry` | one policy |
+| Failure                                                                      | Where it surfaces                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | What holds                                                                                                                                   |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| A new error type forgets `impl Classify`                                     | `cargo xtask verify-errors` fails `just verify`: it finds every `pub` type in `backends/crates` that derives `thiserror::Error` **or** is named `*Error`/`*Rejection`, outside `#[cfg(test)]` blocks and `tests/` directories, and requires an impl in the same crate that is itself outside test code                                                                                                                                                                                                                                                                                                                                                                         | nothing unclassified reaches a boundary — within that scan; the SDKs and `backends/apps` are outside it by design                            |
+| A library crate adds `anyhow` to `[dependencies]`                            | same check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `anyhow` stays at the edge                                                                                                                   |
+| A composite grows a `#[from]` leaf and an existing `_ =>` arm answers for it | same check, extended 2026-09-03 (Step 7): for every `#[from]` variant, each `Classify` method that _discriminates_ on `self` must name `Self::<Variant>` explicitly. Five spellings count as discriminating — `match self`, `match *self`, `match &self`, `if let Self::`, `matches!(self` — because searching only for `match self` made the rule opt-out: an `if let` ladder's trailing `else` answers for an unnamed leaf exactly as a `_ =>` arm does. Proven live by deleting `ApiError`'s `Self::Db(e) => e.code()` arm and watching `verify-errors` refuse, and by `a_from_variant_swallowed_by_an_if_let_ladder_is_reported`, which fails if the list is narrowed back | composites do not re-classify — the leaf's own `code`/`retry`/`severity`/`public_message` reach the boundary instead of the category default |
+| A handler hand-builds an envelope with the wrong status                      | the renderers are `pub(crate)` to `vpay-api`, so code outside the crate cannot call them at all; inside the crate, `error_envelope_with_param` has one production caller (`ApiError::into_response`) and a second is a review finding                                                                                                                                                                                                                                                                                                                                                                                                                                          | one status per category                                                                                                                      |
+| A leaf's `Display` includes a secret                                         | the existing redaction tests (`Debug` on `ProviderHost`, `CommonArgs`, SDK `Credentials`) — extend them when adding a payload that could carry one                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | secrets never reach a log                                                                                                                    |
+| A `public_message()` override leaks a table or host name                     | test in `vpay-core` for the generic messages; add one per override                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | merchants see nothing internal                                                                                                               |
+| Two boundaries disagree on retry                                             | impossible by construction — both read `Classify::retry`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | one policy                                                                                                                                   |
 
 ## How to add an error
 
@@ -307,7 +307,7 @@ dead database is still a config problem), and exits with
 
 **Implemented:** `vpay_core::error` (`Category`, `Retry`, `Severity`,
 `Classify`, `find_in_chain`), with invariant tests over every category
-*and* a literal transcription of the table above as a test, so this
+_and_ a literal transcription of the table above as a test, so this
 document and the code fail together; `impl Classify` on every leaf listed
 above; `vpay_api::ApiError` with `IntoResponse` deriving the envelope, the
 existing 404 fallback routed through it, and `AuthRejection` classified
@@ -350,7 +350,7 @@ idempotency key is never echoed past an 8-character hint, in the log only
 rail.** `POST …/confirm` calls a real adapter over real HTTP, so:
 
 - **`charge_declined` (409)** is what a rail's decision renders as.
-  `ProviderError::Rejected`'s `code()` is that constant on purpose, *not*
+  `ProviderError::Rejected`'s `code()` is that constant on purpose, _not_
   the `FailureCode`'s own string: `FailureCode::ProviderUnavailable` renders
   `provider_unavailable`, which is also `Category::Rail`'s default code, and
   a merchant branching on the envelope would otherwise see one token for

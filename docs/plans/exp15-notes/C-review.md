@@ -12,21 +12,21 @@ Every command below was run in this worktree; every number is pasted.
 > `expected_suites` 42 → 43.** The post-rebase measurements, and the three
 > mutations re-run against them, are in
 > [`C.md`](C.md) under "Rebased onto `bb8de92`". Where this file says `13 SDK
-> method(s)` inside a mutation result, that is what the gate printed at the
+method(s)` inside a mutation result, that is what the gate printed at the
 > time and is the evidence for the finding beside it; it is not a claim about
 > the current tree.
 
 ## 0. The gate, as delivered
 
-| Command | Result |
-|---|---|
-| `just verify` | `verify: ok — the ten gates above passed` |
-| `cargo xtask verify-sdk-parity` | `ok — 350 proving test(s) …, 28 dated gap(s), 13 SDK method(s) enumerated across 16 row(s)`, exit 0 |
-| `cargo test -p xtask` | **208 passed, 0 failed, 0 ignored** (master's 194 + the 14 new cases) |
-| `just docs-check` | `verify-status: ok — 1 unimplemented item(s)`; `verify-links: ok — 743 link(s) in 134 file(s)` |
-| `just fmt-check` | exit 0 |
-| `just clippy` | exit 0 |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1333 total (minimum 1080)` |
+| Command                           | Result                                                                                                                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                     | `verify: ok — the ten gates above passed`                                                                              |
+| `cargo xtask verify-sdk-parity`   | `ok — 350 proving test(s) …, 28 dated gap(s), 13 SDK method(s) enumerated across 16 row(s)`, exit 0                    |
+| `cargo test -p xtask`             | **208 passed, 0 failed, 0 ignored** (master's 194 + the 14 new cases)                                                  |
+| `just docs-check`                 | `verify-status: ok — 1 unimplemented item(s)`; `verify-links: ok — 743 link(s) in 134 file(s)`                         |
+| `just fmt-check`                  | exit 0                                                                                                                 |
+| `just clippy`                     | exit 0                                                                                                                 |
+| `just verify-ignored`             | `0 ignored (expected 0), 42 test binaries (expected 42), 1333 total (minimum 1080)`                                    |
 | `just lint-web` / `just test-web` | **not run — no `sdks/` file is changed by the diff**, which this review confirmed with `git diff --stat 1bd2183..HEAD` |
 
 ## 1. The claims, checked rather than taken
@@ -53,7 +53,7 @@ Independently enumerated, not read off the notes:
 - **`accountHolders` ↔ `account_holders`.** No mapping is exercised: both
   SDKs name the type `AccountHoldersResource`, and `snake_case` takes it to
   `account_holders` in both. The camelCase spelling only ever appears as the
-  Node *client accessor* (`client.accountHolders`), which the enumerator
+  Node _client accessor_ (`client.accountHolders`), which the enumerator
   never reads. Matched, not stale — but for a duller reason than the brief
   supposed.
 - **Node object literals / arrow properties.** The implementer calls these
@@ -67,27 +67,27 @@ Each applied to the committed tree, gate run, reverted, `git status
 --porcelain` clean after each. The gate binary was run directly so the
 mutation could not be confused with a rebuild.
 
-| # | Mutation | As delivered |
-|---|---|---|
-| M1 | delete the `refunds.create` row | **FAIL** exit 1, `sdks/rust/src/resources.rs:705: \`refunds.create\` is shipped and has no row` |
-| M3 | add a `payments.teleport` row, two ✅ cells | **FAIL** exit 1, `docs/sdks/parity.md:160: row \`payments.teleport\` names a method no SDK declares` |
-| M4 | rename a named proving test | **FAIL** exit 1 (the pre-existing direction, preserved) |
-| M5 | the same row rewritten ⛔/⛔ with a date | **PASS** exit 0, 30 dated gaps |
-| M5b | the same row half-dated (one ⛔, one ✅) | **FAIL** exit 1 — correct: one ✅ is a claim |
-| R2 | `pub async fn frobnicate(` on the Rust `RefundsResource` | **FAIL** exit 1, `resources.rs:706` |
-| R6 | rename `create`→`creat` on the **Rust** SDK only | **FAIL** exit 1, one problem (`refunds.creat` unrecorded); the row still stands because Node declares `create` |
-| N1 | `async frobnicate(` on the Node `RefundsResource` | **FAIL** exit 1, `sdks/nodejs/src/resources/refunds.ts:15` |
-| N2 | rename `create`→`creat` on the **Node** SDK only | **FAIL** exit 1, mirror of R6 |
-| VAC | break the enumerator wholesale (`RESOURCE_TYPE_SUFFIX` → a suffix nothing carries) | **FAIL** exit 1, **14 of the 16 rows** each named — a wholly-vacuous enumeration is caught structurally by the doc→code direction, not only by the unit test |
-| N3 | a TS method with a type parameter, `async listAll<T>()` | **PASS** exit 0, still `13 SDK method(s)` — **silent miss, finding 2** |
-| N4 | a TS arrow-property member, `readonly teleport = async () => {}` | **PASS** exit 0 — invisible, and disclosed |
-| N5 | a resource declared as an object literal | **PASS** exit 0 — invisible, and disclosed |
-| LEX-2 | `let _sentinel = b'}';` in `PaymentIntentsResource::create`, then `pub async fn teleport(` later in the **same** impl | **PASS** exit 0, still `13 SDK method(s)` — **silent miss, finding 1** |
-| LEX-2 control | the same `teleport` with no char literal | **FAIL** exit 1, `resources.rs:583: \`payment_intents.teleport\` is shipped and has no row` |
+| #             | Mutation                                                                                                              | As delivered                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M1            | delete the `refunds.create` row                                                                                       | **FAIL** exit 1, `sdks/rust/src/resources.rs:705: \`refunds.create\` is shipped and has no row`                                                              |
+| M3            | add a `payments.teleport` row, two ✅ cells                                                                           | **FAIL** exit 1, `docs/sdks/parity.md:160: row \`payments.teleport\` names a method no SDK declares`                                                         |
+| M4            | rename a named proving test                                                                                           | **FAIL** exit 1 (the pre-existing direction, preserved)                                                                                                      |
+| M5            | the same row rewritten ⛔/⛔ with a date                                                                              | **PASS** exit 0, 30 dated gaps                                                                                                                               |
+| M5b           | the same row half-dated (one ⛔, one ✅)                                                                              | **FAIL** exit 1 — correct: one ✅ is a claim                                                                                                                 |
+| R2            | `pub async fn frobnicate(` on the Rust `RefundsResource`                                                              | **FAIL** exit 1, `resources.rs:706`                                                                                                                          |
+| R6            | rename `create`→`creat` on the **Rust** SDK only                                                                      | **FAIL** exit 1, one problem (`refunds.creat` unrecorded); the row still stands because Node declares `create`                                               |
+| N1            | `async frobnicate(` on the Node `RefundsResource`                                                                     | **FAIL** exit 1, `sdks/nodejs/src/resources/refunds.ts:15`                                                                                                   |
+| N2            | rename `create`→`creat` on the **Node** SDK only                                                                      | **FAIL** exit 1, mirror of R6                                                                                                                                |
+| VAC           | break the enumerator wholesale (`RESOURCE_TYPE_SUFFIX` → a suffix nothing carries)                                    | **FAIL** exit 1, **14 of the 16 rows** each named — a wholly-vacuous enumeration is caught structurally by the doc→code direction, not only by the unit test |
+| N3            | a TS method with a type parameter, `async listAll<T>()`                                                               | **PASS** exit 0, still `13 SDK method(s)` — **silent miss, finding 2**                                                                                       |
+| N4            | a TS arrow-property member, `readonly teleport = async () => {}`                                                      | **PASS** exit 0 — invisible, and disclosed                                                                                                                   |
+| N5            | a resource declared as an object literal                                                                              | **PASS** exit 0 — invisible, and disclosed                                                                                                                   |
+| LEX-2         | `let _sentinel = b'}';` in `PaymentIntentsResource::create`, then `pub async fn teleport(` later in the **same** impl | **PASS** exit 0, still `13 SDK method(s)` — **silent miss, finding 1**                                                                                       |
+| LEX-2 control | the same `teleport` with no char literal                                                                              | **FAIL** exit 1, `resources.rs:583: \`payment_intents.teleport\` is shipped and has no row`                                                                  |
 
-VAC is the good news and it matters: an enumerator that finds *nothing*
+VAC is the good news and it matters: an enumerator that finds _nothing_
 cannot pass, because every capability row then loses its backing. The
-dangerous shape is the *partial* one — one `impl` going quiet while the
+dangerous shape is the _partial_ one — one `impl` going quiet while the
 others still enumerate — because the rows keep their backing from the other
 SDK and nothing is said. That is findings 1 and 2.
 
@@ -99,7 +99,7 @@ SDK and nothing is said. That is findings 1 and 2.
 `b'}'` and `'{'` leave their brace **in the code stream**. One of them
 unbalances `code_block_span`, the enclosing `impl …Resource` body is
 truncated, and every method after it stops being enumerated — with no
-message and no change to the printed method count, because the *other* SDK
+message and no change to the printed method count, because the _other_ SDK
 still backs the rows.
 
 Proved by LEX-2 above: identical mutation, exit 1 without the char literal
@@ -111,8 +111,8 @@ This is not hypothetical. `sdks/rust/src/webhooks.rs:321` already ships
 
 which is net **two** unbalanced closing braces. It is harmless only because
 `webhooks.rs` happens to declare no `…Resource` impl. The delivered notes
-(§7) and `code_only`'s own doc comment both assert *"Neither SDK contains
-one"* — that is **false**, and it is the sentence that made the limitation
+(§7) and `code_only`'s own doc comment both assert _"Neither SDK contains
+one"_ — that is **false**, and it is the sentence that made the limitation
 look acceptable.
 
 Aggravating, and the reason this is a rule-break as well: this repository
@@ -176,11 +176,11 @@ take it either.
 
 One commit per finding; each names the mutation it re-runs.
 
-| Commit | Finding | The mutation it re-runs, before → after |
-|---|---|---|
+| Commit                                                                                | Finding                                                   | The mutation it re-runs, before → after                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fix(xtask): verify-sdk-parity read Rust with its own weaker lexer, and lost methods` | F1, F3 and the nested-comment defect the same reuse fixes | LEX-2 (`b'}'` + an unrecorded `pub async fn` in the same impl) **exit 0 → exit 1**, naming `sdks/rust/src/resources.rs:584`; the nested-comment probe (a parked method inside `/* … /* … */ … */`) **exit 1, a false positive → exit 0** |
-| `fix(xtask): a TypeScript method with a type parameter was read as a field` | F2 | N3 (`async listAll<T>()` on the Node `RefundsResource`) **exit 0 → exit 1**, naming `sdks/nodejs/src/resources/refunds.ts:15` |
-| `test(xtask): the parity vacuity guard asserts two things; say which one broke` | F4 | no behaviour change; the guard's two unlike causes now carry two different sentences |
+| `fix(xtask): a TypeScript method with a type parameter was read as a field`           | F2                                                        | N3 (`async listAll<T>()` on the Node `RefundsResource`) **exit 0 → exit 1**, naming `sdks/nodejs/src/resources/refunds.ts:15`                                                                                                            |
+| `test(xtask): the parity vacuity guard asserts two things; say which one broke`       | F4                                                        | no behaviour change; the guard's two unlike causes now carry two different sentences                                                                                                                                                     |
 
 F1 and the nested-comment defect share one commit rather than two, and this
 is a deliberate departure from one-commit-per-finding: they are the same
@@ -197,26 +197,26 @@ kept:
 
 - `a_character_literal_holding_a_brace_does_not_truncate_the_impl` — with
   `end_of_char_literal` stubbed back to `None` (the exact old bug), it fails
-  `["widgets.create"]`: the method *after* the literals is gone, which is the
+  `["widgets.create"]`: the method _after_ the literals is gone, which is the
   silent truncation itself.
 - `a_method_with_a_type_parameter_is_still_a_method_and_a_field_is_not` —
   with the type-parameter skip deleted, it fails `left: None, right:
-  Some("listAll")`.
+Some("listAll")`.
 - `a_nested_block_comment_hides_the_method_it_parked` — the probe it
   generalises exited 1 on this repository's own `resources.rs` before the fix.
 
 ## 5. Gate, after
 
-| Command | Result |
-|---|---|
-| `just verify` | `verify: ok — the ten gates above passed` |
-| `cargo xtask verify-sdk-parity` | `ok — 350 proving test(s) …, 28 dated gap(s), 13 SDK method(s) enumerated across 16 row(s)`, exit 0 — unchanged, because neither fix changes what this tree ships |
-| `cargo test -p xtask` | **211 passed, 0 failed, 0 ignored** (208 as delivered, 194 on master) |
-| `just docs-check` | ok |
-| `just fmt-check` | exit 0 |
-| `just clippy` | exit 0 |
-| `just verify-ignored` | `0 ignored (expected 0), 42 test binaries (expected 42), 1336 total (minimum 1080)` — 1333 as delivered, +3 for this review's new cases; no new test binary, so `expected_suites` is untouched |
-| `just lint-web` / `just test-web` | **not run**: no file under `sdks/` is touched by this branch, before or after the review |
+| Command                           | Result                                                                                                                                                                                         |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                     | `verify: ok — the ten gates above passed`                                                                                                                                                      |
+| `cargo xtask verify-sdk-parity`   | `ok — 350 proving test(s) …, 28 dated gap(s), 13 SDK method(s) enumerated across 16 row(s)`, exit 0 — unchanged, because neither fix changes what this tree ships                              |
+| `cargo test -p xtask`             | **211 passed, 0 failed, 0 ignored** (208 as delivered, 194 on master)                                                                                                                          |
+| `just docs-check`                 | ok                                                                                                                                                                                             |
+| `just fmt-check`                  | exit 0                                                                                                                                                                                         |
+| `just clippy`                     | exit 0                                                                                                                                                                                         |
+| `just verify-ignored`             | `0 ignored (expected 0), 42 test binaries (expected 42), 1336 total (minimum 1080)` — 1333 as delivered, +3 for this review's new cases; no new test binary, so `expected_suites` is untouched |
+| `just lint-web` / `just test-web` | **not run**: no file under `sdks/` is touched by this branch, before or after the review                                                                                                       |
 
 ## 6. What this review did NOT do
 
@@ -233,7 +233,7 @@ kept:
   confirm: a Node resource declared as an object literal, or whose methods
   are arrow-function properties, is still invisible. Neither shape exists in
   `sdks/nodejs` today — all six resource modules are `export class
-  …Resource` with ordinary members, no getters and no arrow members, checked
+…Resource` with ordinary members, no getters and no arrow members, checked
   file by file — and closing them means guessing which of a module's objects
   is a resource, which is the judgement `RESOURCE_TYPE_SUFFIX` exists to
   avoid. Recorded, not fixed.

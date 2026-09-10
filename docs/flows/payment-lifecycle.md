@@ -5,13 +5,13 @@
 The MVP rails have genuinely different payer journeys, and the core selects
 between them on a **capability value** (`ProviderFlow`), never on a rail name.
 
-| | **push** (MTN MoMo) | **redirect** (Orange Money) |
-|---|---|---|
-| How the payer acts | Prompt on their handset; they enter a PIN | Browser redirect to the rail's hosted page; they enter an OTP from USSD |
-| Who holds the payer identifier | We do — it is an input to submit | The rail does. We may never learn it |
-| Submit returns | An acknowledgement, no id | A `pay_token` and a URL to redirect to |
-| Status after `confirm` | `processing` | `requires_action` |
-| Can the payer act before we persist? | **Yes** | **No** |
+|                                      | **push** (MTN MoMo)                       | **redirect** (Orange Money)                                             |
+| ------------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------- |
+| How the payer acts                   | Prompt on their handset; they enter a PIN | Browser redirect to the rail's hosted page; they enter an OTP from USSD |
+| Who holds the payer identifier       | We do — it is an input to submit          | The rail does. We may never learn it                                    |
+| Submit returns                       | An acknowledgement, no id                 | A `pay_token` and a URL to redirect to                                  |
+| Status after `confirm`               | `processing`                              | `requires_action`                                                       |
+| Can the payer act before we persist? | **Yes**                                   | **No**                                                                  |
 
 That last row is the whole reason `docs/flows/crash-safety.md` has two sections.
 
@@ -68,7 +68,7 @@ CREATE UNIQUE INDEX one_charge_per_intent ON charges (payment_intent_id);
 
 A plain unique index, not a partial one. Scoping it to live states leaks: the
 moment a charge moves to `failed`, the predicate stops covering it and a second
-charge becomes insertable — and "failed" can mean a state we reached *before*
+charge becomes insertable — and "failed" can mean a state we reached _before_
 the rail's answer was final.
 
 **Retry means a new PaymentIntent.** This is the one place the API deviates
@@ -140,7 +140,7 @@ error, and the charge unchanged.
 **Updated 2026-09-03 (Step 3): `confirm` now moves the intent, because it
 now reaches a rail.** It commits a charge in `submitting`, records the
 attempt, `await`s `adapter.submit(..)`, and then does one of four things —
-which one is decided by the *error's* own classification, never by anything
+which one is decided by the _error's_ own classification, never by anything
 the handler knows about rails:
 
 - **push rail accepts** → charge `submitted`, intent **`processing`**,
@@ -150,7 +150,7 @@ the handler knows about rails:
 - **redirect rail accepts** → charge `submitted` carrying the rail's
   `pay_token` and `redirect_url`, intent **`requires_action`**, `200` with
   `next_action.redirect_to_url`. The rail's material and the merchant's
-  `return_url` are committed *before* the response is built, and the
+  `return_url` are committed _before_ the response is built, and the
   `next_action` is rendered **only** from the committed charge row
   (`redirect_confirm_commits_the_rails_material_before_it_answers`);
 - **the rail declines** (`ProviderError::Rejected`) → charge `failed` with
@@ -194,7 +194,7 @@ drives it to a terminal state:
   (`a_decline_after_submission_returns_the_intent_to_requires_payment_method`).
   A retry is still a new intent — the charge is terminal and
   `one_charge_per_intent` is forever;
-- **the rail never answers** → after 24 hours the *charge* moves to
+- **the rail never answers** → after 24 hours the _charge_ moves to
   `unresolved` and a human is alerted, while the **intent stays where it is**.
   `unresolved` is an escalation, not a verdict; the charge is still polled
   hourly and a late success settles it normally
@@ -218,7 +218,7 @@ one drove the payment — `paid`/`complete` on success, `failed`/`expired` on a
 terminal decline, in the same commit as the intent's own status, so the two can
 never be observed disagreeing (`vpay_db::checkout_sessions::settle_for_intent`,
 called from `vpay_db::settlement`). Nothing else about the lifecycle changed: a
-session is a *view* of one checkout attempt and moves no money
+session is a _view_ of one checkout attempt and moves no money
 ([hosted-checkout.md](hosted-checkout.md)).
 
 A checkout session also ends on its own: the worker's hourly housekeeping sweep

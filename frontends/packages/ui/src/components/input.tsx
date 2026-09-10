@@ -1,19 +1,20 @@
-'use client';
+"use client";
 
-import { Input as BaseInput } from '@base-ui/react/input';
-import { cva, type VariantProps } from 'class-variance-authority';
+import { Input as BaseInput } from "@base-ui/react/input";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-const input = cva('input w-full', {
+const input = cva("input w-full", {
   variants: {
-    tone: { default: '', ghost: 'input-ghost', error: 'input-error' },
+    tone: { default: "", ghost: "input-ghost", error: "input-error" },
   },
-  defaultVariants: { tone: 'default' },
+  defaultVariants: { tone: "default" },
 });
 
 export interface InputProps
-  extends Omit<React.ComponentProps<typeof BaseInput>, 'className'>,
+  extends
+    Omit<React.ComponentProps<typeof BaseInput>, "className">,
     VariantProps<typeof input> {
   className?: string;
 }

@@ -18,23 +18,23 @@ Status for what changed and what still has no evidence behind it.
 
 ## What it renders
 
-| Object | Name | Notes |
-|---|---|---|
-| `Deployment` | `<release>-server` | `server.replicaCount` (2 by default) |
-| `Deployment` | `<release>-worker` | `worker.replicaCount` (1); `strategy: Recreate`; the server image with `args: ["worker"]` |
-| `Deployment` | `<release>-checkout` | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page |
-| `Service` | `<release>` | ClusterIP, ports `http` (8080) and `metrics` (9090) |
-| `Service` | `<release>-worker` | Headless, `metrics` only — exists so the worker can be scraped |
-| `Service` | `<release>-checkout` | Optional; `http` only — the page emits no metrics |
-| `ServiceAccount` | `<release>` | `automountServiceAccountToken: false` |
-| `PodDisruptionBudget` | `<release>-server` | `minAvailable: 1`; server only |
-| `ConfigMap` | `<release>-config-overlay` | Optional; the profile overlay, mounted with `subPath` |
-| `Ingress` | `<release>-api` | `/v1`, ingress-nginx annotations incl. `limit-rps` |
-| `Ingress` | `<release>-token` | `/v1/oauth/token`, a tighter `limit-rps` |
-| `Ingress` | `<release>-checkout` | Optional; the payment page, on its own host or a path prefix |
-| `NetworkPolicy` | `<release>-server`, `<release>-worker` | Optional, default-deny both directions |
-| `ServiceMonitor` | `<release>-server`, `<release>-worker` | Optional; needs the prometheus-operator CRDs |
-| `PrometheusRule` | `<release>` | Optional; **every threshold is proposed, every metric unemitted** |
+| Object                | Name                                   | Notes                                                                                     |
+| --------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `Deployment`          | `<release>-server`                     | `server.replicaCount` (2 by default)                                                      |
+| `Deployment`          | `<release>-worker`                     | `worker.replicaCount` (1); `strategy: Recreate`; the server image with `args: ["worker"]` |
+| `Deployment`          | `<release>-checkout`                   | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page             |
+| `Service`             | `<release>`                            | ClusterIP, ports `http` (8080) and `metrics` (9090)                                       |
+| `Service`             | `<release>-worker`                     | Headless, `metrics` only — exists so the worker can be scraped                            |
+| `Service`             | `<release>-checkout`                   | Optional; `http` only — the page emits no metrics                                         |
+| `ServiceAccount`      | `<release>`                            | `automountServiceAccountToken: false`                                                     |
+| `PodDisruptionBudget` | `<release>-server`                     | `minAvailable: 1`; server only                                                            |
+| `ConfigMap`           | `<release>-config-overlay`             | Optional; the profile overlay, mounted with `subPath`                                     |
+| `Ingress`             | `<release>-api`                        | `/v1`, ingress-nginx annotations incl. `limit-rps`                                        |
+| `Ingress`             | `<release>-token`                      | `/v1/oauth/token`, a tighter `limit-rps`                                                  |
+| `Ingress`             | `<release>-checkout`                   | Optional; the payment page, on its own host or a path prefix                              |
+| `NetworkPolicy`       | `<release>-server`, `<release>-worker` | Optional, default-deny both directions                                                    |
+| `ServiceMonitor`      | `<release>-server`, `<release>-worker` | Optional; needs the prometheus-operator CRDs                                              |
+| `PrometheusRule`      | `<release>`                            | Optional; **every threshold is proposed, every metric unemitted**                         |
 
 It renders **no Secret** and **no database**. See
 [Secrets](#secrets-the-chart-creates-none) and [Postgres](#postgres).
@@ -112,7 +112,7 @@ networkPolicy:
 
 **1. The overlay is mounted with `subPath`, and it must be.** `backends/Dockerfile`
 bakes the whole `config/` directory into the image at `/config`. Mounting a
-ConfigMap *at* `/config` replaces that directory, the baked
+ConfigMap _at_ `/config` replaces that directory, the baked
 `application.yml` disappears, and the process exits 78 complaining about a
 file it can no longer see. The chart therefore mounts a single file at
 `/config/application-<profile>.yml`.
@@ -139,11 +139,11 @@ There is no environment variable for it: step-6 decision (7) removes the inert
 
 Three Secrets must exist in the release namespace before install.
 
-| Value | Default name | Shape | Consequence if wrong |
-|---|---|---|---|
-| `database.existingSecret` / `.existingSecretKey` | `vpay-database` / `url` | one key holding a full `postgres://` URL | both Deployments fail to start |
-| `signingKey.existingSecret` / `.key` | `vpay-oauth-signing-key` / `oauth-signing-key.pem` | PEM RSA private key (PKCS#8 or PKCS#1) | the server Deployment exits 78 |
-| `rails.existingSecret` | `vpay-rails` | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** Deployments |
+| Value                                            | Default name                                       | Shape                                                                                                           | Consequence if wrong            |
+| ------------------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `database.existingSecret` / `.existingSecretKey` | `vpay-database` / `url`                            | one key holding a full `postgres://` URL                                                                        | both Deployments fail to start  |
+| `signingKey.existingSecret` / `.key`             | `vpay-oauth-signing-key` / `oauth-signing-key.pem` | PEM RSA private key (PKCS#8 or PKCS#1)                                                                          | the server Deployment exits 78  |
+| `rails.existingSecret`                           | `vpay-rails`                                       | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** Deployments |
 
 The signing key is mounted on the **server Deployment only**. The worker
 issues no token and reads no key, and mounting the Secret there would widen
@@ -160,14 +160,14 @@ check, which clap's derive cannot express. The second spelling parsed and was
 read by nothing for the length of one review pass, and was closed in it.
 
 That is defence in depth and not the guarantee. `VPAY_OAUTH_SIGNING_KEY_FILE`
-in the *environment* is still ignored rather than refused, deliberately — a
+in the _environment_ is still ignored rather than refused, deliberately — a
 shared env block must not `CrashLoopBackOff` a worker — so a flag naming a
 path is not what keeps the key away. **The volume list in
 `deployment-worker.yaml` is**, and this chart sets no
 `VPAY_OAUTH_SIGNING_KEY_FILE` on the worker either.
 
 The rail Secret is projected with `envFrom.secretRef`, so `kubectl describe pod`
-shows the variable *names* and never the values.
+shows the variable _names_ and never the values.
 
 ### `signingKey.defaultMode` is `0440`, not `0400`
 
@@ -195,7 +195,7 @@ There is none in this chart, deliberately (step-6 decision (9)). `DATABASE_URL`
 comes from `database.existingSecret` and from nowhere else.
 
 **CloudNativePG** is the documented in-cluster alternative and is deliberately
-*not* templated here. If you want it, install the operator and a `Cluster`
+_not_ templated here. If you want it, install the operator and a `Cluster`
 separately, then point `database.existingSecret` at the Secret CNPG generates
 (`<cluster>-app`, key `uri`):
 
@@ -222,7 +222,7 @@ payment gateway's chart.
 The chart refuses to render on a combination of values that is well-typed and
 still cannot work. Each guard calls Helm's `fail`, so `helm lint`,
 `helm template`, `helm install` and `helm upgrade` all abort, and each message
-names itself so a test can assert *which* one fired:
+names itself so a test can assert _which_ one fired:
 
 ```
 Error: execution error at (vpay/templates/deployment-server.yaml:1:4):
@@ -231,35 +231,35 @@ shutdownGraceSeconds is 25; the kubelet would SIGKILL the process while it is
 still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 ```
 
-| Guard | Fires when | Why it matters |
-|---|---|---|
-| `grace-period` | `terminationGracePeriodSeconds < shutdownGraceSeconds + 5` | The kubelet kills the process mid-drain; every rolling update truncates in-flight work |
-| `database-secret` | either `database.existingSecret` / `.existingSecretKey` is empty | `DATABASE_URL` has no other source and the chart creates no Secret |
-| `signing-key-secret` | either `signingKey.existingSecret` / `.key` is empty | `vpay-server` exits 78; a chart-generated key would mint tokens other replicas cannot verify |
-| `rails-secret` | `rails.existingSecret` is empty | An unresolved `${VAR}` is exit 78 on **both** binaries. The guard checks a Secret is named, never which keys are in it — that list is the image's, not the chart's |
-| `image-digest-format` | a digest is set and is not `sha256:` + 64 hex | A truncated digest fails at image pull, in the cluster, not here |
-| `worker-replicas` | `worker.replicaCount < 1` | No job is claimed; intents sit in `processing` while everything reports healthy |
-| `pdb-minavailable` | `podDisruptionBudget.minAvailable >= server.replicaCount` | No voluntary eviction is ever allowed, so node drains hang for ever |
-| `observability-port` | `observability.port` equals `server.port` or `service.port` | Publishes `/metrics` on the Ingress-facing port |
-| `rate-limit-ordering` | token `limitRps` > api `limitRps`, or either is ≤ 0 | Inverts the whole reason there are two Ingress objects; nginx treats ≤ 0 as no limit at all |
-| `ingress-host` | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate |
-| `overlay-empty` | overlay ConfigMap requested with empty content, or an empty profile | The process treats an empty overlay as success and runs on baked sandbox placeholders |
-| `dashboard-not-templated` | `dashboard.enabled: true` | This chart templates no dashboard workload — see below |
-| `dashboard-public-origin` | `dashboard.publicOrigin` set to something that is not `scheme://host[:port]` — a bare hostname, a path, a trailing slash | It is compared against the `Origin` header a browser sends, byte for byte after normalisation; anything else never matches, and every server action on the dashboard is refused |
-| `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false` | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer |
-| `checkout-templated-when-enabled` | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment |
-| `networkpolicy-database` | NetworkPolicy enabled with no database destination, or with two | Locks the server away from its own database, and the symptom blames the database |
-| `worker-concurrency-pool` | `worker.concurrency` above 5 | `vpay-server worker` refuses it at boot (exit 78, issue #63): its pool holds 10 connections and one webhook fan-out can hold two. Without the guard the release installs and CrashLoopBackOffs — including on a `helm upgrade` of a working one. The 5 is a literal here; the pool size is a constant in the image, and the chart exposes none |
-| `rails-egress-except` | `networkPolicy.egress.rails` names a CIDR the `except` list does not fit inside | *This row and the one below were missing from this table until 2026-09-10; both guards have existed and fired since 2026-09-03* |
-| `extra-env-collision` | `server.extraEnv` / `worker.extraEnv` / `checkout.extraEnv` sets a name the chart already sets | Kubernetes keeps the last entry with a given name, so the chart's own value is silently replaced |
+| Guard                               | Fires when                                                                                                                             | Why it matters                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `grace-period`                      | `terminationGracePeriodSeconds < shutdownGraceSeconds + 5`                                                                             | The kubelet kills the process mid-drain; every rolling update truncates in-flight work                                                                                                                                                                                                                                                         |
+| `database-secret`                   | either `database.existingSecret` / `.existingSecretKey` is empty                                                                       | `DATABASE_URL` has no other source and the chart creates no Secret                                                                                                                                                                                                                                                                             |
+| `signing-key-secret`                | either `signingKey.existingSecret` / `.key` is empty                                                                                   | `vpay-server` exits 78; a chart-generated key would mint tokens other replicas cannot verify                                                                                                                                                                                                                                                   |
+| `rails-secret`                      | `rails.existingSecret` is empty                                                                                                        | An unresolved `${VAR}` is exit 78 on **both** binaries. The guard checks a Secret is named, never which keys are in it — that list is the image's, not the chart's                                                                                                                                                                             |
+| `image-digest-format`               | a digest is set and is not `sha256:` + 64 hex                                                                                          | A truncated digest fails at image pull, in the cluster, not here                                                                                                                                                                                                                                                                               |
+| `worker-replicas`                   | `worker.replicaCount < 1`                                                                                                              | No job is claimed; intents sit in `processing` while everything reports healthy                                                                                                                                                                                                                                                                |
+| `pdb-minavailable`                  | `podDisruptionBudget.minAvailable >= server.replicaCount`                                                                              | No voluntary eviction is ever allowed, so node drains hang for ever                                                                                                                                                                                                                                                                            |
+| `observability-port`                | `observability.port` equals `server.port` or `service.port`                                                                            | Publishes `/metrics` on the Ingress-facing port                                                                                                                                                                                                                                                                                                |
+| `rate-limit-ordering`               | token `limitRps` > api `limitRps`, or either is ≤ 0                                                                                    | Inverts the whole reason there are two Ingress objects; nginx treats ≤ 0 as no limit at all                                                                                                                                                                                                                                                    |
+| `ingress-host`                      | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret                                                      | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate                                                                                                                                                                                                          |
+| `overlay-empty`                     | overlay ConfigMap requested with empty content, or an empty profile                                                                    | The process treats an empty overlay as success and runs on baked sandbox placeholders                                                                                                                                                                                                                                                          |
+| `dashboard-not-templated`           | `dashboard.enabled: true`                                                                                                              | This chart templates no dashboard workload — see below                                                                                                                                                                                                                                                                                         |
+| `dashboard-public-origin`           | `dashboard.publicOrigin` set to something that is not `scheme://host[:port]` — a bare hostname, a path, a trailing slash               | It is compared against the `Origin` header a browser sends, byte for byte after normalisation; anything else never matches, and every server action on the dashboard is refused                                                                                                                                                                |
+| `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false`                                                                              | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer                                                                                                                                                                                                                                        |
+| `checkout-templated-when-enabled`   | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment                                                                                                                               |
+| `networkpolicy-database`            | NetworkPolicy enabled with no database destination, or with two                                                                        | Locks the server away from its own database, and the symptom blames the database                                                                                                                                                                                                                                                               |
+| `worker-concurrency-pool`           | `worker.concurrency` above 5                                                                                                           | `vpay-server worker` refuses it at boot (exit 78, issue #63): its pool holds 10 connections and one webhook fan-out can hold two. Without the guard the release installs and CrashLoopBackOffs — including on a `helm upgrade` of a working one. The 5 is a literal here; the pool size is a constant in the image, and the chart exposes none |
+| `rails-egress-except`               | `networkPolicy.egress.rails` names a CIDR the `except` list does not fit inside                                                        | _This row and the one below were missing from this table until 2026-09-10; both guards have existed and fired since 2026-09-03_                                                                                                                                                                                                                |
+| `extra-env-collision`               | `server.extraEnv` / `worker.extraEnv` / `checkout.extraEnv` sets a name the chart already sets                                         | Kubernetes keeps the last entry with a given name, so the chart's own value is silently replaced                                                                                                                                                                                                                                               |
 
 `deploy/helm/vpay/ci/guards/<guard>.yaml` is one values file per guard, each
 violating exactly that guard. `just helm-check` renders each and fails unless
-the render fails *with that guard's name in the message* — so a guard that
+the render fails _with that guard's name in the message_ — so a guard that
 stops firing, or a message that stops naming itself, fails CI. Verified by
 disabling a guard and watching the check fail (2026-09-03).
 
-`values.schema.json` is separate and does a different job: it checks *shape*
+`values.schema.json` is separate and does a different job: it checks _shape_
 (types, enums, unknown keys) before a template renders. Semantics live in the
 guards, so the error can explain the consequence.
 
@@ -279,7 +279,7 @@ it answered `GET /healthz` 200 in that state. That is what the Deployment's
 
 **No pod has ever run.** The probe thresholds, the resource numbers and the
 Ingress are reasoned from the image and from Kubernetes' documented behaviour,
-like the rest of this chart. What is new is only that the *container* has been
+like the rest of this chart. What is new is only that the _container_ has been
 observed running the way the chart asks it to.
 
 Off by default, and that is a complete deployment rather than a missing one:
@@ -320,7 +320,7 @@ action is refused.
 The key is here and no template consumes it, for the same reason
 `dashboard.enabled` is here: **the thing an operator has to get right should
 be named where they will look**, not discovered from a sign-in that refuses
-itself. What the chart *can* do about a value it does not read is check its
+itself. What the chart _can_ do about a value it does not read is check its
 shape, and it does — see the `dashboard-public-origin` guard.
 
 Making it **required** is the follow-up, and it belongs with the Deployment
@@ -334,44 +334,44 @@ the reasoning; this table is maintained by hand and can drift from it.
 
 ### Naming
 
-| Key | Default | Meaning |
-|---|---|---|
-| `nameOverride` | `""` | Overrides the chart name in generated names |
-| `fullnameOverride` | `""` | Overrides the full resource name outright |
-| `commonLabels` | `{}` | Labels added to every object |
-| `commonAnnotations` | `{}` | Annotations added to every object |
+| Key                 | Default | Meaning                                     |
+| ------------------- | ------- | ------------------------------------------- |
+| `nameOverride`      | `""`    | Overrides the chart name in generated names |
+| `fullnameOverride`  | `""`    | Overrides the full resource name outright   |
+| `commonLabels`      | `{}`    | Labels added to every object                |
+| `commonAnnotations` | `{}`    | Annotations added to every object           |
 
 ### Images
 
-| Key | Default | Meaning |
-|---|---|---|
-| `images.registry` | `ghcr.io` | Registry host |
-| `images.namespace` | `vaam-apps` | Registry namespace/owner |
-| `images.pullPolicy` | `IfNotPresent` | |
-| `images.pullSecrets` | `[]` | `imagePullSecrets` entries; empty is right for a public package |
-| `images.server.name` | `vpay-server` | |
-| `images.server.tag` | `""` | Empty means `.Chart.AppVersion` |
-| `images.server.digest` | `""` | When set, wins over the tag: `repo@sha256:…`. **Both** backend Deployments use it |
-| `images.checkout.name` | `vpay-checkout` | Only read when `checkout.enabled` |
-| `images.checkout.tag` | `""` | |
-| `images.checkout.digest` | `""` | |
+| Key                      | Default         | Meaning                                                                           |
+| ------------------------ | --------------- | --------------------------------------------------------------------------------- |
+| `images.registry`        | `ghcr.io`       | Registry host                                                                     |
+| `images.namespace`       | `vaam-apps`     | Registry namespace/owner                                                          |
+| `images.pullPolicy`      | `IfNotPresent`  |                                                                                   |
+| `images.pullSecrets`     | `[]`            | `imagePullSecrets` entries; empty is right for a public package                   |
+| `images.server.name`     | `vpay-server`   |                                                                                   |
+| `images.server.tag`      | `""`            | Empty means `.Chart.AppVersion`                                                   |
+| `images.server.digest`   | `""`            | When set, wins over the tag: `repo@sha256:…`. **Both** backend Deployments use it |
+| `images.checkout.name`   | `vpay-checkout` | Only read when `checkout.enabled`                                                 |
+| `images.checkout.tag`    | `""`            |                                                                                   |
+| `images.checkout.digest` | `""`            |                                                                                   |
 
 ### Workloads
 
-| Key | Default | Meaning |
-|---|---|---|
-| `server.replicaCount` | `2` | |
-| `server.port` | `8080` | `VPAY_BIND` |
-| `server.resources` | `100m` / `128Mi` request, `256Mi` limit | **Placeholders, not measurements** — nothing has profiled either binary's RSS |
-| `server.podAnnotations` | `{}` | |
-| `server.nodeSelector` / `.tolerations` / `.affinity` | empty | Scheduling pass-throughs |
-| `server.extraEnv` | `[]` | Extra core/v1 `EnvVar` objects |
-| `worker.replicaCount` | `1` | >1 is safe: jobs are leased with `FOR UPDATE SKIP LOCKED` |
-| `worker.concurrency` | `4` | `VPAY_WORKER_CONCURRENCY`; `vpay-server worker` refuses 0, and refuses anything above **5** — `vpay_db::MAX_CONNECTIONS / 2` (issue #63, `worker-concurrency-pool` guard). More throughput is more `worker.replicaCount`, not more concurrency |
-| `worker.resources` | as server | Same caveat |
-| `worker.podAnnotations` / `.nodeSelector` / `.tolerations` / `.affinity` / `.extraEnv` | empty | |
-| `shutdownGraceSeconds` | `25` | `VPAY_SHUTDOWN_GRACE_SECONDS` |
-| `terminationGracePeriodSeconds` | `35` | Must exceed the above by ≥ 5 (`grace-period` guard) |
+| Key                                                                                    | Default                                 | Meaning                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.replicaCount`                                                                  | `2`                                     |                                                                                                                                                                                                                                                |
+| `server.port`                                                                          | `8080`                                  | `VPAY_BIND`                                                                                                                                                                                                                                    |
+| `server.resources`                                                                     | `100m` / `128Mi` request, `256Mi` limit | **Placeholders, not measurements** — nothing has profiled either binary's RSS                                                                                                                                                                  |
+| `server.podAnnotations`                                                                | `{}`                                    |                                                                                                                                                                                                                                                |
+| `server.nodeSelector` / `.tolerations` / `.affinity`                                   | empty                                   | Scheduling pass-throughs                                                                                                                                                                                                                       |
+| `server.extraEnv`                                                                      | `[]`                                    | Extra core/v1 `EnvVar` objects                                                                                                                                                                                                                 |
+| `worker.replicaCount`                                                                  | `1`                                     | >1 is safe: jobs are leased with `FOR UPDATE SKIP LOCKED`                                                                                                                                                                                      |
+| `worker.concurrency`                                                                   | `4`                                     | `VPAY_WORKER_CONCURRENCY`; `vpay-server worker` refuses 0, and refuses anything above **5** — `vpay_db::MAX_CONNECTIONS / 2` (issue #63, `worker-concurrency-pool` guard). More throughput is more `worker.replicaCount`, not more concurrency |
+| `worker.resources`                                                                     | as server                               | Same caveat                                                                                                                                                                                                                                    |
+| `worker.podAnnotations` / `.nodeSelector` / `.tolerations` / `.affinity` / `.extraEnv` | empty                                   |                                                                                                                                                                                                                                                |
+| `shutdownGraceSeconds`                                                                 | `25`                                    | `VPAY_SHUTDOWN_GRACE_SECONDS`                                                                                                                                                                                                                  |
+| `terminationGracePeriodSeconds`                                                        | `35`                                    | Must exceed the above by ≥ 5 (`grace-period` guard)                                                                                                                                                                                            |
 
 No CPU limit is set, deliberately: throttling a process whose latency is
 dominated by an outbound rail call buys nothing and hides everything. There is
@@ -379,98 +379,98 @@ no HPA either — nothing has measured what would drive one.
 
 ### Config
 
-| Key | Default | Meaning |
-|---|---|---|
-| `config.profile` | `sandbox` | `VPAY_PROFILE`; selects a *file*, never a code path |
-| `config.path` | `/config/application.yml` | The baked base config; changing this is almost certainly wrong |
-| `config.createOverlayConfigMap` | `false` | Render the overlay ConfigMap |
-| `config.overlay` | `""` | The overlay's YAML content |
+| Key                             | Default                   | Meaning                                                        |
+| ------------------------------- | ------------------------- | -------------------------------------------------------------- |
+| `config.profile`                | `sandbox`                 | `VPAY_PROFILE`; selects a _file_, never a code path            |
+| `config.path`                   | `/config/application.yml` | The baked base config; changing this is almost certainly wrong |
+| `config.createOverlayConfigMap` | `false`                   | Render the overlay ConfigMap                                   |
+| `config.overlay`                | `""`                      | The overlay's YAML content                                     |
 
 ### Secrets
 
-| Key | Default | Meaning |
-|---|---|---|
-| `database.existingSecret` | `vpay-database` | |
-| `database.existingSecretKey` | `url` | |
-| `signingKey.existingSecret` | `vpay-oauth-signing-key` | Server only |
-| `signingKey.key` | `oauth-signing-key.pem` | |
-| `signingKey.mountPath` | `/secrets/oauth-signing-key.pem` | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE` |
-| `signingKey.defaultMode` | `0440` (288) | See above — **not** `0400` |
-| `rails.existingSecret` | `vpay-rails` | Projected with `envFrom` onto both workloads |
+| Key                          | Default                          | Meaning                                      |
+| ---------------------------- | -------------------------------- | -------------------------------------------- |
+| `database.existingSecret`    | `vpay-database`                  |                                              |
+| `database.existingSecretKey` | `url`                            |                                              |
+| `signingKey.existingSecret`  | `vpay-oauth-signing-key`         | Server only                                  |
+| `signingKey.key`             | `oauth-signing-key.pem`          |                                              |
+| `signingKey.mountPath`       | `/secrets/oauth-signing-key.pem` | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE`        |
+| `signingKey.defaultMode`     | `0440` (288)                     | See above — **not** `0400`                   |
+| `rails.existingSecret`       | `vpay-rails`                     | Projected with `envFrom` onto both workloads |
 
 ### Observability
 
-| Key | Default | Meaning |
-|---|---|---|
-| `observability.port` | `9090` | `--observability-bind`; bound by both Deployments |
-| `observability.livenessPath` | `/livez` | Static `ok`, no database |
-| `observability.metricsPath` | `/metrics` | Prometheus text format; never scraped by anything |
-| `observability.readinessPath` | `/healthz` | Exists today; a real `SELECT 1` |
-| `metrics.serviceMonitor.enabled` | `false` | Needs the prometheus-operator CRDs |
-| `metrics.serviceMonitor.interval` | `30s` | |
-| `metrics.serviceMonitor.scrapeTimeout` | `10s` | |
-| `metrics.serviceMonitor.labels` | `{}` | e.g. `release: kube-prometheus-stack` |
-| `metrics.prometheusRule.enabled` | `false` | |
-| `metrics.prometheusRule.labels` | `{}` | |
-| `metrics.prometheusRule.providerErrorRatio` | `0.05` | **Proposed, not measured** |
-| `metrics.prometheusRule.providerErrorWindow` | `15m` | **Proposed** |
-| `metrics.prometheusRule.jobQueueBehindSeconds` | `300` | **Proposed** |
-| `metrics.prometheusRule.alertEventWindow` | `5m` | **Proposed** |
+| Key                                            | Default    | Meaning                                           |
+| ---------------------------------------------- | ---------- | ------------------------------------------------- |
+| `observability.port`                           | `9090`     | `--observability-bind`; bound by both Deployments |
+| `observability.livenessPath`                   | `/livez`   | Static `ok`, no database                          |
+| `observability.metricsPath`                    | `/metrics` | Prometheus text format; never scraped by anything |
+| `observability.readinessPath`                  | `/healthz` | Exists today; a real `SELECT 1`                   |
+| `metrics.serviceMonitor.enabled`               | `false`    | Needs the prometheus-operator CRDs                |
+| `metrics.serviceMonitor.interval`              | `30s`      |                                                   |
+| `metrics.serviceMonitor.scrapeTimeout`         | `10s`      |                                                   |
+| `metrics.serviceMonitor.labels`                | `{}`       | e.g. `release: kube-prometheus-stack`             |
+| `metrics.prometheusRule.enabled`               | `false`    |                                                   |
+| `metrics.prometheusRule.labels`                | `{}`       |                                                   |
+| `metrics.prometheusRule.providerErrorRatio`    | `0.05`     | **Proposed, not measured**                        |
+| `metrics.prometheusRule.providerErrorWindow`   | `15m`      | **Proposed**                                      |
+| `metrics.prometheusRule.jobQueueBehindSeconds` | `300`      | **Proposed**                                      |
+| `metrics.prometheusRule.alertEventWindow`      | `5m`       | **Proposed**                                      |
 
 ### Network
 
-| Key | Default | Meaning |
-|---|---|---|
-| `service.type` | `ClusterIP` | |
-| `service.port` | `8080` | |
-| `service.annotations` | `{}` | |
-| `ingress.enabled` | `false` | |
-| `ingress.className` | `nginx` | Step-6 decision (4) |
-| `ingress.host` | `""` | Required when enabled |
-| `ingress.annotations` | `{}` | Merged onto both Ingress objects |
-| `ingress.tls.enabled` | `true` | |
-| `ingress.tls.clusterIssuer` | `letsencrypt-prod` | cert-manager annotation |
-| `ingress.tls.secretName` | `""` | Empty means `<fullname>-tls` |
-| `ingress.api.path` / `.pathType` | `/v1` / `Prefix` | |
-| `ingress.api.limitRps` / `.limitBurstMultiplier` | `20` / `3` | |
-| `ingress.token.path` / `.pathType` | `/v1/oauth/token` / `Exact` | |
-| `ingress.token.limitRps` / `.limitBurstMultiplier` | `5` / `2` | Must be ≤ the api limit |
-| `networkPolicy.enabled` | `false` | Off until you say where Postgres is |
-| `networkPolicy.ingressControllerNamespace` | `ingress-nginx` | |
-| `networkPolicy.monitoringNamespace` | `monitoring` | The only source allowed to reach 9090 |
-| `networkPolicy.dnsNamespace` | `kube-system` | |
-| `networkPolicy.database.cidrs` | `[]` | A managed instance's address |
-| `networkPolicy.database.namespace` / `.podSelector` | `""` / `{}` | An in-cluster one |
-| `networkPolicy.database.port` | `5432` | |
-| `networkPolicy.railsEgress.enabled` | `true` | Outbound HTTPS to the rails |
-| `networkPolicy.railsEgress.port` | `443` | |
-| `networkPolicy.railsEgress.except` | RFC1918 + `169.254.0.0/16` | Keeps the rule from reaching the VPC or the metadata endpoint |
-| `podDisruptionBudget.enabled` | `true` | Server only |
-| `podDisruptionBudget.minAvailable` | `1` | Integer, never a percentage |
+| Key                                                 | Default                     | Meaning                                                       |
+| --------------------------------------------------- | --------------------------- | ------------------------------------------------------------- |
+| `service.type`                                      | `ClusterIP`                 |                                                               |
+| `service.port`                                      | `8080`                      |                                                               |
+| `service.annotations`                               | `{}`                        |                                                               |
+| `ingress.enabled`                                   | `false`                     |                                                               |
+| `ingress.className`                                 | `nginx`                     | Step-6 decision (4)                                           |
+| `ingress.host`                                      | `""`                        | Required when enabled                                         |
+| `ingress.annotations`                               | `{}`                        | Merged onto both Ingress objects                              |
+| `ingress.tls.enabled`                               | `true`                      |                                                               |
+| `ingress.tls.clusterIssuer`                         | `letsencrypt-prod`          | cert-manager annotation                                       |
+| `ingress.tls.secretName`                            | `""`                        | Empty means `<fullname>-tls`                                  |
+| `ingress.api.path` / `.pathType`                    | `/v1` / `Prefix`            |                                                               |
+| `ingress.api.limitRps` / `.limitBurstMultiplier`    | `20` / `3`                  |                                                               |
+| `ingress.token.path` / `.pathType`                  | `/v1/oauth/token` / `Exact` |                                                               |
+| `ingress.token.limitRps` / `.limitBurstMultiplier`  | `5` / `2`                   | Must be ≤ the api limit                                       |
+| `networkPolicy.enabled`                             | `false`                     | Off until you say where Postgres is                           |
+| `networkPolicy.ingressControllerNamespace`          | `ingress-nginx`             |                                                               |
+| `networkPolicy.monitoringNamespace`                 | `monitoring`                | The only source allowed to reach 9090                         |
+| `networkPolicy.dnsNamespace`                        | `kube-system`               |                                                               |
+| `networkPolicy.database.cidrs`                      | `[]`                        | A managed instance's address                                  |
+| `networkPolicy.database.namespace` / `.podSelector` | `""` / `{}`                 | An in-cluster one                                             |
+| `networkPolicy.database.port`                       | `5432`                      |                                                               |
+| `networkPolicy.railsEgress.enabled`                 | `true`                      | Outbound HTTPS to the rails                                   |
+| `networkPolicy.railsEgress.port`                    | `443`                       |                                                               |
+| `networkPolicy.railsEgress.except`                  | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint |
+| `podDisruptionBudget.enabled`                       | `true`                      | Server only                                                   |
+| `podDisruptionBudget.minAvailable`                  | `1`                         | Integer, never a percentage                                   |
 
 ### Misc
 
-| Key | Default | Meaning |
-|---|---|---|
-| `serviceAccount.create` | `true` | |
-| `serviceAccount.name` | `""` | Empty means the chart fullname |
-| `serviceAccount.annotations` | `{}` | |
-| `logFilter` | `info` | `RUST_LOG` |
-| `logFormat` | `json` | `VPAY_LOG_FORMAT` — already the binary's default |
-| `dashboard.enabled` | `false` | `true` is a named template failure |
-| `dashboard.publicOrigin` | `""` | `VPAY_DASHBOARD_PUBLIC_ORIGIN` on the dashboard you deploy separately. **Nothing in this chart reads it** — see below. Empty means the app falls back to comparing `Host` |
-| `checkout.enabled` | `false` | vpay's own payment page. Off is a complete deployment — see below |
-| `checkout.replicaCount` | `2` | |
-| `checkout.port` | `3000` | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service |
-| `checkout.resources` | `100m` / `128Mi` request, `512Mi` limit | **Placeholders**, as everywhere else here. The limit exists because an unbounded heap on a GC'd process evicts a node rather than restarting a pod |
-| `checkout.apiUrl` | `""` | This pod's view of vpay, for the server-side origins lookup. Empty renders this release's own server Service |
-| `checkout.publicApiUrl` | `""` | **Required when enabled.** A payer's browser's view of vpay; the app throws on a missing one |
-| `checkout.service.type` / `.port` | `ClusterIP` / `3000` | |
-| `checkout.ingress.enabled` | `false` | |
-| `checkout.ingress.host` | `""` | Its own hostname — prefer this shape |
-| `checkout.ingress.path` | `""` | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape** |
-| `checkout.ingress.limitRps` | `50` | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface |
-| `checkout.extraEnv` | `[]` | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`) |
+| Key                               | Default                                 | Meaning                                                                                                                                                                   |
+| --------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serviceAccount.create`           | `true`                                  |                                                                                                                                                                           |
+| `serviceAccount.name`             | `""`                                    | Empty means the chart fullname                                                                                                                                            |
+| `serviceAccount.annotations`      | `{}`                                    |                                                                                                                                                                           |
+| `logFilter`                       | `info`                                  | `RUST_LOG`                                                                                                                                                                |
+| `logFormat`                       | `json`                                  | `VPAY_LOG_FORMAT` — already the binary's default                                                                                                                          |
+| `dashboard.enabled`               | `false`                                 | `true` is a named template failure                                                                                                                                        |
+| `dashboard.publicOrigin`          | `""`                                    | `VPAY_DASHBOARD_PUBLIC_ORIGIN` on the dashboard you deploy separately. **Nothing in this chart reads it** — see below. Empty means the app falls back to comparing `Host` |
+| `checkout.enabled`                | `false`                                 | vpay's own payment page. Off is a complete deployment — see below                                                                                                         |
+| `checkout.replicaCount`           | `2`                                     |                                                                                                                                                                           |
+| `checkout.port`                   | `3000`                                  | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service                                                                             |
+| `checkout.resources`              | `100m` / `128Mi` request, `512Mi` limit | **Placeholders**, as everywhere else here. The limit exists because an unbounded heap on a GC'd process evicts a node rather than restarting a pod                        |
+| `checkout.apiUrl`                 | `""`                                    | This pod's view of vpay, for the server-side origins lookup. Empty renders this release's own server Service                                                              |
+| `checkout.publicApiUrl`           | `""`                                    | **Required when enabled.** A payer's browser's view of vpay; the app throws on a missing one                                                                              |
+| `checkout.service.type` / `.port` | `ClusterIP` / `3000`                    |                                                                                                                                                                           |
+| `checkout.ingress.enabled`        | `false`                                 |                                                                                                                                                                           |
+| `checkout.ingress.host`           | `""`                                    | Its own hostname — prefer this shape                                                                                                                                      |
+| `checkout.ingress.path`           | `""`                                    | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape**                                                                        |
+| `checkout.ingress.limitRps`       | `50`                                    | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface                                                                                          |
+| `checkout.extraEnv`               | `[]`                                    | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`)                                                                    |
 
 ## Why two Ingress objects
 
@@ -519,12 +519,12 @@ Written 2026-09-03, step 6 block B.
 
 ### What has actually been verified
 
-* `helm lint` passes on the defaults and on `ci/values-full.yaml`.
-* `helm template` renders 6 objects with the defaults and 14 with
+- `helm lint` passes on the defaults and on `ci/values-full.yaml`.
+- `helm template` renders 6 objects with the defaults and 14 with
   `ci/values-full.yaml`.
-* All **19** guards fire on their own values file, each with its own name in
+- All **19** guards fire on their own values file, each with its own name in
   the message, and `just helm-check` also checks that the nineteen names it
-  expects are exactly the nineteen files on disk — so deleting a guard *and*
+  expects are exactly the nineteen files on disk — so deleting a guard _and_
   its values file fails rather than passing quietly. (**This said "15" until
   2026-09-10** and had been wrong since the sixteenth landed; `worker-concurrency-pool`
   makes it nineteen. Measured: `19 guards, all fired by name (19 expected)`.) Proven negatively too, which is the
@@ -535,18 +535,18 @@ Written 2026-09-03, step 6 block B.
   two guards that pass added, `rails-egress-except` and
   `extra-env-collision`. In each case the recipe reported that the guard
   "did not fire" and named it.
-* `kubeconform -strict` validates 20 rendered resources across both files —
+- `kubeconform -strict` validates 20 rendered resources across both files —
   17 built-in and 3 Prometheus CRDs — with 0 invalid and 0 skipped.
-* Removing the `limit-rps` annotation from the Ingress template makes
+- Removing the `limit-rps` annotation from the Ingress template makes
   `just helm-check` fail.
 
 ### What has NOT been verified — most of it
 
-* **No cluster has ever run this.** Not a real one, not kind, not minikube.
+- **No cluster has ever run this.** Not a real one, not kind, not minikube.
   Step-6 decision (9) put a kind smoke test out of scope for this step, so
   nothing here says anything about scheduling, admission, or whether these
   objects can coexist.
-* ~~**The liveness probes point at a listener that does not exist.**~~
+- ~~**The liveness probes point at a listener that does not exist.**~~
   **Corrected 2026-09-03, same day.** Block A landed `--observability-bind`,
   `/livez` and the worker's first HTTP listener; both Deployments' own
   `tests/cli.rs` drive the running process and assert that `/livez` and
@@ -556,7 +556,7 @@ Written 2026-09-03, step 6 block B.
   wonder whether it was ever real. What remains true: an image older than
   that listener has nothing on port 9090, and the kubelet will restart both
   pods in a loop against one — pin `images.*.digest`.
-* ~~**Every PrometheusRule query names a metric no build emits.**~~
+- ~~**Every PrometheusRule query names a metric no build emits.**~~
   **Corrected 2026-09-03, same day:** block C landed the instrumentation, so
   `vpay_provider_requests_total`, `vpay_charge_transitions_total`,
   `vpay_jobs_*` and `vpay_alert_events_total` are all recorded and served on
@@ -565,29 +565,29 @@ Written 2026-09-03, step 6 block B.
   evaluated against a real series — it has never fired, never failed to fire,
   and never been tested against real data. `metrics.prometheusRule.enabled`
   and `metrics.serviceMonitor.enabled` are both `false` by default.
-* **`VpayProviderErrorRateHigh` will fire on ordinary declines.** Its
+- **`VpayProviderErrorRateHigh` will fire on ordinary declines.** Its
   numerator is `error_kind!=""` — every failed port call, which is what makes
   it able to fire during a rail outage (`provider_unavailable`) at all — and
-  that set includes `charge_declined`, a rail *decision* rather than a rail
+  that set includes `charge_declined`, a rail _decision_ rather than a rail
   failure. Whether to exclude declines is a maintainer decision to make with
   the threshold itself; see `docs/runbooks/provider-error-rate.md`.
-* **Every alert threshold is proposed, not derived.** Step-6 decision (5): the
+- **Every alert threshold is proposed, not derived.** Step-6 decision (5): the
   runbooks contained no numbers to transcribe. Each rule carries
   `provisional: "true"`.
-* `readOnlyRootFilesystem: true` is "no observed writer", not "proven". The
+- `readOnlyRootFilesystem: true` is "no observed writer", not "proven". The
   `scratch` image has no writable path and nothing in either binary opens a
   file for writing, but no pod has run to confirm it.
-* `signingKey.defaultMode: 0440` is reasoned from Kubernetes' documented
+- `signingKey.defaultMode: 0440` is reasoned from Kubernetes' documented
   ownership rule for `fsGroup`ed Secret volumes, not observed.
-* The NetworkPolicy has never been enforced by a CNI. A cluster whose CNI
+- The NetworkPolicy has never been enforced by a CNI. A cluster whose CNI
   ignores NetworkPolicy and one that honours it look identical from here.
-* The PodDisruptionBudget's behaviour during a rolling restart or a node drain
+- The PodDisruptionBudget's behaviour during a rolling restart or a node drain
   is untested.
-* **Nothing has verified that ingress-nginx honours `limit-rps` at all.** CI
-  checks that the annotation is *present in the rendered YAML*. That is the
+- **Nothing has verified that ingress-nginx honours `limit-rps` at all.** CI
+  checks that the annotation is _present in the rendered YAML_. That is the
   whole claim.
-* The resource requests and limits are placeholders. No profiling exists.
-* The images the chart references have never been pulled from GHCR by this
+- The resource requests and limits are placeholders. No profiling exists.
+- The images the chart references have never been pulled from GHCR by this
   chart; ~~publishing them is block A.~~ **Updated 2026-09-05: publishing has
   happened** — release run `33929374661` (2026-09-04) pushed and signed all
   four. The unproven half is the pull, not the push: nobody has pulled one,
@@ -596,11 +596,11 @@ Written 2026-09-03, step 6 block B.
 
 ### Follow-ups
 
-* A kind smoke test — it needs a real Postgres and the signing-key Secret,
+- A kind smoke test — it needs a real Postgres and the signing-key Secret,
   i.e. a second copy of the e2e job, for the ability to catch scheduling
   errors. Deferred by decision (9), worth doing.
-* `helm unittest` for the object shapes, rather than kubeconform alone.
-* A dashboard workload, once someone has run that image with a non-root UID.
-* A cluster run of the checkout page's path-prefix Ingress shape, which is
+- `helm unittest` for the object shapes, rather than kubeconform alone.
+- A dashboard workload, once someone has run that image with a non-root UID.
+- A cluster run of the checkout page's path-prefix Ingress shape, which is
   templated and unexercised.
-* An HPA, once anything has measured what would drive it.
+- An HPA, once anything has measured what would drive it.

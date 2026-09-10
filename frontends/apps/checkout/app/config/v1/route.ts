@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 
-import { runtimeConfig } from '../../../src/config/runtime';
+import { runtimeConfig } from "../../../src/config/runtime";
 
 /**
  * `GET /config/v1` — what this container actually loaded.
@@ -26,12 +26,12 @@ import { runtimeConfig } from '../../../src/config/runtime';
  * `dynamic = 'force-dynamic'` for the same reason the pages set it: the
  * `no-store` `middleware.ts` sends should be the whole caching story.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export function GET(): NextResponse {
   const { branding, checkout } = runtimeConfig();
   return NextResponse.json({
-    object: 'checkout_page_config',
+    object: "checkout_page_config",
     version: 1,
     branding: {
       display_name: branding.displayName,

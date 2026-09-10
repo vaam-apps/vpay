@@ -1,11 +1,11 @@
-import { redirect } from 'next/navigation';
+import { redirect } from "next/navigation";
 
-import { Alert, Heading, List, Stack, Text } from '@vpay/ui';
+import { Alert, Heading, List, Stack, Text } from "@vpay/ui";
 
-import { dashboardConfig } from '../../src/config/runtime';
-import { SignInForm } from '../../src/components/sign-in-form';
-import { signIn } from '../../src/server/actions';
-import { alreadySignedIn, HOME_PATH } from '../../src/server/session';
+import { dashboardConfig } from "../../src/config/runtime";
+import { SignInForm } from "../../src/components/sign-in-form";
+import { signIn } from "../../src/server/actions";
+import { alreadySignedIn, HOME_PATH } from "../../src/server/session";
 
 /**
  * `/login` — leg one of ADR-0017's two-factor sign-in.
@@ -22,7 +22,7 @@ import { alreadySignedIn, HOME_PATH } from '../../src/server/session';
  * could not have worked — an operator reading it is the person who can fix
  * it, and a staff member reading it learns not to keep retyping a password.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function LoginPage() {
   const { config, problems } = dashboardConfig();

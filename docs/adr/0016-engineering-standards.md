@@ -7,17 +7,17 @@
 ## Context
 
 By 2026-09-05 this repository had a documented decision for almost every
-*structural* choice — the provider port ([ADR-0002](0002-provider-port.md)),
+_structural_ choice — the provider port ([ADR-0002](0002-provider-port.md)),
 configuration over environment branching ([ADR-0003](0003-yaml-configuration.md)),
 error modelling ([ADR-0011](0011-error-modelling.md)), the lint policy
 ([ADR-0007](0007-lint-policy.md)), SDK parity ([ADR-0015](0015-sdk-parity.md)) —
-and no written decision at all for the *habits* those structures are built
+and no written decision at all for the _habits_ those structures are built
 with. The habits existed; they were simply spread across places nobody reads
 as a rule:
 
 - `AGENTS.md` said "`thiserror` for library crates, `anyhow` only in binaries",
   which ADR-0011 later turned into a three-tier model with a gate.
-- The serde convention — "`rename_all` is for *our* wire, never a rail's" —
+- The serde convention — "`rename_all` is for _our_ wire, never a rail's" —
   was written in `docs/reference/rails.md`, in the module doc of
   `vpay-adapter-mtn-momo/src/wire.rs`, in the module doc of
   `vpay-adapter-orange-money/src/wire.rs`, and in a comment above
@@ -59,7 +59,7 @@ ADR-0011 remains the authority for the detail; nothing here modifies it.
   fails; `anyhow` under a library crate's `[dependencies]` fails; a `#[from]`
   variant that a composite's `Classify` method answers for with a wildcard
   instead of naming fails.
-- **Left to review:** whether a leaf's `category()` is the *right* category,
+- **Left to review:** whether a leaf's `category()` is the _right_ category,
   and whether an override carries the comment ADR-0011 asks for.
 
 ### 2. Rails stay behind the trait, and every adapter has a clean error surface
@@ -74,7 +74,7 @@ stringly-typed catch-all.
   in `backends/tests/conformance`, which is one suite parameterised over every
   adapter. `cargo xtask verify-no-mocks` keeps a test double out of the
   process that would otherwise be the easy way to fake an adapter.
-- **Left to review:** that a new rail's failures were *mapped* rather than
+- **Left to review:** that a new rail's failures were _mapped_ rather than
   flattened, and that no `if provider == "…"` appeared outside
   `backends/crates/vpay-adapter-*` (ADR-0002's rule; no gate reads for it
   today, and that is a known gap).
@@ -88,7 +88,7 @@ listed in the exemption table below with a reason.
 
 Rust visibility is not part of the rule. `verify-errors` scans `pub` types
 only, because a `pub(crate)` error reaches no boundary — but a `pub(crate)`
-type with a `Serialize` derive reaches a *rail*, and both adapters' entire
+type with a `Serialize` derive reaches a _rail_, and both adapters' entire
 wire modules are `pub(crate)`. A wire does not care what Rust thinks of a
 type's visibility.
 
@@ -97,11 +97,11 @@ serialises a name, so the attribute would rename nothing and requiring it
 would be a rule about characters.
 
 **The rule the exemptions are all instances of:** `rename_all` is a statement
-about *our* wire. Where the names belong to somebody else — a rail's JSON, an
+about _our_ wire. Where the names belong to somebody else — a rail's JSON, an
 `untagged` union whose variant names never appear at all — the attribute is
 either inert or actively dangerous, because the day the other party sends a
 name that is not already snake_case the attribute renames it away from their
-spelling. This is `docs/reference/rails.md` §"serde: `rename_all` is for *our*
+spelling. This is `docs/reference/rails.md` §"serde: `rename_all` is for _our_
 wire, never a rail's", now with a gate behind it.
 
 The line this ADR draws, because it is the one that will be argued about:
@@ -118,24 +118,24 @@ now complies, or a type that no longer exists, **fails the build** — a stale
 exemption describes a decision the code has already reversed, and the next
 person reads it as current.
 
-| Type | File | Reason |
-|---|---|---|
-| `TokenResponse` | `backends/crates/vpay-adapter-mtn-momo/src/token.rs` | Models MTN's OAuth token response. Already snake_case by coincidence, which is what makes the attribute a promise rather than a no-op. |
-| `ExpiresIn` | `backends/crates/vpay-adapter-mtn-momo/src/token.rs` | `#[serde(untagged)]` — variant names never reach the wire, so there is nothing for `rename_all` to rename. |
-| `RequestToPay` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's camelCase Collections wire (`externalId`); the per-field `rename`s are what make it exact. |
-| `StatusResponse` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's camelCase Collections wire (`financialTransactionId`). |
-| `Reason` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | `#[serde(untagged)]` — MTN sends `reason` as a bare string or as an object, and neither shape carries a variant name. |
-| `Scalar` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | `#[serde(untagged)]` — a value MTN sends as a string or a number; no variant name on the wire. |
-| `ApiError` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's error envelope. That module's own doc comment forbids `rename_all` for every type in it, for the reason above. |
-| `BasicUserInfo` | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs` | Models MTN's OIDC-shaped `basicuserinfo` body (`given_name`, `family_name`). Already snake_case by coincidence — the same trap `TokenResponse` above names, and the same answer: the attribute would be a no-op today and a silent claim about MTN's wire tomorrow. Added 2026-09-05 (issue #47). |
-| `WebPaymentRequest` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. Snake_case today, which makes the attribute more dangerous rather than less. |
-| `WebPaymentResponse` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. |
-| `TransactionStatusRequest` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. |
-| `TransactionStatusResponse` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. |
-| `TokenResponse` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models OAuth 2's token response as Orange serves it. |
-| `CallbackBody` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models the body Orange POSTs to `notif_url`. |
-| `ExpandableIntent` | `backends/crates/vpay-api/src/model.rs` | `#[serde(untagged)]` — the wire shape is a string or an object with no discriminator, exactly as Stripe's expansion is. |
-| `Currency` | `backends/crates/vpay-core/src/money.rs` | `rename_all = "UPPERCASE"`: ISO-4217 codes, not vpay field names. `"XAF"` is the spelling the database, both adapters and `Currency::code` already agree on. |
+| Type                        | File                                                    | Reason                                                                                                                                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TokenResponse`             | `backends/crates/vpay-adapter-mtn-momo/src/token.rs`    | Models MTN's OAuth token response. Already snake_case by coincidence, which is what makes the attribute a promise rather than a no-op.                                                                                                                                                            |
+| `ExpiresIn`                 | `backends/crates/vpay-adapter-mtn-momo/src/token.rs`    | `#[serde(untagged)]` — variant names never reach the wire, so there is nothing for `rename_all` to rename.                                                                                                                                                                                        |
+| `RequestToPay`              | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | Models MTN's camelCase Collections wire (`externalId`); the per-field `rename`s are what make it exact.                                                                                                                                                                                           |
+| `StatusResponse`            | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | Models MTN's camelCase Collections wire (`financialTransactionId`).                                                                                                                                                                                                                               |
+| `Reason`                    | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | `#[serde(untagged)]` — MTN sends `reason` as a bare string or as an object, and neither shape carries a variant name.                                                                                                                                                                             |
+| `Scalar`                    | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | `#[serde(untagged)]` — a value MTN sends as a string or a number; no variant name on the wire.                                                                                                                                                                                                    |
+| `ApiError`                  | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | Models MTN's error envelope. That module's own doc comment forbids `rename_all` for every type in it, for the reason above.                                                                                                                                                                       |
+| `BasicUserInfo`             | `backends/crates/vpay-adapter-mtn-momo/src/wire.rs`     | Models MTN's OIDC-shaped `basicuserinfo` body (`given_name`, `family_name`). Already snake_case by coincidence — the same trap `TokenResponse` above names, and the same answer: the attribute would be a no-op today and a silent claim about MTN's wire tomorrow. Added 2026-09-05 (issue #47). |
+| `WebPaymentRequest`         | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire. Snake_case today, which makes the attribute more dangerous rather than less.                                                                                                                                                                                    |
+| `WebPaymentResponse`        | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire.                                                                                                                                                                                                                                                                 |
+| `TransactionStatusRequest`  | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire.                                                                                                                                                                                                                                                                 |
+| `TransactionStatusResponse` | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models Orange's Web Payment wire.                                                                                                                                                                                                                                                                 |
+| `TokenResponse`             | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models OAuth 2's token response as Orange serves it.                                                                                                                                                                                                                                              |
+| `CallbackBody`              | `backends/crates/vpay-adapter-orange-money/src/wire.rs` | Models the body Orange POSTs to `notif_url`.                                                                                                                                                                                                                                                      |
+| `ExpandableIntent`          | `backends/crates/vpay-api/src/model.rs`                 | `#[serde(untagged)]` — the wire shape is a string or an object with no discriminator, exactly as Stripe's expansion is.                                                                                                                                                                           |
+| `Currency`                  | `backends/crates/vpay-core/src/money.rs`                | `rename_all = "UPPERCASE"`: ISO-4217 codes, not vpay field names. `"XAF"` is the spelling the database, both adapters and `Currency::code` already agree on.                                                                                                                                      |
 
 Sixteen rows, and the reason each one gives is a claim about somebody else's
 wire that a reviewer can check against that rail's documentation. **The gate
@@ -160,7 +160,7 @@ is what the one-conformance-suite rule and `vpay_core`'s single
 - **Mechanically enforced by** nothing, deliberately. A cyclomatic-complexity
   or duplicate-token gate measures the shape of code rather than whether a
   responsibility is in the right place, and the cheapest way to pass one is a
-  worse design that scores better. `cargo xtask verify-docs` *reports* every
+  worse design that scores better. `cargo xtask verify-docs` _reports_ every
   production function of 80 lines or more, which is the closest honest proxy
   and is not a gate for the same reason.
 - **Left to review:** all of it. A reviewer asking "what would have to change
@@ -175,7 +175,7 @@ work inside a transaction. Every implementation of those traits is
 only way to obtain one. A handler or a service names the trait — never
 `PgRepositories`, never a `Sql…Store`.
 
-Same rule for a store over a *foreign* trait. `SqlClientAssertionStore`
+Same rule for a store over a _foreign_ trait. `SqlClientAssertionStore`
 implements `authkestra_op`'s `ClientAssertionStore`; it was `pub`, and
 `vpay-api` constructed it by name. It is now `pub(crate)`, reached through
 `vpay_db::client_assertion_store`, which returns `impl ClientAssertionStore` —
@@ -185,7 +185,7 @@ The exemption that already existed stays exactly as it was:
 `Repositories::op_store_pool` is the one place a raw `sqlx` pool leaves the
 crate, because `authkestra_op::sqlx_store::SqlxOpStore` is a foreign
 implementation over a pool whose queries vpay does not own (Step 7's decision
-9, `docs/status.md`). That is a decision about a *pool*, not a licence to name
+9, `docs/status.md`). That is a decision about a _pool_, not a licence to name
 an implementation type.
 
 - **Mechanically enforced by** `cargo xtask verify-repositories`. It derives
@@ -216,13 +216,13 @@ is long enough to be a document, it is one: `#[doc = include_str!("…md")]`.
 
 - **Mechanically enforced by** `just test-doc` (a doctest that stops
   compiling fails CI) and, partially, by `cargo xtask verify-docs`, which
-  *reports* every ` ```ignore ` fence, the doc-comment volume per crate, the
+  _reports_ every ` ```ignore ` fence, the doc-comment volume per crate, the
   non-doc comment volume per crate, and the number of `#[doc = include_str!]`
   modules. **The report is not a gate and must not become one:** the cheapest
   way to pass a comment-volume gate is to delete the `# Errors` sections
   ADR-0011 depends on. That is Step 7's decision (4) and this ADR keeps it.
 - **Left to review:** whether a module doc is a paragraph and a link or an
-  80-line essay, and whether an in-file comment is explaining *why* or
+  80-line essay, and whether an in-file comment is explaining _why_ or
   restating the line below it.
 
 ### Migration rule
@@ -237,7 +237,7 @@ saying it has no gate.
 ## Alternatives considered
 
 - **A ratio gate on comments-to-code.** Rejected, again — Step 7 decision (4)
-  settled it and this ADR does not reopen it. The number is now *reported* per
+  settled it and this ADR does not reopen it. The number is now _reported_ per
   crate so the rule in standard 6 has a baseline, and a baseline is what makes
   a later argument about it evidence-based rather than aesthetic.
 - **An allowlist in `.xtask` instead of a table in the ADR.** Rejected: a
@@ -271,6 +271,6 @@ saying it has no gate.
   suites that constructed it by name go through `vpay_db::client_assertion_store`.
 - This ADR is immutable like every other. A standard that turns out to be
   wrong is superseded by a new ADR, not edited here — including the exemption
-  *table*, which is the one part of this document a routine change touches.
+  _table_, which is the one part of this document a routine change touches.
   Adding or removing a row is a change to an accepted decision's data, not to
   the decision; it is expected, and the gate is what keeps it honest.

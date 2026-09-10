@@ -5,7 +5,7 @@
 
 What this file is for: the MTN documentation citations the implementation
 rests on, the decisions taken and the ones deliberately left open, and the
-mutations that were run to check the tests actually fail. The *process* lives
+mutations that were run to check the tests actually fail. The _process_ lives
 in [../../flows/account-holder-lookup.md](../../flows/account-holder-lookup.md);
 this is the working record behind it.
 
@@ -61,21 +61,21 @@ description: "This operation returns personal information of the account
 
 Template parameters:
 
-| Name | Documented values |
-|---|---|
+| Name                  | Documented values                                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
 | `accountHolderIdType` | `MSISDN`, `Email`, `Alias`, `ID` — "Type of account holder identity passed in accountHolderId path param" |
-| `accountHolderId` | "ID of the account holder." |
+| `accountHolderId`     | "ID of the account holder."                                                                               |
 
 Required headers: `Authorization` ("Bearer Authentication Token generated
 using CreateAccessToken API Call") and `X-Target-Environment`.
 
 Documented responses — **and this is exhaustive, which matters below**:
 
-| Status | Description |
-|---|---|
-| `200` | OK |
-| `401` | Unauthorized |
-| `500` | Error |
+| Status | Description  |
+| ------ | ------------ |
+| `200`  | OK           |
+| `401`  | Unauthorized |
+| `500`  | Error        |
 
 The `200` body, from the operation's example and confirmed against the
 `BasicUserInfoJsonResponse` schema in the API's OpenAPI components document:
@@ -93,7 +93,7 @@ names **or no family name**". Neither is in a `required` list. That sentence
 is why `wire::BasicUserInfo::name()` accepts either half alone and only
 refuses when both are absent.
 
-### 1.3 What the portal says about *not found*, which is nothing
+### 1.3 What the portal says about _not found_, which is nothing
 
 `GetBasicUserinfo` documents no `404`. The comparison that makes this a
 finding rather than an omission-by-me:
@@ -109,7 +109,7 @@ RequesttoPayTransactionStatus  GET /v1_0/requesttopay/{referenceId}
 MTN documents a `404` explicitly where it means one. It does not, for
 `basicuserinfo`.
 
-There is a *third* operation on the same API that answers the existence
+There is a _third_ operation on the same API that answers the existence
 question directly, and it does not use a `404` either:
 
 ```text
@@ -174,7 +174,7 @@ taken anyway, for three reasons:
    MTN answers one for an unregistered number, mapping it to a `502` would
    tell a merchant their integration is broken when it is working.
 2. It is safe in the direction that matters. If MTN never sends a `404` the
-   arm is dead code. If it sends one for some *other* reason, the caller's
+   arm is dead code. If it sends one for some _other_ reason, the caller's
    own rule (issue #47's name match refuses on `UNVERIFIABLE`) still refuses
    — `Ok(None)` and an error are both refusals; they differ in what a support
    ticket says, not in whether money moves.
@@ -185,7 +185,7 @@ taken anyway, for three reasons:
 **`ValidateAccountHolderStatus` (`/active`) was considered and not used.** It
 answers the existence question without an assumption, but it returns a
 boolean and no name, so it cannot serve `GET /v1/account_holders`. Using
-*both* — `/active` to decide `Ok(None)`, `basicuserinfo` for the name —
+_both_ — `/active` to decide `Ok(None)`, `basicuserinfo` for the name —
 doubles the rail calls per lookup and adds a second failure mode to reason
 about, on the strength of a guess about the first one's `404`. Recorded here
 as the fallback if MTN's `404` turns out not to exist. Issue #47's own
@@ -214,7 +214,7 @@ flow doc.
 
 The five capability flags beside it are columns on `providers` (migration
 `0002`), seeded at boot from the adapter. This one is not, because nothing
-reads a capability *out of* that table — `vpay_api` resolves an adapter
+reads a capability _out of_ that table — `vpay_api` resolves an adapter
 in-process and asks it — so a column would be a second copy of an answer the
 linked code already owns, and a migration on the strength of it would claim a
 durability the capability does not need.
@@ -251,18 +251,18 @@ directly. Sharing would mean the server trusting a client-side rule.
 Every one was applied to the working tree, the named test was run, and the
 change was reverted. "Caught by" names the test that failed.
 
-| Mutation | Caught by |
-|---|---|
-| `wire::BasicUserInfo` gains `birthdate`/`locale`/`gender`/`status` and `name()` joins all six — i.e. the adapter returns the whole MTN body | `an_account_holder_lookup_returns_a_name_and_nothing_else::case_1_mtn_momo` (`left: "David Mbarga 1970-01-01 fr_CM MALE ACTIVE"`) **and** `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing::case_1_mtn_momo` |
-| the adapter's `debug!` carries `body = %text` — i.e. the rail's body, name included, reaches a log | `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing::case_1_mtn_momo` |
-| the route's `info!` carries `name = ?holder…name()` | `a_lookup_logs_a_masked_number_and_never_a_name` |
-| `orange_money` declares `supports_account_holder_lookup: true` with no implementation | **the conformance suite**, all four `case_2_orange_money` parameterisations (`expected Malformed naming the body cap, got Unsupported`). **Not** `verify-status`: there is no `NotImplemented` token to be missing, which is exactly why the behavioural case has to exist |
-| the adapter swallows a transport failure and answers `Ok(None)` | `a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder::case_1_mtn_momo` (`a deadline that fires is a failure, and must not be Ok(None): None`) |
-| the route drops `canonical_msisdn` and accepts any non-empty string | `a_missing_or_malformed_parameter_names_itself` |
+| Mutation                                                                                                                                    | Caught by                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wire::BasicUserInfo` gains `birthdate`/`locale`/`gender`/`status` and `name()` joins all six — i.e. the adapter returns the whole MTN body | `an_account_holder_lookup_returns_a_name_and_nothing_else::case_1_mtn_momo` (`left: "David Mbarga 1970-01-01 fr_CM MALE ACTIVE"`) **and** `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing::case_1_mtn_momo`                                       |
+| the adapter's `debug!` carries `body = %text` — i.e. the rail's body, name included, reaches a log                                          | `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing::case_1_mtn_momo`                                                                                                                                                                                 |
+| the route's `info!` carries `name = ?holder…name()`                                                                                         | `a_lookup_logs_a_masked_number_and_never_a_name`                                                                                                                                                                                                                           |
+| `orange_money` declares `supports_account_holder_lookup: true` with no implementation                                                       | **the conformance suite**, all four `case_2_orange_money` parameterisations (`expected Malformed naming the body cap, got Unsupported`). **Not** `verify-status`: there is no `NotImplemented` token to be missing, which is exactly why the behavioural case has to exist |
+| the adapter swallows a transport failure and answers `Ok(None)`                                                                             | `a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder::case_1_mtn_momo` (`a deadline that fires is a failure, and must not be Ok(None): None`)                                                                                                        |
+| the route drops `canonical_msisdn` and accepts any non-empty string                                                                         | `a_missing_or_malformed_parameter_names_itself`                                                                                                                                                                                                                            |
 
 **One mutation was placed wrongly first and is worth recording**, because a
 mutation that lands where the bug cannot be is a green run that proves
-nothing: mapping `Err(Transport) -> Ok(None)` *after* `read_body` left the
+nothing: mapping `Err(Transport) -> Ok(None)` _after_ `read_body` left the
 timeout case passing, because a fired deadline returns early from
 `send_authorized` and never reaches that match. Moving it to the
 `send_authorized` result — where the regression would actually be — failed the

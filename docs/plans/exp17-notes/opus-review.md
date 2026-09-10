@@ -9,7 +9,7 @@ Adversarial review of `4385d0d..d52a0b2` (branch
 **Headline: every quantitative claim in `opus.md` reproduced exactly.** The
 drift arithmetic, the four mutations, the upstream citations and the
 `preview_sql` renderings were all re-derived here from scratch and none of
-them moved. What follows is what the review found *on top* of that.
+them moved. What follows is what the review found _on top_ of that.
 
 ---
 
@@ -18,17 +18,17 @@ them moved. What follows is what the review found *on top* of that.
 Run one recipe at a time so a failure could be attributed, containers up, no
 `--no-fail-fast` masking:
 
-| Recipe | Exit | Wall |
-|---|---|---|
-| `fmt-check` | 0 | 0.5 s |
-| `clippy` | 0 | 48 s |
-| `verify` | 0 | 11.5 s (ten gates + the advisory `verify-docs` report) |
-| `test-rust` | 0 | 16 m 30 s — **1381 tests run: 1381 passed, 0 skipped** |
-| `test-doc` | 0 | 4.8 s |
-| `verify-ignored` | 0 | `0 ignored (expected 0), 43 test binaries (expected 43), 1381 total (minimum 1080)` |
-| `lint-web` | 0 | — |
-| `test-web` | 0 | — |
-| `deny` | 0 | — |
+| Recipe           | Exit | Wall                                                                                |
+| ---------------- | ---- | ----------------------------------------------------------------------------------- |
+| `fmt-check`      | 0    | 0.5 s                                                                               |
+| `clippy`         | 0    | 48 s                                                                                |
+| `verify`         | 0    | 11.5 s (ten gates + the advisory `verify-docs` report)                              |
+| `test-rust`      | 0    | 16 m 30 s — **1381 tests run: 1381 passed, 0 skipped**                              |
+| `test-doc`       | 0    | 4.8 s                                                                               |
+| `verify-ignored` | 0    | `0 ignored (expected 0), 43 test binaries (expected 43), 1381 total (minimum 1080)` |
+| `lint-web`       | 0    | —                                                                                   |
+| `test-web`       | 0    | —                                                                                   |
+| `deny`           | 0    | —                                                                                   |
 
 `docs/status.md`'s claimed numbers (1381 total, 43 binaries, 0 ignored, ten
 `verify` gates) are accurate.
@@ -36,17 +36,17 @@ Run one recipe at a time so a failure could be attributed, containers up, no
 **Re-run after the review's own commits**, same method, at
 `974b72b`:
 
-| Recipe | Exit | Wall |
-|---|---|---|
-| `fmt-check` | 0 | 0.6 s |
-| `clippy` | 0 | 11.9 s |
-| `verify` | 0 | 7.1 s |
-| `test-rust` | 0 | 11 m 36 s — **1382 tests run: 1382 passed, 0 skipped** |
-| `test-doc` | 0 | 5.1 s |
-| `verify-ignored` | 0 | `0 ignored (expected 0), 43 test binaries (expected 43), 1382 total (minimum 1080)` |
-| `lint-web` | 0 | 18.9 s |
-| `test-web` | 0 | 7.7 s |
-| `deny` | 0 | `advisories ok, bans ok, licenses ok, sources ok` |
+| Recipe           | Exit | Wall                                                                                |
+| ---------------- | ---- | ----------------------------------------------------------------------------------- |
+| `fmt-check`      | 0    | 0.6 s                                                                               |
+| `clippy`         | 0    | 11.9 s                                                                              |
+| `verify`         | 0    | 7.1 s                                                                               |
+| `test-rust`      | 0    | 11 m 36 s — **1382 tests run: 1382 passed, 0 skipped**                              |
+| `test-doc`       | 0    | 5.1 s                                                                               |
+| `verify-ignored` | 0    | `0 ignored (expected 0), 43 test binaries (expected 43), 1382 total (minimum 1080)` |
+| `lint-web`       | 0    | 18.9 s                                                                              |
+| `test-web`       | 0    | 7.7 s                                                                               |
+| `deny`           | 0    | `advisories ok, bans ok, licenses ok, sources ok`                                   |
 
 The +1 is `a_currency_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
 (finding 4). `expected_suites` and the ignored count are unmoved; the new
@@ -60,21 +60,21 @@ Every citation in `opus.md`, `schemas/vpay.cstack` and migration 0032 was
 resolved to a line in `~/.cargo/registry/src/*/cratestack-{migrate,macros,sqlx}-0.11.1`.
 All of them hold.
 
-| Claim | Source | Verdict |
-|---|---|---|
-| The diff matches CHECKs by name first, then compares kinds; a kind change emits drop + add | `cratestack-migrate/src/diff/checks.rs:17-57` | ✔ |
-| Introspection reports every validator-derived CHECK as `CheckKind::Raw`; only `Enum` is reconstructed | `introspect/postgres/constraints.rs:75-76`, `ir/checks.rs:60-74` | ✔ |
-| The enum check is synthesised from `pg_enum` for a *native* enum column, under `check_name(table, column, "enum")` | `introspect/postgres/enums.rs:66-78` | ✔ |
-| `resolve_column` projects `typtype == 'e'` and `text` onto the same `Scalar("String")` | `introspect/postgres/columns.rs:78-82` | ✔ |
-| `int4` is deliberately unmapped, because `Int` emits `int8` | `introspect/postgres/types.rs:8-15`, and its own test `narrower_int_widths_are_unmapped_not_guessed` | ✔ |
-| `@iso4217` renders `{c} ~ '^[A-Z]{3}$'`, `@range` renders `{c} >= {min} AND {c} <= {max}` | `emit/postgres/checks.rs:54-66` | ✔ |
-| `<table>_<column>_<validator>_check`, with slugs `iso4217`/`range`/`length`/`enum` | `naming.rs:46-48`, `convert/checks.rs:38-52` | ✔ |
-| Multi-column CHECKs are invisible to introspection | `introspect/postgres/constraints.rs:62` (`array_length(c.conkey, 1) = 1`) | ✔ |
-| `Create{Model}Input` and `upsert_update_columns` both drop every `@default(...)` field | `cratestack-macros/src/model/inputs.rs:20-26`, `model/descriptor/columns.rs:92-101`, `shared/attrs.rs:91-93` | ✔ |
-| `gate_update_policy` probes on `runtime.pool()` with **no** `FOR UPDATE`, so boot cannot deadlock against its own row lock | `cratestack-sqlx/src/query/write/upsert_resolve.rs:161-182`, `upsert_sql.rs:72-102` | ✔ |
-| `run_in_tx` performs every write on `tx` and commits nothing itself | `cratestack-sqlx/src/query/write/upsert.rs:179-201`, `upsert_exec.rs:120-196` | ✔ |
+| Claim                                                                                                                      | Source                                                                                                       | Verdict |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------- |
+| The diff matches CHECKs by name first, then compares kinds; a kind change emits drop + add                                 | `cratestack-migrate/src/diff/checks.rs:17-57`                                                                | ✔       |
+| Introspection reports every validator-derived CHECK as `CheckKind::Raw`; only `Enum` is reconstructed                      | `introspect/postgres/constraints.rs:75-76`, `ir/checks.rs:60-74`                                             | ✔       |
+| The enum check is synthesised from `pg_enum` for a _native_ enum column, under `check_name(table, column, "enum")`         | `introspect/postgres/enums.rs:66-78`                                                                         | ✔       |
+| `resolve_column` projects `typtype == 'e'` and `text` onto the same `Scalar("String")`                                     | `introspect/postgres/columns.rs:78-82`                                                                       | ✔       |
+| `int4` is deliberately unmapped, because `Int` emits `int8`                                                                | `introspect/postgres/types.rs:8-15`, and its own test `narrower_int_widths_are_unmapped_not_guessed`         | ✔       |
+| `@iso4217` renders `{c} ~ '^[A-Z]{3}$'`, `@range` renders `{c} >= {min} AND {c} <= {max}`                                  | `emit/postgres/checks.rs:54-66`                                                                              | ✔       |
+| `<table>_<column>_<validator>_check`, with slugs `iso4217`/`range`/`length`/`enum`                                         | `naming.rs:46-48`, `convert/checks.rs:38-52`                                                                 | ✔       |
+| Multi-column CHECKs are invisible to introspection                                                                         | `introspect/postgres/constraints.rs:62` (`array_length(c.conkey, 1) = 1`)                                    | ✔       |
+| `Create{Model}Input` and `upsert_update_columns` both drop every `@default(...)` field                                     | `cratestack-macros/src/model/inputs.rs:20-26`, `model/descriptor/columns.rs:92-101`, `shared/attrs.rs:91-93` | ✔       |
+| `gate_update_policy` probes on `runtime.pool()` with **no** `FOR UPDATE`, so boot cannot deadlock against its own row lock | `cratestack-sqlx/src/query/write/upsert_resolve.rs:161-182`, `upsert_sql.rs:72-102`                          | ✔       |
+| `run_in_tx` performs every write on `tx` and commits nothing itself                                                        | `cratestack-sqlx/src/query/write/upsert.rs:179-201`, `upsert_exec.rs:120-196`                                | ✔       |
 
-A detail worth writing down because it is *why* the hand-written
+A detail worth writing down because it is _why_ the hand-written
 `CHECK (flow IN ('push','redirect'))` is invisible to the report rather than
 merely equivalent to the old enum: Postgres deparses it as
 `flow = ANY (ARRAY['push'::text, 'redirect'::text])` (measured, § 4 below),
@@ -92,12 +92,12 @@ Not by re-running the repository's test with constants edited, but by driving
 databases (migrations applied with `psql`, plus a hand-created
 `_sqlx_migrations` so the undeclared-table set matches the real run).
 
-| Variant | Report |
-|---|---|
-| **A** — as delivered, all 32 migrations | **84 changes / 16 relations / 17 unmappable** |
-| **B** — 0032 with the two CHECK renames reverted (widening + enum conversion kept) | **84 / 16 / 17** — only the *names* in the report change |
-| **C** — 0032 with the enum conversion reverted (widening + renames kept) | **84 / 16 / 17** — the `providers` block is byte-identical |
-| **D** — no 0032 at all | **85 / 16 / 18** |
+| Variant                                                                            | Report                                                     |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **A** — as delivered, all 32 migrations                                            | **84 changes / 16 relations / 17 unmappable**              |
+| **B** — 0032 with the two CHECK renames reverted (widening + enum conversion kept) | **84 / 16 / 17** — only the _names_ in the report change   |
+| **C** — 0032 with the enum conversion reverted (widening + renames kept)           | **84 / 16 / 17** — the `providers` block is byte-identical |
+| **D** — no 0032 at all                                                             | **85 / 16 / 18**                                           |
 
 So the claim is exact: the `INT → BIGINT` widening is the whole of the −1 and
 the whole of the 18 → 17, and **neither the CHECK rename nor the native-enum
@@ -106,8 +106,8 @@ constants; variant D reproduces `opus.md`'s "before" block line for line.
 
 A fifth variant, driven by finding 6 below:
 
-| Variant | Report |
-|---|---|
+| Variant                                                                        | Report                                                                                    |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
 | **M5** — the five `@default(...)` removed from `model Provider`, DDL untouched | **89 / 16 / 17** — exactly five new `column … default value differs` lines on `providers` |
 
 which confirms the sentence in `schemas/vpay.cstack` that removing the
@@ -143,16 +143,16 @@ Applied 0001–0031 to a container, inserted three currencies and two rails
 Every one applied to a clean tree, run, and reverted; `git status` clean
 afterwards each time; final `git rev-parse HEAD` re-checked.
 
-| # | Mutation | Measured result |
-|---|---|---|
-| 1a | Comment out 0032's `ALTER COLUMN flow TYPE TEXT` + `ADD CONSTRAINT` + `DROP TYPE` | `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` **FAILS** at the seed: `column "flow" is of type provider_flow but expression is of type text` |
-| 1b | 1a + restore `$3::provider_flow` in `config_reconcile` | **FAILS** at the test's own raw read: `mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type provider_flow` |
-| 1c | 1b + cast the test's raw read to `flow::TEXT` | **FAILS** at the CrateStack read: `the CrateStack provider read failed: database: error occurred while decoding column "flow": mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type provider_flow`. Reproduces `opus.md` § 2 verbatim |
-| 2 | Delete `.for_update()` from the currency read | `reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer` **FAILS 10 runs out of 10** (4.16–4.42 s each), always at `expect_err` — the upsert's own probe blocks instead, then overwrites the committed 3 with 0. Unmutated, the same test **passes 10 out of 10**. Whole crate under the mutation, `--no-fail-fast`: **108 tests run, 107 passed, 1 failed** — the new test is the only thing in `vpay-db` that catches it, exactly as claimed |
-| 3 | Delete `@@allow("create", …)` from `model Currency` | `every_action_this_module_calls_has_an_allow_arm` **FAILS in 4 ms with no container**, naming the consequence; three container reconcile cases fail with `Currency: a model policy denied a system upsert: forbidden: create policy denied this upsert` |
-| 4 | Delete `CONSTRAINT partial_refunds_imply_refunds` from migration 0002 | `partial_refunds_without_refunds_is_rejected_by_the_database` **FAILS** (`rows_affected: 1`). `the_cstack_schema_drifts_…` also fails — **but at line 1403, its own `pg_constraint` exact-set assertion, and the header still reads `84 change(s) total`.** The drift count is unmoved, as claimed |
-| 5 | *(added by this review)* Remove the five `@default(...)` from `model Provider` | **The crate stops compiling** — `E0063: missing fields delivers_callbacks, enabled, requires_ip_allowlist and 2 other fields in initializer of CreateProviderInput` at `config_reconcile.rs:501`. With the literal completed, `the_provider_upsert_cannot_carry_the_capability_columns` **FAILS**, printing the eight-column statement the docs predict. See finding 6 |
-| 6 | *(added by this review)* Swap the currency `upsert(...).run_in_tx(&mut tx, &ctx)` for `.run(&ctx)` | Before this review, nothing **failed** — `reconcile_is_idempotent_and_disables_a_dropped_provider_code` **hung** instead: `SLOW [>480.000s]` and still going when the run was killed, because `upsert`'s conflict probe is itself `SELECT … FOR UPDATE` and off the transaction it waits on the row the transaction holds. `a_hand_seeded_currency_…` passed (it never reaches the upsert). The new test is red in 1.2 s. See finding 5 |
+| #   | Mutation                                                                                           | Measured result                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1a  | Comment out 0032's `ALTER COLUMN flow TYPE TEXT` + `ADD CONSTRAINT` + `DROP TYPE`                  | `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` **FAILS** at the seed: `column "flow" is of type provider_flow but expression is of type text`                                                                                                                                                                                                                                                                                                         |
+| 1b  | 1a + restore `$3::provider_flow` in `config_reconcile`                                             | **FAILS** at the test's own raw read: `mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type provider_flow`                                                                                                                                                                                                                                                                                                                   |
+| 1c  | 1b + cast the test's raw read to `flow::TEXT`                                                      | **FAILS** at the CrateStack read: `the CrateStack provider read failed: database: error occurred while decoding column "flow": mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type provider_flow`. Reproduces `opus.md` § 2 verbatim                                                                                                                                                                                        |
+| 2   | Delete `.for_update()` from the currency read                                                      | `reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer` **FAILS 10 runs out of 10** (4.16–4.42 s each), always at `expect_err` — the upsert's own probe blocks instead, then overwrites the committed 3 with 0. Unmutated, the same test **passes 10 out of 10**. Whole crate under the mutation, `--no-fail-fast`: **108 tests run, 107 passed, 1 failed** — the new test is the only thing in `vpay-db` that catches it, exactly as claimed |
+| 3   | Delete `@@allow("create", …)` from `model Currency`                                                | `every_action_this_module_calls_has_an_allow_arm` **FAILS in 4 ms with no container**, naming the consequence; three container reconcile cases fail with `Currency: a model policy denied a system upsert: forbidden: create policy denied this upsert`                                                                                                                                                                                                                      |
+| 4   | Delete `CONSTRAINT partial_refunds_imply_refunds` from migration 0002                              | `partial_refunds_without_refunds_is_rejected_by_the_database` **FAILS** (`rows_affected: 1`). `the_cstack_schema_drifts_…` also fails — **but at line 1403, its own `pg_constraint` exact-set assertion, and the header still reads `84 change(s) total`.** The drift count is unmoved, as claimed                                                                                                                                                                           |
+| 5   | _(added by this review)_ Remove the five `@default(...)` from `model Provider`                     | **The crate stops compiling** — `E0063: missing fields delivers_callbacks, enabled, requires_ip_allowlist and 2 other fields in initializer of CreateProviderInput` at `config_reconcile.rs:501`. With the literal completed, `the_provider_upsert_cannot_carry_the_capability_columns` **FAILS**, printing the eight-column statement the docs predict. See finding 6                                                                                                       |
+| 6   | _(added by this review)_ Swap the currency `upsert(...).run_in_tx(&mut tx, &ctx)` for `.run(&ctx)` | Before this review, nothing **failed** — `reconcile_is_idempotent_and_disables_a_dropped_provider_code` **hung** instead: `SLOW [>480.000s]` and still going when the run was killed, because `upsert`'s conflict probe is itself `SELECT … FOR UPDATE` and off the transaction it waits on the row the transaction holds. `a_hand_seeded_currency_…` passed (it never reaches the upsert). The new test is red in 1.2 s. See finding 5                                      |
 
 ---
 
@@ -170,7 +170,7 @@ is "point at the case that proves it", a citation to a test that does not
 exist is worse than no citation. Nothing gates this — `verify-status` lexes
 `NotImplemented` tokens, not test names.
 
-### 2 — misleading-claim: the repository *does* ship a prettier configuration
+### 2 — misleading-claim: the repository _does_ ship a prettier configuration
 
 `opus.md` § 6 and `docs/status.md` both say "this repository ships no prettier
 configuration file". It ships `.prettierignore`, added in Step 6, whose own
@@ -214,7 +214,7 @@ expand/contract sequence is a maintainer's decision, not a reviewer's.
 transaction, so a failure part-way through leaves the tables exactly as they
 were." Half of those statements now belong to an external crate.
 `a_hand_seeded_currency_exponent_is_read_back_and_refused_not_overwritten`
-proves the *other* direction (a currency refusal leaves no provider behind),
+proves the _other_ direction (a currency refusal leaves no provider behind),
 but nothing proved that a CrateStack write, once made, is rolled back by
 vpay's own rollback — the case where a later raw-sqlx statement fails after
 the currency upsert has already landed.
@@ -237,7 +237,7 @@ when the run was killed. In a deployment that is a boot that never returns
 and never logs an error.
 
 So `.for_update()` and `run_in_tx` are **coupled**, and the module comment
-argued only about `gate_update_policy`'s policy probe (which is a *different*
+argued only about `gate_update_policy`'s policy probe (which is a _different_
 query, and genuinely has no `FOR UPDATE`). The two probes were being treated
 as one. A hang is also the worst available signal — worse than a red test —
 so the fix is both a comment that names the coupling and a test that converts
@@ -253,11 +253,11 @@ carry 10–18-space runs from a line-join that lost its `\` continuation. They
 are not cosmetic in context: they are the strings the row-lock mutation
 prints, and mutation 2 above shows them in the failure output.
 
-### 6 — the provider pin is *more* decisive than claimed (no defect; worth recording)
+### 6 — the provider pin is _more_ decisive than claimed (no defect; worth recording)
 
 `the_provider_upsert_cannot_carry_the_capability_columns` is described as a
 `preview_sql` pin that "an upstream fix turns red". It is stronger than that:
-because `Create{Model}Input`'s *fields* are what the `@default(...)` filter
+because `Create{Model}Input`'s _fields_ are what the `@default(...)` filter
 removes, the day those five columns become settable the crate **stops
 compiling** at `config_reconcile.rs`'s struct literal, before any test runs.
 Measured (mutation 5). And with the literal completed, the generated
@@ -272,7 +272,7 @@ ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name, flow = EX
     supports_refunds = EXCLUDED.supports_refunds, … , enabled = EXCLUDED.enabled
 ```
 
-So the maintainer's option 1 (drop the five `@default`s *and* the five DB
+So the maintainer's option 1 (drop the five `@default`s _and_ the five DB
 defaults) is not a guess — it demonstrably unblocks the provider upsert, at
 the demonstrated cost of five drift lines if the DDL half is skipped.
 
@@ -295,7 +295,7 @@ the live table has them (migration 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`)"
 - **No test or assertion was deleted or weakened.** `git diff 4385d0d..HEAD`
   removes no `#[test]`, no `assert`, and no test function; the only removed
   error branch (`boot_seeds`' `i32::try_from`) is unreachable by type, and
-  `Config::validate_all` refuses any exponent that does not *equal* the
+  `Config::validate_all` refuses any exponent that does not _equal_ the
   canonical `vpay_core::Currency::exponent`, so no input could ever have
   reached it. Both spellings of the range bound are still enforced
   (`Config::validate_all`, then `currencies_exponent_range_check`).
@@ -311,7 +311,7 @@ the live table has them (migration 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`)"
 - **Boot cannot deadlock against its own row lock**, for the reason
   `opus.md` § 4 gives, verified in the 0.11.1 sources (§ 2).
 - **The row-lock test is deterministic**, 10/10 both ways (mutation 2). Its
-  3-second window is used only to assert that reconcile has *not* finished,
+  3-second window is used only to assert that reconcile has _not_ finished,
   which is the safe direction: under the mutation the test fails at the
   later `expect_err` rather than at the window, so a slow machine cannot
   turn a real regression green.
@@ -324,16 +324,16 @@ the live table has them (migration 0002: `DEFAULT FALSE` x4, `DEFAULT TRUE`)"
 
 Seven commits on top of `d52a0b2`, one per finding:
 
-| Commit | Finding | Proof |
-|---|---|---|
-| `0b4c741` | — | this file |
-| `85ecb8f` | 1 | every backticked identifier long enough to be a test name in `config_reconcile.rs` resolved against `fn <name>` across `backends/`; the only non-match is a constraint name |
-| `5ac1a79` | 4 | new test PASS 1.44 s; FAIL 1.23 s under `run(&ctx)`, message naming the cause |
-| `07b82a9` | 3 | the 42704 and the `int8` decode failure, measured on a populated database; both migration tests re-run green after the comment edit |
-| `d04d78c` | 5, 7 | the repaired message re-printed by re-applying the `.for_update()` mutation; `check-schema` green |
-| `eb4927b` | 2 | `.prettierignore` exists (Step 6, `7d62751`); `prettier --list-different .` = 222, measured read-only |
-| `1a3c638` | 6 | `E0063` at the struct literal; the eight-column `preview_sql`; drift 84 → 89 |
-| `974b72b` | — | `verify-ignored` 1382 |
+| Commit    | Finding | Proof                                                                                                                                                                       |
+| --------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0b4c741` | —       | this file                                                                                                                                                                   |
+| `85ecb8f` | 1       | every backticked identifier long enough to be a test name in `config_reconcile.rs` resolved against `fn <name>` across `backends/`; the only non-match is a constraint name |
+| `5ac1a79` | 4       | new test PASS 1.44 s; FAIL 1.23 s under `run(&ctx)`, message naming the cause                                                                                               |
+| `07b82a9` | 3       | the 42704 and the `int8` decode failure, measured on a populated database; both migration tests re-run green after the comment edit                                         |
+| `d04d78c` | 5, 7    | the repaired message re-printed by re-applying the `.for_update()` mutation; `check-schema` green                                                                           |
+| `eb4927b` | 2       | `.prettierignore` exists (Step 6, `7d62751`); `prettier --list-different .` = 222, measured read-only                                                                       |
+| `1a3c638` | 6       | `E0063` at the struct literal; the eight-column `preview_sql`; drift 84 → 89                                                                                                |
+| `974b72b` | —       | `verify-ignored` 1382                                                                                                                                                       |
 
 **Left alone deliberately:**
 
@@ -351,7 +351,7 @@ Seven commits on top of `d52a0b2`, one per finding:
   outside this change's diff.
 - `fn reconcile` is now 203 lines and the longest production function in the
   repository on `verify-docs`' advisory list, almost all of it comment. Not
-  trimmed: every paragraph is explaining *why* rather than restating the line
+  trimmed: every paragraph is explaining _why_ rather than restating the line
   below, which is what ADR-0016 standard 6 leaves to review, and the same
   reasoning is linked rather than only duplicated. Flagged so a maintainer
   can disagree.

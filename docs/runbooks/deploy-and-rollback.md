@@ -52,8 +52,8 @@ Three things the tooling will not check for you:
    spanning a migration.
 2. **The three Secrets exist in the namespace** — `database.existingSecret`,
    `signingKey.existingSecret`, `rails.existingSecret`. The chart creates
-   none of them, and the guards catch an empty *value*, not a missing
-   *Secret*.
+   none of them, and the guards catch an empty _value_, not a missing
+   _Secret_.
 3. **`config.profile` is the profile you meant.** A typo boots cleanly on the
    image's baked **sandbox** configuration — placeholder merchant keys,
    WireMock rail hosts — and reports itself healthy. Nothing catches this;
@@ -75,7 +75,7 @@ reports ready, and if the upgrade fails or times out it **rolls the release
 back automatically**. That is the behaviour you want for a payment gateway:
 the alternative is a half-applied release with a failing Deployment and a
 human deciding under pressure. Read §4 first, though — an automatic rollback
-of the *manifests* does not undo a migration, and it does not undo a signing
+of the _manifests_ does not undo a migration, and it does not undo a signing
 key rotation.
 
 **`--timeout` must exceed a full rollout**, and a rollout includes both pods
@@ -93,11 +93,11 @@ kubectl get pods -l app.kubernetes.io/instance=<release> -w
 
 ### What the two workloads do differently
 
-| | server | worker |
-|---|---|---|
-| Strategy | rolling (Deployment default) | **`Recreate`** — the old worker is gone before the new one starts. It serves no traffic, so there is nothing to keep available, and overlapping claim loops buy nothing |
-| PodDisruptionBudget | `minAvailable: 1`, so a node drain cannot take both replicas | none |
-| Probes | liveness `/livez` :9090, readiness `/healthz` :8080 (a real `SELECT 1`), startup `/livez` :9090 with `failureThreshold: 30` | liveness + startup `/livez` :9090; no readiness — nothing routes to it |
+|                     | server                                                                                                                      | worker                                                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Strategy            | rolling (Deployment default)                                                                                                | **`Recreate`** — the old worker is gone before the new one starts. It serves no traffic, so there is nothing to keep available, and overlapping claim loops buy nothing |
+| PodDisruptionBudget | `minAvailable: 1`, so a node drain cannot take both replicas                                                                | none                                                                                                                                                                    |
+| Probes              | liveness `/livez` :9090, readiness `/healthz` :8080 (a real `SELECT 1`), startup `/livez` :9090 with `failureThreshold: 30` | liveness + startup `/livez` :9090; no readiness — nothing routes to it                                                                                                  |
 
 The startup probe exists because migrations run at boot, before the listener
 binds, and against a cold database that is the slowest part of a start. It is
@@ -137,7 +137,7 @@ description of intent:
   `Expect: 100-continue` interim response rather than a sleep, so "the head
   was parsed and routed before the signal arrived" is proven by the server
   rather than guessed at with a timer. What it does **not** prove is that a
-  slow *rail* drains the same way (the drain is a property of the connection,
+  slow _rail_ drains the same way (the drain is a property of the connection,
   not of what the handler awaits), and nothing has measured the bound under
   real load.
 - **`vpay-worker`**: this half is real and has a test. The grace clock starts
@@ -194,7 +194,7 @@ running; see [unresolved-charges.md](unresolved-charges.md).
 
 ### If `--atomic` rolled back for you
 
-Find out *why* before re-running. The automatic rollback restored the
+Find out _why_ before re-running. The automatic rollback restored the
 manifests; it did not restore a migration and it did not tell you what
 failed.
 
@@ -204,11 +204,11 @@ kubectl logs deploy/<release>-server --previous | tail -50
 kubectl get events --sort-by=.lastTimestamp | tail -30
 ```
 
-| Exit code | Meaning | Usually |
-|---|---|---|
-| **78** | configuration — fix the deploy, restarting will not help | a missing `${VAR}` from the rails Secret (**both** binaries), an unreadable or wrong signing key, a rail named without its required credentials ([ADR-0012](../adr/0012-rail-configuration-requirements-in-config.md)), or a **retired `kid`** |
-| **69** | the database is unavailable — transient, waiting is correct | `DATABASE_URL` wrong or Postgres unreachable. Note the sqlx acquire timeout makes this take a few seconds |
-| **1** | the drain clock elapsed (§3), or an unclassified error | in-flight work was cut off |
+| Exit code | Meaning                                                     | Usually                                                                                                                                                                                                                                        |
+| --------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **78**    | configuration — fix the deploy, restarting will not help    | a missing `${VAR}` from the rails Secret (**both** binaries), an unreadable or wrong signing key, a rail named without its required credentials ([ADR-0012](../adr/0012-rail-configuration-requirements-in-config.md)), or a **retired `kid`** |
+| **69**    | the database is unavailable — transient, waiting is correct | `DATABASE_URL` wrong or Postgres unreachable. Note the sqlx acquire timeout makes this take a few seconds                                                                                                                                      |
+| **1**     | the drain clock elapsed (§3), or an unclassified error      | in-flight work was cut off                                                                                                                                                                                                                     |
 
 Exit 78 in a crash loop is never fixed by restarting. That distinction is the
 whole reason the codes are split.
@@ -241,7 +241,7 @@ Everything operational on this page. Specifically:
   `release.yml` has run 13 times on `master`, 12 green; the latest,
   `33929374661`, pushed and cosign-signed a manifest list for each of the four
   images. A digest pinned from that run is measured, not invented. **What
-  replaces this bullet:** nobody has ever *pulled* one of those images, GHCR
+  replaces this bullet:** nobody has ever _pulled_ one of those images, GHCR
   package visibility is unmeasured (the available token has no
   `read:packages` scope and anonymous pull is refused), and no `cosign verify`
   has been run — so a cluster that cannot authenticate to GHCR would fail at
@@ -250,7 +250,7 @@ Everything operational on this page. Specifically:
   one. `an_in_flight_request_that_outlasts_the_grace_period_is_exit_1_and_says_so`
   in `backends/apps/vpay-server/tests/cli.rs` holds a real request open on a
   real socket across a real SIGTERM and asserts exit 1 plus the forced-cutoff
-  WARN. What it does not prove is that a slow *rail* produces the same
+  WARN. What it does not prove is that a slow _rail_ produces the same
   outcome; the drain is a property of the connection, not of what the handler
   awaits.
 - **No Prometheus has scraped either process.** `/metrics` is served and its

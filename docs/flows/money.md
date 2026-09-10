@@ -9,7 +9,7 @@ workspace-wide to keep it that way.
 ## XAF is zero-decimal
 
 The Central African CFA franc has no centimes in circulating use. Its minor unit
-*is* its major unit.
+_is_ its major unit.
 
 ```
 amount: 5000, currency: "xaf"   →   5,000 FCFA
@@ -20,17 +20,17 @@ developer who knows Stripe gets it right by default.
 
 ## The single conversion point
 
-Exactly one *conversion* renders an amount for a provider, in two encodings:
+Exactly one _conversion_ renders an amount for a provider, in two encodings:
 
 ```rust
 Money::to_provider_string()   // backends/crates/vpay-core/src/money.rs — "5000", "50.00"
 Money::to_provider_minor()    // the same amount as an integer count of minor units
 ```
 
-`to_provider_string` reads the exponent from the *currency*, because the exponent
+`to_provider_string` reads the exponent from the _currency_, because the exponent
 is a property of the currency universally — not of a deployment, an environment
 or a config row. `to_provider_minor` reads no exponent at all: it returns exactly
-`Money::minor`, the number the amount is already stored as. Neither *scales*
+`Money::minor`, the number the amount is already stored as. Neither _scales_
 anything — there is still one conversion, in two encodings — and the integer form
 exists because Orange Money's request body takes `"amount": 5000` as a JSON
 number while MTN's takes the string form
@@ -42,9 +42,9 @@ picks the encoding its rail's own documentation names — never the one that
 happens to compile.
 
 | Currency | Exponent | `Money::new(5000, …)` renders |
-|---|---|---|
-| XAF | 0 | `5000` |
-| EUR | 2 | `50.00` |
+| -------- | -------- | ----------------------------- |
+| XAF      | 0        | `5000`                        |
+| EUR      | 2        | `50.00`                       |
 
 The frontend mirrors this in `@vpay/api-client`'s `formatAmount`, covered by the
 same table of cases.
@@ -52,7 +52,7 @@ same table of cases.
 ## Why EUR is here at all
 
 MTN's sandbox rejects XAF and accepts EUR only. That is a property of a
-*provider profile*, expressed as a config value — never a code branch. It has a
+_provider profile_, expressed as a config value — never a code branch. It has a
 useful side effect: teams using the sandbox exercise the two-decimal formatting
 path daily, so the decimal branch is never untested code.
 

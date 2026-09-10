@@ -5,15 +5,34 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "images", "dashboard", "checkout", "server", "worker", "config", "database",
-    "signingKey", "rails", "observability", "metrics", "service", "ingress",
-    "networkPolicy", "podDisruptionBudget", "serviceAccount"
+    "images",
+    "dashboard",
+    "checkout",
+    "server",
+    "worker",
+    "config",
+    "database",
+    "signingKey",
+    "rails",
+    "observability",
+    "metrics",
+    "service",
+    "ingress",
+    "networkPolicy",
+    "podDisruptionBudget",
+    "serviceAccount"
   ],
   "properties": {
     "nameOverride": { "type": "string" },
     "fullnameOverride": { "type": "string" },
-    "commonLabels": { "type": "object", "additionalProperties": { "type": "string" } },
-    "commonAnnotations": { "type": "object", "additionalProperties": { "type": "string" } },
+    "commonLabels": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "commonAnnotations": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
 
     "images": {
       "type": "object",
@@ -22,7 +41,10 @@
       "properties": {
         "registry": { "type": "string", "minLength": 1 },
         "namespace": { "type": "string", "minLength": 1 },
-        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
         "pullSecrets": {
           "type": "array",
           "items": {
@@ -78,9 +100,15 @@
           "additionalProperties": false,
           "required": ["type", "port"],
           "properties": {
-            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+            },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
           }
         },
 
@@ -93,8 +121,14 @@
             "className": { "type": "string" },
             "host": { "type": "string" },
             "path": { "type": "string" },
-            "pathType": { "type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"] },
-            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "pathType": {
+              "type": "string",
+              "enum": ["Exact", "Prefix", "ImplementationSpecific"]
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
             "tls": {
               "type": "object",
               "additionalProperties": false,
@@ -218,7 +252,10 @@
             "enabled": { "type": "boolean" },
             "interval": { "type": "string" },
             "scrapeTimeout": { "type": "string" },
-            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
           }
         },
         "prometheusRule": {
@@ -227,11 +264,24 @@
           "required": ["enabled"],
           "properties": {
             "enabled": { "type": "boolean" },
-            "labels": { "type": "object", "additionalProperties": { "type": "string" } },
-            "providerErrorRatio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
-            "providerErrorWindow": { "type": "string", "pattern": "^[0-9]+[smhd]$" },
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "providerErrorRatio": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "providerErrorWindow": {
+              "type": "string",
+              "pattern": "^[0-9]+[smhd]$"
+            },
             "jobQueueBehindSeconds": { "type": "integer", "minimum": 1 },
-            "alertEventWindow": { "type": "string", "pattern": "^[0-9]+[smhd]$" }
+            "alertEventWindow": {
+              "type": "string",
+              "pattern": "^[0-9]+[smhd]$"
+            }
           }
         }
       }
@@ -242,9 +292,15 @@
       "additionalProperties": false,
       "required": ["type", "port"],
       "properties": {
-        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+        },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
 
@@ -256,7 +312,10 @@
         "enabled": { "type": "boolean" },
         "className": { "type": "string" },
         "host": { "type": "string" },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
         "tls": {
           "type": "object",
           "additionalProperties": false,
@@ -287,7 +346,10 @@
           "properties": {
             "cidrs": { "type": "array", "items": { "type": "string" } },
             "namespace": { "type": "string" },
-            "podSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+            "podSelector": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
           }
         },
@@ -324,7 +386,10 @@
       "properties": {
         "create": { "type": "boolean" },
         "name": { "type": "string" },
-        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
 
@@ -350,8 +415,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "requests": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
-        "limits": { "type": "object", "additionalProperties": { "type": ["string", "number"] } }
+        "requests": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number"] }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number"] }
+        }
       }
     },
     "ingressRule": {
@@ -360,7 +431,10 @@
       "required": ["path", "pathType", "limitRps", "limitBurstMultiplier"],
       "properties": {
         "path": { "type": "string", "pattern": "^/" },
-        "pathType": { "type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"] },
+        "pathType": {
+          "type": "string",
+          "enum": ["Exact", "Prefix", "ImplementationSpecific"]
+        },
         "limitRps": { "type": "integer" },
         "limitBurstMultiplier": { "type": "integer", "minimum": 1 }
       }

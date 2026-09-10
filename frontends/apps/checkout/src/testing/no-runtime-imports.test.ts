@@ -23,13 +23,13 @@
  * so that a new one is covered by the same rule rather than by an
  * allowlist entry somebody has to remember to add.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
 
 /** `frontends/apps/checkout/` — `src/testing/` is two levels down. */
-const APP = fileURLToPath(new URL('../..', import.meta.url));
+const APP = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * Matches an import specifier that names `src/testing`, by either spelling
@@ -45,53 +45,66 @@ function walk(dir: string): string[] {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
       found.push(...walk(full));
-    } else if (/\.tsx?$/.test(entry) && !/\.(?:test|stories)\.tsx?$/.test(entry)) {
+    } else if (
+      /\.tsx?$/.test(entry) &&
+      !/\.(?:test|stories)\.tsx?$/.test(entry)
+    ) {
       found.push(full);
     }
   }
   return found;
 }
 
-describe('the shipping module graph', () => {
-  it('names nothing under src/testing', () => {
-    const middleware = join(APP, 'middleware.ts');
+describe("the shipping module graph", () => {
+  it("names nothing under src/testing", () => {
+    const middleware = join(APP, "middleware.ts");
     // Named explicitly rather than found by the walk: it sits at the package
     // root beside `next.config.ts`, it is what sets the checkout page's
     // `Content-Security-Policy`, and it ships.
     expect(existsSync(middleware)).toBe(true);
 
     const shipping = [
-      ...walk(join(APP, 'app')),
-      ...walk(join(APP, 'src', 'components')),
-      ...walk(join(APP, 'src', 'lib')),
-      ...walk(join(APP, 'src', 'i18n')),
+      ...walk(join(APP, "app")),
+      ...walk(join(APP, "src", "components")),
+      ...walk(join(APP, "src", "lib")),
+      ...walk(join(APP, "src", "i18n")),
       middleware,
     ];
     // A guard that scanned an empty list would pass forever. 30 files today.
     expect(shipping.length).toBeGreaterThan(25);
 
-    const offenders = shipping.filter((file) => NAMES_TESTING.test(readFileSync(file, 'utf8')));
+    const offenders = shipping.filter((file) =>
+      NAMES_TESTING.test(readFileSync(file, "utf8")),
+    );
     expect(offenders).toEqual([]);
   });
 
-  it('would catch an import if one were added', () => {
+  it("would catch an import if one were added", () => {
     // The regex above, applied to the lines it exists to reject. If this
     // stops matching, the guard above has quietly stopped guarding — which
     // is exactly how the claim in `fixtures.ts` went stale unnoticed.
-    expect(NAMES_TESTING.test("import { makeSession } from '../testing/fixtures';")).toBe(true);
-    expect(NAMES_TESTING.test("import { CHECKOUT_SCREENS } from './testing/screen-states';")).toBe(
-      true,
-    );
-    expect(NAMES_TESTING.test("import { post } from '@/testing/browser-stub';")).toBe(true);
-    expect(NAMES_TESTING.test("import { renderScreen } from '../lib/machine';")).toBe(false);
+    expect(
+      NAMES_TESTING.test("import { makeSession } from '../testing/fixtures';"),
+    ).toBe(true);
+    expect(
+      NAMES_TESTING.test(
+        "import { CHECKOUT_SCREENS } from './testing/screen-states';",
+      ),
+    ).toBe(true);
+    expect(
+      NAMES_TESTING.test("import { post } from '@/testing/browser-stub';"),
+    ).toBe(true);
+    expect(
+      NAMES_TESTING.test("import { renderScreen } from '../lib/machine';"),
+    ).toBe(false);
   });
 
-  it('excludes tests and stories by suffix, not by path', () => {
+  it("excludes tests and stories by suffix, not by path", () => {
     const excluded = /\.(?:test|stories)\.tsx?$/;
-    expect(excluded.test('checkout-view.test.tsx')).toBe(true);
-    expect(excluded.test('dictionary.test.ts')).toBe(true);
-    expect(excluded.test('checkout-screens.stories.tsx')).toBe(true);
-    expect(excluded.test('checkout-view.tsx')).toBe(false);
-    expect(excluded.test('middleware.ts')).toBe(false);
+    expect(excluded.test("checkout-view.test.tsx")).toBe(true);
+    expect(excluded.test("dictionary.test.ts")).toBe(true);
+    expect(excluded.test("checkout-screens.stories.tsx")).toBe(true);
+    expect(excluded.test("checkout-view.tsx")).toBe(false);
+    expect(excluded.test("middleware.ts")).toBe(false);
   });
 });

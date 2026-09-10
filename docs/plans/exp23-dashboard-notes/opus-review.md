@@ -15,17 +15,17 @@ names by hand.
 Run end to end on `1521e5d` before any change, `CARGO_BUILD_JOBS=4`, Node
 22.23.2 (`.nvmrc`), `pnpm install --frozen-lockfile`, rootless Docker.
 
-| recipe | exit | note |
-|---|---|---|
-| `fmt-check` | 0 | |
-| `clippy` | 0 | |
-| `verify` | 0 | ten gates; `verify-docs` advisory. No new `#[allow]`, no ```` ```ignore ```` fence |
-| `test-rust` | 0 | **1418 run, 1418 passed, 0 skipped, 0 ignored** (1216 s) |
-| `test-doc` | 0 | |
-| `verify-ignored` | 0 | 0 ignored (expected 0), **44 binaries (expected 44)**, 1418 total (floor 1080) |
-| `lint-web` | 0 | |
-| `test-web` | 0 | |
-| `deny` | 0 | |
+| recipe           | exit | note                                                                           |
+| ---------------- | ---- | ------------------------------------------------------------------------------ |
+| `fmt-check`      | 0    |                                                                                |
+| `clippy`         | 0    |                                                                                |
+| `verify`         | 0    | ten gates; `verify-docs` advisory. No new `#[allow]`, no ` ```ignore ` fence   |
+| `test-rust`      | 0    | **1418 run, 1418 passed, 0 skipped, 0 ignored** (1216 s)                       |
+| `test-doc`       | 0    |                                                                                |
+| `verify-ignored` | 0    | 0 ignored (expected 0), **44 binaries (expected 44)**, 1418 total (floor 1080) |
+| `lint-web`       | 0    |                                                                                |
+| `test-web`       | 0    |                                                                                |
+| `deny`           | 0    |                                                                                |
 
 The counts the branch claims are the counts that were measured.
 
@@ -35,17 +35,17 @@ The counts the branch claims are the counts that were measured.
 run, and reverted; the helper asserts the branch name and refuses a dirty
 tree.
 
-| # | mutation | result |
-|---|---|---|
-| M1 | `MerchantScope::for_dashboard(claims.client_id)` instead of `binding.merchant_id` | + `the_dashboard_lists_only_the_merchant_it_is_bound_to` |
-| M2 | delete the `claims.client_id != binding.client_id` arm | + `a_dashboard_token_for_an_unregistered_client_is_refused` |
-| M3 | `Surface::Dashboard.audience()` returns `MERCHANT_AUDIENCE` | + 8 of 10 fail |
-| M4 | delete the `validate_dashboard_binding` call | + `a_dashboard_client_bound_to_an_unregistered_merchant_is_rejected` |
-| M5 | delete the merchant-claims-dashboard-audience check | + `a_merchant_client_that_lists_the_dashboard_audience_is_rejected` |
-| M6 | mount the `/dash/v1` nest unconditionally | **-** nothing fails (known, documented by the implementer: the middleware's `None` guard answers the same 404) |
-| M7 | `dash::required_scope` returns the scope for **every** method | **-** nothing fails — finding F3 |
-| M8 | `Events::list_for_objects` **and** `Refunds::list_for_intent` return `Ok(vec![])` | **-** nothing fails — finding F1 |
-| M10 | drop `AND merchant_id = $1` from **both** list cursor subqueries | **-** 35 tests across `dashboard_read_surface` + `payment_intents` all pass — finding F2 |
+| #   | mutation                                                                          | result                                                                                                         |
+| --- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| M1  | `MerchantScope::for_dashboard(claims.client_id)` instead of `binding.merchant_id` | + `the_dashboard_lists_only_the_merchant_it_is_bound_to`                                                       |
+| M2  | delete the `claims.client_id != binding.client_id` arm                            | + `a_dashboard_token_for_an_unregistered_client_is_refused`                                                    |
+| M3  | `Surface::Dashboard.audience()` returns `MERCHANT_AUDIENCE`                       | + 8 of 10 fail                                                                                                 |
+| M4  | delete the `validate_dashboard_binding` call                                      | + `a_dashboard_client_bound_to_an_unregistered_merchant_is_rejected`                                           |
+| M5  | delete the merchant-claims-dashboard-audience check                               | + `a_merchant_client_that_lists_the_dashboard_audience_is_rejected`                                            |
+| M6  | mount the `/dash/v1` nest unconditionally                                         | **-** nothing fails (known, documented by the implementer: the middleware's `None` guard answers the same 404) |
+| M7  | `dash::required_scope` returns the scope for **every** method                     | **-** nothing fails — finding F3                                                                               |
+| M8  | `Events::list_for_objects` **and** `Refunds::list_for_intent` return `Ok(vec![])` | **-** nothing fails — finding F1                                                                               |
+| M10 | drop `AND merchant_id = $1` from **both** list cursor subqueries                  | **-** 35 tests across `dashboard_read_surface` + `payment_intents` all pass — finding F2                       |
 
 M8 is the important one. Every assertion the suite makes about the detail
 route's `refunds` and `events` sections is `== []`, over fixtures that have
@@ -140,7 +140,7 @@ sets `sub: client_id.to_string()`. Under the **authorization-code** grant the
 dashboard is blocked on, `default_handle_authorization_code` calls
 `issue_user_token_with_extra(auth_code.identity, …, Some(client_id))` —
 `sub` is `identity.external_id`, the **staff member**, and `client_id` is the
-*audience*. So the check as written refuses every token a real dashboard
+_audience_. So the check as written refuses every token a real dashboard
 login would issue.
 
 Nothing else in this branch makes ADR-0017 harder; centralising
@@ -207,32 +207,32 @@ handler renders the same object and has no such assertion.
 One commit per finding. Every test added was run against the mutation it
 exists for, on a clean tree, and the mutation reverted.
 
-| finding | commit | decisive mutation, re-run **after** the fix |
-|---|---|---|
-| F1 | `test(dash): the detail timeline and refunds are proven to render…` | M8 (`Ok(vec![])` from both reads) now fails `the_detail_read_renders_the_timeline_and_the_refunds_it_has`; M9 (neutralise `list_for_objects`' `merchant_id` predicate, both binds kept) fails the same test |
-| F2 | `test(dash): a list cursor from another tenant positions nothing` | M10 (drop `AND merchant_id = $1` from both cursor subqueries) now fails `a_cursor_naming_another_merchants_intent_answers_an_empty_page` |
-| F3 | `test(dash): a write method is refused by the boundary…` | M7 (`required_scope` answers the read scope for every method) now fails `a_write_method_is_refused_by_the_boundary_not_by_the_route_table` |
-| F4 | `docs(dash): required_scope's doc said 405…` | doc only; the behaviour it describes is now also pinned by F3's test |
-| F5 | `docs(dash): the charge read is NOT tenant-scoped…` | doc only |
-| F6 | `docs: retire 'the dashboard half is unmounted'…` | doc only |
-| F7 | `docs(dash): record that the client_id check cannot survive…` | deliberately not fixed — maintainer decision |
-| F8 | `fix(config): the two new boot-refusal messages had a ten-space gap` | both formats rendered standalone: one line, single spaces |
-| F9 | `docs(config): the sandbox overlay's comment omitted…` | doc only |
-| F10 | `test(dash): the payments LIST is asserted free of client_secret too` | M11 (render `PaymentIntentWithSecret` in the list) fails `the_dashboard_lists_only_the_merchant_it_is_bound_to` |
+| finding | commit                                                                | decisive mutation, re-run **after** the fix                                                                                                                                                                 |
+| ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1      | `test(dash): the detail timeline and refunds are proven to render…`   | M8 (`Ok(vec![])` from both reads) now fails `the_detail_read_renders_the_timeline_and_the_refunds_it_has`; M9 (neutralise `list_for_objects`' `merchant_id` predicate, both binds kept) fails the same test |
+| F2      | `test(dash): a list cursor from another tenant positions nothing`     | M10 (drop `AND merchant_id = $1` from both cursor subqueries) now fails `a_cursor_naming_another_merchants_intent_answers_an_empty_page`                                                                    |
+| F3      | `test(dash): a write method is refused by the boundary…`              | M7 (`required_scope` answers the read scope for every method) now fails `a_write_method_is_refused_by_the_boundary_not_by_the_route_table`                                                                  |
+| F4      | `docs(dash): required_scope's doc said 405…`                          | doc only; the behaviour it describes is now also pinned by F3's test                                                                                                                                        |
+| F5      | `docs(dash): the charge read is NOT tenant-scoped…`                   | doc only                                                                                                                                                                                                    |
+| F6      | `docs: retire 'the dashboard half is unmounted'…`                     | doc only                                                                                                                                                                                                    |
+| F7      | `docs(dash): record that the client_id check cannot survive…`         | deliberately not fixed — maintainer decision                                                                                                                                                                |
+| F8      | `fix(config): the two new boot-refusal messages had a ten-space gap`  | both formats rendered standalone: one line, single spaces                                                                                                                                                   |
+| F9      | `docs(config): the sandbox overlay's comment omitted…`                | doc only                                                                                                                                                                                                    |
+| F10     | `test(dash): the payments LIST is asserted free of client_secret too` | M11 (render `PaymentIntentWithSecret` in the list) fails `the_dashboard_lists_only_the_merchant_it_is_bound_to`                                                                                             |
 
 No test was weakened and no assertion removed. The suite went 10 -> 13 cases;
 `expected_suites` stays 44, because a new case is not a new binary.
 
 ### Mutations re-run after the fixes
 
-| # | before | after |
-|---|---|---|
-| M7 | not caught | **caught** — `a_write_method_is_refused_by_the_boundary_not_by_the_route_table` |
-| M8 | not caught | **caught** — `the_detail_read_renders_the_timeline_and_the_refunds_it_has` |
-| M9 | (not run before) | **caught** — same test |
-| M10 | not caught | **caught** — `a_cursor_naming_another_merchants_intent_answers_an_empty_page` |
-| M11 | (new) | **caught** — `the_dashboard_lists_only_the_merchant_it_is_bound_to` |
-| M6 | not caught | **still not caught**, and deliberately so — see the implementer's note; the conditional mount and the middleware's `None` guard answer the same 404 independently, and both are kept |
+| #   | before           | after                                                                                                                                                                                |
+| --- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M7  | not caught       | **caught** — `a_write_method_is_refused_by_the_boundary_not_by_the_route_table`                                                                                                      |
+| M8  | not caught       | **caught** — `the_detail_read_renders_the_timeline_and_the_refunds_it_has`                                                                                                           |
+| M9  | (not run before) | **caught** — same test                                                                                                                                                               |
+| M10 | not caught       | **caught** — `a_cursor_naming_another_merchants_intent_answers_an_empty_page`                                                                                                        |
+| M11 | (new)            | **caught** — `the_dashboard_lists_only_the_merchant_it_is_bound_to`                                                                                                                  |
+| M6  | not caught       | **still not caught**, and deliberately so — see the implementer's note; the conditional mount and the middleware's `None` guard answer the same 404 independently, and both are kept |
 
 ## Not checked
 

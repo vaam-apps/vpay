@@ -26,7 +26,7 @@ same socket.
 Three commits, in the order the layers stack.
 
 1. **ADR-0017, migration `0035`, three `.cstack` models, `vpay-db::{staff,
-   staff_sessions, authorization_codes}`, and `vpay_api::staff_auth`** — the
+staff_sessions, authorization_codes}`, and `vpay_api::staff_auth`** — the
    decisions, the schema, the persistence and the cryptography. No route
    served any of it.
 2. **`vpay_api::staff` and `vpay_api::op::dashboard`** — seven unauthenticated
@@ -64,7 +64,7 @@ table.
 `FieldRef::eq` takes `V: IntoSqlValue` and `Option<T>` does not implement it.
 The method is `is_null()` (`cratestack-sql-0.11.1/src/filter/field_ref.rs:163`).
 
-This is recorded because the *first* design worked around a limit that does
+This is recorded because the _first_ design worked around a limit that does
 not exist: `oauth_authorization_codes` was going to carry a `consumed BOOLEAN`
 beside `consumed_at` so the compare-and-swap could filter on `.eq(false)`, and
 the schema comment said in so many words that "is null" was not a predicate
@@ -91,18 +91,18 @@ would have written the log to the file and left the password on the terminal.
 Found by `staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout`,
 which asserts stdout is exactly one line. A subcommand's logs now go to
 **stderr**; the server's stay on stdout, where a container log collector reads
-them. The split is by *what this invocation is*, not by log level.
+them. The split is by _what this invocation is_, not by log level.
 
 ## Three security properties are compare-and-swaps in SQL
 
 Not checks in Rust, because in each of the three the thing being prevented is
 a race:
 
-| Property | Guard | What a read-then-write would lose |
-|---|---|---|
-| TOTP replay | `record_totp_step`'s `last_totp_step < step` | two concurrent presentations of one code both win |
-| Authorization code single use | `consume_code`'s `consumed_at IS NULL` | the TOCTOU `AuthorizationCodeStore`'s own doc names |
-| Enrolment happens once | `enrol_totp`'s `totp_enrolled_at IS NULL` | a second-factor reset with no authentication in front of it |
+| Property                      | Guard                                        | What a read-then-write would lose                           |
+| ----------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
+| TOTP replay                   | `record_totp_step`'s `last_totp_step < step` | two concurrent presentations of one code both win           |
+| Authorization code single use | `consume_code`'s `consumed_at IS NULL`       | the TOCTOU `AuthorizationCodeStore`'s own doc names         |
+| Enrolment happens once        | `enrol_totp`'s `totp_enrolled_at IS NULL`    | a second-factor reset with no authentication in front of it |
 
 `model StaffMember`'s `@@allow("update", …)` is therefore the single most
 dangerous line in `schemas/vpay.cstack`: `update_many`'s policy is compiled
@@ -122,7 +122,7 @@ token's `sub` to the registered dashboard client id, which is right under
 where `sub` is the staff member and the client id is the audience. It was left
 as a maintainer decision.
 
-ADR-0017 takes it, and takes it in the direction that changes the *validator*
+ADR-0017 takes it, and takes it in the direction that changes the _validator_
 rather than the grant: the audience is the registered
 `dashboard_client.client_id`, because that is what
 `default_handle_authorization_code` mints and it has no requested-audience
@@ -149,7 +149,7 @@ path at all. Consequences:
 
 **The dashboard app follows the `/authorize` redirect itself.** ADR-0017
 decision 4. In a browser-driven flow the user agent follows it and a callback
-*page* completes the exchange; here the app's own server does, and a browser
+_page_ completes the exchange; here the app's own server does, and a browser
 never sees a code, a verifier or a token. Everything the grant checks is
 unchanged — exact redirect-URI match, mandatory PKCE, single-use code — and
 what changes is only who follows the `302`. The alternative was for vpay to
@@ -178,7 +178,7 @@ this needs (`OpStore::handle_authorization_code_grant`, whose own doc says it
 exists because "`issue_user_token_with_extra` exists precisely for this, but
 the built-in handler had no way to reach it"), and taking it would still mean
 re-writing every check the default performs, because the default's last step
-*is* the mint. So the checks are written in `vpay_api::staff::oauth::token`,
+_is_ the mint. So the checks are written in `vpay_api::staff::oauth::token`,
 in the same order, each with its own test — and the PKCE check is pinned
 against RFC 7636 Appendix B's own vector rather than against a second function
 in the same file.
@@ -193,32 +193,32 @@ one of those is a check vpay would otherwise own a second copy of.
 Every one applied to a **clean** tree by a harness that asserts the branch
 name and refuses a dirty tree, run, and reverted. `+` = caught, `-` = not.
 
-| # | Mutation | Result |
-|---|---|---|
-| M1 | delete the PKCE verifier check at `/token` | + `a_pkce_verifier_mismatch_is_refused` |
-| M2 | delete `last_totp_step < step` from `record_totp_step` | + `a_replayed_totp_code_is_refused` |
-| M2b | widen the same filter from `lt` to `lte` | + `the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins` |
-| M3 | delete the merchant-claim check from `require_dashboard_token` | + 2 fail: `a_token_whose_merchant_claim_is_not_the_binding_is_refused` and `a_client_credentials_token_is_refused_on_dash_v1` |
-| M4 | delete `consumed_at IS NULL` from the code's compare-and-swap | + 2 fail: `an_authorization_code_cannot_be_exchanged_twice`, `a_code_redeemed_against_another_redirect_uri_is_refused` |
-| M5 | delete `totp_enrolled_at IS NULL` from `enrol_totp` | **-** then **+** — see below |
-| M6 | `model StaffMember` loses `@@allow("create", …)` | + `every_action_this_module_calls_has_an_allow_arm`, in 4 ms with no container |
-| M7 | `/authorize` accepts a password-only session | **-** then **+** — see below |
-| M8 | `/authorize` accepts a staff member of another merchant | + `a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token` |
-| M9 | drop the **absolute** session bound | + `an_idle_session_and_an_expired_one_are_both_refused` |
-| M10 | sign-out stops deleting the session row | + `signing_out_deletes_the_session_and_with_it_the_access_token` |
-| M11 | drop the **idle** session bound | + the same test — both halves are separately caught |
-| M12 | delete the printed-password gate from `/authorize` | + `the_printed_password_cannot_reach_dash_v1` |
-| M13 | delete the disabled-account check from `load_session` | + `disabling_a_staff_member_refuses_their_live_session` |
-| M14 | `verify_absent_account` replaced by a bare `false` | **-** deliberately, see below |
-| M15 | the rate limiter is consulted and ignored | + `vpay-api` unit suite |
-| M16 | `find_by_email` made case-insensitive | + `a_staff_address_is_unique_and_looked_up_exactly` |
-| M17 | `Staff::create` becomes an `upsert` | **-** and the *doc* was wrong, not the test — see below |
+| #   | Mutation                                                       | Result                                                                                                                        |
+| --- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| M1  | delete the PKCE verifier check at `/token`                     | + `a_pkce_verifier_mismatch_is_refused`                                                                                       |
+| M2  | delete `last_totp_step < step` from `record_totp_step`         | + `a_replayed_totp_code_is_refused`                                                                                           |
+| M2b | widen the same filter from `lt` to `lte`                       | + `the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins`                                                           |
+| M3  | delete the merchant-claim check from `require_dashboard_token` | + 2 fail: `a_token_whose_merchant_claim_is_not_the_binding_is_refused` and `a_client_credentials_token_is_refused_on_dash_v1` |
+| M4  | delete `consumed_at IS NULL` from the code's compare-and-swap  | + 2 fail: `an_authorization_code_cannot_be_exchanged_twice`, `a_code_redeemed_against_another_redirect_uri_is_refused`        |
+| M5  | delete `totp_enrolled_at IS NULL` from `enrol_totp`            | **-** then **+** — see below                                                                                                  |
+| M6  | `model StaffMember` loses `@@allow("create", …)`               | + `every_action_this_module_calls_has_an_allow_arm`, in 4 ms with no container                                                |
+| M7  | `/authorize` accepts a password-only session                   | **-** then **+** — see below                                                                                                  |
+| M8  | `/authorize` accepts a staff member of another merchant        | + `a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token`                                                        |
+| M9  | drop the **absolute** session bound                            | + `an_idle_session_and_an_expired_one_are_both_refused`                                                                       |
+| M10 | sign-out stops deleting the session row                        | + `signing_out_deletes_the_session_and_with_it_the_access_token`                                                              |
+| M11 | drop the **idle** session bound                                | + the same test — both halves are separately caught                                                                           |
+| M12 | delete the printed-password gate from `/authorize`             | + `the_printed_password_cannot_reach_dash_v1`                                                                                 |
+| M13 | delete the disabled-account check from `load_session`          | + `disabling_a_staff_member_refuses_their_live_session`                                                                       |
+| M14 | `verify_absent_account` replaced by a bare `false`             | **-** deliberately, see below                                                                                                 |
+| M15 | the rate limiter is consulted and ignored                      | + `vpay-api` unit suite                                                                                                       |
+| M16 | `find_by_email` made case-insensitive                          | + `a_staff_address_is_unique_and_looked_up_exactly`                                                                           |
+| M17 | `Staff::create` becomes an `upsert`                            | **-** and the _doc_ was wrong, not the test — see below                                                                       |
 
 ### M7, and the test that was not decisive
 
 `a_session_that_has_not_presented_a_second_factor_cannot_authorize` **passed
 under its own mutation**. It signed in from scratch, so the session it built
-was `pending_totp` *and* belonged to a staff member who had never replaced the
+was `pending_totp` _and_ belonged to a staff member who had never replaced the
 printed one-time password — and `/authorize` refuses that too. With
 `authenticated_session` swapped for `load_session`, the test went on passing,
 refusing for the second reason while the first was gone.
@@ -233,7 +233,7 @@ fix.**
 Deleting `enrol_totp`'s guard changed nothing observable at the HTTP layer,
 and the reason is structural rather than a missing case:
 `vpay_api::staff::totp_step` computes `enrolling` from the staff row it has
-just read, so a *sequential* second caller never reaches `enrol_totp` at all —
+just read, so a _sequential_ second caller never reaches `enrol_totp` at all —
 by then the row says enrolled and the handler takes the stored-secret path.
 The second sign-in was refused, by a secret mismatch.
 
@@ -243,7 +243,7 @@ presenting a code from its own secret one step ahead) was written, and it
 because it pins the observable property.
 
 The guard closes a real TOCTOU that only the repository layer can express: two
-requests both read the row as unenrolled *before* either writes, both compute
+requests both read the row as unenrolled _before_ either writes, both compute
 "I am enrolling", both call the method, and the swap makes exactly one win.
 `the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins` in
 `vpay-db/tests/repositories.rs` is where that lives. **Caught after the fix.**
@@ -253,7 +253,7 @@ requests both read the row as unenrolled *before* either writes, both compute
 Replacing `verify_absent_account(&password)?` with a no-op leaves every test
 green, and it must: the two answers are **identical by construction** — same
 status, same body — and `a_wrong_password_and_an_unknown_address_are_the_same_refusal`
-asserts exactly that. What the mutation removes is the *timing* equality, and
+asserts exactly that. What the mutation removes is the _timing_ equality, and
 a test that measured argon2id wall-clock would be flaky by nature.
 
 The partial guard is
@@ -263,7 +263,7 @@ which asserts the dummy hash **parses** — because an unparseable one makes
 remove. It is recorded here rather than smoothed over, in the shape exp23's
 own M6 is.
 
-### M17, where the *documentation* was wrong
+### M17, where the _documentation_ was wrong
 
 Swapping `Staff::create` for an `upsert` left every test green, and the test
 was right. `staff add` mints a fresh `stf_…` every time, so a second account
@@ -280,28 +280,28 @@ name the index as what refuses the case that matters.
 commit), `CARGO_BUILD_JOBS=4`, Node 22.23.2 (`.nvmrc`), `pnpm install
 --frozen-lockfile`, rootless Docker.
 
-| recipe | exit | note |
-|---|---|---|
-| `fmt-check` | 0 | |
-| `clippy` | 0 | |
-| `verify` | 0 | ten gates; `verify-docs` advisory. `verify-status` still 1 unimplemented item, all declared. `verify-links`: 894 links over 159 files |
-| `test-rust` | 0 | **1546 run, 1546 passed, 0 skipped, 0 ignored** (1106 s) |
-| `test-doc` | 0 | |
-| `verify-ignored` | 0 | 0 ignored (expected 0), **46 binaries (expected 46)**, 1546 total (floor 1080) |
-| `lint-web` | 0 | |
-| `test-web` | 0 | 807 vitest cases across eight packages, unchanged |
-| `deny` | 0 | advisories, bans, licenses, sources all ok — `sha1` 0.10 beside the graph's existing 0.11 is a `multiple-versions` **warn**, which is the policy |
+| recipe           | exit | note                                                                                                                                             |
+| ---------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fmt-check`      | 0    |                                                                                                                                                  |
+| `clippy`         | 0    |                                                                                                                                                  |
+| `verify`         | 0    | ten gates; `verify-docs` advisory. `verify-status` still 1 unimplemented item, all declared. `verify-links`: 894 links over 159 files            |
+| `test-rust`      | 0    | **1546 run, 1546 passed, 0 skipped, 0 ignored** (1106 s)                                                                                         |
+| `test-doc`       | 0    |                                                                                                                                                  |
+| `verify-ignored` | 0    | 0 ignored (expected 0), **46 binaries (expected 46)**, 1546 total (floor 1080)                                                                   |
+| `lint-web`       | 0    |                                                                                                                                                  |
+| `test-web`       | 0    | 807 vitest cases across eight packages, unchanged                                                                                                |
+| `deny`           | 0    | advisories, bans, licenses, sources all ok — `sha1` 0.10 beside the graph's existing 0.11 is a `multiple-versions` **warn**, which is the policy |
 
 The numbers that moved:
 
-| Constant | Before | After | Why |
-|---|---|---|---|
-| `expected_suites` | 45 | 46 | `staff_sign_in.rs` is a new binary |
-| test count | 1421 | 1546 | +125, none ignored |
-| migration count | 34 | 35 | `0035` |
-| `EXPECTED_DRIFT_CHANGES` | 113 | 130 | 17 lines over three new relations, every one a hand-named CHECK or an undeclared index |
-| `EXPECTED_DRIFTED_RELATIONS` | 17 | 20 | the three new tables |
-| `EXPECTED_UNMAPPABLE_COLUMNS` | 18 | 18 | **unchanged** — no `bytea`, which is the point |
+| Constant                      | Before | After | Why                                                                                    |
+| ----------------------------- | ------ | ----- | -------------------------------------------------------------------------------------- |
+| `expected_suites`             | 45     | 46    | `staff_sign_in.rs` is a new binary                                                     |
+| test count                    | 1421   | 1546  | +125, none ignored                                                                     |
+| migration count               | 34     | 35    | `0035`                                                                                 |
+| `EXPECTED_DRIFT_CHANGES`      | 113    | 130   | 17 lines over three new relations, every one a hand-named CHECK or an undeclared index |
+| `EXPECTED_DRIFTED_RELATIONS`  | 17     | 20    | the three new tables                                                                   |
+| `EXPECTED_UNMAPPABLE_COLUMNS` | 18     | 18    | **unchanged** — no `bytea`, which is the point                                         |
 
 ## What was NOT built
 
@@ -327,10 +327,10 @@ The numbers that moved:
 - **A sweep** of expired `staff_sessions` or `oauth_authorization_codes`.
   Expired rows are refused on read and removed by the sign-out cascade; the
   indexes a sweep would need exist and the sweep does not.
-- **An `audit_log`.** ADR-0008 wants one row per dashboard *write* and this
+- **An `audit_log`.** ADR-0008 wants one row per dashboard _write_ and this
   surface mounts none.
 - **A kill switch for the dashboard client.** `disabled_clients` revokes a
-  *merchant* credential; the dashboard registration can only be removed from
+  _merchant_ credential; the dashboard registration can only be removed from
   YAML and the process restarted. What can be disabled per person is
   `staff_members.status`.
 - **Key rotation.** ADR-0009's fourth blocker, untouched.

@@ -102,10 +102,10 @@ redacting it.
 **Routes** — new module `backends/crates/vpay-api/src/browser/mod.rs`, mounted `.nest("/v1/browser", …)`
 with its own `.fallback(not_found)`, plus `pub const BROWSER_ROUTES: &[V1Route]`:
 
-| Method | Path | Params |
-|---|---|---|
-| GET | `/v1/browser/payment_intents/{id}` | `key`, `client_secret` (query) |
-| POST | `/v1/browser/payment_intents/{id}/confirm` | `key`, `client_secret`, `payment_method_data[…]`, `return_url` (form) |
+| Method | Path                                       | Params                                                                |
+| ------ | ------------------------------------------ | --------------------------------------------------------------------- |
+| GET    | `/v1/browser/payment_intents/{id}`         | `key`, `client_secret` (query)                                        |
+| POST   | `/v1/browser/payment_intents/{id}/confirm` | `key`, `client_secret`, `payment_method_data[…]`, `return_url` (form) |
 
 Both go through one extractor, `browser::PayerScope` (constructed only by `browser::authenticate`):
 
@@ -269,7 +269,7 @@ now what `docs/status.md` cites.
   `examples/merchant-demo`'s own `DEMO_CURRENCY`), and confirming an XAF
   intent against it produced a real, correctly-rendered error —
   `invalid_request_error/invalid_request: rail 'mtn_momo' settles in EUR;
-  this PaymentIntent is XAF` — caught by actually running the example
+this PaymentIntent is XAF` — caught by actually running the example
   against `just demo`, not by inspection. Fixed in `mint.mjs` and
   `checkoutTasks.ts`; both now mint in EUR with a comment explaining why.
 - **A path-traversal guard bug in `serve.mjs` that 403'd every request**,
@@ -297,16 +297,16 @@ now what `docs/status.md` cites.
 - **`sdks/stripe-js/README.md`'s "Type compatibility, precisely" section is
   accurate and was written by block B, not amended here**: Stripe's
   `PaymentIntentResult`/`StripeError` are assignable to ours (a widening);
-  ours is *not* assignable to Stripe's in either direction for the object
+  ours is _not_ assignable to Stripe's in either direction for the object
   types themselves (`PaymentIntent`, and our `StripeError` is intentionally
   wider) — see that section for the precise, compile-time-pinned claims
   rather than restating them loosely here.
 - **`waitForPaymentIntent` ends the poll on the very first `api_connection_error`
   (or any `{error}`), rather than retrying transient network failures until
   the timeout.** This is `client.ts`'s own documented choice (`an
-  api_connection_error is something the caller must decide about —
-  swallowing three minutes of connection failures and then reporting
-  polling_timeout would describe the wrong fault`), not an oversight this
+api_connection_error is something the caller must decide about —
+swallowing three minutes of connection failures and then reporting
+polling_timeout would describe the wrong fault`), not an oversight this
   pass found — but it is worth stating plainly here because it means a
   single dropped packet during a payer's wait aborts the whole poll instead
   of riding it out. A caller wanting resilience has to retry

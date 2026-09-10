@@ -1,25 +1,33 @@
-'use client';
+"use client";
 
-import { Radio as BaseRadio } from '@base-ui/react/radio';
-import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
-import { cva, type VariantProps } from 'class-variance-authority';
+import { Radio as BaseRadio } from "@base-ui/react/radio";
+import { RadioGroup as BaseRadioGroup } from "@base-ui/react/radio-group";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
-export type RadioGroupProps = React.ComponentPropsWithoutRef<typeof BaseRadioGroup>;
+export type RadioGroupProps = React.ComponentPropsWithoutRef<
+  typeof BaseRadioGroup
+>;
 
 /** Groups a series of {@link Radio} buttons under one shared, validated value. */
 export function RadioGroup({ className, ...rest }: RadioGroupProps) {
-  return <BaseRadioGroup className={cn('flex flex-col gap-2', className)} {...rest} />;
+  return (
+    <BaseRadioGroup
+      className={cn("flex flex-col gap-2", className)}
+      {...rest}
+    />
+  );
 }
 
-const radio = cva('radio', {
-  variants: { size: { sm: 'radio-sm', md: '' } },
-  defaultVariants: { size: 'md' },
+const radio = cva("radio", {
+  variants: { size: { sm: "radio-sm", md: "" } },
+  defaultVariants: { size: "md" },
 });
 
 export interface RadioProps
-  extends Omit<React.ComponentProps<typeof BaseRadio.Root>, 'className'>,
+  extends
+    Omit<React.ComponentProps<typeof BaseRadio.Root>, "className">,
     VariantProps<typeof radio> {
   className?: string;
 }
@@ -34,5 +42,7 @@ export interface RadioProps
  * rule, so the visible control paints correctly either way.
  */
 export function Radio({ size, className, ...rest }: RadioProps) {
-  return <BaseRadio.Root className={cn(radio({ size }), className)} {...rest} />;
+  return (
+    <BaseRadio.Root className={cn(radio({ size }), className)} {...rest} />
+  );
 }

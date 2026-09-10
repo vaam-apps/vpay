@@ -15,17 +15,17 @@ one is refuted, the command and its output are recorded.
 be attributed. `pnpm install --frozen-lockfile` first, under the `.nvmrc` Node
 (22.23.2); `rustc 1.98.0`; `cratestack 0.11.1`.
 
-| Recipe | Exit | Wall |
-|---|---|---|
-| `fmt-check` | 0 | 0.6 s |
-| `clippy` | 0 | 53 s |
-| `verify` | 0 | 12 s |
-| `test-rust` | 0 | 1336 s |
-| `test-doc` | 0 | 6 s |
-| `verify-ignored` | 0 | 1 s |
-| `lint-web` | 0 | 23 s |
-| `test-web` | 0 | 9 s |
-| `deny` | 0 | 2 s |
+| Recipe           | Exit | Wall   |
+| ---------------- | ---- | ------ |
+| `fmt-check`      | 0    | 0.6 s  |
+| `clippy`         | 0    | 53 s   |
+| `verify`         | 0    | 12 s   |
+| `test-rust`      | 0    | 1336 s |
+| `test-doc`       | 0    | 6 s    |
+| `verify-ignored` | 0    | 1 s    |
+| `lint-web`       | 0    | 23 s   |
+| `test-web`       | 0    | 9 s    |
+| `deny`           | 0    | 2 s    |
 
 `Summary [1054.484s] 1389 tests run: 1389 passed (1 slow), 0 skipped`;
 `verify-ignored: 0 ignored (expected 0), 43 test binaries (expected 43), 1389
@@ -85,18 +85,18 @@ test the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount ... FAILE
 
 The count-lowering half is true and reproduces (101 → 100). The
 "fails no drift assertion" half is **false**: `EXPECTED_DRIFT_CHANGES` is an
-exact `assert_eq!`, not a floor, so a *lower* count fails it as loudly as a
+exact `assert_eq!`, not a floor, so a _lower_ count fails it as loudly as a
 higher one — and that assertion's own message already names this exact
 diagnosis.
 
 Why this matters in both directions:
 
-* It **understates a real gate this repository already has.** A reader of any
+- It **understates a real gate this repository already has.** A reader of any
   of the four documents would conclude that a dropped CHECK is invisible to
   the drift report. It is not; the exact-equality pin is precisely the defence.
-* It is the stated justification for the new vocabulary test ("the only thing
+- It is the stated justification for the new vocabulary test ("the only thing
   that fails"). The test is worth keeping — it asserts the constraint's
-  *behaviour*, which a change count cannot — but the reason given for it is
+  _behaviour_, which a change count cannot — but the reason given for it is
   wrong, and a claim nobody checks is what this repository says it will not
   ship.
 
@@ -137,7 +137,7 @@ EXP18-E1b re-run in tx (row COMMITTED) = Ok(None)
 ```
 
 **Root cause, in the pinned sources.** `upsert_do_nothing_exec.rs` takes the
-`Existing` branch from `resolve_pre_probe(tx, …)`, which reads *inside* the
+`Existing` branch from `resolve_pre_probe(tx, …)`, which reads _inside_ the
 caller's transaction and therefore sees the uncommitted row. It then calls
 `authorize_existing_row`, which is
 `row_passes_update_policy(runtime.pool(), …)`
@@ -151,7 +151,7 @@ raises `Forbidden`.
 refuses a duplicate webhook endpoint `id`
 (`vpay-config`, `webhook-duplicate-endpoint-id.yml`) and
 `EndpointRegistry::from_pairs` dedups by id besides. So this is latent, not a
-live defect, and it is *not* a reason to revert the move. It is a reason to
+live defect, and it is _not_ a reason to revert the move. It is a reason to
 say so where the contract is claimed, and to pin it: the narrowed contract is
 now load-bearing on a config guard that lives in a different crate, and
 nothing connected the two.
@@ -177,7 +177,7 @@ That is true of the **`Inserted`** branch — which is the only branch the two
 false of the `Existing` branch: `resolve_pre_probe` is
 `select_for_update_by_conflict_target(&mut **tx, …)`
 (`upsert_do_nothing_probe.rs`), i.e. a `SELECT … FOR UPDATE` on the caller's
-transaction, and `authorize_existing_row` then *does* ask a second connection
+transaction, and `authorize_existing_row` then _does_ ask a second connection
 about that same row (F2). The conclusion — no hang — survives, but for a
 different reason: a plain `SELECT 1` does not block on a `FOR UPDATE` row lock
 in Postgres.
@@ -203,12 +203,12 @@ constraint no test asserted (§5b). It then introduced four fresh instances of
 the same failure mode. Every backticked identifier in the diff was resolved
 against the tree:
 
-| Cited as proof | Cited in | Exists |
-|---|---|---|
-| `a_delivery_written_through_cratestack_is_rolled_back_with_the_fan_out` | `webhook_deliveries.rs:219` | no — the test is `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending` |
-| `an_event_flip_denied_by_policy_abandons_the_fan_out` | `webhook_deliveries.rs:271`, `schemas/vpay.cstack:687` | no — no such test, in any form |
-| `a_pending_event_is_flipped_once_and_a_second_flip_reports_false` | `webhook_deliveries.rs:647` | no |
-| `a_delivery_for_an_unknown_event_is_refused_by_the_foreign_key` | `schemas/vpay.cstack:799` | no — the assertion lives inside `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states` |
+| Cited as proof                                                          | Cited in                                               | Exists                                                                                                |
+| ----------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `a_delivery_written_through_cratestack_is_rolled_back_with_the_fan_out` | `webhook_deliveries.rs:219`                            | no — the test is `an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending`                |
+| `an_event_flip_denied_by_policy_abandons_the_fan_out`                   | `webhook_deliveries.rs:271`, `schemas/vpay.cstack:687` | no — no such test, in any form                                                                        |
+| `a_pending_event_is_flipped_once_and_a_second_flip_reports_false`       | `webhook_deliveries.rs:647`                            | no                                                                                                    |
+| `a_delivery_for_an_unknown_event_is_refused_by_the_foreign_key`         | `schemas/vpay.cstack:799`                              | no — the assertion lives inside `migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states` |
 
 Fixed in `a456cf2`: every citation now names a test that exists, checked by
 resolving the whole set again after the edit.
@@ -252,7 +252,7 @@ nine models and six enums; 7 + 6 = 13, the previous value. Fixed in `021f38c`.
 Recorded because a review that lists only defects does not say what it
 covered.
 
-* **The compare-and-swap's guard is intact, and was verified against the
+- **The compare-and-swap's guard is intact, and was verified against the
   rendered SQL rather than the notes.** `update_many_exec.rs:78-92` pushes
   `(<filters>) AND <policy>`; the two `where_` calls are `id` and
   `fanout_state = 'pending'`, exactly the raw statement's
@@ -260,37 +260,37 @@ covered.
   predicate (the policy is ANDed in), it did not widen it. `BatchSummary.ok`
   is `updated.len()` from the `RETURNING` (`update_many_exec.rs:126-131`), so
   `== 1` means what `rows_affected() == 1` meant.
-* **No hidden DDL or extra writes in the money transaction.** `audit_enabled`
+- **No hidden DDL or extra writes in the money transaction.** `audit_enabled`
   is `@@audit` and `emits` is the `@@emit` list
   (`cratestack-macros/src/model/descriptor.rs:76`); neither model declares
   either, so `ensure_event_outbox_table` / `ensure_audit_table` are not
   reached. Worth checking because both would have run DDL — one of them on the
   pool — inside the fan-out's transaction.
-* **`PersistenceError::Invalid` is right and is decisively tested.**
+- **`PersistenceError::Invalid` is right and is decisively tested.**
   `Category::Internal` → `Retry::Never` (`error.rs:265`), and
   `a_delivery_outside_the_length_checks_is_refused_by_the_database` asserts
-  `category()` and `retry()` directly, *and* keeps a raw-`sqlx` half proving
+  `category()` and `retry()` directly, _and_ keeps a raw-`sqlx` half proving
   the CHECKs still fire for every writer that is not this function. The
   variant is a real fix: `Backend` is `Category::Storage`, which is retryable.
   The brief's hypothesis that it should be a 4xx does not apply — no API path
   reaches these writes, and a validator refusing values vpay itself built is
   vpay's bug, not a caller's.
-* **Drift 101 re-derived on a fresh database**, not from the constants, and
+- **Drift 101 re-derived on a fresh database**, not from the constants, and
   every one of the 19 new lines read: 11 on `events`, 8 on
   `webhook_deliveries`, **all `[safe]`**, all either "exists in the live
   database but is not declared" or "default value differs". No `[blocking]`
   and no `[lossy]` line on either table, and no `column … type differs` — so
   no `NOT NULL`, default or type was lost in the model. 84 + 19 − 2 = 101.
-* **The two reported flakes are flakes.** Three isolated runs each:
+- **The two reported flakes are flakes.** Three isolated runs each:
   `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx`
   117 s / 1.2 s / 1.3 s, all PASS (the 117 s run corroborates the
   container-start contention explanation, and nearly reproduced the reported
   120.006 s);
   `a_callback_settles_the_charge_…::case_2_orange_money` 16 s / 5 s / 9 s, all
   PASS. Neither fails alone, so neither is a finding.
-* **The `justfile` change raises a floor** (13 → 15) rather than relaxing one,
+- **The `justfile` change raises a floor** (13 → 15) rather than relaxing one,
   and 15 is the real count.
-* **`docs/flows/webhooks.md`'s update is in its `Status` section**, as
+- **`docs/flows/webhooks.md`'s update is in its `Status` section**, as
   CLAUDE.md requires, not merely somewhere in the file.
 
 ## 3. Reserved for the maintainer
@@ -323,15 +323,15 @@ The implementer's three stand (rename the two multi-value CHECKs to
    verified, and a real blocker for any signed payload column.
 3. `introspect/postgres/types.rs::map_scalar` not reading `jsonb`/`int4` back
    means an undeclared column of those types is invisible to `migrate
-   baseline` in both directions.
+baseline` in both directions.
 
 ## 5. Not checked
 
-* Nothing about `cratestack` beyond the files cited above.
-* The `run_in_tx → run` mutations were not re-run; they are the implementer's
+- Nothing about `cratestack` beyond the files cited above.
+- The `run_in_tx → run` mutations were not re-run; they are the implementer's
   and the abandon test's failure on them is not in doubt. What was re-run is
   the mutation set in §1 and the four in the brief.
-* `jobs`, and every money table, are untouched by this change and were not
+- `jobs`, and every money table, are untouched by this change and were not
   reviewed.
-* No rolling-deploy or load test. F3's concurrency arithmetic is arithmetic,
+- No rolling-deploy or load test. F3's concurrency arithmetic is arithmetic,
   not a measurement under load.

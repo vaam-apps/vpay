@@ -7,17 +7,17 @@ haiku commit). Review head: see § 5. Nothing was pushed.
 
 The design is the one issue #61 asked for and it is in the right place:
 `boot_seeds` asks each configured rail's adapter for its `Capabilities` and
-refuses an incoherent set *before* `reconcile_reference_tables`, with a
+refuses an incoherent set _before_ `reconcile_reference_tables`, with a
 `ConfigError` variant — so the exit code is `78` at every call site, by type,
 through `vpay-server`'s existing `exit_code_for`. The CHECK and its test were
 not touched. The decisive mutation the brief named was verified against the
 draft as delivered:
 
-| # | Mutation | Draft as delivered | After this review |
-|---|---|---|---|
-| M1 | delete the `is_coherent` call from `boot_seeds` | `a_provider_with_incoherent_capabilities_is_a_config_error` **FAILS** | FAILS (unit) **and** `boot_coherence.rs` FAILS (integration, 82 s, message names the regression) |
-| M2 | empty `#[error(…)]` to `"configuration error"` | **PASSES** — the test read the variant, never the message | **FAILS** on both message assertions |
-| M3 | delete the call, ask a real Postgres | not measured — the "78 not 1" claim was argued | FAILS: `boot_seeds` returns `Ok`, and the seed then meets `partial_refunds_imply_refunds` as `Category::Internal` / exit `1` |
+| #   | Mutation                                        | Draft as delivered                                                    | After this review                                                                                                            |
+| --- | ----------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| M1  | delete the `is_coherent` call from `boot_seeds` | `a_provider_with_incoherent_capabilities_is_a_config_error` **FAILS** | FAILS (unit) **and** `boot_coherence.rs` FAILS (integration, 82 s, message names the regression)                             |
+| M2  | empty `#[error(…)]` to `"configuration error"`  | **PASSES** — the test read the variant, never the message             | **FAILS** on both message assertions                                                                                         |
+| M3  | delete the call, ask a real Postgres            | not measured — the "78 not 1" claim was argued                        | FAILS: `boot_seeds` returns `Ok`, and the seed then meets `partial_refunds_imply_refunds` as `Category::Internal` / exit `1` |
 
 M2 is the finding that matters: issue #61's own acceptance sentence is "the
 message names the rule", and nothing in the tree held it.
@@ -27,14 +27,14 @@ message names the rule", and nothing in the tree held it.
 **F1 — gate-hole (fixed).** The draft ran no `just ci` and no container suite,
 and the "exits 78 rather than 1" claim — the entire content of issue #61 — was
 argued in a commit message, not measured. A unit test on a pure function
-cannot say which layer answers *first*.
+cannot say which layer answers _first_.
 Fixed: `backends/tests/integration/tests/boot_coherence.rs` calls the two
 shipping functions `main` calls, in `main`'s order, against a real Postgres 16,
 and asserts `78` + an empty `providers` table + the CHECK's `1` for the seed
 boot withheld. Mutation M3 above is what makes it decisive.
 
 **F2 — correctness of the test (fixed).** The draft's test asserted the variant
-and the `code` field and *claimed*, in its own panic message, that "the message
+and the `code` field and _claimed_, in its own panic message, that "the message
 must name the provider and the violated rule" — while asserting nothing about
 the message. Measured (M2): the message could be emptied entirely and the test
 stayed green. Fixed: both substrings are asserted, in the unit test and in the
@@ -51,27 +51,27 @@ On the brief's question "which rule?": `is_coherent` encodes exactly one,
 without qualification.
 
 **F4 — correctness, small but real (fixed).** The guard refuses every
-*configured* rail, `enabled` or not, which is right — `enabled` is a column on
+_configured_ rail, `enabled` or not, which is right — `enabled` is a column on
 the row the seed becomes, so a disabled incoherent rail reaches the same CHECK
 — but nothing said so and nothing tested it, and `provider.enabled &&
 !coherent` is the obvious "optimisation". The test now runs both values.
 
 **F5 — misleading claim (fixed).** `boot_seeds`' own `# Errors` section still
-read "That is now the *only* error this returns" while the function had two.
+read "That is now the _only_ error this returns" while the function had two.
 
 **F6 — conventions / DRY (fixed).** `IncoherentTestRail` was a 56-line copy of
 the module's `TestRail` differing in two booleans; ADR-0016 standard 4. It is
 now `TestRail` carrying a `Capabilities`, so the incoherent rail differs from
 the coherent one by exactly what is under test.
 On the brief's no-mocks question: **no rule-break either way.** `verify-no-mocks`
-scans `backends/apps` sources for stub-adapter *names* and the shipping
-manifests for test-only *dependencies*; a `#[cfg(test)]` adapter inside a
+scans `backends/apps` sources for stub-adapter _names_ and the shipping
+manifests for test-only _dependencies_; a `#[cfg(test)]` adapter inside a
 library crate is outside both, and the module's existing `TestRail` is the
 repository's own precedent, documented as such. There is no `vpay-testkit` rail
 type to use instead — that crate is containers only, and the integration suite
 deliberately links the **real** adapters. The new integration file carries the
 same argument in its header (it declares a capability set and answers no call;
-a stub *rail* is a WireMock host in configuration, ADR-0006).
+a stub _rail_ is a WireMock host in configuration, ADR-0006).
 
 **F7 — misleading docs (fixed).** `docs/flows/configuration.md` came out of the
 draft asserting both "**not a `vpay-config` boot guard at all**" and, three
@@ -79,7 +79,7 @@ paragraphs later, "**This is now a `vpay-config` boot-time guard**". The second
 is also inaccurate: the check is in `vpay-api`, `Config::validate_all` does not
 run it, and **no YAML can trigger it** — a capability set is a property of the
 adapter's code, so what boot catches is a linking mistake. The "enforced three
-times, independently" list also promoted two *tests* to an enforcement layer.
+times, independently" list also promoted two _tests_ to an enforcement layer.
 
 **F8 — misleading docs, pre-existing and made worse (fixed).** The same section
 said a seed that reaches the CHECK is a `DbError::Query` — exit `69`, "wait for
@@ -105,14 +105,14 @@ neighbour.
 
 ### Not fixed, and why
 
-* **`support::reconcile_from_config`** in the integration harness is a
+- **`support::reconcile_from_config`** in the integration harness is a
   hand-copy of `boot_seeds`' join and does **not** check coherence. It is a
   test harness, its own comment says it mirrors `boot_seeds`, and changing it
   is outside this issue; worth an issue of its own, since a harness that
   drifts from the binary is the failure that module's header warns about.
-* **The `@vpay/ui` `select.test.tsx` flake** (§ 5). Unrelated to this branch
+- **The `@vpay/ui` `select.test.tsx` flake** (§ 5). Unrelated to this branch
   and not this review's to fix; reported, not papered over.
-* **No subprocess (`tests/cli.rs`) case**, which the issue's own wording
+- **No subprocess (`tests/cli.rs`) case**, which the issue's own wording
   suggested. It cannot exist and the reason is structural, not effort:
   `vpay-server` links `mtn_momo` and `orange_money`, both asserted coherent by
   `no_adapter_advertises_partial_without_full_refunds` and by the conformance
@@ -138,12 +138,12 @@ and reverted from a copy afterwards (`git status` clean between runs).
 
 ## 4. What was not checked
 
-* `just test-e2e` and `just helm-check` — outside `just ci` by design.
-* `just docs-check-citations` — needs the network and a token; this document
+- `just test-e2e` and `just helm-check` — outside `just ci` by design.
+- `just docs-check-citations` — needs the network and a token; this document
   cites issue #61 and PR #99 only, both read with `gh` during the review.
-* Nothing about #99 beyond the rebase and the gate re-run: its own tests are
+- Nothing about #99 beyond the rebase and the gate re-run: its own tests are
   covered by the 1662, and its files were not read as part of this review.
-* The behaviour of a **real** incoherent adapter in a shipping binary: there
+- The behaviour of a **real** incoherent adapter in a shipping binary: there
   is none, by construction (see § 1, "Not fixed").
 
 ## 5. Gate
@@ -162,24 +162,24 @@ on the rebased head rather than the numbers from before it being reported.
 --frozen-lockfile`, the pinned CrateStack **0.12.0** CLI, rootless Docker, from
 a cleared `target/`.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy` (`--workspace --all-targets -D warnings`) | ok |
-| `verify` | twelve gates ok; `verify-docs` advisory report printed |
-| `test-rust` | **1662 tests run, 1662 passed, 0 skipped** (1385 s). `boot_coherence` ran in 1.3 s inside the full run |
-| `test-doc` | **111 passed, 1 ignored** (the ignored one is pre-existing) |
-| `verify-ignored` | 0 ignored (expected 0), **46** test binaries (expected 46), 1662 total (1660 before the rebase; #99 added two `tests/cli.rs` cases and no binary) |
-| `lint-web` | ok (typecheck + `pnpm -r lint`) |
-| `test-web` | ok — **1284** tests across nine packages |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| Recipe                                             | Result                                                                                                                                            |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`                                        | ok                                                                                                                                                |
+| `clippy` (`--workspace --all-targets -D warnings`) | ok                                                                                                                                                |
+| `verify`                                           | twelve gates ok; `verify-docs` advisory report printed                                                                                            |
+| `test-rust`                                        | **1662 tests run, 1662 passed, 0 skipped** (1385 s). `boot_coherence` ran in 1.3 s inside the full run                                            |
+| `test-doc`                                         | **111 passed, 1 ignored** (the ignored one is pre-existing)                                                                                       |
+| `verify-ignored`                                   | 0 ignored (expected 0), **46** test binaries (expected 46), 1662 total (1660 before the rebase; #99 added two `tests/cli.rs` cases and no binary) |
+| `lint-web`                                         | ok (typecheck + `pnpm -r lint`)                                                                                                                   |
+| `test-web`                                         | ok — **1284** tests across nine packages                                                                                                          |
+| `deny`                                             | `advisories ok, bans ok, licenses ok, sources ok`                                                                                                 |
 
 The same recipe list was green end to end on the pre-rebase head `096c824`
 too (1660/1660, exit 0); both runs are in the transcript and the rebased one
 is the one that counts.
 
-**A flake, reported rather than papered over.** An earlier full run *on the
-draft head* (`e43530b`) failed `test-web` on `@vpay/ui`'s
+**A flake, reported rather than papered over.** An earlier full run _on the
+draft head_ (`e43530b`) failed `test-web` on `@vpay/ui`'s
 `select.test.tsx > Select > opens on ArrowDown …` while the container suites
 were loading the host; `git diff origin/master -- frontends/` is empty on this
 branch, the file passes 74/74 in isolation, and it passed in the run above. It
@@ -196,14 +196,14 @@ Recorded because "the gate went red once" is part of the evidence.
 SHAs are the post-rebase ones (base `231f51e`); the pre-rebase SHAs are in
 each commit's own reflog entry and in the note above.
 
-| SHA | |
-|---|---|
-| `3d7c3d7` | the haiku draft, untouched (was `e43530b`) |
-| `b63129f` | `fix(config,api)`: the refusal names the rule, and the test reads the message |
-| `ff6a892` | `docs(api)`: `boot_seeds` returns two errors, and its own `# Errors` said one |
-| `42bb7d9` | `test(integration)`: the 78 and the 1, measured against a real Postgres |
+| SHA       |                                                                                      |
+| --------- | ------------------------------------------------------------------------------------ |
+| `3d7c3d7` | the haiku draft, untouched (was `e43530b`)                                           |
+| `b63129f` | `fix(config,api)`: the refusal names the rule, and the test reads the message        |
+| `ff6a892` | `docs(api)`: `boot_seeds` returns two errors, and its own `# Errors` said one        |
+| `42bb7d9` | `test(integration)`: the 78 and the 1, measured against a real Postgres              |
 | `b990cd8` | `docs`: the flow doc contradicted itself, and the decision it settles was still open |
-| `41d6549` | this document, as it stood before the rebased gate's numbers were written into § 5 |
+| `41d6549` | this document, as it stood before the rebased gate's numbers were written into § 5   |
 
 The commit carrying these final numbers sits on top of `41d6549` and changes
 nothing any gate compiles; `just verify` was re-run on the head that carries
@@ -215,6 +215,6 @@ it.
 central mutation held, but two of issue #61's three acceptance sentences were
 unheld by any test (the message naming the rule; the exit code being 78 rather
 than 1), the flow doc contradicted itself in the same section, and the
-maintainer decision this issue *is* was still recorded as open on
+maintainer decision this issue _is_ was still recorded as open on
 `docs/status.md`. All four are closed above, each with the measurement that
 would catch its regression.

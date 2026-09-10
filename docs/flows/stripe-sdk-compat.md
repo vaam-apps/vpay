@@ -37,7 +37,7 @@ const stripe = new Stripe("", {
 ```
 
 `new Stripe("", { authenticator })` is supported: stripe-node refuses only
-when *both* a key and an authenticator are given, or neither.
+when _both_ a key and an authenticator are given, or neither.
 `host`/`port`/`protocol` move every request off `api.stripe.com`. `basePath`
 is fixed at `/v1/` and is not configurable — which is moot, because the
 generated resources use absolute paths (`/v1/payment_intents`,
@@ -48,14 +48,14 @@ rewrite the body — `Content-Length` is computed before it runs.
 
 ## What carries over unchanged
 
-| | Why |
-|---|---|
-| The resource paths | `/v1/payment_intents`, `/{id}`, `/{id}/confirm`, `/{id}/cancel` are the four vpay serves, and stripe-node hardcodes exactly those strings |
+|                                                  | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The resource paths                               | `/v1/payment_intents`, `/{id}`, `/{id}/confirm`, `/{id}/cancel` are the four vpay serves, and stripe-node hardcodes exactly those strings                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Form encoding, including nested and indexed keys | stripe-node percent-encodes and then decodes brackets back, so a space is `%20` and a literal `+` is `%2B` — which is what `vpay_api::form` requires. It serialises arrays **indexed** (`expand[0]=…`, `payment_method_types[0]=…`), and that spelling is proven end to end by `sdks/stripe-compat`'s "accepts and ignores `expand`, which stripe-node encodes as `expand[0]`" case. The bare `expand[]=…` spelling `vpay_api::form` also accepts is **not** exercised by this suite — stripe-node never emits it; its evidence is that decoder's own unit test |
-| `Idempotency-Key` | stripe-node generates one for **every** v1 POST, unconditionally, "including when `maxNetworkRetries` is 0". vpay *requires* one on every `/v1` POST — stricter than Stripe — and that costs a stripe-node user nothing |
-| The list envelope and auto-pagination | `autoPagingToArray` needs only `data[].id` and `has_more`; `ListObject` supplies both plus `url` |
-| The error envelope | `{error: {type, code, message, param?}}`, with `type` from the same closed vocabulary |
-| `webhooks.constructEvent` | vpay's signature construction is byte-identical to Stripe's — see "Webhooks" below for what is and is not built |
+| `Idempotency-Key`                                | stripe-node generates one for **every** v1 POST, unconditionally, "including when `maxNetworkRetries` is 0". vpay _requires_ one on every `/v1` POST — stricter than Stripe — and that costs a stripe-node user nothing                                                                                                                                                                                                                                                                                                                                         |
+| The list envelope and auto-pagination            | `autoPagingToArray` needs only `data[].id` and `has_more`; `ListObject` supplies both plus `url`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| The error envelope                               | `{error: {type, code, message, param?}}`, with `type` from the same closed vocabulary                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `webhooks.constructEvent`                        | vpay's signature construction is byte-identical to Stripe's — see "Webhooks" below for what is and is not built                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Error mapping
 
@@ -65,16 +65,16 @@ classification ([ADR-0011](../adr/0011-error-modelling.md)), so the mapping
 below is a property of the two designs meeting rather than of anything written
 to make it line up.
 
-| vpay answer | What you catch |
-|---|---|
-| `404` `resource_missing` | `StripeInvalidRequestError`, `err.code === "resource_missing"` |
-| `400` `invalid_request` | `StripeInvalidRequestError`, with `err.param` naming the field |
-| `400` `idempotency_error` | `StripeIdempotencyError` |
-| `401` `authentication_error` | `StripeAuthenticationError` |
-| `403` (missing scope) | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status |
-| `409` (lifecycle conflict) | `StripeAPIError` — 409 falls through every branch of `generateV1Error` |
-| `502` (rail transport) | `StripeAPIError`, **and stripe-node retries it** — see below |
-| `429` | never emitted: nothing in `backends/crates` constructs `Category::RateLimited` |
+| vpay answer                  | What you catch                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `404` `resource_missing`     | `StripeInvalidRequestError`, `err.code === "resource_missing"`                                                           |
+| `400` `invalid_request`      | `StripeInvalidRequestError`, with `err.param` naming the field                                                           |
+| `400` `idempotency_error`    | `StripeIdempotencyError`                                                                                                 |
+| `401` `authentication_error` | `StripeAuthenticationError`                                                                                              |
+| `403` (missing scope)        | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status |
+| `409` (lifecycle conflict)   | `StripeAPIError` — 409 falls through every branch of `generateV1Error`                                                   |
+| `502` (rail transport)       | `StripeAPIError`, **and stripe-node retries it** — see below                                                             |
+| `429`                        | never emitted: nothing in `backends/crates` constructs `Category::RateLimited`                                           |
 
 `err.requestId` is populated from a `request-id` response header — stripe-node
 never reads `x-request-id`. vpay emits **both names with one value**, so
@@ -101,9 +101,9 @@ response it is about to store — the rendered `HeaderMap`, not the status — a
 replay emits no header, because a `2xx` never passed through the error
 renderer in the first place.
 
-The fix deliberately *not* taken was re-deriving the advisory from the stored
+The fix deliberately _not_ taken was re-deriving the advisory from the stored
 status at replay time: ADR-0011 makes one classification the source of status
-*and* retry, and a second derivation running the other way round is exactly
+_and_ retry, and a second derivation running the other way round is exactly
 the drift it exists to prevent. Storing the header's text rather than a
 `BOOLEAN` follows from the same rule — a boolean would put a second
 `bool → "true"/"false"` rendering in the replay path, where the column's job
@@ -114,7 +114,7 @@ is to record what was sent. The domain is bought back by a CHECK
 
 Two tests pin the behaviour, and both used to assert the opposite:
 `a_replayed_response_carries_the_advisory_it_was_stored_with` (a `vpay-api`
-unit test — it asserts the replayed value *equals* what the same error renders
+unit test — it asserts the replayed value _equals_ what the same error renders
 fresh, so a hard-coded `false` in `replay` fails it) and
 `a_replayed_error_carries_the_same_retry_advisory_the_original_did` (an
 integration test in `backends/tests/integration`, against a real Postgres and
@@ -160,7 +160,7 @@ predictable consequence of the header, not because anything observed it.
 - **No API keys.** `apiKey`, `stripeAccount`, Connect: none of them mean
   anything. `Stripe-Version`, `Stripe-Account`, `Stripe-Context` and the
   `X-Stripe-Client-*` headers are accepted and ignored, and a `Stripe-Account`
-  is deliberately *not* a 400 — a documented "Connect is not a thing here" is
+  is deliberately _not_ a 400 — a documented "Connect is not a thing here" is
   a better diagnostic.
 - **No dated API version.** vpay advertises none and echoes none, so
   `obj.lastResponse.apiVersion` is `undefined` and pinning `apiVersion` has no
@@ -183,7 +183,7 @@ predictable consequence of the header, not because anything observed it.
   ignored**, with a `400` naming the field in `error.param`: `capture_method`
   with any value other than `automatic`, `application_fee_amount`,
   `transfer_data` and `on_behalf_of`. vpay has no authorise-now /
-  capture-later split (confirming *is* the charge) and no Connect, so ignoring
+  capture-later split (confirming _is_ the charge) and no Connect, so ignoring
   any of them would settle a merchant's money at a time, or to an account,
   they did not ask for and could not see in the response. Both POST bodies
   carry the same refusal set — create and confirm.
@@ -218,16 +218,16 @@ predictable consequence of the header, not because anything observed it.
 - **There is no `failed` status.** A refused charge returns the intent to
   `requires_payment_method` with `last_payment_error` set.
 - **`search`, `POST /v1/refunds` and `/v1/balance`** are not routed and answer
-  the honest `404 unknown_route`. **`GET /v1/refunds/{id}` *is* routed** since
+  the honest `404 unknown_route`. **`GET /v1/refunds/{id}` _is_ routed** since
   2026-09-05 (issue #45) and answers a Stripe-shaped `refund` — but **nothing
   here drives it through stripe-node's `refunds` resource**, so
   `stripe.refunds.retrieve()` working is untested rather than known, exactly
   as `stripe.events.list()` is below. `stripe.refunds.create()` remains a
   `404`, and correctly so: no rail can refund.
-- **`/v1/events` and `/v1/events/{id}` *are* routed** (Step 5), and their
+- **`/v1/events` and `/v1/events/{id}` _are_ routed** (Step 5), and their
   bodies are Stripe's `event` shape — but **nothing here drives them through
   stripe-node's `events` resource**, so `stripe.events.list()` working is
-  untested rather than known. The half that *is* observed is
+  untested rather than known. The half that _is_ observed is
   `webhooks.constructEvent` over a delivered body, below.
 
 ## Webhooks
@@ -255,7 +255,7 @@ above is the same call with the other name.
 observation rather than an argument from the scheme being identical: it makes
 a payment through the official `stripe` package, waits for the worker to
 settle it, pulls the delivery out of the WireMock receiver's own request
-journal (`GET /__admin/requests` — what a receiver *got*, not what vpay
+journal (`GET /__admin/requests` — what a receiver _got_, not what vpay
 believes it sent) and passes the recorded bytes and header straight to
 `constructEvent`. The bytes are never re-serialised: the signature covers a
 body, and parse-and-reprint is the commonest way a merchant breaks their own
@@ -313,7 +313,7 @@ collapse described above.
   confirm, whose rail-side delay is keyed by a reference the server mints. A
   deterministic stage would need a test double, which
   [ADR-0006](../adr/0006-no-mocks-in-main-processes.md) forbids in a shipping
-  process. The *derivation* is unit-tested in `vpay-api`
+  process. The _derivation_ is unit-tested in `vpay-api`
   (`the_retry_advisory_follows_the_classification_not_the_status`); its effect
   on stripe-node is not.
 - **The `502` re-POST described above is reasoning, not a measurement.**
@@ -340,7 +340,7 @@ vpay now serves its **own** checkout page, hosted and embedded, and
 `@stripe/stripe-js`'s Checkout — Stripe's own method is
 `createEmbeddedCheckoutPage` in the pinned 9.15.0, its options are not ours
 in either direction, and vpay's `checkout.session` has no `line_items`,
-`mode` or `amount_total` (Step 9's D10). What *is* portable, and is pinned as
+`mode` or `amount_total` (Step 9's D10). What _is_ portable, and is pinned as
 a compile-time assertion in both directions in `src/compat.test.ts`, is the
 handle: `{ mount(string | HTMLElement), unmount(), destroy() }` is
 assignable to and from Stripe's `StripeEmbeddedCheckout`. The mounting
@@ -356,4 +356,3 @@ is payable; left on `eur`, every confirm in this suite would have been refused
 with `rail 'mtn_momo' settles in XAF; this PaymentIntent is EUR`.
 `config/application.yml` is unchanged and still puts `mtn_momo` on EUR, because
 MTN's real sandbox rejects XAF ([money.md](money.md)).
-

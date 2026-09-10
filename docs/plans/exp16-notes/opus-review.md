@@ -18,17 +18,17 @@ One end-to-end run on `539407d` exactly as delivered, exit 0, after
 (`CYPRESS_INSTALL_BINARY=0`). § 7 has the second run, after the review's own
 commits.
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy` (`--workspace --all-targets -D warnings`) | ok, no warnings |
-| `verify` | ten gates ok; `verify-docs` printed its advisory report |
-| `test-rust` | **1372 tests run, 1372 passed, 0 skipped** across 43 binaries, 700.731 s |
-| `test-doc` | **96 passed, 1 ignored** across 14 doctest targets |
-| `verify-ignored` | 0 ignored (expected 0), 43 binaries (expected 43), 1372 total |
-| `lint-web` | ok (`pnpm -r typecheck`, `pnpm -r lint`) |
-| `test-web` | ok — 63 + 3 + 119 + 180 + 4 + 3 + 57 + 302 vitest cases |
-| `deny` | `advisories ok, bans ok, licenses ok, sources ok` |
+| Recipe                                             | Result                                                                   |
+| -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `fmt-check`                                        | ok                                                                       |
+| `clippy` (`--workspace --all-targets -D warnings`) | ok, no warnings                                                          |
+| `verify`                                           | ten gates ok; `verify-docs` printed its advisory report                  |
+| `test-rust`                                        | **1372 tests run, 1372 passed, 0 skipped** across 43 binaries, 700.731 s |
+| `test-doc`                                         | **96 passed, 1 ignored** across 14 doctest targets                       |
+| `verify-ignored`                                   | 0 ignored (expected 0), 43 binaries (expected 43), 1372 total            |
+| `lint-web`                                         | ok (`pnpm -r typecheck`, `pnpm -r lint`)                                 |
+| `test-web`                                         | ok — 63 + 3 + 119 + 180 + 4 + 3 + 57 + 302 vitest cases                  |
+| `deny`                                             | `advisories ok, bans ok, licenses ok, sources ok`                        |
 
 `cargo build --workspace --all-targets` also exits 0 on its own. Every gate
 number the implementer claimed is reproduced exactly, including the two counts
@@ -56,7 +56,7 @@ need its own arm — as claimed.
 
 What is **not** true is the argument the change gave for preferring four arms
 over one `@@allow("all", …)`: that `"all"` "would also grant `list` and
-`detail`, which nothing in vpay calls". `"read"` is a member of *both* action
+`detail`, which nothing in vpay calls". `"read"` is a member of _both_ action
 lists above, so `@@allow("read", auth().isSystem())` already populates
 `read_allow_policies` **and** `detail_allow_policies`. The four arms and
 `@@allow("all", …)` grant an identical policy set; the only real difference is
@@ -96,9 +96,9 @@ the note" is therefore a property of the statement, not of a fallback.
 connections at once.** `UpsertRecord::run` opens its own transaction on
 `runtime.pool()` (connection A) and `gate_update_policy` →
 `row_passes_update_policy(runtime.pool(), …)` then `fetch_optional`s on
-`policy_pool` — the *same* pool — while A is still held. `vpay-db`'s pool is
+`policy_pool` — the _same_ pool — while A is still held. `vpay-db`'s pool is
 `MAX_CONNECTIONS = 10` with a 5 s `ACQUIRE_TIMEOUT` (`pool.rs`), so ten
-concurrent *second* disables would each hold A and wait 5 s for B, and all ten
+concurrent _second_ disables would each hold A and wait 5 s for B, and all ten
 would fail as `PersistenceError::Backend` → `Category::Storage`. Not reachable
 today — `disable_client` has no shipping caller (`docs/roadmap.md`) and the
 insert branch takes only one connection, because `auth().isSystem()` is not a
@@ -111,12 +111,12 @@ Each row: delete the named line from `schemas/vpay.cstack`, run three suites,
 restore. Harness `scratchpad/exp16-review-mut.sh` (refuses to run off the
 branch). Logs `scratchpad/exp16-review-mut-*.log`.
 
-| Mutation | `-p vpay-db --lib` | `-p vpay-db --test repositories` | `client_store` kill switch |
-|---|---|---|---|
-| drop `@@allow("read", …)` | **26 passed** | 3 failed: read-parity at `repositories.rs:486`, lookup at `:328`, write-parity | FAIL at `client_store.rs:115` |
-| drop `@@allow("create", …)` | **26 passed** | 2 failed: write-parity at the **first** disable, `… forbidden: create policy denied this upsert`; lookup test too. Read-parity **passes** | FAIL, "disabling the client" / same `Forbidden` |
-| drop `@@allow("update", …)` | **26 passed** | 2 failed: write-parity at the **second** disable, `… forbidden: update policy denied this upsert`; lookup test too. Read-parity **passes** | **PASSES** — it disables once and never re-disables |
-| drop `@@allow("delete", …)` | **26 passed** | 2 failed: write-parity at `repositories.rs:649` (the read-back after enable, `Ok` returned and the row still there); lookup at `:353` | FAIL at `client_store.rs:129`, "re-enabling must restore access" |
+| Mutation                    | `-p vpay-db --lib` | `-p vpay-db --test repositories`                                                                                                           | `client_store` kill switch                                       |
+| --------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| drop `@@allow("read", …)`   | **26 passed**      | 3 failed: read-parity at `repositories.rs:486`, lookup at `:328`, write-parity                                                             | FAIL at `client_store.rs:115`                                    |
+| drop `@@allow("create", …)` | **26 passed**      | 2 failed: write-parity at the **first** disable, `… forbidden: create policy denied this upsert`; lookup test too. Read-parity **passes**  | FAIL, "disabling the client" / same `Forbidden`                  |
+| drop `@@allow("update", …)` | **26 passed**      | 2 failed: write-parity at the **second** disable, `… forbidden: update policy denied this upsert`; lookup test too. Read-parity **passes** | **PASSES** — it disables once and never re-disables              |
+| drop `@@allow("delete", …)` | **26 passed**      | 2 failed: write-parity at `repositories.rs:649` (the read-back after enable, `Ok` returned and the row still there); lookup at `:353`      | FAIL at `client_store.rs:129`, "re-enabling must restore access" |
 
 Every runtime effect the change claimed is reproduced, including the two
 subtle ones: the `update` arm is consulted **only** on the conflict branch (a
@@ -134,14 +134,14 @@ that turns red needs Docker. Finding F2.
 
 ## 4. Findings
 
-| # | Severity | Finding |
-|---|---|---|
-| F1 | misleading-claim | "`@@allow("all", …)` would also grant `list` and `detail`" is false — `@@allow("read", …)` already fills both slots (§ 2). Stated in `schemas/vpay.cstack`, `docs/reference/vpay-db.md` and `docs/plans/exp16-notes/opus.md`. |
-| F2 | gate-hole | Every policy arm's absence is invisible to the database-free gate (§ 3, first column). The compiled `ModelDescriptor` carries the answer as a `&'static [ReadPolicy]` per slot, so this is checkable in `-p vpay-db --lib` at zero cost, and was not. |
-| F3 | nit | `MODEL`'s doc comment still says "the `.cstack` model `is_client_disabled` reads". Three statements carry it now. |
-| F4 | correctness (documentation of a real cost) | The upsert's update branch holds two pooled connections at once (§ 2). `docs/reference/vpay-db.md` and `docs/status.md` say only "a round trip". |
-| F5 | nit | `docs/status.md`: "Both silent directions are fail-safe or not:" is not a sentence. |
-| F6 | nit | `docs/plans/exp16-notes/opus.md` § 6 says "no node modules are installed in this worktree" while the same document claims a green `just ci`, which runs `lint-web` and `test-web` and cannot pass without them. |
+| #   | Severity                                   | Finding                                                                                                                                                                                                                                               |
+| --- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | misleading-claim                           | "`@@allow("all", …)` would also grant `list` and `detail`" is false — `@@allow("read", …)` already fills both slots (§ 2). Stated in `schemas/vpay.cstack`, `docs/reference/vpay-db.md` and `docs/plans/exp16-notes/opus.md`.                         |
+| F2  | gate-hole                                  | Every policy arm's absence is invisible to the database-free gate (§ 3, first column). The compiled `ModelDescriptor` carries the answer as a `&'static [ReadPolicy]` per slot, so this is checkable in `-p vpay-db --lib` at zero cost, and was not. |
+| F3  | nit                                        | `MODEL`'s doc comment still says "the `.cstack` model `is_client_disabled` reads". Three statements carry it now.                                                                                                                                     |
+| F4  | correctness (documentation of a real cost) | The upsert's update branch holds two pooled connections at once (§ 2). `docs/reference/vpay-db.md` and `docs/status.md` say only "a round trip".                                                                                                      |
+| F5  | nit                                        | `docs/status.md`: "Both silent directions are fail-safe or not:" is not a sentence.                                                                                                                                                                   |
+| F6  | nit                                        | `docs/plans/exp16-notes/opus.md` § 6 says "no node modules are installed in this worktree" while the same document claims a green `just ci`, which runs `lint-web` and `test-web` and cannot pass without them.                                       |
 
 Checked and **not** findings:
 
@@ -153,9 +153,9 @@ Checked and **not** findings:
 - The read-parity test's new inline-SQL seed is consistent with ADR-0006 and
   AGENTS.md rule 1 — it is a statement against the same real Postgres, not a
   double — and it still proves what it claims: mutation `read` above fails it
-  at `repositories.rs:486` *after* the seed change.
+  at `repositories.rs:486` _after_ the seed change.
 - No `unwrap`/`expect`/`panic` outside `#[cfg(test)]`; `clippy` with `-D
-  warnings` is the proof, and `clippy.toml`'s test exemption is what allows
+warnings` is the proof, and `clippy.toml`'s test exemption is what allows
   the `expect` in `lazy_cratestack`.
 - `system_context()` is built fresh at all three call sites; nothing is
   cached across writes.
@@ -168,7 +168,7 @@ Checked and **not** findings:
   Policy arms are not schema shape, so this is the expected answer rather
   than a lucky one.
 - `disable_client` twice with a different reason really does take the conflict
-  branch: the `update` mutation fails at the *second* call and not the first,
+  branch: the `update` mutation fails at the _second_ call and not the first,
   which is only expressible if the second call went through
   `gate_update_policy`.
 - `CreateDisabledClientInput`'s struct literal is exhaustive by construction
@@ -176,8 +176,8 @@ Checked and **not** findings:
   `model DisabledClient` is `error[E0063]` at this call site rather than a
   silent NULL. Re-measured rather than taken from the change's own notes:
   adding `note String?` to the model produces `error[E0063]: missing field
-  `note` in initializer of `inputs::CreateDisabledClientInput``, pointing at
-  `disabled_clients.rs:210`. That is a *good* property here and a CrateStack ergonomics
+`note`in initializer of`inputs::CreateDisabledClientInput``, pointing at
+  `disabled_clients.rs:210`. That is a _good_ property here and a CrateStack ergonomics
   cost everywhere else: the generated input type's shape leaks into every
   caller, so adding a column to a model is a breaking change for every
   literal, in this repository and in any other. Worth an upstream note (§ 6),
@@ -224,13 +224,13 @@ Checked and **not** findings:
 
 One commit per finding, on top of `539407d`, each naming its own proof.
 
-| Commit | Finding | Proof |
-|---|---|---|
-| `f81c40e` | — | this file: phase 1, the re-run gate and the re-run mutations |
-| `d87a90c` | F2 | `every_action_this_crate_calls_has_an_allow_arm` in `disabled_clients.rs`; deleting each of the four arms in turn makes it fail four times out of four, in ~4 ms, with no Docker |
-| `3387fe7` | F1 | `detail_allow_policies.len() == 1` with no `detail` arm declared — the wildcard would have granted nothing extra |
-| `fcca73a` | F4 | `upsert.rs::run` + `upsert_resolve.rs::gate_update_policy` + `pool.rs`'s `MAX_CONNECTIONS = 10` |
-| `062f60d` | F3, F5, F6 | three sentences that were stale, garbled or self-contradicting |
+| Commit    | Finding    | Proof                                                                                                                                                                            |
+| --------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `f81c40e` | —          | this file: phase 1, the re-run gate and the re-run mutations                                                                                                                     |
+| `d87a90c` | F2         | `every_action_this_crate_calls_has_an_allow_arm` in `disabled_clients.rs`; deleting each of the four arms in turn makes it fail four times out of four, in ~4 ms, with no Docker |
+| `3387fe7` | F1         | `detail_allow_policies.len() == 1` with no `detail` arm declared — the wildcard would have granted nothing extra                                                                 |
+| `fcca73a` | F4         | `upsert.rs::run` + `upsert_resolve.rs::gate_update_policy` + `pool.rs`'s `MAX_CONNECTIONS = 10`                                                                                  |
+| `062f60d` | F3, F5, F6 | three sentences that were stale, garbled or self-contradicting                                                                                                                   |
 
 Nothing was weakened: no test was deleted, relaxed or `#[ignore]`d, no
 `#[allow]` was added, and no assertion changed from `==` to something looser.
@@ -257,7 +257,7 @@ The brief asked whether `enable_client` should assert on `delete_many`'s
 2. `delete_many` + `require total == 1`. This is `.delete(pk)` spelled
    differently: it fails on every re-enable of an already-enabled client,
    which is the same contract break.
-3. `delete_many` + *on `total == 0`*, a second read to ask whether the row is
+3. `delete_many` + _on `total == 0`_, a second read to ask whether the row is
    still there, reporting `PersistenceError::Denied` when it is. This is the
    only shape that distinguishes "policy refused" from "nothing to delete".
 
@@ -268,7 +268,7 @@ reasons that outweigh what it buys.
   deleted nothing, but between the `DELETE` and the read another caller may
   legitimately `disable_client` the same id — and the read would then report
   `Denied` → `Category::Internal`, a page, for a correct concurrent
-  operation. Trading a silent failure that is *fail-safe* (a client stays
+  operation. Trading a silent failure that is _fail-safe_ (a client stays
   revoked) for a spurious alarm on a normal race is a bad trade for a
   kill switch.
 - The thing it was going to catch is caught earlier and for free. A missing
@@ -278,7 +278,7 @@ reasons that outweigh what it buys.
   deployment through a green gate.
 
 The honest residue, stated because it is not nothing: the descriptor test
-proves the slot is *occupied*, not that the policy in it admits the system
+proves the slot is _occupied_, not that the policy in it admits the system
 context. A `@@allow("delete", auth().isMerchant())` would pass F2's test and
 still silently refuse every enable — and only the container tests would say
 so. That is exactly why F2's test is written as an addition to them and never

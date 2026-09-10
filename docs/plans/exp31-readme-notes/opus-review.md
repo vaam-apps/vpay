@@ -7,7 +7,7 @@ there.
 
 Reviewer's brief: make the README lie in neither direction. An overstated
 capability and an understated one are the same defect, and the maintainer's
-question ("is *vpay cannot take a payment yet* still true?") is answered
+question ("is _vpay cannot take a payment yet_ still true?") is answered
 wrongly by both.
 
 Method: read the new README as a sceptical merchant, and for every sentence
@@ -24,26 +24,26 @@ Severity: **misleading-claim** (the README says something a reader would act
 on that the tree does not support, in either direction) · **correctness** (a
 wrong fact that misleads less) · **nit**.
 
-| # | Severity | Claim | What the tree says | Fixed in |
-|---|---|---|---|---|
-| F1 | misleading-claim | "**Four** table families — `disabled_clients`, `staff_members`, `staff_sessions`, `oauth_authorization_codes` — run their statements through it; the rest is a design sketch" | **Nine** of the thirteen models in `schemas/vpay.cstack` carry production statements. The omitted three are `customers`, `events` and `webhook_deliveries` — the personal-data object and both halves of the webhook outbox | `ace3ff9` |
-| F2 | misleading-claim | "`--config`, `--database-url` and `--oauth-signing-key-file` are required … a missing one exits `78` before the port is bound" | Measured: `78` for `--config` and `--oauth-signing-key-file`, **`1`** for `--database-url`, on **both** binaries. And `vpay-worker-bin` does not accept `--oauth-signing-key-file` at all | `a0c8d71` |
-| F3 | misleading-claim | "`just verify-ignored` … **1550 tests listed**; the recipe fails if **any of the three** moves" | The total is a **floor** (`-lt "{{min_tests}}"`, 1080), not a pin; only `expected_ignored` and `expected_suites` are exact. Demonstrated: the total moved to **1563** on the rebase and the recipe exited 0 | `d943f4c` |
-| F4 | correctness | MTN's outcome is "selected by the payer's MSISDN (a documentation number in the `2376000000xx` block)" | The three MSISDNs are `237600000ce0`, `237600000f01`, `237600000f02` — hex steering codes, and the walkthrough's own step 6 shows one refused with a `400` for not being a Cameroon E.164 number | `27be744` |
-| F5 | correctness | "eleven gates and one advisory report" | Eleven was true at `045db7e` and false four hours later. Rebased onto `e58862a`, `just verify` echoes **twelve**; the sentence now takes its count from the recipe and dates it | `da9ed64`, `7a85ca0` |
-| F6 | correctness | "**Frontend** — Next.js 15" | `frontends/apps/*` are `^15.5.25`; `examples/shop`, the app `just demo` builds and a browser opens, is `16.3.4` | `bc3225c` |
-| F7 | misleading-claim | `docs/status.md` MVP item 7: "**Nothing here has ever performed a login**", plus a paragraph of reasons it could not be closed by wiring | Seven `/dash/v1` sign-in routes are mounted and `staff_sign_in.rs` drives 13 cases in which every token came from `POST /dash/v1/oauth/token` after a password, a TOTP code and a PKCE exchange (ADR-0017, 2026-09-07) | `5e620f9` |
-| F8 | misleading-claim | `docs/flows/dashboard.md` § Status: "**Not built:** login, of any kind" | Same. True of the *app*, false as written | `5e620f9` |
-| F9 | correctness | `docs/runbooks/demo.md` §6: "`/dash/v1` does not exist (Phase 2b, not started)" | `DASH_ROUTES` has carried two reads since 2026-09-06 | `b270275` |
-| F10 | correctness | `docs/flows/README.md`'s index | Omits `dashboard.md` and `customers.md` — 19 of 21 flow documents listed | `1d14278` |
-| F11 | correctness | `AGENTS.md`: "Headless UI for behaviour, framer-motion for motion, vaul for sheets" | None of the three is a dependency of any `package.json` in the tree | `3a44c73` |
-| F12 | correctness | `AGENTS.md` **on master after #84**: "`just verify` is **twelve** gates" followed by a parenthetical naming **eleven** | `verify-ui` is missing from that list. Fixed in the rebase resolution | `3a44c73` |
-| F13 | correctness | `.xtask/src/main.rs:3` "ten gates"; `justfile:440` "the **eleven** gates passed"; `justfile:1532` "# Everything CI runs, in CI's order" | Twelve, twelve, and `just ci` covers four of CI's six jobs. The first two are literals #84 did not sweep — the justfile said "eleven" eight lines above a recipe echoing "twelve" | `3a44c73` |
-| F14 | correctness | `docs/plans/exp17-notes/opus.md:161` cites `#228` with an `issue` cue | Resolved against `vaam-apps/vpay`, where it 404s. It is `cratestack/cratestack#228`. `just docs-check-citations` failed on this tree before this branch existed | `e323669` |
+| #   | Severity         | Claim                                                                                                                                                                         | What the tree says                                                                                                                                                                                                          | Fixed in             |
+| --- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| F1  | misleading-claim | "**Four** table families — `disabled_clients`, `staff_members`, `staff_sessions`, `oauth_authorization_codes` — run their statements through it; the rest is a design sketch" | **Nine** of the thirteen models in `schemas/vpay.cstack` carry production statements. The omitted three are `customers`, `events` and `webhook_deliveries` — the personal-data object and both halves of the webhook outbox | `ace3ff9`            |
+| F2  | misleading-claim | "`--config`, `--database-url` and `--oauth-signing-key-file` are required … a missing one exits `78` before the port is bound"                                                | Measured: `78` for `--config` and `--oauth-signing-key-file`, **`1`** for `--database-url`, on **both** binaries. And `vpay-worker-bin` does not accept `--oauth-signing-key-file` at all                                   | `a0c8d71`            |
+| F3  | misleading-claim | "`just verify-ignored` … **1550 tests listed**; the recipe fails if **any of the three** moves"                                                                               | The total is a **floor** (`-lt "{{min_tests}}"`, 1080), not a pin; only `expected_ignored` and `expected_suites` are exact. Demonstrated: the total moved to **1563** on the rebase and the recipe exited 0                 | `d943f4c`            |
+| F4  | correctness      | MTN's outcome is "selected by the payer's MSISDN (a documentation number in the `2376000000xx` block)"                                                                        | The three MSISDNs are `237600000ce0`, `237600000f01`, `237600000f02` — hex steering codes, and the walkthrough's own step 6 shows one refused with a `400` for not being a Cameroon E.164 number                            | `27be744`            |
+| F5  | correctness      | "eleven gates and one advisory report"                                                                                                                                        | Eleven was true at `045db7e` and false four hours later. Rebased onto `e58862a`, `just verify` echoes **twelve**; the sentence now takes its count from the recipe and dates it                                             | `da9ed64`, `7a85ca0` |
+| F6  | correctness      | "**Frontend** — Next.js 15"                                                                                                                                                   | `frontends/apps/*` are `^15.5.25`; `examples/shop`, the app `just demo` builds and a browser opens, is `16.3.4`                                                                                                             | `bc3225c`            |
+| F7  | misleading-claim | `docs/status.md` MVP item 7: "**Nothing here has ever performed a login**", plus a paragraph of reasons it could not be closed by wiring                                      | Seven `/dash/v1` sign-in routes are mounted and `staff_sign_in.rs` drives 13 cases in which every token came from `POST /dash/v1/oauth/token` after a password, a TOTP code and a PKCE exchange (ADR-0017, 2026-09-07)      | `5e620f9`            |
+| F8  | misleading-claim | `docs/flows/dashboard.md` § Status: "**Not built:** login, of any kind"                                                                                                       | Same. True of the _app_, false as written                                                                                                                                                                                   | `5e620f9`            |
+| F9  | correctness      | `docs/runbooks/demo.md` §6: "`/dash/v1` does not exist (Phase 2b, not started)"                                                                                               | `DASH_ROUTES` has carried two reads since 2026-09-06                                                                                                                                                                        | `b270275`            |
+| F10 | correctness      | `docs/flows/README.md`'s index                                                                                                                                                | Omits `dashboard.md` and `customers.md` — 19 of 21 flow documents listed                                                                                                                                                    | `1d14278`            |
+| F11 | correctness      | `AGENTS.md`: "Headless UI for behaviour, framer-motion for motion, vaul for sheets"                                                                                           | None of the three is a dependency of any `package.json` in the tree                                                                                                                                                         | `3a44c73`            |
+| F12 | correctness      | `AGENTS.md` **on master after #84**: "`just verify` is **twelve** gates" followed by a parenthetical naming **eleven**                                                        | `verify-ui` is missing from that list. Fixed in the rebase resolution                                                                                                                                                       | `3a44c73`            |
+| F13 | correctness      | `.xtask/src/main.rs:3` "ten gates"; `justfile:440` "the **eleven** gates passed"; `justfile:1532` "# Everything CI runs, in CI's order"                                       | Twelve, twelve, and `just ci` covers four of CI's six jobs. The first two are literals #84 did not sweep — the justfile said "eleven" eight lines above a recipe echoing "twelve"                                           | `3a44c73`            |
+| F14 | correctness      | `docs/plans/exp17-notes/opus.md:161` cites `#228` with an `issue` cue                                                                                                         | Resolved against `vaam-apps/vpay`, where it 404s. It is `cratestack/cratestack#228`. `just docs-check-citations` failed on this tree before this branch existed                                                             | `e323669`            |
 
 F13's `.xtask` and `CLAUDE.md` entries are claims the implementer's notes did
 not list. They are the same defect as the four items that were listed, they
-were wrong *before* #84 rather than after it, and one of them is in the file
+were wrong _before_ #84 rather than after it, and one of them is in the file
 every agent reads first.
 
 ### The three that matter most
@@ -114,33 +114,33 @@ Everything below was verified against this tree and needed no change. It is
 listed because "the reviewer read it and it was fine" is otherwise
 indistinguishable from "the reviewer did not read it".
 
-| Claim | How it was checked |
-|---|---|
-| The `/v1` table | Transcribed `vpay_api::v1::V1_ROUTES` (`v1/mod.rs:188`) — 13 `V1Route` entries. Every one is in the table and the table invents none. `/v1/customers/{id}` really is `GET`/`POST`/`DELETE`, the only three-method path |
-| `POST /v1/refunds` and `GET /v1/balance` routed nowhere | Neither is in `V1_ROUTES`; `v1/mod.rs:170` states the `/v1/balance` exclusion in as many words |
-| "**nothing in this repository creates a `refunds` row**" | `grep -ni 'insert into refunds'` over the tree returns four hits, all under `backends/tests/` |
-| `mtn_momo::refund` is the one `NotImplemented`, `orange_money` answers `supports_refunds: false` | `cargo xtask verify-status`: "1 unimplemented item(s)". `adapter-mtn-momo/src/lib.rs:692`, `adapter-orange-money/src/lib.rs:327`. MTN's `supports_refunds` stays `true`, and the README does not say otherwise |
-| The boundary test walks the constant | `every_registered_v1_path_answers_401_without_a_token`, `payment_intents.rs:1037` |
-| `/dash/v1`'s "two read routes" | `dash::DASH_ROUTES` has exactly two entries, both `GET` on payment intents |
-| Eight demo services | `demo_services` names eight, and the measured run started exactly those eight |
-| Six `just` variables for a second demo | `demo_project`, `demo_port`, `demo_receiver_port`, `demo_orange_port`, `demo_checkout_port`, `demo_shop_port` are the whole of the `demo_*` block. There is no `demo_mtn_port` and the README does not claim one — `compose.demo.yml` `!reset`s the MTN stub's publication |
-| Six steps, the fourth a table | The measured run printed `[1/6]`…`[6/6]`, and `[4/6]` is the payments table |
-| `just test-e2e`: four specs, 11 tests | `ls cypress/e2e` → 4 specs; `it(` counts 1 + 3 + 4 + 3 = 11. The two `cypress run`s (`e2e:default`, `e2e:framed`) are **disjoint** — `specPattern`/`excludeSpecPattern` split `shop-embedded.cy.ts` off — so 11 is a total, not a half |
-| `just ci` covers four of CI's six jobs | `ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web deny` against `.github/workflows/ci.yml`'s `verify` / `rust` / `deny` / `web` / `e2e (compose)` / `deploy (helm chart)` |
-| No `headlessui`, `framer-motion` or `vaul` | `git grep` over every `package.json`: nothing. `@base-ui/react` 1.8.0, `tailwindcss` 4.3.3, `daisyui` 5.7.28, `storybook` 10.6.0, react 19, cva ^0.7.1 all confirmed. Theme `bumblebee` confirmed in four files |
-| The layout block | `ls` on every directory it names. `backends/crates` (10), `backends/apps` (2), `backends/tests` (3), `frontends/packages` (4), `frontends/apps` (2), `sdks` (4), `examples` (7), `docs`, `deploy/helm/vpay`, `.xtask` — all present, none invented |
-| Prerequisites (Docker, Rust, `just`, `jq`, `curl`, `openssl`) | The four recipes' own `command -v` lists: `gen-demo-keys` (cargo, jq), `gen-e2e-signing-key` (openssl), `demo-up` (docker, curl), `demo-walk` (cargo, curl). Exactly the set the README names |
-| `just up`, `just install`, `just` with no argument | `compose.yml` has three services (postgres, wiremock-mtn, wiremock-orange); `install: install-rust install-node`; `default: @just --list` |
-| The XAF paragraph | `config/application.yml:39` `currency: EUR` for `mtn_momo` with the "MTN's sandbox rejects XAF" comment; `application-sandbox.yml` declares no `currency`, so it inherits; the generated `.e2e/application-demo.yml` puts **both** rails on XAF and says why; `payment_intents.rs:1541` is the confirm-time comparison |
-| `--public-base-url` removed 2026-09-03 | `git log -S` on `vpay-config/src/cli.rs` → `7d62751`, dated `2026-09-03` |
-| The worker paragraph | `run_loop.rs:60` `GAUGE_INTERVAL = 60s`, the `job loop gauge` line at `:980`, lease reaping at boot and on a timer |
-| `--observability-bind` default `0.0.0.0:9090`, `/livez` + `/metrics` off the traffic port | `cli.rs:140`; `observability.rs`'s module docs and `neither_livez_nor_metrics_is_reachable_on_the_traffic_router` |
-| `Idempotency-Key` required on every `POST` | `idempotency.rs:117` |
-| The `stripe-compat` sentence | `lifecycle.compat.test.ts:192` "settles to succeeded, because the worker polls the rail"; `webhooks.compat.test.ts:194` "verifies with stripe.webhooks.constructEvent, and rejects a tampered body"; both under CI's `e2e (compose)` job |
-| "No test inside `sdks/nodejs` itself has ever spoken to a vpay" | Nine `*.test.ts` files; the only server any of them starts is `src/testing/test-server.ts`, `createServer` from `node:http` |
-| SDK parity "machine-checked in both directions" | `docs/sdks/parity.md` § "The gate reads this file **and** the SDKs, since 2026-09-06"; the gate reported 407 proving tests over 23 rows |
-| rustls only, mimalloc, musl → scratch | `deny.toml:150-152` bans `openssl`, `openssl-sys`, `native-tls`; `MiMalloc` in both `main.rs`; `verify-toolchain` confirms the Dockerfile pin |
-| The banner's "what has never happened" | `docs/flows/deployment.md:415` "No cluster has ever run this — not a real one, not kind"; `docs/flows/dashboard.md` § Status for the pages; no `/metrics` scrape |
+| Claim                                                                                            | How it was checked                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The `/v1` table                                                                                  | Transcribed `vpay_api::v1::V1_ROUTES` (`v1/mod.rs:188`) — 13 `V1Route` entries. Every one is in the table and the table invents none. `/v1/customers/{id}` really is `GET`/`POST`/`DELETE`, the only three-method path                                                                                                 |
+| `POST /v1/refunds` and `GET /v1/balance` routed nowhere                                          | Neither is in `V1_ROUTES`; `v1/mod.rs:170` states the `/v1/balance` exclusion in as many words                                                                                                                                                                                                                         |
+| "**nothing in this repository creates a `refunds` row**"                                         | `grep -ni 'insert into refunds'` over the tree returns four hits, all under `backends/tests/`                                                                                                                                                                                                                          |
+| `mtn_momo::refund` is the one `NotImplemented`, `orange_money` answers `supports_refunds: false` | `cargo xtask verify-status`: "1 unimplemented item(s)". `adapter-mtn-momo/src/lib.rs:692`, `adapter-orange-money/src/lib.rs:327`. MTN's `supports_refunds` stays `true`, and the README does not say otherwise                                                                                                         |
+| The boundary test walks the constant                                                             | `every_registered_v1_path_answers_401_without_a_token`, `payment_intents.rs:1037`                                                                                                                                                                                                                                      |
+| `/dash/v1`'s "two read routes"                                                                   | `dash::DASH_ROUTES` has exactly two entries, both `GET` on payment intents                                                                                                                                                                                                                                             |
+| Eight demo services                                                                              | `demo_services` names eight, and the measured run started exactly those eight                                                                                                                                                                                                                                          |
+| Six `just` variables for a second demo                                                           | `demo_project`, `demo_port`, `demo_receiver_port`, `demo_orange_port`, `demo_checkout_port`, `demo_shop_port` are the whole of the `demo_*` block. There is no `demo_mtn_port` and the README does not claim one — `compose.demo.yml` `!reset`s the MTN stub's publication                                             |
+| Six steps, the fourth a table                                                                    | The measured run printed `[1/6]`…`[6/6]`, and `[4/6]` is the payments table                                                                                                                                                                                                                                            |
+| `just test-e2e`: four specs, 11 tests                                                            | `ls cypress/e2e` → 4 specs; `it(` counts 1 + 3 + 4 + 3 = 11. The two `cypress run`s (`e2e:default`, `e2e:framed`) are **disjoint** — `specPattern`/`excludeSpecPattern` split `shop-embedded.cy.ts` off — so 11 is a total, not a half                                                                                 |
+| `just ci` covers four of CI's six jobs                                                           | `ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web deny` against `.github/workflows/ci.yml`'s `verify` / `rust` / `deny` / `web` / `e2e (compose)` / `deploy (helm chart)`                                                                                                               |
+| No `headlessui`, `framer-motion` or `vaul`                                                       | `git grep` over every `package.json`: nothing. `@base-ui/react` 1.8.0, `tailwindcss` 4.3.3, `daisyui` 5.7.28, `storybook` 10.6.0, react 19, cva ^0.7.1 all confirmed. Theme `bumblebee` confirmed in four files                                                                                                        |
+| The layout block                                                                                 | `ls` on every directory it names. `backends/crates` (10), `backends/apps` (2), `backends/tests` (3), `frontends/packages` (4), `frontends/apps` (2), `sdks` (4), `examples` (7), `docs`, `deploy/helm/vpay`, `.xtask` — all present, none invented                                                                     |
+| Prerequisites (Docker, Rust, `just`, `jq`, `curl`, `openssl`)                                    | The four recipes' own `command -v` lists: `gen-demo-keys` (cargo, jq), `gen-e2e-signing-key` (openssl), `demo-up` (docker, curl), `demo-walk` (cargo, curl). Exactly the set the README names                                                                                                                          |
+| `just up`, `just install`, `just` with no argument                                               | `compose.yml` has three services (postgres, wiremock-mtn, wiremock-orange); `install: install-rust install-node`; `default: @just --list`                                                                                                                                                                              |
+| The XAF paragraph                                                                                | `config/application.yml:39` `currency: EUR` for `mtn_momo` with the "MTN's sandbox rejects XAF" comment; `application-sandbox.yml` declares no `currency`, so it inherits; the generated `.e2e/application-demo.yml` puts **both** rails on XAF and says why; `payment_intents.rs:1541` is the confirm-time comparison |
+| `--public-base-url` removed 2026-09-03                                                           | `git log -S` on `vpay-config/src/cli.rs` → `7d62751`, dated `2026-09-03`                                                                                                                                                                                                                                               |
+| The worker paragraph                                                                             | `run_loop.rs:60` `GAUGE_INTERVAL = 60s`, the `job loop gauge` line at `:980`, lease reaping at boot and on a timer                                                                                                                                                                                                     |
+| `--observability-bind` default `0.0.0.0:9090`, `/livez` + `/metrics` off the traffic port        | `cli.rs:140`; `observability.rs`'s module docs and `neither_livez_nor_metrics_is_reachable_on_the_traffic_router`                                                                                                                                                                                                      |
+| `Idempotency-Key` required on every `POST`                                                       | `idempotency.rs:117`                                                                                                                                                                                                                                                                                                   |
+| The `stripe-compat` sentence                                                                     | `lifecycle.compat.test.ts:192` "settles to succeeded, because the worker polls the rail"; `webhooks.compat.test.ts:194` "verifies with stripe.webhooks.constructEvent, and rejects a tampered body"; both under CI's `e2e (compose)` job                                                                               |
+| "No test inside `sdks/nodejs` itself has ever spoken to a vpay"                                  | Nine `*.test.ts` files; the only server any of them starts is `src/testing/test-server.ts`, `createServer` from `node:http`                                                                                                                                                                                            |
+| SDK parity "machine-checked in both directions"                                                  | `docs/sdks/parity.md` § "The gate reads this file **and** the SDKs, since 2026-09-06"; the gate reported 407 proving tests over 23 rows                                                                                                                                                                                |
+| rustls only, mimalloc, musl → scratch                                                            | `deny.toml:150-152` bans `openssl`, `openssl-sys`, `native-tls`; `MiMalloc` in both `main.rs`; `verify-toolchain` confirms the Dockerfile pin                                                                                                                                                                          |
+| The banner's "what has never happened"                                                           | `docs/flows/deployment.md:415` "No cluster has ever run this — not a real one, not kind"; `docs/flows/dashboard.md` § Status for the pages; no `/metrics` scrape                                                                                                                                                       |
 
 ---
 
@@ -162,18 +162,18 @@ just demo_project=exp31-review demo_port=18080 demo_receiver_port=18083 \
 Six steps printed, `[4/6]` the payments table. Every row of the README's
 table reproduced:
 
-| # | Rail | Outcome | `last_payment_error.code` | Event |
-|---|---|---|---|---|
-| 1 | `mtn_momo` | `succeeded` after **7 polls** | — | `payment_intent.succeeded` |
-| 2 | `mtn_momo` | `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
-| 3 | `mtn_momo` | `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-| 4 | `orange_money` | `requires_action` → `succeeded` | — | `payment_intent.succeeded` |
-| 5 | `orange_money` | `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-| 6 | `orange_money` | `requires_payment_method` | `provider_error` | `payment_intent.payment_failed` |
+| #   | Rail           | Outcome                         | `last_payment_error.code` | Event                           |
+| --- | -------------- | ------------------------------- | ------------------------- | ------------------------------- |
+| 1   | `mtn_momo`     | `succeeded` after **7 polls**   | —                         | `payment_intent.succeeded`      |
+| 2   | `mtn_momo`     | `requires_payment_method`       | `insufficient_funds`      | `payment_intent.payment_failed` |
+| 3   | `mtn_momo`     | `requires_payment_method`       | `payer_timeout`           | `payment_intent.payment_failed` |
+| 4   | `orange_money` | `requires_action` → `succeeded` | —                         | `payment_intent.succeeded`      |
+| 5   | `orange_money` | `requires_payment_method`       | `payer_timeout`           | `payment_intent.payment_failed` |
+| 6   | `orange_money` | `requires_payment_method`       | `provider_error`          | `payment_intent.payment_failed` |
 
-Closing line: *"all six steps behaved as expected — 6 payments on 2 rails,
+Closing line: _"all six steps behaved as expected — 6 payments on 2 rails,
 every one settled by the worker asking the rail and evidenced by a signed
-webhook"*. Steps 5 and 6 (two Checkout Sessions, both left `open` and
+webhook"_. Steps 5 and 6 (two Checkout Sessions, both left `open` and
 unpaid; three account-holder lookups) also matched the README.
 
 So **"six payments on both rails" is measured, not transcribed** — and F4 is
@@ -193,17 +193,17 @@ path, and `verify-migrations` passes on the rebased head.
 `.nvmrc` Node, `CARGO_BUILD_JOBS=4`, rootless `DOCKER_HOST`, on the rebased
 branch.
 
-| Gate | Result |
-|---|---|
-| `just verify` | **exit 0** — "the **twelve** gates above passed; the verify-docs report is advisory" |
-| `cargo xtask verify-links` | ok — 961 repository link(s) in 178 tracked markdown file(s) resolve |
-| `cargo xtask verify-status` | ok — 1 unimplemented item, declared and still in shipping code |
-| `cargo xtask verify-no-mocks` | ok |
-| `cargo xtask verify-sdk-parity` | ok — 407 proving tests, 35 dated gaps, 19 methods over 23 rows |
-| `cargo xtask verify-migrations` | ok — 35 migration files all match `MANIFEST.sha256` |
-| `just verify-ignored` | 0 ignored (expected 0), 46 test binaries (expected 46), **1563** total (minimum 1080) |
-| `just docs-check-citations` | **ok — exit 0**, 55 unique ids over 178 files, 0 MISS. It exited 1 with 1 MISS before F14's fix, which is the mutation evidence that the gate still checks bare ids |
-| `just --list`, `just --evaluate` | parse (the justfile edits are comments) |
+| Gate                             | Result                                                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                    | **exit 0** — "the **twelve** gates above passed; the verify-docs report is advisory"                                                                                |
+| `cargo xtask verify-links`       | ok — 961 repository link(s) in 178 tracked markdown file(s) resolve                                                                                                 |
+| `cargo xtask verify-status`      | ok — 1 unimplemented item, declared and still in shipping code                                                                                                      |
+| `cargo xtask verify-no-mocks`    | ok                                                                                                                                                                  |
+| `cargo xtask verify-sdk-parity`  | ok — 407 proving tests, 35 dated gaps, 19 methods over 23 rows                                                                                                      |
+| `cargo xtask verify-migrations`  | ok — 35 migration files all match `MANIFEST.sha256`                                                                                                                 |
+| `just verify-ignored`            | 0 ignored (expected 0), 46 test binaries (expected 46), **1563** total (minimum 1080)                                                                               |
+| `just docs-check-citations`      | **ok — exit 0**, 55 unique ids over 178 files, 0 MISS. It exited 1 with 1 MISS before F14's fix, which is the mutation evidence that the gate still checks bare ids |
+| `just --list`, `just --evaluate` | parse (the justfile edits are comments)                                                                                                                             |
 
 One environment note, not a regression: `check-schema` prints
 `WARNING — cratestack 0.11.1 on PATH, this repository pins 0.12.0` and then
@@ -232,7 +232,7 @@ on a per-gate line.
   while checking F4: `Steering::Msisdn`'s doc comment says "a documentation
   number in the `2376000000xx` block" (the values below it are not), and
   `ACCOUNT_HOLDER_CASES`' says "`237600000100` is the same number step 4's
-  *settling* MTN outcome uses" (step 4's settling outcome uses
+  _settling_ MTN outcome uses" (step 4's settling outcome uses
   `237600000ce0`). Source changes in a file this brief did not open; the
   README no longer repeats either.
 - **`just test-e2e`.** Not re-run. The claim it backs — a real browser has

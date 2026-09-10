@@ -7,7 +7,7 @@ BuildKit v0.32.2.
 
 **Measurement hygiene.** Every build in this document ran on a purpose-made
 `docker-container` builder named `vpay-exp8-opus`, created for this task and
-removed after it. The default builder was deliberately *not* used and never
+removed after it. The default builder was deliberately _not_ used and never
 pruned: another agent was building on this host at the same time, and
 `docker builder prune -f` on the shared builder would have destroyed its
 cache and contaminated both sets of numbers. Cold means
@@ -46,12 +46,12 @@ attacks.
 
 The canonical three-stage cargo-chef shape, adapted to this file's rules.
 
-| Stage | Content |
-|---|---|
-| `chef` | `FROM rust:1.95.0-alpine3.22` (tag unchanged), `apk add --no-cache musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78` |
-| `planner` | `FROM chef`, the workspace COPYs, `cargo chef prepare --recipe-path recipe.json` |
-| `builder` | `FROM chef`, `COPY .cargo`, `COPY --from=planner recipe.json`, **cook**, then `ARG`/`ENV VPAY_GIT_SHA`, the workspace COPYs, the existing `cargo build` and `cp` to `/out` |
-| `server`, `worker` | untouched — still `FROM scratch`, still `USER 65532:65532` |
+| Stage              | Content                                                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chef`             | `FROM rust:1.95.0-alpine3.22` (tag unchanged), `apk add --no-cache musl-dev pkgconfig`, `cargo install cargo-chef --locked --version 0.1.78`                               |
+| `planner`          | `FROM chef`, the workspace COPYs, `cargo chef prepare --recipe-path recipe.json`                                                                                           |
+| `builder`          | `FROM chef`, `COPY .cargo`, `COPY --from=planner recipe.json`, **cook**, then `ARG`/`ENV VPAY_GIT_SHA`, the workspace COPYs, the existing `cargo build` and `cp` to `/out` |
+| `server`, `worker` | untouched — still `FROM scratch`, still `USER 65532:65532`                                                                                                                 |
 
 ### The pin
 
@@ -68,12 +68,12 @@ this host. That cost is paid once per change to the base image or the pin.
 
 1. **The cook takes the same flags as the build.** `--profile dist`,
    `--target "$(rustc -vV | sed -n 's/^host: //p')"`,
-   `-p vpay-server -p vpay-worker-bin`, and `.cargo/` is copied in *before*
+   `-p vpay-server -p vpay-worker-bin`, and `.cargo/` is copied in _before_
    the cook so `+crt-static` applies. A cook under different rustflags or a
    different profile writes fingerprints the real build rejects: it would
    cache nothing and cost 68 s per build, silently.
 
-   `--locked` is *not* passed to `cook`. The recipe already carries the
+   `--locked` is _not_ passed to `cook`. The recipe already carries the
    resolved `Cargo.lock`, and cook rewrites the workspace's manifests into a
    skeleton, which `--locked` would reject.
 
@@ -222,7 +222,7 @@ $ docker image inspect vpay-exp8-opus:chef-server     --format '{{json .RootFS.L
 ```
 
 Two layers before, two layers after; identical size; the `config/` layer is
-the *same digest* in both. The binary layer differs because the two binaries
+the _same digest_ in both. The binary layer differs because the two binaries
 are different builds (the baseline image was the one built from the touched
 source) — this is not a reproducible-build claim and nothing here tests one.
 
@@ -254,13 +254,13 @@ vpay-worker-bin 0.1.0
 
 ### Summary table
 
-| | one-stage (before) | cargo-chef (after) |
-|---|---|---|
-| cold build | 254 s | 238 s — **retracted, see above; matched pairs give 193/256 and 212/248** |
-| source touched | 260 s | **125 s** |
-| `VPAY_GIT_SHA` changed | (~260 s by construction: `ENV` was the first builder instruction) | **116 s** |
-| `--target worker` after a `server` build | full rebuild | 1 s |
-| `vpay-server` image | 15.9 MB, 2 layers | 15.9 MB, 2 layers |
+|                                          | one-stage (before)                                                | cargo-chef (after)                                                       |
+| ---------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| cold build                               | 254 s                                                             | 238 s — **retracted, see above; matched pairs give 193/256 and 212/248** |
+| source touched                           | 260 s                                                             | **125 s**                                                                |
+| `VPAY_GIT_SHA` changed                   | (~260 s by construction: `ENV` was the first builder instruction) | **116 s**                                                                |
+| `--target worker` after a `server` build | full rebuild                                                      | 1 s                                                                      |
+| `vpay-server` image                      | 15.9 MB, 2 layers                                                 | 15.9 MB, 2 layers                                                        |
 
 ### One result from `release-dry-run` that disagrees with the isolated runs
 
@@ -292,13 +292,13 @@ observation. It does not affect Builds A/B/C, which ran on an isolated
 builder with nothing else on it.
 
 > **Explained in review, 2026-09-05, and it is not a defect.** `DONE 0.0s` is
-> simply what BuildKit prints for a `COPY` that *missed* the cache and then
+> simply what BuildKit prints for a `COPY` that _missed_ the cache and then
 > took no measurable time; `CACHED` requires a hit. Build B above shows the
 > same output for `COPY backends` at the moment its content was known to have
 > changed — and once that `COPY` misses, every later `COPY` in the stage
 > misses with it, which is the rest of the log. So the observation says the
 > default builder's cached entry for `COPY backends` had been written from a
-> *different* `backends/` tree, which is what one would expect given the
+> _different_ `backends/` tree, which is what one would expect given the
 > cache-probe line that was being added and reverted around those runs.
 > `just release-dry-run` re-run on the committed tree, on that same default
 > builder, logs `COPY backends ./backends  CACHED` and finishes in 5 s.
@@ -308,12 +308,12 @@ builder with nothing else on it.
 `[profile.dist]` inherits `release`, which is `lto = "fat"` with
 `codegen-units = 1`. A fat-LTO link re-consumes every dependency's LLVM IR at
 link time, so the final `cargo build` costs ~2 minutes however much of the
-graph is already compiled. cargo-chef removes the *frontend* compilation of
+graph is already compiled. cargo-chef removes the _frontend_ compilation of
 ~317 packages (75 s of cook) and cannot remove the LTO link. A project on
 thin or no LTO would see a much larger ratio. Nothing here trades away the
 LTO, and it is not this task's to reopen.
 
-> **Corrected in review, 2026-09-05:** the fat LTO is *not* ADR-0004's
+> **Corrected in review, 2026-09-05:** the fat LTO is _not_ ADR-0004's
 > decision. ADR-0004 is about musl and mimalloc and says nothing about LTO;
 > no ADR mentions it, and the `lto = "fat"` line in `[profile.release]`
 > carries no comment. It is an unrecorded choice, which makes "should
@@ -322,32 +322,32 @@ LTO, and it is not this task's to reopen.
 
 ## Gates
 
-| Gate | Result |
-|---|---|
-| `just verify` | ok — five gates passed, `verify-docs` report advisory |
-| `just fmt-check` | `cargo fmt --all -- --check`, exit 0 (no Rust source was changed) |
-| `just docs-check` | see the commit; `verify-status` + `verify-links` |
-| `just release-dry-run` | **exit 0.** Four images for `linux/amd64` (`vpay-server` 15.9 MB, `vpay-worker` 12.7 MB, `vpay-dashboard` 344 MB, `vpay-checkout` 344 MB), then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `23 resources … Valid: 23, Invalid: 0, Errors: 0, Skipped: 0`. Ran on the *shared default* builder (the recipe drives `docker buildx build` directly), so it is not one of the controlled measurements above |
-| `actionlint` (v at `/home/selast/go/bin/actionlint`) on `.github/workflows/release.yml` | exit 0, clean |
+| Gate                                                                                    | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                                                                           | ok — five gates passed, `verify-docs` report advisory                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `just fmt-check`                                                                        | `cargo fmt --all -- --check`, exit 0 (no Rust source was changed)                                                                                                                                                                                                                                                                                                                                                                                               |
+| `just docs-check`                                                                       | see the commit; `verify-status` + `verify-links`                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `just release-dry-run`                                                                  | **exit 0.** Four images for `linux/amd64` (`vpay-server` 15.9 MB, `vpay-worker` 12.7 MB, `vpay-dashboard` 344 MB, `vpay-checkout` 344 MB), then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `23 resources … Valid: 23, Invalid: 0, Errors: 0, Skipped: 0`. Ran on the _shared default_ builder (the recipe drives `docker buildx build` directly), so it is not one of the controlled measurements above |
+| `actionlint` (v at `/home/selast/go/bin/actionlint`) on `.github/workflows/release.yml` | exit 0, clean                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 No Rust source file was changed by this task. The only source edit was the
 comment line added and reverted twice as a cache probe.
 
 ## What I did not do
 
-* **No arm64 build.** This host is amd64 and the release workflow builds
+- **No arm64 build.** This host is amd64 and the release workflow builds
   arm64 on a native `ubuntu-24.04-arm` runner; reproducing it here means
   QEMU, which is the path step-6 decision (8) exists to avoid. The cook
   reads its target from `rustc -vV` exactly as the build does, so the
   host-triple invariant is preserved by construction — but preserved by
   construction is not measured.
-* **No GitHub Actions run.** Nothing was pushed. The `type=gha` cache
+- **No GitHub Actions run.** Nothing was pushed. The `type=gha` cache
   behaviour above is inference plus a local mutation, not a measured
   cache-hit rate.
-* **No repeat runs.** One sample per row, on a busy host.
-* **No change to `frontends/Dockerfile`.** It has its own layer story
+- **No repeat runs.** One sample per row, on a busy host.
+- **No change to `frontends/Dockerfile`.** It has its own layer story
   (pnpm) and was out of scope.
-* **`cargo chef cook --check` / `--clippy`** were not used; CI's Rust job
+- **`cargo chef cook --check` / `--clippy`** were not used; CI's Rust job
   builds outside Docker and this file exists to produce release binaries.
 
 ## Rebased onto `2ce13d0` (2026-09-05)
@@ -356,7 +356,7 @@ The branch was rebased from `a81b6b6` onto `2ce13d0`, keeping all twelve
 commits and their identities. `docs/status.md` conflicted twice — on the
 first commit and on the last — and both conflicts had the same shape: git
 widened the hunk to cover two adjacent table rows, so the marked region
-contained one row each side had changed *and* one row only the other side
+contained one row each side had changed _and_ one row only the other side
 had changed. Taking either side wholesale would have been wrong, and
 concatenating both sides would have duplicated two rows. Resolved per row:
 the `backends/Dockerfile` row from this branch (it is a superset — master
@@ -373,13 +373,13 @@ byte-identical content, as its net diff against `a81b6b6` did, and
 The re-run on the rebased tree, same host, `linux/amd64`, on a dedicated
 `docker-container` builder (`vpay-exp8-land`) created fresh for the run:
 
-| gate | result |
-| --- | --- |
-| `just verify` | exit 0 — **seven** gates now, not the five this file's table above records: master has since added `verify-npm-scope` and `check-schema`. `verify-links` reports 691 links in 121 files (this branch adds two notes files to master's 119/684) |
-| `just docs-check` | exit 0 |
-| `just fmt-check` | exit 0 (no Rust source changed) |
-| `actionlint .github/workflows/release.yml` | exit 0, clean |
-| `just release-dry-run` | **exit 0**, 339 s wall for all four images from a cold builder, then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `Valid: 23, Invalid: 0, Errors: 0, Skipped: 0` |
+| gate                                       | result                                                                                                                                                                                                                                         |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                              | exit 0 — **seven** gates now, not the five this file's table above records: master has since added `verify-npm-scope` and `check-schema`. `verify-links` reports 691 links in 121 files (this branch adds two notes files to master's 119/684) |
+| `just docs-check`                          | exit 0                                                                                                                                                                                                                                         |
+| `just fmt-check`                           | exit 0 (no Rust source changed)                                                                                                                                                                                                                |
+| `actionlint .github/workflows/release.yml` | exit 0, clean                                                                                                                                                                                                                                  |
+| `just release-dry-run`                     | **exit 0**, 339 s wall for all four images from a cold builder, then `helm-check`: 17 guards all fired by name, `/v1` `limit-rps=20` / token `limit-rps=5`, kubeconform `Valid: 23, Invalid: 0, Errors: 0, Skipped: 0`                         |
 
 Both `scratch` images were then rebuilt with `--load` from the rebased tree
 and **run**: `vpay-server --version` → `vpay-server 0.1.0` and

@@ -18,13 +18,13 @@ the real output of a real run and a "what this proves / what it does not".
 `cargo run -p merchant-demo` on its own works too, against an already-running
 vpay:
 
-| Variable | Default |
-|---|---|
-| `VPAY_BASE_URL` | `http://localhost:8080` |
-| `VPAY_CLIENT_ID` | `demo-merchant` |
-| `VPAY_PRIVATE_KEY_FILE` | `.e2e/demo-merchant/oauth-signing-key.pem` |
-| `VPAY_RECEIVER_URL` | `http://localhost:8083` |
-| `MERCHANT_WEBHOOK_SECRET` | `wiremock-stub-webhook-secret-32-bytes` |
+| Variable                  | Default                                    |
+| ------------------------- | ------------------------------------------ |
+| `VPAY_BASE_URL`           | `http://localhost:8080`                    |
+| `VPAY_CLIENT_ID`          | `demo-merchant`                            |
+| `VPAY_PRIVATE_KEY_FILE`   | `.e2e/demo-merchant/oauth-signing-key.pem` |
+| `VPAY_RECEIVER_URL`       | `http://localhost:8083`                    |
+| `MERCHANT_WEBHOOK_SECRET` | `wiremock-stub-webhook-secret-32-bytes`    |
 
 Exits `0` only when all four steps behave as expected — and step 4 is six
 payments, every one of which must reach the exact status, `failure_code` and
@@ -46,14 +46,14 @@ not.
 
 ## The outcome table
 
-| # | Rail | Outcome | Steered by | After confirm | Settles to | `failure_code` | Event |
-|---|---|---|---|---|---|---|---|
-| 1 | `mtn_momo` | the payer approves on their handset | MSISDN `237600000ce0` | `processing` | `succeeded` | — | `payment_intent.succeeded` |
-| 2 | `mtn_momo` | the payer has no balance | MSISDN `237600000f01` | `processing` | `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
-| 3 | `mtn_momo` | the prompt expires unanswered | MSISDN `237600000f02` | `processing` | `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-| 4 | `orange_money` | the payer completes the hosted page | 5000 XAF | `requires_action` | `succeeded` | — | `payment_intent.succeeded` |
-| 5 | `orange_money` | the hosted page expires | 5001 XAF | `requires_action` | `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-| 6 | `orange_money` | the rail refuses, reason undocumented | 5002 XAF | `requires_action` | `requires_payment_method` | `provider_error` | `payment_intent.payment_failed` |
+| #   | Rail           | Outcome                               | Steered by            | After confirm     | Settles to                | `failure_code`       | Event                           |
+| --- | -------------- | ------------------------------------- | --------------------- | ----------------- | ------------------------- | -------------------- | ------------------------------- |
+| 1   | `mtn_momo`     | the payer approves on their handset   | MSISDN `237600000ce0` | `processing`      | `succeeded`               | —                    | `payment_intent.succeeded`      |
+| 2   | `mtn_momo`     | the payer has no balance              | MSISDN `237600000f01` | `processing`      | `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
+| 3   | `mtn_momo`     | the prompt expires unanswered         | MSISDN `237600000f02` | `processing`      | `requires_payment_method` | `payer_timeout`      | `payment_intent.payment_failed` |
+| 4   | `orange_money` | the payer completes the hosted page   | 5000 XAF              | `requires_action` | `succeeded`               | —                    | `payment_intent.succeeded`      |
+| 5   | `orange_money` | the hosted page expires               | 5001 XAF              | `requires_action` | `requires_payment_method` | `payer_timeout`      | `payment_intent.payment_failed` |
+| 6   | `orange_money` | the rail refuses, reason undocumented | 5002 XAF              | `requires_action` | `requires_payment_method` | `provider_error`     | `payment_intent.payment_failed` |
 
 There is no `failed` status: a rail-reported failure returns the intent to
 `requires_payment_method` carrying `last_payment_error`
@@ -78,7 +78,7 @@ column:
   (`backends/tests/conformance/wiremock/orange/mappings/demo-outcomes.json`).
 
 **The MTN half is order-sensitive**, and the demo is what keeps it honest: its
-scenarios are armed by a submit and answer the *next* status query whatever
+scenarios are armed by a submit and answer the _next_ status query whatever
 reference it carries, so the table is driven strictly sequentially — each
 charge reaches a terminal state and has its webhook verified before the next
 confirm is sent. Do not parallelise it without re-reading those mapping files.
@@ -95,7 +95,7 @@ something about a rail nobody has called.
 
 **Create and retrieve.** A real row in the demo stack's database, filed under
 the demo merchant's tenant and thrown away by `just demo-down`. The retrieve is
-not decoration: it is what proves the create *persisted* rather than merely
+not decoration: it is what proves the create _persisted_ rather than merely
 rendered an object.
 
 **Confirm.** The request is real all the way down — vpay resolves the adapter,
@@ -111,7 +111,7 @@ design), so a status that was rendered but never committed fails the run.
 **Settlement.** The demo polls `GET /v1/payment_intents/{id}` — the merchant's
 own fallback — until the intent leaves its post-confirm status. Nothing here
 fakes an approval: the `vpay-worker` container claims the `poll_charge` job the
-confirm committed *in the same transaction as the charge*, asks the stub over
+confirm committed _in the same transaction as the charge_, asks the stub over
 HTTP, and either goes back on the ladder or commits the charge, the intent and
 one event together. The demo asserts the exact `last_payment_error.code`, not
 merely "it failed" — the taxonomy code
@@ -121,7 +121,7 @@ decline and showing the adapter's mapping table working.
 
 **The webhook.** The demo polls the `wiremock-webhook` receiver's own request
 journal (`GET /__admin/requests` — the same URL you can `curl`) for a POST that
-carries a `Vpay-Event-Id` *and* whose body names this payment's intent, waits
+carries a `Vpay-Event-Id` _and_ whose body names this payment's intent, waits
 up to 30 seconds, then checks `Stripe-Signature` carries the same value as
 `Vpay-Signature` and verifies the recorded bytes with
 `vpay_sdk::webhooks::verify` — the same call a merchant's handler makes. It
@@ -158,7 +158,7 @@ value — never a code branch (ADR-0003).
 - **A payer actually visiting Orange's hosted page.** Outcome 4 prints the URL
   a merchant would send a browser to, and the stub then answers the status
   query as though the payer had completed it. Nothing here opens that URL.
-- **A rail calling *us*.** There is no `POST /provider/{code}/callback`, so
+- **A rail calling _us_.** There is no `POST /provider/{code}/callback`, so
   every settlement above came from vpay asking rather than from being told. The
   demo prints that sentence at the end of the table, and it is the one claim in
   the file that no assertion backs — precisely because it is a claim about

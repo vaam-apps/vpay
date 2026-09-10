@@ -10,18 +10,18 @@ environment variable, with an explicit flag beating its env var. The two
 binaries share one `CommonArgs` (`#[command(flatten)]`), so they cannot drift
 on a flag's name, env var, or default.
 
-| Flag | Env var | Default |
-|---|---|---|
-| `--bind` (`vpay-server` only) | `VPAY_BIND` | `0.0.0.0:8080` |
-| `--database-url` | `DATABASE_URL` | none |
-| `--profile` | `VPAY_PROFILE` | `sandbox` |
-| `--config` | `VPAY_CONFIG` | none |
-| `--observability-bind` | `VPAY_OBSERVABILITY_BIND` | `0.0.0.0:9090` |
-| `--oauth-signing-key-file` (`vpay-server` only) | `VPAY_OAUTH_SIGNING_KEY_FILE` | none |
-| `--log-filter` | `RUST_LOG` | `info` |
-| `--log-format` (`json`\|`text`) | `VPAY_LOG_FORMAT` | `json` |
-| `--shutdown-grace-seconds` | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25` |
-| `--worker-concurrency` (`worker` mode only) | `VPAY_WORKER_CONCURRENCY` | `4` |
+| Flag                                            | Env var                       | Default        |
+| ----------------------------------------------- | ----------------------------- | -------------- |
+| `--bind` (`vpay-server` only)                   | `VPAY_BIND`                   | `0.0.0.0:8080` |
+| `--database-url`                                | `DATABASE_URL`                | none           |
+| `--profile`                                     | `VPAY_PROFILE`                | `sandbox`      |
+| `--config`                                      | `VPAY_CONFIG`                 | none           |
+| `--observability-bind`                          | `VPAY_OBSERVABILITY_BIND`     | `0.0.0.0:9090` |
+| `--oauth-signing-key-file` (`vpay-server` only) | `VPAY_OAUTH_SIGNING_KEY_FILE` | none           |
+| `--log-filter`                                  | `RUST_LOG`                    | `info`         |
+| `--log-format` (`json`\|`text`)                 | `VPAY_LOG_FORMAT`             | `json`         |
+| `--shutdown-grace-seconds`                      | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25`           |
+| `--worker-concurrency` (`worker` mode only)     | `VPAY_WORKER_CONCURRENCY`     | `4`            |
 
 `--observability-bind` is on **both** binaries — the worker had no HTTP
 listener at all before it — and serves exactly two paths, `GET /livez` and
@@ -29,7 +29,7 @@ listener at all before it — and serves exactly two paths, `GET /livez` and
 is fronted by an Ingress, and `/metrics` names every rail this deployment
 talks to, every route pattern it serves and every error code it has produced.
 The chart's NetworkPolicy admits 9090 from the monitoring namespace only, and
-it can express that *because* the two are different ports.
+it can express that _because_ the two are different ports.
 
 `--version` reports the workspace version (`0.1.0`). Run
 `cargo run -p vpay-server -- --help` to see the live flag set — that is more
@@ -42,7 +42,7 @@ blast radius for no capability, and `the_worker_is_not_handed_the_signing_key`
 pins that. It is a **file**, never an env value, because that is how a
 Kubernetes Secret reaches a pod; `cargo xtask gen-signing-key --out <dir>`
 generates one, and `just gen-e2e-signing-key` does the openssl equivalent
-for the compose stack. The *path* is deliberately visible in `Debug` output
+for the compose stack. The _path_ is deliberately visible in `Debug` output
 (`the_signing_key_path_stays_visible_in_debug_output`) — a path is not a
 secret, and "which file did it try" is the first thing an operator needs —
 while the file's contents never enter the CLI types at all.
@@ -54,7 +54,7 @@ It had been accepted and parsed and read by nothing since it was added, which
 is easy to get wrong now that `/v1/oauth` publishes an issuer: the issuer is
 `vpay_api::op::issuer_for(&config)`, which reads
 **`deployment.public_base_url` from the YAML config file**, and that is
-unchanged. What went away is the *flag* and its `VPAY_PUBLIC_BASE_URL`
+unchanged. What went away is the _flag_ and its `VPAY_PUBLIC_BASE_URL`
 variable — the second, inert spelling of one idea.
 
 The two halves of that removal behave differently, and the difference matters
@@ -70,8 +70,8 @@ to whoever upgrades (`backends/crates/vpay-config/src/cli.rs`, the
   the same thing it did before the removal (it was inert then too), so nothing
   breaks — but nothing tells anyone either. Nothing in this repository sets it
   (`.env.example` dropped its row in the same change).
-`--profile` only ever selects a config *file name*, per the "no environment
-branching" rule; it is never matched on to change behaviour.
+  `--profile` only ever selects a config _file name_, per the "no environment
+  branching" rule; it is never matched on to change behaviour.
 
 `--shutdown-grace-seconds` is a partial exception: `vpay-server` actually uses
 it to bound how long it waits for in-flight requests to drain after a
@@ -79,17 +79,17 @@ shutdown signal, via `serve_with_bounded_drain` in
 `backends/apps/vpay-server/src/main.rs` — it races the drain against a clock
 of that length and exits non-zero if the clock wins. `vpay-worker-bin` accepts
 and logs the same flag but does nothing with it; there is no drain to bound
-because there is no job loop yet. Neither binary's handling of the *timeout*
+because there is no job loop yet. Neither binary's handling of the _timeout_
 case is covered by a test today — see [../status.md](../status.md).
 
 ## There is no sandbox mode
 
 Two statements that look contradictory and are not:
 
-- **A sandbox *environment* — yes.** Two deployments: one talking to rail
+- **A sandbox _environment_ — yes.** Two deployments: one talking to rail
   sandboxes and WireMock, one talking to real rails. Each has its own config
   file and its own database.
-- **A sandbox *mode* — no.** No `if (sandbox)`, no code path that exists only
+- **A sandbox _mode_ — no.** No `if (sandbox)`, no code path that exists only
   outside production, no bean wired differently.
 
 A profile selects a **configuration file**. It must never select a **code path**.
@@ -98,21 +98,21 @@ Same binary, same image digest, different YAML and different database.
 Because Spring Boot is the idiom being borrowed, the trap it makes easy is worth
 naming: `@Profile("!prod")`, `@ConditionalOnProperty` on business logic and
 profile-specific bean overrides are all `if (sandbox)` wearing a
-dependency-injection costume. Profiles may select *values*; never *beans that
-behave differently*.
+dependency-injection costume. Profiles may select _values_; never _beans that
+behave differently_.
 
 ## Boot sequence
 
 **Steps 1–4 are implemented and wired into both binaries; the config hash
-half of step 4 is not.** *Updated 2026-09-03 (Step 2); this paragraph said
-"step 4 is not" until then.*
+half of step 4 is not.** _Updated 2026-09-03 (Step 2); this paragraph said
+"step 4 is not" until then._
 `vpay_config::Config::load` implements the YAML layering, the `${}`
 resolution and the validation rules below, and both `vpay-server` and
 `vpay-worker-bin` call it before opening a database connection — a missing
 or invalid `--config` / `VPAY_CONFIG` is exit 78 (proven by subprocess tests
 in each binary's `tests/cli.rs`; see `docs/status.md`, "YAML config
-loading"). *This paragraph said "neither binary calls it" until 2026-09-02;
-that had been false since 2026-08-11.* The deployment consequence is real:
+loading"). _This paragraph said "neither binary calls it" until 2026-09-02;
+that had been false since 2026-08-11._ The deployment consequence is real:
 `backends/Dockerfile` bakes `config/` into the image and sets `VPAY_CONFIG`,
 and `compose.e2e.yml` supplies every `${VAR}` the file names, because a
 process without them does not start.
@@ -130,7 +130,7 @@ state.
 
 **What the seeds are joined against.** `vpay_api::v1::boot::boot_seeds` is
 the single derivation both binaries call: it walks the YAML's `providers`
-and, for each, looks up a *linked adapter* to take `flow`,
+and, for each, looks up a _linked adapter_ to take `flow`,
 `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks` and
 `requires_ip_allowlist` from — capabilities come from the adapter, the
 `enabled` flag from the YAML
@@ -156,7 +156,7 @@ pins it, empty string included.
 1. Install the SIGINT/SIGTERM handlers and the rustls crypto provider.
 2. Load and validate the YAML config (steps 1–3 above). Missing or invalid
    → exit `78`, before any network round trip.
-2b. Link the adapters this binary was built with and **join the YAML's rails
+   2b. Link the adapters this binary was built with and **join the YAML's rails
    against them** (`adapters_by_code` + `boot_seeds`). A configured rail with
    no adapter → exit `78`, still before any network round trip.
 3. **Load the RS256 signing key** from `--oauth-signing-key-file` /
@@ -199,7 +199,7 @@ pins it, empty string included.
 raised at step 4's own call site in both modes, so the exit-code classifier
 finds a typed leaf and the answer is `78` — the same number the two steps
 either side of it give, which is what makes "`78` means fix the deploy,
-`69` means wait for Postgres" a rule an operator can hold. `a_missing_database_url_is_exit_78_naming_the_problem` and its `worker::` twin in `backends/apps/vpay-server/tests/cli.rs` are the two cases, and each one fails if *its* mode's site reverts.
+`69` means wait for Postgres" a rule an operator can hold. `a_missing_database_url_is_exit_78_naming_the_problem` and its `worker::` twin in `backends/apps/vpay-server/tests/cli.rs` are the two cases, and each one fails if _its_ mode's site reverts.
 
 1. Load `application.yml`, overlay `application-{profile}.yml`.
 2. Resolve `${}` placeholders. **An unresolved placeholder is fatal**, never an
@@ -214,21 +214,21 @@ gateway that boots half-configured is worse than one that does not boot.
 
 ## Rules that refuse to boot
 
-| Rule | Why |
-|---|---|
-| Every merchant's rail host appears in that rail's allowlist | The host allowlist, checked before the FK |
-| Every referenced provider exists and is enabled | A typo fails at boot, not at first payment |
-| Every merchant registration carries a unique `merchant_id` | The `/v1` tenancy boundary has no foreign key behind it |
-| Currency exponent matches the canonical table | A 100× amount bug is otherwise silent |
-| `livemode` ⇒ every host is `https://` | |
-| `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost` | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with |
-| `livemode` ⇒ secrets come from `${}`, not literals | Stops a real key reaching git |
-| `partial-refunds` ⇒ `refunds` | **Not a rule about the YAML** — boot step 4 refuses a *linked adapter* whose capability set is incoherent, exit `78` naming the rail and the rule; the database CHECK is the last line — see below |
-| `checkout.public_base_url` is a well-formed origin, `https://` under `livemode` | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port |
-| Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read |
-| `checkout_origins` without a `checkout.public_base_url` | There is no page for those origins to frame |
-| `merchant_clients[].display_name` is non-blank and at most 80 characters | It is painted into a heading on a phone-sized page; refused at boot rather than truncated at render time |
-| `--worker-concurrency` ≤ `vpay_db::MAX_CONNECTIONS / 2` (5), `worker` mode only | **The one row here that is not a YAML rule** — it joins a flag to a constant compiled into the image, so it is raised by `vpay-server`'s own `StartupError`, not by `vpay-config`. A webhook fan-out re-run holds two pooled connections, and a pool with nothing left makes crash recovery wait out the acquire timeout rather than fail fast (issue #63, [crash-safety.md](crash-safety.md#worker-concurrency-and-the-pool)) |
+| Rule                                                                                                                                                                     | Why                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Every merchant's rail host appears in that rail's allowlist                                                                                                              | The host allowlist, checked before the FK                                                                                                                                                                                                                                                                                                                                                                                      |
+| Every referenced provider exists and is enabled                                                                                                                          | A typo fails at boot, not at first payment                                                                                                                                                                                                                                                                                                                                                                                     |
+| Every merchant registration carries a unique `merchant_id`                                                                                                               | The `/v1` tenancy boundary has no foreign key behind it                                                                                                                                                                                                                                                                                                                                                                        |
+| Currency exponent matches the canonical table                                                                                                                            | A 100× amount bug is otherwise silent                                                                                                                                                                                                                                                                                                                                                                                          |
+| `livemode` ⇒ every host is `https://`                                                                                                                                    |                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `livemode` ⇒ no host labelled `wiremock`/`stub`/`mock`/`localhost`                                                                                                       | **The most valuable rule here.** It is what makes "the code cannot tell a stub from a real rail" safe to live with                                                                                                                                                                                                                                                                                                             |
+| `livemode` ⇒ secrets come from `${}`, not literals                                                                                                                       | Stops a real key reaching git                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `partial-refunds` ⇒ `refunds`                                                                                                                                            | **Not a rule about the YAML** — boot step 4 refuses a _linked adapter_ whose capability set is incoherent, exit `78` naming the rail and the rule; the database CHECK is the last line — see below                                                                                                                                                                                                                             |
+| `checkout.public_base_url` is a well-formed origin, `https://` under `livemode`                                                                                          | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port                                                                                                                                                                                                                                                                                                     |
+| Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read                                                                                                                                                                                                                                                            |
+| `checkout_origins` without a `checkout.public_base_url`                                                                                                                  | There is no page for those origins to frame                                                                                                                                                                                                                                                                                                                                                                                    |
+| `merchant_clients[].display_name` is non-blank and at most 80 characters                                                                                                 | It is painted into a heading on a phone-sized page; refused at boot rather than truncated at render time                                                                                                                                                                                                                                                                                                                       |
+| `--worker-concurrency` ≤ `vpay_db::MAX_CONNECTIONS / 2` (5), `worker` mode only                                                                                          | **The one row here that is not a YAML rule** — it joins a flag to a constant compiled into the image, so it is raised by `vpay-server`'s own `StartupError`, not by `vpay-config`. A webhook fan-out re-run holds two pooled connections, and a pool with nothing left makes crash recovery wait out the acquire timeout rather than fail fast (issue #63, [crash-safety.md](crash-safety.md#worker-concurrency-and-the-pool)) |
 
 The three `livemode` rules — `https`-only, no stub-labelled host, and
 `${}`-only secrets — are implemented and tested in `vpay-config`
@@ -275,9 +275,9 @@ rail cannot be named on a new intent or on a confirm
 
 **The "every referenced provider exists and is enabled" row, exactly.** Half
 of it is now a boot rule and half of it is not, and conflating the two would
-overstate what boots safely. What *is* enforced at boot is the join above: a
+overstate what boots safely. What _is_ enforced at boot is the join above: a
 rail named in the YAML with no linked adapter exits `78`. What is **not** a
-boot rule is the original intent of this row — a *merchant*'s reference to a
+boot rule is the original intent of this row — a _merchant_'s reference to a
 rail — because there is still no merchant→rail routing concept in this
 config shape; an OAuth `MerchantClient` names no rails. A payment intent's
 rails are instead checked per request, against the deployment's enabled set,
@@ -308,7 +308,7 @@ framing was right after all — it just could not have been built through
 `schemas/vpay.cstack`.
 
 **Boot refuses it now** (2026-09-10, issue #61), and the thing that changed
-is an *exit code*. Boot step 4's join — `vpay_api::boot::boot_seeds`, which
+is an _exit code_. Boot step 4's join — `vpay_api::boot::boot_seeds`, which
 `vpay-server` runs in both `serve` and `worker` mode, before it opens a pool —
 asks every configured rail's adapter for its `Capabilities` and refuses a set
 that is not `is_coherent` with `ConfigError::IncoherentCapabilities`:
@@ -317,7 +317,7 @@ that is not `is_coherent` with `ConfigError::IncoherentCapabilities`:
 and exit **1**, "page someone", about a database that was working perfectly.
 
 **What it is not: a rule about a deployment's YAML.** A capability set is a
-property of an adapter's *code* (ADR-0002). Nothing in `application.yml`
+property of an adapter's _code_ (ADR-0002). Nothing in `application.yml`
 makes a coherent rail incoherent, `Config::validate_all` does not run this
 check, and no configuration a merchant or an operator can write reaches it —
 what it catches is a **linking** mistake, a binary that shipped with an
@@ -327,7 +327,7 @@ in `vpay-config` for the exit code, not because the file is the subject.
 Three things now have an opinion on the rule, and they are not three of a
 kind:
 
-- **At boot**, in step 4 — the only one of the three that is a *runtime*
+- **At boot**, in step 4 — the only one of the three that is a _runtime_
   guard on a deployment. `a_provider_with_incoherent_capabilities_is_a_config_error`
   (`backends/crates/vpay-api/src/v1/boot.rs`) asserts the refusal and the
   message for both values of `enabled`;
@@ -350,13 +350,13 @@ kind:
 
 None of the three is a rule about a deployment's YAML — that is the point of
 the paragraph above, and it is why "boot refuses it" and "an operator can
-cause it" are different sentences. *This said "**Neither** has anything to do
+cause it" are different sentences. _This said "**Neither** has anything to do
 with `vpay-config`…" while listing two, and before that ended "there is still
 no YAML-loading or reconciliation code in this repo", which stopped being
 true for loading on 2026-09-02 and for reconciliation on 2026-09-03 — see the
-boot sequence above.*
+boot sequence above._
 
-*The CHECK became reachable from `reconcile` itself on 2026-09-03, and what a
+_The CHECK became reachable from `reconcile` itself on 2026-09-03, and what a
 seed that reaches it produces is `DbError::Persistence(PersistenceError::Check
 { constraint: "partial_refunds_imply_refunds" })` — `Category::Internal`,
 exit `1` — which rolls the whole reconcile back. This sentence said
@@ -365,7 +365,7 @@ provider pass moved onto CrateStack on 2026-09-06 and the classification
 moved with it, measured then by
 `a_provider_written_through_cratestack_is_rolled_back_with_the_rest_of_the_transaction`
 and re-measured on the boot path by `boot_coherence.rs`. Since issue #61 that
-route is no longer how a **deployment** finds out: boot answers first.*
+route is no longer how a **deployment** finds out: boot answers first._
 
 ## The checkout page reads its own two files, and they are not these
 
@@ -376,10 +376,10 @@ Everything above is `vpay-server` and `vpay-worker`: one document
 `frontends/apps/checkout` — the container that serves the payment page — reads
 **two different files, with different rules** (2026-09-06):
 
-| | file | default path | override |
-|---|---|---|---|
-| brand | `branding.yaml` | `/etc/vpay/checkout/branding.yaml` | `VPAY_CHECKOUT_BRANDING_FILE` |
-| settings | `config.yaml` | `/etc/vpay/checkout/config.yaml` | `VPAY_CHECKOUT_CONFIG_FILE` |
+|          | file            | default path                       | override                      |
+| -------- | --------------- | ---------------------------------- | ----------------------------- |
+| brand    | `branding.yaml` | `/etc/vpay/checkout/branding.yaml` | `VPAY_CHECKOUT_BRANDING_FILE` |
+| settings | `config.yaml`   | `/etc/vpay/checkout/config.yaml`   | `VPAY_CHECKOUT_CONFIG_FILE`   |
 
 Shipped examples, both fully commented, are
 [`config/checkout/branding.example.yaml`](../../config/checkout/branding.example.yaml)
@@ -392,8 +392,8 @@ Three differences from the Rust side are worth stating out loud, because
 someone reading this page will otherwise assume the rules above apply:
 
 - **A bad file does not refuse the boot.** Absent, unreadable, malformed, a
-  key of the wrong type, a value that fails its rule — each costs *exactly
-  that key*, prints one `WARN` naming the file, and the page renders. A
+  key of the wrong type, a value that fails its rule — each costs _exactly
+  that key_, prints one `WARN` naming the file, and the page renders. A
   payment page that would not load because a logo URL had a typo is a worse
   failure than a page with no logo. `vpay-server` makes the opposite trade
   deliberately, and both are right for what they serve.
@@ -420,7 +420,7 @@ prompt TTL, rate limits, webhook endpoints, capability flags.
 
 **Identity-defining, refused while any non-terminal charge references the
 config:** host, currency, payee identifier, or the merchant/provider pairing. A
-charge submitted to host A must be *polled* at host A; silently repointing it
+charge submitted to host A must be _polled_ at host A; silently repointing it
 means recovery asks the wrong server and gets `NotFound` forever.
 
 ## Status
@@ -452,8 +452,8 @@ requirement (steps 1–3 above; **57 tests in `vpay-config`** as of 2026-09-03
 — 29 in `config`, 18 in `cli`, 5 in `oauth`, 5 crate-level; it was 53 on
 2026-09-02, and the four new ones are the `merchant_id` and `enabled` rules
 described below — plus subprocess tests in each binary). `--database-url` is likewise required at runtime and opens
-a real pool. *Updated 2026-09-02 — this section had said all of that was
-"not started".*
+a real pool. _Updated 2026-09-02 — this section had said all of that was
+"not started"._
 
 **Updated 2026-09-10 (issue #87): a missing `--database-url` / `DATABASE_URL`
 is exit `78` now, in `serve` and in `worker`, and two subprocess cases say
@@ -461,12 +461,12 @@ so** — `a_missing_database_url_is_exit_78_naming_the_problem` and its
 `worker::` twin in `backends/apps/vpay-server/tests/cli.rs`. It was `1` until
 then, because the call site raised a bare `anyhow` context string with nothing
 for `exit_code_for` to classify; the correction to the boot sequence above has
-the detail. Each case fails when *its own* call site reverts, and each calls
+the detail. Each case fails when _its own_ call site reverts, and each calls
 `env_remove("DATABASE_URL")`, without which it asserts "no database URL" on a
 machine that has one.
 
 **New 2026-09-02:** `--oauth-signing-key-file` / `VPAY_OAUTH_SIGNING_KEY_FILE`
-on `vpay-server`, required at runtime and checked *before* the database
+on `vpay-server`, required at runtime and checked _before_ the database
 connection, so its three failure modes exit `78` and are covered by
 subprocess tests that need no Docker (named in the boot sequence above).
 Eighteen of `vpay-config`'s 57 tests are in its `cli` module.
@@ -478,7 +478,7 @@ merchant registration cannot target `vpay_config::MERCHANT_AUDIENCE`
 that proves it (`a_merchant_client_that_cannot_target_the_v1_audience_is_rejected`)
 is verbatim what `config/application.yml` shipped until that day, and
 `the_example_config_registers_its_merchant_for_the_v1_audience` asserts the
-real file satisfies the rule by carrying the *constant*, not a second copy
+real file satisfies the rule by carrying the _constant_, not a second copy
 of the spelling.
 
 **New 2026-09-03 (Step 2), and the reason this section's "Not started" list
@@ -504,7 +504,7 @@ transaction, after the same `pg_advisory_xact_lock`, in the same sorted
 order. The read is not a prefetch: CrateStack's `upsert` renders
 `DO UPDATE SET exponent = EXCLUDED.exponent`, which is precisely the
 overwrite `DbError::CurrencyExponentConflict` exists to refuse, so reading
-under a row lock first *is* the guard.
+under a row lock first _is_ the guard.
 `reconcile_reads_the_exponent_under_a_row_lock_and_cannot_clobber_a_concurrent_writer`
 is what fails if the `.for_update()` goes; the boot-lock test above passes
 without it, because those are two different guards against two different
@@ -558,7 +558,7 @@ or compares one, so nothing detects a replica booted from a different config
 file; the two boot-guard rules that need a payment-routing `merchants`
 concept ("every merchant's rail host is in the allowlist", and the
 merchant-facing half of "every referenced provider exists and is enabled" —
-see that row above for what *is* enforced); a `display_name` that is a real
+see that row above for what _is_ enforced); a `display_name` that is a real
 port capability rather than a derivation of the code; and any hot reload —
 a config change is still a redeploy. (`--public-base-url`, which this
 paragraph used to list here as still-inert, was removed on 2026-09-03 — see
@@ -568,15 +568,15 @@ the flag table above.) See [../status.md](../status.md).
 than a feature it added:**
 
 - **Livemode had never been bootable.** `validate_secret`'s rule is "a
-  credential must be *written* as a `${VAR}` placeholder, not as a literal"
+  credential must be _written_ as a `${VAR}` placeholder, not as a literal"
   — a question about step 1's text — and it was being asked of step 2's
-  *resolved* values, where a correctly written `${MTN_API_KEY}` and a
+  _resolved_ values, where a correctly written `${MTN_API_KEY}` and a
   literal `hunter2` are the same string. So the rule enforced nothing and
   refused every correct livemode config. The pre-resolution text of each
   `providers[].credentials` value is now captured before resolution and
   checked against that (`RawProviderSecrets`, private to `vpay_config::config`).
   The two rules now answer the two different questions they were always
-  meant to: *was it written as a reference* and *did the reference resolve*
+  meant to: _was it written as a reference_ and _did the reference resolve_
   (`a_livemode_config_with_a_literal_secret_is_rejected`,
   `a_livemode_config_whose_placeholders_resolve_loads`,
   `a_livemode_placeholder_that_does_not_resolve_is_still_the_unresolved_error`,
@@ -587,7 +587,7 @@ than a feature it added:**
   so an unknown code is a refusal to start rather than a 500 on a merchant's
   confirm.
 - **`providers[].callback_url`** is optional and defaults to
-  `{public_base_url}/provider/{code}/callback`. The *effective* value — not
+  `{public_base_url}/provider/{code}/callback`. The _effective_ value — not
   just an override — is put through `validate_host`, so a livemode
   deployment cannot hand a live rail a plaintext or stub callback host
   (`a_livemode_callback_url_that_is_not_https_is_rejected`,
@@ -602,7 +602,7 @@ than a feature it added:**
   forbids; it is a deliberate, recorded interim —
   [ADR-0012](../adr/0012-rail-configuration-requirements-in-config.md) — and
   it moves behind the port the day the port grows a `required_settings()`
-  hook. Nothing here selects *behaviour*; it selects a refusal to start
+  hook. Nothing here selects _behaviour_; it selects a refusal to start
   (`a_rail_missing_a_required_setting_is_rejected`,
   `a_rail_missing_a_required_credential_is_rejected`,
   `a_required_key_present_but_empty_is_treated_as_missing`,
@@ -635,10 +635,10 @@ than a feature it added:**
   `a_livemode_webhook_secret_written_as_a_placeholder_loads_and_carries_the_resolved_value`
   and `a_webhook_endpoints_debug_output_never_contains_a_secret`.
 
-*Updated 2026-09-07: the checkout container's own `branding.yaml`/`config.yaml`
+_Updated 2026-09-07: the checkout container's own `branding.yaml`/`config.yaml`
 are documented above. Nothing in `vpay-config` changed and the 77 tests are
 still 77 — those two files are read by TypeScript in a different process, with
 24 unit cases in `frontends/apps/checkout/src/config/settings.test.ts` and 8
 filesystem cases in `runtime.test.ts` (real temporary files, including an
 absent mount and a `chmod 000` one). No container has been started with the
-Helm chart supplying them, because the chart cannot yet.*
+Helm chart supplying them, because the chart cannot yet._

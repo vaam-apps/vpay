@@ -16,7 +16,7 @@
  * them is this file's whole job, and doing it here rather than in the page
  * means the boundary conversion is a unit test.
  */
-import { endOfDayUtc, startOfDayUtc } from './format';
+import { endOfDayUtc, startOfDayUtc } from "./format";
 
 /** How many rows a page asks for. */
 export const PAGE_SIZE = 25;
@@ -37,11 +37,11 @@ export interface PaymentsQuery {
 
 /** An empty query — every payment, newest first, first page. */
 export const NO_QUERY: PaymentsQuery = {
-  status: '',
-  createdFrom: '',
-  createdTo: '',
-  after: '',
-  before: '',
+  status: "",
+  createdFrom: "",
+  createdTo: "",
+  after: "",
+  before: "",
 };
 
 /**
@@ -54,9 +54,9 @@ export const NO_QUERY: PaymentsQuery = {
  */
 export function one(value: string | string[] | undefined): string {
   if (Array.isArray(value)) {
-    return typeof value[0] === 'string' ? value[0].trim() : '';
+    return typeof value[0] === "string" ? value[0].trim() : "";
   }
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === "string" ? value.trim() : "";
 }
 
 /** The query this request is asking for. */
@@ -64,11 +64,11 @@ export function queryFrom(
   params: Readonly<Record<string, string | string[] | undefined>>,
 ): PaymentsQuery {
   return {
-    status: one(params['status']),
-    createdFrom: one(params['created_from']),
-    createdTo: one(params['created_to']),
-    after: one(params['after']),
-    before: one(params['before']),
+    status: one(params["status"]),
+    createdFrom: one(params["created_from"]),
+    createdTo: one(params["created_to"]),
+    after: one(params["after"]),
+    before: one(params["before"]),
   };
 }
 
@@ -86,22 +86,23 @@ export function queryFrom(
  */
 export function apiQueryString(query: PaymentsQuery): string {
   const search = new URLSearchParams();
-  search.set('limit', String(PAGE_SIZE));
+  search.set("limit", String(PAGE_SIZE));
   if (query.status.length > 0) {
-    search.set('status', query.status);
+    search.set("status", query.status);
   }
-  const gte = query.createdFrom.length > 0 ? startOfDayUtc(query.createdFrom) : null;
+  const gte =
+    query.createdFrom.length > 0 ? startOfDayUtc(query.createdFrom) : null;
   if (gte !== null) {
-    search.set('created_gte', gte);
+    search.set("created_gte", gte);
   }
   const lte = query.createdTo.length > 0 ? endOfDayUtc(query.createdTo) : null;
   if (lte !== null) {
-    search.set('created_lte', lte);
+    search.set("created_lte", lte);
   }
   if (query.after.length > 0) {
-    search.set('starting_after', query.after);
+    search.set("starting_after", query.after);
   } else if (query.before.length > 0) {
-    search.set('ending_before', query.before);
+    search.set("ending_before", query.before);
   }
   return search.toString();
 }
@@ -110,13 +111,13 @@ export function apiQueryString(query: PaymentsQuery): string {
 function filterParams(query: PaymentsQuery): URLSearchParams {
   const search = new URLSearchParams();
   if (query.status.length > 0) {
-    search.set('status', query.status);
+    search.set("status", query.status);
   }
   if (query.createdFrom.length > 0) {
-    search.set('created_from', query.createdFrom);
+    search.set("created_from", query.createdFrom);
   }
   if (query.createdTo.length > 0) {
-    search.set('created_to', query.createdTo);
+    search.set("created_to", query.createdTo);
   }
   return search;
 }
@@ -175,13 +176,23 @@ export function pagerHrefs(
   const hasOlder = pagingBackwards ? true : hasMore;
 
   return {
-    previousHref: hasNewer && first !== undefined ? withCursor(query, 'before', first.id) : null,
-    nextHref: hasOlder && last !== undefined ? withCursor(query, 'after', last.id) : null,
+    previousHref:
+      hasNewer && first !== undefined
+        ? withCursor(query, "before", first.id)
+        : null,
+    nextHref:
+      hasOlder && last !== undefined
+        ? withCursor(query, "after", last.id)
+        : null,
   };
 }
 
 /** `/payments` with the filters kept and one cursor set. */
-function withCursor(query: PaymentsQuery, key: 'after' | 'before', id: string): string {
+function withCursor(
+  query: PaymentsQuery,
+  key: "after" | "before",
+  id: string,
+): string {
   const search = filterParams(query);
   search.set(key, id);
   return `/payments?${search.toString()}`;

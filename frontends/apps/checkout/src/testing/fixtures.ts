@@ -9,27 +9,29 @@
  * `.stories.tsx` may name it, and one does: Storybook is built by
  * `pnpm --filter @vpay/ui build-storybook` and is not part of `next build`.
  */
-import type { PaymentIntent } from '@vaam-apps/vpay-stripe-js';
+import type { PaymentIntent } from "@vaam-apps/vpay-stripe-js";
 
-import type { MemoryControls } from '../components/screens';
-import type { Branding } from '../config/settings';
-import type { CheckoutContext } from '../lib/machine';
-import type { CheckoutSession, PublicPaymentIntent } from '../lib/types';
+import type { MemoryControls } from "../components/screens";
+import type { Branding } from "../config/settings";
+import type { CheckoutContext } from "../lib/machine";
+import type { CheckoutSession, PublicPaymentIntent } from "../lib/types";
 
-export const SESSION_ID = 'cs_test_fixture000000000001';
-export const INTENT_ID = 'pi_test_fixture000000000001';
-export const INTENT_SECRET = `${INTENT_ID}_secret_${'a'.repeat(32)}`;
+export const SESSION_ID = "cs_test_fixture000000000001";
+export const INTENT_ID = "pi_test_fixture000000000001";
+export const INTENT_SECRET = `${INTENT_ID}_secret_${"a".repeat(32)}`;
 
-export function makeSession(overrides: Partial<CheckoutSession> = {}): CheckoutSession {
+export function makeSession(
+  overrides: Partial<CheckoutSession> = {},
+): CheckoutSession {
   return {
     id: SESSION_ID,
-    object: 'checkout.session',
+    object: "checkout.session",
     livemode: false,
-    ui_mode: 'hosted',
-    status: 'open',
-    payment_status: 'unpaid',
-    success_url: 'https://shop.example/ok?sid={CHECKOUT_SESSION_ID}',
-    cancel_url: 'https://shop.example/cancel',
+    ui_mode: "hosted",
+    status: "open",
+    payment_status: "unpaid",
+    success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://shop.example/cancel",
     return_url: null,
     url: `https://checkout.example/c/${SESSION_ID}`,
     expires_at: 1_757_000_000,
@@ -38,14 +40,16 @@ export function makeSession(overrides: Partial<CheckoutSession> = {}): CheckoutS
   };
 }
 
-export function makeIntent(overrides: Partial<PaymentIntent> = {}): PaymentIntent {
+export function makeIntent(
+  overrides: Partial<PaymentIntent> = {},
+): PaymentIntent {
   return {
     id: INTENT_ID,
-    object: 'payment_intent',
+    object: "payment_intent",
     amount: 5000,
-    currency: 'xaf',
-    status: 'requires_payment_method',
-    payment_method_types: ['mtn_momo'],
+    currency: "xaf",
+    status: "requires_payment_method",
+    payment_method_types: ["mtn_momo"],
     next_action: null,
     last_payment_error: null,
     metadata: {},
@@ -58,7 +62,9 @@ export function makeIntent(overrides: Partial<PaymentIntent> = {}): PaymentInten
 }
 
 /** The same intent as the return route renders it: no `client_secret`. */
-export function makePublicIntent(overrides: Partial<PaymentIntent> = {}): PublicPaymentIntent {
+export function makePublicIntent(
+  overrides: Partial<PaymentIntent> = {},
+): PublicPaymentIntent {
   const { client_secret: _secret, ...rest } = makeIntent(overrides);
   return rest;
 }
@@ -72,7 +78,7 @@ export function makePublicIntent(overrides: Partial<PaymentIntent> = {}): Public
 export function makeContext(
   session: Partial<CheckoutSession> = {},
   intent: Partial<PaymentIntent> = {},
-  merchantName: string | null = 'Boutique Test',
+  merchantName: string | null = "Boutique Test",
   allowedMethods: readonly string[] | null = null,
 ): CheckoutContext {
   return {
@@ -101,7 +107,9 @@ export function makeBranding(overrides: Partial<Branding> = {}): Branding {
 }
 
 /** Page memory offered, nothing remembered, box unticked — the first visit. */
-export function makeMemoryControls(overrides: Partial<MemoryControls> = {}): MemoryControls {
+export function makeMemoryControls(
+  overrides: Partial<MemoryControls> = {},
+): MemoryControls {
   return {
     offered: true,
     remember: false,

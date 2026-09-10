@@ -6,7 +6,7 @@
  * than something only a browser can exercise. Every branch below is one a
  * page takes *before* rendering anything.
  */
-import type { ApiFailure, SessionResponse, SessionStageResponse } from './api';
+import type { ApiFailure, SessionResponse, SessionStageResponse } from "./api";
 
 /** What `gateFor` decided. */
 export type Gate =
@@ -16,13 +16,13 @@ export type Gate =
    * flag, `/authorize` included — so this is not a nag screen, it is the
    * only page such a session can reach.
    */
-  | { readonly kind: 'must-change-password'; readonly session: SessionResponse }
+  | { readonly kind: "must-change-password"; readonly session: SessionResponse }
   /**
    * Signed in, but no code exchange has happened yet — the token that reads
    * `/dash/v1` has not been minted. The page runs the authorization-code leg
    * and asks again.
    */
-  | { readonly kind: 'needs-token'; readonly session: SessionResponse }
+  | { readonly kind: "needs-token"; readonly session: SessionResponse }
   /**
    * Signed in, holding a token that is **near the end of its life**. Mint a
    * replacement before reading — and, unlike `needs-token`, there is
@@ -30,13 +30,13 @@ export type Gate =
    * {@link staleTokenFor}.
    */
   | {
-      readonly kind: 'stale-token';
+      readonly kind: "stale-token";
       readonly session: SessionResponse;
       readonly accessToken: string;
     }
   /** Signed in, with a token to read `/dash/v1` with. */
   | {
-      readonly kind: 'ready';
+      readonly kind: "ready";
       readonly session: SessionResponse;
       readonly accessToken: string;
     };
@@ -74,15 +74,15 @@ export const REMINT_AFTER_FRACTION = 0.8;
  */
 export function gateFor(session: SessionResponse, now: number): Gate {
   if (session.password_change_required) {
-    return { kind: 'must-change-password', session };
+    return { kind: "must-change-password", session };
   }
   const token = session.access_token;
-  if (typeof token !== 'string' || token.length === 0) {
-    return { kind: 'needs-token', session };
+  if (typeof token !== "string" || token.length === 0) {
+    return { kind: "needs-token", session };
   }
   return staleTokenFor(session, now)
-    ? { kind: 'stale-token', session, accessToken: token }
-    : { kind: 'ready', session, accessToken: token };
+    ? { kind: "stale-token", session, accessToken: token }
+    : { kind: "ready", session, accessToken: token };
 }
 
 /**
@@ -106,10 +106,14 @@ export function gateFor(session: SessionResponse, now: number): Gate {
  */
 function staleTokenFor(session: SessionResponse, now: number): boolean {
   const ttlSeconds = session.access_token_ttl_seconds;
-  if (typeof ttlSeconds !== 'number' || !Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+  if (
+    typeof ttlSeconds !== "number" ||
+    !Number.isFinite(ttlSeconds) ||
+    ttlSeconds <= 0
+  ) {
     return true;
   }
-  const expiresAt = Date.parse(session.access_token_expires_at ?? '');
+  const expiresAt = Date.parse(session.access_token_expires_at ?? "");
   if (Number.isNaN(expiresAt)) {
     return true;
   }
@@ -123,9 +127,9 @@ function staleTokenFor(session: SessionResponse, now: number): boolean {
 /** What a refused read of `/dash/v1/staff/session` means for this browser. */
 export type Refusal =
   /** The session is over: forget the cookie and show the form. */
-  | 'sign-out'
+  | "sign-out"
   /** vpay could not answer. Keep the cookie and render the failure. */
-  | 'outage';
+  | "outage";
 
 /**
  * Whether a refusal ends the session, or is a vpay this app could not reach.
@@ -157,23 +161,23 @@ export type Refusal =
  * `503` case in `gate.test.ts` then reads `'sign-out'`.
  */
 export function refusalFor(failure: ApiFailure): Refusal {
-  return failure.status === 401 ? 'sign-out' : 'outage';
+  return failure.status === 401 ? "sign-out" : "outage";
 }
 
 /** What `/login/totp` must do about the session read it just took. */
 export type TotpGate =
   /** Live, and still owed a code: render the form (and the enrolment panel). */
-  | { readonly kind: 'enter-code' }
+  | { readonly kind: "enter-code" }
   /**
    * Live, and both factors are already in. A back button, a second tab, or a
    * reload after the action redirected. Send them on: `requireStaff` decides
    * from there whether the printed password still has to be replaced.
    */
-  | { readonly kind: 'signed-in' }
+  | { readonly kind: "signed-in" }
   /** vpay refused the session. Back to the form — this is the only branch that does. */
-  | { readonly kind: 'dead' }
+  | { readonly kind: "dead" }
   /** vpay could not answer. Keep the cookie and render the failure. */
-  | { readonly kind: 'outage'; readonly failure: ApiFailure };
+  | { readonly kind: "outage"; readonly failure: ApiFailure };
 
 /**
  * The decision `/login/totp` takes before rendering anything.
@@ -210,10 +214,12 @@ export function totpGateFor(
   if (stage === null) {
     // Fail closed on a read that answered neither: a page that rendered a
     // code form for a session it knows nothing about is what this replaces.
-    if (failure !== null && refusalFor(failure) === 'outage') {
-      return { kind: 'outage', failure };
+    if (failure !== null && refusalFor(failure) === "outage") {
+      return { kind: "outage", failure };
     }
-    return { kind: 'dead' };
+    return { kind: "dead" };
   }
-  return stage.stage === 'authenticated' ? { kind: 'signed-in' } : { kind: 'enter-code' };
+  return stage.stage === "authenticated"
+    ? { kind: "signed-in" }
+    : { kind: "enter-code" };
 }

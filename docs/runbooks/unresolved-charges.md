@@ -21,7 +21,7 @@ somebody reconciles it by hand.
 
 > **Read the rule literally, because it is not quite what this page used to
 > say.** The prose below described "a charge has been in `unresolved` for more
-> than one hour". The rule fires on any *transition into* `unresolved` in the
+> than one hour". The rule fires on any _transition into_ `unresolved` in the
 > last hour, held for 5 minutes. Those are close but not identical: the rule
 > pages on arrival, not on dwell time. Arrival is the actionable event, and no
 > metric measures dwell time — but if you are reconciling an alert against
@@ -38,7 +38,7 @@ somebody reconciles it by hand.
 > Where that recording happens differs by write, and the difference is
 > deliberate: `vpay_db::settlement`'s three own their transaction and record
 > after their own `COMMIT`, while `vpay_db::charges`' three run inside a
-> *caller's* transaction and hand the recording to that caller
+> _caller's_ transaction and hand the recording to that caller
 > (`charges::record_opened` / `record_left_submitting`, called after
 > `tx.commit()`). `unresolved` itself is reached through
 > `vpay_db::Settlement::set_live_state`, a single `UPDATE` on the pool, so it
@@ -49,7 +49,7 @@ somebody reconciles it by hand.
 > `metrics.prometheusRule.enabled` is `false` by default.
 
 The query below stays the primary tool regardless, and not only as a
-fallback: the metric reports *arrivals*, and reconciling money needs the rows
+fallback: the metric reports _arrivals_, and reconciling money needs the rows
 themselves.
 
 ```sql
@@ -64,7 +64,7 @@ FROM charges WHERE state = 'unresolved' ORDER BY updated_at;
 hourly. The intent is still `processing`, which merchants are told means "not
 yet, don't ship".
 
-What it does *not* mean: that the payer was not debited. That is the question
+What it does _not_ mean: that the payer was not debited. That is the question
 you are here to answer.
 
 ## Steps
@@ -93,7 +93,7 @@ you are here to answer.
    adapter's error, i.e. the same tokens a merchant sees in the error
    envelope: `provider_unavailable`, `provider_error`, `charge_declined`,
    `misconfigured`, `operation_unsupported_by_rail`, `not_implemented`.
-   `misconfigured` is the one that means *stop and fix the deployment* — the
+   `misconfigured` is the one that means _stop and fix the deployment_ — the
    adapter refused before or because of a bad credential, header or
    `base_url` — not a rail problem.
 
@@ -103,8 +103,9 @@ you are here to answer.
    design, so a rail's payload can never end up in a table an operator
    browses. If you need the body, you need the application logs for that
    request, and even there the raw failure reason is truncated.
+
 3. Query the rail directly with the reference (MTN: `GET
-   /collection/v1_0/requesttopay/{ref}`; Orange: `transactionstatus` with
+/collection/v1_0/requesttopay/{ref}`; Orange: `transactionstatus` with
    `order_id` + `amount` + `pay_token`).
 4. Reconcile against the rail's settlement statement for that day, by amount and
    timestamp.

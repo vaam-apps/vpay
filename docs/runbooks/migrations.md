@@ -32,7 +32,7 @@ the build, and `just migrations-manifest` refuses to rewrite an existing line,
 so the gate cannot be silenced by regenerating.
 
 **What the gate does not stop, stated plainly.** A contributor who edits a
-migration *and* hand-edits its line in `MANIFEST.sha256` passes the gate. That
+migration _and_ hand-edits its line in `MANIFEST.sha256` passes the gate. That
 is by construction, and hashing the manifest would not fix it: a manifest whose
 own hash is checked has to pin that hash somewhere, and whoever can edit two
 files can edit three. The manifest was not added to make the edit impossible —
@@ -82,11 +82,11 @@ psql "$DATABASE_URL" -tAc \
   "SELECT encode(checksum, 'hex') FROM _sqlx_migrations WHERE version = 28;"
 ```
 
-| What it prints | State | Action |
-|---|---|---|
-| `6eeb31ee…07b5ec` | applied the **current** file | nothing — this database boots |
-| `f4d1a8e1…8ae252` | applied the **original** file (created between #37 and #39) | §4 |
-| anything else | not a state this page describes | stop; escalate |
+| What it prints    | State                                                       | Action                        |
+| ----------------- | ----------------------------------------------------------- | ----------------------------- |
+| `6eeb31ee…07b5ec` | applied the **current** file                                | nothing — this database boots |
+| `f4d1a8e1…8ae252` | applied the **original** file (created between #37 and #39) | §4                            |
+| anything else     | not a state this page describes                             | stop; escalate                |
 
 The two values in full:
 
@@ -143,7 +143,7 @@ all and the boot failure is something else.
 across the two versions of the file — only a comment differs — so the tables,
 columns, indexes and constraints the database already has are exactly what the
 current file would have created. That is what makes the repair safe here, and
-it is a fact about *this* migration, not a general licence.
+it is a fact about _this_ migration, not a general licence.
 
 ### Confirm it is fixed
 
@@ -161,7 +161,7 @@ kubectl logs -l app.kubernetes.io/name=vpay --tail=50
 
 A clean boot logs the migrator applying **no** migrations and the server
 binding its listeners. Any remaining `previously applied but has been modified`
-names a *different* version, which is not this incident: some other migration
+names a _different_ version, which is not this incident: some other migration
 was edited after it shipped, and §5 applies.
 
 ---
@@ -194,8 +194,8 @@ ran.** `the_0028_repair_in_the_runbook_fixes_a_database_that_applied_the_origina
 (`backends/tests/integration/tests/postgres_smoke.rs`) applies the current
 migrations to a fresh `postgres:16-alpine`, rewinds `_sqlx_migrations.checksum`
 for version 28 to the original value in §3, confirms `sqlx::migrate!` then
-refuses with the message §2 quotes, parses the `UPDATE` out of *this markdown
-file*, runs it, and confirms the migrator runs clean afterwards. So the trigger,
+refuses with the message §2 quotes, parses the `UPDATE` out of _this markdown
+file_, runs it, and confirms the migrator runs clean afterwards. So the trigger,
 the repair and the confirmation are all measured, and the SQL cannot drift from
 what was tested without failing the build.
 

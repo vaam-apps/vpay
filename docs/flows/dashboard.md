@@ -25,14 +25,14 @@ The dashboard is built in slices, and the navigation is only ever allowed to
 link to slices that exist. A menu entry for a page nobody wrote is the same
 lie as an empty table.
 
-| Slice | What it is                                 | State                                                                |
-| ----- | ------------------------------------------ | -------------------------------------------------------------------- |
-| 1     | Payments — list and detail                 | **Built.** The two `/dash/v1` reads, the sign-in, and the pages       |
-| 2     | Webhooks — deliveries, retries, signatures | Not started                                                          |
-| 3     | Checkout sessions                          | Not started                                                          |
-| 4     | Balances and the ledger                    | Not started                                                          |
-| 5     | Settings                                   | Not started                                                          |
-| 6     | Rail health                                | Not started                                                          |
+| Slice | What it is                                 | State                                                           |
+| ----- | ------------------------------------------ | --------------------------------------------------------------- |
+| 1     | Payments — list and detail                 | **Built.** The two `/dash/v1` reads, the sign-in, and the pages |
+| 2     | Webhooks — deliveries, retries, signatures | Not started                                                     |
+| 3     | Checkout sessions                          | Not started                                                     |
+| 4     | Balances and the ledger                    | Not started                                                     |
+| 5     | Settings                                   | Not started                                                     |
+| 6     | Rail health                                | Not started                                                     |
 
 ## What slice 1 built (2026-09-06)
 
@@ -67,14 +67,14 @@ that no single edit removes the boundary:
 2. it carries a `vpay_merchant_id` claim equal to the bound `merchant_id`.
    Nothing but the staff authorization-code grant stamps that claim, so **no
    `client_credentials` token can satisfy it** — the refusal is a property of
-   the mint rather than of a list somebody maintains. The claim is *compared*,
+   the mint rather than of a list somebody maintains. The claim is _compared_,
    never used: the tenant still comes from the binding, so a forged claim buys
    a `403` and never another merchant's rows;
 3. it carries the registration's single scope;
 4. every query filters by the bound `merchant_id`.
 
 Check 2 replaced a comparison of the token's `sub` with the registered client
-id. That was right for `client_credentials` — where `sub` *is* the client id —
+id. That was right for `client_credentials` — where `sub` _is_ the client id —
 and wrong for every token a real login produces, where `sub` is the **staff
 member**. It was the 2026-09-06 review's finding F7, left as a maintainer
 decision; ADR-0017 takes it.
@@ -135,11 +135,11 @@ the staff row and authorises nothing.
 The second, smaller decision recorded beside it — that
 `default_handle_authorization_code` mints `aud = <client_id>` with no
 requested-audience path — is resolved in the same move, by changing the
-*validator* to expect what the grant produces rather than forking the handler.
+_validator_ to expect what the grant produces rather than forking the handler.
 
 ~~**Consequence, stated plainly: the two routes above are a resource server
 with no issuer.**~~ They have an issuer now. What was true and stays true is
-why the tenancy boundary was built first: it has to be right *before* a login
+why the tenancy boundary was built first: it has to be right _before_ a login
 exists, not after.
 
 ### ~~There are still no pages~~ — corrected 2026-09-07 (exp28)
@@ -148,13 +148,13 @@ exists, not after.
 saying so on screen, still zero tests", and it is no longer true.** The pages
 exist and a person can click them:
 
-| Page               | What it is                                                                                  |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| `/login`           | Work email and argon2id password — leg one of ADR-0017's two factors                       |
-| `/login/totp`      | The six-digit code. A **first** sign-in renders the `otpauth://` QR and the base32 secret, and requires one valid code before the enrolment is committed |
-| `/login/password`  | Replacing the one-time password `vpay-server staff add` printed. Not optional and not a nag: a session carrying `password_change_required` is refused by every authenticated route, `/oauth/authorize` included, so no `/dash/v1` token can exist until this is done |
-| `/payments`        | The bound merchant's intents, newest first. Status and created-range filters, cursor paging |
-| `/payments/{id}`   | The intent, the charge, the refunds, the last error with its failure code, and the event timeline |
+| Page              | What it is                                                                                                                                                                                                                                                           |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/login`          | Work email and argon2id password — leg one of ADR-0017's two factors                                                                                                                                                                                                 |
+| `/login/totp`     | The six-digit code. A **first** sign-in renders the `otpauth://` QR and the base32 secret, and requires one valid code before the enrolment is committed                                                                                                             |
+| `/login/password` | Replacing the one-time password `vpay-server staff add` printed. Not optional and not a nag: a session carrying `password_change_required` is refused by every authenticated route, `/oauth/authorize` included, so no `/dash/v1` token can exist until this is done |
+| `/payments`       | The bound merchant's intents, newest first. Status and created-range filters, cursor paging                                                                                                                                                                          |
+| `/payments/{id}`  | The intent, the charge, the refunds, the last error with its failure code, and the event timeline                                                                                                                                                                    |
 
 `/` redirects to whichever of `/login` and `/payments` applies. It used to be
 the whole app — a scaffold notice plus a legend of every status badge — and
@@ -191,7 +191,7 @@ for the rest of every sign-in past its first quarter of an hour. That is what
 it did until the exp28 review measured it. `src/server/dash-read.ts` retries a
 `401` once, after running the same authorization-code leg the first render
 runs, which re-reads the staff row and re-checks the account, the merchant
-binding and `password_change_required` — so re-minting is *more* checking than
+binding and `password_change_required` — so re-minting is _more_ checking than
 carrying one token for twelve hours, not less. A `403` is never retried.
 
 **Every server action opens with an origin check, and it does not compare two
@@ -223,19 +223,19 @@ and a line in the container log naming the variable. It is optional because
 making it required would have taken the sign-in down for every deployment not
 yet reconfigured, this repository's own compose stacks included.
 
-*Amended 2026-09-10 by the exp36 review (finding F7).* **This check does not
+_Amended 2026-09-10 by the exp36 review (finding F7)._ **This check does not
 replace Next's own — both run, and an action needs both to pass.** Measured
 against a booted stack, firing the real `signIn` action id with chosen
 headers:
 
-| Configured origin | `Origin` | `Host` | `X-Forwarded-Host` | Result |
-|---|---|---|---|---|
-| `http://localhost:13200` | same | honest | — | reaches the action |
-| `http://localhost:13200` | `https://evil.example` | `evil.example` | `evil.example` | **refused by vpay** — and this is the whole of item 4: all three agree, which is exactly what Next accepts |
-| `http://localhost:13200` | absent | honest | — | **refused by vpay** |
-| *(unset)* | `https://evil.example` | honest | `evil.example` | **refused by vpay** — Next accepts this one too |
-| `http://localhost:13200` | same | `vpay-dashboard.internal` | `localhost:13200` | reaches the action |
-| `http://localhost:13200` | same | `vpay-dashboard.internal` | — | **refused by NEXT**, `500` |
+| Configured origin        | `Origin`               | `Host`                    | `X-Forwarded-Host` | Result                                                                                                     |
+| ------------------------ | ---------------------- | ------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `http://localhost:13200` | same                   | honest                    | —                  | reaches the action                                                                                         |
+| `http://localhost:13200` | `https://evil.example` | `evil.example`            | `evil.example`     | **refused by vpay** — and this is the whole of item 4: all three agree, which is exactly what Next accepts |
+| `http://localhost:13200` | absent                 | honest                    | —                  | **refused by vpay**                                                                                        |
+| _(unset)_                | `https://evil.example` | honest                    | `evil.example`     | **refused by vpay** — Next accepts this one too                                                            |
+| `http://localhost:13200` | same                   | `vpay-dashboard.internal` | `localhost:13200`  | reaches the action                                                                                         |
+| `http://localhost:13200` | same                   | `vpay-dashboard.internal` | —                  | **refused by NEXT**, `500`                                                                                 |
 
 The last row is the operational consequence and nothing else in this
 repository said it: **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and
@@ -257,7 +257,7 @@ turns up that cannot, the lever is `serverActions.allowedOrigins` in
 check is a security change that would want its own review, and no measured
 deployment needs it.
 
-*Amended 2026-09-10 by the exp36 review (finding F3).* **It is set now** —
+_Amended 2026-09-10 by the exp36 review (finding F3)._ **It is set now** —
 `compose.e2e.yml` gives the dashboard
 `VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT}`,
 keyed to the same variable as the publication and the registered redirect URI,
@@ -283,7 +283,7 @@ item 2).
 function with its own unit tests, because "a `503` signs everybody out" should
 be a red test rather than something noticed during an incident. **`401` is the
 only status that ends a session**, and the mapping is exact rather than
-conservative: vpay answers `401` for *every* session refusal by design —
+conservative: vpay answers `401` for _every_ session refusal by design —
 absent, expired, idle, forged, disabled, at the wrong stage — so there is no
 other status that could mean the session is over. Everything else renders the
 message and its request id on the page, **with the cookie untouched**. A `403`
@@ -292,8 +292,8 @@ of vpay refused this app, which is a deployment problem and not a fact about
 the person. The decisive mutation is widening `refusalFor` to `status >= 400`,
 which turns four cases in `gate.test.ts` red.
 
-> **`refusalFor` is about the SESSION READ, and only about it.** *Recorded
-> 2026-09-10 by the exp36 review.* "`401` means the session is over" holds
+> **`refusalFor` is about the SESSION READ, and only about it.** _Recorded
+> 2026-09-10 by the exp36 review._ "`401` means the session is over" holds
 > because `GET /staff/session` and `/oauth/authorize` have nothing else to
 > refuse. On a route that also refuses a **credential** the same `401` means
 > two things and a caller cannot tell them apart, which is the price of "every
@@ -334,7 +334,7 @@ the exp28 review. It forgets the cookie only for a top-level navigation
 
 - **No "Rail" column on the list.** `GET /dash/v1/payment_intents` returns no
   charge at all, so the only rail-shaped value in that response is
-  `payment_method_types` — the rails an intent *may* be confirmed against. The
+  `payment_method_types` — the rails an intent _may_ be confirmed against. The
   column is headed **Methods**, because that is what it is; a "Rail" heading
   over it would be wrong for every intent that offers two and was taken by
   one. The detail page has a real `Rail`, from `charge.provider_code`.
@@ -375,7 +375,7 @@ nothing else on the page answers that.
 
 **The nav rule is a gate, twice over.** `NAV_LINKS` is an exported constant
 and `src/layout.test.tsx` resolves every entry against `app/**/page.tsx` on
-disk *and* checks the rendered markup for a dangling internal `href` — the
+disk _and_ checks the rendered markup for a dangling internal `href` — the
 constant catches a link rendered only in a branch a test never exercises, and
 the markup catches a link written straight into the JSX. Adding
 `{ href: '/webhooks' }` fails both.
@@ -400,17 +400,18 @@ replaced by the real two-leg forms.
 
   **The page renders it as an em dash, `—`, and that dash is a real `null`
   rather than a hard-coded string**: it comes from the column, on a payment
-  that *has* a charge, and `dashboard.cy.ts` walks the list until it finds one
+  that _has_ a charge, and `dashboard.cy.ts` walks the list until it finds one
   before asserting it — a dash on an intent nobody confirmed would prove
   nothing. The row exists rather than being omitted so that the day the column
   is written the value appears, instead of a field having to be added then.
-  What must not happen is this quietly becoming the *unmasked* value because
+  What must not happen is this quietly becoming the _unmasked_ value because
   the masked one was empty, and `payment-detail.test.tsx` pins both directions.
 
   The **list** has no payer column at all, which is a second and stronger
   reason: `GET /dash/v1/payment_intents` does not return a charge, so there is
   no `payer_ref_masked` in that response to be null. A column there would be
   sourced from nothing.
+
 - **There is no search by phone**, for the same reason: a filter over a
   column that is always `NULL` answers "no results" for every payer who ever
   paid, which reads as an answer.
@@ -507,7 +508,7 @@ Measured in [../plans/exp35-dashboard-port-notes/opus-review.md](../plans/exp35-
 
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
-to.~~ *Corrected 2026-09-07.* A staff member can sign in and read this
+to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
 merchant's payments. What the dashboard still cannot do is anything at all to
 them: there is no write path, no other slice, and no audit log — because
 there is nothing yet to audit.

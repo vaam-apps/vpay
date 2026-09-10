@@ -25,7 +25,7 @@
  * presented with a wrong verifier is spent anyway so a captured code cannot
  * be probed.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from "node:crypto";
 
 /** A verifier and the challenge derived from it. */
 export interface PkcePair {
@@ -42,7 +42,7 @@ export interface PkcePair {
  * migration `0035`'s `method_is_s256` refuses the row — so naming it here
  * would be a value nothing accepts.
  */
-export const CODE_CHALLENGE_METHOD = 'S256';
+export const CODE_CHALLENGE_METHOD = "S256";
 
 /**
  * How many random bytes back a verifier.
@@ -55,7 +55,7 @@ const VERIFIER_BYTES = 32;
 
 /** `BASE64URL-ENCODE` (RFC 7636 §A): base64 without padding, `+/` → `-_`. */
 function base64url(bytes: Buffer): string {
-  return bytes.toString('base64url');
+  return bytes.toString("base64url");
 }
 
 /**
@@ -67,7 +67,7 @@ function base64url(bytes: Buffer): string {
  * wrong in a way both ends share would still "work" end to end.
  */
 export function challengeFor(verifier: string): string {
-  return base64url(createHash('sha256').update(verifier, 'ascii').digest());
+  return base64url(createHash("sha256").update(verifier, "ascii").digest());
 }
 
 /**

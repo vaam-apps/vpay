@@ -123,7 +123,7 @@ unused — and `cargo nextest run --workspace` (78 passed, 3 skipped,
 including `authkestra_op_smoke.rs`) built and ran the full dependency graph
 with `authkestra-op` present without a provider collision. This closes the
 open question this ADR originally left unresolved — the caveat now is
-narrower: this was verified with `authkestra-op` as a *dev*-dependency of
+narrower: this was verified with `authkestra-op` as a _dev_-dependency of
 one test crate, not yet with it linked into `vpay-server` itself; re-check
 this once that happens.
 

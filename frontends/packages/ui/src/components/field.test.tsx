@@ -1,11 +1,11 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
-import { Field, FieldDescription, FieldError, FieldLabel } from './field';
-import { Input } from './input';
+import { Field, FieldDescription, FieldError, FieldLabel } from "./field";
+import { Input } from "./input";
 
-describe('Field', () => {
-  it('associates its label and description with the control via Base UI, not a manual id', () => {
+describe("Field", () => {
+  it("associates its label and description with the control via Base UI, not a manual id", () => {
     const { unmount } = render(
       <Field className="gap-1">
         <FieldLabel>MSISDN</FieldLabel>
@@ -13,12 +13,12 @@ describe('Field', () => {
         <FieldDescription>Include the country code.</FieldDescription>
       </Field>,
     );
-    const input = screen.getByRole('textbox', { name: 'MSISDN' });
-    expect(input.getAttribute('aria-describedby')).toBeTruthy();
+    const input = screen.getByRole("textbox", { name: "MSISDN" });
+    expect(input.getAttribute("aria-describedby")).toBeTruthy();
     unmount();
   });
 
-  it('shows a validation error via Field.Error, not a manually rendered <p>', () => {
+  it("shows a validation error via Field.Error, not a manually rendered <p>", () => {
     const { unmount } = render(
       <Field className="gap-1" invalid>
         <FieldLabel>MSISDN</FieldLabel>
@@ -26,7 +26,7 @@ describe('Field', () => {
         <FieldError match>Enter a valid number</FieldError>
       </Field>,
     );
-    expect(screen.getByText('Enter a valid number')).toBeTruthy();
+    expect(screen.getByText("Enter a valid number")).toBeTruthy();
     unmount();
   });
 });

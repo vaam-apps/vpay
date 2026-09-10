@@ -6,12 +6,12 @@ sections. Branch `claude/exp21-checkout-page`, base `06e27f9`.
 
 The maintainer's four requirements (2026-09-05) and what happened to each:
 
-| | Asked for | Delivered |
-|---|---|---|
-| 1 | daisyUI **bumblebee** + Base UI defaults, minimal custom CSS, accessible, same screens in both modes | done |
-| 2 | Replace the auto-forward countdown with a **"Back to {merchant}"** button; failure shows the rail's reason | done |
-| 3 | Runtime `branding.yaml` + `config.yaml`, missing file → defaults + a loud log | done |
-| 4 | Page memory: prefill number and method; **PIN vault** in IndexedDB | number and method done; **the PIN vault was refused** — see below |
+|     | Asked for                                                                                                  | Delivered                                                         |
+| --- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | daisyUI **bumblebee** + Base UI defaults, minimal custom CSS, accessible, same screens in both modes       | done                                                              |
+| 2   | Replace the auto-forward countdown with a **"Back to {merchant}"** button; failure shows the rail's reason | done                                                              |
+| 3   | Runtime `branding.yaml` + `config.yaml`, missing file → defaults + a loud log                              | done                                                              |
+| 4   | Page memory: prefill number and method; **PIN vault** in IndexedDB                                         | number and method done; **the PIN vault was refused** — see below |
 
 A fifth item arrived mid-task from the `examples/shop` track: **the popup
 peer** — a popup is not a frame, so `window.parent === window` inside one and
@@ -29,7 +29,7 @@ of §2 had surfaced, and it is built — see that entry.
 **There is no PIN vault, and no PIN field.** The requirement asked the page to
 remember a PIN "purely for recall into the form; it NEVER authorises anything
 and is never sent anywhere except into the same form field the payer would
-type into". *There is no such field, anywhere in this system.*
+type into". _There is no such field, anywhere in this system._
 
 - `frontends/apps/checkout` collects one thing on the MTN path: a Cameroon
   MSISDN. Orange collects nothing here at all.
@@ -61,7 +61,7 @@ taken.**
    it. The page's stated a11y invariant used to be "every control is a native
    `button`, `input` or `input[type=radio]`"; that sentence is now false and
    has been corrected in `screens.tsx` rather than left standing. The
-   *property* it defended is still held and is now tested explicitly (role,
+   _property_ it defended is still held and is now tested explicitly (role,
    tab index, accessible name, `aria-checked`, label click, space key — the
    last two measured, not assumed).
 3. **The failed outcome renders a NEUTRAL alert and the canceled one renders
@@ -75,7 +75,7 @@ taken.**
    — the merchant's single registered `checkout_origins` entry where there is
    exactly one, and no channel with none or with several. The rationale
    recorded with the decision: with one registered origin the `postMessage`
-   target *is* the merchant's own origin and is the only party the message
+   target _is_ the merchant's own origin and is the only party the message
    could ever have been for, so the worst case is a message delivered to its
    intended reader. `soleOrigin` counts after normalising, so one malformed
    registered origin is none rather than one to pin to. Six unit cases in
@@ -119,12 +119,12 @@ Rendered from the **shipping components** (`CheckoutView`, via
 the design, **not** a container serving a live session — no API, no session,
 no rail.
 
-| File | What it shows |
-|---|---|
-| [`outcomes-hosted.png`](outcomes-hosted.png) | succeeded / failed / canceled, `ui_mode: hosted` |
-| [`outcomes-embedded.png`](outcomes-embedded.png) | the same three, `ui_mode: embedded` |
-| [`entry-screens.png`](entry-screens.png) | rail selector, MSISDN form, redirect prompt, waiting — in French |
-| [`branded.png`](branded.png) | `branding.yaml` applied: operator name, support line, and `primary_color: "#1d4ed8"` |
+| File                                             | What it shows                                                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| [`outcomes-hosted.png`](outcomes-hosted.png)     | succeeded / failed / canceled, `ui_mode: hosted`                                     |
+| [`outcomes-embedded.png`](outcomes-embedded.png) | the same three, `ui_mode: embedded`                                                  |
+| [`entry-screens.png`](entry-screens.png)         | rail selector, MSISDN form, redirect prompt, waiting — in French                     |
+| [`branded.png`](branded.png)                     | `branding.yaml` applied: operator name, support line, and `primary_color: "#1d4ed8"` |
 
 **The two outcome images are pixel-identical, and that is the point rather
 than an oversight**: both modes render the same screens from the same state
@@ -135,7 +135,7 @@ screenshot.
 
 Looking at them caught one real defect: the test-mode banner had been changed
 from a paragraph to a daisyUI `badge`, and `.badge` is `whitespace-nowrap` by
-design, so *"Test mode — no money moves on this deployment."* spilled straight
+design, so _"Test mode — no money moves on this deployment."_ spilled straight
 out of the card. Reverted to a paragraph, with the reason written next to it.
 `branded.png` is the evidence the colour conversion works end to end: the
 button is `#1d4ed8` in OKLCh with a **white** foreground, derived by daisyUI's
@@ -164,27 +164,27 @@ Each was applied to the shipping source, the whole suite was run, and the
 source was restored. A mutation that did not fail anything is a test that was
 not testing.
 
-| Mutation | Result |
-|---|---|
+| Mutation                                                                        | Result                                                                    |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `middleware.ts`: `contentSecurityPolicy(embedded ? origins : [])` → `(origins)` | **2 failed** — the hosted page became framable by every registered origin |
-| `rails.ts`: drop the `allowed_methods` narrowing | **4 failed** |
-| `memory.ts`: `isStoredMsisdn` → `value.length > 0` | **4 failed** |
-| `memory.ts`: drop the ninety-day horizon | **3 failed** |
-| `memory.ts`: `pageMemoryFor` ignores the `page_memory` flag | **1 failed** |
-| `theme.ts`: `themeStyleSheet` emits an unvalidated colour | **1 failed** |
-| `controller.ts`: a popup asks its opener to navigate | **1 failed** |
-| `controller.ts`: `vpay:complete` is not deduped | **1 failed** |
-| `entry.ts`: never resolve an opener | **1 failed** |
-| `screens.tsx`: outcome button loses the merchant's name | **17 failed** |
-| `settings.ts`: swallow a wrong-typed key instead of reporting it | **1 failed** |
-| `origins.ts`: `soleOrigin` pins the first of several instead of refusing | **1 failed** |
-| `entry.ts`: the return page never pins an opener | **1 failed** |
-| `middleware.ts`: the return page's CSP takes the resolved list | **3 failed** |
+| `rails.ts`: drop the `allowed_methods` narrowing                                | **4 failed**                                                              |
+| `memory.ts`: `isStoredMsisdn` → `value.length > 0`                              | **4 failed**                                                              |
+| `memory.ts`: drop the ninety-day horizon                                        | **3 failed**                                                              |
+| `memory.ts`: `pageMemoryFor` ignores the `page_memory` flag                     | **1 failed**                                                              |
+| `theme.ts`: `themeStyleSheet` emits an unvalidated colour                       | **1 failed**                                                              |
+| `controller.ts`: a popup asks its opener to navigate                            | **1 failed**                                                              |
+| `controller.ts`: `vpay:complete` is not deduped                                 | **1 failed**                                                              |
+| `entry.ts`: never resolve an opener                                             | **1 failed**                                                              |
+| `screens.tsx`: outcome button loses the merchant's name                         | **17 failed**                                                             |
+| `settings.ts`: swallow a wrong-typed key instead of reporting it                | **1 failed**                                                              |
+| `origins.ts`: `soleOrigin` pins the first of several instead of refusing        | **1 failed**                                                              |
+| `entry.ts`: the return page never pins an opener                                | **1 failed**                                                              |
+| `middleware.ts`: the return page's CSP takes the resolved list                  | **3 failed**                                                              |
 
 **One mutation survived on the first pass and produced a code change**:
 `checkout-client.tsx` with `offered: true` hard-coded passed all 426 tests.
 The view's own cases covered `offered: false` and nothing covered how that
-value was *arrived at*. The policy moved out of the component into
+value was _arrived at_. The policy moved out of the component into
 `pageMemoryFor` in `memory.ts`, where it is three cases; the mutation now
 fails.
 
@@ -197,28 +197,28 @@ mutation:
   `normalizeCameroonMsisdn(value) === value`, so the rule lives in one file.
 - `theme.ts`'s achromatic guard was `chroma === 0`, and `#ffffff` comes out of
   the OKLab matrices with a chroma around 1e-8 — so white got a hue of
-  89.87° where daisyUI emits `0`. The guard is on the *rounded* chroma now.
+  89.87° where daisyUI emits `0`. The guard is on the _rounded_ chroma now.
 
 ## 6. The gate
 
 `just ci` on the final tree, **exit 0**, read from a file rather than from a
 banner. Recipe by recipe:
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok (Rust only — `just fmt` also runs prettier over ~222 unrelated files and was deliberately NOT run) |
-| `clippy` | ok, `-D warnings` |
+| Recipe               | Result                                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `fmt-check`          | ok (Rust only — `just fmt` also runs prettier over ~222 unrelated files and was deliberately NOT run)                                     |
+| `clippy`             | ok, `-D warnings`                                                                                                                         |
 | `verify` (ten gates) | all ok — `verify-links` over **806 links in 146 tracked files**, `verify-status` 1 declared unimplemented item, `verify-toolchain` 1.98.0 |
-| `test-rust` | **1382 run, 1382 passed, 0 skipped**, 1084 s, 43 binaries, real Postgres + real WireMock rails |
-| `test-doc` | **91 passed, 1 ignored** |
-| `verify-ignored` | **0 ignored (expected 0), 43 binaries (expected 43), 1382 total (floor 1080)** |
-| `lint-web` | ok — `pnpm -r typecheck` and `pnpm -r lint --max-warnings 0` over 15 packages |
-| `test-web` | ok — `@vpay/checkout` **442 cases in 22 files, 0 skipped** (was 302 in 17) |
-| `deny` | advisories ok, bans ok, licenses ok, sources ok |
+| `test-rust`          | **1382 run, 1382 passed, 0 skipped**, 1084 s, 43 binaries, real Postgres + real WireMock rails                                            |
+| `test-doc`           | **91 passed, 1 ignored**                                                                                                                  |
+| `verify-ignored`     | **0 ignored (expected 0), 43 binaries (expected 43), 1382 total (floor 1080)**                                                            |
+| `lint-web`           | ok — `pnpm -r typecheck` and `pnpm -r lint --max-warnings 0` over 15 packages                                                             |
+| `test-web`           | ok — `@vpay/checkout` **442 cases in 22 files, 0 skipped** (was 302 in 17)                                                                |
+| `deny`               | advisories ok, bans ok, licenses ok, sources ok                                                                                           |
 
 **Nothing under `backends/` was touched**, so every Rust number is `master`'s.
 
-One honest caveat about *what* was gated: the run above was started on the
+One honest caveat about _what_ was gated: the run above was started on the
 tree at `19274df` and finished on a tree that differed by four
 comment-and-prose edits made while it compiled — three source comments
 corrected (one of which had overstated what `secrets.test.ts` covers) and two

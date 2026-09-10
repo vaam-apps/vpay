@@ -35,34 +35,34 @@ one open question surfaced rather than taken (the checkbox's shape).
 
 Recipe by recipe, re-run here on that commit:
 
-| claim | true? |
-|---|---|
-| `pnpm --filter @vpay/checkout typecheck` clean | **yes**, exit 0 |
-| `pnpm --filter @vpay/checkout lint` clean | **yes**, exit 0 |
-| `pnpm --filter @vpay/checkout test` 459/459, 23 files, 0 skipped | **yes**, exact |
-| `pnpm --filter @vpay/checkout build` a real `next build`, compiled CSS read | **yes** — and the CSS does carry every class claimed |
-| `just verify-ui` exit 0 | **yes** |
-| `just verify` all eleven gates exit 0 | **yes** — confirmed inside `just ci`, and every Rust number equals master's: **1466 tests run, 1466 passed, 0 skipped** |
-| the three decisive mutations | **yes**, all three fire; re-run below, plus three more |
-| screenshots regenerated and looked at; canceled amber; branded `#1d4ed8` white-on-blue | **yes** for what they show; **no** for what they were not looked at for (finding 1) |
-| `just lint-web` red "pre-existing, reproduced identically on Lane A's own unmodified head `08d9b8e` with zero Lane B changes applied — Lane D's job" | **NO** (finding 3). It is Lane B's regression |
-| `just test-e2e` "could not complete — the `dashboard` image build fails" | **NO** (finding 8). It completes: 11/11 across four specs |
-| "a real browser's native activation is what `just test-e2e` now proves instead" (`docs/status.md`) | **NO** (finding 6). No Cypress spec touches the checkbox |
-| `styling_files` 2, "target missed by one", the target and plan §4.1 "in mild tension" | number true, reasoning **NO** (finding 4). The target is reachable and is now met |
+| claim                                                                                                                                                | true?                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vpay/checkout typecheck` clean                                                                                                       | **yes**, exit 0                                                                                                         |
+| `pnpm --filter @vpay/checkout lint` clean                                                                                                            | **yes**, exit 0                                                                                                         |
+| `pnpm --filter @vpay/checkout test` 459/459, 23 files, 0 skipped                                                                                     | **yes**, exact                                                                                                          |
+| `pnpm --filter @vpay/checkout build` a real `next build`, compiled CSS read                                                                          | **yes** — and the CSS does carry every class claimed                                                                    |
+| `just verify-ui` exit 0                                                                                                                              | **yes**                                                                                                                 |
+| `just verify` all eleven gates exit 0                                                                                                                | **yes** — confirmed inside `just ci`, and every Rust number equals master's: **1466 tests run, 1466 passed, 0 skipped** |
+| the three decisive mutations                                                                                                                         | **yes**, all three fire; re-run below, plus three more                                                                  |
+| screenshots regenerated and looked at; canceled amber; branded `#1d4ed8` white-on-blue                                                               | **yes** for what they show; **no** for what they were not looked at for (finding 1)                                     |
+| `just lint-web` red "pre-existing, reproduced identically on Lane A's own unmodified head `08d9b8e` with zero Lane B changes applied — Lane D's job" | **NO** (finding 3). It is Lane B's regression                                                                           |
+| `just test-e2e` "could not complete — the `dashboard` image build fails"                                                                             | **NO** (finding 8). It completes: 11/11 across four specs                                                               |
+| "a real browser's native activation is what `just test-e2e` now proves instead" (`docs/status.md`)                                                   | **NO** (finding 6). No Cypress spec touches the checkbox                                                                |
+| `styling_files` 2, "target missed by one", the target and plan §4.1 "in mild tension"                                                                | number true, reasoning **NO** (finding 4). The target is reachable and is now met                                       |
 
 ## Findings
 
-| # | severity | finding |
-|---|---|---|
-| 1 | correctness | the payment-failure alert fails WCAG AA — 3.53:1, a regression from daisyUI 4's 6.82:1 |
-| 2 | correctness | the language switch lost its visible label |
-| 3 | misleading-claim | `just ci`'s failure is Lane B's, not pre-existing; the comparison was run in a worktree at a different filesystem depth |
-| 4 | rule-break | seven raw utilities left in `screens.tsx` against plan §3, and the `styling_files ≤1` target argued away rather than met |
-| 5 | rule-break | the `<header>` banner landmark deleted from both views |
-| 6 | misleading-claim | "a real browser's native activation is what `just test-e2e` now proves" — no spec touches the checkbox |
-| 7 | gate-hole | plan §7 row 5's axe run over "every checkout screen" was never built, and row 6 (contrast) is what finding 1 slipped through |
-| 8 | misleading-claim | `just test-e2e` was reported as unable to complete; it completes, 11/11 |
-| 9 | nit | `transpilePackages: ['@vpay/ui']` is not load-bearing; no mutation of it fails |
+| #   | severity         | finding                                                                                                                      |
+| --- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | correctness      | the payment-failure alert fails WCAG AA — 3.53:1, a regression from daisyUI 4's 6.82:1                                       |
+| 2   | correctness      | the language switch lost its visible label                                                                                   |
+| 3   | misleading-claim | `just ci`'s failure is Lane B's, not pre-existing; the comparison was run in a worktree at a different filesystem depth      |
+| 4   | rule-break       | seven raw utilities left in `screens.tsx` against plan §3, and the `styling_files ≤1` target argued away rather than met     |
+| 5   | rule-break       | the `<header>` banner landmark deleted from both views                                                                       |
+| 6   | misleading-claim | "a real browser's native activation is what `just test-e2e` now proves" — no spec touches the checkbox                       |
+| 7   | gate-hole        | plan §7 row 5's axe run over "every checkout screen" was never built, and row 6 (contrast) is what finding 1 slipped through |
+| 8   | misleading-claim | `just test-e2e` was reported as unable to complete; it completes, 11/11                                                      |
+| 9   | nit              | `transpilePackages: ['@vpay/ui']` is not load-bearing; no mutation of it fails                                               |
 
 ### 1 — the payment-failure alert fails WCAG AA (correctness)
 
@@ -74,11 +74,11 @@ telling a payer their money did not move.
 
 Measured three ways rather than argued:
 
-| source | result |
-|---|---|
-| the compiled theme block in `.next/static/css/*.css` | #801518 on #ff6266, 3.53:1 |
-| the pixels of the lane's own committed `outcomes-hosted.png` | bg rgb(255,98,102), darkest glyph rgb(128,21,24), **3.53:1** |
-| the pixels of daisyUI 4's `docs/plans/exp21-checkout-page-notes/outcomes-hosted.png` | black on #ff5861, **6.82:1** |
+| source                                                                               | result                                                       |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| the compiled theme block in `.next/static/css/*.css`                                 | #801518 on #ff6266, 3.53:1                                   |
+| the pixels of the lane's own committed `outcomes-hosted.png`                         | bg rgb(255,98,102), darkest glyph rgb(128,21,24), **3.53:1** |
+| the pixels of daisyUI 4's `docs/plans/exp21-checkout-page-notes/outcomes-hosted.png` | black on #ff5861, **6.82:1**                                 |
 
 So it is a **regression of this revamp**, not an inherited defect: daisyUI 5
 changed how a theme's `*-content` is derived. `.alert-info` is 4.27:1 by the
@@ -342,19 +342,19 @@ Each was applied to the shipping source, the suite (or the build) was run, and
 the source was restored. `git diff --stat` empty after each. A mutation that
 fails nothing is a test that is not testing.
 
-| # | mutation | result |
-|---|---|---|
-| M1 | `OutcomePanel` renders `tone="neutral"` for every outcome | **15 failed** / 507 |
-| M2 | the MSISDN submit loses `type="submit"` | **1 failed** — "leaves the MSISDN form's only submit button the submit button" |
-| M3 | `themeStyleSheet` skips the `linearRgb` null-check | **10 failed**, including both XSS strings |
-| M4 | `ScreenHeading` drops `tabIndex={-1}` | **13 failed** |
-| M5 | the theme `<style>` goes back inside an explicit `<head>` (plan §6.5) | **1 failed** — "renders NO explicit `<head>` element" |
-| M6 | `transpilePackages` loses `@vpay/ui` | **nothing failed**, `next build` exit 0 — finding 9 |
-| M7 | the language switch goes back to `aria-label` only | **1 failed** — "names the language switch on the screen" |
-| M8 | `<Stack as="header">` -> `<Stack>` in both views | **1 failed** — `Unable to find an accessible element with the role "banner"` |
-| M9 | `MsisdnForm` loses its `<FieldLabel>` | **4 failed** — `[ 'label: 1 node(s) ]` in both locales |
-| M10 | delete the theme-contrast override from `styles.css` | **3 failed** — error 3.54:1, info 4.27:1 |
-| M11 | move that override INSIDE `@layer base` | **3 failed** — the gate models the cascade, not source order |
+| #   | mutation                                                              | result                                                                         |
+| --- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| M1  | `OutcomePanel` renders `tone="neutral"` for every outcome             | **15 failed** / 507                                                            |
+| M2  | the MSISDN submit loses `type="submit"`                               | **1 failed** — "leaves the MSISDN form's only submit button the submit button" |
+| M3  | `themeStyleSheet` skips the `linearRgb` null-check                    | **10 failed**, including both XSS strings                                      |
+| M4  | `ScreenHeading` drops `tabIndex={-1}`                                 | **13 failed**                                                                  |
+| M5  | the theme `<style>` goes back inside an explicit `<head>` (plan §6.5) | **1 failed** — "renders NO explicit `<head>` element"                          |
+| M6  | `transpilePackages` loses `@vpay/ui`                                  | **nothing failed**, `next build` exit 0 — finding 9                            |
+| M7  | the language switch goes back to `aria-label` only                    | **1 failed** — "names the language switch on the screen"                       |
+| M8  | `<Stack as="header">` -> `<Stack>` in both views                      | **1 failed** — `Unable to find an accessible element with the role "banner"`   |
+| M9  | `MsisdnForm` loses its `<FieldLabel>`                                 | **4 failed** — `[ 'label: 1 node(s) ]` in both locales                         |
+| M10 | delete the theme-contrast override from `styles.css`                  | **3 failed** — error 3.54:1, info 4.27:1                                       |
+| M11 | move that override INSIDE `@layer base`                               | **3 failed** — the gate models the cascade, not source order                   |
 
 M1-M5 are the lane's own table (M4 and M5 it deferred rather than ran); M6-M11
 are this review's.
@@ -364,19 +364,19 @@ are this review's.
 Measured on `4364cee`. Exit codes read from a file, never from a harness
 banner. Plan §7's list, row by row:
 
-| # | plan §7 check | result |
-|---|---|---|
-| 1 | `exp26-plan-count.sh` before vs. after | `@vpay/checkout` `styling_files` 5 → **1** (target ≤1, **met**), `class_tokens_distinct` 71 → **2** (target ≤14), `classname_sites` 59 → **1**, `class_tokens_total` 161 → **2**. Repo-wide outside `@vpay/ui`: distinct tokens 92 → **33**, `styling_files` 18 → **14**, `classname_sites` 107 → **49**, `inline_styles` 24 → 24 (Lane C's). The 80% repo-wide rows are not met and are not expected to be until Lanes C and D land |
-| 2 | `just ci` | **exit 0**. Rust equals master's, as it must with `backends/` untouched: **1466 tests run, 1466 passed, 0 skipped**; `verify-ignored` 0 ignored (expected 0), 45 test binaries (expected 45); **98 doctests** across 14 crates; `verify: ok — the eleven gates above passed`; `deny` advisories/bans/licenses/sources ok. Web: `@vpay/checkout` **507 in 24 files**, `@vpay/ui` **74 in 18**, shop 96, config 63, tokens 8, api-client 4, stripe-js 146, nodejs 190 — 0 skipped anywhere |
-| 3 | `just test-e2e` | **exit 0, 11/11 across four specs, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1, `dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3, `shop-embedded.cy.ts` 4 (`VPAY_E2E_FRAMED=1`). `demo_project=exp26b-review`, ports 29080/29083/29082/29081/29001, all confirmed free; stack torn down with `down -v` by the recipe |
-| 4 | `just build-storybook` | **exit 0** |
-| 5 | axe, structural | **built by this review** — 46 cases over every checkout screen in both locales, 0 violations, plus `@vpay/ui`'s own 2 |
-| 6 | axe, contrast, real browser | **partly**. The question is answered for this head and gated for every tone a component renders (`theme-contrast.test.ts`, plus a Chrome measurement of the app's own compiled stylesheet). `cypress-axe` as a reusable harness is **still not built**, by this review either |
-| 7 | `just lint-web` | **exit 0** — `pnpm -r typecheck` and `pnpm -r lint` across all 16 packages |
-| 8 | `just verify-ui` | **exit 0**, all five checks |
-| 9 | `just audit-web` | **exit 0** — "no known vulnerabilities" on both the production graph and the whole workspace including dev dependencies, after this review's lockfile change |
-| 10 | screenshots | all four regenerated on this head and looked at; the contrast figures in finding 1 were read off `outcomes-hosted.png`'s own pixels |
-| 11 | `docs/status.md` + `docs/flows/hosted-checkout.md` | updated in the same commits, with the real numbers and with the three wrong claims struck through in place |
+| #   | plan §7 check                                      | result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `exp26-plan-count.sh` before vs. after             | `@vpay/checkout` `styling_files` 5 → **1** (target ≤1, **met**), `class_tokens_distinct` 71 → **2** (target ≤14), `classname_sites` 59 → **1**, `class_tokens_total` 161 → **2**. Repo-wide outside `@vpay/ui`: distinct tokens 92 → **33**, `styling_files` 18 → **14**, `classname_sites` 107 → **49**, `inline_styles` 24 → 24 (Lane C's). The 80% repo-wide rows are not met and are not expected to be until Lanes C and D land                                                     |
+| 2   | `just ci`                                          | **exit 0**. Rust equals master's, as it must with `backends/` untouched: **1466 tests run, 1466 passed, 0 skipped**; `verify-ignored` 0 ignored (expected 0), 45 test binaries (expected 45); **98 doctests** across 14 crates; `verify: ok — the eleven gates above passed`; `deny` advisories/bans/licenses/sources ok. Web: `@vpay/checkout` **507 in 24 files**, `@vpay/ui` **74 in 18**, shop 96, config 63, tokens 8, api-client 4, stripe-js 146, nodejs 190 — 0 skipped anywhere |
+| 3   | `just test-e2e`                                    | **exit 0, 11/11 across four specs, 0 failing, 0 pending, 0 skipped** — `checkout.cy.ts` 1, `dashboard.cy.ts` 3, `shop-hosted.cy.ts` 3, `shop-embedded.cy.ts` 4 (`VPAY_E2E_FRAMED=1`). `demo_project=exp26b-review`, ports 29080/29083/29082/29081/29001, all confirmed free; stack torn down with `down -v` by the recipe                                                                                                                                                                |
+| 4   | `just build-storybook`                             | **exit 0**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 5   | axe, structural                                    | **built by this review** — 46 cases over every checkout screen in both locales, 0 violations, plus `@vpay/ui`'s own 2                                                                                                                                                                                                                                                                                                                                                                    |
+| 6   | axe, contrast, real browser                        | **partly**. The question is answered for this head and gated for every tone a component renders (`theme-contrast.test.ts`, plus a Chrome measurement of the app's own compiled stylesheet). `cypress-axe` as a reusable harness is **still not built**, by this review either                                                                                                                                                                                                            |
+| 7   | `just lint-web`                                    | **exit 0** — `pnpm -r typecheck` and `pnpm -r lint` across all 16 packages                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 8   | `just verify-ui`                                   | **exit 0**, all five checks                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 9   | `just audit-web`                                   | **exit 0** — "no known vulnerabilities" on both the production graph and the whole workspace including dev dependencies, after this review's lockfile change                                                                                                                                                                                                                                                                                                                             |
+| 10  | screenshots                                        | all four regenerated on this head and looked at; the contrast figures in finding 1 were read off `outcomes-hosted.png`'s own pixels                                                                                                                                                                                                                                                                                                                                                      |
+| 11  | `docs/status.md` + `docs/flows/hosted-checkout.md` | updated in the same commits, with the real numbers and with the three wrong claims struck through in place                                                                                                                                                                                                                                                                                                                                                                               |
 
 One process note worth keeping: the first attempt at row 2 was killed by
 signal 9 at test 1399/1466 on a host whose swap was exhausted. That is not a
@@ -391,8 +391,7 @@ only reason that was caught.
 - **`cypress-axe`** (plan §7 row 6's general harness). Not built. Its specific
   question is answered and gated for the tones this product renders; a reusable
   browser-side axe run is not there.
-- **Space/Enter activation of the memory opt-in in a real browser** — finding
-  6. Named as a gap; not closed, because `checkout.cy.ts` is not this lane's
+- **Space/Enter activation of the memory opt-in in a real browser** — finding 6. Named as a gap; not closed, because `checkout.cy.ts` is not this lane's
   file.
 - **`examples/shop` and `frontends/apps/dashboard`** — untouched as source.
   The only change reaching either is finding 3's root `package.json` entry and

@@ -1,16 +1,20 @@
-import { Heading, Stack } from '@vpay/ui';
+import { Heading, Stack } from "@vpay/ui";
 
-import { EmptyState } from '../../src/components/empty-state';
-import { ReadFailure } from '../../src/components/read-failure';
-import { Pager } from '../../src/components/pager';
-import { PaymentsFilters } from '../../src/components/payments-filters';
-import { PaymentsTable } from '../../src/components/payments-table';
-import { SignedInBar } from '../../src/components/signed-in-bar';
-import { apiQueryString, pagerHrefs, queryFrom } from '../../src/payments-query';
-import { type PaymentIntentList } from '../../src/server/api';
-import { readDash } from '../../src/server/dash-read';
-import { signOut } from '../../src/server/actions';
-import { requireStaff } from '../../src/server/session';
+import { EmptyState } from "../../src/components/empty-state";
+import { ReadFailure } from "../../src/components/read-failure";
+import { Pager } from "../../src/components/pager";
+import { PaymentsFilters } from "../../src/components/payments-filters";
+import { PaymentsTable } from "../../src/components/payments-table";
+import { SignedInBar } from "../../src/components/signed-in-bar";
+import {
+  apiQueryString,
+  pagerHrefs,
+  queryFrom,
+} from "../../src/payments-query";
+import { type PaymentIntentList } from "../../src/server/api";
+import { readDash } from "../../src/server/dash-read";
+import { signOut } from "../../src/server/actions";
+import { requireStaff } from "../../src/server/session";
 
 /**
  * `/payments` — the merchant's payment intents, newest first.
@@ -44,7 +48,7 @@ import { requireStaff } from '../../src/server/session';
  * staff member to the sign-in form, indistinguishably from having been signed
  * out on purpose.
  */
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function PaymentsPage({
   searchParams,
@@ -52,7 +56,7 @@ export default async function PaymentsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const gate = await requireStaff();
-  if (gate.kind === 'outage') {
+  if (gate.kind === "outage") {
     return (
       <Stack direction="column" gap="lg">
         <Heading level={2}>Payments</Heading>
@@ -73,7 +77,11 @@ export default async function PaymentsPage({
 
   return (
     <Stack direction="column" gap="lg">
-      <SignedInBar email={session.email} merchantId={session.merchant_id} signOut={signOut} />
+      <SignedInBar
+        email={session.email}
+        merchantId={session.merchant_id}
+        signOut={signOut}
+      />
 
       <Heading level={2}>Payments</Heading>
 
@@ -91,15 +99,19 @@ export default async function PaymentsPage({
         <EmptyState
           title="No payments"
           description={
-            query.status.length > 0 || query.createdFrom.length > 0 || query.createdTo.length > 0
-              ? 'No payment matched these filters. Widen the range or clear the status.'
-              : 'This merchant has no payment intents yet.'
+            query.status.length > 0 ||
+            query.createdFrom.length > 0 ||
+            query.createdTo.length > 0
+              ? "No payment matched these filters. Widen the range or clear the status."
+              : "This merchant has no payment intents yet."
           }
         />
       ) : (
         <>
           <PaymentsTable rows={result.value.data} />
-          <Pager {...pagerHrefs(query, result.value.data, result.value.has_more)} />
+          <Pager
+            {...pagerHrefs(query, result.value.data, result.value.has_more)}
+          />
         </>
       )}
     </Stack>

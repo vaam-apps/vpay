@@ -28,7 +28,7 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask
-> verify-status` fails the build if the code carries an unimplemented path that
+verify-status` fails the build if the code carries an unimplemented path that
 > page does not declare, **and** if that page declares one no shipping code
 > carries any more.
 
@@ -77,11 +77,11 @@ owned list of where they still don't.
 
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
-| | **MTN MoMo** (`push`) | **Orange Money** (`redirect`) |
-|---|---|---|
-| Payer acts by | Entering a PIN on their handset | Being redirected to Orange's hosted page |
-| Intent status after `confirm` | `processing` | `requires_action` |
-| Can the payer act before we persist? | **Yes** | **No** |
+|                                      | **MTN MoMo** (`push`)           | **Orange Money** (`redirect`)            |
+| ------------------------------------ | ------------------------------- | ---------------------------------------- |
+| Payer acts by                        | Entering a PIN on their handset | Being redirected to Orange's hosted page |
+| Intent status after `confirm`        | `processing`                    | `requires_action`                        |
+| Can the payer act before we persist? | **Yes**                         | **No**                                   |
 
 That last row is why crash safety has two enforcement points rather than one.
 See [`docs/flows/crash-safety.md`](docs/flows/crash-safety.md).
@@ -92,8 +92,8 @@ Both are wired into `just verify` and CI, because a promise nothing checks is a
 promise that decays.
 
 **1. No test doubles in shipping processes.** No mock, fake or stub may be
-reachable from `vpay-server` (either mode). A stub rail is a *WireMock
-host in configuration* — the same mechanism production uses to reach a real
+reachable from `vpay-server` (either mode). A stub rail is a _WireMock
+host in configuration_ — the same mechanism production uses to reach a real
 rail. `cargo xtask verify-no-mocks` walks `cargo metadata`'s dependency graph
 from each shipping binary and fails the build otherwise.
 ([ADR-0006](docs/adr/0006-no-mocks-in-main-processes.md))
@@ -111,14 +111,14 @@ of them, so a green run never overstates coverage.
 `GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`),
 and behind a merchant bearer token and a scope check:
 
-| Resource | Methods |
-|---|---|
-| `/v1/payment_intents` | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
-| `/v1/checkout/sessions` | `POST`, `GET`, `GET {id}`, `POST {id}/expire` |
-| `/v1/customers` | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}` |
-| `/v1/events` | `GET`, `GET {id}` |
-| `/v1/refunds/{id}` | `GET` |
-| `/v1/account_holders` | `GET` |
+| Resource                | Methods                                                            |
+| ----------------------- | ------------------------------------------------------------------ |
+| `/v1/payment_intents`   | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
+| `/v1/checkout/sessions` | `POST`, `GET`, `GET {id}`, `POST {id}/expire`                      |
+| `/v1/customers`         | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}`              |
+| `/v1/events`            | `GET`, `GET {id}`                                                  |
+| `/v1/refunds/{id}`      | `GET`                                                              |
+| `/v1/account_holders`   | `GET`                                                              |
 
 An `Idempotency-Key` is required on every `POST`. The table is the constant
 `vpay_api::V1_ROUTES`, and a boundary test walks it — it does not list paths of
@@ -175,8 +175,8 @@ statements over twelve tables** — `currencies`, `providers`,
 `staff_sessions` and `oauth_authorization_codes`; the five that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
 `ledger_entries`, which stay a design sketch a compiler now type-checks.
-*(Measured 2026-09-10; this said "nine of thirteen" and had been stale since
-S4b and S5 added four models and moved five tables.)* `backends/migrations` remains the
+_(Measured 2026-09-10; this said "nine of thirteen" and had been stale since
+S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
 authoritative schema, and this file has diverged from it on two `CHECK`
 constraints CrateStack's grammar cannot express. See `docs/status.md`
 § CrateStack.
@@ -243,14 +243,14 @@ Six steps, the fourth of which is a table:
    settlement produced out of the receiver's own request journal and verifies
    its `Vpay-Signature` with the SDK:
 
-   | # | Rail | Outcome | `last_payment_error.code` | Event delivered |
-   |---|---|---|---|---|
-   | 1 | `mtn_momo` | the payer approves → `succeeded` | — | `payment_intent.succeeded` |
-   | 2 | `mtn_momo` | no balance → `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
-   | 3 | `mtn_momo` | the prompt expires → `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-   | 4 | `orange_money` | `requires_action` + the redirect URL → `succeeded` | — | `payment_intent.succeeded` |
-   | 5 | `orange_money` | the hosted page expires → `requires_payment_method` | `payer_timeout` | `payment_intent.payment_failed` |
-   | 6 | `orange_money` | the rail refuses → `requires_payment_method` | `provider_error` | `payment_intent.payment_failed` |
+   | #   | Rail           | Outcome                                             | `last_payment_error.code` | Event delivered                 |
+   | --- | -------------- | --------------------------------------------------- | ------------------------- | ------------------------------- |
+   | 1   | `mtn_momo`     | the payer approves → `succeeded`                    | —                         | `payment_intent.succeeded`      |
+   | 2   | `mtn_momo`     | no balance → `requires_payment_method`              | `insufficient_funds`      | `payment_intent.payment_failed` |
+   | 3   | `mtn_momo`     | the prompt expires → `requires_payment_method`      | `payer_timeout`           | `payment_intent.payment_failed` |
+   | 4   | `orange_money` | `requires_action` + the redirect URL → `succeeded`  | —                         | `payment_intent.succeeded`      |
+   | 5   | `orange_money` | the hosted page expires → `requires_payment_method` | `payer_timeout`           | `payment_intent.payment_failed` |
+   | 6   | `orange_money` | the rail refuses → `requires_payment_method`        | `provider_error`          | `payment_intent.payment_failed` |
 
 5. one hosted and one embedded Checkout Session, on a fresh intent each, read
    back and printed as a merchant would use them. It stops there — the program
@@ -267,13 +267,13 @@ hex steering code the stub keys its scenario on, and step 6 shows
 a Cameroon E.164 number. Nothing rewrites stored state to
 make an outcome happen. The stubs are WireMock containers reached over HTTP
 exactly as a real rail would be — that is the rule in [AGENTS.md](AGENTS.md): a
-stub rail is a *host*, never a linked implementation — and **MTN's and Orange's
+stub rail is a _host_, never a linked implementation — and **MTN's and Orange's
 real endpoints have never been called by this code.** A `succeeded` here means
 `vpay-worker` asked a stub and the stub said `SUCCESSFUL`; it does not mean
 anyone paid.
 
 **Every payment above is XAF, on both rails**, and that is a property of the
-*demo overlay* alone — `.e2e/application-demo.yml`, the file `just
+_demo overlay_ alone — `.e2e/application-demo.yml`, the file `just
 gen-demo-keys` writes. The demo shop prices its catalogue in XAF, offers a
 payer both rails, and `/v1` refuses a confirm whose intent currency is not the
 rail's settlement currency; one currency for both rails is what makes the
@@ -297,7 +297,7 @@ look at it.
 **Running two demos on one machine** is what the `just` variables are for:
 `demo_project` picks the Compose project (so different containers, network and
 `pgdata` volume) and `demo_port`, `demo_receiver_port`, `demo_orange_port`,
-`demo_checkout_port` and `demo_shop_port` are the published *host* ports; the
+`demo_checkout_port` and `demo_shop_port` are the published _host_ ports; the
 server still binds 8080 inside its container.
 
 ```bash
@@ -315,11 +315,11 @@ you want to buy something from the demo shop in a browser.
 
 Three commands, with genuinely different requirements:
 
-| Command | Needs | Runs |
-|---|---|---|
-| `just verify` | Rust, and the pinned `cratestack` CLI on `PATH`; seconds | the gates the `verify` recipe lists in the [justfile](justfile) — twelve of them on this commit — and one advisory report, `verify-docs`, which never fails. The recipe echoes its own count on success, so the justfile is the number and this sentence is not. See [AGENTS.md](AGENTS.md) for what each gate refuses. `check-schema` **fails** rather than skips when the CLI is missing, because a skipped check checked nothing |
-| `just test` | **Docker**, and Node | `cargo nextest run --workspace`, `cargo test --doc --workspace` and `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. The adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006) |
-| `just test-e2e` | Docker, and Cypress's binary | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does |
+| Command         | Needs                                                    | Runs                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`   | Rust, and the pinned `cratestack` CLI on `PATH`; seconds | the gates the `verify` recipe lists in the [justfile](justfile) — twelve of them on this commit — and one advisory report, `verify-docs`, which never fails. The recipe echoes its own count on success, so the justfile is the number and this sentence is not. See [AGENTS.md](AGENTS.md) for what each gate refuses. `check-schema` **fails** rather than skips when the CLI is missing, because a skipped check checked nothing         |
+| `just test`     | **Docker**, and Node                                     | `cargo nextest run --workspace`, `cargo test --doc --workspace` and `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. The adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006) |
+| `just test-e2e` | Docker, and Cypress's binary                             | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does                                                                                                                                                                                                                                                       |
 
 `just verify-ignored` is the count that keeps the suite honest. Measured on
 this tree, 2026-09-07: **0 ignored, 46 test binaries, 1563 tests listed**.
@@ -419,7 +419,7 @@ liveness probe) and `GET /metrics` (Prometheus text). Neither is on the
 `--bind` port, because that one is fronted by an Ingress and `/metrics` is an
 operational map of the deployment. `/healthz` stays on 8080 and stays the
 readiness probe. **Nothing has ever scraped `/metrics`** — every series it
-exports is one a scrape *would* find, never one anyone has watched over time.
+exports is one a scrape _would_ find, never one anyone has watched over time.
 See [`docs/status.md`](docs/status.md) and
 [`docs/flows/configuration.md`](docs/flows/configuration.md).
 
@@ -436,15 +436,15 @@ See [`docs/status.md`](docs/status.md) and
 - **Rootless Docker.** `testcontainers` talks to `/var/run/docker.sock` by
   default. If your `docker` CLI uses a rootless context, point the tests at
   it: `DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock cargo nextest run
-  --workspace`. The Postgres-backed suites need `postgres:16-alpine` pulled.
+--workspace`. The Postgres-backed suites need `postgres:16-alpine` pulled.
 - **musl target.** `rustup target add x86_64-unknown-linux-musl` before
-  `just build-dist`. `backends/Dockerfile` builds the host's *implicit* musl
+  `just build-dist`. `backends/Dockerfile` builds the host's _implicit_ musl
   target rather than hardcoding the x86_64 triple
   ([ADR-0014](docs/adr/0014-builder-host-musl-triple.md)).
 - **A stale `pgdata` volume.** The demo shop's database is created once, from
   Postgres's entrypoint, on an empty data directory. A volume from before the
   shop landed has no `shop` database and `vpay-shop` dies in `zen migrate
-  deploy`. `just demo-down` removes volumes, which is the fix.
+deploy`. `just demo-down` removes volumes, which is the fix.
 
 ## Documentation
 

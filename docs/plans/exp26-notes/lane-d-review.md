@@ -17,24 +17,24 @@ that page's form.
 Everything below was re-run by the reviewer on `be6f068`, not carried
 forward from the lane's report.
 
-| claim | verdict | evidence |
-|---|---|---|
-| `styling_files` 2 → 0, `class_tokens_distinct` 17 → 0 | **true** | `exp26-plan-count.sh` on a `git archive` of `08d9b8e` and on the worktree: `@vpay/dashboard 2 → 0` and `17 → 0` |
-| `OUTSIDE @vpay/ui` `styling_files` 18 → 16, tokens 92 → 85 | **true** | same two runs, `OUTSIDE` row |
-| `just lint-web` green | **true** | exit 0 |
-| `just test-web` green, dashboard 9/9 | **true** | exit 0; `@vpay/dashboard` 5 files / 9 tests; `@vpay/ui` 60/60, `@vpay/checkout` 448/448, `examples/shop` 96/96 unchanged |
-| `just verify` red only on Lane B's `checkout` | **true** | exit 1, and the only output is `screens.tsx:408,409` `form-control`/`label-text`. The other ten gates print `ok` |
-| `verify-ui` clean scoped to `frontends/apps/dashboard` | **true** | all **six** current checks run individually with the recipe's own `git grep` patterns: no match |
-| `tailwind: true` is actually live (six rules) | **true**, and decisively | a long `className` in this app fails `better-tailwindcss/enforce-consistent-line-wrapping` **and** `enforce-consistent-class-order`; commenting `tailwind: true` out makes the same file lint clean |
-| the `next.config.ts` webpack workaround is gone and unnecessary | **true** | `git diff 08d9b8e..HEAD -- next.config.ts` is empty; `next build` from a wiped `node_modules` succeeds (§4 below) |
-| the theme mutation is caught | **true** | `data-theme="corporate"` → `src/layout.test.tsx` fails, 1 of 9 |
-| the two "Lane B measured" items do not reproduce | **true** | no `tailwind.config.ts` under `frontends/apps/dashboard` on any commit of this branch; `transpilePackages` lists `@vpay/ui` and predates the lane |
-| no fake rows anywhere | **true** | the only `amount` in a shipping file is a prop type. The two `pi_example_*` ids live in `payments-table.test.tsx`, which is where a fixture belongs |
-| README's "4 files, 6 tests" | **false** | it was 5 files / 9 tests when written. Fixed |
+| claim                                                           | verdict                  | evidence                                                                                                                                                                                            |
+| --------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `styling_files` 2 → 0, `class_tokens_distinct` 17 → 0           | **true**                 | `exp26-plan-count.sh` on a `git archive` of `08d9b8e` and on the worktree: `@vpay/dashboard 2 → 0` and `17 → 0`                                                                                     |
+| `OUTSIDE @vpay/ui` `styling_files` 18 → 16, tokens 92 → 85      | **true**                 | same two runs, `OUTSIDE` row                                                                                                                                                                        |
+| `just lint-web` green                                           | **true**                 | exit 0                                                                                                                                                                                              |
+| `just test-web` green, dashboard 9/9                            | **true**                 | exit 0; `@vpay/dashboard` 5 files / 9 tests; `@vpay/ui` 60/60, `@vpay/checkout` 448/448, `examples/shop` 96/96 unchanged                                                                            |
+| `just verify` red only on Lane B's `checkout`                   | **true**                 | exit 1, and the only output is `screens.tsx:408,409` `form-control`/`label-text`. The other ten gates print `ok`                                                                                    |
+| `verify-ui` clean scoped to `frontends/apps/dashboard`          | **true**                 | all **six** current checks run individually with the recipe's own `git grep` patterns: no match                                                                                                     |
+| `tailwind: true` is actually live (six rules)                   | **true**, and decisively | a long `className` in this app fails `better-tailwindcss/enforce-consistent-line-wrapping` **and** `enforce-consistent-class-order`; commenting `tailwind: true` out makes the same file lint clean |
+| the `next.config.ts` webpack workaround is gone and unnecessary | **true**                 | `git diff 08d9b8e..HEAD -- next.config.ts` is empty; `next build` from a wiped `node_modules` succeeds (§4 below)                                                                                   |
+| the theme mutation is caught                                    | **true**                 | `data-theme="corporate"` → `src/layout.test.tsx` fails, 1 of 9                                                                                                                                      |
+| the two "Lane B measured" items do not reproduce                | **true**                 | no `tailwind.config.ts` under `frontends/apps/dashboard` on any commit of this branch; `transpilePackages` lists `@vpay/ui` and predates the lane                                                   |
+| no fake rows anywhere                                           | **true**                 | the only `amount` in a shipping file is a prop type. The two `pi_example_*` ids live in `payments-table.test.tsx`, which is where a fixture belongs                                                 |
+| README's "4 files, 6 tests"                                     | **false**                | it was 5 files / 9 tests when written. Fixed                                                                                                                                                        |
 
 ## 2. Findings
 
-### Finding 1 — `<main>` was dropped; axe `region` regressed 0 → 1 *(correctness, a11y)*
+### Finding 1 — `<main>` was dropped; axe `region` regressed 0 → 1 _(correctness, a11y)_
 
 The `08d9b8e` scaffold wrapped its whole page in `<main>`
 (`git show 08d9b8e:frontends/apps/dashboard/app/page.tsx`). The rewrite onto
@@ -64,7 +64,7 @@ over all four recipes including the sign-in form's error and pending states.
 Decisive mutation run: remove `<main>` → `expected [ 'region: <section>' ] to
 deeply equal []`.
 
-### Finding 2 — the nav-honesty rule was gated by nothing *(gate-hole)*
+### Finding 2 — the nav-honesty rule was gated by nothing _(gate-hole)_
 
 > "The navigation is only ever allowed to link to slices that exist. A menu
 > entry for a page nobody wrote is the same lie as an empty table."
@@ -88,7 +88,7 @@ control (`pageExists('/')` true, `pageExists('/payments')` false) so the
 first case cannot pass by the helper answering `true` to everything.
 Mutation: `expected [ '/payments' ] to deeply equal []`.
 
-### Finding 3 — the sign-in recipe printed its error twice *(correctness)*
+### Finding 3 — the sign-in recipe printed its error twice _(correctness)_
 
 `SignInForm` rendered the `error` string through `FieldError match={…}`
 **and** through `<Alert tone="error">`. `FieldError` is not invisible —
@@ -103,7 +103,7 @@ a reading. The alert is the single place a form-level error appears; a
 genuinely field-level error is what `FieldError` is for, and `@vpay/ui` still
 exports it.
 
-### Finding 4 — the recipe cannot express the form it is the contract for *(correctness / contract-hole)*
+### Finding 4 — the recipe cannot express the form it is the contract for _(correctness / contract-hole)_
 
 The brief's whole reason for the recipes is that exp24's pages should land on
 them. So the review built **exp24's actual login form from the recipe
@@ -131,7 +131,7 @@ who typed a perfectly good one, and the form gave the caller no way to
 prevent it.
 
 Fixed in `b6193b5`. Three of the four controls added and tested: `pending`
-(disables every control *and* makes the submit handler a no-op, so a
+(disables every control _and_ makes the submit handler a no-op, so a
 `requestSubmit` or an Enter key cannot get around `disabled`), `requestId`
 (vpay emits `request-id`/`x-request-id` with one value on every response, and
 `vpay-api`'s error envelope carries no field for it deliberately — the header
@@ -139,7 +139,7 @@ is the only thing a locked-out staff member can quote to an operator), and
 `codeLength` (`maxLength` + `pattern`, six by default).
 
 **The fourth — a password control — was deliberately not added.**
-`docs/flows/dashboard.md` on *this* branch still records "how does a human
+`docs/flows/dashboard.md` on _this_ branch still records "how does a human
 staff member prove who they are?" as an open decision, and ADR-0017 is not on
 this tree. Answering it here would settle something the plan and the flow doc
 both reserve. It is named instead — in the recipe's doc comment, in the
@@ -149,7 +149,7 @@ knowingly rather than discovering the gap.
 After the fixes: 5 of the 6 probes pass; the password probe still fails, on
 purpose.
 
-### Finding 5 — README's test counts were stale *(misleading-claim, nit)*
+### Finding 5 — README's test counts were stale _(misleading-claim, nit)_
 
 `# 4 files, 6 tests` in the README's "Testing this app" block, against an
 actual 5 files / 9 tests at `be6f068` (and `docs/status.md`'s own row said 9
@@ -157,43 +157,43 @@ in 5 in the same commit). Now `6 files, 22 tests`, matching the suite.
 
 ## 3. Mutation table
 
-| # | mutation | must | as delivered (`be6f068`) | after the review |
-|---|---|---|---|---|
-| 1 | `data-theme` reverts to `corporate` | fail | **fails** — `src/layout.test.tsx`, 1 of 9 | fails |
-| 2 | a `<StatusBadge>` renders a duplicate `data-status` | fail `dashboard.cy.ts` | not re-run in the browser (plan §5's own case, and `dashboard.cy.ts` is unchanged from master) | unchanged |
-| 3 | the scaffold notice loses `role="status"` | fail `dashboard.cy.ts` | unchanged spec, unchanged assertion | unchanged |
-| 4 | `tailwind: true` commented out, long `className` present | lint must fail **with** the flag | **passes with the flag removed, fails with it** — the six rules are live | unchanged |
-| 5 | `<main>` removed from the layout | should fail | **nothing failed** | **fails** — `region: <section>` |
-| 6 | `<a href="/payments">` added to the `<nav>` | should fail | **nothing failed** (9/9, lint clean) | **fails** — `[ '/payments' ]` |
-| 7 | `SignInForm` rendered without `pending`, double-clicked | should submit once | **submitted twice** | caller can prevent it; `pending` refuses both the click and a raw `submit` |
+| #   | mutation                                                 | must                             | as delivered (`be6f068`)                                                                       | after the review                                                           |
+| --- | -------------------------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 1   | `data-theme` reverts to `corporate`                      | fail                             | **fails** — `src/layout.test.tsx`, 1 of 9                                                      | fails                                                                      |
+| 2   | a `<StatusBadge>` renders a duplicate `data-status`      | fail `dashboard.cy.ts`           | not re-run in the browser (plan §5's own case, and `dashboard.cy.ts` is unchanged from master) | unchanged                                                                  |
+| 3   | the scaffold notice loses `role="status"`                | fail `dashboard.cy.ts`           | unchanged spec, unchanged assertion                                                            | unchanged                                                                  |
+| 4   | `tailwind: true` commented out, long `className` present | lint must fail **with** the flag | **passes with the flag removed, fails with it** — the six rules are live                       | unchanged                                                                  |
+| 5   | `<main>` removed from the layout                         | should fail                      | **nothing failed**                                                                             | **fails** — `region: <section>`                                            |
+| 6   | `<a href="/payments">` added to the `<nav>`              | should fail                      | **nothing failed** (9/9, lint clean)                                                           | **fails** — `[ '/payments' ]`                                              |
+| 7   | `SignInForm` rendered without `pending`, double-clicked  | should submit once               | **submitted twice**                                                                            | caller can prevent it; `pending` refuses both the click and a raw `submit` |
 
 ## 4. Gates, on the reviewed head
 
 Every number below was produced by the reviewer, under the `.nvmrc` Node
 (v22.23.2), on this branch. `just fmt` was never run (plan §8.1).
 
-| gate | as delivered (`be6f068`) | on the reviewed head |
-|---|---|---|
-| `just lint-web` | exit 0 | exit 0 |
-| `just test-web` | exit 0 | exit 0 |
-| `pnpm --filter @vpay/dashboard typecheck` | clean | clean |
-| `pnpm --filter @vpay/dashboard lint` | clean, six `better-tailwindcss` rules live | clean |
-| `pnpm --filter @vpay/dashboard test` | 5 files / **9** tests | 6 files / **22** tests |
-| `just verify` | exit 1 — `verify-ui` only, on `frontends/apps/checkout/src/components/screens.tsx:408,409` (`form-control`, `label-text`). Lane B's tree, not this lane's | unchanged, same two lines |
-| `verify-ui`'s six checks scoped to `frontends/apps/dashboard` | all clean | all clean |
-| `pnpm install --frozen-lockfile` from a **wiped** `node_modules` (every `node_modules` in the worktree removed first) | not run by the lane | exit 0 |
-| `pnpm --filter @vpay/dashboard build` on that clean install, `.next` removed | claimed | exit 0 — "Compiled successfully in 11.7s", 4/4 static pages, no `next.config.ts` workaround present |
-| `just test-e2e`, all four specs, isolated project `exp26d-review` on ports 18601–18605 (the dashboard's `3000:3000` is **not** overridable in `compose.e2e.yml`, so this cannot run while another lane's stack holds 3000) | claimed 11/11 | exit 0 — **11 tests, 11 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4. Teardown ran to completion; containers, volume, network and all five ports confirmed gone |
-| compiled CSS (plan §6.4) | claimed | `bumblebee` ×2, `alert-warning`/`badge-success`/`badge-error`/`badge-warning`/`badge-neutral`/`badge-info` ×1 each; `corporate`, `form-control`, `label-text` **absent** |
+| gate                                                                                                                                                                                                                       | as delivered (`be6f068`)                                                                                                                                  | on the reviewed head                                                                                                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just lint-web`                                                                                                                                                                                                            | exit 0                                                                                                                                                    | exit 0                                                                                                                                                                                                                                              |
+| `just test-web`                                                                                                                                                                                                            | exit 0                                                                                                                                                    | exit 0                                                                                                                                                                                                                                              |
+| `pnpm --filter @vpay/dashboard typecheck`                                                                                                                                                                                  | clean                                                                                                                                                     | clean                                                                                                                                                                                                                                               |
+| `pnpm --filter @vpay/dashboard lint`                                                                                                                                                                                       | clean, six `better-tailwindcss` rules live                                                                                                                | clean                                                                                                                                                                                                                                               |
+| `pnpm --filter @vpay/dashboard test`                                                                                                                                                                                       | 5 files / **9** tests                                                                                                                                     | 6 files / **22** tests                                                                                                                                                                                                                              |
+| `just verify`                                                                                                                                                                                                              | exit 1 — `verify-ui` only, on `frontends/apps/checkout/src/components/screens.tsx:408,409` (`form-control`, `label-text`). Lane B's tree, not this lane's | unchanged, same two lines                                                                                                                                                                                                                           |
+| `verify-ui`'s six checks scoped to `frontends/apps/dashboard`                                                                                                                                                              | all clean                                                                                                                                                 | all clean                                                                                                                                                                                                                                           |
+| `pnpm install --frozen-lockfile` from a **wiped** `node_modules` (every `node_modules` in the worktree removed first)                                                                                                      | not run by the lane                                                                                                                                       | exit 0                                                                                                                                                                                                                                              |
+| `pnpm --filter @vpay/dashboard build` on that clean install, `.next` removed                                                                                                                                               | claimed                                                                                                                                                   | exit 0 — "Compiled successfully in 11.7s", 4/4 static pages, no `next.config.ts` workaround present                                                                                                                                                 |
+| `just test-e2e`, all four specs, isolated project `exp26d-review` on ports 18601–18605 (the dashboard's `3000:3000` is **not** overridable in `compose.e2e.yml`, so this cannot run while another lane's stack holds 3000) | claimed 11/11                                                                                                                                             | exit 0 — **11 tests, 11 passing, 0 failing, 0 skipped**: `checkout.cy.ts` 1/1, `dashboard.cy.ts` 3/3, `shop-hosted.cy.ts` 3/3, `shop-embedded.cy.ts` 4/4. Teardown ran to completion; containers, volume, network and all five ports confirmed gone |
+| compiled CSS (plan §6.4)                                                                                                                                                                                                   | claimed                                                                                                                                                   | `bumblebee` ×2, `alert-warning`/`badge-success`/`badge-error`/`badge-warning`/`badge-neutral`/`badge-info` ×1 each; `corporate`, `form-control`, `label-text` **absent**                                                                            |
 
 ### Recipe by recipe
 
-| recipe | compiles | rendered by a test | `@vpay/ui` exports only | raw utility classes | axe (structural) |
-|---|---|---|---|---|---|
-| `SignInForm` | yes | yes — 8 cases (2 as delivered) | `Alert`, `Button`, `Field`, `FieldLabel`, `Input`, `Text` | none | 0 violations, error and pending states both |
-| `PaymentsTable` | yes | yes — 1 case | `StatusBadge`, `Table` (+ `PaymentStatus` from `@vpay/tokens`) | none | 0 violations |
-| `DetailTimeline` | yes | yes — 2 cases | `List`, `Stack`, `Text` | none | 0 violations, populated and empty |
-| `EmptyState` | yes | yes — 1 case | `Heading`, `Stack`, `Text` | none | 0 violations |
+| recipe           | compiles | rendered by a test             | `@vpay/ui` exports only                                        | raw utility classes | axe (structural)                            |
+| ---------------- | -------- | ------------------------------ | -------------------------------------------------------------- | ------------------- | ------------------------------------------- |
+| `SignInForm`     | yes      | yes — 8 cases (2 as delivered) | `Alert`, `Button`, `Field`, `FieldLabel`, `Input`, `Text`      | none                | 0 violations, error and pending states both |
+| `PaymentsTable`  | yes      | yes — 1 case                   | `StatusBadge`, `Table` (+ `PaymentStatus` from `@vpay/tokens`) | none                | 0 violations                                |
+| `DetailTimeline` | yes      | yes — 2 cases                  | `List`, `Stack`, `Text`                                        | none                | 0 violations, populated and empty           |
+| `EmptyState`     | yes      | yes — 1 case                   | `Heading`, `Stack`, `Text`                                     | none                | 0 violations                                |
 
 Zero `className` strings in any recipe or in `app/` — the counting script's
 one `classname_sites` hit for this package is the **word** `className` inside
@@ -248,7 +248,7 @@ a comment in `eslint.config.js`, not an attribute.
   re-derived here.
 - **exp24's branch was read, not run.** `claude/exp24-staff-auth` at `1a29ec7`
   touches no frontend file at all (checked: `git diff --name-only
-  master...HEAD` has no `frontends/` entry, and its
+master...HEAD` has no `frontends/` entry, and its
   `frontends/apps/dashboard` is still master's ten-file scaffold). Its
   ADR-0017 and `docs/flows/dashboard-auth.md` were read to derive finding 4's
   probes; no code from it was executed.

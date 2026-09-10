@@ -8,15 +8,15 @@
  * drive). A screenshot of a state nobody can produce is how a page ends up
  * with a branch that has never rendered.
  */
-import { PageShell, Stack } from '@vpay/ui';
+import { PageShell, Stack } from "@vpay/ui";
 
-import type { Branding } from '../config/settings';
-import type { Locale, MessageKey, Translate } from '../i18n/index';
-import { failureMessage } from '../lib/failures';
-import type { CheckoutState } from '../lib/machine';
-import { formatAmount } from '../lib/money';
-import type { SupportedRail } from '../lib/rails';
-import { LocaleSwitch } from './locale-switch';
+import type { Branding } from "../config/settings";
+import type { Locale, MessageKey, Translate } from "../i18n/index";
+import { failureMessage } from "../lib/failures";
+import type { CheckoutState } from "../lib/machine";
+import { formatAmount } from "../lib/money";
+import type { SupportedRail } from "../lib/rails";
+import { LocaleSwitch } from "./locale-switch";
 import {
   BrandHeader,
   MsisdnForm,
@@ -29,7 +29,7 @@ import {
   SupportLine,
   merchantLine,
   type MemoryControls,
-} from './screens';
+} from "./screens";
 
 export interface CheckoutViewHandlers {
   onChooseRail: (rail: SupportedRail) => void;
@@ -60,14 +60,16 @@ export interface CheckoutViewProps extends CheckoutViewHandlers {
 
 /** The session-bearing states, so the summary is rendered once rather than per screen. */
 function contextOf(state: CheckoutState) {
-  return 'context' in state ? state.context : null;
+  return "context" in state ? state.context : null;
 }
 
 export function CheckoutView(props: CheckoutViewProps) {
   const { state, t, locale } = props;
   const context = contextOf(state);
   const amount =
-    context === null ? '' : formatAmount(context.intent.amount, context.intent.currency, locale);
+    context === null
+      ? ""
+      : formatAmount(context.intent.amount, context.intent.currency, locale);
   // `null`, not `''`: the screens choose a neutrally-worded sentence for a
   // session whose read carried no merchant name, rather than rendering one
   // written for a name with the name missing.
@@ -113,48 +115,60 @@ function renderScreen(
 ): React.ReactNode {
   const { state, t } = props;
   switch (state.name) {
-    case 'loading':
-      return <StatusPanel t={t} screen="loading" title={t('state.loading')} body={null} />;
+    case "loading":
+      return (
+        <StatusPanel
+          t={t}
+          screen="loading"
+          title={t("state.loading")}
+          body={null}
+        />
+      );
 
-    case 'error':
+    case "error":
       return (
         <NoticePanel
           t={t}
           screen="error"
-          title={t('error.title')}
+          title={t("error.title")}
           body={t(state.error.code)}
           code={state.error.serverCode}
         />
       );
 
-    case 'refused':
-      return state.reason === 'embed_not_allowed' ? (
+    case "refused":
+      return state.reason === "embed_not_allowed" ? (
         <NoticePanel
           t={t}
           screen="refused_embed"
-          title={t('refusal.embed_title')}
-          body={t('refusal.embed_body')}
+          title={t("refusal.embed_title")}
+          body={t("refusal.embed_body")}
         />
       ) : (
         <NoticePanel
           t={t}
           screen="refused_rail"
-          title={t('error.title')}
-          body={t('rail.none')}
+          title={t("error.title")}
+          body={t("rail.none")}
         />
       );
 
-    case 'expired':
+    case "expired":
       return (
         <NoticePanel
           t={t}
           screen="expired"
-          title={t('expired.title')}
-          body={merchantLine(t, merchant, 'expired.body', 'expired.body_unnamed')}
+          title={t("expired.title")}
+          body={merchantLine(
+            t,
+            merchant,
+            "expired.body",
+            "expired.body_unnamed",
+          )}
         />
       );
 
-    case 'select_rail':
+    case "select_rail":
       return (
         <RailSelector
           t={t}
@@ -164,7 +178,7 @@ function renderScreen(
         />
       );
 
-    case 'collect_msisdn':
+    case "collect_msisdn":
       return (
         <MsisdnForm
           t={t}
@@ -179,7 +193,7 @@ function renderScreen(
         />
       );
 
-    case 'ready_redirect':
+    case "ready_redirect":
       return (
         <RedirectPrompt
           t={t}
@@ -193,32 +207,39 @@ function renderScreen(
         />
       );
 
-    case 'confirming':
-      return <StatusPanel t={t} screen="confirming" title={t('state.confirming')} body={null} />;
+    case "confirming":
+      return (
+        <StatusPanel
+          t={t}
+          screen="confirming"
+          title={t("state.confirming")}
+          body={null}
+        />
+      );
 
-    case 'waiting':
+    case "waiting":
       return (
         <StatusPanel
           t={t}
           screen="waiting"
-          title={t('state.waiting_title')}
-          body={t('state.waiting_body', { amount })}
+          title={t("state.waiting_title")}
+          body={t("state.waiting_body", { amount })}
           notice={state.notice}
           onRetry={state.notice === null ? undefined : props.onRetryPoll}
         />
       );
 
-    case 'redirecting':
+    case "redirecting":
       return (
         <StatusPanel
           t={t}
           screen="redirecting"
-          title={t('state.redirecting_title')}
-          body={t('state.redirecting_body')}
+          title={t("state.redirecting_title")}
+          body={t("state.redirecting_body")}
         />
       );
 
-    case 'outcome':
+    case "outcome":
       return (
         <OutcomePanel
           t={t}
@@ -232,17 +253,17 @@ function renderScreen(
         />
       );
 
-    case 'forwarding':
+    case "forwarding":
       return (
         <StatusPanel
           t={t}
           screen="forwarding"
-          title={t('state.forwarding_title')}
+          title={t("state.forwarding_title")}
           body={merchantLine(
             t,
             merchant,
-            'state.forwarding_body',
-            'state.forwarding_body_unnamed',
+            "state.forwarding_body",
+            "state.forwarding_body_unnamed",
           )}
         />
       );

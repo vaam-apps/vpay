@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { Drawer as BaseDrawer } from '@base-ui/react/drawer';
+import { Drawer as BaseDrawer } from "@base-ui/react/drawer";
 
-import { cn } from '../cn';
+import { cn } from "../cn";
 
 export interface DrawerProps {
   open: boolean;
@@ -22,7 +22,13 @@ export interface DrawerProps {
  * charge detail, where operators are often on a phone. Content is passed
  * in; this component owns presentation only.
  */
-export function Drawer({ open, onOpenChange, title, children, className }: DrawerProps) {
+export function Drawer({
+  open,
+  onOpenChange,
+  title,
+  children,
+  className,
+}: DrawerProps) {
   return (
     <BaseDrawer.Root open={open} onOpenChange={onOpenChange}>
       <BaseDrawer.Portal>
@@ -37,10 +43,14 @@ export function Drawer({ open, onOpenChange, title, children, className }: Drawe
          */}
         <BaseDrawer.Backdrop className="fixed inset-0 bg-base-content/40" />
         <BaseDrawer.Viewport className="fixed inset-x-0 bottom-0 mt-24 flex max-h-[90vh] flex-col">
-          <BaseDrawer.Popup className={cn('flex flex-col rounded-t-2xl bg-base-100', className)}>
+          <BaseDrawer.Popup
+            className={cn("flex flex-col rounded-t-2xl bg-base-100", className)}
+          >
             <div className="mx-auto my-3 h-1.5 w-12 rounded-full bg-base-300" />
             <div className="overflow-y-auto px-4 pb-8">
-              <BaseDrawer.Title className="mb-2 text-lg font-semibold">{title}</BaseDrawer.Title>
+              <BaseDrawer.Title className="mb-2 text-lg font-semibold">
+                {title}
+              </BaseDrawer.Title>
               {children}
             </div>
           </BaseDrawer.Popup>

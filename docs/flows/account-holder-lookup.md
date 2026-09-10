@@ -3,7 +3,7 @@
 `GET /v1/account_holders` — "whose mobile-money account is this number?"
 
 Built for [issue #47](https://github.com/vaam-apps/vpay/issues/47): an
-integrator whose refund flow lets a buyer nominate a *different* number for
+integrator whose refund flow lets a buyer nominate a _different_ number for
 their money must match the nominated account's registered name against the
 buyer's verified one, and refuse on a mismatch. Without a lookup, every
 nomination is `UNVERIFIABLE` and every one is refused — safe, and dead.
@@ -44,11 +44,11 @@ vpay_adapter_mtn_momo
 
 ## The three-way answer, and why nothing may collapse it
 
-| The port says | `/v1` answers | What it means |
-|---|---|---|
-| `Ok(Some(holder))` | `200`, `name: "…"`, `verified: true` | the rail named a holder |
-| `Ok(None)` | `200`, `name: null`, `verified: false` | **the rail answered and has no record of this number** |
-| `Err(..)` | the classified status — `502` for a rail that could not be reached, `500` for a misconfiguration, `400` for a rail with no such API | **nobody asked, or the rail could not answer** |
+| The port says      | `/v1` answers                                                                                                                       | What it means                                          |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `Ok(Some(holder))` | `200`, `name: "…"`, `verified: true`                                                                                                | the rail named a holder                                |
+| `Ok(None)`         | `200`, `name: null`, `verified: false`                                                                                              | **the rail answered and has no record of this number** |
+| `Err(..)`          | the classified status — `502` for a rail that could not be reached, `500` for a misconfiguration, `400` for a rail with no such API | **nobody asked, or the rail could not answer**         |
 
 The middle row is a fact about the **number**. The bottom row is a fact about
 the **lookup**. Issue #47's caller refuses a nominated destination on both —
@@ -79,7 +79,7 @@ rule with no edit. The port's own type,
 hand-written `Debug` that redacts even that, so a `{:?}` of a holder — or of
 any `Result` or `Option` containing one — cannot print a name.
 
-*Proven by* `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
+_Proven by_ `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
 in the conformance suite, whose stub sends eleven fields including five MTN
 does not document (`sub`, `email`, `address`, `national_id`,
 `phone_number`), and asserts each one absent from the returned value.
@@ -103,7 +103,7 @@ leading `6`, four bullets, the last three digits. The bullet count is
 **fixed**, not one per hidden digit — a mask whose length revealed the
 input's length would be a small oracle for free.
 
-*Proven by* `a_lookup_logs_a_masked_number_and_never_a_name`
+_Proven by_ `a_lookup_logs_a_masked_number_and_never_a_name`
 (`vpay-api`, against captured `tracing` output) and, for the adapter's own
 debug line, by the conformance case named in rule 1 — which asserts the
 holder's name, the unmasked number and all eight other personal fields are
@@ -118,7 +118,7 @@ column is a change to the charge path and not to this route.
 
 Issue #47 §3 asks for a per-merchant rate limit, and says why: "unlimited
 lookup of arbitrary MSISDNs is a name-harvesting oracle", and the abuse here
-is *exfiltration* rather than load.
+is _exfiltration_ rather than load.
 
 **It is not built, and no default was chosen.** Rate limiting in this
 deployment is an ingress concern — [provider-port.md](provider-port.md)
@@ -138,14 +138,14 @@ this costs.
 
 §3 asks for both. Neither is built.
 
-*The audit log* contradicts rule 2 above: a per-merchant, per-MSISDN trail
+_The audit log_ contradicts rule 2 above: a per-merchant, per-MSISDN trail
 **is** a stored record of who asked about whom, and it is precisely the
 record rule 2 declines to keep. Which of the two wins is a policy choice, not
 an implementation detail, and taking it quietly in either direction would be
 wrong. (`MerchantScope` is already bound on the handler, so the value such a
 log would be keyed on is in hand the day it is decided.)
 
-*A scope of its own* (`identity:read` rather than `payments:read`) is a
+_A scope of its own_ (`identity:read` rather than `payments:read`) is a
 three-place change that fails **silently** when the places disagree — see
 `SCOPE_PAYMENTS_WRITE`'s own doc comment: the string an operator writes in a
 registration, the string the OP mints, and the string the middleware checks.
@@ -177,7 +177,7 @@ separators `frontends/apps/checkout/src/lib/msisdn.ts` accepts. Anything else
 is a `400` naming `msisdn`.
 
 **There is no `livemode`, and that is a departure from every other object on
-this surface.** `PaymentIntentObject::livemode` is read off the *row*, so an
+this surface.** `PaymentIntentObject::livemode` is read off the _row_, so an
 object cannot start describing itself differently when a deployment is
 reconfigured. There is no row here and there never will be (rule 2), so the
 only available value would be the deployment's current configuration read at
@@ -196,7 +196,7 @@ on [adapter-orange-money.md](adapter-orange-money.md)'s "to confirm" list.
 
 `Unsupported` and **not** a `NotImplemented` token, because nothing about
 Orange is unbuilt work someone owes: the flag is a permanent answer. A rail
-that *does* expose a lookup and has not written one must declare `true` and
+that _does_ expose a lookup and has not written one must declare `true` and
 override the method with its own token, so `verify-status` sees the gap.
 
 The flag is deliberately **not persisted**: unlike the four capability flags
@@ -205,7 +205,7 @@ beside it, it has no column in `providers` (migration `0002`) and no field on
 `vpay_api` resolves an adapter in-process and asks it — so a column would be
 a second copy of an answer the linked code already owns.
 
-`/v1` refuses an unknown rail, a *disabled* rail and an incapable rail with a
+`/v1` refuses an unknown rail, a _disabled_ rail and an incapable rail with a
 byte-identical `400`. Telling them apart would let a merchant enumerate which
 rails a deployment has configured but switched off, and the fix is the same
 either way.
@@ -235,7 +235,7 @@ the series exists rather than being read off `vpay_http_requests_total`.
 The rail call itself is on `vpay_provider_requests_total{operation="account_holder_name"}`
 like every other port call, through `vpay_provider::Measured`. That series
 cannot tell `found` from `not_found`, deliberately: it answers a question
-about the *rail*, and this one answers a question about the *route*.
+about the _rail_, and this one answers a question about the _route_.
 
 ## Status
 
@@ -271,12 +271,12 @@ about the *rail*, and this one answers a question about the *route*.
 
   **The two compound, and that is the failure mode to watch for on the first
   real call.** If the path segment's case is wrong, MTN's gateway answers
-  `404` to *every* lookup; the `404 -> Ok(None)` mapping then renders every
+  `404` to _every_ lookup; the `404 -> Ok(None)` mapping then renders every
   one of them as `{ "name": null, "verified": false }` with HTTP `200`. A
   total misconfiguration would look exactly like "nobody in Cameroon is
   registered" — no error, no page, nothing in
   `vpay_account_holder_lookups_total` but a `not_found` rate of 1.0. Neither
-  assumption is unsafe about *money* (the caller refuses on `Ok(None)` just as
+  assumption is unsafe about _money_ (the caller refuses on `Ok(None)` just as
   it refuses on an error), and the mapping is still the right default for the
   reason the adapter's own doc gives; what is worth knowing is that the two
   wrong together are **silent**, where either alone is not. The first
@@ -284,6 +284,7 @@ about the *rail*, and this one answers a question about the *route*.
   it trusts a `not_found`, and an operator should alert on a sustained
   `not_found` rate near 1.0. Reversing either decision costs one constant
   (`vpay_adapter_mtn_momo::ACCOUNT_HOLDER_ID_TYPE`) or one match arm.
+
 - **Orange's route is unconfirmed**, so `false` there is "we do not know of
   one", not "Orange has none".
 - **No rate limit, no audit log, no dedicated scope** — the three reserved
@@ -294,18 +295,18 @@ about the *rail*, and this one answers a question about the *route*.
 
 **Where the evidence is:**
 
-| Claim | Test |
-|---|---|
-| the projection keeps a name and drops the rest | `an_account_holder_lookup_returns_a_name_and_nothing_else` (conformance, both rails), `a_basic_user_info_body_keeps_only_the_two_name_fields`, `nothing_but_the_name_survives_the_projection` |
-| a number with no holder is `Ok(None)`, not an error | `a_number_the_rail_has_no_record_of_is_not_an_error` (conformance, both rails) |
-| a rail that cannot be reached is never `Ok(None)`, and keeps its source chain | `a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder` (conformance, both rails) |
-| an oversized body is refused at the cap | `an_oversized_account_holder_body_is_refused_at_the_cap` (conformance, both rails) |
-| no personal data reaches a log line | `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing` (conformance), `a_lookup_logs_a_masked_number_and_never_a_name` (`vpay-api`) |
-| Orange answers `Unsupported` rather than a token | all five conformance cases above, on their `orange_money` parameterisation |
-| the whole `account_holder_outcome` table | `the_account_holder_table_maps_every_documented_status` (`vpay-adapter-mtn-momo`) |
-| the route's validation and refusals | `a_missing_or_malformed_parameter_names_itself`, `a_rail_that_has_no_such_api_is_a_400_naming_the_parameter`, `a_disabled_or_unknown_rail_is_the_same_refusal_as_an_incapable_one` |
-| every outcome counted, no label carrying the number or the name | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name` |
-| the route, end to end, over a socket, against a real WireMock MTN | `backends/tests/integration/tests/account_holders.rs` — six cases |
-| both SDKs speak the same query string and read the same object | `docs/sdks/parity.md`, five `account_holders` rows |
+| Claim                                                                         | Test                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the projection keeps a name and drops the rest                                | `an_account_holder_lookup_returns_a_name_and_nothing_else` (conformance, both rails), `a_basic_user_info_body_keeps_only_the_two_name_fields`, `nothing_but_the_name_survives_the_projection` |
+| a number with no holder is `Ok(None)`, not an error                           | `a_number_the_rail_has_no_record_of_is_not_an_error` (conformance, both rails)                                                                                                                |
+| a rail that cannot be reached is never `Ok(None)`, and keeps its source chain | `a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder` (conformance, both rails)                                                                                         |
+| an oversized body is refused at the cap                                       | `an_oversized_account_holder_body_is_refused_at_the_cap` (conformance, both rails)                                                                                                            |
+| no personal data reaches a log line                                           | `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing` (conformance), `a_lookup_logs_a_masked_number_and_never_a_name` (`vpay-api`)                                        |
+| Orange answers `Unsupported` rather than a token                              | all five conformance cases above, on their `orange_money` parameterisation                                                                                                                    |
+| the whole `account_holder_outcome` table                                      | `the_account_holder_table_maps_every_documented_status` (`vpay-adapter-mtn-momo`)                                                                                                             |
+| the route's validation and refusals                                           | `a_missing_or_malformed_parameter_names_itself`, `a_rail_that_has_no_such_api_is_a_400_naming_the_parameter`, `a_disabled_or_unknown_rail_is_the_same_refusal_as_an_incapable_one`            |
+| every outcome counted, no label carrying the number or the name               | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                        |
+| the route, end to end, over a socket, against a real WireMock MTN             | `backends/tests/integration/tests/account_holders.rs` — six cases                                                                                                                             |
+| both SDKs speak the same query string and read the same object                | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                            |
 
 See [../status.md](../status.md).

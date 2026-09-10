@@ -59,7 +59,7 @@ for **neither** of the three this task needs. So they are written here, and
 `NoClientAssertionStore`/`NoDpopReplayStore` are the pattern they follow.
 
 (A note for whoever reads `code.rs:116` and worries about coherence: the
-blanket impl is over `S: KvStore<..> + AtomicConsume<..>`, and a *local* unit
+blanket impl is over `S: KvStore<..> + AtomicConsume<..>`, and a _local_ unit
 struct that implements neither is a disjoint impl rustc accepts. This was the
 one thing I expected to fight and did not — `cargo check` produced exactly one
 error on first compile, an arity mismatch on `RefreshToken::new`, which gained
@@ -69,25 +69,25 @@ a `jkt` parameter at 0.7.1.)
 
 `backends/crates/vpay-api/src/op/refusing_stores.rs`:
 
-* `UnservedGrant` — a three-variant enum whose `grant_type()` returns the wire
+- `UnservedGrant` — a three-variant enum whose `grant_type()` returns the wire
   spelling. An enum, not three `&'static str`s, so a fourth grant is a compile
   error at every match rather than a fourth string.
-* `UnservedGrantError` — `#[derive(thiserror::Error)]`, `Display` names the
-  grant *and* the trait method (`store_code` reaching this is a different
+- `UnservedGrantError` — `#[derive(thiserror::Error)]`, `Display` names the
+  grant _and_ the trait method (`store_code` reaching this is a different
   defect from `consume_code` reaching it), `impl Classify` →
   `Category::NotImplemented`. Not `Internal`: `Internal` claims vpay broke,
   and what happened is that a capability vpay never offered was asked for.
   `public_message()` is the category's generic sentence and leaks neither the
   grant nor the method (ADR-0011), which is its own test.
-* `RefusingAuthorizationCodeStore`, `RefusingRefreshTokenStore`,
+- `RefusingAuthorizationCodeStore`, `RefusingRefreshTokenStore`,
   `RefusingDeviceCodeStore` — twelve async methods, no SQL, each returning
   `Err(OpError::GrantTypeNotPermitted)` after a `tracing::error!` carrying the
   whole `UnservedGrantError`. `GrantTypeNotPermitted` rather than `Storage`
   because nothing is wrong with any storage and a log reader who sees "storage
   error" starts checking Postgres; it makes no difference to the caller, since
-  every grant handler maps *any* store error to `server_error` without
+  every grant handler maps _any_ store error to `server_error` without
   inspecting it.
-* Four doctests and four unit tests.
+- Four doctests and four unit tests.
 
 **Why this is not the stub AGENTS.md rule 1 forbids**, spelled out because it
 is the one judgement call in the change: an "always empty" store answers
@@ -100,15 +100,15 @@ naming the grant. `verify-no-mocks` is unchanged and green.
 
 Two independent arguments, then the measurement.
 
-* Each of the three grant handlers checks `client.allows_grant_type(..)` as
+- Each of the three grant handlers checks `client.allows_grant_type(..)` as
   its **first statement** (`default_handle_authorization_code`,
   `default_handle_refresh_token`, `handle_device_code`, all in
   `authkestra-op-0.7.1/src/handlers/token.rs`), and a merchant registration
   can only ever declare `client_credentials`
   (`vpay_config::ConfigError::DisallowedMerchantGrant`).
-* `handle_client_credentials` — the one handler that does run — **is not
+- `handle_client_credentials` — the one handler that does run — **is not
   passed the store at all**: its signature takes `req, client_id, client,
-  config, tokens, client_cert_der` and no `op_store`. No configuration change
+config, tokens, client_cert_der` and no `op_store`. No configuration change
   can route the served grant to a refusing store.
 
 The test is `merchant_token_flow.rs` case (i),
@@ -138,7 +138,7 @@ and after the swap, in the full file:
 **The brief predicted `unsupported_grant_type` and the measurement says
 `unauthorized_client`.** The test asserts what was measured. The reason is the
 `allows_grant_type` check above: authkestra dispatches on the grant string
-first and consults `grant_types_supported` never, so a grant it *knows* but
+first and consults `grant_types_supported` never, so a grant it _knows_ but
 this client may not use is `unauthorized_client`, not `unsupported_grant_type`.
 
 ## 4. The sqlx bump
@@ -157,7 +157,7 @@ $ cargo deny check
 advisories ok, bans ok, licenses ok, sources ok
 ```
 
-`cargo tree -d` lists no sqlx *version* duplicate. It does print
+`cargo tree -d` lists no sqlx _version_ duplicate. It does print
 `sqlx-core v0.9.0 (*)` twice — the same version twice, which it also does for
 `base64 v0.22.1` and `log v0.4.33` on this workspace; that is a
 feature-resolution artefact of `-d` on a multi-member workspace, not two
@@ -168,14 +168,14 @@ fresh `cargo check` on this branch and re-audited site by site here rather
 than taken on trust. **Two things sample 12 could not have found**, because
 `vpay-api` did not compile there and so neither did the integration crate:
 
-* `postgres_smoke.rs` has two more dynamic statements (`{table}`,
+- `postgres_smoke.rs` has two more dynamic statements (`{table}`,
   `{expires_at_clause}`) — an identifier and a SQL expression, neither of
   which can be a bind parameter. Wrapped, each with its own audit comment.
-* `payment_intents.rs`'s `count(pool, sql, bind)` helper took `sql: &str`,
+- `payment_intents.rs`'s `count(pool, sql, bind)` helper took `sql: &str`,
   which no longer satisfies `SqlSafeStr`. Every caller passes a literal, so
   the parameter became `&'static str` — the compiler keeps doing the checking
   rather than the check moving into a comment. This is the one place the bump
-  made the code *stronger* rather than merely different.
+  made the code _stronger_ rather than merely different.
 
 Feature list copied across unchanged (checked against both releases' own
 manifests); `webpki-roots` 0.26.11 → 1.0.9, still CDLA-Permissive-2.0, so
@@ -205,11 +205,11 @@ must still be `crate::charges::COLUMNS`).
 
 **Proven to fire by three mutations, each reverted:**
 
-| mutation | failing test |
-|---|---|
-| `format!("… WHERE payment_intent_id = '{payment_intent_id}'")` in `charges::get_for_intent` | `every_interpolation_into_a_statement_is_a_crate_constant` — *"charges.rs: a statement interpolates `{payment_intent_id}`, which is neither a `const …: &str` in this crate nor one of the two audited exceptions"* |
-| `let direction = if backwards { "ASC" } else { "DESC".to_owned().leak() };` | `the_audited_non_constants_are_still_what_the_audit_says_they_are` — *"events.rs interpolates `{direction}` but no longer contains …"* |
-| `AssertSqlSafe(format!("UPDATE jobs SET locked_by = '{worker_id}'"))` in `jobs::claim` | `every_assert_sql_safe_wraps_the_variable_the_audit_covers` |
+| mutation                                                                                    | failing test                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format!("… WHERE payment_intent_id = '{payment_intent_id}'")` in `charges::get_for_intent` | `every_interpolation_into_a_statement_is_a_crate_constant` — _"charges.rs: a statement interpolates `{payment_intent_id}`, which is neither a `const …: &str` in this crate nor one of the two audited exceptions"_ |
+| `let direction = if backwards { "ASC" } else { "DESC".to_owned().leak() };`                 | `the_audited_non_constants_are_still_what_the_audit_says_they_are` — _"events.rs interpolates `{direction}` but no longer contains …"_                                                                              |
+| `AssertSqlSafe(format!("UPDATE jobs SET locked_by = '{worker_id}'"))` in `jobs::claim`      | `every_assert_sql_safe_wraps_the_variable_the_audit_covers`                                                                                                                                                         |
 
 The third is the one that matters: without it, the audit is bypassed by not
 using the variable the audit looks at. Two further tests are controls on the
@@ -243,7 +243,7 @@ workspace**, and `schemas/vpay.cstack` is still outside the build graph.
 
 ## 7. What was given up, and the honest cost
 
-* **`backends/tests/integration/tests/authkestra_op_smoke.rs` (3 tests) is
+- **`backends/tests/integration/tests/authkestra_op_smoke.rs` (3 tests) is
   deleted.** It drove `SqlxOpStore`'s hand-built SQL against migrations
   0006/0013 to prove that transcription faithful, and it cannot compile
   without the feature. It proved a property of a type this system no longer
@@ -251,28 +251,28 @@ workspace**, and `schemas/vpay.cstack` is still outside the build graph.
   exist and that `oauth_codes.client_id`'s foreign key fires — a schema check,
   not a store-compatibility check, and the difference is recorded in
   `docs/status.md` against the row that used to claim the stronger thing.
-* **The four `authkestra.*` tables are now unread and unwritten by any code
+- **The four `authkestra.*` tables are now unread and unwritten by any code
   path.** Dropping them needs a new migration and is left to the maintainer.
-* **Migrations 0006 and 0013 still cite the deleted test in their header
+- **Migrations 0006 and 0013 still cite the deleted test in their header
   comments, and were deliberately left wrong.** `sqlx::migrate!` checksums a
   migration's entire file content, comments included, so editing an applied
   one turns the next boot into a version mismatch. The correction is in
   `docs/status.md`.
-* **`expected_suites` moved 42 → 41.** This is the first entry in that
-  justfile comment's long history to record a binary being *removed*, and the
+- **`expected_suites` moved 42 → 41.** This is the first entry in that
+  justfile comment's long history to record a binary being _removed_, and the
   reasoning is written there rather than only here.
 
 ## 8. Reserved for the maintainer
 
-* **Ask authkestra upstream to move `authkestra-store-sqlx` to sqlx 0.9.** An
+- **Ask authkestra upstream to move `authkestra-store-sqlx` to sqlx 0.9.** An
   external issue or PR for the maintainer to file, not for an agent. It is
   what would make a real SQL-backed store available again if `/v1` ever mounts
   one of the three grants. (`authkestra-op` 0.8.1, published 2026-09-05,
   deletes `src/sqlx_store.rs` and moves it to `authkestra-store-sqlx`, which
   is still `sqlx ^0.8` — so bumping the authkestra family does not help.)
-* **Whether to drop the four `authkestra.*` tables**, now that nothing reads
+- **Whether to drop the four `authkestra.*` tables**, now that nothing reads
   them.
-* **Whether to adopt `cratestack-sqlx` at all**, now that it resolves. This
+- **Whether to adopt `cratestack-sqlx` at all**, now that it resolves. This
   pass made it possible and started nothing.
 
 ## 9. The gate
@@ -327,22 +327,23 @@ prints `vpay-server 0.1.0`, image **16 MB** (`FROM scratch`, musl static).
 
 ## 10. What I did not do
 
-* **Did not implement real OP storage.** The three stores refuse; they store
+- **Did not implement real OP storage.** The three stores refuse; they store
   nothing. If `/v1` ever mounts one of those grants, this is where the work
   starts.
-* **Did not bump the authkestra family** to 0.8.1. It does not unblock
+- **Did not bump the authkestra family** to 0.8.1. It does not unblock
   anything (§8) and is a second dependency migration with its own breaking
   surface.
-* **Did not drop the four unused `authkestra.*` tables**, or touch any
+- **Did not drop the four unused `authkestra.*` tables**, or touch any
   migration file.
-* **Did not adopt CrateStack.** The scratch crate that proves the bump unlocks
+- **Did not adopt CrateStack.** The scratch crate that proves the bump unlocks
   it was deleted; no CrateStack crate is in this workspace.
-* **Did not verify the 1.94 MSRV by compiling** with a 1.94 toolchain. It is a
+- **Did not verify the 1.94 MSRV by compiling** with a 1.94 toolchain. It is a
   metadata floor, as the comment in `Cargo.toml` says.
-* **Did not run `just test-e2e`, `just helm-check` or `just demo`.** None is
+- **Did not run `just test-e2e`, `just helm-check` or `just demo`.** None is
   part of `just ci`; the first needs Cypress's CDN and the second needs the
   network.
-* **Did not push, and did not open a PR.**
+- **Did not push, and did not open a PR.**
+
 ## 11. Rebased onto `8d907f9` (2026-09-05)
 
 `master` moved while this branch sat: [PR
@@ -356,8 +357,8 @@ with **one conflict**.
 
 **`justfile` — the only conflict, resolved by keeping both sides.** Both
 branches appended a dated entry to the comment block above
-`expected_ignored`/`expected_suites`: #44's recording *1271 total, 42 test
-binaries*, and this branch's recording *42 → 41* when
+`expected_ignored`/`expected_suites`: #44's recording _1271 total, 42 test
+binaries_, and this branch's recording _42 → 41_ when
 `authkestra_op_smoke.rs` was deleted. Neither block was dropped — each names
 the base it was measured on, and deleting either would have erased a measured
 fact to make an arithmetic chain look tidy. `expected_suites` is **41**: #44's
@@ -416,10 +417,10 @@ off `PATH`); `worker_kill9` **2/2** (35.2 s and 6.0 s).
 **Both decisive mutations re-run on the rebased tree**, because a rebase is
 exactly when a gate quietly stops gating:
 
-| # | Mutation | Observed |
-|---|---|---|
-| M4 | `authkestra-op = { workspace = true, features = ["sqlx-postgres"] }` in `vpay-api` | `cargo tree -d`: `sqlx v0.8.6` beside `sqlx v0.9.0`. `cargo deny check bans`: `error[banned]: crate 'sqlx = 0.8.6' is explicitly banned`, `error[banned]: crate 'sqlx-core = 0.8.6' …`, **bans FAILED, exit 2** |
-| M1 | `charges::get_for_intent` interpolates `payment_intent_id` as a positional `{}` with the bind removed | **FAIL** `sql_audit::tests::every_interpolation_into_a_statement_is_a_crate_constant` — "charges.rs: a statement uses a positional `{}` capture, whose value comes from the argument list and cannot be checked here" |
+| #   | Mutation                                                                                              | Observed                                                                                                                                                                                                              |
+| --- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M4  | `authkestra-op = { workspace = true, features = ["sqlx-postgres"] }` in `vpay-api`                    | `cargo tree -d`: `sqlx v0.8.6` beside `sqlx v0.9.0`. `cargo deny check bans`: `error[banned]: crate 'sqlx = 0.8.6' is explicitly banned`, `error[banned]: crate 'sqlx-core = 0.8.6' …`, **bans FAILED, exit 2**       |
+| M1  | `charges::get_for_intent` interpolates `payment_intent_id` as a positional `{}` with the bind removed | **FAIL** `sql_audit::tests::every_interpolation_into_a_statement_is_a_crate_constant` — "charges.rs: a statement uses a positional `{}` capture, whose value comes from the argument list and cannot be checked here" |
 
 Both reverted (`git checkout --` on the mutated files plus a `cargo metadata`
 to restore `Cargo.lock`); `cargo deny check bans` is **bans ok** and

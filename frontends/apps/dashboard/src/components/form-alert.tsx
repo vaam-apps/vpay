@@ -1,4 +1,4 @@
-import { Alert, Text } from '@vpay/ui';
+import { Alert, Text } from "@vpay/ui";
 
 /** What {@link FormAlert} renders, or nothing. */
 export interface FormAlertProps {

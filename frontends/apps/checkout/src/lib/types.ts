@@ -15,20 +15,20 @@
  * is what stops the return page from ever calling `confirm`: there is no
  * secret on the object to pass.
  */
-import type { PaymentIntent } from '@vaam-apps/vpay-stripe-js';
+import type { PaymentIntent } from "@vaam-apps/vpay-stripe-js";
 
 export type { PaymentIntent };
 
 /** The intent as the return route renders it: every public key, no secret. */
-export type PublicPaymentIntent = Omit<PaymentIntent, 'client_secret'>;
+export type PublicPaymentIntent = Omit<PaymentIntent, "client_secret">;
 
 /** D10: `open`, `complete` or `expired`. Nothing else is a session status. */
-export type CheckoutSessionStatus = 'open' | 'complete' | 'expired';
+export type CheckoutSessionStatus = "open" | "complete" | "expired";
 
 /** D10: `unpaid`, `paid` or `failed`. */
-export type CheckoutSessionPaymentStatus = 'unpaid' | 'paid' | 'failed';
+export type CheckoutSessionPaymentStatus = "unpaid" | "paid" | "failed";
 
-export type CheckoutUiMode = 'hosted' | 'embedded';
+export type CheckoutUiMode = "hosted" | "embedded";
 
 /**
  * `checkout.session`'s own fields — everything except the intent.
@@ -46,7 +46,7 @@ export type CheckoutUiMode = 'hosted' | 'embedded';
  */
 export interface CheckoutSession {
   id: string;
-  object: 'checkout.session';
+  object: "checkout.session";
   livemode: boolean;
   ui_mode: CheckoutUiMode;
   status: CheckoutSessionStatus;
@@ -115,12 +115,12 @@ export interface CheckoutOriginsView {
  * carrying detail no payer should read).
  */
 export type CheckoutErrorCode =
-  | 'error.session_not_found'
-  | 'error.network'
-  | 'error.unexpected'
-  | 'error.missing_key'
-  | 'error.missing_secret'
-  | 'error.missing_return_token';
+  | "error.session_not_found"
+  | "error.network"
+  | "error.unexpected"
+  | "error.missing_key"
+  | "error.missing_secret"
+  | "error.missing_return_token";
 
 export interface CheckoutError {
   code: CheckoutErrorCode;
@@ -132,4 +132,5 @@ export interface CheckoutError {
   serverCode?: string | undefined;
 }
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: CheckoutError };
+export type Result<T> =
+  { ok: true; value: T } | { ok: false; error: CheckoutError };

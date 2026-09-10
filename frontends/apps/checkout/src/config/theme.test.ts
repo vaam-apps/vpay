@@ -22,9 +22,9 @@
  * inside a single `it` — so a single bad hex or a single failed contrast
  * ratio is reported by name rather than folded into one assertion.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
-import { THEME, themeStyleSheet } from './theme';
+import { THEME, themeStyleSheet } from "./theme";
 
 // --- An independent OKLCh round trip, used only to verify contrast. -------
 // Not imported from theme.ts: theme.ts no longer does this arithmetic at
@@ -33,11 +33,14 @@ import { THEME, themeStyleSheet } from './theme';
 // will produce from theme.ts's formula.
 
 function linearize(channel: number): number {
-  return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+  return channel <= 0.04045
+    ? channel / 12.92
+    : Math.pow((channel + 0.055) / 1.055, 2.4);
 }
 
 function hexToLinearRgb(hex: string): [number, number, number] {
-  const channel = (start: number): number => Number.parseInt(hex.slice(start, start + 2), 16) / 255;
+  const channel = (start: number): number =>
+    Number.parseInt(hex.slice(start, start + 2), 16) / 255;
   return [linearize(channel(1)), linearize(channel(3)), linearize(channel(5))];
 }
 
@@ -82,7 +85,10 @@ function relativeLuminance([r, g, b]: [number, number, number]): number {
 }
 
 /** WCAG contrast ratio between two linear-light colours. */
-function contrastRatio(a: [number, number, number], b: [number, number, number]): number {
+function contrastRatio(
+  a: [number, number, number],
+  b: [number, number, number],
+): number {
   const la = relativeLuminance(a);
   const lb = relativeLuminance(b);
   const lighter = Math.max(la, lb);
@@ -108,9 +114,12 @@ function isDark(hex: string): boolean {
  * function is the independent check of that rule rather than a restatement
  * of it. Returns linear-light sRGB, ready for `relativeLuminance`.
  */
-function mixTowardAchromatic(hex: string, towards: 'white' | 'black'): [number, number, number] {
+function mixTowardAchromatic(
+  hex: string,
+  towards: "white" | "black",
+): [number, number, number] {
   const oklab = linearRgbToOklab(hexToLinearRgb(hex));
-  const targetL = towards === 'white' ? 1 : 0;
+  const targetL = towards === "white" ? 1 : 0;
   const mixed: Oklab = {
     l: oklab.l + 0.8 * (targetL - oklab.l),
     a: oklab.a * 0.2,
@@ -120,24 +129,31 @@ function mixTowardAchromatic(hex: string, towards: 'white' | 'black'): [number, 
 }
 
 /** The colours `theme.ts`'s doc comment and this suite both use as worked examples. */
-const COLOURS = ['#f3c623', '#ff0000', '#ffffff', '#000000', '#1d4ed8', '#00a651'];
+const COLOURS = [
+  "#f3c623",
+  "#ff0000",
+  "#ffffff",
+  "#000000",
+  "#1d4ed8",
+  "#00a651",
+];
 
 /** Values `settings.ts` would already have refused before this module sees them, checked here too. */
 const NOT_A_COLOUR = [
-  '',
-  '#fff',
-  'f3c623',
-  '#f3c62',
-  '#f3c6233',
-  'red',
-  '#gggggg',
-  '#f3c62 3',
-  'javascript:alert(1)',
-  '</style><script>',
+  "",
+  "#fff",
+  "f3c623",
+  "#f3c62",
+  "#f3c6233",
+  "red",
+  "#gggggg",
+  "#f3c62 3",
+  "javascript:alert(1)",
+  "</style><script>",
 ];
 
-describe('themeStyleSheet', () => {
-  it('emits nothing at all when no colour is configured', () => {
+describe("themeStyleSheet", () => {
+  it("emits nothing at all when no colour is configured", () => {
     expect(themeStyleSheet(null)).toBeNull();
   });
 
@@ -147,21 +163,23 @@ describe('themeStyleSheet', () => {
     });
   }
 
-  it('is case-insensitive about the hex digits', () => {
-    expect(themeStyleSheet('#F3C623')).toBe(
+  it("is case-insensitive about the hex digits", () => {
+    expect(themeStyleSheet("#F3C623")).toBe(
       ':root[data-theme="bumblebee"]{--color-primary:#F3C623;' +
-        '--color-primary-content:color-mix(in oklch, #F3C623 20%, black);}',
+        "--color-primary-content:color-mix(in oklch, #F3C623 20%, black);}",
     );
   });
 
-  it('scopes the override to the theme the app actually renders under', () => {
-    expect(THEME).toBe('bumblebee');
-    expect(themeStyleSheet('#1d4ed8')).toContain(':root[data-theme="bumblebee"]{');
+  it("scopes the override to the theme the app actually renders under", () => {
+    expect(THEME).toBe("bumblebee");
+    expect(themeStyleSheet("#1d4ed8")).toContain(
+      ':root[data-theme="bumblebee"]{',
+    );
   });
 
   for (const hex of COLOURS) {
-    it(`emits ${hex} as --color-primary, verbatim, and mixes toward ${isDark(hex) ? 'white' : 'black'}`, () => {
-      const towards = isDark(hex) ? 'white' : 'black';
+    it(`emits ${hex} as --color-primary, verbatim, and mixes toward ${isDark(hex) ? "white" : "black"}`, () => {
+      const towards = isDark(hex) ? "white" : "black";
       expect(themeStyleSheet(hex)).toBe(
         `:root[data-theme="bumblebee"]{--color-primary:${hex};` +
           `--color-primary-content:color-mix(in oklch, ${hex} 20%, ${towards});}`,
@@ -174,12 +192,12 @@ describe('themeStyleSheet', () => {
       const sheet = themeStyleSheet(hex);
       expect(sheet).not.toBeNull();
       // Everything after the selector: the values this module composed.
-      const values = sheet!.slice(sheet!.indexOf('{'));
+      const values = sheet!.slice(sheet!.indexOf("{"));
       expect(values).toMatch(/^[0-9a-z#%.,()\s{}:;-]+$/i);
-      expect(values).not.toContain('<');
-      expect(values).not.toContain('script');
+      expect(values).not.toContain("<");
+      expect(values).not.toContain("script");
       // The colour must appear exactly as given — re-emitted, not rewritten.
-      expect(values.match(new RegExp(hex, 'gi'))).toHaveLength(2);
+      expect(values.match(new RegExp(hex, "gi"))).toHaveLength(2);
     });
   }
 
@@ -187,9 +205,12 @@ describe('themeStyleSheet', () => {
     it(`clears WCAG AA contrast (4.5:1) for the foreground it computes for ${hex}`, () => {
       const dark = isDark(hex);
       const original = hexToLinearRgb(hex);
-      const foreground = mixTowardAchromatic(hex, dark ? 'white' : 'black');
+      const foreground = mixTowardAchromatic(hex, dark ? "white" : "black");
       const ratio = contrastRatio(original, foreground);
-      expect(ratio, `${hex}: contrast ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+      expect(
+        ratio,
+        `${hex}: contrast ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(4.5);
     });
   }
 });
