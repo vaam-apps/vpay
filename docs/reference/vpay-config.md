@@ -193,6 +193,18 @@ typed leaf — `ConfigError::MissingPath`, or the binary's own `StartupError` �
 that `exit_code_for` classifies as `Category::Configuration` and turns into exit
 `78`, "fix the deploy".
 
+**That sentence was written before it was true of all three, and it is true
+of all three since 2026-09-10** (issue #87). `--database-url` raised a bare
+`anyhow` context string until then, so it fell through to
+`Category::Internal` and exit `1` while this paragraph said otherwise — the
+gap `docs/status.md`'s CLI row had recorded since 2026-09-02. It is
+`StartupError::MissingDatabaseUrl` now, raised from `main.rs`'s `boot` and
+from `worker.rs`'s, and `a_missing_database_url_is_exit_78_naming_the_problem` and its `worker::` twin in `backends/apps/vpay-server/tests/cli.rs` fail if either site goes back.
+The variable is `DATABASE_URL`, not `VPAY_DATABASE_URL`: sqlx's spelling,
+and the one place in this CLI where the `VPAY_` prefix does not apply, which
+is worth knowing because a message that gets it wrong sends an operator to
+export a variable nothing reads.
+
 Which inputs a process requires is a property of *that process*, which is why
 `StartupError` is defined in the binary rather than in this crate. Which inputs
 a *mode* requires is likewise a property of that mode, and the CLI still says

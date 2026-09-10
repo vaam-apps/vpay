@@ -388,17 +388,21 @@ gauge` line a minute. Whether the rail either of them reaches is MTN, Orange or
 a WireMock stub is a line in `config/application.yml`, and to date it has only
 ever been a stub.
 
-`--config` and `--database-url` are required by both binaries and
-`--oauth-signing-key-file` by `vpay-server` alone (the worker issues no
+`--config` and `--database-url` are required by every mode and
+`--oauth-signing-key-file` by the serve mode alone (the worker issues no
 tokens and does not accept the flag); all three are genuinely consumed, and
-a missing one refuses to start before the port is bound. **Two of the three
-exit `78` and one does not:** a missing `--config` or
-`--oauth-signing-key-file` is `78` (`EX_CONFIG` — "fix your configuration"),
-but a missing `--database-url` exits **`1`**, because `main` raises a bare
-`anyhow` error there and `exit_code_for` has nothing to classify. Measured on
-this commit, both binaries. It is a known gap, recorded in
-[`docs/status.md`](docs/status.md)'s CLI row; do not build a probe or a
-systemd unit on "78 means the operator forgot something". The URL
+a missing one refuses to start before the port is bound. **All three exit
+`78`** (`EX_CONFIG` — "fix your configuration"), in `serve` and in `worker`
+alike, so a supervisor may read `78` as "the operator forgot something" and
+`69` as "wait for Postgres". ~~Two of the three exit `78` and one does not:
+a missing `--database-url` exits **`1`**, because `main` raises a bare
+`anyhow` error there and `exit_code_for` has nothing to classify.~~
+**Corrected 2026-09-10 (issue #87): that was true until this commit and is
+not now.** `--database-url` raises a typed
+`StartupError::MissingDatabaseUrl` from both call sites, and the two
+subprocess cases that fail if either one reverts are `a_missing_database_url_is_exit_78_naming_the_problem` and its `worker::` twin in `backends/apps/vpay-server/tests/cli.rs`.
+Measured by hand as well, on the shipping binary: `78` in both modes, with a
+message naming `--database-url` and `DATABASE_URL`. The URL
 a merchant's tokens carry comes from `Config`'s `deployment.public_base_url` in
 the YAML, which the OP's issuer is derived from
 (`vpay_api::op::issuer_for` → `{public_base_url}/v1/oauth`). There is no
