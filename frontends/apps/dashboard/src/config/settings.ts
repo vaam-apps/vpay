@@ -53,6 +53,26 @@ export interface DashboardConfig {
    * configuration mistake.
    */
   readonly scope: string;
+  /**
+   * The origin a browser reaches this dashboard on
+   * (`https://dash.example`), or `null` if the deployment has not said.
+   *
+   * Used by **one** thing: the origin check in front of every server action
+   * (`server/csrf.ts`, issue #88 item 4). It is compared against the `Origin`
+   * header, and it exists because Next's own check compares `Origin` against
+   * `X-Forwarded-Host` — two values the caller sets, which agree whenever
+   * the caller wants them to.
+   *
+   * **Optional**, unlike every other field here, and the reason is stated
+   * rather than assumed: making it required would refuse every action on
+   * every deployment that has not been reconfigured, including this
+   * repository's own compose stacks. With it unset the check falls back to
+   * the `Host` header — never `X-Forwarded-Host`, so still stronger than
+   * Next's — which is right for a dashboard reached directly and wrong
+   * behind a proxy that rewrites `Host`. `docs/status.md` carries it as the
+   * follow-up.
+   */
+  readonly publicOrigin: string | null;
 }
 
 /** One missing or unusable setting, in the words an operator needs. */
@@ -77,6 +97,11 @@ export const CLIENT_ID_VAR = 'VPAY_DASHBOARD_CLIENT_ID';
 export const REDIRECT_URI_VAR = 'VPAY_DASHBOARD_REDIRECT_URI';
 /** The registered read-only scope. */
 export const SCOPE_VAR = 'VPAY_DASHBOARD_SCOPE';
+/**
+ * The origin a browser reaches this dashboard on. **Optional** — see
+ * [`DashboardConfig.publicOrigin`].
+ */
+export const PUBLIC_ORIGIN_VAR = 'VPAY_DASHBOARD_PUBLIC_ORIGIN';
 
 /**
  * A value that is present and not whitespace, or `null`.
@@ -166,6 +191,11 @@ export function assembleConfig(env: Readonly<Record<string, string | undefined>>
       clientId,
       redirectUri,
       scope,
+      // Not validated here and not defaulted. `server/csrf.ts` normalises it
+      // and treats anything that is not an absolute http(s) URL as unset,
+      // which is the same fail-closed reading a blank value gets: the
+      // fallback is the `Host` comparison, never an allow-everything.
+      publicOrigin: present(env[PUBLIC_ORIGIN_VAR]),
     },
     problems: [],
   };

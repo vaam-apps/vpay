@@ -245,6 +245,7 @@ still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 | `ingress-host` | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate |
 | `overlay-empty` | overlay ConfigMap requested with empty content, or an empty profile | The process treats an empty overlay as success and runs on baked sandbox placeholders |
 | `dashboard-not-templated` | `dashboard.enabled: true` | This chart templates no dashboard workload — see below |
+| `dashboard-public-origin` | `dashboard.publicOrigin` set to something that is not `scheme://host[:port]` — a bare hostname, a path, a trailing slash | It is compared against the `Origin` header a browser sends, byte for byte after normalisation; anything else never matches, and every server action on the dashboard is refused |
 | `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false` | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer |
 | `checkout-templated-when-enabled` | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment |
 | `networkpolicy-database` | NetworkPolicy enabled with no database destination, or with two | Locks the server away from its own database, and the symptom blames the database |
@@ -302,6 +303,26 @@ declares no `USER`, and Next's standalone server's filesystem behaviour under
 Deployment with an invented UID and a guessed set of `emptyDir` mounts is
 exactly the kind of thing this repository's AGENTS.md forbids. Deploy it
 separately until someone has actually run it.
+
+### `dashboard.publicOrigin`, which this chart also does not read
+
+Added 2026-09-10 (issue #88 item 4). The dashboard refuses any server action
+whose `Origin` is not `VPAY_DASHBOARD_PUBLIC_ORIGIN`; Next's own check
+compares `Origin` against `X-Forwarded-Host`, which is two caller-supplied
+values agreeing whenever the caller wants them to. Unset, the app falls back
+to comparing the `Host` header — never `X-Forwarded-Host`, so still stronger
+than Next's, and **wrong behind a proxy that rewrites `Host`**, where every
+action is refused.
+
+The key is here and no template consumes it, for the same reason
+`dashboard.enabled` is here: **the thing an operator has to get right should
+be named where they will look**, not discovered from a sign-in that refuses
+itself. What the chart *can* do about a value it does not read is check its
+shape, and it does — see the `dashboard-public-origin` guard.
+
+Making it **required** is the follow-up, and it belongs with the Deployment
+this chart does not yet write: a required value on a workload that does not
+exist would fail a deployment for a setting nothing reads.
 
 ## Values
 
@@ -434,6 +455,7 @@ no HPA either — nothing has measured what would drive one.
 | `logFilter` | `info` | `RUST_LOG` |
 | `logFormat` | `json` | `VPAY_LOG_FORMAT` — already the binary's default |
 | `dashboard.enabled` | `false` | `true` is a named template failure |
+| `dashboard.publicOrigin` | `""` | `VPAY_DASHBOARD_PUBLIC_ORIGIN` on the dashboard you deploy separately. **Nothing in this chart reads it** — see below. Empty means the app falls back to comparing `Host` |
 | `checkout.enabled` | `false` | vpay's own payment page. Off is a complete deployment — see below |
 | `checkout.replicaCount` | `2` | |
 | `checkout.port` | `3000` | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service |

@@ -570,11 +570,161 @@ pub struct StaffAuth {
     #[garde(skip)]
     #[serde(default)]
     pub totp_encryption_key: Option<String>,
+
+    /// The addresses whose `X-Forwarded-For` this deployment believes
+    /// (issue #79 item 1). Empty by default, which is the only safe default.
+    ///
+    /// Each entry is a literal address (`198.51.100.7`, `2001:db8::1`) or a
+    /// CIDR block (`10.0.0.0/8`, `fd00::/8`). An Ingress controller's pod
+    /// address is not stable, so a deployment that could only name literals
+    /// would have to be re-configured on every reschedule — which is how an
+    /// allow-list ends up as `0.0.0.0/0`.
+    ///
+    /// **Empty means the transport peer is the client address, always**, and
+    /// that is what ADR-0017 shipped: `X-Forwarded-For` is caller-supplied on
+    /// an unauthenticated route, and honouring it from an untrusted peer
+    /// hands an attacker a fresh per-IP budget per request. Behind a proxy
+    /// with this list empty the per-IP budget is the *deployment's*, which is
+    /// a real cost and the reason this field exists.
+    ///
+    /// Parsed by `vpay_api::staff::client_address::TrustedProxies::parse` at
+    /// boot rather than here, for [`Self::totp_encryption_key`]'s reason: the
+    /// syntax is decided where the matching is. An entry that does not parse
+    /// stops the staff login from mounting, loudly — see
+    /// `vpay-server`'s `staff_login`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+
+    /// How many attempts each rate-limited action gets per window
+    /// (issue #79 item 2). Absent means the documented defaults.
+    #[garde(dive)]
+    #[serde(default)]
+    pub rate_limits: RateLimits,
 }
 
-/// Prints presence and nothing else. Both fields are deployment secrets, and
-/// unlike [`ProviderHost`]'s redaction there is no useful non-secret half to
-/// show: a pepper has no structure and a key is 32 random bytes.
+/// One fixed-window budget: how many attempts, over how long.
+///
+/// A *policy per action* rather than one pair of numbers for the whole
+/// deployment, because the two actions counted are not the same kind of
+/// event. Signing in is something a person does from a login form having
+/// possibly mistyped a generated one-time password; re-presenting a current
+/// password is something a person does inside a session that has already
+/// proved two factors, where a wrong answer is far more likely to be an
+/// attacker holding a stolen cookie than a typo.
+///
+/// Configurable at all — rather than two constants — for one reason that is
+/// worth stating plainly, because "make the security parameter tunable" is
+/// usually a smell: the budget stopped being per-replica on 2026-09-10, and
+/// a number that was chosen for a limiter three replicas multiplied by three
+/// is not obviously the right number for a limiter that no longer does. A
+/// deployment that measures its own traffic can now say so without a release,
+/// and `docs/flows/dashboard-auth.md` carries the defaults and the argument
+/// for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct RateLimitPolicy {
+    /// Attempts admitted per window. The `n+1`th is refused with `429`.
+    ///
+    /// At least one: a policy of zero would refuse the first attempt, which
+    /// is a deployment nobody can sign in to, spelled as a number rather than
+    /// as a decision.
+    #[garde(range(min = 1))]
+    pub attempts: u32,
+    /// How long one window lasts, in seconds.
+    ///
+    /// At least one. Fixed, not sliding: an attacker who straddles a window
+    /// boundary gets twice `attempts` in one instant, which
+    /// `vpay_api::staff::rate_limit`'s header states rather than hides.
+    #[garde(range(min = 1))]
+    pub window_seconds: u32,
+}
+
+/// The policy for each rate-limited action.
+///
+/// A closed struct and not a map keyed by an action name: a typo'd key in a
+/// map is a policy that silently does not apply, and the failure is a limit
+/// that is looser than the operator wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct RateLimits {
+    /// Both legs of a sign-in — `POST /staff/login` and `POST /staff/totp` —
+    /// on one shared budget per email and per address.
+    ///
+    /// One budget across the two legs is ADR-0017 decision 2 and it is not
+    /// changed here: the second factor is six digits on a path with no
+    /// argon2id, so a separate budget for it would be a second, independent
+    /// allowance for the cheapest credential in the design to guess.
+    #[garde(dive)]
+    #[serde(default = "RateLimits::default_sign_in")]
+    pub sign_in: RateLimitPolicy,
+
+    /// The **current-password** check on `POST /staff/password`
+    /// (issue #79 item 3).
+    ///
+    /// Its own budget because its own key is: a password change is counted
+    /// per *session*, not per email or per address, because the caller has
+    /// already presented a session token and that is the narrowest thing
+    /// that identifies them. Tighter than [`Self::sign_in`] because there is
+    /// no one-time password to mistype here — the person is typing a
+    /// password they chose.
+    #[garde(dive)]
+    #[serde(default = "RateLimits::default_change_password")]
+    pub change_password: RateLimitPolicy,
+}
+
+impl RateLimits {
+    /// Ten attempts per five minutes.
+    ///
+    /// The numbers `vpay_api::staff::rate_limit` carried as constants until
+    /// 2026-09-10, unchanged. Ten is high enough that a person who mistypes a
+    /// generated one-time password twice and then fetches it from a terminal
+    /// is not locked out of their own first login, and low enough that online
+    /// guessing is not a strategy.
+    ///
+    /// Left at ten although the budget is now shared by every replica rather
+    /// than held per replica — which makes it strictly stricter than what
+    /// shipped — because lowering it is a *policy* change with a stated
+    /// rationale behind the current value, and this change's subject is where
+    /// the counter lives. `docs/status.md` records it as a maintainer
+    /// decision rather than taking it in passing.
+    fn default_sign_in() -> RateLimitPolicy {
+        RateLimitPolicy {
+            attempts: 10,
+            window_seconds: 300,
+        }
+    }
+
+    /// Five attempts per five minutes.
+    ///
+    /// Half of [`Self::default_sign_in`], for the reason
+    /// [`Self::change_password`] gives: nothing here is a printed password
+    /// somebody is copying by hand.
+    fn default_change_password() -> RateLimitPolicy {
+        RateLimitPolicy {
+            attempts: 5,
+            window_seconds: 300,
+        }
+    }
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        Self {
+            sign_in: Self::default_sign_in(),
+            change_password: Self::default_change_password(),
+        }
+    }
+}
+
+/// Prints presence for the two secrets and the values of everything else.
+///
+/// The secrets are redacted for the reason [`ProviderHost`]'s redaction does
+/// not apply to them: a pepper has no structure and a key is 32 random bytes,
+/// so there is no useful non-secret half to show. The proxy allow-list and
+/// the limits are the opposite — they are exactly what an operator wants to
+/// read back out of a startup log to check that the file they edited is the
+/// file this process loaded.
 impl fmt::Debug for StaffAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaffAuth")
@@ -586,6 +736,8 @@ impl fmt::Debug for StaffAuth {
                 "totp_encryption_key",
                 &self.totp_encryption_key.as_deref().map(|_| "[redacted]"),
             )
+            .field("trusted_proxies", &self.trusted_proxies)
+            .field("rate_limits", &self.rate_limits)
             .finish()
     }
 }

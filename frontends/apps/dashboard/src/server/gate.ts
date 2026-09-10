@@ -6,7 +6,7 @@
  * than something only a browser can exercise. Every branch below is one a
  * page takes *before* rendering anything.
  */
-import type { SessionResponse } from './api';
+import type { ApiFailure, SessionResponse } from './api';
 
 /** What `gateFor` decided. */
 export type Gate =
@@ -48,4 +48,44 @@ export function gateFor(session: SessionResponse): Gate {
     return { kind: 'needs-token', session };
   }
   return { kind: 'ready', session, accessToken: token };
+}
+
+/** What a refused read of `/dash/v1/staff/session` means for this browser. */
+export type Refusal =
+  /** The session is over: forget the cookie and show the form. */
+  | 'sign-out'
+  /** vpay could not answer. Keep the cookie and render the failure. */
+  | 'outage';
+
+/**
+ * Whether a refusal ends the session, or is a vpay this app could not reach.
+ *
+ * # `401` and nothing else ends a session
+ *
+ * `requireStaff` used to send a browser to `/signed-out` for **every**
+ * failure of the session read — and `server/api.ts` turns a `fetch` that
+ * rejected into an `ApiFailure` with `status: 0` rather than throwing, so
+ * "vpay is restarting", "the connection was reset" and "vpay answered `503`"
+ * were all indistinguishable from "your session is over". A rolling restart
+ * of vpay therefore signed every staff member out of the dashboard, and they
+ * could not tell that from having been signed out on purpose (issue #88
+ * item 2).
+ *
+ * `401` is the only status vpay answers for a session it has refused, and it
+ * answers it for **every** such refusal by design — absent, expired, idle,
+ * forged, disabled, at the wrong stage
+ * (`docs/flows/dashboard-auth.md`, "Every refusal is one answer"). So the
+ * mapping is exact rather than conservative: there is no other status that
+ * could mean the session is over, and every other status is something the
+ * deployment has to fix.
+ *
+ * **`403` is an outage here, not a sign-out**, and that is deliberate: on the
+ * session route it would mean vpay is behind something that refused this app,
+ * which is a deployment problem and not a fact about the person.
+ *
+ * The decisive mutation is widening this to `>= 400`, or to `!== 200`: the
+ * `503` case in `gate.test.ts` then reads `'sign-out'`.
+ */
+export function refusalFor(failure: ApiFailure): Refusal {
+  return failure.status === 401 ? 'sign-out' : 'outage';
 }

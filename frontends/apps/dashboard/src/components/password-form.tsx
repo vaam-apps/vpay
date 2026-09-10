@@ -32,10 +32,25 @@ export interface PasswordFormProps {
  * reach, and until it is done no `/dash/v1` token exists at all — which is
  * what stops a printed credential becoming a long-lived one by being ignored.
  *
- * There is no "current password" field, and that is vpay's design rather than
- * an omission: the session making the change has already presented both
- * factors, and re-checking a password this endpoint then overwrites would be
- * a second copy of that check in the wrong layer.
+ * # The current-password field, and the argument it replaces
+ *
+ * This component said, until 2026-09-10: "There is no 'current password'
+ * field, and that is vpay's design rather than an omission: the session
+ * making the change has already presented both factors." What that missed is
+ * *when*. A session lives up to twelve hours; the two factors were presented
+ * once, at its start. So the credential actually protecting the change was
+ * the session cookie on its own, and the reward for holding it for one
+ * request was the account (issue #79 item 3).
+ *
+ * The field is `autoComplete="current-password"` so a password manager offers
+ * the stored one rather than generating a new one into it — which is what
+ * `new-password` on this field would do, and would make the form unusable for
+ * exactly the people who use a manager.
+ *
+ * On a **first** sign-in the password in force is the one
+ * `vpay-server staff add` printed, so that is what goes here. The description
+ * says so, because "current password" reads like a password the person chose
+ * and on this one visit there is not one.
  */
 export function PasswordForm({ action }: PasswordFormProps) {
   const [state, submit, pending] = useActionState(action, NO_ERROR);
@@ -43,6 +58,22 @@ export function PasswordForm({ action }: PasswordFormProps) {
   return (
     <form action={submit}>
       <Stack direction="column" gap="md">
+        <Field invalid={state.error !== null}>
+          <FieldLabel htmlFor="dashboard-current-password">Current password</FieldLabel>
+          <Input
+            id="dashboard-current-password"
+            name="current_password"
+            type="password"
+            required
+            autoComplete="current-password"
+            autoFocus
+            disabled={pending}
+          />
+          <FieldDescription>
+            On your first sign-in this is the one-time password you were given.
+          </FieldDescription>
+        </Field>
+
         <Field invalid={state.error !== null}>
           <FieldLabel htmlFor="dashboard-new-password">New password</FieldLabel>
           <Input
@@ -52,7 +83,6 @@ export function PasswordForm({ action }: PasswordFormProps) {
             required
             minLength={MIN_PASSWORD_CHARS}
             autoComplete="new-password"
-            autoFocus
             disabled={pending}
           />
           <FieldDescription>

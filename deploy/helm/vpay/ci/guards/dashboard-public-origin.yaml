@@ -1,0 +1,10 @@
+# Violates exactly one guard: "dashboard-public-origin".
+#
+# A trailing slash, which is the likeliest way to get this wrong — it is how
+# a browser shows an address bar and how most people write a base URL, and it
+# is not what an `Origin` header ever contains. Left as-is it would refuse
+# every server action on the dashboard with one sentence and a container-log
+# line, which is a long way from the values file that caused it.
+dashboard:
+  enabled: false
+  publicOrigin: "https://dash.example/"

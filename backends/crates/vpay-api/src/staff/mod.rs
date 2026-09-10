@@ -57,6 +57,7 @@ use crate::ApiError;
 use crate::op::dashboard::DashboardOp;
 use crate::staff_auth::{StaffCredentials, tokens, totp};
 
+pub mod client_address;
 pub mod oauth;
 pub mod rate_limit;
 
@@ -82,8 +83,15 @@ pub struct StaffLogin {
     pub credentials: Arc<StaffCredentials>,
     /// The authorization-code grant these sessions feed.
     pub dashboard_op: Arc<DashboardOp>,
-    /// Per-email and per-IP sign-in limiting, this replica's.
-    pub limiter: Arc<rate_limit::SignInLimiter>,
+    /// Per-email and per-address limiting, **this deployment's** —
+    /// counted in Postgres since 2026-09-10, so every replica spends from
+    /// one budget (issue #79 item 2). `Copy`, not `Arc`: it holds two
+    /// policies and no state, because every counter is a row.
+    pub limiter: rate_limit::SignInLimiter,
+    /// The peers whose `X-Forwarded-For` this deployment believes
+    /// (issue #79 item 1). Empty by default, and empty means the transport
+    /// peer is the client address — which is what ADR-0017 shipped.
+    pub trusted_proxies: client_address::TrustedProxies,
     /// What an `otpauth://` URI names this deployment as, in an
     /// authenticator app's account list.
     ///
@@ -197,10 +205,36 @@ pub struct TotpResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PasswordRequest {
-    /// The new password. No "old password" field: the session making the
-    /// change has already presented both factors, and re-checking a password
-    /// this endpoint then overwrites would be a second copy of that check in
-    /// the wrong layer.
+    /// The password in force right now, re-presented (issue #79 item 3).
+    ///
+    /// # This field did not exist until 2026-09-10, and its absence was the finding
+    ///
+    /// The argument for leaving it out is written down in this repository and
+    /// it was wrong: "the session making the change has already presented
+    /// both factors, and re-checking a password this endpoint then overwrites
+    /// would be a second copy of that check in the wrong layer." What that
+    /// misses is *when* the two factors were presented. A session lives up to
+    /// twelve hours; the check they justify happened once, at its start. So
+    /// the credential actually protecting this endpoint was **the session
+    /// cookie alone** — an unattended browser, a stolen cookie, an XSS on the
+    /// dashboard's origin — and the reward for holding it for one request was
+    /// the account, permanently, because a password change also clears
+    /// `password_change_required`.
+    ///
+    /// Re-presenting the current password is what makes "change the password"
+    /// need something the browser does not already have. It is the same
+    /// reason every other product asks, and it is a *different* check from
+    /// the sign-in's, not a second copy of it: that one authenticated a
+    /// session, this one authorises one irreversible action inside it.
+    ///
+    /// `#[serde(default)]`, so an absent field is an empty string and is
+    /// refused by [`change_password`] with the one `401` this module answers
+    /// — rather than by `axum::Form`'s own rejection, which would be a
+    /// different status and a different body for the one case an attacker
+    /// tries first.
+    #[serde(default)]
+    pub current_password: String,
+    /// The password to set.
     pub new_password: String,
 }
 
@@ -289,6 +323,7 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 pub(crate) async fn login(
     State(state): State<crate::AppState>,
     peer: Option<axum::Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Form(request): Form<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     let login = state.staff_login()?;
@@ -298,8 +333,13 @@ pub(crate) async fn login(
     // Lower-cased once, here, and used for both the budget and the lookup.
     let email = request.email.trim().to_lowercase();
 
-    let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
-    if login.limiter.check(&email, peer_ip, now) == rate_limit::Verdict::Limited {
+    let address = caller_address(login, &headers, peer);
+    if login
+        .limiter
+        .check_sign_in(repositories, &email, address, now)
+        .await?
+        == rate_limit::Verdict::Limited
+    {
         tracing::warn!("a staff sign-in attempt was refused by the rate limiter");
         return Err(ApiError::StaffSignInRateLimited);
     }
@@ -461,8 +501,13 @@ pub(crate) async fn totp_step(
         // after the verification rather than before it because the
         // verification is one HMAC and the reason `login` checks first (not
         // spending an argon2id on an attempt over budget) does not apply.
-        let peer_ip = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
-        if login.limiter.check(&staff.email, peer_ip, now) == rate_limit::Verdict::Limited {
+        let address = caller_address(login, &headers, peer);
+        if login
+            .limiter
+            .check_sign_in(repositories, &staff.email, address, now)
+            .await?
+            == rate_limit::Verdict::Limited
+        {
             tracing::warn!("a staff second-factor attempt was refused by the rate limiter");
             return Err(ApiError::StaffSignInRateLimited);
         }
@@ -503,17 +548,47 @@ pub(crate) async fn totp_step(
     }))
 }
 
-/// Replaces the one-time password the operator printed.
+/// Replaces this staff member's password, having been shown the current one.
 ///
-/// Reachable only by an **authenticated** session — both factors — so the
-/// printed password cannot be replaced by whoever happens to have it without
-/// also holding the second factor.
+/// Reachable only by an **authenticated** session — both factors — *and* only
+/// by a caller who can re-present the password in force. See
+/// [`PasswordRequest::current_password`] for why the second requirement
+/// exists and what its absence cost.
+///
+/// # Every other session of this staff member is deleted
+///
+/// Changing a password is the thing a person does when they believe somebody
+/// else has their account, and until 2026-09-10 it did nothing whatsoever
+/// about that: the other browser's `staff_sessions` row was authenticated
+/// before the change, its `access_token` column was still readable, and it
+/// went on reading `/dash/v1` until the absolute bound up to twelve hours
+/// later. `vpay_db::StaffSessions::delete_others` is the fix, and the cascade
+/// on `oauth_authorization_codes.session_id` takes any code those sessions
+/// had in flight with them.
+///
+/// The caller's **own** session survives — see that method's contract.
+///
+/// # The order of the four checks, and why it is this one
+///
+/// 1. the session is authenticated,
+/// 2. the *new* password is inside the bounds,
+/// 3. the rate limiter,
+/// 4. the *current* password.
+///
+/// (2) before (3) so that fumbling one's own new password costs no budget:
+/// it is a statement about the caller's own input with no credential in it,
+/// and a person who types eleven characters twice must not be locked out of
+/// changing their password for five minutes. (3) before (4) for
+/// [`login`]'s reason and no other — an attempt over budget must not cost an
+/// argon2id verification, which is exactly what (4) is.
 ///
 /// # Errors
 ///
-/// [`ApiError::InvalidParam`] for a password outside the bounds;
-/// [`ApiError::StaffSignInRefused`] for a session that is not authenticated;
-/// [`ApiError::Db`] if Postgres fails.
+/// [`ApiError::InvalidParam`] for a new password outside the bounds;
+/// [`ApiError::StaffSignInRateLimited`] over the budget;
+/// [`ApiError::StaffSignInRefused`] for a session that is not authenticated
+/// and for a current password that is absent or wrong — the same `401`, this
+/// module's one answer; [`ApiError::Db`] if Postgres fails.
 pub(crate) async fn change_password(
     State(state): State<crate::AppState>,
     headers: HeaderMap,
@@ -523,7 +598,7 @@ pub(crate) async fn change_password(
     let repositories = state.repositories();
     let now = OffsetDateTime::now_utc();
 
-    let (_, staff) = authenticated_session(&state, &headers, now).await?;
+    let (session, staff) = authenticated_session(&state, &headers, now).await?;
 
     let length = request.new_password.chars().count();
     if !(MIN_PASSWORD_CHARS..=MAX_PASSWORD_CHARS).contains(&length) {
@@ -536,15 +611,56 @@ pub(crate) async fn change_password(
         });
     }
 
+    // Keyed by the session, not by the email: the session token is the
+    // narrowest thing that identifies this caller, and a budget shared with
+    // sign-in would let somebody holding a stolen cookie lock the owner out
+    // of their own login by guessing here.
+    if login
+        .limiter
+        .check_password_change(repositories, &session.id, now)
+        .await?
+        == rate_limit::Verdict::Limited
+    {
+        tracing::warn!("a staff password change was refused by the rate limiter");
+        return Err(ApiError::StaffSignInRateLimited);
+    }
+
+    // Absent and wrong are the same answer, deliberately: this module has one
+    // refusal, and a caller who could tell "you sent no current password"
+    // from "you sent the wrong one" would learn nothing useful and be told
+    // which half to work on.
+
+    let current = request.current_password.as_str();
+    if current.is_empty() || current.chars().count() > MAX_PASSWORD_CHARS {
+        return Err(refused("current password absent or out of bounds"));
+    }
+    if !login
+        .credentials
+        .verify_password(current, &staff.password_hash)?
+    {
+        return Err(refused("current password"));
+    }
+
     let hash = login.credentials.hash_password(&request.new_password)?;
     if !repositories.set_password(&staff.id, &hash, now).await? {
         return Err(refused("staff row vanished during a password change"));
     }
 
-    tracing::info!(staff_id = %staff.id, "a staff member replaced their password");
-    Ok(Json(
-        serde_json::json!({ "password_change_required": false }),
-    ))
+    // AFTER the write, not before. A revocation followed by a failed write
+    // would sign everybody out and leave the old password in force, which is
+    // the worst of both answers; this ordering can only leave sessions alive
+    // that the caller can kill by trying again.
+    let revoked = repositories.delete_others(&staff.id, &session.id).await?;
+
+    tracing::info!(
+        staff_id = %staff.id,
+        revoked,
+        "a staff member replaced their password; every other session of theirs was deleted"
+    );
+    Ok(Json(serde_json::json!({
+        "password_change_required": false,
+        "other_sessions_revoked": revoked,
+    })))
 }
 
 /// Who is signed in, and the token to present to `/dash/v1`.
@@ -601,6 +717,27 @@ pub(crate) async fn logout(
         tracing::info!("a staff session was signed out and its access token revoked with it");
     }
     Ok(Json(serde_json::json!({ "signed_out": true })))
+}
+
+/// The address the rate limiter counts this request under.
+///
+/// The transport peer, unless the peer is one of the machines
+/// `staff_auth.trusted_proxies` names — in which case the first untrusted hop
+/// of `X-Forwarded-For`. [`client_address`] owns the walk and the reasons;
+/// this is the two-line bridge from `axum`'s extractors to it, so that the
+/// decision itself stays a pure function with unit tests.
+///
+/// `Option`, and a `None` is counted under one shared key rather than
+/// exempted — see [`rate_limit`]'s header. It can only be `None` if the
+/// service was built without `into_make_service_with_connect_info`, which is
+/// the defect exp24's finding F2 was.
+fn caller_address(
+    login: &StaffLogin,
+    headers: &HeaderMap,
+    peer: Option<axum::Extension<ConnectInfo<SocketAddr>>>,
+) -> Option<std::net::IpAddr> {
+    let peer = peer.map(|axum::Extension(ConnectInfo(peer))| peer.ip());
+    client_address::client_address_from(&login.trusted_proxies, peer, headers)
 }
 
 /// The session token from [`SESSION_HEADER`], if the caller sent a usable

@@ -176,6 +176,27 @@ workload is not written. This is the chart's `NotImplemented`.
 {{- if .Values.dashboard.enabled -}}
 {{- fail "vpay chart guard \"dashboard-not-templated\": dashboard.enabled is true, but this chart templates no dashboard workload. ghcr.io/vaam-apps/vpay-dashboard is published by the release workflow; its Deployment is not written, because the image is node:22-alpine-based, declares no USER, and its behaviour under readOnlyRootFilesystem has never been observed. Deploy it separately, or leave this false — do not expect a silent no-op." -}}
 {{- end -}}
+{{/*
+dashboard-public-origin — the SHAPE of a value this chart consumes and no
+workload here reads, which is the point: it names VPAY_DASHBOARD_PUBLIC_ORIGIN
+on the dashboard an operator deploys separately, and a typo in it refuses
+every server action on that dashboard with one sentence. Checking the shape
+where the value is written is the only place the mistake is cheap.
+
+Empty is legal and is the default — it means the app falls back to comparing
+the `Host` header. A value that IS set has to be an absolute http(s) origin
+with no path and no trailing slash, because that is what the app compares an
+`Origin` header against, byte for byte after normalisation.
+*/}}
+{{- with .Values.dashboard.publicOrigin -}}
+{{- if not (or (hasPrefix "http://" .) (hasPrefix "https://" .)) -}}
+{{- fail (printf "vpay chart guard \"dashboard-public-origin\": dashboard.publicOrigin is %q, which is not an absolute origin. Write scheme://host[:port] — https://dash.example, http://localhost:3000 — because it is compared against the Origin header a browser sends, which always carries a scheme." .) -}}
+{{- end -}}
+{{- $authority := last (splitList "//" .) -}}
+{{- if contains "/" $authority -}}
+{{- fail (printf "vpay chart guard \"dashboard-public-origin\": dashboard.publicOrigin is %q, which carries a path or a trailing slash. An Origin header is scheme://host[:port] and nothing else; anything more never compares equal, and the symptom is every server action on the dashboard refused." .) -}}
+{{- end -}}
+{{- end -}}
 
 {{/* --------------------------------------------------------------- 13 */}}
 {{/*

@@ -96,6 +96,74 @@ its TTL. Nothing can change that, and
 `signing_out_deletes_the_session_and_with_it_the_access_token` asserts it
 rather than implying otherwise.
 
+### Changing a password ends every other session
+
+`POST /dash/v1/staff/password` takes the password **in force** as well as the
+new one, and on success deletes every session of that staff member **except
+the caller's own**. Neither was true until 2026-09-10 (issue #79 item 3), and
+each absence was its own defect:
+
+- **No current password** meant the credential protecting an irreversible
+  account takeover was the session cookie alone. The argument for leaving it
+  out was written down — "the session making the change has already presented
+  both factors" — and what it misses is *when*: a session lives twelve hours
+  and the factors were presented once, at its start. An unattended browser, a
+  stolen cookie or an XSS on the dashboard's origin bought the account in one
+  request, `password_change_required` included.
+- **No revocation** meant that changing a password did nothing about the
+  person you changed it because of. Their `staff_sessions` row stayed
+  `authenticated` with its `access_token` column intact until the absolute
+  bound, up to twelve hours later.
+
+The caller's own session survives on purpose: it is the one session here known
+to have just proved two factors *and* the current password, and signing it out
+would make the success case look like a failure. The cascade on
+`oauth_authorization_codes.session_id` takes any code the deleted sessions had
+in flight.
+
+The current-password check has **its own rate-limit budget**, keyed by the
+session (`change_password:session`, five per five minutes by default) — the
+narrowest thing identifying that caller, and deliberately not the sign-in
+budget: a thief holding a stolen cookie must not be able to lock the owner out
+of their own login by guessing here. A **successful** change spends a unit too,
+for `login`'s reason and no other: the limiter counts before it knows the
+answer, because an attempt over budget must not cost an argon2id
+verification.
+
+> *Added 2026-09-10 by the exp36 review (finding F5).* That budget was
+> exercised by nothing. The case proving the current password is required
+> makes two wrong attempts against a default of five and stops, so a
+> `check_password_change` that had been deleted — or wired to a policy of a
+> thousand — passed the whole suite, and the check it guards is an argon2id
+> verification anybody holding a stolen cookie can drive at will.
+> `the_current_password_check_has_its_own_budget_and_it_is_the_sessions`
+> reads `401` at the fourth attempt against a budget of three with the
+> limiter call deleted, and asserts the second half too: a second browser of
+> the same person still has its own budget.
+
+Every refusal is the same `401` this document's next section describes. Absent
+and wrong are one answer.
+
+**And a `401` from this endpoint ends nothing.** *Corrected 2026-09-10 by the
+exp36 review (finding F1).* The dashboard cleared its session cookie on any
+`401` from `POST /staff/password` — which was right while the endpoint's only
+refusal was an unauthenticated session, and became wrong the moment it grew a
+credential to refuse. "Every refusal is one answer" cuts both ways: a caller
+cannot tell "your session is over" from "that is not your password", so the
+only safe reading on a credential endpoint is that neither ends the session.
+Whether the session is over is the *next render's* question, and
+`PasswordPage` asks it on every render and redirects to `/login` when vpay
+refuses. Measured before the fix, in a browser at
+`demo_dashboard_port=13200`: a wrong current password produced
+`(new url) /login` and no alert at all, and `dashboard.cy.ts` was 6 of 8
+failing.
+
+Proof:
+`changing_a_password_needs_the_current_one_and_ends_every_other_session`. The
+decisive mutations, one per half: delete the `verify_password` and the first
+two assertions read `200`; delete the `delete_others` and the other browser's
+next render reads `200` where it must read `401`.
+
 ## Every refusal is one answer
 
 No such address, wrong password, disabled account, wrong code, replayed code,
@@ -110,13 +178,16 @@ and "wrong password" take the same time as well as the same shape. A login
 form that answered differently for either would be an account-enumeration
 oracle.
 
-Sign-in is rate limited per email **and** per IP, in-process, fixed window,
-ten attempts per five minutes. `POST /staff/login` is refused **before** any
-credential work happens, because an attempt over budget must not cost an
+Sign-in is rate limited per email **and** per address, fixed window, ten
+attempts per five minutes by default. `POST /staff/login` is refused **before**
+any credential work happens, because an attempt over budget must not cost an
 argon2id verification. Both counters move on every attempt including a refused
 one — short-circuiting would let an attacker who exhausted one address keep
 hammering a thousand others from the same host with that host's counter
 frozen.
+
+**The counters were in one process's memory until 2026-09-10** and are rows in
+Postgres now (issue #79 item 2) — see "The budget is the deployment's" below.
 
 **The second factor spends from the same budget, and it did not until
 2026-09-07** (the exp28 review). The limiter was wired to `/staff/login` alone,
@@ -134,21 +205,123 @@ have halved how many people can sign in per window to close a hole only wrong
 codes exploit. There is no argon2id here to protect, so the count can wait
 until the answer is known.
 
-**The limits are per replica.** Three replicas admit three times the attempts
-one does. That is the honest cost of in-process limiting; the alternative — a
-shared counter in Postgres — puts a write on the unauthenticated path, which
-is a denial-of-service amplifier of a different kind. It is the first thing to
-revisit for a deployment that runs many replicas.
+### The budget is the deployment's
 
-**The IP the limiter counts is the transport peer, and nothing else.** vpay
-reads no `X-Forwarded-For` and no `Forwarded`, deliberately: both are
-caller-supplied on an unauthenticated route, and honouring either without an
-authenticated trusted-proxy list hands an attacker a fresh bucket per request.
-The consequence is stated rather than hidden — **behind a reverse proxy or an
-Ingress, every staff member shares one per-IP budget**, because the peer is
-the proxy. The per-email budget still binds per account, and closing the rest
-needs a trusted-proxy allow-list that this slice does not have. It is recorded
-in ADR-0017's Consequences.
+~~**The limits are per replica.** Three replicas admit three times the attempts
+one does.~~ **Corrected 2026-09-10 (issue #79 item 2).** They were, and ADR-0017
+called it "the first thing to revisit if a deployment runs many replicas". It
+was revisited: the counters are rows in `rate_limit_windows` (migration
+`0038`), so **ten attempts means ten attempts** whatever a deployment's replica
+count is and however a load balancer spreads a burst across it.
+
+The objection ADR-0017 raised against a durable counter — "a write on the
+unauthenticated path … a denial-of-service amplifier of a different kind" — is
+answered by three properties of one statement rather than waved away:
+
+| Property | What it stops |
+|---|---|
+| The row key is `SHA-256("<action>:<dimension>:<value>")` | The caller chooses the *value* — for the interesting attempts, an address with no account. A column holding it verbatim is a column an attacker sizes, and a copy of somebody's email address written down by the act of guessing it |
+| Up to **32 elapsed rows** are deleted in the same statement — `FOR UPDATE SKIP LOCKED`, and never the row the statement is about | Sixteen times the two rows one attempt adds, so a caller spending fresh keys drains the table faster than they fill it. `SKIP LOCKED` is what makes two concurrent sign-ins unable to deadlock on the sweep; without it a deadlock is a `500` for somebody typing a password |
+| One `INSERT … ON CONFLICT (id) DO UPDATE … RETURNING attempts` | The row lock Postgres takes before evaluating `DO UPDATE` serialises two replicas on one key. A read-then-write would have kept the over-admission and added a race: two replicas reading 9 both write 10 and both admit |
+
+**The numbers are configuration** — `staff_auth.rate_limits.sign_in` and
+`staff_auth.rate_limits.change_password`, each `{ attempts, window_seconds }` —
+defaulting to 10/300 and 5/300. Configurable because ten was chosen for a
+limiter three replicas multiplied by three, and it is not obvious that it is
+still the right number now that they do not. **Whether the shared default
+should now be below ten is a maintainer decision and has not been taken.**
+
+*Reviewed 2026-09-10 (exp36 review): ten stays.* The case for lowering is that
+the budget got stricter by becoming shared, so there is headroom. The half
+that would be spent is the per-**address** one, and with `trusted_proxies`
+empty — the default — that half is shared by everybody behind the proxy, so
+lowering it makes a proxy-fronted deployment lock its whole staff out faster.
+The reason for ten was never replicas: it is that a person who mistypes a
+printed one-time password twice must not be locked out of their first login,
+and that has not changed. The number is configuration, so a deployment that
+measures its own traffic still moves it without a release; the review takes
+the default, not the choice.
+
+**Failing closed is part of the contract.** Every count returns a `Result` and
+a database failure is a refusal, never an allowance: a limiter that answered
+"allowed" when it could not count would have been removed by the very attack
+it exists to bound.
+
+**The window is fixed, not sliding**, and the cost is the classic one, stated
+rather than hidden: an attacker who straddles a window boundary gets twice the
+limit in one instant. A sliding window needs a row per attempt, which is the
+unbounded table the digest key and the sweep exist to avoid.
+
+Proof: `two_replicas_share_one_sign_in_budget` — two vpay servers on two ports
+over one Postgres, six wrong passwords for one account alternating between
+them against a configured budget of five, and the sixth is `429`. With the
+counters per limiter instance again it reads `[401 × 6]`.
+
+### Which address the limiter counts
+
+**The transport peer, unless the peer is a machine the operator named.**
+`staff_auth.trusted_proxies` is a list of addresses and CIDR blocks
+(`10.0.0.0/8`, `198.51.100.7`, `fd00::/8`), **empty by default**, and empty
+means the peer — which is exactly what ADR-0017 shipped, and is why a
+deployment that does not set it behaves as it always did.
+
+When the peer *is* in the list, the client address is the **first untrusted
+hop of `X-Forwarded-For`, walking from the right**: the rightmost entries are
+the ones this deployment's own infrastructure appended, so the first one that
+is not ours is the last value a trusted machine vouched for.
+
+> Taking the **leftmost** entry — the shape most "get the real IP" snippets
+> have — is whatever the caller wrote, and a caller writes a new one per
+> request. That is not a smaller version of the same feature; it is the hole
+> the feature exists to not open, because it hands every caller a fresh
+> rate-limit bucket while the limiter goes on reporting that it limits.
+
+Four things end the walk at the peer, and each is a hole if it is dropped:
+
+- the peer is **not** in the allow-list — the header is not read at all;
+- a hop does not parse as an address, so nothing to its left has been vouched
+  for by anything checkable;
+- every hop is one of ours, which names no client;
+- there is no header.
+
+A **repeated** `X-Forwarded-For` is one chain. RFC 9110 §5.2 makes repeated
+field lines one comma-separated list in the order received, so the walk runs
+right to left *across* the lines: the nearest hop is the last hop of the last
+line, because that is what the most downstream proxy appended.
+
+> **Corrected 2026-09-10 by the exp36 review (finding F2).** This read
+> `HeaderMap::get` — the *first* line only — as first delivered. Behind a
+> proxy that appends its hop as a new line rather than rewriting the caller's,
+> the whole chain being walked was then the one the caller wrote, and the
+> allow-list handed out a fresh bucket per request rather than closing one.
+> `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget` sends two
+> field lines over a real socket and reads `[401 × 6]` against a budget of
+> five with the first-line-only reading restored.
+
+A field line that is not readable as text ends the walk at the peer rather
+than being skipped: skipping it means walking *past* an unreadable hop into a
+line further from the peer, which is the one direction this walk never goes.
+
+`Forwarded` (RFC 7239) is deliberately **not** read. Two parsers over one
+caller-supplied string means the more permissive answer wins, and the more
+permissive answer is the one that buys a fresh bucket.
+
+An entry that does not parse takes the **login** down: `vpay-server` logs the
+entry by index and mounts the read surface with no staff login, rather than
+narrowing the list silently — a typo'd allow-list is a per-address budget that
+has quietly become the whole deployment's again, which is the failure this
+feature exists to fix and the one nobody would notice.
+
+**With the list empty and a reverse proxy in front, every staff member shares
+one per-address budget**, because the peer is the proxy. The per-email budget
+still binds per account, and `vpay-server` says so at `info` on every boot.
+
+Proof, and it is a pair rather than one case, because either alone would pass
+with the trusted-proxy check deleted:
+`a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` (six
+attempts, six different claimed client addresses, one peer, `429` on the
+sixth) and `a_forwarded_for_header_from_a_trusted_peer_is_the_client_address`
+(one claimed client exhausted, a second one's first attempt still served).
 
 *Corrected 2026-09-07 (exp24 review, finding F2).* Until that review the
 per-IP half **did not exist**: axum supplies the peer address through
@@ -301,6 +474,24 @@ What is built, in the order a request meets it:
   carries no merchant claim and nothing but this grant stamps one, so the
   refusal is a property of the mint. It is a tightening over what stood
   before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it.
+
+**Added 2026-09-10 (issue #79 items 1-3):**
+
+- `rate_limit_windows` (migration `0038`), and with it a sign-in budget that
+  is **the deployment's rather than each replica's** — see "The budget is the
+  deployment's". `two_replicas_share_one_sign_in_budget` boots two vpay
+  servers over one Postgres and reads `429` on the sixth attempt against a
+  configured budget of five; with per-instance counters it reads `[401 × 6]`.
+- `staff_auth.trusted_proxies`, so the per-address budget can count the
+  **caller** behind a reverse proxy rather than the proxy — see "Which
+  address the limiter counts". Two cases, because either alone would pass
+  with the check deleted.
+- `staff_auth.rate_limits`, one policy per action.
+- `POST /staff/password` requires the **current** password and deletes every
+  other session of that staff member — see "Changing a password ends every
+  other session". The dashboard's form carries the field; its vitest case
+  asserted the opposite until this pass, quoting the argument the endpoint
+  itself carried.
 
 **What is still not built, and none of it is implied by the above:**
 

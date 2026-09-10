@@ -194,6 +194,128 @@ runs, which re-reads the staff row and re-checks the account, the merchant
 binding and `password_change_required` — so re-minting is *more* checking than
 carrying one token for twelve hours, not less. A `403` is never retried.
 
+**Every server action opens with an origin check, and it does not compare two
+values the caller sets.** An export of a `'use server'` file is a `POST`
+endpoint anything on the internet can reach — Next registers an action id for
+it — and this app's session cookie is `SameSite=Lax` rather than `Strict`, so
+a top-level form submission from another site carries it.
+
+Next has its own check and it is not the one this deployment wants:
+`app-render/action-handler` compares `Origin` against the host, and the host
+it uses is **`x-forwarded-host` when present**, falling back to `Host`. Behind
+a proxy that does not strip incoming forwarding headers — the default for
+several — a caller who sends `X-Forwarded-Host: evil.example` and
+`Origin: https://evil.example` makes the two agree and passes.
+
+`server/csrf.ts` compares `Origin` against **`VPAY_DASHBOARD_PUBLIC_ORIGIN`**,
+which no caller can influence, and `originIsAllowed`'s signature is the guard:
+it takes the `Origin` and the `Host` and there is no third parameter for a
+forwarding header to arrive through, so the decisive mutation is a signature
+change rather than a one-character edit (issue #88 item 4). An absent `Origin`
+is refused — the check must not be removable by removing a header.
+
+**The variable is optional, and what a deployment gets without it is stated
+rather than hidden.** With it unset the check compares the `Host` header —
+still never `X-Forwarded-Host`, so strictly stronger than Next's own — which
+is right for a dashboard a browser reaches directly and **wrong behind a
+proxy that rewrites `Host`**, where every action is refused with one sentence
+and a line in the container log naming the variable. It is optional because
+making it required would have taken the sign-in down for every deployment not
+yet reconfigured, this repository's own compose stacks included.
+
+*Amended 2026-09-10 by the exp36 review (finding F7).* **This check does not
+replace Next's own — both run, and an action needs both to pass.** Measured
+against a booted stack, firing the real `signIn` action id with chosen
+headers:
+
+| Configured origin | `Origin` | `Host` | `X-Forwarded-Host` | Result |
+|---|---|---|---|---|
+| `http://localhost:13200` | same | honest | — | reaches the action |
+| `http://localhost:13200` | `https://evil.example` | `evil.example` | `evil.example` | **refused by vpay** — and this is the whole of item 4: all three agree, which is exactly what Next accepts |
+| `http://localhost:13200` | absent | honest | — | **refused by vpay** |
+| *(unset)* | `https://evil.example` | honest | `evil.example` | **refused by vpay** — Next accepts this one too |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | `localhost:13200` | reaches the action |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | — | **refused by NEXT**, `500` |
+
+The last row is the operational consequence and nothing else in this
+repository said it: **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and
+not sufficient behind a proxy that rewrites `Host`.** vpay's check passes, and
+Next's own then aborts the action with
+
+```
+`x-forwarded-host` header with value `vpay-dashboard.internal` does not match
+`origin` header with value `localhost:13200` from a forwarded Server Actions
+request. Aborting the action.
+```
+
+— a `500`, a message naming neither this app's sentence nor the variable, and
+nothing to point an operator at the cause. Such a proxy must **also** send
+`X-Forwarded-Host` matching the public host, which every ordinary reverse
+proxy does; the row above it is that deployment, and it works. If one ever
+turns up that cannot, the lever is `serverActions.allowedOrigins` in
+`next.config`, and it is deliberately not pulled here: widening Next's own
+check is a security change that would want its own review, and no measured
+deployment needs it.
+
+*Amended 2026-09-10 by the exp36 review (finding F3).* **It is set now** —
+`compose.e2e.yml` gives the dashboard
+`VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT}`,
+keyed to the same variable as the publication and the registered redirect URI,
+so the configured path is the one `just test-e2e` exercises rather than the
+one nothing ever did. The chart carries `dashboard.publicOrigin` and a
+`dashboard-public-origin` guard on its **shape**; no template reads it,
+because this chart writes no dashboard workload, and the README says so where
+the key is. It stays **optional** until that Deployment exists: a required
+value on a workload nothing renders would fail a deployment for a setting
+nothing reads. That is the remaining half of the follow-up, and
+`docs/status.md` carries it.
+
+**A vpay this app cannot reach is not a sign-out.** Every failure of the
+session read used to send a browser to `/signed-out`, and `server/api.ts`
+deliberately turns a rejected `fetch` into an `ApiFailure` with `status: 0`
+rather than throwing — so "vpay is restarting", "the connection was reset" and
+"vpay answered `503`" were indistinguishable from "your session is over". A
+rolling restart therefore signed every staff member out of the dashboard, and
+they could not tell that from having been signed out on purpose (issue #88
+item 2).
+
+`server/gate.ts`'s `refusalFor` is the whole of the fix and it is a pure
+function with its own unit tests, because "a `503` signs everybody out" should
+be a red test rather than something noticed during an incident. **`401` is the
+only status that ends a session**, and the mapping is exact rather than
+conservative: vpay answers `401` for *every* session refusal by design —
+absent, expired, idle, forged, disabled, at the wrong stage — so there is no
+other status that could mean the session is over. Everything else renders the
+message and its request id on the page, **with the cookie untouched**. A `403`
+on the session route counts as an outage too: it would mean something in front
+of vpay refused this app, which is a deployment problem and not a fact about
+the person. The decisive mutation is widening `refusalFor` to `status >= 400`,
+which turns four cases in `gate.test.ts` red.
+
+> **`refusalFor` is about the SESSION READ, and only about it.** *Recorded
+> 2026-09-10 by the exp36 review.* "`401` means the session is over" holds
+> because `GET /staff/session` and `/oauth/authorize` have nothing else to
+> refuse. On a route that also refuses a **credential** the same `401` means
+> two things and a caller cannot tell them apart, which is the price of "every
+> refusal is one answer" — so on such a route it must end nothing.
+> `changePassword` learned that the hard way (finding F1) and no longer
+> clears the cookie on one.
+>
+> **`submitTotp` still does, and this review left it alone.** A wrong
+> six-digit code is a `401` there, so a mistyped code sends a person back to
+> the email-and-password form rather than telling them. That behaviour is
+> older than this change and its comment does not name the case — it lists
+> "gone, expired, idle, at the wrong stage" and not "wrong code", which is the
+> commonest of the five. It is not a hole (a session that is genuinely over is
+> also refused, and the extra sign-in bounds code guessing rather than
+> loosening it), and unlike `changePassword` it cannot simply be dropped:
+> `/login/totp` reads no session on render — only the cookie's presence — so
+> with the cookie kept, a session that really is over leaves the person
+> retyping codes at a form that will never accept one. Closing it means giving
+> that page the session read `PasswordPage` already has. Left open on purpose,
+> and written down rather than quietly fixed in a review that was not asked
+> for it.
+
 **There is one route that is not a page**, and it exists for a Next rule
 rather than for a person: `GET /signed-out` clears the session cookie and
 redirects to `/login`. A page may not write a cookie — `cookies().set` throws

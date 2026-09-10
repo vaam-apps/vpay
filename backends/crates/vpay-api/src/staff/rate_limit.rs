@@ -1,142 +1,175 @@
-//! In-process, fixed-window rate limiting for the sign-in endpoints
-//! ([ADR-0017](../../../../../docs/adr/0017-staff-authentication.md)
-//! decision 2).
+//! Fixed-window rate limiting for the credential endpoints, **shared by every
+//! replica** ([ADR-0017](../../../../../docs/adr/0017-staff-authentication.md)
+//! decision 2, amended 2026-09-10 for issue #79 item 2).
 //!
-//! # Two keys, and why both
+//! # It was in process, and per-replica limiting is not a limit
+//!
+//! This module was a `Mutex<HashMap<String, Window>>` until 2026-09-10.
+//! ADR-0017 said what that cost, in its own Consequences: "**The rate limit
+//! is per replica.** Three replicas admit three times the attempts a single
+//! one does … the first thing to revisit if a deployment runs many
+//! replicas." It also named the alternative and refused it — "a shared
+//! counter in Postgres … puts a write on the unauthenticated path, which is a
+//! denial-of-service amplifier of a different kind".
+//!
+//! Both sentences were true and the amendment takes the second trade with the
+//! amplifier bounded rather than accepted. The write is one statement,
+//! keyed by a **digest** so an unauthenticated caller cannot choose how wide
+//! a row is, and it sweeps sixteen times more elapsed rows than it adds — see
+//! `vpay_db::rate_limits`, which argues each of the three in full, and
+//! migration `0038`, which an operator will read first.
+//!
+//! What that buys is the thing a per-replica limiter cannot have: **ten
+//! attempts means ten attempts**, whatever a deployment's replica count is
+//! and however a load balancer spreads a burst across it.
+//!
+//! # Two keys on a sign-in, and why both
 //!
 //! Per **email**, so that guessing one person's password is bounded however
-//! many addresses an attacker has. Per **IP**, so that spreading the same
-//! budget across a thousand addresses is bounded too. Either limit alone
+//! many addresses an attacker has. Per **address**, so that spreading the
+//! same budget across a thousand addresses is bounded too. Either limit alone
 //! leaves the other attack unbounded, and neither is a substitute for the
 //! other.
+//!
+//! **Both are counted on every attempt, even when the first already
+//! refuses.** Short-circuiting would let an attacker who has exhausted one
+//! address's budget keep hammering a thousand others from the same host
+//! without that host's counter moving. It costs one extra statement on an
+//! attempt that is already being refused, which is the cheapest thing on this
+//! path.
 //!
 //! # Fixed window, and not a lockout
 //!
 //! A *lockout* — "five failures and this account is frozen" — is a denial of
 //! service an attacker triggers by guessing at somebody else's address, which
-//! is why ADR-0017 refuses one. A fixed window costs an attacker the same
-//! and costs the account's owner a wait rather than a support ticket.
+//! is why ADR-0017 refuses one. Making the counter durable does not change
+//! that argument; if anything it sharpens it, because a durable lockout would
+//! survive the restart that used to clear it.
 //!
 //! Fixed rather than sliding: a sliding window needs a timestamp per attempt
-//! and therefore unbounded memory per key under exactly the load it exists to
-//! survive. The cost is the classic one and it is stated rather than hidden —
-//! **an attacker who straddles a window boundary gets twice the limit in one
-//! instant** — and at these numbers (ten attempts per five minutes) that is
-//! twenty guesses, which changes nothing about a 130-bit one-time password or
-//! a chosen one behind argon2id.
+//! and therefore a row per attempt, which is the unbounded table the digest
+//! key and the sweep exist to avoid. The cost is the classic one and it is
+//! stated rather than hidden — **an attacker who straddles a window boundary
+//! gets twice the limit in one instant** — and at these numbers that is
+//! twenty guesses, which changes nothing about a 130-bit one-time password
+//! or a chosen one behind argon2id.
 //!
-//! # In-process, and what that costs
+//! # Failing closed
 //!
-//! The counters are this replica's. Three replicas admit three times the
-//! attempts one does. The alternative is a shared counter in Postgres, which
-//! puts a **write** on the unauthenticated path — a denial-of-service
-//! amplifier of a different and worse kind, since an attacker would be
-//! choosing how much the database writes. ADR-0017's Consequences records
-//! this as the first thing to revisit for a deployment that runs many
-//! replicas.
+//! Every method here returns `Result`, and a database failure is an `Err`
+//! that the handler turns into a refusal. A limiter that answered "allowed"
+//! when it could not count is not a limiter: an attacker who can make one
+//! statement fail — by exhausting the pool with the very attempts being
+//! counted — would have removed the limit by attacking it.
 //!
-//! # Where the IP comes from, and the bug that made this module a lie
+//! # Where the address comes from
 //!
-//! [`SignInLimiter::check`] takes an `Option<IpAddr>` and counts a `None`
-//! under one shared `ip:unknown` key rather than exempting it — the
-//! fail-closed reading, and the right one. What supplies the `Some` is axum's
-//! `ConnectInfo`, which is in request extensions **only** when the service
-//! was built with `into_make_service_with_connect_info`.
+//! [`crate::staff::client_address`], which reads `X-Forwarded-For` **only**
+//! from a peer named in `staff_auth.trusted_proxies` and otherwise counts the
+//! transport peer. A `None` peer is counted under one shared key rather than
+//! exempted — the fail-closed reading, and the right one: the alternative is
+//! an unlimited bucket reachable by removing whatever supplies the address.
+//! That is not hypothetical. Until the exp24 review (2026-09-07, finding F2)
+//! neither `vpay-server` nor the integration harness built its service with
+//! `into_make_service_with_connect_info`, so the peer was `None` on every
+//! request and the whole deployment shared one bucket.
 //!
-//! Until the exp24 review (2026-09-07, finding F2) neither `vpay-server`'s
-//! `serve_with_bounded_drain` nor the integration harness did that, so the
-//! peer was `None` on every request and this whole module was one global
-//! ten-per-five-minute bucket: ten requests from anywhere refused every
-//! sign-in in the deployment for five minutes. Every unit test below passed
-//! throughout, because they call `check` directly and pass a `Some`. The
-//! guard that can catch it is therefore an end-to-end one and lives in
-//! `staff_sign_in.rs`
-//! (`the_sign_in_rate_limit_is_per_source_address`), which drives two
-//! loopback source addresses through a real socket.
+//! # Which endpoints spend from which budget
 //!
-//! # Which endpoints spend from it, and the one that did not
+//! * [`crate::staff::login`] and [`crate::staff::totp_step`] — **one** shared
+//!   sign-in budget, per email and per address. One budget across the two
+//!   legs is ADR-0017 decision 2: `login` lower-cases the address it was
+//!   given and `totp_step` uses the row's, which migration `0035` constrains
+//!   to lower case, so one account is one budget across both.
 //!
-//! Both legs of a sign-in: [`crate::staff::login`] and
-//! [`crate::staff::totp_step`], on the same per-email key — `login`
-//! lower-cases the address it was given and `totp_step` uses the row's, which
-//! migration `0035` constrains to lower case, so one account is one budget
-//! across both.
+//!   `totp_step` did **not** spend from it until the exp28 review
+//!   (2026-09-07). A second factor is six digits, three of them live at any
+//!   instant given `Totp`'s one-step skew, on a path that costs no argon2id —
+//!   the cheapest credential in this design to guess and the only one nothing
+//!   bounded. Measured against a real stack: thirty consecutive wrong codes,
+//!   thirty `401`s, no `429`.
 //!
-//! `totp_step` did **not**, until the exp28 review (2026-09-07). ADR-0017
-//! decision 2 says "sign-in is rate limited", this module's whole subject is
-//! bounding a guess, and the second factor — six digits, three of them live at
-//! any instant given `Totp`'s one-step skew, and no argon2id anywhere on that
-//! path — was the cheapest thing in the flow to guess and the only one nothing
-//! bounded. Measured against a real stack: thirty consecutive wrong codes,
-//! thirty `401`s, no `429`. The end-to-end guard is
-//! `the_second_factor_is_rate_limited_and_not_only_the_password`, and deleting
-//! the `check` from `totp_step` makes it read `[401 × 12]`.
+//!   `login` counts **every** attempt, before any credential work, because an
+//!   attempt over budget must not cost an argon2id verification.
+//!   `totp_step` counts only a **wrong** code, after the verification: the
+//!   budget is shared, and behind a proxy with no allow-list the per-address
+//!   half is shared by the whole deployment, so counting successful second
+//!   factors would have halved how many people can sign in per window to
+//!   close a hole only wrong codes exploit. There is no argon2id on that path
+//!   to protect, so the count can wait until the answer is known.
 //!
-//! It is the same class of defect as the `ConnectInfo` one below: a limiter
-//! that is correct and is not called from where it is needed.
-//!
-//! `totp_step` spends a unit only on a **wrong** code, where `login` spends
-//! one on every attempt. That asymmetry is deliberate: the budget is shared
-//! between the two legs, and behind a reverse proxy the per-IP half of it is
-//! shared by every staff member in the deployment (see the last paragraph of
-//! this header), so counting successful second factors would have halved how
-//! many people can sign in per window in order to close a hole only wrong
-//! codes exploit. `login` counts every attempt because an attempt over budget
-//! must not cost an argon2id verification; `totp_step` costs one HMAC-SHA1,
-//! so it can wait until the answer is known.
-//!
-//! **The address is the transport peer.** No `X-Forwarded-For`, no
-//! `Forwarded`: both are caller-supplied on an unauthenticated route, and
-//! trusting either without an authenticated proxy allow-list would hand an
-//! attacker a fresh bucket per request. Behind a reverse proxy the peer is
-//! the proxy, so the per-IP budget is shared by every staff member — stated
-//! in ADR-0017's Consequences rather than left for someone to discover.
+//! * [`crate::staff::change_password`] — its own budget, keyed by the
+//!   **session** (issue #79 item 3). Since 2026-09-10 that endpoint verifies
+//!   the current password, which is an argon2id verification an attacker
+//!   holding a stolen session cookie can drive. Keyed by the session rather
+//!   than by the email because the session token is the narrowest thing
+//!   identifying that caller, and because a budget shared with sign-in would
+//!   let a thief lock the owner out of their own login by guessing at the
+//!   password change.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Mutex, PoisonError};
 
 use time::{Duration, OffsetDateTime};
+use vpay_db::Repositories;
 
-/// How long one window lasts.
-const WINDOW: Duration = Duration::minutes(5);
+use crate::ApiError;
+use crate::staff_auth::tokens;
 
-/// How many sign-in attempts one key may make per window.
+/// One budget: how many attempts, over how long.
 ///
-/// Ten. High enough that a person who mistypes a generated one-time password
-/// twice and then fetches it from a terminal is not locked out of their own
-/// first login; low enough that an online guessing attack is not a strategy.
-const ATTEMPTS_PER_WINDOW: u32 = 10;
-
-/// How many distinct keys one process will track at once.
-///
-/// Ten thousand. The map is keyed by *caller-supplied* values — an email
-/// address and a client address — so without a bound it is a memory
-/// exhaustion an unauthenticated caller drives directly. On overflow the
-/// whole map is dropped and rebuilt, which resets every counter: that is a
-/// deliberate choice of *availability* over *precision*, and it is the
-/// direction an attacker can already achieve by waiting five minutes.
-const MAX_TRACKED_KEYS: usize = 10_000;
-
-/// What one key is doing in the current window.
-#[derive(Debug, Clone, Copy)]
-struct Window {
-    /// When this window opened.
-    opened_at: OffsetDateTime,
-    /// Attempts inside it.
+/// A value rather than two constants, because the numbers are configuration
+/// since 2026-09-10 (`vpay_config::RateLimitPolicy`, which carries the
+/// defaults and the argument for them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+    /// Attempts admitted per window. The `attempts + 1`th is refused.
     attempts: u32,
+    /// How long one window lasts.
+    window: Duration,
 }
 
-/// The sign-in rate limiter for one process.
+impl Policy {
+    /// A policy from the configured pair.
+    ///
+    /// `i64::from` on both, so the arithmetic that builds the `Duration`
+    /// cannot overflow: `vpay_config` validates each as a `u32` at least 1,
+    /// and every `u32` is an `i64`.
+    #[must_use]
+    fn from_config(configured: vpay_config::RateLimitPolicy) -> Self {
+        Self {
+            attempts: configured.attempts,
+            window: Duration::seconds(i64::from(configured.window_seconds)),
+        }
+    }
+}
+
+/// The kinds of budget this deployment counts, and the three values
+/// `rate_limit_windows_scope_is_known` admits.
 ///
-/// A `Mutex<HashMap<..>>` rather than anything lock-free: the critical
-/// section is a hash lookup and an increment, it is entered once per sign-in
-/// attempt, and sign-in attempts are not a hot path. A lock here that ever
-/// became contended would mean vpay was under exactly the attack this type
-/// exists for, and the queue in front of the mutex is then a feature.
-#[derive(Debug, Default)]
-pub struct SignInLimiter {
-    windows: Mutex<HashMap<String, Window>>,
+/// A closed enum mirroring a database CHECK, exactly as
+/// `vpay_db::StaffStatus` mirrors `staff_members_status_is_known`: a scope
+/// spelled here and not there is refused at the insert rather than written
+/// and never understood.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Budget {
+    /// One account's sign-in budget, across both legs.
+    SignInEmail,
+    /// One source address's sign-in budget, across every account.
+    SignInAddress,
+    /// One session's current-password budget.
+    ChangePasswordSession,
+}
+
+impl Budget {
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            Budget::SignInEmail => "sign_in:email",
+            Budget::SignInAddress => "sign_in:address",
+            Budget::ChangePasswordSession => "change_password:session",
+        }
+    }
 }
 
 /// Whether an attempt may proceed.
@@ -150,209 +183,249 @@ pub enum Verdict {
     Limited,
 }
 
+impl Verdict {
+    /// `Limited` if `attempts` is past `policy`.
+    ///
+    /// `>` and not `>=`: `count_attempt` returns the position of the attempt
+    /// being counted, *including itself*, so a budget of ten admits the
+    /// answer ten and refuses eleven. The off-by-one this spelling avoids is
+    /// a limiter that admits one fewer attempt than the operator configured,
+    /// which nobody would ever notice.
+    fn of(attempts: i64, policy: Policy) -> Self {
+        if attempts > i64::from(policy.attempts) {
+            Verdict::Limited
+        } else {
+            Verdict::Allowed
+        }
+    }
+}
+
+/// The deployment's rate-limiting policy, and the only thing that counts an
+/// attempt.
+///
+/// Holds no state: every counter is a row. It is `Clone`-free and shared as
+/// `Arc<StaffLogin>` like everything else on that struct, and it could as
+/// easily be two `Copy` policies — it is a type so that the *keys* are
+/// composed in one place, which is the half of this design a caller could
+/// otherwise get subtly wrong.
+#[derive(Debug, Clone, Copy)]
+pub struct SignInLimiter {
+    sign_in: Policy,
+    change_password: Policy,
+}
+
 impl SignInLimiter {
-    /// A limiter with no history.
+    /// A limiter over this deployment's configured policies.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(limits: vpay_config::RateLimits) -> Self {
+        Self {
+            sign_in: Policy::from_config(limits.sign_in),
+            change_password: Policy::from_config(limits.change_password),
+        }
     }
 
-    /// Counts one sign-in attempt against both keys and says whether it may
-    /// proceed.
-    ///
-    /// **Both keys are always counted, even when the first already refuses.**
-    /// Short-circuiting would let an attacker who has exhausted one address's
-    /// budget keep hammering a thousand others from the same IP without that
-    /// IP's counter moving.
+    /// Counts one **sign-in** attempt against both keys and says whether it
+    /// may proceed.
     ///
     /// The email is lower-cased by the caller before it gets here, for the
     /// same reason the column is: two spellings of one address must not be
     /// two budgets.
-    #[must_use]
-    pub fn check(&self, email: &str, peer: Option<IpAddr>, now: OffsetDateTime) -> Verdict {
-        let email_ok = self.count(&format!("email:{email}"), now);
-        // A caller with no resolvable peer address — behind a proxy that
-        // stripped it, or a test over a channel with none — is counted under
-        // one shared key rather than not counted at all. That makes the
-        // unknown-peer population share a budget, which is the fail-closed
-        // reading: the alternative is an unlimited bucket reachable by
-        // removing a header.
-        let peer_key = peer.map_or_else(|| "ip:unknown".to_owned(), |ip| format!("ip:{ip}"));
-        let peer_ok = self.count(&peer_key, now);
+    ///
+    /// Both keys are always counted — see the module header for the attack
+    /// that short-circuiting reopens. The two statements are sequential
+    /// rather than concurrent because they are two rows in one pool and a
+    /// `join!` here would hold two connections per refused attempt, which is
+    /// the resource an attacker is already trying to exhaust.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Db`] if either count fails. The caller must **not** treat
+    /// that as an allowance: a limiter that fails open has been removed by
+    /// the attack it exists to bound.
+    pub async fn check_sign_in(
+        &self,
+        repositories: &dyn Repositories,
+        email: &str,
+        address: Option<IpAddr>,
+        now: OffsetDateTime,
+    ) -> Result<Verdict, ApiError> {
+        let by_email = self
+            .count(repositories, Budget::SignInEmail, email, self.sign_in, now)
+            .await?;
+        // A caller with no resolvable address — behind a proxy that stripped
+        // it, or a channel that has none — is counted under one shared key
+        // rather than not counted at all. That makes the unknown-address
+        // population share a budget, which is the fail-closed reading: the
+        // alternative is an unlimited bucket reachable by removing whatever
+        // supplies the address.
+        let key = address.map_or_else(|| "unknown".to_owned(), |ip| ip.to_string());
+        let by_address = self
+            .count(repositories, Budget::SignInAddress, &key, self.sign_in, now)
+            .await?;
 
-        if email_ok && peer_ok {
-            Verdict::Allowed
-        } else {
-            Verdict::Limited
-        }
+        Ok(match (by_email, by_address) {
+            (Verdict::Allowed, Verdict::Allowed) => Verdict::Allowed,
+            _ => Verdict::Limited,
+        })
     }
 
-    /// Counts one attempt against one key. `true` if it was inside the
-    /// budget.
-    fn count(&self, key: &str, now: OffsetDateTime) -> bool {
-        // A poisoned mutex means another thread panicked while holding it.
-        // The map is a counter; the data behind it cannot be inconsistent in
-        // any way that matters, and refusing every sign-in for the life of
-        // the process because one thread panicked would be a worse outcome
-        // than continuing with the counts.
-        let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
+    /// Counts one **current-password** attempt against the session making it.
+    ///
+    /// `session_digest` is `staff_sessions.id` — the SHA-256 of the token,
+    /// which the handler already holds. It is hashed again here rather than
+    /// used raw, because every key on `rate_limit_windows` is a digest of a
+    /// scoped pre-image and a single exception would be the one an operator
+    /// reading the table could correlate back to a live session row.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Db`], which the caller must treat as a refusal.
+    pub async fn check_password_change(
+        &self,
+        repositories: &dyn Repositories,
+        session_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Verdict, ApiError> {
+        self.count(
+            repositories,
+            Budget::ChangePasswordSession,
+            session_digest,
+            self.change_password,
+            now,
+        )
+        .await
+    }
 
-        if windows.len() >= MAX_TRACKED_KEYS && !windows.contains_key(key) {
-            tracing::warn!(
-                tracked = windows.len(),
-                "the staff sign-in rate limiter is tracking its maximum number of keys and is \
-                 resetting every counter; this is what an attack on the login endpoint looks \
-                 like from inside"
-            );
-            windows.clear();
-        }
-
-        let window = windows.entry(key.to_owned()).or_insert(Window {
-            opened_at: now,
-            attempts: 0,
-        });
-
-        // A window that has elapsed is *replaced*, not extended: that is what
-        // makes this fixed rather than sliding, and it is the boundary
-        // behaviour the module header states plainly.
-        if now - window.opened_at >= WINDOW {
-            *window = Window {
-                opened_at: now,
-                attempts: 0,
-            };
-        }
-
-        window.attempts = window.attempts.saturating_add(1);
-        window.attempts <= ATTEMPTS_PER_WINDOW
+    /// Counts one attempt against one key.
+    ///
+    /// The key is `SHA-256("<scope>:<value>")`. **Scoped**, so that the same
+    /// email cannot collide with the same string used as another budget's
+    /// value, and **hashed**, for migration `0038`'s two reasons: an
+    /// unauthenticated caller chooses the value, and for the commonest key it
+    /// is an email address with no account behind it.
+    async fn count(
+        &self,
+        repositories: &dyn Repositories,
+        budget: Budget,
+        value: &str,
+        policy: Policy,
+        now: OffsetDateTime,
+    ) -> Result<Verdict, ApiError> {
+        let scope = budget.as_wire_str();
+        let id = tokens::digest(&format!("{scope}:{value}"));
+        let attempts = repositories
+            .count_attempt(&id, scope, policy.window, now)
+            .await?;
+        Ok(Verdict::of(attempts, policy))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
-
     use super::*;
 
-    fn peer() -> Option<IpAddr> {
-        Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)))
+    fn policy(attempts: u32, window_seconds: u32) -> Policy {
+        Policy::from_config(vpay_config::RateLimitPolicy {
+            attempts,
+            window_seconds,
+        })
     }
 
+    /// The budget is `attempts`, and the `attempts + 1`th is refused.
+    ///
+    /// The whole of the verdict, and the only arithmetic in this module.
+    /// `count_attempt` answers the position of the attempt it just counted,
+    /// so ten is the tenth attempt and is inside a budget of ten.
     #[test]
-    fn the_budget_is_ten_attempts_and_the_eleventh_is_refused() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
+    fn the_nth_attempt_is_inside_a_budget_of_n_and_the_next_is_not() {
+        let ten = policy(10, 300);
 
-        for attempt in 1..=ATTEMPTS_PER_WINDOW {
-            assert_eq!(
-                limiter.check("ada@example.test", peer(), now),
-                Verdict::Allowed,
-                "attempt {attempt} is inside the budget"
+        assert_eq!(Verdict::of(1, ten), Verdict::Allowed, "the first attempt");
+        assert_eq!(Verdict::of(10, ten), Verdict::Allowed, "the tenth");
+        assert_eq!(Verdict::of(11, ten), Verdict::Limited, "the eleventh");
+
+        let five = policy(5, 300);
+        assert_eq!(Verdict::of(5, five), Verdict::Allowed);
+        assert_eq!(
+            Verdict::of(6, five),
+            Verdict::Limited,
+            "a deployment that configures five gets five"
+        );
+    }
+
+    /// The configured numbers reach the policy unchanged, including the
+    /// window, which is the one that is converted.
+    #[test]
+    fn the_configured_policy_is_the_policy() {
+        let limiter = SignInLimiter::new(vpay_config::RateLimits::default());
+
+        assert_eq!(limiter.sign_in, policy(10, 300), "ADR-0017's numbers");
+        assert_eq!(
+            limiter.change_password,
+            policy(5, 300),
+            "tighter, because nothing here is a printed password somebody is copying by hand"
+        );
+        assert_eq!(limiter.sign_in.window, Duration::minutes(5));
+    }
+
+    /// The three scopes are exactly the three
+    /// `rate_limit_windows_scope_is_known` admits, and they fit the column.
+    ///
+    /// The mutation this catches is renaming a variant's wire string: the
+    /// insert would then be refused by the CHECK on every attempt, which
+    /// fails closed but as a `500` on a login form rather than as a `429`.
+    #[test]
+    fn the_scopes_are_the_ones_the_database_admits() {
+        let scopes = [
+            Budget::SignInEmail,
+            Budget::SignInAddress,
+            Budget::ChangePasswordSession,
+        ]
+        .map(Budget::as_wire_str);
+
+        assert_eq!(
+            scopes,
+            [
+                "sign_in:email",
+                "sign_in:address",
+                "change_password:session"
+            ],
+            "migration 0038's rate_limit_windows_scope_is_known lists exactly these three"
+        );
+        for scope in scopes {
+            assert!(
+                !scope.is_empty() && scope.len() <= 64,
+                "rate_limit_windows_scope_length is 1..=64: {scope}"
             );
         }
-        assert_eq!(
-            limiter.check("ada@example.test", peer(), now),
-            Verdict::Limited
-        );
     }
 
-    /// The per-email budget binds even from a fresh address — otherwise a
-    /// botnet is an unlimited guessing budget against one account.
+    /// Two budgets never share a row, however the values are spelled.
+    ///
+    /// The scope is part of the pre-image, so one address used as an email
+    /// key and as an address key is two rows. Without the scope prefix a
+    /// deployment whose staff member's address happened to equal a source
+    /// address string would have had one budget for both — a collision that
+    /// is absurd for an email and not at all absurd once a third budget
+    /// exists.
     #[test]
-    fn the_email_budget_binds_across_addresses() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
+    fn a_scope_is_part_of_the_key() {
+        let key = |budget: Budget, value: &str| {
+            tokens::digest(&format!("{}:{value}", budget.as_wire_str()))
+        };
 
-        for octet in 0..ATTEMPTS_PER_WINDOW {
-            let from = Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, octet as u8)));
-            assert_eq!(
-                limiter.check("ada@example.test", from, now),
-                Verdict::Allowed
-            );
-        }
-        let fresh = Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 200)));
-        assert_eq!(
-            limiter.check("ada@example.test", fresh, now),
-            Verdict::Limited,
-            "a new source address must not reset one account's budget"
+        assert_ne!(
+            key(Budget::SignInEmail, "ada@example.test"),
+            key(Budget::SignInAddress, "ada@example.test"),
         );
-    }
-
-    /// The per-IP budget binds even across addresses — otherwise credential
-    /// stuffing against a list of addresses is unbounded from one host.
-    #[test]
-    fn the_address_budget_binds_across_emails() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
-
-        for n in 0..ATTEMPTS_PER_WINDOW {
-            assert_eq!(
-                limiter.check(&format!("person-{n}@example.test"), peer(), now),
-                Verdict::Allowed
-            );
-        }
-        assert_eq!(
-            limiter.check("someone-else@example.test", peer(), now),
-            Verdict::Limited,
-            "a new address must not reset one source's budget"
-        );
-    }
-
-    /// Both counters move on every attempt, including a refused one. The
-    /// decisive mutation is short-circuiting `check` on `email_ok`: with
-    /// that, the IP counter stops moving once one address is exhausted.
-    #[test]
-    fn a_refused_attempt_still_counts_against_the_other_key() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
-
-        // Exhaust one address's budget, from one host.
-        for _ in 0..=ATTEMPTS_PER_WINDOW {
-            let _ = limiter.check("ada@example.test", peer(), now);
-        }
-        // The host is now over its own budget too, because every one of
-        // those attempts counted against it as well.
-        assert_eq!(
-            limiter.check("someone-else@example.test", peer(), now),
-            Verdict::Limited
-        );
-    }
-
-    /// The window is five minutes, and it *resets* rather than sliding.
-    #[test]
-    fn the_window_resets_after_five_minutes() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
-
-        for _ in 0..=ATTEMPTS_PER_WINDOW {
-            let _ = limiter.check("ada@example.test", peer(), now);
-        }
-        assert_eq!(
-            limiter.check("ada@example.test", peer(), now + Duration::minutes(4)),
-            Verdict::Limited,
-            "still inside the window"
+        assert_ne!(
+            key(Budget::SignInEmail, "ada@example.test"),
+            key(Budget::ChangePasswordSession, "ada@example.test"),
         );
         assert_eq!(
-            limiter.check("ada@example.test", peer(), now + WINDOW),
-            Verdict::Allowed,
-            "a new window"
-        );
-    }
-
-    /// A caller with no resolvable address shares one budget rather than
-    /// having none. The mutation this catches is skipping the peer count when
-    /// `peer` is `None`, which would make an unlimited bucket reachable by
-    /// removing whatever supplies the address.
-    #[test]
-    fn an_unknown_peer_is_counted_rather_than_exempt() {
-        let limiter = SignInLimiter::new();
-        let now = OffsetDateTime::UNIX_EPOCH;
-
-        for n in 0..=ATTEMPTS_PER_WINDOW {
-            let _ = limiter.check(&format!("person-{n}@example.test"), None, now);
-        }
-        assert_eq!(
-            limiter.check("yet-another@example.test", None, now),
-            Verdict::Limited
+            key(Budget::SignInEmail, "ada@example.test").len(),
+            64,
+            "rate_limit_windows_id_length is an equality CHECK on 64"
         );
     }
 }

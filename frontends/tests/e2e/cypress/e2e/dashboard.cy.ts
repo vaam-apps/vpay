@@ -21,6 +21,13 @@
  *    `staff_members.totp_secret` is `NULL`.
  * 3. the same screen — one valid code, which is what commits the enrolment.
  * 4. `/login/password` — `staff add` sets `password_change_required`, and
+ *    since 2026-09-10 the change also needs the password IN FORCE (issue #79
+ *    item 3): the wrong one is refused in the browser here, and the printed
+ *    one is what completes it. The other half of that item — every OTHER
+ *    session of the same staff member is deleted — needs two browser sessions
+ *    at once and is proven in
+ *    `staff_sign_in.rs::changing_a_password_needs_the_current_one_and_ends_every_other_session`
+ *    instead. This spec does not claim it.
  *    every authenticated route refuses such a session, `/oauth/authorize`
  *    included. So no `/dash/v1` token can exist until this is done.
  * 5. only then `/payments`, rendered from a token minted by the
@@ -113,9 +120,29 @@ describe("the dashboard", { testIsolation: false }, () => {
       });
 
     // ---- leg 4: the printed password must be replaced --------------------
+    //
+    // And it must be PRESENTED to be replaced (issue #79 item 3, 2026-09-10).
+    // On a first sign-in the password in force is the one `staff add`
+    // printed, so that is what goes in the current-password field.
     cy.location("pathname").should("eq", "/login/password");
+
+    // The wrong current password first, in the browser, because this is the
+    // case the field exists for: without the check a stolen session cookie
+    // was an account takeover in one request. vpay answers the same 401 it
+    // answers for every credential refusal, and the page stays put.
+    cy.get("#dashboard-current-password").type("not-the-printed-password", { log: false });
     cy.get("#dashboard-new-password").type(NEW_PASSWORD, { log: false });
     cy.get("#dashboard-confirm-password").type(NEW_PASSWORD, { log: false });
+    cy.contains("button", "Set password").click();
+    cy.location("pathname").should("eq", "/login/password");
+    cy.get('[role="alert"]').should("be.visible");
+
+    // Then the right one.
+    cy.task<string>("staffPassword").then((printed) => {
+      cy.get("#dashboard-current-password").clear().type(printed, { log: false });
+    });
+    cy.get("#dashboard-new-password").clear().type(NEW_PASSWORD, { log: false });
+    cy.get("#dashboard-confirm-password").clear().type(NEW_PASSWORD, { log: false });
     cy.contains("button", "Set password").click();
 
     // ---- leg 5: signed in, on a token the code exchange minted -----------

@@ -5,6 +5,8 @@ import { Alert, Heading, Stack, Text } from '@vpay/ui';
 import { dashboardConfig } from '../../../src/config/runtime';
 import { PasswordForm } from '../../../src/components/password-form';
 import { changePassword } from '../../../src/server/actions';
+import { ReadFailure } from '../../../src/components/read-failure';
+import { refusalFor } from '../../../src/server/gate';
 import { HOME_PATH, LOGIN_PATH, readSession, sessionToken } from '../../../src/server/session';
 
 /**
@@ -35,8 +37,20 @@ export default async function PasswordPage() {
     redirect(LOGIN_PATH);
   }
 
-  const { session } = await readSession(config, token);
+  const { session, failure } = await readSession(config, token);
   if (session === null) {
+    // Only a `401` means the session is over — issue #88 item 2, and
+    // `server/gate.ts` carries the argument. A vpay that could not be reached
+    // renders here rather than bouncing somebody who is mid-sign-in back to
+    // the form with their one-time password already spent.
+    if (failure !== null && refusalFor(failure) === 'outage') {
+      return (
+        <Stack direction="column" gap="md">
+          <Heading level={2}>Choose a password</Heading>
+          <ReadFailure failure={failure} />
+        </Stack>
+      );
+    }
     redirect(LOGIN_PATH);
   }
   if (!session.password_change_required) {

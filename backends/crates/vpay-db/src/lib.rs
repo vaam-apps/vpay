@@ -63,6 +63,12 @@ pub mod refunds;
 // belongs to *neither* table on its own: it moves both and emits the event
 // that tells a merchant about them. A home inside either table's module
 // would have made "settle the charge" reachable without the rest.
+/// The durable fixed-window counters every replica's rate limiting spends
+/// from (issue #79 item 2, migration 0038). Its own module rather than a
+/// function on `staff`, because the table is not about staff: its commonest
+/// key is an address with no account, and the second action counted on it is
+/// a password change made by somebody already signed in.
+pub mod rate_limits;
 pub mod settlement;
 /// Staff sign-in: the `staff_members` table, its two credentials and the replay
 /// guard (ADR-0017).
@@ -131,6 +137,7 @@ pub use payment_intents::{
 pub use persistence::PersistenceError;
 pub use pool::{connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
+pub use rate_limits::RateLimits;
 pub use refunds::{RefundRow, Refunds};
 pub use repository::{
     PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
