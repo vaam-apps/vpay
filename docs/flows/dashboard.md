@@ -223,6 +223,40 @@ and a line in the container log naming the variable. It is optional because
 making it required would have taken the sign-in down for every deployment not
 yet reconfigured, this repository's own compose stacks included.
 
+*Amended 2026-09-10 by the exp36 review (finding F7).* **This check does not
+replace Next's own — both run, and an action needs both to pass.** Measured
+against a booted stack, firing the real `signIn` action id with chosen
+headers:
+
+| Configured origin | `Origin` | `Host` | `X-Forwarded-Host` | Result |
+|---|---|---|---|---|
+| `http://localhost:13200` | same | honest | — | reaches the action |
+| `http://localhost:13200` | `https://evil.example` | `evil.example` | `evil.example` | **refused by vpay** — and this is the whole of item 4: all three agree, which is exactly what Next accepts |
+| `http://localhost:13200` | absent | honest | — | **refused by vpay** |
+| *(unset)* | `https://evil.example` | honest | `evil.example` | **refused by vpay** — Next accepts this one too |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | `localhost:13200` | reaches the action |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | — | **refused by NEXT**, `500` |
+
+The last row is the operational consequence and nothing else in this
+repository said it: **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and
+not sufficient behind a proxy that rewrites `Host`.** vpay's check passes, and
+Next's own then aborts the action with
+
+```
+`x-forwarded-host` header with value `vpay-dashboard.internal` does not match
+`origin` header with value `localhost:13200` from a forwarded Server Actions
+request. Aborting the action.
+```
+
+— a `500`, a message naming neither this app's sentence nor the variable, and
+nothing to point an operator at the cause. Such a proxy must **also** send
+`X-Forwarded-Host` matching the public host, which every ordinary reverse
+proxy does; the row above it is that deployment, and it works. If one ever
+turns up that cannot, the lever is `serverActions.allowedOrigins` in
+`next.config`, and it is deliberately not pulled here: widening Next's own
+check is a security change that would want its own review, and no measured
+deployment needs it.
+
 *Amended 2026-09-10 by the exp36 review (finding F3).* **It is set now** —
 `compose.e2e.yml` gives the dashboard
 `VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT}`,

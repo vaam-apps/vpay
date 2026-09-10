@@ -247,3 +247,95 @@ Still not done, and the implementer's account of why is accurate: the reactive
 re-mint in `dash-read.ts` exists and works, and a proactive one needs a
 `staff_sessions.access_token_expires_at` column, an API field, a `gateFor`
 arm and a configurable TTL. This review did not attempt it either.
+
+### F7 — vpay's origin check does not replace Next's, and the docs read as if it does · **misleading-claim**
+
+Measured against a booted stack, firing the real `signIn` action id with
+chosen headers (config = `VPAY_DASHBOARD_PUBLIC_ORIGIN`):
+
+| config | `Origin` | `Host` | `X-Forwarded-Host` | result |
+|---|---|---|---|---|
+| `http://localhost:13200` | same | honest | — | reaches the action |
+| `http://localhost:13200` | `https://evil.example` | `evil.example` | `evil.example` | **refused by vpay** |
+| `http://localhost:13200` | absent | honest | — | **refused by vpay** |
+| *(unset)* | `https://evil.example` | honest | `evil.example` | **refused by vpay** |
+| *(unset)* | same | honest | — | reaches the action |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | `localhost:13200` | reaches the action |
+| `http://localhost:13200` | same | `vpay-dashboard.internal` | — | **refused by NEXT**, `500` |
+
+Rows 2 and 4 are issue #88 item 4 proven live, and they are the two Next's own
+check **accepts**: in row 2 all three headers agree, and in row 4 `Origin`
+equals `X-Forwarded-Host`. The feature does what it claims.
+
+**Row 7 is the finding.** vpay's check passed and Next's own then aborted the
+action:
+
+```
+`x-forwarded-host` header with value `vpay-dashboard.internal` does not match
+`origin` header with value `localhost:13200` from a forwarded Server Actions
+request. Aborting the action.
+⨯ [Error: Invalid Server Actions request.] { digest: '1698557269' }
+```
+
+So **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and not sufficient
+behind a proxy that rewrites `Host`** — the proxy must also send
+`X-Forwarded-Host`. The prose read as though this check had *replaced* Next's,
+and an operator following it would have set the variable, gone on getting
+`500`s, and had nothing pointing at the cause: the message names neither this
+app's sentence nor the variable. Row 6 is that same deployment with an
+ordinary proxy, and it works.
+
+Documented rather than coded around. The lever is
+`serverActions.allowedOrigins` in `next.config`, and pulling it widens Next's
+own check — a security change wanting its own review, which no measured
+deployment needs.
+
+## The attack table
+
+Everything the brief asked to be broken into, and what happened.
+
+| Attack | Result |
+|---|---|
+| Untrusted peer sends `X-Forwarded-For: 1.2.3.4` | keyed on the peer — `429` on the sixth of six differently-claimed addresses |
+| Trusted peer, chain `a, b, c` with two trusted proxies at the right | the first untrusted hop **from the right**, which is the last value a trusted machine vouched for |
+| Garbage hop (`unknown`) | ends the walk at the peer |
+| Absent header from a trusted peer | the peer, not a shared unknown key — the bug the implementer found stays fixed |
+| **Repeated `X-Forwarded-For` field lines** | **BROKEN — F2.** The first line only was read; the caller's own line was the whole chain |
+| Non-ASCII field line | ends at the peer (added by F2's fix; it would otherwise have been stepped over) |
+| IPv6, port-suffixed and `[v6]:port` hops | parsed; v4-mapped v6 deliberately does not match a v4 block |
+| Two server processes, one database, sixth wrong attempt | `429` from either, one row carrying `attempts = 6` |
+| **The window rolls over** | **UNTESTED — F4.** Now run: with the reset arm dropped it reads 5 where it demands 1 |
+| A success does not reset another key's budget | pinned; and the `scope` column separates nothing, which is now pinned too |
+| **Table growth after 1000 attempts** | **1000 rows** inside one window, and 40 attempts past the boundary drain them. Bounded — but "drains faster than they fill" is only true in the limit, which the docs now say |
+| Limiter writes exhausting the pool | two sequential single-statement counts per attempt, one connection at a time, returned before the next; the sweep is `LIMIT 32` on an indexed column. Bounded by the pool, not by the caller |
+| `change_password` wrong current → `401` | yes |
+| **…and counted against the budget** | **UNTESTED — F5.** Now run: `429` on the fourth against a budget of three |
+| `change_password` correct → other sessions gone, this one survives | yes, on their next render |
+| The one-time-password path still forces the change | yes — and `dashboard.cy.ts` leg 4 now proves it **in a browser**, which it never had |
+| **A wrong current password in a browser** | **BROKEN — F1.** Signed the person out |
+| vpay stopped, a render | `200`, "vpay could not be reached (fetch failed).", **no `Set-Cookie`** — the cookie survives |
+| …with the request id | **no.** A connection failure has `requestId: null` by construction (`api.ts`'s `unreachable`). Only a vpay that *answered* carries one; the claim is true of a `5xx` and not of a refused connection |
+| A `401` from a live session check | `307 → /signed-out` |
+| Cross-site POST, matching `Host`, foreign `Origin` | refused |
+| `X-Forwarded-Host` spoof | ignored — refused both with the variable set and unset |
+| `VPAY_DASHBOARD_PUBLIC_ORIGIN` set, `Host` rewritten by a proxy | accepted **if** the proxy sends `X-Forwarded-Host`; **F7** if it does not |
+| Migration 0038 applied in order with the other 37 | `schema_migrates_cleanly_on_an_empty_database`, 38 recorded. 0038 only `CREATE`s, so it reads and writes nothing that existed |
+| A policy for every action invoked | three scopes, three `Budget` variants, one CHECK — and all three are now spent by a test |
+| Drift re-derived under 0.12.0 | 172 / 24 / 19, as claimed |
+
+## An observation, not a finding
+
+`dashboard.cy.ts`'s last leg — "signs the same staff member back in with the
+password they set" — **flaked once** across two post-fix runs. Its closing
+`cy.location("pathname").should("eq", "/payments")` is retried against the
+4000 ms default, and on the slower of the two runs the navigation landed just
+after the budget expired (`(new url) http://localhost:13200/payments` printed
+immediately below the failed assertion). Retries 2 and 3 could not recover it,
+because the spec is `testIsolation: false` and by then the browser was already
+signed in, so `cy.visit("/login")` redirects and `#dashboard-signin-email`
+never appears.
+
+Not touched. Raising a timeout to make a red test green is the one edit a
+review like this should never make, and the spec is otherwise sound; recorded
+so that the next person to see it has the diagnosis rather than a mystery.
+Run 3 was 8/8.
