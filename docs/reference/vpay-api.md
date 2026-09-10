@@ -442,7 +442,7 @@ carries the shape decisions.
 client of this deployment can obtain a token for this surface.~~ **Corrected
 2026-09-07** ([ADR-0017](../adr/0017-staff-authentication.md)): the
 authorization-code grant *is* served, for the dashboard client and nothing
-else, and `vpay_api::staff` is the seven unauthenticated routes that produce
+else, and `vpay_api::staff` is the eight unauthenticated routes that produce
 the `Identity` `authkestra-op` takes as a parameter and authenticates nobody
 for. What follows describes a resource server that now has an issuer.
 

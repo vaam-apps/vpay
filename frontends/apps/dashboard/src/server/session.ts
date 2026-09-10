@@ -35,7 +35,12 @@ import { redirect } from 'next/navigation';
 
 import { dashboardConfig } from '../config/runtime';
 import type { DashboardConfig } from '../config/settings';
-import { getJson, type ApiFailure, type SessionResponse } from './api';
+import {
+  getJson,
+  type ApiFailure,
+  type SessionResponse,
+  type SessionStageResponse,
+} from './api';
 import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from './cookies';
 import { gateFor, refusalFor } from './gate';
 import { completeAuthorizationCode } from './oauth';
@@ -136,6 +141,32 @@ export async function readSession(
   return result.ok
     ? { session: result.value, failure: null }
     : { session: null, failure: result.failure };
+}
+
+/**
+ * Reads how far a session has got, or `null` with the refusal.
+ *
+ * The read `/login/totp` takes on every render. {@link readSession} cannot
+ * serve it: `GET /dash/v1/staff/session` is refused for a session that has not
+ * presented a code, with the same `401` it answers for a session that is over,
+ * so the page could not tell a typo from a sign-out — see
+ * {@link import('./gate').totpGateFor}.
+ *
+ * Like {@link readSession} it does not redirect: deciding is
+ * `totpGateFor`'s job and acting is the page's.
+ */
+export async function readSessionStage(
+  config: DashboardConfig,
+  token: string,
+): Promise<{ stage: SessionStageResponse | null; failure: ApiFailure | null }> {
+  const result = await getJson<SessionStageResponse>(
+    config.apiBaseUrl,
+    '/dash/v1/staff/session/stage',
+    { sessionToken: token },
+  );
+  return result.ok
+    ? { stage: result.value, failure: null }
+    : { stage: null, failure: result.failure };
 }
 
 /**

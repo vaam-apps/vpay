@@ -2199,3 +2199,208 @@ async fn changing_a_password_needs_the_current_one_and_ends_every_other_session(
     assert_eq!(status, 401, "the replaced password is refused: {body}");
     Ok(())
 }
+
+// ---------------------------------------------------------------- test 22
+
+/// **A mistyped six-digit code must not end the session** — and the route
+/// that lets the dashboard know the difference.
+///
+/// `POST /dash/v1/staff/totp` answers one `401` for a wrong code and for
+/// every session it refuses, which is this module's whole design. The
+/// dashboard app read that `401` as "the session is over" and cleared the
+/// cookie, so a typo sent a staff member back to the email-and-password form
+/// (the exp36 review's F6). The two lines could not simply be deleted:
+/// `/login/totp` read no session at all, so with the cookie kept a session
+/// that really *was* over would have left somebody typing codes at a form
+/// that could never accept one.
+///
+/// `GET /dash/v1/staff/session/stage` is what closes it, and this asserts the
+/// four things the page now rests on:
+///
+/// 1. `/staff/session` is refused at this stage and `/staff/session/stage` is
+///    not — which is why it is a new route rather than a reuse;
+/// 2. a **wrong code** leaves the session live and still `pending_totp`, so
+///    the browser may simply try again;
+/// 3. the body carries the stage and **no identity at all** — a caller here
+///    has presented a password and no second factor;
+/// 4. an accepted code moves it to `authenticated`, and signing out ends it.
+///
+/// The decisive mutation is `session_stage` calling `authenticated_session`
+/// instead of `load_session`: (1) and (2) then answer `401`, and the page has
+/// no way back to the honest one of F6's two meanings.
+#[tokio::test]
+async fn a_wrong_code_leaves_the_session_live_and_the_stage_route_says_so() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+
+    // (1) The stage read answers where the session read cannot.
+    let (status, body) = harness
+        .get_json("/dash/v1/staff/session", Some(&enrolling.session), None)
+        .await?;
+    assert_eq!(
+        status, 401,
+        "/staff/session is refused before the second factor — the reason /staff/session/stage \
+         exists: {body}"
+    );
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("pending_totp"),
+        "{body}"
+    );
+
+    // (3) The stage and nothing else. Every key here would be something the
+    // second factor exists to gate.
+    let keys: Vec<&String> = body
+        .as_object()
+        .context("the stage response is an object")?
+        .keys()
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["stage"],
+        "the stage route must publish nothing about the person: {body}"
+    );
+
+    // (2) A wrong code. Refused, with the same 401 a dead session gets — and
+    // the session is untouched.
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", "000000"), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(status, 401, "a wrong code is refused: {body}");
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 200,
+        "a MISTYPED CODE MUST NOT END THE SESSION. A 401 here is the dashboard signing a staff \
+         member out for a typo, which is exactly what F6 was: {body}"
+    );
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("pending_totp"),
+        "and it is still owed a code, so the same enrolment blob may be re-presented: {body}"
+    );
+
+    // (4) The right code moves the stage, and it is the SAME session token —
+    // the blob the browser kept is still the one that commits the enrolment.
+    let code = enrolling
+        .totp
+        .code_at_step(totp::step_at(OffsetDateTime::now_utc().unix_timestamp()));
+    let (status, body) = harness
+        .post_form(
+            "/dash/v1/staff/totp",
+            Some(&enrolling.session),
+            &[("code", &code), ("enrolment", &enrolling.sealed)],
+        )
+        .await?;
+    assert_eq!(
+        status, 200,
+        "the retry after a typo must complete the enrolment: {body}"
+    );
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        field(&body, "stage"),
+        &Value::from("authenticated"),
+        "{body}"
+    );
+
+    // And it is a session read like any other: sign-out ends it.
+    let (status, body) = harness
+        .post_form("/dash/v1/staff/logout", Some(&enrolling.session), &[])
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a signed-out session is over at this route too: {body}"
+    );
+
+    // As is a forged one, and one with no header at all.
+    let (status, _) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some("not-a-session-vpay-ever-minted"),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 401);
+    let (status, _) = harness
+        .get_json("/dash/v1/staff/session/stage", None, None)
+        .await?;
+    assert_eq!(status, 401);
+    Ok(())
+}
+
+// ---------------------------------------------------------------- test 23
+
+/// A **disabled** staff member's session is over at the stage route too.
+///
+/// `load_session` re-reads the staff row on every request, and this is the
+/// route the `/login/totp` page decides from — so a route that trusted the
+/// session row would leave a disabled person typing codes at a live form.
+/// The decisive mutation is deleting the `is_active` arm from
+/// `load_session`: this reads `200`.
+#[tokio::test]
+async fn a_disabled_account_is_refused_at_the_stage_route() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let enrolling = harness.begin_enrolment().await?;
+
+    let (status, _) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(status, 200, "live before the account is disabled");
+
+    sqlx::query("UPDATE staff_members SET status = 'disabled' WHERE email = $1")
+        .bind(STAFF_EMAIL)
+        .execute(&harness.repositories.op_store_pool())
+        .await
+        .context("disabling the staff member")?;
+
+    let (status, body) = harness
+        .get_json(
+            "/dash/v1/staff/session/stage",
+            Some(&enrolling.session),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a disabled account's half-authenticated session must stop at once: {body}"
+    );
+    Ok(())
+}

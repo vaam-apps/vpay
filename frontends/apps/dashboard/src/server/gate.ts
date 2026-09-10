@@ -6,7 +6,7 @@
  * than something only a browser can exercise. Every branch below is one a
  * page takes *before* rendering anything.
  */
-import type { ApiFailure, SessionResponse } from './api';
+import type { ApiFailure, SessionResponse, SessionStageResponse } from './api';
 
 /** What `gateFor` decided. */
 export type Gate =
@@ -88,4 +88,62 @@ export type Refusal =
  */
 export function refusalFor(failure: ApiFailure): Refusal {
   return failure.status === 401 ? 'sign-out' : 'outage';
+}
+
+/** What `/login/totp` must do about the session read it just took. */
+export type TotpGate =
+  /** Live, and still owed a code: render the form (and the enrolment panel). */
+  | { readonly kind: 'enter-code' }
+  /**
+   * Live, and both factors are already in. A back button, a second tab, or a
+   * reload after the action redirected. Send them on: `requireStaff` decides
+   * from there whether the printed password still has to be replaced.
+   */
+  | { readonly kind: 'signed-in' }
+  /** vpay refused the session. Back to the form — this is the only branch that does. */
+  | { readonly kind: 'dead' }
+  /** vpay could not answer. Keep the cookie and render the failure. */
+  | { readonly kind: 'outage'; readonly failure: ApiFailure };
+
+/**
+ * The decision `/login/totp` takes before rendering anything.
+ *
+ * # A mistyped code is not a dead session, and telling them apart needs a read
+ *
+ * `POST /dash/v1/staff/totp` answers `401` for a **wrong six-digit code** and
+ * for every session it will not accept — one answer, deliberately
+ * (`docs/flows/dashboard-auth.md`, "Every refusal is one answer"). Until
+ * 2026-09-10 `submitTotp` read any `401` from it as "the session is over" and
+ * cleared the cookie, so the commonest of those cases — a typo — sent a staff
+ * member back to the email-and-password form with no explanation. That is the
+ * exp36 review's F6, and F1 was the identical shape one route over.
+ *
+ * The two lines could not simply be dropped, and that is why this function
+ * exists: the page read **no** session, only the cookie's presence, so with
+ * the cookie kept a session that really was over would leave somebody typing
+ * codes at a form that could never accept one. The page now asks
+ * `GET /dash/v1/staff/session/stage` on every render — `/staff/session` is
+ * refused at this stage, which is what made this a new route rather than a
+ * reuse — and the answer, not the action's status, is what ends a session.
+ *
+ * The decisive mutation is mapping any failure to `'dead'`: the outage case
+ * below then reads `'dead'`, which is a vpay restart signing everybody out
+ * mid-sign-in (issue #88 item 2, on this route).
+ *
+ * @param stage the stage read's answer, or `null` if it failed
+ * @param failure why it failed, or `null` if it did not
+ */
+export function totpGateFor(
+  stage: SessionStageResponse | null,
+  failure: ApiFailure | null,
+): TotpGate {
+  if (stage === null) {
+    // Fail closed on a read that answered neither: a page that rendered a
+    // code form for a session it knows nothing about is what this replaces.
+    if (failure !== null && refusalFor(failure) === 'outage') {
+      return { kind: 'outage', failure };
+    }
+    return { kind: 'dead' };
+  }
+  return stage.stage === 'authenticated' ? { kind: 'signed-in' } : { kind: 'enter-code' };
 }

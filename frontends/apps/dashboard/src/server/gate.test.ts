@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ApiFailure, SessionResponse } from './api';
-import { gateFor, refusalFor } from './gate';
+import { gateFor, refusalFor, totpGateFor } from './gate';
 
 const SESSION: SessionResponse = {
   staff_id: 'stf_example_1',
@@ -80,5 +80,46 @@ describe('what a refused session read means for the cookie', () => {
   it('does not sign out on a 500 or a 502', () => {
     expect(refusalFor(failure(500))).toBe('outage');
     expect(refusalFor(failure(502))).toBe('outage');
+  });
+});
+
+describe('what /login/totp must do about the session it read', () => {
+  const failure = (status: number): ApiFailure => ({
+    status,
+    message: 'vpay said something',
+    requestId: 'req_example_2',
+  });
+
+  it('renders the code form for a session that has not presented one yet', () => {
+    expect(totpGateFor({ stage: 'pending_totp' }, null).kind).toBe('enter-code');
+  });
+
+  it('sends a session that already has both factors on to the payments list', () => {
+    // A back button, or a reload after the action redirected. Rendering the
+    // code form again would ask for a credential vpay would refuse as a
+    // replay.
+    expect(totpGateFor({ stage: 'authenticated' }, null).kind).toBe('signed-in');
+  });
+
+  it('ends the session only for a 401', () => {
+    // The 401 here is the STAGE READ's, never the TOTP action's — that one
+    // also means "wrong code". This is the whole of F6's fix.
+    expect(totpGateFor(null, failure(401)).kind).toBe('dead');
+  });
+
+  it('keeps the cookie when vpay could not be reached', () => {
+    // THE DECISIVE MUTATION: map any failure to 'dead'. These two then read
+    // 'dead', which is a vpay restart signing everybody out mid-sign-in
+    // (issue #88 item 2, on this route).
+    const outage = totpGateFor(null, failure(0));
+    expect(outage.kind).toBe('outage');
+    if (outage.kind === 'outage') {
+      expect(outage.failure.status).toBe(0);
+    }
+    expect(totpGateFor(null, failure(503)).kind).toBe('outage');
+  });
+
+  it('fails closed when the read answered neither a stage nor a failure', () => {
+    expect(totpGateFor(null, null).kind).toBe('dead');
   });
 });

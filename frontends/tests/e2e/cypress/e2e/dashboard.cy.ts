@@ -19,7 +19,9 @@
  * 2. `/login/totp` — enrolment is **mandatory at first sign-in** (ADR-0017
  *    decision 1): a session never reaches `authenticated` while
  *    `staff_members.totp_secret` is `NULL`.
- * 3. the same screen — one valid code, which is what commits the enrolment.
+ * 3. the same screen — a mistyped code first, which must show the error and
+ *    keep both the session and the sealed enrolment blob (the exp36 review's
+ *    F6), and then one valid code, which is what commits the enrolment.
  * 4. `/login/password` — `staff add` sets `password_change_required`, and
  *    since 2026-09-10 the change also needs the password IN FORCE (issue #79
  *    item 3): the wrong one is refused in the browser here, and the printed
@@ -104,6 +106,26 @@ describe("the dashboard", { testIsolation: false }, () => {
     // moments later. It authenticates nothing that will exist tomorrow.
     cy.screenshot("02-enrolment", { capture: "viewport" });
 
+    // ---- leg 3a: a MISTYPED code must not sign anybody out ---------------
+    //
+    // The exp36 review's F6, in a browser. `POST /dash/v1/staff/totp` answers
+    // the same 401 for a wrong six-digit code as for a session it refuses, and
+    // `submitTotp` read every one of them as "the session is over": it cleared
+    // the session cookie AND the sealed enrolment blob, so a typo sent the
+    // person back to the email-and-password form and a first sign-in could not
+    // even be retried — the retry would have carried no secret to commit.
+    //
+    // Three assertions, and the QR is the one that would be missed: the page
+    // has to still be the ENROLMENT page, not just still be at this path.
+    cy.get("#dashboard-totp-code").type("000000");
+    cy.contains("button", /finish enrolment/i).click();
+    cy.location("pathname").should("eq", "/login/totp");
+    cy.get('[role="alert"]').should("be.visible");
+    cy.get('[data-testid="totp-qr"]').should("be.visible");
+    cy.getCookie("vpay_dash_session").should((cookie) => {
+      expect(cookie?.value ?? "", "the session cookie after a wrong code").to.not.equal("");
+    });
+
     // ---- leg 3: a code computed from what the screen showed --------------
     cy.get('[data-testid="totp-secret"]')
       .invoke("text")
@@ -115,7 +137,7 @@ describe("the dashboard", { testIsolation: false }, () => {
         return totpDigits(secret.trim());
       })
       .then((code) => {
-        cy.get("#dashboard-totp-code").type(code);
+        cy.get("#dashboard-totp-code").clear().type(code);
         cy.contains("button", /finish enrolment/i).click();
       });
 

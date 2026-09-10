@@ -187,13 +187,26 @@ export async function submitTotp(_previous: FormState, form: FormData): Promise<
     { sessionToken: token },
   );
   if (!result.ok) {
-    if (result.failure.status === 401) {
-      // The session is gone, expired, idle or at the wrong stage — all one
-      // answer. Back to the form with the cookie cleared, which is what stops
-      // a loop.
-      await clearSessionCookie();
-      store.set(ENROLMENT_COOKIE, '', { ...COOKIE_ATTRIBUTES, maxAge: 0 });
-    }
+    // NOT `if (status === 401) { clearSessionCookie(); clear the enrolment }`,
+    // which is what stood here until 2026-09-10 (the exp36 review's F6, and
+    // `changePassword`'s F1 one route over).
+    //
+    // `/dash/v1/staff/totp` answers `401` for a **wrong six-digit code** as
+    // well as for a session it refuses — one answer for both, deliberately,
+    // because this module has exactly one refusal. So the old reading turned
+    // the commonest failure on this screen, a typo, into a sign-out: the
+    // cookie went, the next render found none and bounced to `/login`, and
+    // the person never read the sentence saying what was wrong. It took the
+    // sealed enrolment blob with it, so a first sign-in could not even be
+    // retried — the retry would carry no secret to commit.
+    //
+    // Nothing is lost by not clearing them. A session that really IS over is
+    // caught by `TotpPage`, which since the same day reads
+    // `GET /dash/v1/staff/session/stage` on every render and redirects to
+    // `/login` when vpay refuses it — the page whose job that is, deciding it
+    // from a fresh answer, rather than an action inferring it from a status
+    // that means two things. The extra guesses this admits are bounded by the
+    // sign-in limiter, which counts a wrong code (`staff::totp_step`).
     return shown(result.failure);
   }
 

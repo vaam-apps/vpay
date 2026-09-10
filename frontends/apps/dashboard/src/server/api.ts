@@ -64,6 +64,22 @@ export interface SessionResponse {
   readonly access_token?: string;
 }
 
+/**
+ * `GET /dash/v1/staff/session/stage`'s answer
+ * (`vpay_api::staff::SessionStageResponse`).
+ *
+ * The one read that answers for a session **mid-sign-in**. `/staff/session`
+ * refuses one that has not presented a code — the same `401` it answers for a
+ * session that is over — so this is what lets `/login/totp` tell "you mistyped
+ * your code" from "your session is gone".
+ *
+ * One field, deliberately: a caller at this stage has proved a password and
+ * no second factor, so vpay publishes nothing about the person here.
+ */
+export interface SessionStageResponse {
+  readonly stage: 'pending_totp' | 'authenticated';
+}
+
 /** `POST /dash/v1/oauth/token`'s answer. */
 export interface TokenResponse {
   readonly access_token: string;
