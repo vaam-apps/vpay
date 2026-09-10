@@ -15,6 +15,20 @@ publish = false
 [lints]
 workspace = true
 
+# `live-stack` compiles ONE test target and nothing else: `tests/live_invoices.rs`,
+# which drives this SDK against a real `vpay-server` over a socket. It is not a
+# feature of the shipped crate — no `#[cfg(feature = "live-stack")]` appears in
+# `src/` — and it exists so that `cargo nextest run --workspace` does not try to
+# reach a stack that is not there.
+#
+# The alternative would be `#[ignore]`, and AGENTS.md forbids it for exactly the
+# reason this file's `[[test]]` block gives: an ignored test reports `ok`.
+# `sdks/stripe-compat` solves the same problem the same way — its own vitest
+# project, its own preflight, run by its own recipe — and this is that shape in
+# Cargo's vocabulary.
+[features]
+live-stack = []
+
 [dependencies]
 tokio.workspace = true
 reqwest.workspace = true
@@ -84,3 +98,16 @@ rand.workspace = true
 # see docs/flows/merchant-auth.md's Status section for exactly what this does
 # and does not prove.
 authkestra-op.workspace = true
+
+# The live suite, off by default. `just sdk-live` (and CI's `e2e` job) turn it
+# on; nothing else compiles it, so `just verify-ignored`'s test-binary count is
+# unmoved by it.
+#
+# **It never skips.** With the feature on and no stack reachable, every case
+# fails with a message naming the missing variable or the unanswered
+# `/healthz` — see the module doc. That is the whole point: a suite that
+# skipped itself would print `ok` with zero cases and be indistinguishable, in
+# a CI summary, from one that passed.
+[[test]]
+name = "live_invoices"
+required-features = ["live-stack"]

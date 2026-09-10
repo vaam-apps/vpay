@@ -698,6 +698,15 @@ none of them touches the network:
   `unit_amount` outside the safe-integer range throws `TypeError` before any
   request. Every body string is the one `sdks/rust/tests/resources.rs` pins,
   asserted as a literal on both sides.
+- **Against a real `vpay-server`, not a stub** (added 2026-09-08):
+  `src/invoices.live.test.ts` creates a customer, drafts an invoice, bills two
+  lines, finalizes it, reads it back, checks the stored lines add up to the
+  stored total, lists it, voids it and finds it keeps its number; then
+  finalizes a second and has `pay` mint a payment intent and a hosted URL
+  without charging anybody; and confirms `currency` is required. It is a
+  **separate vitest project** (`vitest.live.config.ts`, `pnpm test:live`) so
+  `pnpm test` stays runnable with no stack, and it **fails rather than
+  skipping** when there is none — `just sdk-live` is what brings one up.
 - That the four `invoice.*` types are in `KnownEventType` and narrow through
   `isInvoiceEvent`, that `isPaymentIntentEvent` and `isCheckoutSessionEvent`
   do **not** claim them, and that an event body's empty `lines` decodes

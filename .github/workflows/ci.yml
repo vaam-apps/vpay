@@ -674,6 +674,36 @@ jobs:
           # resolved against `sdks/stripe-compat/`.
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
         run: pnpm --filter @vaam-apps/vpay-stripe-compat compat
+      # The two merchant SDKs' OWN invoice cases against this same stack —
+      # `just sdk-live`, split into its two halves so a failure names the SDK.
+      # The step above drives the real `stripe` package; these drive
+      # `sdks/rust` and `sdks/nodejs` directly, which is what
+      # docs/sdks/parity.md's "Invoices exercised against a running vpay" row
+      # asks for and what nothing did until 2026-09-08.
+      #
+      # Neither suite can report a green without a stack. The Rust one is a
+      # cargo target behind the `live-stack` feature, so it is not built by
+      # the `rust` job's `cargo nextest run --workspace` at all (and
+      # `just verify-ignored`'s binary count is unmoved); the Node one is a
+      # separate vitest project excluded from `pnpm test`. Run with no
+      # `VPAY_BASE_URL`, both FAIL rather than skipping.
+      #
+      # `cargo test` and not `cargo nextest`: this job installs no nextest,
+      # and one integration binary does not need one.
+      - name: sdks/rust invoice lifecycle against the running stack
+        env:
+          VPAY_BASE_URL: http://localhost:8080
+          VPAY_MERCHANT_CLIENT_ID: demo-merchant
+          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+        run: cargo test -p vpay-sdk --features live-stack --test live_invoices
+      - name: sdks/nodejs invoice lifecycle against the running stack
+        env:
+          VPAY_BASE_URL: http://localhost:8080
+          VPAY_MERCHANT_CLIENT_ID: demo-merchant
+          # Absolute: `pnpm --filter` runs the script with the cwd set to the
+          # package, not to the checkout.
+          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+        run: pnpm --filter @vaam-apps/vpay-sdk test:live
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()

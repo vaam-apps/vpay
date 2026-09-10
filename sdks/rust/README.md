@@ -551,7 +551,16 @@ customers or invoices), run by `just test-sdk-rust`:
   with a `payment_intent` and a `hosted_invoice_url`; the four
   `invoice_items()` methods, including that neither `currency` nor `amount`
   is ever in the body; and that a `unit_amount` outside `0..=2^53-1` is
-  refused before any request. All against `wiremock` — see the note below.
+  refused before any request. All against `wiremock`; the live suite in the
+  next bullet is what runs the same lifecycle against a real server.
+- **Against a real `vpay-server`, not a `wiremock`** (added 2026-09-08):
+  `tests/live_invoices.rs` runs the same lifecycle over a socket — create,
+  two lines, finalize, retrieve, list, void (and the number survives it), then
+  create → finalize → `pay`, plus the refusal that proves `currency` is
+  required. It is a **separate cargo test target** behind the `live-stack`
+  feature, so `cargo nextest run --workspace` never tries to reach a stack
+  that is not there, and it **fails rather than skipping** when there is none.
+  `just sdk-live` brings one up and runs it.
 - That the four `invoice.*` event types are known, that
   `invoice.marked_uncollectible` and `invoice.payment_failed` are **not**
   (vpay writes neither), and that an event body's empty `lines` and a `/v1`

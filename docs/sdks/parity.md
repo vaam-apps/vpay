@@ -155,6 +155,19 @@ types that vpay does not write, so an entry for either would be the
 `customer.created` mistake made knowingly. Both SDKs' proving tests assert the
 four are known *and* that those two are not.
 
+**And on 2026-09-08 the last invoice row was closed by running them.** The
+⛔/⛔ *invoices exercised against a running vpay* row was written on
+2026-09-07 so that building thirteen methods against stubs would not close it
+by accident; it is closed now by two suites that actually drive a real
+`vpay-server` — `sdks/rust/tests/live_invoices.rs` behind the `live-stack`
+cargo feature and `sdks/nodejs/src/invoices.live.test.ts` in its own vitest
+project, both run by `just sdk-live` and by CI's `e2e` job beside
+`sdks/stripe-compat`. Neither can report a green without a stack: run with no
+`VPAY_BASE_URL` they **fail**, naming the variable, rather than skipping.
+The run earned its keep immediately — it is what found that `currency` is
+required on `POST /v1/invoices`, which both SDKs had documented as optional
+with a deployment default that does not exist.
+
 Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
 things about those are worth stating rather than leaving to be discovered:
 the Node accessor is `client.accountHolders` (camelCase, like
@@ -313,7 +326,7 @@ method name).
 | `invoice_items.del` — draft parent only, decoding the **`line_item`** deleted shape | ✅ `del_invoice_item_is_a_delete_that_decodes_the_line_item_shape` | ✅ `invoiceItems.del: a DELETE that decodes the line_item shape` |
 | A line's `unit_amount` is held to the same `0..=2^53-1` bound as every other amount, refused before any request | ✅ `an_invoice_lines_unit_amount_is_refused_before_any_request` | ✅ `an invoice line's unit_amount is refused before any request` |
 | The four `invoice.*` event types in the event union, and their payloads decoding as an invoice with **empty** lines | ✅ `the_four_invoice_event_types_are_known_and_their_payloads_decode` | ✅ `the four invoice event types are known and their payloads narrow` |
-| Invoices exercised against a running vpay | ⛔ 2026-09-07, still true 2026-09-08 — every server in these cases is `wiremock`. The thirteen methods above are built and their bytes are pinned, but nothing drives them against a live stack; `backends/tests/integration/tests/invoices.rs` drives the route over a socket and **not through this SDK**, so "the stub answers the way this SDK expects" is the whole of the evidence here. Kept separate from the rows above deliberately, so that building the methods against stubs did not silently close it — which is exactly what it was written on 2026-09-07 to prevent. Owner: SDK maintainers | ⛔ 2026-09-07, still true 2026-09-08 — same: every server in these cases is `src/testing/test-server.ts`, and `sdks/stripe-compat` has no invoice cases either. Owner: SDK maintainers |
+| Invoices exercised against a running vpay | ✅ `live_invoice_lifecycle`, `an_invoice_create_with_no_currency_is_refused_by_the_server` | ✅ `creates a draft, bills two lines, finalizes, reads back and voids`, `finalizes a second invoice and mints a payment intent and a hosted url`, `refuses an invoice create with no usable currency, naming the parameter` |
 | Customers exercised against a running vpay | ⛔ 2026-09-06 — every server in these cases is `wiremock`. `/v1/customers` is real and `backends/tests/integration/tests/customers.rs` drives it over a socket, but **not through either SDK**, so "the stub answers the way this SDK expects" is the whole of the evidence here. Recorded ⛔/⛔ because both SDKs are equally short of the server. Owner: SDK maintainers | ⛔ 2026-09-06 — same: every server in these cases is `src/testing/test-server.ts`. Owner: SDK maintainers |
 | An `Idempotency-Key` on every POST, caller-supplied or a generated UUIDv4 | ✅ `a_post_without_a_caller_supplied_key_generates_a_uuid_v4_idempotency_key`, `cancel_posts_an_empty_body_and_still_carries_an_idempotency_key` | ✅ `payment_intents.create: exact path, method, Idempotency-Key, and body`, `payment_intents.create generates an Idempotency-Key when the caller supplies none` |
 
@@ -452,7 +465,7 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 | A checkout session's `customer` is in neither SDK, in either direction, though the server sends and accepts it | both | 2026-09-07 | SDK maintainers |
 | ~~Invoices and invoice items are in neither SDK, while the whole `/v1` surface is mounted~~ **— closed 2026-09-08: thirteen methods in each, fifteen rows above** | both | 2026-09-07 | closed |
 | ~~The four `invoice.*` event types are in neither event union, though the server emits all four~~ **— closed 2026-09-08** | both | 2026-09-07 | closed |
-| Invoices have never run against a live stack | both | 2026-09-07 | SDK maintainers |
+| ~~Invoices have never run against a live stack~~ **— closed 2026-09-08 by the exp33 review: `just sdk-live` and CI's `e2e` job drive both SDKs against a real `vpay-server`, and the run found the `currency` claim wrong** | both | 2026-09-07 | closed |
 
 ## What this matrix does not claim
 

@@ -352,7 +352,12 @@ sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
 skipped), asserting the exact bytes each of the thirteen methods puts on the
 wire and the decode of all eighteen keys. Both are stub-backed, deliberately:
 what proves the *server* is `invoices.rs`, and what these prove is that a
-merchant's client sends what the server documents.
+merchant's client sends what the server documents. **Since the exp33 review
+the same day, each SDK also has a live suite** — two cases in
+`sdks/rust/tests/live_invoices.rs` and three in
+`sdks/nodejs/src/invoices.live.test.ts` — driving a real `vpay-server` over a
+socket, because "the stub answers the way this SDK expects" is not evidence
+about the server and the delivered suites had nothing else.
 
 **Three mutations escaped the suite as delivered and are now caught**
 (2026-09-07 review, each measured by applying the mutation and re-running):
@@ -375,12 +380,25 @@ green while a settlement paid an invoice it was never bound to.
   `invoices.rs` still drives raw HTTP and should: it was written before the
   clients existed, and a suite rewritten to drive one would assert the SDK's
   encoding rather than the server's contract.
-- **Neither SDK has been exercised against a running vpay, and the
-  Stripe-compat suite still has no invoice cases.** The remaining ⛔/⛔ row,
-  and the reason it was listed separately from the one above on 2026-09-07:
-  every server in the SDK cases is a stub, so "the stub answers the way this
-  SDK expects" is the whole of the evidence there. `invoices.rs` is what
-  proves the server, over a socket, against a real Postgres.
+- ~~**Neither SDK has been exercised against a running vpay**~~ **— closed
+  2026-09-08 by the exp33 review.** Each SDK has a live suite that drives a
+  real `vpay-server`: `sdks/rust/tests/live_invoices.rs`, a cargo target
+  behind the `live-stack` feature (so `cargo nextest run --workspace` neither
+  builds nor counts it), and `sdks/nodejs/src/invoices.live.test.ts`, its own
+  vitest project excluded from `pnpm test`. `just sdk-live` brings the stack
+  up and runs both; CI's `e2e` job runs them beside `sdks/stripe-compat`.
+  Neither skips — with no `VPAY_BASE_URL` they fail naming the variable, which
+  is the whole difference between this row being closed and it being
+  laundered. **The first run found a defect**: `currency` is required on
+  `POST /v1/invoices` and both SDKs had it optional, documented as letting
+  "the server apply this deployment's own default"; there is no such default,
+  and no stub answering `201` to anything could have said so.
+  `invoices.rs` is still what proves the *server*, over a socket, against a
+  real Postgres.
+- **The Stripe-compat suite still has no invoice cases.** `sdks/stripe-compat`
+  drives the real `stripe@22.6.1` package rather than either merchant SDK, so
+  the row above says nothing about it. It gets no parity rows of its own
+  (ADR-0015 decision 4), and this is recorded here instead.
 - **No Cypress case renders an invoice's `hosted_invoice_url`.** The URL is
   asserted to be a real checkout-session URL by the integration suite, and the
   checkout page it points at is covered by `checkout.cy.ts` — but nothing has
