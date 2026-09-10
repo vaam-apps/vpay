@@ -3161,8 +3161,16 @@ struct ParityRow {
 
 /// Fail if the parity matrix and the SDK trees disagree, in either direction.
 ///
-/// Five rules, one per way the matrix could start lying:
+/// Six rules, one per way the matrix could start lying:
 ///
+/// * a `✅` cell on a row that names a `<resource>.<method>` may only appear
+///   in a column whose **own tree declares that method**. Until 2026-09-08
+///   nothing asked: deleting `invoices.void` from `sdks/rust` alone was
+///   measured to exit 0, because the doc→code direction below was satisfied
+///   by `sdks/nodejs` still declaring it and the cell's named test went on
+///   existing as the *other* SDK's source text. A ✅ is a claim about one
+///   SDK, and telling the two apart is the only thing the row's two cells
+///   are for.
 /// * a `✅` cell names the test(s) that prove the capability **in that SDK**,
 ///   and every one of them must exist there — a Rust `#[test]`/`#[tokio::test]`
 ///   function or a TypeScript `it("…")`/`test("…")` with that exact name.
@@ -3178,7 +3186,7 @@ struct ParityRow {
 /// * **doc → code**: every `<resource>.<method>` row names a method at least
 ///   one SDK declares, unless the row is a dated `⛔` in every column.
 ///
-/// The last two landed on 2026-09-06 and are the reason this gate is worth
+/// The two directional rules landed on 2026-09-06 and are the reason this gate is worth
 /// anything as a *parity* check. Until then it read the matrix and only ever
 /// asked whether what the matrix said was true; deleting a whole row was
 /// measured to pass (350 proving tests → 347, exit 0), and a method with no
@@ -3256,6 +3264,8 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
     // document compares the same two SDK roots, and walking each of them once
     // per table would be five identical walks.
     let mut shipped: BTreeMap<String, SdkMethod> = BTreeMap::new();
+    let mut declared_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut spellings_used: BTreeSet<usize> = BTreeSet::new();
     let mut walked: BTreeSet<&str> = BTreeSet::new();
     let mut named_by_a_row: BTreeSet<String> = BTreeSet::new();
     let mut capability_rows = 0usize;
@@ -3271,11 +3281,19 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 ));
             }
             if walked.insert(column.as_str()) {
-                for method in sdk_methods(root, column) {
+                let mut declared = BTreeSet::new();
+                for mut method in sdk_methods(root, column) {
+                    if let Some((at, canonical)) = canonical_capability(column, &method.capability)
+                    {
+                        spellings_used.insert(at);
+                        method.capability = canonical.to_owned();
+                    }
+                    declared.insert(method.capability.clone());
                     // First declaration wins, so the reported `file:line` is
                     // stable rather than dependent on column order.
                     shipped.entry(method.capability.clone()).or_insert(method);
                 }
+                declared_by.insert(column.clone(), declared);
             }
             indexes.push(test_names_in(&dir));
         }
@@ -3291,17 +3309,24 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 ));
                 continue;
             }
-            if let Some(capability) = row_capability(&row.capability) {
+            let capability = row_capability(&row.capability);
+            if let Some(capability) = capability.as_deref() {
                 capability_rows += 1;
-                check_row_names_a_shipped_method(&capability, row, &shipped, &mut problems);
-                named_by_a_row.insert(capability);
+                check_row_names_a_shipped_method(capability, row, &shipped, &mut problems);
+                named_by_a_row.insert(capability.to_owned());
             }
+            // The per-column rule asks *which* SDK ships it, so it has nothing
+            // to add about a capability NO SDK ships — that is one defect, and
+            // `check_row_names_a_shipped_method` has already named it once.
+            let capability = capability.filter(|c| shipped.contains_key(c));
             for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
                 check_parity_cell(
                     cell,
                     column,
                     index,
                     row,
+                    capability.as_deref(),
+                    declared_by.get(column),
                     &mut problems,
                     &mut proven,
                     &mut gaps,
@@ -3321,6 +3346,29 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 method.file, method.line
             ));
         }
+    }
+
+    // The spelling table, checked in the direction that lets it rot: an entry
+    // nothing declares is an exemption that has outlived the divergence it was
+    // written for, and it would go on quietly widening what a ✅ cell accepts.
+    // `verify-serde`'s exemption table is read both ways for the same reason.
+    for (at, (column, declared_as, canonical)) in PARITY_COLUMN_SPELLINGS.iter().enumerate() {
+        // Scoped to the columns this document compares and the rows it
+        // carries, so the rule is about *this* matrix: a synthetic one that
+        // never mentions the capability is not a tree where the entry has
+        // gone stale, it is a tree the entry does not speak about.
+        if spellings_used.contains(&at)
+            || !walked.contains(column)
+            || !named_by_a_row.contains(*canonical)
+        {
+            continue;
+        }
+        problems.push(format!(
+            "PARITY_COLUMN_SPELLINGS[{at}]: `{column}` declares no `{declared_as}`, so the entry \
+             mapping it onto the row `{canonical}` exempts nothing. Delete the entry — a stale \
+             spelling exemption goes on accepting a ✅ cell for a method that column stopped \
+             declaring"
+        ));
     }
 
     ParityOutcome {
@@ -3351,12 +3399,25 @@ fn check_row_names_a_shipped_method(
     ));
 }
 
-/// The first three rules on [`verify_sdk_parity`], applied to one cell.
+/// The first three rules on [`verify_sdk_parity`], plus the per-column rule,
+/// applied to one cell.
+///
+/// `capability` is the `<resource>.<method>` this row names, if it names one,
+/// and `declared` is the set of capabilities **this column's own tree**
+/// declares — the pair that makes a `✅` a claim about this SDK rather than
+/// about either of them.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seven inputs and two counters; splitting them into a struct would name the \
+              same fields once more without changing what the function decides"
+)]
 fn check_parity_cell(
     cell: &str,
     column: &str,
     index: &BTreeSet<String>,
     row: &ParityRow,
+    capability: Option<&str>,
+    declared: Option<&BTreeSet<String>>,
     problems: &mut Vec<String>,
     proven: &mut usize,
     gaps: &mut usize,
@@ -3376,6 +3437,23 @@ fn check_parity_cell(
     }
 
     if text.starts_with('✅') {
+        // The per-column rule, checked BEFORE the test names: a ✅ says *this*
+        // SDK ships the capability, and until 2026-09-08 nothing here asked
+        // that column whether it did. Deleting `void` from `sdks/rust` alone
+        // was measured to exit 0 — the doc→code direction was satisfied by
+        // `sdks/nodejs` still declaring it, and the cell's named test is
+        // source text that goes on existing because it is the *other* SDK's.
+        // See `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
+        if let (Some(capability), Some(declared)) = (capability, declared)
+            && !declared.contains(capability)
+        {
+            problems.push(format!(
+                "{at}: ✅ claims `{capability}`, which `{column}` does not declare — a ✅ is a \
+                 claim about THIS SDK, and the other column declaring it is what the row's two \
+                 cells exist to tell apart. Ship the method here, or make this cell a dated ⛔"
+            ));
+            return;
+        }
         let names = code_spans(text);
         if names.is_empty() {
             problems.push(format!(
@@ -3618,6 +3696,46 @@ const RESOURCE_TYPE_SUFFIX: &str = "Resource";
 /// not a rule because there is no rule — `checkout` is a namespace type with
 /// no operations, and nothing in the source says so.
 const PARITY_NESTED_RESOURCES: [(&str, &str); 1] = [("checkout_sessions", "checkout.sessions")];
+
+/// The capabilities one column spells differently from the row that records
+/// them: `(column, the spelling that column declares, the row's spelling)`.
+///
+/// ADR-0015 decision 1 is that parity is **per capability, not per method
+/// name**, and its "Alternatives considered" rejects method-name parity
+/// outright: *"method-name parity is nearly meaningless across Rust and
+/// TypeScript."* Everything else in the matrix has managed one spelling
+/// anyway, because every other method is a single lower-case word. The one
+/// that cannot is `invoices.mark_uncollectible`: `sdks/rust` may not spell
+/// `markUncollectible` (`non_snake_case` is a rustc lint, not a preference)
+/// and `sdks/nodejs` should not spell `mark_uncollectible` — Stripe's own
+/// Node SDK, which merchants arrive from, calls it `markUncollectible`, and
+/// it would otherwise be the one snake_case method in a camelCase package.
+///
+/// Without this table the gate would force one of those two, which is the
+/// method-name parity the ADR rejected — a check deciding an API's public
+/// spelling because it could not read two. It is a table and not a rule
+/// (no "TypeScript may camel-case any row") deliberately: a rule would make
+/// every future divergence silent, where an entry here is one line a reviewer
+/// must be shown. Checked in both directions — an entry that exempts nothing
+/// fails, in [`parity_outcome`].
+const PARITY_COLUMN_SPELLINGS: [(&str, &str, &str); 1] = [(
+    "sdks/nodejs",
+    "invoices.markUncollectible",
+    "invoices.mark_uncollectible",
+)];
+
+/// The row spelling `column`'s `declared` capability answers to, and the index
+/// of the [`PARITY_COLUMN_SPELLINGS`] entry that says so.
+///
+/// `None` when the column spells the capability the way the rows do, which is
+/// every capability but one.
+fn canonical_capability(column: &str, declared: &str) -> Option<(usize, &'static str)> {
+    PARITY_COLUMN_SPELLINGS
+        .iter()
+        .enumerate()
+        .find(|(_, (col, spelled, _))| *col == column && *spelled == declared)
+        .map(|(at, (_, _, canonical))| (at, *canonical))
+}
 
 /// Directory names under an SDK root that hold no shipped surface.
 ///
@@ -9458,6 +9576,130 @@ export class HolderResource {
         );
     }
 
+    /// **The escape this gate shipped with until 2026-09-08**, as a
+    /// regression test. Deleting a method from ONE SDK left
+    /// `verify-sdk-parity` green: the doc→code direction was satisfied while
+    /// the *other* column still declared it, and the ✅ cell's named test is
+    /// source text that goes on existing because it belongs to that other
+    /// SDK. Measured on `sdks/rust`'s `invoices.void`, exit 0.
+    ///
+    /// The fixture removes `list` from the Rust tree only, and both cells of
+    /// the `widgets.list` row keep naming tests that really exist — which is
+    /// exactly the shape that used to pass.
+    #[test]
+    fn a_tick_for_a_method_only_the_other_sdk_declares_fails() {
+        let dir = synthetic_sdks_shipping_widgets("parity-one-sided-method");
+        fs::write(
+            dir.path().join("sdks/rust/src/resources.rs"),
+            "impl WidgetsResource<'_> {\n    pub async fn create(&self) {}\n}\n",
+        )
+        .expect("the rust resource fixture is rewritable");
+
+        let doc = format!("{HEADER}{WIDGETS}");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let message = found.first().map(String::as_str).unwrap_or_default();
+        assert!(message.contains("widgets.list"), "{message}");
+        assert!(message.contains("sdks/rust"), "{message}");
+        assert!(
+            !message.contains("sdks/nodejs"),
+            "the SDK that still ships it is not the one at fault, {message}"
+        );
+    }
+
+    /// The other half of the same rule: a ⛔ cell is how a column that does
+    /// not declare the method answers, and it still passes.
+    #[test]
+    fn a_dated_gap_is_how_the_sdk_that_lacks_the_method_answers() {
+        let dir = synthetic_sdks_shipping_widgets("parity-one-sided-gap");
+        fs::write(
+            dir.path().join("sdks/rust/src/resources.rs"),
+            "impl WidgetsResource<'_> {\n    pub async fn create(&self) {}\n}\n",
+        )
+        .expect("the rust resource fixture is rewritable");
+
+        let doc = format!(
+            "{HEADER}| `widgets.create` | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n\
+             | `widgets.list` | ⛔ 2026-09-08 — not built here. Owner: SDK maintainers | ✅ `lists widgets` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.gaps, 1);
+    }
+
+    /// A row that names no `<resource>.<method>` states a behaviour spanning
+    /// methods, and the per-column rule must not invent a method for it —
+    /// most of the matrix's rows are that shape.
+    #[test]
+    fn a_behaviour_row_is_untouched_by_the_per_column_rule() {
+        let dir = synthetic_sdks_shipping_widgets("parity-behaviour-row");
+        let doc = format!(
+            "{HEADER}{WIDGETS}| A widget id is percent-encoded | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+    }
+
+    /// [`PARITY_COLUMN_SPELLINGS`], both ways, on a synthetic tree that
+    /// declares the real entry's spelling: the camelCase declaration answers
+    /// the snake_case row, and the entry is then not stale.
+    #[test]
+    fn a_column_may_spell_a_capability_its_own_way_when_the_table_says_so() {
+        let dir = TempDir::new("parity-spelling");
+        let rust_src = dir.path().join("sdks/rust/src");
+        let rust_tests = dir.path().join("sdks/rust/tests");
+        let node_src = dir.path().join("sdks/nodejs/src/resources");
+        for path in [&rust_src, &rust_tests, &node_src] {
+            fs::create_dir_all(path).expect("the fixture directory is creatable");
+        }
+        fs::write(
+            rust_src.join("resources.rs"),
+            "impl InvoicesResource<'_> {\n    pub async fn mark_uncollectible(&self) {}\n}\n",
+        )
+        .expect("the rust fixture is writable");
+        fs::write(
+            rust_tests.join("invoices.rs"),
+            "#[tokio::test]\nasync fn a_write_off() {}\n",
+        )
+        .expect("the rust test fixture is writable");
+        fs::write(
+            node_src.join("invoices.ts"),
+            "export class InvoicesResource {\n  async markUncollectible() {}\n}\n",
+        )
+        .expect("the node fixture is writable");
+        fs::write(
+            node_src.join("invoices.test.ts"),
+            "it(\"writes one off\", () => {});\n",
+        )
+        .expect("the node test fixture is writable");
+
+        let doc = format!(
+            "{HEADER}| `invoices.mark_uncollectible` | ✅ `a_write_off` | ✅ `writes one off` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(
+            outcome.methods, 1,
+            "the two spellings are ONE capability, not two"
+        );
+
+        // And the stale direction: spell it snake_case in the Node tree too,
+        // so the entry exempts nothing, and the table itself is the failure.
+        fs::write(
+            node_src.join("invoices.ts"),
+            "export class InvoicesResource {\n  async mark_uncollectible() {}\n}\n",
+        )
+        .expect("the node fixture is rewritable");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found.first().is_some_and(
+                |m| m.contains("PARITY_COLUMN_SPELLINGS") && m.contains("exempts nothing")
+            ),
+            "{found:?}"
+        );
+    }
+
     /// The vacuity guard. Both new directions are satisfied by an enumerator
     /// that finds nothing, so the count this repository's own SDKs yield is
     /// asserted rather than merely printed — and asserted by name, because a
@@ -9476,7 +9718,7 @@ export class HolderResource {
     /// needs to know which one broke, because only one of them is a defect:
     ///
     /// 1. neither enumerator has gone quiet (the vacuity half), and
-    /// 2. the two SDKs happen to declare the *same* 14 methods today.
+    /// 2. the two SDKs happen to declare the *same* 32 methods today.
     ///
     /// (2) is a fact about this tree, **not** a rule — ADR-0015 decision 2
     /// expressly lets a capability land in one SDK with a dated ⛔ row for the
@@ -9484,6 +9726,17 @@ export class HolderResource {
     /// The list is still asserted rather than relaxed to "non-empty", because
     /// a guard that only counts is a guard that survives the list changing
     /// under it; the message below is what carries the distinction.
+    ///
+    /// The comparison is over **canonical** capability names, so the one
+    /// entry in [`PARITY_COLUMN_SPELLINGS`] does not read as a divergence
+    /// here; the raw spellings are pinned separately below, because a table
+    /// entry nobody can see the effect of is one nobody maintains.
+    ///
+    /// **It caught exactly that on 2026-09-08**, one branch later: exp33's
+    /// thirteen invoice methods landed in both SDKs and this list was not
+    /// updated with them, so `cargo nextest -p xtask` failed on a head whose
+    /// `just verify` was green — `verify-sdk-parity` counts capabilities, and
+    /// only this test names them. The list is the thirteen longer for it.
     #[test]
     fn the_repositorys_own_sdks_enumerate_exactly_the_capabilities_the_matrix_records() {
         /// What to do about a failure, since two unlike causes reach it.
@@ -9510,6 +9763,23 @@ export class HolderResource {
             "customers.retrieve",
             "customers.update",
             "events.list",
+            // S4b, 2026-09-08 (exp33). Thirteen methods, both SDKs, in one
+            // PR — the ordinary reason again. `invoice_items` has no `list`:
+            // the server mounts no collection GET and a line is read off its
+            // invoice.
+            "invoice_items.create",
+            "invoice_items.del",
+            "invoice_items.retrieve",
+            "invoice_items.update",
+            "invoices.create",
+            "invoices.del",
+            "invoices.finalize",
+            "invoices.list",
+            "invoices.mark_uncollectible",
+            "invoices.pay",
+            "invoices.retrieve",
+            "invoices.update",
+            "invoices.void",
             "payment_intents.cancel",
             "payment_intents.confirm",
             "payment_intents.create",
@@ -9519,18 +9789,50 @@ export class HolderResource {
             "refunds.retrieve",
         ];
         for column in ["sdks/rust", "sdks/nodejs"] {
-            let found: BTreeSet<String> = sdk_methods(&root, column)
+            let raw: BTreeSet<String> = sdk_methods(&root, column)
                 .into_iter()
                 .map(|m| m.capability)
                 .collect();
-            let found: Vec<&str> = found.iter().map(String::as_str).collect();
             assert!(
-                !found.is_empty(),
+                !raw.is_empty(),
                 "{column} enumerated NOTHING, which passes both new parity directions \
                  vacuously{WHEN_THIS_FAILS}"
             );
+            let canonical: BTreeSet<String> = raw
+                .iter()
+                .map(|c| {
+                    canonical_capability(column, c)
+                        .map_or_else(|| c.clone(), |(_, name)| name.to_owned())
+                })
+                .collect();
+            let found: Vec<&str> = canonical.iter().map(String::as_str).collect();
             assert_eq!(found, expected, "{column}{WHEN_THIS_FAILS}");
         }
+
+        // The one capability the two SDKs spell differently, pinned by name in
+        // BOTH directions. Without this, `PARITY_COLUMN_SPELLINGS` could be
+        // deleted and the canonical comparison above would still pass — the
+        // Rust spelling is the canonical one, so only the Node column would
+        // notice, and only through the gate's own stale-entry rule.
+        let node: BTreeSet<String> = sdk_methods(&root, "sdks/nodejs")
+            .into_iter()
+            .map(|m| m.capability)
+            .collect();
+        assert!(
+            node.contains("invoices.markUncollectible")
+                && !node.contains("invoices.mark_uncollectible"),
+            "sdks/nodejs spells it Stripe's way (2026-09-08); sdks/rust cannot, and \
+             PARITY_COLUMN_SPELLINGS is what makes the one row cover both{WHEN_THIS_FAILS}"
+        );
+        let rust: BTreeSet<String> = sdk_methods(&root, "sdks/rust")
+            .into_iter()
+            .map(|m| m.capability)
+            .collect();
+        assert!(
+            rust.contains("invoices.mark_uncollectible")
+                && !rust.contains("invoices.markUncollectible"),
+            "sdks/rust spells it snake_case, which is the row's spelling{WHEN_THIS_FAILS}"
+        );
     }
 
     #[test]

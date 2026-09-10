@@ -32,6 +32,24 @@ so the gate now runs in both directions:
   `events.retrieve` row below has been ⛔/⛔ since 2026-09-03). A stale row
   fails, naming its own line.
 
+### And per column, since 2026-09-08
+
+The two directions above are both satisfied by *either* SDK declaring the
+method, which left one thing unchecked for two days: whether the SDK a ✅ cell
+is **in** ships it. Measured on the exp33 head — deleting `invoices.void`
+from `sdks/rust` alone, leaving `sdks/nodejs` untouched — `verify-sdk-parity`
+exited **0** and still reported 443 proving tests: doc→code was answered by
+the Node declaration, and the Rust cell's named test is source text that goes
+on existing whether or not the method it calls does. (What caught it in
+practice was `cargo nextest -p vpay-sdk`, because the test no longer
+compiled; the gate is what is supposed to say so first.)
+
+So a ✅ on a capability row may now only appear in a column whose **own tree**
+declares that method. The other column declaring it is exactly what the row's
+two cells exist to tell apart. A column that does not ship it answers with a
+dated ⛔, which is what ADR-0015 decision 2 asks for. Rows that name no
+`<resource>.<method>` — most of this document — are untouched by the rule.
+
 ### How a capability row is named
 
 A row is a **capability row** when its first cell *opens* with a code span
@@ -83,6 +101,72 @@ three states (leave alone / set / clear), Rust spells them
 resulting *body* — `email=` for a clear, the key absent for a leave-alone —
 rather than the type. Collapsing the two in either language makes a payer's
 email unclearable and nothing else notices.
+
+Again on **2026-09-08** for the fifteen invoice rows (S4b's resource, built in
+both SDKs a day after the server). Four things about those are worth stating
+rather than leaving to be discovered.
+
+**`invoices.mark_uncollectible` is the row's spelling and `markUncollectible`
+is the Node SDK's**, and it is the only capability in this document the two
+SDKs spell differently. `sdks/rust` *cannot* spell `markUncollectible`
+(`non_snake_case` is a rustc lint, not a preference) and
+`@vaam-apps/vpay-sdk` should not spell `mark_uncollectible` — Stripe's own
+Node SDK, which merchants arrive from, says `markUncollectible`, and the
+other spelling would be the one snake_case method in a camelCase package.
+
+It was `mark_uncollectible` in the Node SDK for one day (2026-09-08), because
+the gate keyed a row on one spelling verbatim and two rows for one capability
+would each show a ⛔ in the column not using its spelling — a matrix reporting
+a divergence where there is none. That is the gate deciding a public API's
+spelling because it could not read two, and ADR-0015 decision 1 says the
+opposite in as many words: parity is *"per capability, with the same wire
+semantics — not per method name"*, and its alternatives reject method-name
+parity outright. So the gate learned the distinction instead:
+`PARITY_COLUMN_SPELLINGS` in `.xtask/src/main.rs` carries the one entry,
+`(sdks/nodejs, invoices.markUncollectible, invoices.mark_uncollectible)`, and
+is read in **both** directions — an entry that exempts nothing fails the
+build, the way ADR-0016's serde exemption table is. A table and not a rule
+("TypeScript may camel-case any row") deliberately: a rule would make every
+future divergence silent, where an entry here is one line a reviewer is shown.
+
+**The path is not renamed and cannot be**: the route is
+`POST /v1/invoices/{id}/mark_uncollectible`, and both SDKs' proving tests
+assert that path by name.
+
+**The object is a `line_item` and the route is `/v1/invoice_items`**, and both
+spellings are the wire's. Stripe has two objects where vpay has one. Both SDKs
+name the *type* for the object (`InvoiceLine`) and the *resource* for the route
+(`invoice_items` / `client.invoiceItems`), so neither name is invented; the
+`invoice_items.del` row's proving tests are the ones that would fail if either
+SDK started decoding `"invoice_item"`.
+
+**The update types are at parity on the capability and deliberately not on the
+shape**, for the reason the `customers.update` row's note gives one direction
+and this one gives the other: an invoice patch field is three-state
+(`Option<Option<T>>` / `T | null | undefined`) because `description=` clears,
+while an *invoice item* patch field is two-state in both languages, because all
+three of its columns are `NOT NULL` and `description=` is a `400` naming the
+parameter rather than a clear. Collapsing the first loses a clear; widening the
+second would offer a state the server refuses.
+
+**The event union grew by four and deliberately not by six.**
+`invoice.marked_uncollectible` and `invoice.payment_failed` are real Stripe
+types that vpay does not write, so an entry for either would be the
+`customer.created` mistake made knowingly. Both SDKs' proving tests assert the
+four are known *and* that those two are not.
+
+**And on 2026-09-08 the last invoice row was closed by running them.** The
+⛔/⛔ *invoices exercised against a running vpay* row was written on
+2026-09-07 so that building thirteen methods against stubs would not close it
+by accident; it is closed now by two suites that actually drive a real
+`vpay-server` — `sdks/rust/tests/live_invoices.rs` behind the `live-stack`
+cargo feature and `sdks/nodejs/src/invoices.live.test.ts` in its own vitest
+project, both run by `just sdk-live` and by CI's `e2e` job beside
+`sdks/stripe-compat`. Neither can report a green without a stack: run with no
+`VPAY_BASE_URL` they **fail**, naming the variable, rather than skipping.
+The run earned its keep immediately — it is what found that `currency` is
+required on `POST /v1/invoices`, which both SDKs had documented as optional
+with a deployment default that does not exist.
 
 Again on **2026-09-05** for the five `account_holders` rows (issue #47). Two
 things about those are worth stating rather than leaving to be discovered:
@@ -227,9 +311,22 @@ method name).
 | The `customer.deleted` event type, and its payload decoding as a customer | ✅ `the_customer_deleted_event_type_is_known_and_its_payload_decodes` | ✅ `customer.deleted is a known event type and its payload is a customer` |
 | `customer.created` and `customer.updated` in the event union | ⛔ 2026-09-06 — **the server does not emit them**, so a union entry would be a claim about vpay that is false. `POST /v1/customers` and `POST /v1/customers/{id}` are single statements on the pool; emitting an event means putting the write and the event in one transaction, which migration 0034 deliberately did not do (see its own comment, and `docs/flows/customers.md` "What is not built"). Recorded ⛔/⛔ because both SDKs are equally short of Stripe, which is a different statement from being short of vpay. Owner: vpay maintainers, not SDK maintainers | ⛔ 2026-09-06 — same, and the union is `sdks/nodejs/src/types.ts`'s `KnownEventType`. Owner: vpay maintainers |
 | A checkout session's `customer` — sent on `checkout.sessions.create`, and decoded off the session object | ⛔ 2026-09-07 — **neither SDK models it in either direction**, while the server does both. S4a added `customer` to `POST /v1/checkout/sessions` (accepted, stored, rendered — `docs/flows/customers.md`, and `a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction` proves the server half) but `CreateCheckoutSessionParams` has no `customer` field in either language and neither `CheckoutSession` type carries the key the server now returns. A merchant driving sessions through an SDK cannot attach a customer at all, and a session created any other way decodes with the field dropped. The intent's `customer` **is** in both (the rows above); only the session's is missing, which is why this is a gap row and not a correction to one. Owner: SDK maintainers | ⛔ 2026-09-07 — same, and the types are `sdks/nodejs/src/types.ts`'s `CreateCheckoutSessionParams` and `CheckoutSession` |
-| **Invoices — the whole resource** (S4b, 2026-09-07): `invoices.create/retrieve/update/list/del`, `finalize`, `void`, `mark_uncollectible`, `pay`, and `invoice_items.create/retrieve/update/del` | ⛔ 2026-09-07 — **not built in either SDK.** The server surface is real, mounted and proven (`docs/flows/invoices.md`, `backends/tests/integration/tests/invoices.rs` — twelve cases over a socket), and neither SDK has one method for it. Recorded ⛔/⛔ because both are equally short of the server, which is why `invoices.rs` drives raw HTTP: a suite written against a client that does not exist would assert the implementation back to itself. Owner: SDK maintainers | ⛔ 2026-09-07 — same. The types would go in `sdks/nodejs/src/types.ts` and the resource in `sdks/nodejs/src/resources/invoices.ts` |
-| The four `invoice.*` event types in the event union, and their payloads decoding as an invoice | ⛔ 2026-09-07 — **the server emits all four** (`invoice.created`, `invoice.finalized`, `invoice.paid`, `invoice.voided`; migration 0036 and `the_event_vocabulary_holds_exactly_the_invoice_types_that_have_writers`), and neither SDK knows any of them. Different in kind from the `customer.created` row above: there the union is short because vpay does not emit, here it is short while vpay does — so a merchant's typed handler silently drops an event that is really being delivered. Owner: SDK maintainers | ⛔ 2026-09-07 — same, and the union is `sdks/nodejs/src/types.ts`'s `KnownEventType` |
-| Invoices exercised against a running vpay | ⛔ 2026-09-07 — neither SDK has the resource at all, so there is nothing to exercise. Listed separately from the row above so that building the methods against stubs does not silently close this one too. Owner: SDK maintainers | ⛔ 2026-09-07 — same |
+| `invoices.create` — `POST /v1/invoices`, a draft with no number and zero amounts; `customer` **and** `currency` are required | ✅ `create_invoice_sends_the_documented_body_and_decodes_every_key`, `an_unset_invoice_field_is_omitted_from_the_body_rather_than_sent_empty` | ✅ `invoices.create: exact path, method, Idempotency-Key, and body`, `an unset invoice field is omitted from the body rather than sent empty` |
+| `invoices.retrieve` — `GET /v1/invoices/{id}`, **with its lines expanded** | ✅ `retrieve_invoice_is_a_get_that_carries_its_lines` | ✅ `invoices.retrieve: a GET whose response carries the lines` |
+| `invoices.update`, and the three states of a patch field: leave alone, set, **clear** | ✅ `an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire` | ✅ `invoices.update tells leave-alone, set and clear apart on the wire`, `an invoice patch that mentions nothing clears nothing` |
+| `invoices.list`, with both cursors and both filters (`customer`, `status`) | ✅ `list_invoices_encodes_its_filters_and_cursors_into_the_query_string` | ✅ `invoices.list: exact query string, both cursors and both filters` |
+| `invoices.del` — draft only, a `DELETE` with an `Idempotency-Key` and **no** body | ✅ `del_invoice_is_a_delete_that_still_carries_an_idempotency_key` | ✅ `invoices.del: a DELETE with an Idempotency-Key and no body` |
+| `invoices.finalize` — the money transition: number assigned, lines frozen, amounts final | ✅ `the_three_parameterless_transitions_post_an_empty_body_to_their_own_paths` | ✅ `the three parameterless transitions post an empty body to their own paths` |
+| `invoices.void` — cancels an issued document, **keeping its number** | ✅ `the_three_parameterless_transitions_post_an_empty_body_to_their_own_paths`, `a_refused_transition_is_a_conflict_this_sdk_hands_back_whole` | ✅ `the three parameterless transitions post an empty body to their own paths`, `a refused transition is a VpayApiError carrying the server's 409 whole` |
+| `invoices.mark_uncollectible` — written off: still owed, never expected, and **no event** | ✅ `the_three_parameterless_transitions_post_an_empty_body_to_their_own_paths` | ✅ `the three parameterless transitions post an empty body to their own paths` |
+| `invoices.pay` — mints an intent and a hosted checkout for `amount_remaining`; charges nobody | ✅ `pay_sends_both_urls_and_decodes_the_intent_and_hosted_url` | ✅ `invoices.pay sends both urls and decodes the intent and hosted url` |
+| `invoice_items.create` — a line on a draft; no `currency` and no `amount` parameter, ever | ✅ `create_invoice_item_sends_the_documented_body_and_decodes_the_line` | ✅ `invoiceItems.create: exact body, and no currency or amount in it`, `invoiceItems.create omits an absent quantity so the server applies its default` |
+| `invoice_items.retrieve` — readable whatever the parent invoice's status | ✅ `retrieve_invoice_item_is_a_get_with_no_body` | ✅ `invoiceItems.retrieve: exact GET path, no body, no Idempotency-Key` |
+| `invoice_items.update` — draft parent only, `amount` recomputed and never sent | ✅ `update_invoice_item_sends_only_what_it_was_given_and_never_an_amount` | ✅ `invoiceItems.update sends only what it was given, and never an amount` |
+| `invoice_items.del` — draft parent only, decoding the **`line_item`** deleted shape | ✅ `del_invoice_item_is_a_delete_that_decodes_the_line_item_shape` | ✅ `invoiceItems.del: a DELETE that decodes the line_item shape` |
+| A line's `unit_amount` is held to the same `0..=2^53-1` bound as every other amount, refused before any request | ✅ `an_invoice_lines_unit_amount_is_refused_before_any_request` | ✅ `an invoice line's unit_amount is refused before any request` |
+| The four `invoice.*` event types in the event union, and their payloads decoding as an invoice with **empty** lines | ✅ `the_four_invoice_event_types_are_known_and_their_payloads_decode` | ✅ `the four invoice event types are known and their payloads narrow` |
+| Invoices exercised against a running vpay | ✅ `live_invoice_lifecycle`, `an_invoice_create_with_no_currency_is_refused_by_the_server` | ✅ `creates a draft, bills two lines, finalizes, reads back and voids`, `finalizes a second invoice and mints a payment intent and a hosted url`, `refuses an invoice create with no usable currency, naming the parameter` |
 | Customers exercised against a running vpay | ⛔ 2026-09-06 — every server in these cases is `wiremock`. `/v1/customers` is real and `backends/tests/integration/tests/customers.rs` drives it over a socket, but **not through either SDK**, so "the stub answers the way this SDK expects" is the whole of the evidence here. Recorded ⛔/⛔ because both SDKs are equally short of the server. Owner: SDK maintainers | ⛔ 2026-09-06 — same: every server in these cases is `src/testing/test-server.ts`. Owner: SDK maintainers |
 | An `Idempotency-Key` on every POST, caller-supplied or a generated UUIDv4 | ✅ `a_post_without_a_caller_supplied_key_generates_a_uuid_v4_idempotency_key`, `cancel_posts_an_empty_body_and_still_carries_an_idempotency_key` | ✅ `payment_intents.create: exact path, method, Idempotency-Key, and body`, `payment_intents.create generates an Idempotency-Key when the caller supplies none` |
 
@@ -366,9 +463,9 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 | `customer.created`/`customer.updated` are in neither event union, because the server emits neither | both | 2026-09-06 | vpay maintainers |
 | Customers have never run against a live stack | both | 2026-09-06 | SDK maintainers |
 | A checkout session's `customer` is in neither SDK, in either direction, though the server sends and accepts it | both | 2026-09-07 | SDK maintainers |
-| Invoices and invoice items are in neither SDK, while the whole `/v1` surface is mounted | both | 2026-09-07 | SDK maintainers |
-| The four `invoice.*` event types are in neither event union, though the server emits all four | both | 2026-09-07 | SDK maintainers |
-| Invoices have never run against a live stack | both | 2026-09-07 | SDK maintainers |
+| ~~Invoices and invoice items are in neither SDK, while the whole `/v1` surface is mounted~~ **— closed 2026-09-08: thirteen methods in each, fifteen rows above** | both | 2026-09-07 | closed |
+| ~~The four `invoice.*` event types are in neither event union, though the server emits all four~~ **— closed 2026-09-08** | both | 2026-09-07 | closed |
+| ~~Invoices have never run against a live stack~~ **— closed 2026-09-08 by the exp33 review: `just sdk-live` and CI's `e2e` job drive both SDKs against a real `vpay-server`, and the run found the `currency` claim wrong** | both | 2026-09-07 | closed |
 
 ## What this matrix does not claim
 

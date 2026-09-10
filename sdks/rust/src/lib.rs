@@ -65,17 +65,20 @@ pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
     AccountHolder, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
-    CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, Event, EventData,
-    IntentStatus, KnownEventType, LastPaymentError, List, NextAction, PaymentIntent,
+    CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, DeletedInvoice,
+    DeletedInvoiceItem, Event, EventData, IntentStatus, Invoice, InvoiceLine, InvoiceStatus,
+    InvoiceStatusTransitions, KnownEventType, LastPaymentError, List, NextAction, PaymentIntent,
     PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
     AccountHoldersResource, BalanceResource, CheckoutResource, CheckoutSessionsResource,
     ConfirmPaymentIntentParams, CreateCheckoutSessionParams, CreateCustomerParams,
-    CreatePaymentIntentParams, CreateRefundParams, CustomersResource, EventsResource,
-    ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListPaymentIntentsParams,
-    PaymentIntentsResource, RefundsResource, RequestOptions, RetrieveAccountHolderParams,
-    UpdateCustomerParams,
+    CreateInvoiceItemParams, CreateInvoiceParams, CreatePaymentIntentParams, CreateRefundParams,
+    CustomersResource, EventsResource, InvoiceItemsResource, InvoicesResource,
+    ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListInvoicesParams,
+    ListPaymentIntentsParams, PayInvoiceParams, PaymentIntentsResource, RefundsResource,
+    RequestOptions, RetrieveAccountHolderParams, UpdateCustomerParams, UpdateInvoiceItemParams,
+    UpdateInvoiceParams,
 };
 
 /// See [`payment_intents`]. The account-holder lookup (issue #47): a
@@ -118,6 +121,20 @@ pub mod customers {
     pub use crate::model::{Customer, DeletedCustomer};
     pub use crate::resources::{
         CreateCustomerParams, CustomersResource, ListCustomersParams, UpdateCustomerParams,
+    };
+}
+
+/// See [`payment_intents`]. The Invoice resource and its lines (S4b) — a
+/// merchant's bill to one customer, and the one resource on this surface with
+/// a state machine of its own: `docs/flows/invoices.md` is the whole of it.
+pub mod invoices {
+    pub use crate::model::{
+        DeletedInvoice, DeletedInvoiceItem, Invoice, InvoiceLine, InvoiceStatus,
+        InvoiceStatusTransitions,
+    };
+    pub use crate::resources::{
+        CreateInvoiceItemParams, CreateInvoiceParams, InvoiceItemsResource, InvoicesResource,
+        ListInvoicesParams, PayInvoiceParams, UpdateInvoiceItemParams, UpdateInvoiceParams,
     };
 }
 

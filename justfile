@@ -1478,6 +1478,19 @@ expected_ignored := "0"
 # the dated gap row, and a suite written against a client that does not exist
 # would be the "test asserts the implementation back to itself" failure
 # `CLAUDE.md` names.
+#
+# **Still 45 on 2026-09-08 (the exp33 review), and that is the interesting
+# case.** `sdks/rust/tests/live_invoices.rs` is a new test binary, and it does
+# not appear here: `sdks/rust/Cargo.toml` declares it with
+# `required-features = ["live-stack"]`, so `cargo nextest list --workspace`
+# neither builds nor lists it (measured: 45 before and after) and `just
+# sdk-live` is what turns the feature on. That is deliberate and is the only
+# arrangement that satisfies both rules at once — the suite needs a running
+# vpay, which this workspace's default test run has no business assuming, and
+# AGENTS.md forbids `#[ignore]` for it because an ignored test reports `ok`.
+# `sdks/stripe-compat` is the same shape in the TypeScript half of the tree.
+# If that feature is ever switched on by default, this number becomes 46 in
+# the same commit.
 expected_suites := "45"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
@@ -3196,6 +3209,78 @@ stripe-compat: gen-demo-keys build-sdk-node
     echo
     echo "  tear down with: just demo_project={{demo_project}} demo-down"
     exit $status
+
+# The two merchant SDKs' own invoice cases against a running vpay.
+#
+# The other half of `just stripe-compat`. That recipe drives the real `stripe`
+# package through `@vaam-apps/vpay-sdk/stripe`; this one drives `sdks/rust`
+# and `sdks/nodejs` **directly**, which is the thing
+# `docs/sdks/parity.md`'s "Invoices exercised against a running vpay" row was
+# written on 2026-09-07 to ask for and which nothing did until 2026-09-08.
+#
+# Same six services, same overlay and same `demo_port` as `just
+# stripe-compat`, for the same reason: the suites need a merchant whose public
+# JWK the server holds, and `gen-demo-keys` is the only thing that produces
+# one. `just demo-down` tears down either.
+#
+# **Neither suite skips.** The Rust one is a separate cargo test target behind
+# the `live-stack` feature (`sdks/rust/Cargo.toml`) and the Node one is a
+# separate vitest project (`sdks/nodejs/vitest.live.config.ts`); with no stack
+# reachable, both FAIL with a message naming what is missing. That is checked
+# by running them: `cargo nextest … --features live-stack` with no
+# `VPAY_BASE_URL` reports "2 tests run: 0 passed, 2 failed", never "0 tests
+# run". An `#[ignore]`/`it.skip` would report `ok` instead, which is what
+# AGENTS.md rule 2 forbids.
+#
+# Both suites run even if the first fails (`set +e` around each), because
+# "Rust passes and Node does not" is the answer a parity run exists to give,
+# and a `set -e` would hide half of it.
+#
+# The stack is left UP on purpose, as `just demo` and `just stripe-compat`
+# leave it. Tear down with `just demo-down`.
+sdk-live: gen-demo-keys
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in docker curl pnpm cargo jq; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "sdk-live: needs '$tool' on PATH" >&2; exit 1; }
+    done
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    docker compose {{demo_compose}} up -d --build --wait {{compat_services}}
+
+    echo "sdk-live: waiting for http://localhost:{{demo_port}}/healthz"
+    deadline=$((SECONDS + 120))
+    until curl -fsS -o /dev/null http://localhost:{{demo_port}}/healthz; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "sdk-live: FAIL — /healthz did not answer within 120s. Last 80 log lines:" >&2
+            docker compose {{demo_compose}} ps >&2
+            docker compose {{demo_compose}} logs --tail 80 vpay-server >&2
+            exit 1
+        fi
+        sleep 2
+    done
+    echo "sdk-live: /healthz answered"
+    echo
+
+    export VPAY_BASE_URL=http://localhost:{{demo_port}}
+    export VPAY_MERCHANT_CLIENT_ID=demo-merchant
+    export VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem"
+
+    set +e
+    cargo nextest run -p vpay-sdk --features live-stack --test live_invoices
+    rust=$?
+    pnpm --filter @vaam-apps/vpay-sdk test:live
+    node=$?
+    set -e
+
+    echo
+    echo "sdk-live: sdks/rust exit $rust, sdks/nodejs exit $node"
+    echo "  tear down with: just demo_project={{demo_project}} demo-down"
+    [ "$rust" -eq 0 ] && [ "$node" -eq 0 ]
 
 storybook:
     pnpm --filter @vpay/ui storybook

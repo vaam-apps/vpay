@@ -224,3 +224,72 @@ pub(crate) fn checkout_session_json(id: &str, client_secret: Option<&str>) -> Va
     }
     object
 }
+
+/// An `invoice` object with every field the wire contract lists (S4b) — all
+/// **eighteen** keys, one line expanded.
+///
+/// The count is the point: this object is the `data.object` of all four
+/// `invoice.*` event types, so a nineteenth key is signed, delivered and
+/// stored forever. `vpay_api`'s
+/// `the_invoice_object_is_the_documented_eighteen_keys` holds the number on
+/// the server side; this fixture is what the SDK decodes, so a key that
+/// appeared on one side and not the other shows up as a decode difference
+/// here rather than in a container.
+///
+/// `status` is `open` and `number` is assigned, deliberately: a draft fixture
+/// would let `number: Option<String>` be `None` in every case and nothing
+/// would ever decode the assigned form.
+pub(crate) fn invoice_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "invoice",
+        // Never `null`, unlike a payment intent's.
+        "customer": "cus_1",
+        "currency": "xaf",
+        "status": "open",
+        "number": "A7K3M9QP-000001",
+        "amount_due": 11_000,
+        "amount_paid": 0,
+        "amount_remaining": 11_000,
+        "due_date": null,
+        "description": "September hosting",
+        "metadata": { "order_id": "1234" },
+        "payment_intent": null,
+        "hosted_invoice_url": null,
+        "lines": {
+            "object": "list",
+            "has_more": false,
+            // `/v1/invoice_items`, a route that exists — not Stripe's
+            // `/v1/invoices/{id}/lines`, which vpay does not serve.
+            "url": "/v1/invoice_items",
+            "data": [invoice_line_json("ii_1")],
+        },
+        "status_transitions": {
+            "finalized_at": 1_753_401_600_i64,
+            "paid_at": null,
+            "voided_at": null,
+            "marked_uncollectible_at": null,
+        },
+        "created": 1_753_401_600_i64,
+        "livemode": false,
+    })
+}
+
+/// A `line_item` object with every field the wire contract lists (S4b).
+///
+/// Its `object` is `"line_item"` and the route that addresses it is
+/// `/v1/invoice_items`; both spellings are the wire's, and the fixture is
+/// where that stops being surprising.
+pub(crate) fn invoice_line_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "line_item",
+        "description": "Hosting",
+        "quantity": 2,
+        "unit_amount": 5_500,
+        // `quantity * unit_amount`, computed by the database and never sent.
+        "amount": 11_000,
+        "currency": "xaf",
+        "livemode": false,
+    })
+}

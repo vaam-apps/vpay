@@ -28,6 +28,10 @@ use vpay_sdk::checkout::{
     ListCheckoutSessionsParams,
 };
 use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
+use vpay_sdk::invoices::{
+    CreateInvoiceItemParams, CreateInvoiceParams, InvoiceStatus, ListInvoicesParams,
+    PayInvoiceParams, UpdateInvoiceItemParams, UpdateInvoiceParams,
+};
 use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, ListPaymentIntentsParams,
     PaymentMethodType,
@@ -1948,4 +1952,744 @@ fn the_customer_deleted_event_type_is_known_and_its_payload_decodes() {
         serde_json::from_value(payload).expect("the event payload is a customer");
     assert_eq!(customer.id, "cus_1");
     assert_eq!(customer.phone.as_deref(), Some("237600000200"));
+}
+
+// -------------------------------------------------------------- invoices
+//
+// S4b. Thirteen methods over two resources, and the three properties that are
+// this resource and not the others: the four transitions are `POST`s with an
+// **empty body** to their own paths, `del` applies to a draft while `void`
+// applies to an issued document, and an `invoice.*` event body carries no
+// lines while a `/v1` response always does.
+//
+// Every server here is `wiremock`, exactly as in the customer cases above.
+// That is the whole of the evidence and `docs/sdks/parity.md`'s "Invoices
+// exercised against a running vpay" row says so: these assert that this SDK
+// puts the documented bytes on the wire and decodes the documented shape,
+// never that a real vpay answers them.
+
+/// `invoices.create` sends the documented body, and the decoded object
+/// carries **every one of the eighteen keys** — including the two that come
+/// from somewhere other than the row (`lines`, `hosted_invoice_url`).
+///
+/// The decode half is not decoration. This object is the `data.object` of
+/// four event types, so a field this SDK silently dropped would be a field a
+/// merchant's handler could never read back off a webhook.
+#[tokio::test]
+async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::invoice_json("in_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invoice = client
+        .invoices()
+        .create(
+            CreateInvoiceParams {
+                customer: "cus_1".to_string(),
+                // Upper-cased deliberately: the wire contract says lowercase
+                // and the SDK normalises, exactly as on an intent.
+                currency: "XAF".to_string(),
+                description: Some("September hosting".to_string()),
+                due_date: Some(1_753_401_600),
+                metadata: BTreeMap::from([("order_id".to_string(), "1234".to_string())]),
+            },
+            RequestOptions::new().with_idempotency_key("idem_inv"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(invoice.id, "in_1");
+    assert_eq!(invoice.object, "invoice");
+    assert_eq!(invoice.customer, "cus_1");
+    assert_eq!(invoice.currency, "xaf");
+    assert_eq!(invoice.status, InvoiceStatus::Open);
+    assert_eq!(invoice.number.as_deref(), Some("A7K3M9QP-000001"));
+    assert_eq!(invoice.amount_due, 11_000);
+    assert_eq!(invoice.amount_paid, 0);
+    assert_eq!(invoice.amount_remaining, 11_000);
+    assert_eq!(invoice.due_date, None);
+    assert_eq!(invoice.description.as_deref(), Some("September hosting"));
+    assert_eq!(
+        invoice.metadata.get("order_id").map(String::as_str),
+        Some("1234")
+    );
+    assert_eq!(invoice.payment_intent, None);
+    assert_eq!(invoice.hosted_invoice_url, None);
+    assert_eq!(invoice.lines.url, "/v1/invoice_items");
+    assert!(
+        !invoice.lines.has_more,
+        "an invoice's lines are never paged"
+    );
+    assert_eq!(invoice.lines.data.len(), 1);
+    assert_eq!(invoice.status_transitions.finalized_at, Some(1_753_401_600));
+    assert_eq!(invoice.status_transitions.paid_at, None);
+    assert_eq!(invoice.status_transitions.voided_at, None);
+    assert_eq!(invoice.status_transitions.marked_uncollectible_at, None);
+    assert_eq!(invoice.created, 1_753_401_600);
+    assert!(!invoice.livemode);
+
+    let request = only_request(&server, "/v1/invoices").await;
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_inv")
+    );
+    assert_eq!(
+        body_string(&request),
+        "customer=cus_1&currency=xaf&description=September%20hosting&due_date=1753401600\
+         &metadata[order_id]=1234"
+    );
+}
+
+/// `customer` and `currency` are the two required fields, and every unset one
+/// is **omitted** rather than sent empty — `description=` means "clear it" on
+/// the update path and would mean an empty description here.
+///
+/// The name said "needs only a customer" until 2026-09-08. It did not: the
+/// server answers `400 A three-letter \`currency\` code is required.`, which
+/// a `wiremock` that answers `201` to anything could never have said, and
+/// `live_invoice_lifecycle` is where it now gets said. See
+/// `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
+#[tokio::test]
+async fn an_unset_invoice_field_is_omitted_from_the_body_rather_than_sent_empty() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::invoice_json("in_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .invoices()
+        .create(
+            CreateInvoiceParams::new("cus_1", "xaf"),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/invoices").await;
+    assert_eq!(body_string(&request), "customer=cus_1&currency=xaf");
+}
+
+/// `invoices.retrieve` is a `GET` with no body, and the lines come back
+/// expanded — the read a webhook handler falls back to, because an
+/// `invoice.*` event body has none.
+#[tokio::test]
+async fn retrieve_invoice_is_a_get_that_carries_its_lines() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/invoices/in_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invoice = client.invoices().retrieve("in_1").await.unwrap();
+    assert_eq!(invoice.id, "in_1");
+    let line = &invoice.lines.data[0];
+    assert_eq!(line.id, "ii_1");
+    assert_eq!(line.object, "line_item", "the object is not `invoice_item`");
+    assert_eq!(line.quantity, 2);
+    assert_eq!(line.unit_amount, 5_500);
+    assert_eq!(line.amount, 11_000);
+    assert_eq!(line.currency, "xaf");
+
+    let request = only_request(&server, "/v1/invoices/in_1").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert!(request.body.is_empty());
+    assert_eq!(
+        header_value(&request, "idempotency-key"),
+        None,
+        "a read carries no idempotency key"
+    );
+}
+
+/// **The three states of an invoice patch field**, which is why
+/// `UpdateInvoiceParams`' scalars are `Option<Option<_>>`.
+///
+/// Decisive, and the mutation is one word: collapse either to a single
+/// `Option` and `due_date=` vanishes from the body — a merchant who set a due
+/// date by mistake can never remove it, and nothing else in this SDK notices.
+#[tokio::test]
+async fn an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .invoices()
+        .update(
+            "in_1",
+            UpdateInvoiceParams {
+                // set
+                description: Some(Some("October hosting".to_string())),
+                // clear
+                due_date: Some(None),
+                // merge one key, remove another (the empty value)
+                metadata: BTreeMap::from([
+                    ("order_id".to_string(), "5678".to_string()),
+                    ("tier".to_string(), String::new()),
+                ]),
+            },
+            RequestOptions::new().with_idempotency_key("idem_upd_inv"),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/invoices/in_1").await;
+    assert_eq!(request.method.as_str(), "POST");
+    assert_eq!(
+        body_string(&request),
+        "description=October%20hosting&due_date=&metadata[order_id]=5678&metadata[tier]=",
+        "`due_date=` is `clear it`"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_upd_inv")
+    );
+
+    // …and a patch that mentions nothing sends nothing, rather than clearing
+    // both fields. The other half of the same distinction.
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_2")))
+        .mount(&server)
+        .await;
+    client
+        .invoices()
+        .update(
+            "in_2",
+            UpdateInvoiceParams::default(),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+    let request = only_request(&server, "/v1/invoices/in_2").await;
+    assert_eq!(
+        body_string(&request),
+        "",
+        "a patch that mentions nothing must not clear anything"
+    );
+}
+
+/// `invoices.list` encodes both cursors **and** both filters, and `status`
+/// goes out as the wire label rather than a Rust variant name.
+#[tokio::test]
+async fn list_invoices_encodes_its_filters_and_cursors_into_the_query_string() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/invoices"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::invoice_json("in_1")],
+            "has_more": true,
+            "url": "/v1/invoices",
+        })))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .invoices()
+        .list(ListInvoicesParams {
+            limit: Some(2),
+            starting_after: Some("in_0".to_string()),
+            customer: Some("cus_1".to_string()),
+            // The filter a merchant reconciling write-offs uses, because
+            // `mark_uncollectible` emits no event.
+            status: Some(InvoiceStatus::Uncollectible),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(page.has_more);
+    assert_eq!(page.data.len(), 1);
+
+    let request = only_request(&server, "/v1/invoices").await;
+    assert_eq!(
+        request.url.query(),
+        Some("limit=2&starting_after=in_0&customer=cus_1&status=uncollectible")
+    );
+}
+
+/// `del` is a `DELETE` with an `Idempotency-Key` and no body, and it decodes
+/// the deleted-object shape rather than an invoice.
+#[tokio::test]
+async fn del_invoice_is_a_delete_that_still_carries_an_idempotency_key() {
+    let (server, client) = fixture().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/invoices/in_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "in_1",
+            "object": "invoice",
+            "deleted": true,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let deleted = client
+        .invoices()
+        .del(
+            "in_1",
+            RequestOptions::new().with_idempotency_key("idem_del_inv"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.id, "in_1");
+    assert_eq!(deleted.object, "invoice");
+    assert!(deleted.deleted);
+
+    let request = only_request(&server, "/v1/invoices/in_1").await;
+    assert_eq!(request.method.as_str(), "DELETE");
+    assert!(
+        request.body.is_empty(),
+        "a DELETE sends no body: the server hashes the bytes against the idempotency key"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_del_inv")
+    );
+}
+
+/// **The three transitions that take no parameters** — `finalize`, `void` and
+/// `mark_uncollectible` — each `POST` an **empty body** to its own path and
+/// still carry an `Idempotency-Key`.
+///
+/// One case for the three because the property is the same one and asserting
+/// it three times in three files is how the fourth transition ends up shaped
+/// differently. Each is mounted separately, so a method that posted to the
+/// wrong path fails here rather than being absorbed by a catch-all.
+#[tokio::test]
+async fn the_three_parameterless_transitions_post_an_empty_body_to_their_own_paths() {
+    for (transition, wire_path) in [
+        ("finalize", "/v1/invoices/in_1/finalize"),
+        ("void", "/v1/invoices/in_1/void"),
+        ("mark_uncollectible", "/v1/invoices/in_1/mark_uncollectible"),
+    ] {
+        let (server, client) = fixture().await;
+        Mock::given(method("POST"))
+            .and(path(wire_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_1")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let invoices = client.invoices();
+        let opts = RequestOptions::new().with_idempotency_key("idem_transition");
+        let invoice = match transition {
+            "finalize" => invoices.finalize("in_1", opts).await,
+            "void" => invoices.void("in_1", opts).await,
+            _ => invoices.mark_uncollectible("in_1", opts).await,
+        }
+        .unwrap();
+        assert_eq!(invoice.id, "in_1");
+
+        let request = only_request(&server, wire_path).await;
+        assert_eq!(request.method.as_str(), "POST");
+        assert_eq!(
+            body_string(&request),
+            "",
+            "{transition} takes no parameters, so its body is empty"
+        );
+        assert_eq!(
+            header_value(&request, "idempotency-key").as_deref(),
+            Some("idem_transition"),
+            "{transition} is a write and carries a key like every other write"
+        );
+    }
+}
+
+/// A transition the state machine refuses comes back as this SDK's own `409`,
+/// carrying the status the server named — not a decode failure and not a
+/// success.
+///
+/// The property worth pinning is that the *refusal* survives the round trip
+/// with its `message` intact: it is the only thing that tells a merchant
+/// which of `paid`, `void` and `uncollectible` their invoice already reached.
+#[tokio::test]
+async fn a_refused_transition_is_a_conflict_this_sdk_hands_back_whole() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1/void"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invoice_status",
+                "message": "Invoice in_1 is paid, not open, so it cannot be voided.",
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let error = client
+        .invoices()
+        .void("in_1", RequestOptions::new())
+        .await
+        .unwrap_err();
+
+    match error {
+        Error::Api {
+            status,
+            ref code,
+            ref message,
+            ..
+        } => {
+            assert_eq!(status, 409);
+            assert_eq!(code.as_deref(), Some("invoice_status"));
+            assert!(message.contains("is paid, not open"), "{message}");
+        }
+        other => panic!("expected an Api error, got {other:?}"),
+    }
+}
+
+/// `pay` sends **both** URLs and decodes the two keys it exists to set.
+///
+/// It charges nobody: the invoice comes back still `open`, with a `pi_…` and
+/// a hosted checkout URL to send the payer to. A merchant who read this as
+/// "the invoice is paid" would ship a shop that fulfils on an unpaid bill,
+/// which is why the assertion is on the status as much as on the URL.
+#[tokio::test]
+async fn pay_sends_both_urls_and_decodes_the_intent_and_hosted_url() {
+    let (server, client) = fixture().await;
+    let mut paid = support::invoice_json("in_1");
+    paid["payment_intent"] = json!("pi_1");
+    paid["hosted_invoice_url"] = json!("https://checkout.example/c/cs_1#cs_1_secret_abc123");
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1/pay"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(paid))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invoice = client
+        .invoices()
+        .pay(
+            "in_1",
+            PayInvoiceParams::new(
+                "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+                "https://shop.example/cancel",
+            ),
+            RequestOptions::new().with_idempotency_key("idem_pay"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(invoice.payment_intent.as_deref(), Some("pi_1"));
+    assert_eq!(
+        invoice.hosted_invoice_url.as_deref(),
+        Some("https://checkout.example/c/cs_1#cs_1_secret_abc123")
+    );
+    assert_eq!(
+        invoice.status,
+        InvoiceStatus::Open,
+        "`pay` mints a page to pay on; it does not pay"
+    );
+
+    let request = only_request(&server, "/v1/invoices/in_1/pay").await;
+    assert_eq!(
+        body_string(&request),
+        "success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D\
+         &cancel_url=https%3A%2F%2Fshop.example%2Fcancel"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_pay")
+    );
+}
+
+/// `invoice_items.create` sends the documented body and decodes a
+/// `line_item`.
+///
+/// The body has no `currency` and no `amount`, and both absences are
+/// asserted by the string equality rather than stated: a line is always in
+/// its invoice's currency, and `amount` is the database's product of the two
+/// factors.
+#[tokio::test]
+async fn create_invoice_item_sends_the_documented_body_and_decodes_the_line() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoice_items"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::invoice_line_json("ii_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let line = client
+        .invoice_items()
+        .create(
+            CreateInvoiceItemParams {
+                invoice: "in_1".to_string(),
+                description: "Hosting".to_string(),
+                quantity: Some(2),
+                unit_amount: 5_500,
+            },
+            RequestOptions::new().with_idempotency_key("idem_item"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(line.id, "ii_1");
+    assert_eq!(line.object, "line_item");
+    assert_eq!(line.amount, 11_000);
+
+    let request = only_request(&server, "/v1/invoice_items").await;
+    assert_eq!(
+        body_string(&request),
+        "invoice=in_1&description=Hosting&quantity=2&unit_amount=5500"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_item")
+    );
+
+    // An omitted `quantity` is left off the body entirely, so the *server*
+    // applies its default of 1 rather than this SDK guessing it.
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoice_items"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(support::invoice_line_json("ii_2")))
+        .mount(&server)
+        .await;
+    client
+        .invoice_items()
+        .create(
+            CreateInvoiceItemParams::new("in_1", "Hosting", 5_500),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+    let request = only_request(&server, "/v1/invoice_items").await;
+    assert_eq!(
+        body_string(&request),
+        "invoice=in_1&description=Hosting&unit_amount=5500"
+    );
+}
+
+/// A `unit_amount` outside `0..=2^53-1` is refused **before any request**,
+/// exactly as an intent's `amount` is.
+///
+/// The bound is JavaScript's, not Rust's: an amount this SDK sent and
+/// `@vaam-apps/vpay-sdk` refused would be a divergence in the money path.
+/// Both the create and the update path check, because a merchant can reach
+/// the same ceiling by editing a line as by adding one.
+#[tokio::test]
+async fn an_invoice_lines_unit_amount_is_refused_before_any_request() {
+    let (server, client) = fixture().await;
+
+    for amount in [-1_i64, 9_007_199_254_740_992] {
+        let error = client
+            .invoice_items()
+            .create(
+                CreateInvoiceItemParams::new("in_1", "Hosting", amount),
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidParams { ref param, .. } if param == "unit_amount"),
+            "{error:?}"
+        );
+
+        let error = client
+            .invoice_items()
+            .update(
+                "ii_1",
+                UpdateInvoiceItemParams {
+                    unit_amount: Some(amount),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidParams { ref param, .. } if param == "unit_amount"),
+            "{error:?}"
+        );
+    }
+
+    // Nothing left this process: no route was ever mounted, and a request to
+    // an unmounted route would have been recorded here.
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().all(|r| r.url.path() == "/v1/oauth/token"),
+        "a refused amount must not reach the wire"
+    );
+}
+
+/// `invoice_items.retrieve` is a `GET` with no body — readable whatever the
+/// parent invoice's status.
+#[tokio::test]
+async fn retrieve_invoice_item_is_a_get_with_no_body() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/invoice_items/ii_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_line_json("ii_1")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let line = client.invoice_items().retrieve("ii_1").await.unwrap();
+    assert_eq!(line.id, "ii_1");
+    assert_eq!(line.description, "Hosting");
+
+    let request = only_request(&server, "/v1/invoice_items/ii_1").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert!(request.body.is_empty());
+    assert_eq!(header_value(&request, "idempotency-key"), None);
+}
+
+/// `invoice_items.update` sends only the fields it was given, and **never**
+/// an `amount`.
+///
+/// The single `Option`s are the point: all three columns are `NOT NULL`, so
+/// there is no cleared state to express, and `description=` is a `400` naming
+/// the parameter rather than a clear. A body carrying `description=` here
+/// would be a request the server refuses.
+#[tokio::test]
+async fn update_invoice_item_sends_only_what_it_was_given_and_never_an_amount() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoice_items/ii_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_line_json("ii_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .invoice_items()
+        .update(
+            "ii_1",
+            UpdateInvoiceItemParams {
+                quantity: Some(3),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("idem_upd_item"),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/invoice_items/ii_1").await;
+    assert_eq!(request.method.as_str(), "POST");
+    assert_eq!(
+        body_string(&request),
+        "quantity=3",
+        "an unmentioned field is absent, never sent empty"
+    );
+    assert!(
+        !body_string(&request).contains("amount="),
+        "`amount` is not a parameter, ever — it is the database's product"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_upd_item")
+    );
+}
+
+/// `invoice_items.del` is a `DELETE` that decodes the **`line_item`** deleted
+/// shape — not `invoice_item`, which is the route's name and not the object's.
+#[tokio::test]
+async fn del_invoice_item_is_a_delete_that_decodes_the_line_item_shape() {
+    let (server, client) = fixture().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/invoice_items/ii_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "ii_1",
+            "object": "line_item",
+            "deleted": true,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let deleted = client
+        .invoice_items()
+        .del(
+            "ii_1",
+            RequestOptions::new().with_idempotency_key("idem_del_item"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.id, "ii_1");
+    assert_eq!(deleted.object, "line_item");
+    assert!(deleted.deleted);
+
+    let request = only_request(&server, "/v1/invoice_items/ii_1").await;
+    assert_eq!(request.method.as_str(), "DELETE");
+    assert!(request.body.is_empty());
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_del_item")
+    );
+}
+
+/// **The four `invoice.*` event types are known, and their payloads decode as
+/// an invoice.**
+///
+/// Different in kind from the `customer.created` gap: vpay *does* emit all
+/// four, so a union short of them silently drops an event that is really
+/// being delivered. The decisive mutation is one line — delete any variant
+/// from `KnownEventType` and `from_wire` answers `None` for a type vpay is
+/// signing and sending, which is the same answer it gives for a type from the
+/// future.
+///
+/// The second half asserts the shape difference nothing else would catch: an
+/// event body carries `lines.data` **empty** while a `/v1` response carries
+/// the lines, and both must decode.
+#[test]
+fn the_four_invoice_event_types_are_known_and_their_payloads_decode() {
+    for (wire, kind) in [
+        ("invoice.created", KnownEventType::InvoiceCreated),
+        ("invoice.finalized", KnownEventType::InvoiceFinalized),
+        ("invoice.paid", KnownEventType::InvoicePaid),
+        ("invoice.voided", KnownEventType::InvoiceVoided),
+    ] {
+        assert_eq!(KnownEventType::from_wire(wire), Some(kind), "{wire}");
+        assert_eq!(kind.as_wire_str(), wire);
+    }
+
+    // The two Stripe types vpay deliberately does not write. Recorded here so
+    // that adding either to the union without a writer fails a test rather
+    // than shipping a claim about vpay that is false.
+    assert_eq!(
+        KnownEventType::from_wire("invoice.marked_uncollectible"),
+        None
+    );
+    assert_eq!(KnownEventType::from_wire("invoice.payment_failed"), None);
+
+    let mut object = support::invoice_json("in_1");
+    object["lines"]["data"] = json!([]);
+    let event: vpay_sdk::Event = serde_json::from_value(json!({
+        "id": "evt_1",
+        "object": "event",
+        "type": "invoice.finalized",
+        "created": 1_753_401_600_i64,
+        "livemode": false,
+        "data": { "object": object },
+    }))
+    .expect("the event decodes");
+
+    let invoice = event.invoice().expect("the payload is an invoice");
+    assert_eq!(invoice.id, "in_1");
+    assert_eq!(invoice.status, InvoiceStatus::Open);
+    assert!(
+        invoice.lines.data.is_empty(),
+        "an `invoice.*` body carries no lines — retrieve the invoice for them"
+    );
+
+    // And the `/v1` shape, which does carry them, decodes through the same
+    // type: one struct, two populations of `lines`.
+    let full: vpay_sdk::Invoice =
+        serde_json::from_value(support::invoice_json("in_1")).expect("the response decodes");
+    assert_eq!(full.lines.data.len(), 1);
 }

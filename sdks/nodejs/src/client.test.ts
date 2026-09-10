@@ -17,7 +17,12 @@ import {
   type RecordedRequest,
   type TestServer,
 } from "./testing/test-server.js";
-import type { PaymentIntent } from "./types.js";
+import {
+  isCheckoutSessionEvent,
+  isInvoiceEvent,
+  isPaymentIntentEvent,
+} from "./types.js";
+import type { Event, KnownEventType, PaymentIntent } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
@@ -2487,5 +2492,582 @@ describe("customers", () => {
     expect(reqs[1]!.body).toBe(
       "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo",
     );
+  });
+});
+
+/**
+ * `/v1/invoices` and `/v1/invoice_items` — S4b's thirteen merchant
+ * operations.
+ *
+ * These mirror `sdks/rust/tests/resources.rs`'s invoice cases one for one,
+ * down to the body strings, for the reason the customer block above states:
+ * ADR-0015's parity is about *wire semantics*, and two SDKs that both
+ * "support invoices" while encoding a cleared `due_date` differently are not
+ * at parity.
+ *
+ * Every server here is `src/testing/test-server.ts`. That is the whole of the
+ * evidence, and `docs/sdks/parity.md`'s "Invoices exercised against a running
+ * vpay" row says so: these assert that this SDK puts the documented bytes on
+ * the wire and decodes the documented shape, never that a real vpay answers
+ * them.
+ */
+describe("invoices", () => {
+  const sampleLine = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: "ii_123",
+    // `line_item`, not `invoice_item`: the route and the object are named
+    // differently and both spellings are the wire's.
+    object: "line_item",
+    description: "Hosting",
+    quantity: 2,
+    unit_amount: 5500,
+    // `quantity * unit_amount`, computed by the database and never sent.
+    amount: 11000,
+    currency: "xaf",
+    livemode: false,
+    ...overrides,
+  });
+
+  /**
+   * All **eighteen** keys of the invoice object, one line expanded.
+   *
+   * The count is the point: this object is the `data.object` of four event
+   * types, so a nineteenth key is signed, delivered and stored forever.
+   * `status` is `open` with a number assigned rather than a draft, so that
+   * `number: string | null` is decoded in its assigned form somewhere.
+   */
+  const sampleInvoice = (
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    id: "in_123",
+    object: "invoice",
+    // Never null, unlike a payment intent's.
+    customer: "cus_123",
+    currency: "xaf",
+    status: "open",
+    number: "A7K3M9QP-000001",
+    amount_due: 11000,
+    amount_paid: 0,
+    amount_remaining: 11000,
+    due_date: null,
+    description: "September hosting",
+    metadata: { order_id: "1234" },
+    payment_intent: null,
+    hosted_invoice_url: null,
+    lines: {
+      object: "list",
+      has_more: false,
+      url: "/v1/invoice_items",
+      data: [sampleLine()],
+    },
+    status_transitions: {
+      finalized_at: 1_753_401_600,
+      paid_at: null,
+      voided_at: null,
+      marked_uncollectible_at: null,
+    },
+    created: 1_753_401_600,
+    livemode: false,
+    ...overrides,
+  });
+
+  it("invoices.create: exact path, method, Idempotency-Key, and body", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    const invoice = await client.invoices.create(
+      {
+        customer: "cus_1",
+        // Upper-cased deliberately: the wire contract says lowercase and the
+        // SDK normalises, exactly as on an intent.
+        currency: "XAF",
+        description: "September hosting",
+        due_date: 1_753_401_600,
+        metadata: { order_id: "1234" },
+      },
+      { idempotencyKey: "idem_inv" },
+    );
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices")!;
+    expect(req.method).toBe("POST");
+    expect(req.headers["idempotency-key"]).toBe("idem_inv");
+    expect(req.body).toBe(
+      "customer=cus_1&currency=xaf&description=September%20hosting&due_date=1753401600&metadata[order_id]=1234",
+    );
+
+    // Every one of the eighteen keys decodes, including the two that do not
+    // come from the row.
+    expect(invoice.id).toBe("in_123");
+    expect(invoice.object).toBe("invoice");
+    expect(invoice.customer).toBe("cus_123");
+    expect(invoice.currency).toBe("xaf");
+    expect(invoice.status).toBe("open");
+    expect(invoice.number).toBe("A7K3M9QP-000001");
+    expect(invoice.amount_due).toBe(11000);
+    expect(invoice.amount_paid).toBe(0);
+    expect(invoice.amount_remaining).toBe(11000);
+    expect(invoice.due_date).toBeNull();
+    expect(invoice.description).toBe("September hosting");
+    expect(invoice.metadata).toEqual({ order_id: "1234" });
+    expect(invoice.payment_intent).toBeNull();
+    expect(invoice.hosted_invoice_url).toBeNull();
+    expect(invoice.lines.url).toBe("/v1/invoice_items");
+    expect(invoice.lines.has_more).toBe(false);
+    expect(invoice.lines.data).toHaveLength(1);
+    expect(invoice.status_transitions.finalized_at).toBe(1_753_401_600);
+    expect(invoice.status_transitions.paid_at).toBeNull();
+    expect(invoice.status_transitions.voided_at).toBeNull();
+    expect(invoice.status_transitions.marked_uncollectible_at).toBeNull();
+    expect(invoice.created).toBe(1_753_401_600);
+    expect(invoice.livemode).toBe(false);
+  });
+
+  // The name said "an invoice needs only a customer" until 2026-09-08. It
+  // does not: `POST /v1/invoices` with no `currency` is
+  // `400 A three-letter \`currency\` code is required.` — measured against a
+  // running vpay, which a stub answering 201 to anything could never have
+  // said. `currency` is a required field of `CreateInvoiceParams` now, as it
+  // already was of `CreatePaymentIntentParams`. See
+  // `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
+  it("an unset invoice field is omitted from the body rather than sent empty", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.create({ customer: "cus_1", currency: "xaf" });
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices")!;
+    // Omitted, never sent empty: `description=` means "clear it" on the
+    // update path and would mean an empty description here.
+    expect(req.body).toBe("customer=cus_1&currency=xaf");
+  });
+
+  it("invoices.retrieve: a GET whose response carries the lines", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    const invoice = await client.invoices.retrieve("in_123");
+    expect(invoice.id).toBe("in_123");
+    const line = invoice.lines.data[0]!;
+    expect(line.object).toBe("line_item");
+    expect(line.quantity).toBe(2);
+    expect(line.unit_amount).toBe(5500);
+    expect(line.amount).toBe(11000);
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices/in_123")!;
+    expect(req.method).toBe("GET");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("invoices.update tells leave-alone, set and clear apart on the wire", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.update(
+      "in_123",
+      {
+        // set
+        description: "October hosting",
+        // clear
+        due_date: null,
+        // merge one key, remove another (the empty value)
+        metadata: { order_id: "5678", tier: "" },
+      },
+      { idempotencyKey: "idem_upd_inv" },
+    );
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices/in_123")!;
+    expect(req.method).toBe("POST");
+    // `due_date=` is "clear it". Collapsing `null` and `undefined` — the
+    // obvious simplification — makes a due date set by mistake unremovable,
+    // and this is the assertion that fails when somebody does it.
+    expect(req.body).toBe(
+      "description=October%20hosting&due_date=&metadata[order_id]=5678&metadata[tier]=",
+    );
+    expect(req.headers["idempotency-key"]).toBe("idem_upd_inv");
+  });
+
+  it("an invoice patch that mentions nothing clears nothing", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.update("in_123", {});
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices/in_123")!;
+    expect(req.body).toBe("");
+  });
+
+  it("invoices.list: exact query string, both cursors and both filters", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleInvoice()],
+          has_more: true,
+          url: "/v1/invoices",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.invoices.list({
+      limit: 2,
+      starting_after: "in_0",
+      customer: "cus_1",
+      // The filter a merchant reconciling write-offs uses, because
+      // `markUncollectible` emits no event.
+      status: "uncollectible",
+    });
+    expect(page.has_more).toBe(true);
+    expect(page.data).toHaveLength(1);
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/invoices"))!;
+    expect(req.url).toBe(
+      "/v1/invoices?limit=2&starting_after=in_0&customer=cus_1&status=uncollectible",
+    );
+    expect(req.method).toBe("GET");
+  });
+
+  it("invoices.del: a DELETE with an Idempotency-Key and no body", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { id: "in_123", object: "invoice", deleted: true },
+      }),
+    });
+    const client = makeClient(server);
+
+    const deleted = await client.invoices.del("in_123", {
+      idempotencyKey: "idem_del_inv",
+    });
+    expect(deleted.deleted).toBe(true);
+    expect(deleted.id).toBe("in_123");
+    expect(deleted.object).toBe("invoice");
+
+    const req = server.requests.find((r) => r.url === "/v1/invoices/in_123")!;
+    expect(req.method).toBe("DELETE");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBe("idem_del_inv");
+    expect(req.headers["content-type"]).toBeUndefined();
+  });
+
+  /**
+   * **The three transitions that take no parameters** — `finalize`, `void`
+   * and `markUncollectible` — each POST an **empty body** to its own path
+   * and still carry an `Idempotency-Key`.
+   *
+   * The third method is camelCase and its **path is not**: the route is
+   * `/v1/invoices/{id}/mark_uncollectible`, and the loop below asserts that
+   * path by name, so renaming the method and carrying the wire along with it
+   * fails here.
+   *
+   * One case for the three because the property is the same one, and each
+   * path is asserted separately so a method posting to the wrong one fails
+   * here rather than being absorbed.
+   */
+  it("the three parameterless transitions post an empty body to their own paths", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.finalize("in_123", { idempotencyKey: "idem_fin" });
+    await client.invoices.void("in_123", { idempotencyKey: "idem_void" });
+    await client.invoices.markUncollectible("in_123", {
+      idempotencyKey: "idem_unc",
+    });
+
+    for (const [name, key] of [
+      ["finalize", "idem_fin"],
+      ["void", "idem_void"],
+      ["mark_uncollectible", "idem_unc"],
+    ] as const) {
+      const req = server.requests.find(
+        (r) => r.url === `/v1/invoices/in_123/${name}`,
+      )!;
+      expect(req, `${name} posted to its own path`).toBeDefined();
+      expect(req.method).toBe("POST");
+      // A write with no parameters, so the body is empty — but it is still a
+      // form POST, so the content type is present, unlike on a DELETE.
+      expect(req.body).toBe("");
+      expect(req.headers["content-type"]).toBe(
+        "application/x-www-form-urlencoded",
+      );
+      expect(req.headers["idempotency-key"]).toBe(key);
+    }
+  });
+
+  it("a refused transition is a VpayApiError carrying the server's 409 whole", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 409,
+        body: {
+          error: {
+            type: "invalid_request_error",
+            code: "invoice_status",
+            message: "Invoice in_123 is paid, not open, so it cannot be voided.",
+          },
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    // The `message` is the only thing that tells a merchant which of `paid`,
+    // `void` and `uncollectible` their invoice already reached.
+    await expect(client.invoices.void("in_123")).rejects.toMatchObject({
+      status: 409,
+      code: "invoice_status",
+    });
+    const error = await client.invoices.void("in_123").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(VpayApiError);
+    expect((error as VpayApiError).message).toContain("is paid, not open");
+  });
+
+  it("invoices.pay sends both urls and decodes the intent and hosted url", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleInvoice({
+          payment_intent: "pi_123",
+          hosted_invoice_url:
+            "https://checkout.example/c/cs_1#cs_1_secret_abc123",
+        }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const invoice = await client.invoices.pay(
+      "in_123",
+      {
+        success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://shop.example/cancel",
+      },
+      { idempotencyKey: "idem_pay" },
+    );
+
+    expect(invoice.payment_intent).toBe("pi_123");
+    expect(invoice.hosted_invoice_url).toBe(
+      "https://checkout.example/c/cs_1#cs_1_secret_abc123",
+    );
+    // `pay` mints a page to pay on; it does not pay. A merchant who read it
+    // as "the invoice is paid" would fulfil on an unpaid bill.
+    expect(invoice.status).toBe("open");
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoices/in_123/pay",
+    )!;
+    expect(req.body).toBe(
+      "success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel",
+    );
+    expect(req.headers["idempotency-key"]).toBe("idem_pay");
+  });
+
+  it("invoiceItems.create: exact body, and no currency or amount in it", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleLine() }),
+    });
+    const client = makeClient(server);
+
+    const line = await client.invoiceItems.create(
+      {
+        invoice: "in_1",
+        description: "Hosting",
+        quantity: 2,
+        unit_amount: 5500,
+      },
+      { idempotencyKey: "idem_item" },
+    );
+
+    expect(line.id).toBe("ii_123");
+    expect(line.object).toBe("line_item");
+    expect(line.amount).toBe(11000);
+
+    const req = server.requests.find((r) => r.url === "/v1/invoice_items")!;
+    // No `currency` (a line is always its invoice's) and no `amount` (the
+    // database's product of the two factors). The string equality asserts
+    // both absences rather than stating them.
+    expect(req.body).toBe(
+      "invoice=in_1&description=Hosting&quantity=2&unit_amount=5500",
+    );
+    expect(req.headers["idempotency-key"]).toBe("idem_item");
+  });
+
+  it("invoiceItems.create omits an absent quantity so the server applies its default", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleLine() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoiceItems.create({
+      invoice: "in_1",
+      description: "Hosting",
+      unit_amount: 5500,
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/invoice_items")!;
+    expect(req.body).toBe("invoice=in_1&description=Hosting&unit_amount=5500");
+  });
+
+  it("an invoice line's unit_amount is refused before any request", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 201, body: sampleLine() }),
+    });
+    const client = makeClient(server);
+
+    // The bound is the same one `sdks/rust` applies: an amount one SDK sends
+    // and the other refuses is a divergence in the money path.
+    for (const amount of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, 1e21]) {
+      await expect(
+        client.invoiceItems.create({
+          invoice: "in_1",
+          description: "Hosting",
+          unit_amount: amount,
+        }),
+      ).rejects.toThrow(TypeError);
+      await expect(
+        client.invoiceItems.update("ii_123", { unit_amount: amount }),
+      ).rejects.toThrow(TypeError);
+    }
+
+    expect(
+      server.requests.filter((r) => r.url.startsWith("/v1/invoice_items")),
+    ).toHaveLength(0);
+  });
+
+  it("invoiceItems.retrieve: exact GET path, no body, no Idempotency-Key", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleLine() }),
+    });
+    const client = makeClient(server);
+
+    const line = await client.invoiceItems.retrieve("ii_123");
+    expect(line.id).toBe("ii_123");
+    expect(line.description).toBe("Hosting");
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoice_items/ii_123",
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+  });
+
+  it("invoiceItems.update sends only what it was given, and never an amount", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleLine({ quantity: 3 }) }),
+    });
+    const client = makeClient(server);
+
+    await client.invoiceItems.update(
+      "ii_123",
+      { quantity: 3 },
+      { idempotencyKey: "idem_upd_item" },
+    );
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoice_items/ii_123",
+    )!;
+    expect(req.method).toBe("POST");
+    // An unmentioned field is absent, never sent empty: all three columns are
+    // NOT NULL, so `description=` is a 400 naming the parameter rather than a
+    // clear — which is why the params type has no `| null`.
+    expect(req.body).toBe("quantity=3");
+    expect(req.body).not.toContain("amount=");
+    expect(req.headers["idempotency-key"]).toBe("idem_upd_item");
+  });
+
+  it("invoiceItems.del: a DELETE that decodes the line_item shape", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { id: "ii_123", object: "line_item", deleted: true },
+      }),
+    });
+    const client = makeClient(server);
+
+    const deleted = await client.invoiceItems.del("ii_123", {
+      idempotencyKey: "idem_del_item",
+    });
+    expect(deleted.deleted).toBe(true);
+    expect(deleted.id).toBe("ii_123");
+    // `line_item`, not `invoice_item` — the route's name is not the object's.
+    expect(deleted.object).toBe("line_item");
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoice_items/ii_123",
+    )!;
+    expect(req.method).toBe("DELETE");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBe("idem_del_item");
+  });
+
+  /**
+   * **The four `invoice.*` event types are in the union, and their payloads
+   * narrow to an invoice.**
+   *
+   * Different in kind from the `customer.created` gap: vpay *does* emit all
+   * four, so a union short of them silently drops an event that is really
+   * being delivered.
+   *
+   * The second half asserts the shape difference nothing else would catch: an
+   * event body carries `lines.data` **empty** while a `/v1` response carries
+   * the lines, and both must decode through the same type.
+   */
+  it("the four invoice event types are known and their payloads narrow", () => {
+    const known: KnownEventType[] = [
+      "invoice.created",
+      "invoice.finalized",
+      "invoice.paid",
+      "invoice.voided",
+    ];
+    // A compile-time assertion as much as a runtime one: a union missing any
+    // of the four makes this array a type error, which is the mutation this
+    // case exists to catch.
+    expect(known).toHaveLength(4);
+
+    const event: Event = {
+      id: "evt_1",
+      object: "event",
+      type: "invoice.finalized",
+      created: 1_753_401_600,
+      livemode: false,
+      data: {
+        object: sampleInvoice({
+          lines: {
+            object: "list",
+            has_more: false,
+            url: "/v1/invoice_items",
+            data: [],
+          },
+        }),
+      },
+    };
+
+    expect(isInvoiceEvent(event)).toBe(true);
+    expect(isPaymentIntentEvent(event)).toBe(false);
+    expect(isCheckoutSessionEvent(event)).toBe(false);
+    if (!isInvoiceEvent(event)) throw new Error("unreachable");
+    const invoice = event.data.object;
+    expect(invoice.id).toBe("in_123");
+    expect(invoice.status).toBe("open");
+    // An `invoice.*` body carries no lines — retrieve the invoice for them.
+    expect(invoice.lines.data).toHaveLength(0);
+
+    // The two Stripe types vpay deliberately does not write stay out of the
+    // union: nothing writes them, so an entry would be a false claim.
+    const notEmitted = ["invoice.marked_uncollectible", "invoice.payment_failed"];
+    expect(notEmitted).not.toContain("invoice.paid");
   });
 });

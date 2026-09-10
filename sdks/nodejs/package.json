@@ -42,6 +42,7 @@
     "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:live": "vitest run -c vitest.live.config.ts",
     "lint": "eslint . --max-warnings 0"
   },
   "peerDependencies": {

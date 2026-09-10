@@ -41,6 +41,18 @@ export type {
   CreateCustomerParams,
   UpdateCustomerParams,
   ListCustomersParams,
+  Invoice,
+  InvoiceLine,
+  InvoiceStatus,
+  InvoiceStatusTransitions,
+  DeletedInvoice,
+  DeletedInvoiceItem,
+  CreateInvoiceParams,
+  UpdateInvoiceParams,
+  ListInvoicesParams,
+  PayInvoiceParams,
+  CreateInvoiceItemParams,
+  UpdateInvoiceItemParams,
   PaymentIntent,
   PaymentIntentStatus,
   PaymentMethodType,
@@ -66,6 +78,7 @@ export type {
 
 export {
   isCheckoutSessionEvent,
+  isInvoiceEvent,
   isPaymentIntentEvent,
   isRefundEvent,
 } from "./types.js";
