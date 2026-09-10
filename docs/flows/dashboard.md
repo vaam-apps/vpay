@@ -194,6 +194,28 @@ runs, which re-reads the staff row and re-checks the account, the merchant
 binding and `password_change_required` — so re-minting is *more* checking than
 carrying one token for twelve hours, not less. A `403` is never retried.
 
+**A vpay this app cannot reach is not a sign-out.** Every failure of the
+session read used to send a browser to `/signed-out`, and `server/api.ts`
+deliberately turns a rejected `fetch` into an `ApiFailure` with `status: 0`
+rather than throwing — so "vpay is restarting", "the connection was reset" and
+"vpay answered `503`" were indistinguishable from "your session is over". A
+rolling restart therefore signed every staff member out of the dashboard, and
+they could not tell that from having been signed out on purpose (issue #88
+item 2).
+
+`server/gate.ts`'s `refusalFor` is the whole of the fix and it is a pure
+function with its own unit tests, because "a `503` signs everybody out" should
+be a red test rather than something noticed during an incident. **`401` is the
+only status that ends a session**, and the mapping is exact rather than
+conservative: vpay answers `401` for *every* session refusal by design —
+absent, expired, idle, forged, disabled, at the wrong stage — so there is no
+other status that could mean the session is over. Everything else renders the
+message and its request id on the page, **with the cookie untouched**. A `403`
+on the session route counts as an outage too: it would mean something in front
+of vpay refused this app, which is a deployment problem and not a fact about
+the person. The decisive mutation is widening `refusalFor` to `status >= 400`,
+which turns four cases in `gate.test.ts` red.
+
 **There is one route that is not a page**, and it exists for a Next rule
 rather than for a person: `GET /signed-out` clears the session cookie and
 redirects to `/login`. A page may not write a cookie — `cookies().set` throws

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SessionResponse } from './api';
-import { gateFor } from './gate';
+import type { ApiFailure, SessionResponse } from './api';
+import { gateFor, refusalFor } from './gate';
 
 const SESSION: SessionResponse = {
   staff_id: 'stf_example_1',
@@ -36,5 +36,49 @@ describe('the gate', () => {
     if (gate.kind === 'ready') {
       expect(gate.accessToken).toBe('header.payload.signature');
     }
+  });
+});
+
+describe('what a refused session read means for the cookie', () => {
+  const failure = (status: number): ApiFailure => ({
+    status,
+    message: 'vpay said something',
+    requestId: 'req_example_1',
+  });
+
+  it('signs out on a 401, which is the only status a refused session gets', () => {
+    // vpay answers 401 for EVERY session refusal by design — absent, expired,
+    // idle, forged, disabled, at the wrong stage. So this mapping is exact
+    // rather than conservative.
+    expect(refusalFor(failure(401))).toBe('sign-out');
+  });
+
+  it('does NOT sign out on a 503, and this is the case the feature exists for', () => {
+    // Until 2026-09-10 `requireStaff` sent a browser to /signed-out for every
+    // failure of the session read, so a rolling restart of vpay signed every
+    // staff member out — indistinguishably from having been signed out on
+    // purpose (issue #88 item 2).
+    //
+    // THE DECISIVE MUTATION: widen `refusalFor` to `status >= 400` or
+    // `status !== 200`. This assertion reads 'sign-out'.
+    expect(refusalFor(failure(503))).toBe('outage');
+  });
+
+  it('does not sign out when there was no response at all', () => {
+    // `server/api.ts` turns a rejected `fetch` into `status: 0` rather than
+    // throwing, so "the connection was reset" arrives here as a failure like
+    // any other. It is the commonest shape of the outage this exists for.
+    expect(refusalFor(failure(0))).toBe('outage');
+  });
+
+  it('treats a 403 on the session route as an outage rather than a sign-out', () => {
+    // On this route a 403 means something in front of vpay refused this app,
+    // which is a deployment problem and not a fact about the person.
+    expect(refusalFor(failure(403))).toBe('outage');
+  });
+
+  it('does not sign out on a 500 or a 502', () => {
+    expect(refusalFor(failure(500))).toBe('outage');
+    expect(refusalFor(failure(502))).toBe('outage');
   });
 });

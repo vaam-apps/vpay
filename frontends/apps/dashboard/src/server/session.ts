@@ -37,7 +37,7 @@ import { dashboardConfig } from '../config/runtime';
 import type { DashboardConfig } from '../config/settings';
 import { getJson, type ApiFailure, type SessionResponse } from './api';
 import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from './cookies';
-import { gateFor } from './gate';
+import { gateFor, refusalFor } from './gate';
 import { completeAuthorizationCode } from './oauth';
 
 /** Where an unauthenticated visitor is sent. */
@@ -56,6 +56,24 @@ export const HOME_PATH = '/payments';
  * deletes the session cookie and redirects to {@link LOGIN_PATH}.
  */
 export const SIGNED_OUT_PATH = '/signed-out';
+
+/**
+ * What {@link requireStaff} answers when it did not redirect.
+ *
+ * A union rather than a `StaffContext` because a page has **three** possible
+ * next moves and only two of them are a redirect: render, go somewhere, or
+ * say that vpay could not be reached. The third had no representation until
+ * 2026-09-10 and was spelled as the second — see {@link refusalFor}.
+ */
+export type StaffGate =
+  /** Signed in, with a token to read `/dash/v1` with. */
+  | { readonly kind: 'ready'; readonly staff: StaffContext }
+  /**
+   * vpay could not answer. **The cookie is untouched**: this browser may
+   * still hold a perfectly good session, and the page renders the failure and
+   * its request id instead of the data.
+   */
+  | { readonly kind: 'outage'; readonly failure: ApiFailure };
 
 /** Everything a protected page needs, once the gate has let it through. */
 export interface StaffContext {
@@ -145,7 +163,7 @@ export async function readSession(
  * property ADR-0017 decision 2 rests on. A token cached across requests would
  * break it; a token used by the request that created it cannot.
  */
-export async function requireStaff(): Promise<StaffContext> {
+export async function requireStaff(): Promise<StaffGate> {
   const { config } = dashboardConfig();
   if (config === null) {
     // Nothing can be read without a registration; `/login` is where the
@@ -160,6 +178,14 @@ export async function requireStaff(): Promise<StaffContext> {
 
   const first = await readSession(config, token);
   if (first.session === null) {
+    // `refusalFor` and not `if (session === null)`. This branch used to send
+    // a browser to `/signed-out` for every failure, and `api.ts` turns a
+    // rejected `fetch` into a failure rather than throwing — so a vpay that
+    // was restarting signed every staff member out and told them nothing
+    // (issue #88 item 2).
+    if (first.failure !== null && refusalFor(first.failure) === 'outage') {
+      return { kind: 'outage', failure: first.failure };
+    }
     redirect(SIGNED_OUT_PATH);
   }
 
@@ -168,18 +194,31 @@ export async function requireStaff(): Promise<StaffContext> {
     redirect(PASSWORD_PATH);
   }
   if (gate.kind === 'ready') {
-    return { session: gate.session, accessToken: gate.accessToken, sessionToken: token, config };
+    return {
+      kind: 'ready',
+      staff: { session: gate.session, accessToken: gate.accessToken, sessionToken: token, config },
+    };
   }
 
   const exchanged = await completeAuthorizationCode(config, token);
   if (!exchanged.ok) {
+    // The same rule on the mint. `/oauth/authorize` refuses a session it will
+    // not issue for with a `401`, so anything else here — a `502` from a
+    // proxy, a connection that was reset — is vpay being unreachable while
+    // this browser's session is very likely still good.
+    if (refusalFor(exchanged.failure) === 'outage') {
+      return { kind: 'outage', failure: exchanged.failure };
+    }
     redirect(SIGNED_OUT_PATH);
   }
   return {
-    session: gate.session,
-    accessToken: exchanged.value.access_token,
-    sessionToken: token,
-    config,
+    kind: 'ready',
+    staff: {
+      session: gate.session,
+      accessToken: exchanged.value.access_token,
+      sessionToken: token,
+      config,
+    },
   };
 }
 

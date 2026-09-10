@@ -1,9 +1,10 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { Alert, Heading, Stack, Text } from '@vpay/ui';
+import { Heading, Stack } from '@vpay/ui';
 
 import { PaymentDetailView } from '../../../src/components/payment-detail';
+import { ReadFailure } from '../../../src/components/read-failure';
 import { SignedInBar } from '../../../src/components/signed-in-bar';
 import { type PaymentDetail } from '../../../src/server/api';
 import { readDash } from '../../../src/server/dash-read';
@@ -27,7 +28,17 @@ export default async function PaymentDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const staff = await requireStaff();
+  const gate = await requireStaff();
+  if (gate.kind === 'outage') {
+    // A vpay this page cannot reach is not a sign-out — see `payments/page.tsx`.
+    return (
+      <Stack direction="column" gap="lg">
+        <Heading level={2}>Payment</Heading>
+        <ReadFailure failure={gate.failure} />
+      </Stack>
+    );
+  }
+  const staff = gate.staff;
   const { session, config } = staff;
   const { id } = await params;
 
@@ -52,14 +63,7 @@ export default async function PaymentDetailPage({
       </Stack>
 
       {!result.ok ? (
-        <Alert tone="error">
-          <Text as="span">{result.failure.message}</Text>
-          {result.failure.requestId === null ? null : (
-            <Text as="span" size="xs" tone="muted">
-              Request <code>{result.failure.requestId}</code>
-            </Text>
-          )}
-        </Alert>
+        <ReadFailure failure={result.failure} />
       ) : (
         <PaymentDetailView detail={result.value} />
       )}

@@ -1,6 +1,7 @@
-import { Alert, Heading, Stack, Text } from '@vpay/ui';
+import { Heading, Stack } from '@vpay/ui';
 
 import { EmptyState } from '../../src/components/empty-state';
+import { ReadFailure } from '../../src/components/read-failure';
 import { Pager } from '../../src/components/pager';
 import { PaymentsFilters } from '../../src/components/payments-filters';
 import { PaymentsTable } from '../../src/components/payments-table';
@@ -34,6 +35,14 @@ import { requireStaff } from '../../src/server/session';
  * A failed read renders the failure and the request id, never an empty list:
  * "this merchant has no payments" and "the read was refused" are different
  * answers, and the empty list is the one an operator would believe.
+ *
+ * # A vpay this page cannot reach is not a sign-out
+ *
+ * `requireStaff` answers `outage` for anything but a `401` on the session
+ * read, and this page renders the failure with its request id and **keeps the
+ * cookie** (issue #88 item 2). Before 2026-09-10 a restarting vpay sent every
+ * staff member to the sign-in form, indistinguishably from having been signed
+ * out on purpose.
  */
 export const dynamic = 'force-dynamic';
 
@@ -42,7 +51,16 @@ export default async function PaymentsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const staff = await requireStaff();
+  const gate = await requireStaff();
+  if (gate.kind === 'outage') {
+    return (
+      <Stack direction="column" gap="lg">
+        <Heading level={2}>Payments</Heading>
+        <ReadFailure failure={gate.failure} />
+      </Stack>
+    );
+  }
+  const staff = gate.staff;
   const { session, config } = staff;
   const query = queryFrom(await searchParams);
 
@@ -68,14 +86,7 @@ export default async function PaymentsPage({
       />
 
       {!result.ok ? (
-        <Alert tone="error">
-          <Text as="span">{result.failure.message}</Text>
-          {result.failure.requestId === null ? null : (
-            <Text as="span" size="xs" tone="muted">
-              Request <code>{result.failure.requestId}</code>
-            </Text>
-          )}
-        </Alert>
+        <ReadFailure failure={result.failure} />
       ) : result.value.data.length === 0 ? (
         <EmptyState
           title="No payments"
