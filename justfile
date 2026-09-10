@@ -349,6 +349,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
          demo_orange_port={{demo_orange_port}} \
          demo_checkout_port={{demo_checkout_port}} \
          demo_shop_port={{demo_shop_port}} \
+         demo_dashboard_port={{demo_dashboard_port}} \
          demo-staff
     if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
         echo "test-e2e: FAIL — no staff member for the dashboard spec" >&2
@@ -360,9 +361,17 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     # for the dashboard — a PATH to a credential rather than the credential.
     # `dashboardTasks.ts` reads the file in Node; the password never reaches
     # `Cypress.env`, a browser or a `cypress run` argument list.
+    #
+    # VPAY_DASHBOARD_URL is Cypress's own `baseUrl` — every bare `cy.visit("/…")`
+    # in `dashboard.cy.ts` resolves against it. `cypress.config.ts` already read
+    # it, but nothing ever SET it, so until exp35's review every dashboard spec
+    # went to the config's `?? "http://localhost:3000"` fallback whatever
+    # `demo_dashboard_port` said — i.e. at a custom port, straight at whichever
+    # OTHER stack happened to hold 3000, or at nothing.
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
       VPAY_STAFF_EMAIL={{demo_staff_email}} \
       VPAY_STAFF_PASSWORD_FILE="$PWD/{{demo_staff_password_file}}" \
+      VPAY_DASHBOARD_URL=http://localhost:{{demo_dashboard_port}} \
       VPAY_SHOP_URL=http://localhost:{{demo_shop_port}} \
       VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
@@ -1970,13 +1979,21 @@ demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 # merchant's payment intents — so it joins the list, and
 # `docs/runbooks/demo.md` §6 is how to sign in to it.
 #
-# One consequence, stated because it is the kind that is discovered at the
-# worst moment: `compose.e2e.yml` publishes the dashboard on host port **3000**
-# and that port is NOT one of the `demo_*` variables — the dashboard client's
-# registered `redirect_uri` names it, and a redirect URI is matched byte for
-# byte. So two demo stacks cannot both serve a dashboard, and the second
-# `demo-up` fails on the port bind. Everything else in "two demos on one
-# machine" is unaffected.
+# **That consequence is closed as of 2026-09-10 (exp35, issue #78).** This
+# paragraph used to read "`compose.e2e.yml` publishes the dashboard on host
+# port **3000** and that port is NOT one of the `demo_*` variables — the
+# dashboard client's registered `redirect_uri` names it, and a redirect URI is
+# matched byte for byte. So two demo stacks cannot both serve a dashboard, and
+# the second `demo-up` fails on the port bind."
+#
+# The byte-for-byte matching is still true and is still the reason this was
+# hard. What changed is that the redirect URI is no longer a fixed string:
+# `gen-demo-keys` WRITES it from `demo_dashboard_port`, `compose.e2e.yml` sets
+# the app's `VPAY_DASHBOARD_REDIRECT_URI` from the same variable, and
+# `compose.demo.yml` publishes the container on it — so all three bytes agree
+# at any port, and the overlay is regenerated when the variable moves. Two
+# stacks can now each serve a dashboard; see `demo_dashboard_port` below and
+# `docs/runbooks/demo.md` §7.
 #
 # `vpay-checkout` and `vpay-shop` joined the list in Step 9 and had to: a
 # service that is in the file set but not in this list does not start, and the
@@ -2143,22 +2160,33 @@ demo_checkout_port := "3080"
 # the port `pnpm --filter @vpay/checkout dev` uses for its own dev server, so
 # do not run both at once without moving one.)
 demo_shop_port := "3001"
-# The host port `just demo` publishes the DASHBOARD
-# on, so the OAuth redirect URI and the dashboard app's VPAY_DASHBOARD_REDIRECT_URI
-# environment variable can both reference it.
+
+# The host port `just demo` publishes the DASHBOARD (`frontends/apps/dashboard`)
+# on — the staff sign-in surface `docs/runbooks/demo.md` §6 walks.
 #
 #     just demo_dashboard_port=13000 demo
 #
-# Three things have to agree about it:
+# Added 2026-09-10 (exp35, issue #78). FOUR things have to agree about it, and
+# the fourth is the one that made this a variable late:
 #
-#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_DASHBOARD_PORT`);
-#   2. the redirect_uri in the overlay (`gen-demo-keys` writes it);
-#   3. the VPAY_DASHBOARD_REDIRECT_URI env var set in `compose.e2e.yml`
-#      (authkestra matches it byte for byte).
+#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_DASHBOARD_PORT`,
+#      on a `!override` so compose.e2e.yml's literal does not survive beside it);
+#   2. `VPAY_DASHBOARD_REDIRECT_URI` on the service (`compose.e2e.yml`), which
+#      is the string the APP sends in both OAuth legs;
+#   3. `dashboard_client.redirect_uris` in the generated overlay, which is what
+#      the OP has REGISTERED — authkestra matches (2) against (3) byte for
+#      byte, no prefix and no wildcard, so a mismatch is a 400 at /authorize
+#      naming redirect_uri while server, app and base config are each right;
+#   4. Cypress's `baseUrl` (`VPAY_DASHBOARD_URL`, set by `test-e2e`), because
+#      every bare `cy.visit("/…")` in `dashboard.cy.ts` resolves against it.
 #
-# All three are things this recipe set can write. See ADR-0016 and the brief for exp35.
+# `gen-demo-keys` regenerates the overlay when this changes, and its shape
+# check is keyed on this port for exactly reason (3).
+#
+# 3000 is the default because that is what `compose.e2e.yml` publishes and what
+# CI's e2e job polls; nothing outside a `demo_dashboard_port=…` invocation sees
+# a different one.
 demo_dashboard_port := "3000"
-
 
 # The demo dashboard's one staff member — ADR-0017 decision 1's only way in.
 #
@@ -2375,13 +2403,17 @@ gen-demo-keys: gen-e2e-signing-key
     }
 
     # Added 2026-09-07 (exp28). The base config's redirect_uris names port
-    # 8080; the dashboard app runs on 3000 and sends this string in both OAuth
-    # legs, where authkestra matches it byte for byte. An overlay generated
-    # before this line makes every staff sign-in end in a 400 naming
-    # redirect_uri — with the server, the app and the base config all
-    # individually correct. Keyed on the exact string compose.e2e.yml sets in
-    # VPAY_DASHBOARD_REDIRECT_URI, because equality with THAT is the property
-    # that matters.
+    # 8080; the dashboard app runs on `demo_dashboard_port` and sends this
+    # string in both OAuth legs, where authkestra matches it byte for byte. An
+    # overlay generated before this line makes every staff sign-in end in a
+    # 400 naming redirect_uri — with the server, the app and the base config
+    # all individually correct. Keyed on the exact string compose.e2e.yml sets
+    # in VPAY_DASHBOARD_REDIRECT_URI, because equality with THAT is the
+    # property that matters.
+    #
+    # Keyed on the CURRENT port since exp35 (issue #78), so this is also what
+    # regenerates a stale overlay after `just demo_dashboard_port=… demo` —
+    # the same job `checkout_base_present` does for `demo_checkout_port`.
     dashboard_redirect_present() {
         grep -qF "    - http://localhost:{{demo_dashboard_port}}/dash/v1/callback" "$overlay"
     }
@@ -2479,8 +2511,10 @@ gen-demo-keys: gen-e2e-signing-key
             echo "gen-demo-keys: $overlay predates the dashboard client's \`merchant_id\` binding (PR #69) — regenerating the pair"
         elif ! dashboard_redirect_present; then
             # Added 2026-09-07 (exp28). The base config registers port 8080;
-            # the dashboard app is published on 3000 and sends its own
-            # redirect_uri in both OAuth legs, matched byte for byte. Stale,
+            # the dashboard app is published on `demo_dashboard_port` and
+            # sends its own redirect_uri in both legs, matched byte for byte.
+            # Since exp35 this also fires when that VARIABLE changed rather
+            # than only when the overlay predates the line at all. Stale,
             # and every staff sign-in dies at /authorize with a 400 naming
             # redirect_uri while the server, the app and the base config are
             # each individually right.
@@ -2684,17 +2718,27 @@ gen-demo-keys: gen-e2e-signing-key
     # the merchant_id line was missing).
     #
     # \`redirect_uris\` is a LIST, so this replaces the base file's outright —
-    # which is what it is for. The base names port 8080; the dashboard app
-    # runs on 3000 (compose.e2e.yml publishes it there, on a literal rather
-    # than on one of the demo_* variables), and the app sends this string in
-    # BOTH OAuth legs, where authkestra matches it byte for byte. It must be
-    # the same bytes as compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI, or
-    # every sign-in ends in a 400 naming redirect_uri. Nothing ever fetches
-    # this URL: the app's own server follows the 302 (ADR-0017 decision 4).
+    # which is what it is for. The base names port 8080; the dashboard app is
+    # published on \`demo_dashboard_port\` (compose.demo.yml reads
+    # \$VPAY_DEMO_DASHBOARD_PORT), and the app sends this string in BOTH OAuth
+    # legs, where authkestra matches it byte for byte. It must be the same
+    # bytes as compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI, or every sign-in
+    # ends in a 400 naming redirect_uri. Nothing ever fetches this URL: the
+    # app's own server follows the 302 (ADR-0017 decision 4).
+    #
+    # Templated on the variable rather than a literal 3000, and that is the
+    # whole of issue #78. exp35's first draft templated the CHECK below and
+    # left this line literal, which was measured to do two things at once:
+    # register :3000 while the app sends :{{demo_dashboard_port}} (every
+    # sign-in dies at /authorize with a 400 naming redirect_uri), and never
+    # satisfy \`dashboard_redirect_present\` — so every single invocation
+    # regenerated the shared merchant key pair and took any already-running
+    # stack's \`demo-walk\` down with it (\`invalid_client\`; see
+    # docs/runbooks/demo.md §7 for why a regenerated pair does that).
     dashboard_client:
       merchant_id: demo-merchant-tenant
       redirect_uris:
-        - http://localhost:3000/dash/v1/callback
+        - http://localhost:{{demo_dashboard_port}}/dash/v1/callback
 
     # ADR-0017 decision 1's two deployment secrets. Without BOTH,
     # \`staff_login\` is None and /dash/v1 mounts its read surface and NO login
@@ -3053,11 +3097,11 @@ demo-shop:
 demo-checkout:
     @echo "http://localhost:{{demo_checkout_port}}"
 
-# Print the demo dashboard's origin — the value the dashboard app's
-# VPAY_DASHBOARD_REDIRECT_URI gets set to. The dashboard is on the same
-# loopback as every other demo service.
-#
-# Print the dashboard origin for the current demo_dashboard_port.
+# Print the demo dashboard's origin, for the CURRENT `demo_dashboard_port` —
+# the same origin `VPAY_DASHBOARD_REDIRECT_URI` and the overlay's registered
+# `redirect_uris` are built from. `localhost` rather than the host's LAN
+# address on purpose: `compose.demo.yml` binds this publication to `127.0.0.1`
+# and a staff sign-in form is what is behind it.
 demo-dashboard:
     @echo "http://localhost:{{demo_dashboard_port}}"
 
