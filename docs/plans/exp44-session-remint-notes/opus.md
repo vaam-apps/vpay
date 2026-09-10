@@ -243,3 +243,26 @@ retries. Reverted, it is 9 of 9.
   configured TTL narrows that window and does not close it, and closing it
   means binding every `/dash/v1` read to a live session row — a maintainer
   decision the exp24 review surfaced and nobody has taken.
+
+## 6. The gate
+
+`just ci`, on `a7e6971`, exit code read from a file: **0**.
+
+| Recipe | Measured |
+|---|---|
+| `fmt-check` | clean |
+| `clippy --workspace --all-targets -- -D warnings` | clean |
+| `verify` | the twelve gates; `verify-migrations` 40 files against the manifest, `verify-links` 1034 links in 197 files |
+| `test-rust` | **1665 run, 1665 passed, 0 skipped**, 45 binaries, 1144 s, against a real Postgres |
+| `test-doc` | **111 passed, 1 ignored** |
+| `verify-ignored` | 0 ignored (expected 0), 45 binaries (expected 45), 1665 total |
+| `lint-web` | clean |
+| `test-web` | all packages green; `@vpay/dashboard` **182 in 21 files** |
+| `deny` | advisories, bans, licenses, sources all ok |
+
+`just test-e2e`, on its own compose project (`demo_project=exp44`,
+`demo_dashboard_port=13800`, `demo_port=18800`): **19 of 19 passing**, exit 0 —
+dashboard 9, checkout 1, shop-hosted 3, shop-embedded 6.
+
+`staff_sign_in.rs` is **23 → 26** cases across this branch; `postgres_smoke.rs`
++1; dashboard vitest **177 → 182**.
