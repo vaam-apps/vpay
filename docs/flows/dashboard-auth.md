@@ -499,7 +499,7 @@ argues that a TTL varying by YAML is one more thing that can differ between the
 sandbox a merchant integrates against and the production they go live on — and
 that argument is about a number *merchants* build against. Nothing outside this
 deployment ever receives a dashboard token. What it buys is the case nothing
-could otherwise exercise: `demo_staff_token_ttl` sets twenty seconds on the
+could otherwise exercise: `demo_staff_token_ttl` sets thirty seconds on the
 demo stack, and `dashboard.cy.ts` crosses both the margin and the expiry in one
 leg, in a real browser, without a re-login.
 

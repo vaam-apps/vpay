@@ -45,8 +45,7 @@ export type Gate =
  * How much of a token's life must be **gone** before a render replaces it.
  *
  * 80 %, so a token is re-minted with a fifth of its TTL still in hand: 180
- * seconds at the shipping 900, four at the few seconds an end-to-end run
- * configures. A fraction and not a fixed number of seconds because the TTL is
+ * seconds at the shipping 900, six at the thirty an end-to-end run configures. A fraction and not a fixed number of seconds because the TTL is
  * `staff_auth.access_token_ttl_seconds` now and a deployment may set it —
  * sixty seconds of margin would be a fifteenth of one TTL and three times
  * another, which is either too late to matter or a re-mint on every render.

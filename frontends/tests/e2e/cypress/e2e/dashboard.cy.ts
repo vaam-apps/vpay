@@ -41,7 +41,7 @@
  * "replaces the access token before it expires" is issue #88 item 1, and it is
  * here rather than in a unit test because the thing it proves is a **sequence
  * of renders across an expiry**. It depends on this stack's short
- * `staff_auth.access_token_ttl_seconds` (`demo_staff_token_ttl`, twenty
+ * `staff_auth.access_token_ttl_seconds` (`demo_staff_token_ttl`, thirty
  * seconds) — at the shipping 900 no browser run could reach the case at all,
  * which is why nothing ever had.
  */
@@ -353,17 +353,26 @@ describe("the dashboard", { testIsolation: false }, () => {
     // was an error box.
     //
     // At the shipping 900 s no browser run could reach that. This stack sets
-    // twenty (`demo_staff_token_ttl`), so the margin — 20 % of the TTL — falls
-    // at sixteen seconds and one leg crosses both it and the expiry.
+    // thirty (`demo_staff_token_ttl`), so the margin — 20 % of the TTL — falls
+    // at twenty-four seconds and one leg crosses both it and the expiry.
     //
     // **What makes this decisive.** The reactive re-mint in `dash-read.ts`
     // still exists, so a page renders correctly whether the token was replaced
     // early or replaced after a read failed on it. The two are told apart by
     // `access_token_expires_at`, read from vpay itself: the assertion is that
     // the expiry MOVED while the old one had not yet passed. Drop the margin
-    // from `gateFor` and the second read answers the same expiry as the first.
-    const ttlSeconds = 20;
-    const marginSeconds = ttlSeconds * 0.2;
+    // from `gateFor` and the re-mint happens AT the expiry instead of before
+    // it — measured, and the second assertion below is the one that failed.
+    //
+    // **The waits are computed from the expiry vpay reported, not counted from
+    // here**, and that is not tidiness. A fixed `cy.wait` pays for the visit
+    // and the task that precede it out of the same window: at a twenty-second
+    // TTL that window is four seconds wide and the first version of this leg
+    // landed 300 ms inside it, which is a flake waiting for a slower machine.
+    // Targeting an instant makes the slack a stated number — 4.5 seconds.
+    const ttlSeconds = 30;
+    /** Where in the token's life the second render should land: 85 % gone. */
+    const renderAtFraction = 0.85;
 
     cy.visit("/payments");
     cy.contains("h2", "Payments").should("be.visible");
@@ -376,8 +385,11 @@ describe("the dashboard", { testIsolation: false }, () => {
         expect(first, "the session row must record when its token expires").to.be.a("string");
         const firstExpiry = Date.parse(String(first));
 
-        // Past the margin, and deliberately NOT past the expiry.
-        cy.wait((ttlSeconds - marginSeconds + 1) * 1000);
+        // Past the 80 % margin and comfortably short of the expiry.
+        const target = firstExpiry - ttlSeconds * (1 - renderAtFraction) * 1000;
+        cy.wrap(null).then(() => {
+          cy.wait(Math.max(target - Date.now(), 0));
+        });
         cy.visit("/payments");
         cy.contains("h2", "Payments").should("be.visible");
 
@@ -397,7 +409,9 @@ describe("the dashboard", { testIsolation: false }, () => {
 
         // And now past the ORIGINAL token's expiry entirely: the render that
         // used to be an error box. No sign-in happens in between.
-        cy.wait((ttlSeconds - (ttlSeconds - marginSeconds) + 2) * 1000);
+        cy.wrap(null).then(() => {
+          cy.wait(Math.max(firstExpiry + 2000 - Date.now(), 0));
+        });
         cy.visit("/payments");
         cy.location("pathname").should("eq", "/payments");
         cy.contains("h2", "Payments").should("be.visible");
