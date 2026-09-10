@@ -32,6 +32,24 @@ so the gate now runs in both directions:
   `events.retrieve` row below has been ⛔/⛔ since 2026-09-03). A stale row
   fails, naming its own line.
 
+### And per column, since 2026-09-08
+
+The two directions above are both satisfied by *either* SDK declaring the
+method, which left one thing unchecked for two days: whether the SDK a ✅ cell
+is **in** ships it. Measured on the exp33 head — deleting `invoices.void`
+from `sdks/rust` alone, leaving `sdks/nodejs` untouched — `verify-sdk-parity`
+exited **0** and still reported 443 proving tests: doc→code was answered by
+the Node declaration, and the Rust cell's named test is source text that goes
+on existing whether or not the method it calls does. (What caught it in
+practice was `cargo nextest -p vpay-sdk`, because the test no longer
+compiled; the gate is what is supposed to say so first.)
+
+So a ✅ on a capability row may now only appear in a column whose **own tree**
+declares that method. The other column declaring it is exactly what the row's
+two cells exist to tell apart. A column that does not ship it answers with a
+dated ⛔, which is what ADR-0015 decision 2 asks for. Rows that name no
+`<resource>.<method>` — most of this document — are untouched by the rule.
+
 ### How a capability row is named
 
 A row is a **capability row** when its first cell *opens* with a code span

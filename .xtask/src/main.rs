@@ -3161,8 +3161,16 @@ struct ParityRow {
 
 /// Fail if the parity matrix and the SDK trees disagree, in either direction.
 ///
-/// Five rules, one per way the matrix could start lying:
+/// Six rules, one per way the matrix could start lying:
 ///
+/// * a `✅` cell on a row that names a `<resource>.<method>` may only appear
+///   in a column whose **own tree declares that method**. Until 2026-09-08
+///   nothing asked: deleting `invoices.void` from `sdks/rust` alone was
+///   measured to exit 0, because the doc→code direction below was satisfied
+///   by `sdks/nodejs` still declaring it and the cell's named test went on
+///   existing as the *other* SDK's source text. A ✅ is a claim about one
+///   SDK, and telling the two apart is the only thing the row's two cells
+///   are for.
 /// * a `✅` cell names the test(s) that prove the capability **in that SDK**,
 ///   and every one of them must exist there — a Rust `#[test]`/`#[tokio::test]`
 ///   function or a TypeScript `it("…")`/`test("…")` with that exact name.
@@ -3178,7 +3186,7 @@ struct ParityRow {
 /// * **doc → code**: every `<resource>.<method>` row names a method at least
 ///   one SDK declares, unless the row is a dated `⛔` in every column.
 ///
-/// The last two landed on 2026-09-06 and are the reason this gate is worth
+/// The two directional rules landed on 2026-09-06 and are the reason this gate is worth
 /// anything as a *parity* check. Until then it read the matrix and only ever
 /// asked whether what the matrix said was true; deleting a whole row was
 /// measured to pass (350 proving tests → 347, exit 0), and a method with no
@@ -3256,6 +3264,7 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
     // document compares the same two SDK roots, and walking each of them once
     // per table would be five identical walks.
     let mut shipped: BTreeMap<String, SdkMethod> = BTreeMap::new();
+    let mut declared_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut walked: BTreeSet<&str> = BTreeSet::new();
     let mut named_by_a_row: BTreeSet<String> = BTreeSet::new();
     let mut capability_rows = 0usize;
@@ -3271,11 +3280,14 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 ));
             }
             if walked.insert(column.as_str()) {
+                let mut declared = BTreeSet::new();
                 for method in sdk_methods(root, column) {
+                    declared.insert(method.capability.clone());
                     // First declaration wins, so the reported `file:line` is
                     // stable rather than dependent on column order.
                     shipped.entry(method.capability.clone()).or_insert(method);
                 }
+                declared_by.insert(column.clone(), declared);
             }
             indexes.push(test_names_in(&dir));
         }
@@ -3291,17 +3303,24 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 ));
                 continue;
             }
-            if let Some(capability) = row_capability(&row.capability) {
+            let capability = row_capability(&row.capability);
+            if let Some(capability) = capability.as_deref() {
                 capability_rows += 1;
-                check_row_names_a_shipped_method(&capability, row, &shipped, &mut problems);
-                named_by_a_row.insert(capability);
+                check_row_names_a_shipped_method(capability, row, &shipped, &mut problems);
+                named_by_a_row.insert(capability.to_owned());
             }
+            // The per-column rule asks *which* SDK ships it, so it has nothing
+            // to add about a capability NO SDK ships — that is one defect, and
+            // `check_row_names_a_shipped_method` has already named it once.
+            let capability = capability.filter(|c| shipped.contains_key(c));
             for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
                 check_parity_cell(
                     cell,
                     column,
                     index,
                     row,
+                    capability.as_deref(),
+                    declared_by.get(column),
                     &mut problems,
                     &mut proven,
                     &mut gaps,
@@ -3351,12 +3370,25 @@ fn check_row_names_a_shipped_method(
     ));
 }
 
-/// The first three rules on [`verify_sdk_parity`], applied to one cell.
+/// The first three rules on [`verify_sdk_parity`], plus the per-column rule,
+/// applied to one cell.
+///
+/// `capability` is the `<resource>.<method>` this row names, if it names one,
+/// and `declared` is the set of capabilities **this column's own tree**
+/// declares — the pair that makes a `✅` a claim about this SDK rather than
+/// about either of them.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "seven inputs and two counters; splitting them into a struct would name the \
+              same fields once more without changing what the function decides"
+)]
 fn check_parity_cell(
     cell: &str,
     column: &str,
     index: &BTreeSet<String>,
     row: &ParityRow,
+    capability: Option<&str>,
+    declared: Option<&BTreeSet<String>>,
     problems: &mut Vec<String>,
     proven: &mut usize,
     gaps: &mut usize,
@@ -3376,6 +3408,23 @@ fn check_parity_cell(
     }
 
     if text.starts_with('✅') {
+        // The per-column rule, checked BEFORE the test names: a ✅ says *this*
+        // SDK ships the capability, and until 2026-09-08 nothing here asked
+        // that column whether it did. Deleting `void` from `sdks/rust` alone
+        // was measured to exit 0 — the doc→code direction was satisfied by
+        // `sdks/nodejs` still declaring it, and the cell's named test is
+        // source text that goes on existing because it is the *other* SDK's.
+        // See `docs/plans/exp33-sdk-invoices-notes/opus-review.md`.
+        if let (Some(capability), Some(declared)) = (capability, declared)
+            && !declared.contains(capability)
+        {
+            problems.push(format!(
+                "{at}: ✅ claims `{capability}`, which `{column}` does not declare — a ✅ is a \
+                 claim about THIS SDK, and the other column declaring it is what the row's two \
+                 cells exist to tell apart. Ship the method here, or make this cell a dated ⛔"
+            ));
+            return;
+        }
         let names = code_spans(text);
         if names.is_empty() {
             problems.push(format!(
@@ -9456,6 +9505,70 @@ export class HolderResource {
                 .is_some_and(|m| m.contains("names a method no SDK declares")),
             "{found:?}"
         );
+    }
+
+    /// **The escape this gate shipped with until 2026-09-08**, as a
+    /// regression test. Deleting a method from ONE SDK left
+    /// `verify-sdk-parity` green: the doc→code direction was satisfied while
+    /// the *other* column still declared it, and the ✅ cell's named test is
+    /// source text that goes on existing because it belongs to that other
+    /// SDK. Measured on `sdks/rust`'s `invoices.void`, exit 0.
+    ///
+    /// The fixture removes `list` from the Rust tree only, and both cells of
+    /// the `widgets.list` row keep naming tests that really exist — which is
+    /// exactly the shape that used to pass.
+    #[test]
+    fn a_tick_for_a_method_only_the_other_sdk_declares_fails() {
+        let dir = synthetic_sdks_shipping_widgets("parity-one-sided-method");
+        fs::write(
+            dir.path().join("sdks/rust/src/resources.rs"),
+            "impl WidgetsResource<'_> {\n    pub async fn create(&self) {}\n}\n",
+        )
+        .expect("the rust resource fixture is rewritable");
+
+        let doc = format!("{HEADER}{WIDGETS}");
+        let found = problems(&dir, &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let message = found.first().map(String::as_str).unwrap_or_default();
+        assert!(message.contains("widgets.list"), "{message}");
+        assert!(message.contains("sdks/rust"), "{message}");
+        assert!(
+            !message.contains("sdks/nodejs"),
+            "the SDK that still ships it is not the one at fault, {message}"
+        );
+    }
+
+    /// The other half of the same rule: a ⛔ cell is how a column that does
+    /// not declare the method answers, and it still passes.
+    #[test]
+    fn a_dated_gap_is_how_the_sdk_that_lacks_the_method_answers() {
+        let dir = synthetic_sdks_shipping_widgets("parity-one-sided-gap");
+        fs::write(
+            dir.path().join("sdks/rust/src/resources.rs"),
+            "impl WidgetsResource<'_> {\n    pub async fn create(&self) {}\n}\n",
+        )
+        .expect("the rust resource fixture is rewritable");
+
+        let doc = format!(
+            "{HEADER}| `widgets.create` | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n\
+             | `widgets.list` | ⛔ 2026-09-08 — not built here. Owner: SDK maintainers | ✅ `lists widgets` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+        assert_eq!(outcome.gaps, 1);
+    }
+
+    /// A row that names no `<resource>.<method>` states a behaviour spanning
+    /// methods, and the per-column rule must not invent a method for it —
+    /// most of the matrix's rows are that shape.
+    #[test]
+    fn a_behaviour_row_is_untouched_by_the_per_column_rule() {
+        let dir = synthetic_sdks_shipping_widgets("parity-behaviour-row");
+        let doc = format!(
+            "{HEADER}{WIDGETS}| A widget id is percent-encoded | ✅ `a_widget_is_created` | ✅ `creates a widget` |\n"
+        );
+        let outcome = parity_outcome(dir.path(), &doc);
+        assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
     }
 
     /// The vacuity guard. Both new directions are satisfied by an enumerator

@@ -216,9 +216,20 @@ same rows, 13 across 16 when measured, 14 across 17 after the rebase onto
 `cargo test -p xtask` 208 → **211 passed, 0 failed, 0 ignored**. Still not
 checked, and recorded rather than fixed: a Node resource declared as an
 object literal or with arrow-function properties remains invisible (neither
-shape exists in `sdks/nodejs` today, checked module by module), and no rule
+shape exists in `sdks/nodejs` today, checked module by module). ~~and no rule
 compares a row's per-column `✅`/`⛔` cell against whether *that* SDK
-declares the method.
+declares the method~~ **— closed 2026-09-08 (exp33 review).** That hole was
+measured on the exp33 head before it was closed: deleting `invoices.void`
+from `sdks/rust` alone left `verify-sdk-parity` at **exit 0**, reporting
+"443 proving test(s) … 32 SDK method(s)", because the doc→code direction was
+satisfied by `sdks/nodejs` still declaring the method and the ✅ cell's named
+test went on existing as *that* SDK's source text. The gate now has a sixth
+rule — a ✅ on a capability row may only appear in a column whose own tree
+declares the method — and the same mutation exits 1 naming `sdks/rust`.
+`a_tick_for_a_method_only_the_other_sdk_declares_fails` is the regression
+test, with `a_dated_gap_is_how_the_sdk_that_lacks_the_method_answers` and
+`a_behaviour_row_is_untouched_by_the_per_column_rule` for the two shapes that
+must keep passing.
 
 **New 2026-09-05: the three publishable npm packages are renamed
 `@vpay/*` → `@vaam-apps/vpay-*`.** The organisation was renamed
