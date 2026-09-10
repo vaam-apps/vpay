@@ -1724,8 +1724,8 @@ chart := "deploy/helm/vpay"
 # adding this to it would turn "offline" into "failing". Run it by hand before
 # opening a PR that touches the chart; CI runs it on every PR regardless.
 #
-# What it proves: the chart lints, both value sets render, the seventeen named
-# guards are exactly the seventeen on disk and each fires on its own values
+# What it proves: the chart lints, both value sets render, the nineteen named
+# guards are exactly the nineteen on disk and each fires on its own values
 # file with a non-zero exit, the default render templates no checkout page and
 # `ci/values-full.yaml`'s does, and every rendered object validates against the
 # upstream schemas. What it does not prove: anything at all about a cluster.
@@ -1777,6 +1777,7 @@ helm-check:
         rails-secret
         rate-limit-ordering
         signing-key-secret
+        worker-concurrency-pool
         worker-replicas
     )
     echo "==> template guards (each must FAIL, by name)"

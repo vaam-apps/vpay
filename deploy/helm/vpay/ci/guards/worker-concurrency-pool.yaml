@@ -1,0 +1,12 @@
+# One past `vpay_db::MAX_CONNECTIONS / 2`, which is what `vpay-server worker`
+# refuses at boot (issue #63). Every other worker value is the chart's own
+# default, so this file violates exactly one guard.
+worker:
+  replicaCount: 1
+  concurrency: 6
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

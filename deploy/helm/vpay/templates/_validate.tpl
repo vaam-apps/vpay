@@ -350,4 +350,30 @@ be well-typed and still not work.
 {{- end -}}
 {{- end -}}
 
+{{/* --------------------------------------------------------------- 18 */}}
+{{/*
+worker-concurrency-pool — a worker concurrency the image's connection pool
+cannot serve. `vpay-server worker` refuses it at boot with exit 78 (issue
+#63), so without this guard the chart installs cleanly and the Deployment
+CrashLoopBackOffs, which is a slower and less legible way to learn the same
+thing — and one that takes the queue down with it if it is a `helm upgrade`
+of a working release.
+
+The number is 5 and it is a LITERAL here on purpose. The bound is
+`vpay_db::MAX_CONNECTIONS / 2`, a Rust constant compiled into the image; the
+chart exposes no pool size and cannot read one, so this is the one place in
+the repository where that number is duplicated rather than derived. It is
+written down in three others that must move with it — the guard in
+`backends/apps/vpay-server/src/worker.rs`, `docs/flows/deployment.md` §3 and
+this chart's README — and the binary's own refusal is the backstop if this
+copy ever goes stale: a chart that let a too-large value through would still
+not start a pod. What this guard buys is the failure arriving at
+`helm upgrade` time, naming the fix, instead of at rollout time.
+*/}}
+{{- $concurrency := int .Values.worker.concurrency -}}
+{{- $poolCeiling := 5 -}}
+{{- if gt $concurrency $poolCeiling -}}
+{{- fail (printf "vpay chart guard \"worker-concurrency-pool\": worker.concurrency is %d, but vpay-server worker refuses anything above %d at boot (exit 78) — its database pool holds 10 connections and one webhook fan-out can hold two of them at once. This release would install and then CrashLoopBackOff. Set worker.concurrency to %d or less and raise worker.replicaCount for more throughput; the pool size is a constant in the image, not a chart value." $concurrency $poolCeiling $poolCeiling) -}}
+{{- end -}}
+
 {{- end -}}

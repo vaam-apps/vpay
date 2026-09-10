@@ -343,7 +343,7 @@ correlation mechanism until an OTLP decision is made.
 
 | Guard | Where | Catches |
 |---|---|---|
-| 15 named `fail` guards | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README |
+| 19 named `fail` guards | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README. *Said 15 until 2026-09-10; the count is the `expected_guards` list in the `helm-check` recipe, which is the copy `just helm-check` actually enforces* |
 | `helm lint` + `helm template` + `kubeconform -strict` | CI `deploy` job / `just helm-check` | Malformed templates, objects that do not match their schema |
 | `limit-rps` assertion on the rendered Ingress | same | The rate limit [ADR-0009](../adr/0009-dashboard-oidc-provider.md) assumes exists silently disappearing |
 | `Config::validate_all` | the process | Configuration that would fail at runtime |
