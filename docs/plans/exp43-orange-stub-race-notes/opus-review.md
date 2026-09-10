@@ -99,6 +99,33 @@ same starvation in §2). The row is corrected to the measured 7, with the
 walkthrough's total wall clock beside it, because "how long does the demo take
 now" is the question that number is there to answer.
 
+### 3b. Cypress, and the two ports two agents collide on
+
+`just test-e2e` on the review's own project: **19 tests, 19 passing, 0
+failing**, exit 0 — `checkout.cy.ts` 1, `dashboard.cy.ts` 8,
+`shop-hosted.cy.ts` **4**, `shop-embedded.cy.ts` 6. Then `shop-hosted.cy.ts`
+**five times over against one standing stack: 20 of 20**, with the new cancel
+case at 5.42 / 5.35 / 5.47 / 5.38 / 5.34 s — a 130 ms spread. The *pay* case
+is bimodal, 3.7 s twice and ~13.9 s three times, and that is the unconditional
+rung visible in the wall clock: when Cypress's click beats the worker's first
+poll the charge settles at once, and when it loses, the first poll answers
+`PENDING` and it settles on the next rung. Both end `paid`, which is exactly
+why the *cancel* case is the one that gates the fix.
+
+**Two runs before that failed for a reason that is not this branch's**, and it
+is worth writing down because it will bite the next person. The Cypress side of
+`just test-e2e` starts two fixture servers on **fixed** ports —
+`checkoutBrowserServer.ts` on 4180 and `frameFixtureServer.ts` on 4181 — each
+overridable by an environment variable (`CHECKOUT_BROWSER_PORT`,
+`VPAY_E2E_FRAME_FIXTURE_PORT`) that `just test-e2e` does **not** set from a
+`just` variable, unlike every one of the seven compose ports beside them. A
+concurrent `just test-e2e` in another worktree (exp44's, here) takes both, and
+the failure reads as `EADDRINUSE` inside a Cypress plugin or, worse, as
+`cy.visit()` failing with `ECONNREFUSED` on a port the spec never chose. This
+review worked around it with the two environment variables. It is **on
+`master`**, not introduced here, so it is not fixed on this branch; it belongs
+with `demo_project` and its six siblings.
+
 ### 4. WireMock's double stache — the delivered correction is right
 
 The delivered notes retract an old comment claiming `{{…}}` HTML-escapes.

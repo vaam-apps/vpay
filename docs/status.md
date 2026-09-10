@@ -2783,11 +2783,23 @@ maintainer's `vpay-demo` stack was not touched):**
   terminally at T+0.466 s and T+0.414 s. The likeliest cause of 41 is the
   authoring host: the same review measured a first poll arriving **60.96 s**
   late under five CPU hogs, because load starves the worker's claim loop.)*
-- `just test-e2e` — **19 Cypress tests, 19 passing, 0 failing**:
-  `checkout.cy.ts` (1), `dashboard.cy.ts` (8), `shop-hosted.cy.ts` (**4**, one
-  of them new), `shop-embedded.cy.ts` (6). The Orange legs are the ones this
-  change is about: "the payer pays on the rail's own page" 15.9 s and "the
-  payer cancels on the rail's own page and the order reaches `failed`" 5.4 s.
+- `just test-e2e` — **19 Cypress tests, 19 passing, 0 failing**, exit 0,
+  re-run by the sabotage review on 2026-09-10: `checkout.cy.ts` (1),
+  `dashboard.cy.ts` (8), `shop-hosted.cy.ts` (**4**, one of them new),
+  `shop-embedded.cy.ts` (6). The Orange legs are the ones this change is
+  about: "the payer pays on the rail's own page" 5.8 s and "the payer cancels
+  on the rail's own page and the order reaches `failed`" 15.5 s.
+- **`shop-hosted.cy.ts` five times over, against one standing stack: 5 runs,
+  4 passing each, 20 of 20** (added by the review, because a new browser case
+  that is *usually* green is the thing this change was supposed to stop
+  shipping). The cancel case took 5.42, 5.35, 5.47, 5.38 and 5.34 s — a 130 ms
+  spread, which is what determinism looks like. The *pay* case is bimodal —
+  3.7 s twice, ~13.9 s three times — and that is the unconditional rung
+  visible in the wall clock: when Cypress's click beats the worker's first
+  poll the charge settles at once, and when it loses, the first poll answers
+  `PENDING` and the charge settles on the next rung ten seconds later. Both
+  end `paid`. Before this change the losing half of that coin ended `paid`
+  too, for the wrong reason; the cancel case is where the difference shows.
 
 - **The window itself, in a real browser, read out of the stub's own request
   journal** (added by the sabotage review, 2026-09-10). A person bought a
