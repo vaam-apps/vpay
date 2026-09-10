@@ -175,9 +175,16 @@ All three now say forty-one files, highest `0042`, one-wide gap at `0041`.
 
 ## Gates
 
-`just ci` on the rebased branch as delivered (run 1) and on the review's final
-head (run 2). Numbers and exit codes in the report; the exit code is read from a
-file rather than from a harness banner.
+`just ci`, exit code read from a file rather than from a harness banner.
+
+| Run | Head | Result |
+|---|---|---|
+| 1 — as delivered, rebased | `bf1faed` | **0**. `verify` twelve gates ok; nextest **1689/1689, 0 skipped**; doctests 120 passed, 1 ignored (`vpay_sdk`); `verify-ignored: 0 ignored, 46 binaries`; web all green; `deny` ok |
+| 2 — review's head, first attempt | `5766cbf` | **100**, and *not* this change: `a_provider_reads_through_cratestack_exactly_as_it_does_through_sqlx` timed out at 120 s in `failed to create a container: Timeout error`. Host load 19, `fs.inotify.max_user_instances` 128, 24 `created`-state `postgres:16-alpine` containers left by earlier runs — the flake the project memory records. Debris removed, re-run |
+| 3 — review's head, re-run | `5766cbf` | **0**. `verify` twelve gates ok; nextest **1696/1696, 0 skipped** (1545 s, 2 slow); doctests **120 passed, 1 ignored**; `verify-ignored: 0 ignored (expected 0), 46 binaries, 1696 total`; web 1294 vitest cases across nine projects; `deny`: advisories, bans, licenses, sources ok |
+
+The seven cases this review added all ran in run 3 (`vpay-api` 5, `vpay-sdk` 1,
+`vpay-db` 1) — 1689 → 1696.
 
 `just test-e2e` was **not** run: Cypress fixture ports 4180/4181 are fixed on
 master (#106) and nothing on this host was holding them, but item 4 — the
