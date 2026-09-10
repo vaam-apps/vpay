@@ -8674,7 +8674,12 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
 
     // One second short of the boundary: still the same window.
     let attempts = repositories
-        .count_attempt(&key, "sign_in:email", window, start + window - time::Duration::seconds(1))
+        .count_attempt(
+            &key,
+            "sign_in:email",
+            window,
+            start + window - time::Duration::seconds(1),
+        )
         .await?;
     assert_eq!(attempts, 4, "inside the window, the count carries on");
 
@@ -8707,8 +8712,8 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
 /// The other half is the ordinary one: two ids are two budgets, and spending
 /// one moves nothing else.
 #[tokio::test]
-async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label()
--> anyhow::Result<()> {
+async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label() -> anyhow::Result<()>
+{
     let (_container, repositories, pool) = migrated_postgres().await?;
     let window = time::Duration::seconds(300);
     let now = time::OffsetDateTime::now_utc();
@@ -8736,11 +8741,10 @@ async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label()
          into one and never notice"
     );
 
-    let label: String =
-        sqlx::query_scalar("SELECT scope FROM rate_limit_windows WHERE id = $1")
-            .bind(&one)
-            .fetch_one(&pool)
-            .await?;
+    let label: String = sqlx::query_scalar("SELECT scope FROM rate_limit_windows WHERE id = $1")
+        .bind(&one)
+        .fetch_one(&pool)
+        .await?;
     assert_eq!(
         label, "sign_in:email",
         "and the label a row was born with is the one it keeps — `ON CONFLICT DO UPDATE` does \

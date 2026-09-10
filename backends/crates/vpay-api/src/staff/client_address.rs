@@ -689,7 +689,10 @@ mod tests {
             FORWARDED_FOR,
             axum::http::HeaderValue::from_bytes(&[0xff, 0xfe]).expect("a non-ASCII header value"),
         );
-        assert_eq!(client_address_from(&proxies, Some(peer), &headers), Some(peer));
+        assert_eq!(
+            client_address_from(&proxies, Some(peer), &headers),
+            Some(peer)
+        );
     }
 
     /// `client_address_from` on a map with no header at all is the peer, and

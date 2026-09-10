@@ -1818,8 +1818,8 @@ async fn a_forwarded_for_header_from_a_trusted_peer_is_the_client_address() -> a
 /// **The decisive mutation** is deleting the `check_password_change` call in
 /// `change_password`: the third attempt then reads `401`.
 #[tokio::test]
-async fn the_current_password_check_has_its_own_budget_and_it_is_the_sessions()
--> anyhow::Result<()> {
+async fn the_current_password_check_has_its_own_budget_and_it_is_the_sessions() -> anyhow::Result<()>
+{
     let harness = harness_with(staff_auth_with(
         Vec::new(),
         RateLimits {
