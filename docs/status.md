@@ -658,34 +658,41 @@ outstanding work by construction.
 **`just ci` exit 0 on the head carrying this entry**, exit code read from a
 file rather than a banner, on Node **22.23.2** (`.nvmrc`), rustc **1.98.0**
 (`rust-toolchain.toml`) and the pinned `cratestack` **0.12.0**: `fmt-check`;
-`clippy` `-D warnings`; `verify`, all **twelve** gates (`verify-status` 1
-declared unimplemented item, `verify-errors` 18 error types / 16 `#[from]`
-variants, `verify-sdk-parity` 448 proving tests / 35 dated gaps,
-`verify-links` **1033 links in 192 tracked markdown files**, `check-schema` 25
-declarations under cratestack 0.12.0, `verify-serde` 83 types / 16 exemptions,
-`verify-repositories` 4 implementations, `verify-toolchain` 1.98.0,
-`verify-migrations` 37 files); `test-rust` **1626 tests run, 1626 passed, 0
-skipped** across **45** binaries against a real Postgres and real WireMock
-rails; `test-doc` **109 passed, 1 ignored** (`sdks/rust`'s README block,
-pre-existing); `verify-ignored` **0 ignored (expected 0), 45 test binaries
-(expected 45), 1626 total**; `lint-web`; `test-web` (`@vpay/checkout` 507 in 24
-files, `dashboard` 150 in 20, `@vaam-apps/vpay-sdk` 207 in 9,
-`@vaam-apps/vpay-stripe-js` 146 in 9, all 0 skipped); `deny` (advisories, bans,
-licenses, sources all ok).
+`clippy` `-D warnings`; `verify`, all **twelve** gates (`verify-no-mocks`,
+`verify-status` 1 declared unimplemented item, `verify-errors` 19 error types
+/ 16 `#[from]` variants, `verify-sdk-parity` 448 proving tests / 35 dated
+gaps, `verify-links` **1039 links in 195 tracked markdown files**,
+`verify-npm-scope`, `check-schema` under cratestack 0.12.0, `verify-serde` 85
+types / 16 exemptions, `verify-repositories` 4 implementations,
+`verify-toolchain` 1.98.0, `verify-ui`, `verify-migrations` 38 files);
+`test-rust` **1650 tests run, 1650 passed, 0 skipped** across **45** binaries
+against a real Postgres and real WireMock rails; `test-doc` **111 passed, 1
+ignored** (`sdks/rust`'s README block, pre-existing); `verify-ignored` **0
+ignored (expected 0), 45 test binaries (expected 45), 1650 total**;
+`lint-web`; `test-web` (`@vpay/checkout` 507, `dashboard` 172, `shop` 102,
+`@vaam-apps/vpay-sdk` 207, `@vaam-apps/vpay-stripe-js` 146, `@vpay/ui` 74,
+`config` 63, `tokens` 8, `api-client` 4, all 0 skipped); `deny` (advisories,
+bans, licenses, sources all ok).
 
-**It was run on the code head first** (`34fb910`, the scenario and its notes,
-before this page said anything about them) **and then again here**, because a
-status page written after a gate is a page that gate did not read. Every count
-above is identical on both, with one exception that is this entry's own doing:
-`verify-links` read **1032** there and reads 1033 here, the extra link being
-the one at the end of this paragraph. Only the wall clock moved otherwise, by
-roughly half again its own length between the fastest and slowest of this
-branch's gate runs, on a machine that was also running other work — a number
-deliberately not quoted here, because it measures the machine rather than this
-change, and not one count moved with it. **This change adds two cases to an
-existing binary and adds no binary**, which is why the expected-suite count did
-not move, and the three container-backed `worker_kill9` scenarios took
-3.7–31.9 s each.
+**1650, not 1626.** The implementation's gate ran on a branch based on
+`ff1f507`; this one is rebased onto `ded879d`, which is 22 tests further on,
+and the review adds two more cases (the timed-out drain and the mapping
+guard) to an existing binary — the expected-binary count is still **45**,
+because neither adds a binary. The six `worker_kill9` cases on this run:
+`a_worker_sigtermed_mid_delivery…` **40.8 s**,
+`a_drain_that_runs_out_of_grace_under_a_real_signal…` **36.7 s**, the two
+`SIGKILL` cases 3.4 s each, and the two container-free guards 4 ms each.
+(The entry previously quoted "3.7–31.9 s each" for three scenarios; that
+range spanned two different gate runs rather than one, which is why it is
+replaced by one run's numbers.)
+
+**It took three attempts to get a clean gate on this head, and the two
+failures were the machine.** A `vpay-db` test failed twice on
+`failed to create a container: Timeout error` / `container startup timeout`,
+on a host running two other agents' full suites at load average 10. Neither
+failure touched anything this branch changes, and the run recorded above is a
+complete one — every recipe, exit code from a file. Named here because
+"passed on the third try" and "passed" are different sentences.
 
 **Two of the three gaps this entry disclosed are closed, by the review, with
 one case.** ~~`Drain::TimedOut` under a real signal … is still proven only by

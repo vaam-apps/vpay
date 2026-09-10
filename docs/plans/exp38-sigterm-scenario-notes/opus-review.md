@@ -21,7 +21,7 @@ head. Two of them came out differently, and both differences are the rebase's
 | ten consecutive runs of the new case, 30.4–99.8 s, 10 passed | **10 passed**, 30.1–53.3 s, on `e3a2782` |
 | remove the drain → *the worker never logged `webhook delivered`* | reproduced, byte for byte |
 | remove `locked_at IS NULL` from `Jobs::claim` → double send | reproduced: `left: 2  right: 1`, two byte-identical signed POSTs of one `evt_…`, both carrying the same `t=` |
-| `just ci` 1626/1626 | **1648/1648** after the rebase; the entry in `docs/status.md` was written against the pre-rebase count and is corrected |
+| `just ci` 1626/1626 | **1650/1650** on the review's final head (`master` moved to 1648, and this review adds two cases); the entry in `docs/status.md` was written against the pre-rebase count and is corrected |
 
 ## The attacks, and what each proved
 
@@ -178,6 +178,20 @@ which is strictly later than the delete.
 It is recorded here because it is the exact failure this review exists to
 catch, and it was caught by running the project's own gate rather than by
 reading the code.
+
+## The gate, on the head this review ends at
+
+`just ci`, exit code read from a file: **exit 0** on `ccc97ba`, Node 22.23.2,
+rustc 1.98.0, cratestack 0.12.0. `test-rust` **1650 run, 1650 passed, 0
+skipped** across 45 binaries; `test-doc` 111 passed, 1 ignored; `verify` all
+twelve; `verify-ignored` 0 ignored (expected 0), 45 binaries (expected 45),
+1650 total; `lint-web`, `test-web`, `deny` all clean.
+
+It took three attempts. The first found the race above; the second and third
+failed a `vpay-db` test on `failed to create a container: Timeout error` and
+`container startup timeout`, on a host carrying two other agents' full suites
+at load average 10. Neither is anything this branch touches, and the run
+recorded here is a complete one.
 
 ## What this review did NOT do
 
