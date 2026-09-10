@@ -1785,6 +1785,79 @@ async fn a_forwarded_for_header_from_a_trusted_peer_is_the_client_address() -> a
     Ok(())
 }
 
+// ------------------------------------------------------- test 19b (review)
+
+/// **A REPEATED `X-Forwarded-For` is one chain, over a real socket** — the
+/// half of issue #79 item 1 that `HeaderMap::get` quietly did not have.
+///
+/// A proxy may append its hop as a *new* field line rather than rewriting the
+/// caller's, and RFC 9110 s5.2 makes those one comma-separated list in the
+/// order received. `client_address_from` read `headers.get(..)` — the FIRST
+/// line only — until the exp36 review, so on such a deployment the whole
+/// chain this module walked was the one the caller wrote, the "first
+/// untrusted hop" was whatever they put at the end of it, and **the
+/// allow-list bought a fresh rate-limit bucket per request instead of closing
+/// one**. That is the same defect
+/// `a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget`
+/// refuses from an untrusted peer, reappearing from a trusted one.
+///
+/// Each attempt here sends TWO lines: a caller-written one naming a fresh
+/// address, then the one a proxy appended. The real client is the same every
+/// time, so the budget of five must fill.
+///
+/// **The decisive mutation** is `headers.get(FORWARDED_FOR)` in place of
+/// `get_all`: the last assertion then reads `401`, because every request
+/// counted under the address on the caller's own line.
+#[tokio::test]
+async fn a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget() -> anyhow::Result<()> {
+    let harness = harness_with(staff_auth_with(
+        vec!["127.0.0.0/8".to_owned()],
+        RateLimits {
+            sign_in: RateLimitPolicy {
+                attempts: 5,
+                window_seconds: 300,
+            },
+            ..RateLimits::default()
+        },
+    ))
+    .await?;
+
+    let mut statuses = Vec::new();
+    for n in 0..6_u8 {
+        let response = reqwest::Client::new()
+            .post(format!("{}/dash/v1/staff/login", harness.base_url))
+            // Line one: what the caller wrote, a different address each time.
+            .header("x-forwarded-for", format!("198.51.100.{n}"))
+            // Line two: what the proxy appended — the address it actually
+            // saw, then itself. `reqwest` appends rather than replaces, so
+            // this is two field lines on the wire and not one.
+            .header("x-forwarded-for", "203.0.113.5, 127.0.0.1")
+            .form(&[
+                ("email", format!("chain-{n}@example.test").as_str()),
+                ("password", "wrong"),
+            ])
+            .send()
+            .await
+            .context("a sign-in attempt behind a proxy that appends its own header line")?;
+        statuses.push(response.status().as_u16());
+    }
+
+    assert_eq!(
+        statuses.get(0..5),
+        Some([401, 401, 401, 401, 401].as_slice()),
+        "the first five are inside the budget and refused on the credential: {statuses:?}"
+    );
+    assert_eq!(
+        statuses.last().copied(),
+        Some(429),
+        "six attempts from ONE real client must exhaust ONE budget, however many addresses the \
+         caller writes on a line of their own. A 401 here means only the first field line is \
+         being read, and on a proxy that appends rather than rewrites the allow-list is handing \
+         out a fresh bucket per request: {statuses:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------- test 20
 
 /// **Two replicas share one sign-in budget** (issue #79 item 2).

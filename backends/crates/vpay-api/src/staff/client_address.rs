@@ -342,6 +342,43 @@ pub fn client_address(
     peer: Option<IpAddr>,
     forwarded_for: Option<&str>,
 ) -> Option<IpAddr> {
+    // The two arms say what an empty slice says: an absent header is no hops,
+    // and no hops ends the walk at the peer.
+    match forwarded_for {
+        Some(header) => client_address_over(proxies, peer, &[header]),
+        None => client_address_over(proxies, peer, &[]),
+    }
+}
+
+/// [`client_address`], over a request's `X-Forwarded-For` **field lines**
+/// rather than over one of them.
+///
+/// # Why a slice, and not the single value `HeaderMap::get` answers
+///
+/// A field may be repeated, and RFC 9110 s5.2 says a recipient reads the
+/// repetitions as one comma-separated list **in the order received**.
+/// `HeaderMap::get` answers the *first* value only. So a deployment whose
+/// proxy appends its hop as a **new** `X-Forwarded-For` line — rather than
+/// rewriting the existing one, which is a per-proxy configuration difference
+/// and not a rare one — would have had this module read the caller's own line
+/// and nothing else. The walk would then start at the right-hand end of a
+/// string the caller wrote in full, the "first untrusted hop" would be
+/// whatever they put there, and **a trusted-proxy deployment would hand every
+/// caller a fresh rate-limit bucket per request** — the exact hole the
+/// allow-list exists to close, reopened one function lower down.
+///
+/// `forwarded_for` is therefore every line, in the order received, and the
+/// walk runs right to left **across** them: the last hop of the last line is
+/// the nearest one, because it is what the most downstream proxy appended.
+///
+/// `a_repeated_header_is_one_chain_and_the_callers_line_is_not_the_end` is the
+/// case; the mutation is reading only the first line again.
+#[must_use]
+pub fn client_address_over(
+    proxies: &TrustedProxies,
+    peer: Option<IpAddr>,
+    forwarded_for: &[&str],
+) -> Option<IpAddr> {
     let peer = peer?;
 
     // THE CHECK. Without it every branch below reads a value the caller
@@ -350,22 +387,25 @@ pub fn client_address(
         return Some(peer);
     }
 
-    // `let … else` and NOT `forwarded_for?`. The `?` spelling compiles, reads
-    // identically, and is wrong: it returns `None` *from this function* when
-    // the header is absent, which is "no address at all" rather than "the
-    // peer". Every trusted-proxy deployment would then count every request
-    // with no `X-Forwarded-For` under the limiter's one shared unknown-address
-    // key. `an_all_trusted_header_falls_back_to_the_peer` is what found it.
-    let Some(header) = forwarded_for else {
-        return Some(peer);
-    };
-    for hop in header.rsplit(',') {
-        let Some(address) = parse_hop(hop.trim()) else {
-            // A hop that is not an address vouches for nothing to its left.
-            return Some(peer);
-        };
-        if !proxies.contains(address) {
-            return Some(address);
+    // Right to left, across the lines and then within each one. An empty
+    // slice is an absent header and falls out of the loop at the peer — which
+    // is deliberate, and is why there is no `?` on a header value anywhere
+    // here. The `?` spelling compiles, reads identically, and is wrong: it
+    // answers `None` *from this function*, which is "no address at all"
+    // rather than "the peer", and every trusted-proxy deployment would then
+    // count every request with no `X-Forwarded-For` under the limiter's one
+    // shared unknown-address key.
+    // `an_all_trusted_header_falls_back_to_the_peer` is what found it.
+    for value in forwarded_for.iter().rev() {
+        for hop in value.rsplit(',') {
+            let Some(address) = parse_hop(hop.trim()) else {
+                // A hop that is not an address vouches for nothing to its
+                // left — including nothing on any earlier line.
+                return Some(peer);
+            };
+            if !proxies.contains(address) {
+                return Some(address);
+            }
         }
     }
 
@@ -387,26 +427,37 @@ fn parse_hop(hop: &str) -> Option<IpAddr> {
     hop.parse::<SocketAddr>().ok().map(|socket| socket.ip())
 }
 
-/// [`client_address`], reading the header out of a request's own map.
+/// [`client_address_over`], reading the header out of a request's own map.
 ///
-/// A separate function so the decision above is a pure one over a `&str` and
+/// A separate function so the decision above is a pure one over strings and
 /// therefore a unit test rather than something only a socket can exercise —
 /// the split `crate::staff_auth`'s modules already use.
 ///
-/// A non-ASCII header value is treated as absent, for
-/// [`crate::staff::session_token`]'s reason: the value is a list of addresses
-/// by construction, so anything else was not written by a proxy this
-/// deployment would believe.
+/// **`get_all` and not `get`.** `get` answers the first field line only, and
+/// a proxy that appends its hop as a new `X-Forwarded-For` line rather than
+/// rewriting the existing one would then have this module walk the *caller's*
+/// line and stop — see [`client_address_over`] for what that costs.
+///
+/// A non-ASCII value ends the whole thing at the peer, for
+/// [`crate::staff::session_token`]'s reason and one more: the value is a list
+/// of addresses by construction, so anything else was not written by a proxy
+/// this deployment would believe — and skipping it to keep walking would mean
+/// stepping *past* an unreadable hop into a line further from the peer, which
+/// is the one direction this module never goes.
 #[must_use]
 pub fn client_address_from(
     proxies: &TrustedProxies,
     peer: Option<IpAddr>,
     headers: &HeaderMap,
 ) -> Option<IpAddr> {
-    let forwarded = headers
-        .get(FORWARDED_FOR)
-        .and_then(|value| value.to_str().ok());
-    client_address(proxies, peer, forwarded)
+    let mut lines = Vec::new();
+    for value in headers.get_all(FORWARDED_FOR) {
+        match value.to_str() {
+            Ok(text) => lines.push(text),
+            Err(_) => return peer,
+        }
+    }
+    client_address_over(proxies, peer, &lines)
 }
 
 #[cfg(test)]
@@ -570,6 +621,99 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("IPv4"), "{rendered}");
         assert!(rendered.contains("/32"), "the maximum is named: {rendered}");
+    }
+
+    /// **A repeated `X-Forwarded-For` is ONE chain, and the caller's line is
+    /// not the end of it.**
+    ///
+    /// The shape this pins is a real deployment and not a curiosity: a proxy
+    /// that appends its hop as a *new* field line, in front of a caller who
+    /// sent one of their own. RFC 9110 s5.2 says those are one list in the
+    /// order received, so the nearest hop is the last hop of the LAST line.
+    ///
+    /// **The mutation is `headers.get(..)` in place of `get_all`**, which is
+    /// what this module did until the exp36 review: the walk then starts at
+    /// the right-hand end of a string the caller wrote in full, the "first
+    /// untrusted hop" is whatever they put there, and every request buys a
+    /// fresh rate-limit bucket from a trusted-proxy deployment — the hole the
+    /// allow-list exists to close.
+    #[test]
+    fn a_repeated_header_is_one_chain_and_the_callers_line_is_not_the_end() {
+        let proxies = trusted(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.9");
+
+        // The caller wrote line one. The proxy appended line two.
+        let mut headers = HeaderMap::new();
+        headers.append(FORWARDED_FOR, "203.0.113.7".parse().expect("a header"));
+        headers.append(FORWARDED_FOR, "10.1.1.1".parse().expect("a header"));
+        assert_eq!(
+            client_address_from(&proxies, Some(peer), &headers),
+            Some(ip("203.0.113.7")),
+            "the two lines are one chain: the proxy's hop is trusted, so the client is the \
+             caller's entry, which is where a single-line header would also have landed"
+        );
+
+        // And the case that separates the two readings. The caller writes a
+        // whole fake chain ending in an address they chose; the proxy appends
+        // the address it actually saw, which is untrusted.
+        let mut spoofed = HeaderMap::new();
+        spoofed.append(
+            FORWARDED_FOR,
+            "1.1.1.1, 198.51.100.99".parse().expect("a header"),
+        );
+        spoofed.append(FORWARDED_FOR, "203.0.113.7".parse().expect("a header"));
+        assert_eq!(
+            client_address_from(&proxies, Some(peer), &spoofed),
+            Some(ip("203.0.113.7")),
+            "the nearest hop is the last hop of the LAST line — the address the proxy vouched \
+             for. Reading only the first line answers 198.51.100.99, which the caller chose, \
+             and a caller chooses a new one per request"
+        );
+    }
+
+    /// A value that is not ASCII ends the walk at the peer rather than being
+    /// stepped over.
+    ///
+    /// Skipping it would mean walking *past* an unreadable hop into a line
+    /// further from the peer — trusting what is on the far side of something
+    /// this deployment could not check, which is the one direction the walk
+    /// never goes.
+    #[test]
+    fn an_unreadable_line_ends_the_walk_at_the_peer() {
+        let proxies = trusted(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.9");
+
+        let mut headers = HeaderMap::new();
+        headers.append(FORWARDED_FOR, "203.0.113.7".parse().expect("a header"));
+        headers.append(
+            FORWARDED_FOR,
+            axum::http::HeaderValue::from_bytes(&[0xff, 0xfe]).expect("a non-ASCII header value"),
+        );
+        assert_eq!(client_address_from(&proxies, Some(peer), &headers), Some(peer));
+    }
+
+    /// `client_address_from` on a map with no header at all is the peer, and
+    /// on an untrusted peer it reads nothing — the two ends of the map-bound
+    /// half, which no unit test covered before the exp36 review.
+    #[test]
+    fn the_map_bound_half_agrees_with_the_pure_one() {
+        let proxies = trusted(&["10.0.0.0/8"]);
+        let peer = ip("10.0.0.9");
+
+        assert_eq!(
+            client_address_from(&proxies, Some(peer), &HeaderMap::new()),
+            Some(peer),
+            "no header is the peer"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.append(FORWARDED_FOR, "203.0.113.7".parse().expect("a header"));
+        let stranger = ip("198.51.100.4");
+        assert_eq!(
+            client_address_from(&proxies, Some(stranger), &headers),
+            Some(stranger),
+            "an untrusted peer reads no header, through this entry point too"
+        );
     }
 
     /// No peer is no address, whatever the header says. The limiter counts

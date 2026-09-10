@@ -245,6 +245,24 @@ Four things end the walk at the peer, and each is a hole if it is dropped:
 - every hop is one of ours, which names no client;
 - there is no header.
 
+A **repeated** `X-Forwarded-For` is one chain. RFC 9110 §5.2 makes repeated
+field lines one comma-separated list in the order received, so the walk runs
+right to left *across* the lines: the nearest hop is the last hop of the last
+line, because that is what the most downstream proxy appended.
+
+> **Corrected 2026-09-10 by the exp36 review (finding F2).** This read
+> `HeaderMap::get` — the *first* line only — as first delivered. Behind a
+> proxy that appends its hop as a new line rather than rewriting the caller's,
+> the whole chain being walked was then the one the caller wrote, and the
+> allow-list handed out a fresh bucket per request rather than closing one.
+> `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget` sends two
+> field lines over a real socket and reads `[401 × 6]` against a budget of
+> five with the first-line-only reading restored.
+
+A field line that is not readable as text ends the walk at the peer rather
+than being skipped: skipping it means walking *past* an unreadable hop into a
+line further from the peer, which is the one direction this walk never goes.
+
 `Forwarded` (RFC 7239) is deliberately **not** read. Two parsers over one
 caller-supplied string means the more permissive answer wins, and the more
 permissive answer is the one that buys a fresh bucket.

@@ -347,9 +347,28 @@ hole the paragraph above refuses to open.
 
 Four fallbacks all end at the peer, and each is a hole if it is dropped: an
 untrusted peer, an unparseable hop, a header of nothing but trusted hops, and
-an absent header. `Forwarded` (RFC 7239) is still not read, deliberately: two
+an absent header. A **repeated** `X-Forwarded-For` is one chain, walked right
+to left across every field line in the order received (RFC 9110 §5.2) — see
+the amendment below. `Forwarded` (RFC 7239) is still not read, deliberately: two
 parsers over one caller-supplied string means the more permissive answer wins,
 and the more permissive answer is the one that buys a fresh bucket.
+
+*Amended again 2026-09-10 (exp36 review, finding F2).* **The walk reads every
+`X-Forwarded-For` field line, not the first one.** As first delivered it read
+`HeaderMap::get`, which answers the first value only. A proxy may append its
+hop as a **new** field line rather than rewriting the caller's — a per-proxy
+configuration difference, not a rarity — and RFC 9110 §5.2 makes repeated
+field lines one comma-separated list in the order received. On such a
+deployment the entire chain this module walked was therefore the one the
+*caller* wrote; the "first untrusted hop" was whatever they put at the end of
+it; and the allow-list handed out **a fresh rate-limit bucket per request**
+instead of closing one — the very hole the paragraph above refuses to open,
+from a trusted peer rather than an untrusted one. Measured: with the first
+line only, `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget`
+reads `[401 × 6]` against a budget of five. A field line that is not readable
+as text ends the walk at the peer rather than being stepped over, because
+stepping over it means trusting what lies on the far side of a hop this
+deployment could not check.
 
 **The list is empty by default and empty means the peer**, which is exactly
 what this ADR shipped — so a deployment that does not set it is in the state
