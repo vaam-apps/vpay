@@ -98,3 +98,38 @@ deployment could not check.
 |---|---|---|
 | unit — `a_repeated_header_is_one_chain_and_the_callers_line_is_not_the_end` | `Some(198.51.100.99)`, the address the caller chose | `Some(203.0.113.7)`, the one the proxy vouched for |
 | socket — `a_repeated_forwarded_for_is_one_chain_and_buys_no_fresh_budget` | `[401, 401, 401, 401, 401, 401]` — no `429` at all | `[401 × 5, 429]` |
+
+### F3 — the configured origin was configured nowhere · **rule-break**
+
+`VPAY_DASHBOARD_PUBLIC_ORIGIN` was read by `server/csrf.ts` and set by no
+compose file and no helm value — the implementer's notes name that as the
+follow-up and are honest about it. The cost is not hypothetical: it left the
+`Host` fallback as the only path anything ever executed, so the branch's
+headline claim — "the CSRF check compares a value no caller can set" — was
+true of a code path no run of `just test-e2e` had ever taken.
+
+**Fix, and it is two different things because the two deployments are:**
+
+- `compose.e2e.yml` sets it to
+  `http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}`, the same variable the
+  publication and `VPAY_DASHBOARD_REDIRECT_URI` are keyed to. This one is
+  *consumed*, and it is proven by the e2e run: a wrong value refuses every
+  server action, so a green `dashboard.cy.ts` is the assertion.
+- The chart gets `dashboard.publicOrigin` (values, schema, README) and an
+  eighteenth guard, `dashboard-public-origin`, on its **shape** — a trailing
+  slash or a bare hostname there refuses every action on the dashboard, and
+  the values file is the only cheap place to catch it. **No template reads
+  it**, because this chart writes no dashboard workload, and every place the
+  key appears says so. Inventing a Deployment to give it a consumer is
+  precisely what AGENTS.md forbids and what the chart's own
+  `dashboard-not-templated` guard exists to refuse.
+
+**Kept optional, deliberately.** The brief asked for it to be set "so a later
+pass can make it required". It is set; required is the *later* pass, and it
+belongs with the Deployment, because a required value on a workload nothing
+renders fails a deployment for a setting nothing reads.
+
+`just helm-check`: 18 guards, all fired by name (18 expected); kubeconform 23
+resources valid. `ci/values-full.yaml` carries a well-formed value so the
+guard's passing side is exercised by something too — a guard's own values file
+only ever proves that it fires.

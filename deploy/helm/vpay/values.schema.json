@@ -41,8 +41,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled"],
-      "description": "Not templated by this chart. `enabled: true` is a named template failure, not a workload.",
-      "properties": { "enabled": { "type": "boolean" } }
+      "description": "Not templated by this chart. `enabled: true` is a named template failure, not a workload. `publicOrigin` is consumed by nothing here for the same reason — it names VPAY_DASHBOARD_PUBLIC_ORIGIN on the separately-deployed dashboard, and its SHAPE is checked by the \"dashboard-public-origin\" guard because a trailing slash or a bare hostname there refuses every server action.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "publicOrigin": { "type": "string" }
+      }
     },
 
     "checkout": {

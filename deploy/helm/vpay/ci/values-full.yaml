@@ -11,6 +11,15 @@
 # defaults, the digest is a real-shaped but meaningless one, and the CIDR is
 # documentation-range.
 
+# `dashboard.enabled` stays FALSE here: it is a named template failure, not a
+# workload, and "everything this chart can render" does not include a thing it
+# refuses to render. `publicOrigin` is set anyway, to a well-formed value, so
+# that the "dashboard-public-origin" guard's PASSING side is exercised by
+# something — the guard's own values file only proves it fires.
+dashboard:
+  enabled: false
+  publicOrigin: "https://dash.example"
+
 images:
   server:
     # A well-formed digest, so the rendered reference exercises the

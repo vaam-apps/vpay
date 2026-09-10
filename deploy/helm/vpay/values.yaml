@@ -87,6 +87,33 @@ images:
 dashboard:
   enabled: false
 
+  # The origin a browser reaches the dashboard on (`https://dash.example`).
+  #
+  # NOTHING IN THIS CHART CONSUMES IT, because this chart templates no
+  # dashboard workload — see above. It is here for the same reason `enabled`
+  # is: so that the thing an operator has to get right is *named*, in the
+  # place they will look, rather than discovered from a refused sign-in.
+  #
+  # What it is: `VPAY_DASHBOARD_PUBLIC_ORIGIN` on whatever runs
+  # `ghcr.io/vaam-apps/vpay-dashboard`. The dashboard's server actions refuse
+  # any request whose `Origin` is not this value (issue #88 item 4); Next's
+  # own check compares `Origin` against `X-Forwarded-Host`, which is two
+  # caller-supplied values agreeing whenever the caller wants them to. Unset,
+  # the app falls back to comparing the `Host` header — never
+  # `X-Forwarded-Host`, so still stronger than Next's, and **wrong behind a
+  # proxy that rewrites `Host`**, where every action is then refused.
+  #
+  # Empty is the default and empty is not "allow everything": it means the app
+  # uses that `Host` fallback. A value that is set but is not an absolute
+  # http(s) origin — a trailing slash, a path, a bare hostname — is a typo
+  # that would refuse every action, so the "dashboard-public-origin" guard in
+  # templates/_validate.tpl refuses it here instead.
+  #
+  # Making it REQUIRED is the follow-up, and it lands with the Deployment this
+  # chart does not yet write: a required value on a workload that does not
+  # exist would fail a deployment for a setting nothing reads.
+  publicOrigin: ""
+
 # ------------------------------------------------------------- checkout ----
 
 # vpay's own hosted/embedded payment page — `frontends/apps/checkout`,

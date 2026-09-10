@@ -1746,8 +1746,8 @@ helm-check:
     # message stops naming itself — fails here, which is the only thing that
     # keeps these from rotting into decoration.
     #
-    # The expected set is written out rather than counted, because "17 files
-    # were found and 17 fired" is also what deleting a guard *and* its values
+    # The expected set is written out rather than counted, because "18 files
+    # were found and 18 fired" is also what deleting a guard *and* its values
     # file looks like. Adding a guard means adding its name here, its values
     # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
     # one commit.
@@ -1755,6 +1755,7 @@ helm-check:
         checkout-not-templated-by-default
         checkout-templated-when-enabled
         dashboard-not-templated
+        dashboard-public-origin
         database-secret
         extra-env-collision
         grace-period

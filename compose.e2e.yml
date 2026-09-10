@@ -266,6 +266,26 @@ services:
       # and a token with no scope is refused by `/dash/v1` with a `403` that
       # looks nothing like a configuration mistake.
       VPAY_DASHBOARD_SCOPE: dashboard:read
+      # THE ORIGIN THE CSRF CHECK COMPARES AGAINST (issue #88 item 4).
+      #
+      # Every export of the dashboard's `'use server'` file is a POST endpoint
+      # anything on the internet can reach, and its session cookie is
+      # `SameSite=Lax` rather than `Strict`, so a top-level form submission
+      # from another site carries it. `src/server/csrf.ts` refuses an action
+      # whose `Origin` is not this value.
+      #
+      # SET HERE SINCE 2026-09-10 (exp36 review). Unset, that check falls back
+      # to comparing the `Host` header — never `X-Forwarded-Host`, so still
+      # stronger than Next's own, but a fallback rather than the thing. This
+      # stack is the one place in the repository where a browser actually
+      # drives those actions, so leaving it unset would have meant the
+      # configured path was the one path nothing ever exercised.
+      #
+      # The port is the same variable the publication and
+      # `VPAY_DASHBOARD_REDIRECT_URI` use, and it has to be: this is compared
+      # against the `Origin` a browser sends, which carries the host port.
+      # A stale literal here refuses every action with one sentence.
+      VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}
     depends_on:
       # `service_started`, not `service_healthy`: `vpay-server` has no
       # healthcheck to report healthy (see the comment above it). This is a

@@ -221,8 +221,20 @@ is right for a dashboard a browser reaches directly and **wrong behind a
 proxy that rewrites `Host`**, where every action is refused with one sentence
 and a line in the container log naming the variable. It is optional because
 making it required would have taken the sign-in down for every deployment not
-yet reconfigured, this repository's own compose stacks included;
-`docs/status.md` carries that as the follow-up.
+yet reconfigured, this repository's own compose stacks included.
+
+*Amended 2026-09-10 by the exp36 review (finding F3).* **It is set now** —
+`compose.e2e.yml` gives the dashboard
+`VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT}`,
+keyed to the same variable as the publication and the registered redirect URI,
+so the configured path is the one `just test-e2e` exercises rather than the
+one nothing ever did. The chart carries `dashboard.publicOrigin` and a
+`dashboard-public-origin` guard on its **shape**; no template reads it,
+because this chart writes no dashboard workload, and the README says so where
+the key is. It stays **optional** until that Deployment exists: a required
+value on a workload nothing renders would fail a deployment for a setting
+nothing reads. That is the remaining half of the follow-up, and
+`docs/status.md` carries it.
 
 **A vpay this app cannot reach is not a sign-out.** Every failure of the
 session read used to send a browser to `/signed-out`, and `server/api.ts`
