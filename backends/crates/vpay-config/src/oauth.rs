@@ -425,6 +425,74 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub checkout_origins: Vec<String>,
+    /// This merchant's default forwarding URLs for
+    /// `POST /v1/invoices/{id}/pay` (issue #91, D2). See [`InvoiceDefaults`].
+    ///
+    /// `#[serde(default)]`, and an all-`None` default is the correct
+    /// registration for a merchant that never pays an invoice through vpay:
+    /// the route then behaves exactly as it did before this key existed, and
+    /// answers `400` naming both parameters when a request omits them too.
+    ///
+    /// Validated in `Config::validate_all` for [`Self::checkout_origins`]'s
+    /// reason — the message has to name *which* merchant and *which* of the
+    /// two URLs is wrong, and a `garde` report says only that
+    /// `merchant_clients[3].invoices.success_url` failed a rule.
+    #[garde(skip)]
+    #[serde(default)]
+    pub invoices: InvoiceDefaults,
+}
+
+/// One merchant's defaults for the two URLs
+/// `POST /v1/invoices/{id}/pay` forwards a payer to (issue #91, D2).
+///
+/// # Why this exists at all
+///
+/// Paying an invoice mints a **hosted checkout session**, and migration
+/// `0028`'s `urls_match_ui_mode` requires both URLs on one. The route
+/// therefore required both on every request, which is wrong for the surface
+/// it serves: an invoice is paid from a link in an e-mail, and a merchant's
+/// "thank you" and "cancelled" pages are a property of the *merchant*, not of
+/// each individual bill. Requiring them per request meant every caller
+/// repeated two constants, and a merchant automating monthly billing had two
+/// more strings to get wrong on every invoice.
+///
+/// # A request that sends them still wins
+///
+/// These are defaults and never a ceiling: a `pay` request carrying its own
+/// `success_url` is honoured, because a merchant may legitimately want one
+/// bill to land somewhere else. `vpay_api::v1::invoices` resolves
+/// request-then-default and validates whichever value it ends up with through
+/// the *same* function `POST /v1/checkout/sessions` uses, so a configured URL
+/// and a passed one cannot be admitted by two different rules.
+///
+/// # Two `Option`s and not one struct-of-two
+///
+/// A merchant may configure one and pass the other, and there is nothing
+/// incoherent about that. Boot refuses a *malformed* value, never a missing
+/// one — the missing case is a `400` at request time naming exactly what is
+/// absent, which is where a merchant can act on it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct InvoiceDefaults {
+    /// Where the payer is sent after a successful invoice payment, when the
+    /// `pay` request does not carry its own.
+    ///
+    /// **Not secret**, on the same footing as
+    /// [`MerchantClient::checkout_origins`]: it is a page on the merchant's
+    /// own site and vpay puts it in a payer's browser by construction.
+    ///
+    /// Bounded, `http(s)`, and `https` under `deployment.livemode`, by
+    /// `Config::validate_all`
+    /// ([`ConfigError::MalformedInvoiceUrl`](crate::ConfigError::MalformedInvoiceUrl),
+    /// [`ConfigError::InsecureInvoiceUrl`](crate::ConfigError::InsecureInvoiceUrl)).
+    #[garde(skip)]
+    #[serde(default)]
+    pub success_url: Option<String>,
+    /// Where the payer is sent when they abandon the checkout. See
+    /// [`Self::success_url`]; the same rules apply to both.
+    #[garde(skip)]
+    #[serde(default)]
+    pub cancel_url: Option<String>,
 }
 
 /// Redacts [`MerchantClient::client_secret`] (which must always be `None` —
@@ -465,6 +533,11 @@ impl fmt::Debug for MerchantClient {
             // did this deployment load?" is the *only* question worth asking
             // when an embedded checkout renders an empty iframe.
             .field("checkout_origins", &self.checkout_origins)
+            // In full, for `checkout_origins`' reason: these are pages on the
+            // merchant's own site, put into a payer's browser by
+            // construction, and "which defaults did this deployment load?" is
+            // the first question asked when a `pay` with no URLs answers 400.
+            .field("invoices", &self.invoices)
             .finish()
     }
 }
@@ -601,6 +674,10 @@ mod tests {
             scopes: vec!["payments:write".to_owned()],
             allowed_audiences: vec!["vpay".to_owned()],
             client_secret: Some("this-should-never-be-here".to_owned()),
+            invoices: InvoiceDefaults {
+                success_url: Some("https://acme.example/thanks".to_owned()),
+                cancel_url: Some("https://acme.example/basket".to_owned()),
+            },
             webhooks: vec![WebhookEndpoint {
                 id: "primary".to_owned(),
                 url: "https://acme.example/hooks".to_owned(),

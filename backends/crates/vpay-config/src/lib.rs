@@ -29,8 +29,8 @@ pub use config::{
     WebhookPolicy,
 };
 pub use oauth::{
-    DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, MERCHANT_AUDIENCE, MerchantClient,
-    WebhookEndpoint,
+    DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
+    MerchantClient, WebhookEndpoint,
 };
 pub use signal::ShutdownSignals;
 
@@ -848,6 +848,59 @@ pub enum ConfigError {
         client_id: String,
         /// The entry as written.
         origin: String,
+    },
+    /// A `merchant_clients[].invoices.success_url` or `.cancel_url` is not a
+    /// URL a payer's browser may be forwarded to (issue #91, D2).
+    ///
+    /// Refused at **boot** rather than at request time, which is the whole
+    /// point of the key existing: the value's job is to save every `pay`
+    /// request from repeating two constants, so a typo in it is a typo in
+    /// every invoice this merchant ever raises. Caught at request time it
+    /// would be a `400` on a route the merchant called correctly, blaming
+    /// them for the operator's file.
+    ///
+    /// The shape rules are `validate_invoice_urls`', and they are the same
+    /// rules `vpay_api::v1::checkout_sessions`' `checked_forward_url` applies
+    /// to a URL sent on the request — scheme, length — plus the two a
+    /// forwarding destination has no business carrying (embedded credentials,
+    /// no host). A query string and a fragment are **allowed** here, unlike
+    /// on [`Self::MalformedCheckoutBaseUrl`]: vpay appends nothing to this
+    /// value, so `https://shop.example/thanks?order=1` is a legitimate
+    /// destination.
+    #[error(
+        "merchant client {client_id} declares invoices.{param} `{url}`, which is not a URL a \
+         payer may be forwarded to: {reason}"
+    )]
+    MalformedInvoiceUrl {
+        /// The registration the value belongs to.
+        client_id: String,
+        /// `success_url` or `cancel_url` — which of the two is wrong.
+        param: &'static str,
+        /// The value as written.
+        url: String,
+        /// Which of `validate_invoice_urls`' rules it broke.
+        reason: &'static str,
+    },
+    /// A `merchant_clients[].invoices` URL is `http://` under
+    /// `deployment.livemode: true`.
+    ///
+    /// Separate from [`Self::MalformedInvoiceUrl`] for
+    /// [`Self::InsecureCheckoutOrigin`]'s reason: `http://localhost:3000` is
+    /// exactly right for a merchant developing against a sandbox and exactly
+    /// wrong for one taking real money. The payer arrives at this URL
+    /// carrying the outcome of a real payment, and a plaintext page is one an
+    /// active network attacker rewrites before the payer reads it.
+    #[error(
+        "merchant client {client_id} declares invoices.{param} `{url}` under \
+         deployment.livemode: true; a livemode forwarding URL must be https"
+    )]
+    InsecureInvoiceUrl {
+        /// The registration the value belongs to.
+        client_id: String,
+        /// `success_url` or `cancel_url`.
+        param: &'static str,
+        /// The value as written.
+        url: String,
     },
     /// Two merchants — or one merchant twice — declare the same checkout
     /// origin.

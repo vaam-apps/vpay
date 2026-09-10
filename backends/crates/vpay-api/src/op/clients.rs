@@ -269,6 +269,11 @@ mod tests {
             // a `ClientRegistration`.
             publishable_keys: Vec::new(),
             checkout_origins: Vec::new(),
+            // Same argument again: where a payer is forwarded after paying an
+            // invoice is not an OAuth fact, and a conversion that read it
+            // would be putting a merchant's "thank you" page into a
+            // `ClientRegistration`.
+            invoices: vpay_config::InvoiceDefaults::default(),
         }
     }
 

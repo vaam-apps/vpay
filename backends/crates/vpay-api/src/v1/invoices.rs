@@ -788,9 +788,12 @@ async fn transition_once(
 /// means creating a **hosted checkout session**, and migration `0028`'s
 /// `urls_match_ui_mode` requires both URLs on one.
 ///
-/// They are required rather than defaulted, because vpay does not know where
-/// a merchant's "thank you" page is and inventing one would send a paying
-/// customer to a `404`. `docs/flows/invoices.md` records the divergence.
+/// They may be **omitted** when the merchant registration carries
+/// `merchant_clients[].invoices.success_url` / `.cancel_url` (issue #91, D2),
+/// and a request that sends its own still wins. vpay never invents one:
+/// a merchant that configured neither and sent neither gets a `400` naming
+/// both, because guessing a "thank you" page would send a paying customer to
+/// a `404`. `docs/flows/invoices.md` records the divergence and the default.
 ///
 /// # A second `pay` is refused
 ///
@@ -844,8 +847,7 @@ async fn pay_once(
         .ok_or_else(|| not_found(id))?;
 
     let params: PayParams = post.form().await?;
-    let success_url = required_forward_url(params.success_url, "success_url", config)?;
-    let cancel_url = required_forward_url(params.cancel_url, "cancel_url", config)?;
+    let (success_url, cancel_url) = forward_urls(&params, config, scope.merchant_id())?;
 
     if current.status != InvoiceStatus::Open.as_wire_str() {
         return Err(not_open(&current));
@@ -1333,34 +1335,118 @@ pub(crate) fn not_found(id: &str) -> ApiError {
     }
 }
 
-/// One of `pay`'s two forwarding URLs, required and validated by exactly the
-/// rules `POST /v1/checkout/sessions` applies to its own.
+/// `pay`'s two forwarding URLs: whatever the request sent, else whatever this
+/// merchant configured, validated by exactly the rules
+/// `POST /v1/checkout/sessions` applies to its own.
+///
+/// # Request-then-default, in that order
+///
+/// A request that carries a URL **wins** over the configured one (D2). A
+/// merchant may legitimately want one bill to land somewhere else — a
+/// one-off, a campaign page — and a configured default that could not be
+/// overridden would make that impossible without an operator editing the
+/// deployment's YAML.
+///
+/// It also makes the key safe to add to a running deployment: every request
+/// that worked before this existed carries both URLs and behaves identically.
+///
+/// # Both are validated, whichever they came from
 ///
 /// Through [`super::checkout_sessions::checked_forward_url`] rather than a
-/// copy: the scheme allow-list, the livemode `https` rule and the length
-/// bound are properties of *where a payer's browser may be sent*, not of
-/// which route asked, and a second copy is how one of the two surfaces ends
-/// up accepting `javascript:`.
+/// copy, and on **both** paths rather than only on the request's: the scheme
+/// allow-list, the livemode `https` rule and the length bound are properties
+/// of *where a payer's browser may be sent*, not of which route asked or of
+/// which document the value came out of. `vpay_config`'s
+/// `validate_invoice_urls` refuses a malformed configured value at boot; this
+/// is what stops the two rule sets from ever diverging, and a second copy is
+/// how one of the surfaces ends up accepting `javascript:`.
+///
+/// # Missing values are named together
+///
+/// A merchant that configured neither and sent neither gets **one** `400`
+/// naming both, rather than one about `success_url` followed — after they fix
+/// it — by another about `cancel_url`. Two round trips to learn two halves of
+/// one mistake is the shape this repository's error messages avoid.
+///
+/// The message is kept under `ApiError`'s 200-character ceiling on purpose:
+/// past it the envelope truncates with an ellipsis, and the first casualty
+/// would be the sentence that says a merchant may configure these once
+/// instead of sending them every time — the whole point of D2.
 ///
 /// # Errors
 ///
-/// [`ApiError::invalid_param`] naming the parameter.
-fn required_forward_url(
-    raw: Option<String>,
-    param: &'static str,
+/// [`ApiError::invalid_param`] naming every parameter that is absent, or the
+/// one that is malformed.
+fn forward_urls(
+    params: &PayParams,
     config: &ResourceConfig,
-) -> Result<String, ApiError> {
-    let url = present(raw).ok_or_else(|| {
-        ApiError::invalid_param(
-            param,
+    merchant_id: &str,
+) -> Result<(String, String), ApiError> {
+    let defaults = config.invoice_url_defaults(merchant_id);
+
+    let resolve = |sent: Option<String>, configured: Option<&String>| {
+        present(sent).or_else(|| present(configured.cloned()))
+    };
+    let success_url = resolve(
+        params.success_url.clone(),
+        defaults.and_then(|urls| urls.success_url.as_ref()),
+    );
+    let cancel_url = resolve(
+        params.cancel_url.clone(),
+        defaults.and_then(|urls| urls.cancel_url.as_ref()),
+    );
+
+    let missing: Vec<&'static str> = [
+        ("success_url", success_url.is_none()),
+        ("cancel_url", cancel_url.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(param, absent)| absent.then_some(param))
+    .collect();
+
+    if let Some(first) = missing.first() {
+        let named = missing
+            .iter()
+            .map(|param| format!("`{param}`"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        return Err(ApiError::invalid_param(
+            *first,
             format!(
-                "`{param}` is required: paying an invoice creates a hosted checkout session, \
-                 and vpay does not know where your payer should be sent afterwards."
+                "{named} must be sent, or configured as `merchant_clients[].invoices`: paying \
+                 an invoice creates a hosted checkout session and vpay cannot guess where to \
+                 send your payer."
             ),
-        )
-    })?;
-    super::checkout_sessions::checked_forward_url(&url, param, config.livemode())?;
-    Ok(url)
+        ));
+    }
+
+    // `Vec::first` above proved both are `Some`; these two `ok_or_else` arms
+    // are unreachable and are spelled as a fallible resolve rather than an
+    // `expect` because `clippy.toml` denies `expect` outside tests, and
+    // because an unreachable branch that answers the honest refusal is
+    // cheaper than one that panics a request thread.
+    let success_url = success_url.ok_or_else(|| missing_url("success_url"))?;
+    let cancel_url = cancel_url.ok_or_else(|| missing_url("cancel_url"))?;
+
+    super::checkout_sessions::checked_forward_url(&success_url, "success_url", config.livemode())?;
+    super::checkout_sessions::checked_forward_url(&cancel_url, "cancel_url", config.livemode())?;
+    Ok((success_url, cancel_url))
+}
+
+/// The refusal for a forwarding URL that is neither sent nor configured.
+///
+/// Its own function because [`forward_urls`] produces it from two places —
+/// the message that names every absent parameter at once, and the
+/// unreachable arms that keep the resolve total.
+fn missing_url(param: &'static str) -> ApiError {
+    ApiError::invalid_param(
+        param,
+        format!(
+            "`{param}` must be sent, or configured as `merchant_clients[].invoices`: paying an \
+             invoice creates a hosted checkout session and vpay cannot guess where to send \
+             your payer."
+        ),
+    )
 }
 
 /// Blank is absent, on create and in a value position everywhere else —

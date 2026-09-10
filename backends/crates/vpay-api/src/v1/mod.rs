@@ -716,6 +716,50 @@ pub struct ResourceConfig {
     /// question — "which of several dashboard clients is this?" — the
     /// configuration cannot ask.
     dashboard: Option<DashboardBinding>,
+    /// This tenant's default `success_url`/`cancel_url` for
+    /// `POST /v1/invoices/{id}/pay` (issue #91, D2).
+    ///
+    /// Keyed on the **tenant**, like [`Self::display_name_by_merchant_id`]
+    /// and for the same reason: the question is asked by a route that has
+    /// already resolved a merchant, and one merchant may hold several
+    /// credentials.
+    ///
+    /// First-wins on the merge, exactly as `display_name_by_merchant_id` is
+    /// and unlike the two list-valued maps: two registrations naming one
+    /// tenant with two different "thank you" pages is a contradiction rather
+    /// than a union, and the day `DuplicateMerchantId` relaxes it has to be
+    /// decided in configuration rather than by iteration order. It cannot
+    /// happen today.
+    ///
+    /// Only merchants that configured at least one of the two appear, so the
+    /// common case — a merchant that never pays an invoice through vpay — is
+    /// an absence rather than a pair of `None`s.
+    invoice_urls_by_merchant_id: BTreeMap<String, InvoiceUrlDefaults>,
+}
+
+/// One tenant's default forwarding URLs for `POST /v1/invoices/{id}/pay`,
+/// projected out of `vpay_config::oauth::InvoiceDefaults` at boot.
+///
+/// Its own type rather than a `(Option<String>, Option<String>)`, for
+/// [`DashboardBinding`]'s reason: a bare pair at a call site is two values
+/// whose order nothing checks, and these two are the answer to "where does
+/// this payer go when it works" and "…when it does not" — swapping them sends
+/// a paying customer to the cancelled page.
+///
+/// A projection and not the config type, for [`WebhookEndpointConfig`]'s
+/// reason: what is in [`ResourceConfig`] is exactly what a request path is
+/// allowed to depend on, and carrying the YAML type would carry whatever else
+/// it grows next.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InvoiceUrlDefaults {
+    /// Where a payer goes after a successful invoice payment, when the `pay`
+    /// request carries no `success_url` of its own. Validated at **boot**
+    /// (`vpay_config`'s `validate_invoice_urls`), and again by the route's
+    /// own `checked_forward_url` — see
+    /// [`ResourceConfig::invoice_url_defaults`] for why both.
+    pub success_url: Option<String>,
+    /// Where a payer goes when they abandon it. See [`Self::success_url`].
+    pub cancel_url: Option<String>,
 }
 
 /// The `/dash/v1` registration, projected: which credential, which tenant,
@@ -816,7 +860,21 @@ impl ResourceConfig {
         let mut checkout_origins_by_merchant_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut publishable_keys_by_merchant_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut display_name_by_merchant_id: BTreeMap<String, String> = BTreeMap::new();
+        let mut invoice_urls_by_merchant_id: BTreeMap<String, InvoiceUrlDefaults> = BTreeMap::new();
         for client in &config.merchant_clients {
+            // Only when the registration configured at least one, so an
+            // absent entry means "this merchant set none" rather than "this
+            // merchant set two `None`s" — the distinction
+            // `invoice_url_defaults` answers `None` for either way, and the
+            // one that keeps the map the size of what an operator wrote.
+            if client.invoices.success_url.is_some() || client.invoices.cancel_url.is_some() {
+                invoice_urls_by_merchant_id
+                    .entry(client.merchant_id.clone())
+                    .or_insert_with(|| InvoiceUrlDefaults {
+                        success_url: client.invoices.success_url.clone(),
+                        cancel_url: client.invoices.cancel_url.clone(),
+                    });
+            }
             if let Some(display_name) = client.display_name.as_deref() {
                 display_name_by_merchant_id
                     .entry(client.merchant_id.clone())
@@ -868,6 +926,7 @@ impl ResourceConfig {
                     merchant_id: dashboard.merchant_id.clone(),
                     scope: dashboard.scope.clone(),
                 }),
+            invoice_urls_by_merchant_id,
         })
     }
 
@@ -890,6 +949,33 @@ impl ResourceConfig {
         self.merchant_id_by_client_id
             .get(client_id)
             .map(String::as_str)
+    }
+
+    /// This tenant's configured default forwarding URLs for
+    /// `POST /v1/invoices/{id}/pay`, or `None` if it configured neither
+    /// (issue #91, D2).
+    ///
+    /// # It is a default and never a ceiling
+    ///
+    /// `pay` resolves request-then-this, so a request that carries its own
+    /// `success_url` wins. That is what makes the key safe to add to an
+    /// existing deployment: no request that worked before behaves
+    /// differently after.
+    ///
+    /// # Why the value is validated twice
+    ///
+    /// `vpay_config`'s `validate_invoice_urls` refuses a malformed value at
+    /// **boot**, so an operator's typo is a deployment that will not start
+    /// rather than a `400` blaming the merchant. The route then puts whatever
+    /// it resolved — configured or passed — through
+    /// `checkout_sessions::checked_forward_url` anyway, so there is exactly
+    /// one rule deciding whether a payer may be sent somewhere and it is the
+    /// same one on both paths. Trusting the boot check and skipping the
+    /// second is how a configured URL ends up admitted by rules a passed one
+    /// is not.
+    #[must_use]
+    pub fn invoice_url_defaults(&self, merchant_id: &str) -> Option<&InvoiceUrlDefaults> {
+        self.invoice_urls_by_merchant_id.get(merchant_id)
     }
 
     /// The `/dash/v1` registration, or `None` if this deployment configured

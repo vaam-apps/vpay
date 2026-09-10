@@ -139,6 +139,12 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // exercise.
         publishable_keys: Vec::new(),
         checkout_origins: Vec::new(),
+        // Neither URL configured, which is the registration a merchant that
+        // never pays an invoice through vpay has — and the one that makes
+        // `POST /v1/invoices/{id}/pay` with an empty body answer the `400`
+        // naming both parameters. `config_with_invoice_defaults` below is the
+        // fixture for the other half.
+        invoices: vpay_config::InvoiceDefaults::default(),
     }
 }
 
