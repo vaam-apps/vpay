@@ -52,13 +52,146 @@ and this page is the only one such a session can reach. There is no
 re-checking a password this endpoint then overwrites would be a second copy of
 that check in the wrong layer.
 
+## The BFF, which is a new browser-reachable surface
+
+Two `GET` route handlers, added 2026-09-11:
+
+| Route                            | What it does                                       |
+| -------------------------------- | -------------------------------------------------- |
+| `/api/dash/payment_intents`      | One page of this merchant's intents, as JSON       |
+| `/api/dash/payment_intents/{id}` | One payment's intent, charge, refunds and timeline |
+
+**Read the paragraph before reaching for these.** Until they existed nothing in
+this app was reachable from a browser except a page and four Server Actions,
+and every `/dash/v1` read happened inside a render. They authenticate on the
+same httpOnly session cookie and proxy to `/dash/v1` with the token read out of
+the `staff_sessions` row on that request — the bearer never leaves this
+process — but they are an authenticated surface a script on this origin can
+call, which the app did not have before.
+
+**Nothing calls them.** No page, no component, no test but their own. They
+exist so that a client-side data layer has a transport when one is written, and
+**whether this app should have such a surface at all is the maintainer's
+decision, not this code's** — it is RD5 in
+[the Refine plan](../../../docs/plans/exp55-refine-seam-bff-notes/refine-plan.md)
+§8, and it reverses a stated property of the app's security model. Deleting the
+two files under `app/api/` and `src/server/bff.ts` breaks nothing else.
+
+What they do about it, each written as a mutation in `src/server/bff.test.ts`:
+
+- a request with **no session cookie** is refused and reaches vpay **not at
+  all** — the test asserts the stub `fetch` was never called, because a `401`
+  answered _after_ an upstream round trip is a surface anyone can use to make
+  this server open connections;
+- a request this dashboard did not issue is refused by `csrf.ts`'s own
+  `originIsAllowed`, plus `Sec-Fetch-Site: same-origin`, which is what a
+  browser sends instead of an `Origin` on a same-origin `GET`;
+- the bearer token appears in no response header and no response body, asserted
+  against the serialised response while the stubbed vpay echoes the token into
+  a header, into the envelope's `url` and into an extra top-level field;
+- no caller-supplied merchant id, audience or scope is forwarded, because the
+  upstream query string is built by `apiQueryString` from the five parameters
+  `queryFrom` reads and nothing else is ever looked at;
+- a repeated parameter takes its **first** value, the same as the page does.
+  `Object.fromEntries(searchParams.entries())` keeps the last, which would
+  have made one URL mean two different pages depending on which surface read
+  it.
+
+Only `GET` is exported and **no write can reach the file** — the same shape
+`/dash/v1` has, where `dash::required_scope` refuses a non-`GET` before the
+router matches.
+
+This line went on ~~"so Next answers `405` to everything else"~~ until
+**2026-09-11**, when the exp55 security review read
+`app-route/helpers/auto-implement-methods` instead of assuming it. Next
+auto-implements two methods:
+
+- **`HEAD` is bound to the `GET` handler itself** (`methods.HEAD =
+handlers.GET`), body discarded — so a `HEAD` costs the same session read,
+  the same possible token mint and the same upstream call, and answers the
+  status and the headers. Consistent with `/dash/v1`, which admits `GET` and
+  `HEAD`. Left as it is.
+- **`OPTIONS` answered `204` with `Allow: GET, HEAD, OPTIONS` before the
+  handler ran at all**, so before the origin check and before the cookie was
+  read — the one answer this surface could give without passing its own gate.
+  ~~"Suppressing it needs a middleware and this app has none, so it is
+  recorded rather than fixed."~~ **Fixed the same day (exp56):**
+  [`middleware.ts`](middleware.ts) matches `/api/dash/:path*` and answers
+  `405` with **no `Allow` header** to every method that is not `GET` or
+  `HEAD`, before the route module is reached.
+
+So the reachable method set is two, and the review's third — `OPTIONS` — is a
+refusal now. `middleware.test.ts` holds the pair of cases that say so: one
+runs the real route module through **Next's own `autoImplementMethods`** and
+measures the `204` and the `Allow` header it would still produce, and the next
+asserts what the caller actually gets. The decisive one is
+`answers OPTIONS 405 with no Allow header, before the route module can` —
+make `middleware` return `NextResponse.next()` unconditionally and it goes red
+on both the status and the header.
+
+**What it closed and what it did not**, measured against a real `next start`
+rather than reasoned about. The middleware runs on the matched subtree
+**before routing**, so a path under `/api/dash/` that no route file serves
+answers the same as the two that do:
+
+| probe                               | before          | after              |
+| ----------------------------------- | --------------- | ------------------ |
+| `OPTIONS /api/dash/payment_intents` | `204` + `Allow` | `405`              |
+| `OPTIONS /api/dash/nope`            | `404`           | `405`              |
+| `POST /api/dash/payment_intents`    | `405` (Next's)  | `405` (this one's) |
+| `GET /api/dash/payment_intents`     | the gate        | the gate           |
+| `GET /api/dash/nope`                | `404`           | `404`              |
+| `OPTIONS /payments`                 | `400`           | `400`, not matched |
+
+So for `OPTIONS` route existence really is unanswerable now. **For `GET` it is
+not**, and this should not be read as saying otherwise: an unauthenticated
+`GET` to a route that exists reaches `bff.ts`'s gate where a path nothing
+serves gets Next's `404`. `OPTIONS` was the loudest discriminator and the only
+one reachable without passing a check, never the only one — and making the
+`GET` pair uniform would mean answering `404` to an honest signed-out client.
+`answers alike for a path in the subtree that no route file serves` is the
+case that pins the first half.
+
+The review recorded all of this against **Next 16.3.4**, which is
+`examples/shop`'s pin; this app resolves **15.5.25**, whose
+`AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same. The finding held;
+the version named in it was not this app's. The test measures the installed
+one rather than repeating either number.
+
+Two more things the same review corrected, both of them claims rather than
+code. The third bullet above is pinned by the **detail** read's case and not
+the list's: `src/dash/provider.ts`'s `getList` has already rebuilt
+`{ data, hasMore, cursor }` field by field, so serving the upstream document
+verbatim leaves the list case green and only the detail case red. And
+`Sec-Fetch-Site` is not merely "a pre-2020 browser" question — **Safari has
+sent it only since 16.4 (March 2023)**, so this surface answers `403` to every
+older WebKit. That costs nothing while nothing calls it, and is a decision for
+whatever eventually does.
+
+The review corrected that in the test file's header and **not in the marker
+inside it**, which went on labelling the list case `// THE THIRD DECISIVE
+CASE` — so a reader following the comment nearest the code would still have
+deleted `project` and seen green. Both say the same thing as of **exp56**, and
+the mutation was re-run to say it: replacing `served(project(result.value))`
+with `served(result.value)` fails **two** cases, and only one of them is about
+a credential. `puts it in no part of the detail read either` is that one.
+`answers the page and its two cursors, and nothing vpay sent besides` is the
+other, and it fails on the envelope's **key names** — `data, hasMore, cursor`
+where the wire promises `object, data, has_more, cursor` — which is evidence
+about the contract this surface publishes, not about the token staying in.
+Named because two red cases read as more corroboration than one, and here they
+are two different claims.
+
 ## How the code is laid out
 
 | Directory               | What lives there                                                                          |
 | ----------------------- | ----------------------------------------------------------------------------------------- |
 | `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone          |
+| `app/api/dash/`         | The BFF's two route handlers. Four lines each; `src/server/bff.ts` is the substance       |
+| `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root         |
 | `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`        |
 | `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself        |
+| `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework            |
 | `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once |
 | `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right              |
 | `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                         |
@@ -160,7 +293,7 @@ point: there is no field there to be null.
 ## Testing this app
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 18 files, 136 tests
+pnpm --filter @vpay/dashboard test        # 22 files, 243 tests, 0 skipped
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
 pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
@@ -184,11 +317,17 @@ dropped the `<main>` landmark and every other gate stayed green: `region` went
 Each of these was applied to the tree, the suite run, and the mutation
 reverted:
 
-| Mutation                                                                     | Fails                        |
-| ---------------------------------------------------------------------------- | ---------------------------- |
-| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts` |
-| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`   |
-| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice |
+| Mutation                                                                     | Fails                                                                           |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts`                                                    |
+| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`                                                      |
+| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice                                                    |
+| `pageCursors` reads `has_more` the same way in both paging directions        | `src/dash/provider.test.ts`, and `src/payments-query.test.ts` twice             |
+| the BFF reads the session cookie **after** the upstream session read         | `src/server/bff.test.ts`, twice — vpay is contacted for a caller with no cookie |
+| `apiIsSameOrigin` drops its `originIsAllowed` call                           | `src/server/bff.test.ts`, twice                                                 |
+| the BFF serves the parsed upstream document instead of the named fields      | `src/server/bff.test.ts` — the **detail** case only; see below                  |
+| `middleware` returns `NextResponse.next()` unconditionally                   | `middleware.test.ts`, three times; `OPTIONS` gets Next's `204` and `Allow` back |
+| `apiIsSameOrigin` drops its `Sec-Fetch-Site` comparison                      | `dashboard.cy.ts`'s frame case, in a browser — `200` where `403` was expected   |
 
 `oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
 assertion is that the exchange presents the verifier whose `S256` **is** the
@@ -202,6 +341,16 @@ through the real OP against the real compose stack and computes its TOTP codes
 from the secret **the enrolment screen displayed**. `just demo-staff` creates
 the staff member; `just test-e2e` runs the whole thing.
 
+Five of its sixteen cases are the BFF's, and they are the only evidence in
+this repository about what a browser actually puts on the wire. The decisive
+one is `refuses a cross-origin FRAME of the same URL, which carries no Origin
+at all`: an `<iframe>` is a navigation, so it carries no `Origin`, and
+`SameSite=Lax` still attaches the session to a **same-site** request — so it
+reaches this surface with a signed-in cookie and nothing but `Sec-Fetch-Site`
+identifying it. Delete that comparison from `apiIsSameOrigin`, rebuild the
+image and re-run: it fails with **`200` where `403` was expected**, and every
+other case stays green.
+
 ## What this app still cannot do
 
 - **Anything at all to a payment.** `/dash/v1` refuses every non-`GET` method
@@ -212,3 +361,15 @@ the staff member; `just test-e2e` runs the whole thing.
   health are not built, and the nav gate fails if it ever links to them.
 - **Contrast checking.** jsdom computes no paint, and no `cypress-axe` pass
   against a real browser exists.
+- **Anything through the BFF.** The two handlers under `app/api/dash/` are
+  real and tested, and **nothing in this app calls them** — there is no
+  client-side data layer yet, and whether there should be one on this origin
+  is RD5. ~~They are exercised by `src/server/bff.test.ts` and by no browser
+  and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
+  arrive as this code expects them to is not proven here.~~ **They are
+  exercised by a browser since 2026-09-11 (exp56):** five cases in
+  `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` drive them from Chrome
+  against the real stack, and the measured headers are in
+  [`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md). The browser
+  agreed with the code on every assumption. What is still true is the first
+  sentence: **no page and no component in this app calls them.**

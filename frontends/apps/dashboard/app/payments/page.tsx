@@ -5,13 +5,8 @@ import { ReadFailure } from "../../src/components/read-failure";
 import { PaymentsFilters } from "../../src/components/payments-filters";
 import { PaymentsTable } from "../../src/components/payments-table";
 import { SignedInBar } from "../../src/components/signed-in-bar";
-import {
-  apiQueryString,
-  pagerHrefs,
-  queryFrom,
-} from "../../src/payments-query";
-import { type PaymentIntentList } from "../../src/server/api";
-import { readDash } from "../../src/server/dash-read";
+import { dashProvider, PAYMENT_INTENTS } from "../../src/dash/provider";
+import { pagerHrefs, queryFrom } from "../../src/payments-query";
 import { signOut } from "../../src/server/actions";
 import { requireStaff } from "../../src/server/session";
 
@@ -27,7 +22,13 @@ import { requireStaff } from "../../src/server/session";
  * server can obtain it from. A token cached in this process would keep
  * rendering payments for a signed-out session until it expired.
  *
- * The read goes through `readDash`, which mints a fresh access token once if
+ * The read goes through `src/dash/provider.ts` — the seam, which is where the
+ * path, the query parameters and the meaning of a page of results live now
+ * that more than this page wants them. It calls `readDash` with the same two
+ * tokens this page used to pass itself; nothing about when a token is minted
+ * or where it is read from has moved.
+ *
+ * `readDash` mints a fresh access token once if
  * the one on the row has expired — the token's TTL is fifteen minutes and a
  * session's is up to twelve hours, so without that this page answers "the
  * bearer token is invalid, expired" for the rest of every sign-in past the
@@ -64,15 +65,13 @@ export default async function PaymentsPage({
     );
   }
   const staff = gate.staff;
-  const { session, config } = staff;
+  const { session } = staff;
   const query = queryFrom(await searchParams);
 
-  const result = await readDash<PaymentIntentList>(
-    config,
-    `/dash/v1/payment_intents?${apiQueryString(query)}`,
-    staff.accessToken,
-    staff.sessionToken,
-  );
+  const result = await dashProvider(staff).getList({
+    resource: PAYMENT_INTENTS,
+    query,
+  });
 
   return (
     <Stack direction="column" gap="lg">
@@ -109,7 +108,7 @@ export default async function PaymentsPage({
         <>
           <PaymentsTable rows={result.value.data} />
           <PaymentsPager
-            {...pagerHrefs(query, result.value.data, result.value.has_more)}
+            {...pagerHrefs(query, result.value.data, result.value.hasMore)}
           />
         </>
       )}

@@ -69,6 +69,7 @@ import {
   checkoutOrigin,
   orderIdFromUrl,
   readOrder,
+  shopUrl,
 } from "../support/shop";
 
 /** The staff address `just demo-staff` created. */
@@ -526,6 +527,314 @@ describe("the dashboard", { testIsolation: false }, () => {
         });
       };
       check(0);
+    });
+  });
+
+  // ------------------------------------------------------------------ BFF ---
+  //
+  // THE CASES `bff.test.ts` CANNOT HAVE, and the reason this block exists.
+  // Every case in that suite is a synthetic `Request` against a stubbed
+  // `fetch`, so the surface's whole CSRF control — "the browser sent
+  // `Sec-Fetch-Site: same-origin`" — is a header the unit suite writes itself
+  // and then reads back. These run in Chrome against the real stack, where
+  // the header is the browser's and nothing here can spell it.
+  //
+  // `cy.intercept` is used as a **spy and never as a stub**: no response is
+  // faked and no request is rewritten — every one of them reaches the
+  // dashboard and vpay. `cypress/support/e2e.ts` says request stubbing does
+  // not live in these specs and that still holds. What an interception buys
+  // is the one thing `cy.window().fetch` cannot report: the headers the
+  // browser put on the wire, and the status the server answered when the page
+  // itself is not allowed to read it.
+  //
+  // Still signed in from the sign-in test; `testIsolation` is off.
+
+  it("serves the signed-in staff member's own browser fetch, on the browser's own headers", () => {
+    // THE CASE THAT ANSWERS THE OPEN QUESTION. `docs/status.md` has said of
+    // this surface since it was built that "a real browser's `Sec-Fetch-Site`
+    // and cookie arrive as this code expects" is NOT proven. This is what
+    // proves it — or, if Chrome disagrees with `bff.ts`'s reading of the
+    // Fetch spec, what says so.
+    cy.intercept("GET", "**/api/dash/payment_intents*").as("bffList");
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.window()
+      .then((win) =>
+        win
+          .fetch("/api/dash/payment_intents", { credentials: "same-origin" })
+          .then((response) =>
+            response.text().then((body) => ({ status: response.status, body })),
+          ),
+      )
+      .then((answer) => {
+        expect(answer.status, "the BFF's own answer to its own page").to.equal(
+          200,
+        );
+        const page = JSON.parse(answer.body) as Record<string, unknown>;
+        expect(page["object"]).to.equal("list");
+        expect(page["data"], "the rows").to.be.an("array");
+        expect(page, "the envelope this surface promises").to.have.property(
+          "has_more",
+        );
+        expect(page).to.have.property("cursor");
+        // The token check in a browser rather than against a serialised
+        // `NextResponse`: a `/dash/v1` bearer is a JWT, and there is none in
+        // what reached this page.
+        expect(
+          answer.body,
+          "the body a browser actually received",
+        ).to.not.match(/eyJ[A-Za-z0-9_-]{10,}\./);
+      });
+
+    cy.wait("@bffList").then((interception) => {
+      const headers = interception.request.headers;
+      // WHAT THE BROWSER ACTUALLY SENT. Each line is an assumption written
+      // down in `src/server/bff.ts` and, until this spec, believed rather
+      // than seen. Measured under Chrome 152 and under Cypress's bundled
+      // Electron 138, identical in both.
+      expect(
+        headers["sec-fetch-site"],
+        "the header apiIsSameOrigin requires, as the BROWSER set it",
+      ).to.equal("same-origin");
+      expect(
+        headers["origin"] ?? null,
+        "and NO Origin at all — `apiIsSameOrigin`'s whole reason for reading " +
+          "Sec-Fetch-Site is that a browser omits Origin on a same-origin " +
+          "GET. If this is ever not null, that sentence has stopped being " +
+          "true and the rule can be tightened",
+      ).to.equal(null);
+      expect(headers["sec-fetch-mode"]).to.equal("cors");
+      expect(headers["sec-fetch-dest"]).to.equal("empty");
+      expect(
+        String(headers["cookie"] ?? ""),
+        "the httpOnly session cookie, which no script on the page can read " +
+          "and the browser attaches anyway",
+      ).to.contain("vpay_dash_session");
+      expect(interception.response?.statusCode).to.equal(200);
+      // Nothing cached it, which matters more here than on a page: this is a
+      // merchant's payment list on a shared origin.
+      expect(interception.response?.headers["cache-control"]).to.equal(
+        "no-store",
+      );
+    });
+  });
+
+  it("refuses the same browser fetch the moment the session cookie is gone", () => {
+    // The cookie half, with the page already loaded so the fetch is the only
+    // thing that changes. Restores the session afterwards, like the
+    // refused-cookie test above, because the sequence below depends on it.
+    cy.intercept("GET", "**/api/dash/payment_intents*").as("bffNoSession");
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.getCookie("vpay_dash_session").then((good) => {
+      const real = good?.value ?? "";
+      expect(real, "a session to restore afterwards").to.not.equal("");
+
+      cy.clearCookie("vpay_dash_session");
+      cy.window()
+        .then((win) =>
+          win
+            .fetch("/api/dash/payment_intents", { credentials: "same-origin" })
+            .then((response) =>
+              response
+                .text()
+                .then((body) => ({ status: response.status, body })),
+            ),
+        )
+        .then((answer) => {
+          expect(answer.status, "no session, no read").to.equal(401);
+          // The sentence, not just the status: a `401` that said something
+          // about vpay's internals would be the finding the exp55 review
+          // fixed, coming back.
+          expect(answer.body).to.contain("carried no staff session");
+        });
+
+      cy.wait("@bffNoSession").then((interception) => {
+        expect(
+          String(interception.request.headers["cookie"] ?? ""),
+          "the browser must have sent no session cookie",
+        ).to.not.contain("vpay_dash_session");
+        expect(interception.response?.statusCode).to.equal(401);
+      });
+
+      cy.setCookie("vpay_dash_session", real, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+      });
+      cy.visit("/payments");
+      cy.contains("h2", "Payments").should("be.visible");
+    });
+  });
+
+  it("refuses a cross-origin fetch from another site's page, cookie and all", () => {
+    // THE CSRF CONTROL, FIRING IN A BROWSER — a genuine cross-origin request
+    // rather than a same-origin one with a forged header, which would prove
+    // nothing this spec could not also have made up.
+    //
+    // The shop is a different ORIGIN (`localhost:3001` against the
+    // dashboard's `localhost:3000`) and the same SITE, because a site is
+    // scheme plus registrable domain and **a port is not part of it**. That
+    // is not a weakness of the test, it is the sharper half of it: a
+    // same-site request is one a `SameSite=Lax` cookie is still attached to,
+    // so what arrives at the dashboard below CARRIES THE SESSION and is
+    // refused on the origin rule alone.
+    //
+    // What this case does NOT isolate: which half of `apiIsSameOrigin`
+    // refused it. A cross-origin `fetch` carries an `Origin`, so
+    // `originIsAllowed` refuses before `Sec-Fetch-Site` is consulted. The
+    // next case is the one with no `Origin` on it.
+    cy.intercept("GET", "**/api/dash/payment_intents*").as("bffCrossOrigin");
+
+    const target = `${Cypress.config("baseUrl")}/api/dash/payment_intents`;
+    cy.visit(shopUrl());
+
+    cy.window()
+      .then((win) =>
+        win
+          .fetch(target, { credentials: "include" })
+          .then((response) => `read it: ${response.status}`)
+          .catch(() => "the browser would not let this page read the answer"),
+      )
+      .then((outcome) => {
+        // The BFF sends no `Access-Control-Allow-Origin`, so the page cannot
+        // see the answer at all — a second, independent refusal, and worth
+        // asserting rather than working around. The SERVER's answer is read
+        // below, off the wire, where a page's own permissions do not apply.
+        expect(outcome).to.equal(
+          "the browser would not let this page read the answer",
+        );
+      });
+
+    cy.wait("@bffCrossOrigin").then((interception) => {
+      const headers = interception.request.headers;
+      expect(
+        headers["origin"],
+        "the attacking page's origin, as the browser set it",
+      ).to.equal(shopUrl());
+      expect(
+        headers["sec-fetch-site"],
+        "a port is not part of a site, so Chrome calls this same-site",
+      ).to.equal("same-site");
+      expect(
+        String(headers["cookie"] ?? ""),
+        "and SameSite=Lax attaches the session to a SAME-SITE request — which " +
+          "is exactly why this surface cannot rest on the cookie policy alone",
+      ).to.contain("vpay_dash_session");
+      expect(
+        interception.response?.statusCode,
+        "403 and not 401: the origin rule refused it with a live session in hand",
+      ).to.equal(403);
+    });
+  });
+
+  it("refuses a cross-origin FRAME of the same URL, which carries no Origin at all", () => {
+    // THE CASE THAT ISOLATES `Sec-Fetch-Site`, and the only one here that can.
+    //
+    // `bff.ts` requires that header because **a browser sends no `Origin` on
+    // a same-origin `GET`** and script cannot add one, so `Origin` alone
+    // cannot answer the question on this method. The corollary is the hole
+    // the header closes: a cross-origin request that is a NAVIGATION rather
+    // than a `fetch` carries no `Origin` either, so `originIsAllowed` has
+    // nothing to refuse and passes. An `<iframe src="…">` is such a
+    // navigation, and it is a thing any page on the internet can do.
+    //
+    // If this answered anything but `403`, the surface would have a hole the
+    // unit suite — which writes the header it then reads — could not see.
+    cy.intercept("GET", "**/api/dash/payment_intents*").as("bffFramed");
+
+    const target = `${Cypress.config("baseUrl")}/api/dash/payment_intents`;
+    cy.visit(shopUrl());
+
+    cy.window().then((win) => {
+      const frame = win.document.createElement("iframe");
+      frame.src = target;
+      win.document.body.appendChild(frame);
+    });
+
+    cy.wait("@bffFramed").then((interception) => {
+      const headers = interception.request.headers;
+      // MEASURED, Chrome 152 and Electron 138 alike. Every line of this is
+      // the attack, written out as the browser sent it.
+      expect(
+        headers["sec-fetch-mode"],
+        "a frame load is a navigation, not a fetch",
+      ).to.equal("navigate");
+      expect(headers["sec-fetch-dest"]).to.equal("iframe");
+      expect(
+        headers["origin"] ?? null,
+        "and a navigation carries NO Origin — so `originIsAllowed` has " +
+          "nothing to refuse and passes this request through",
+      ).to.equal(null);
+      expect(
+        headers["sec-fetch-site"],
+        "leaving this as the only thing that says where it came from",
+      ).to.equal("same-site");
+      expect(
+        String(headers["cookie"] ?? ""),
+        "AND THE SESSION TRAVELS WITH IT. `SameSite=Lax` does not stop a " +
+          "same-site request, so a bare <iframe> on any page sharing this " +
+          "registrable domain reaches this surface holding a signed-in " +
+          "staff member's cookie. This is the request Sec-Fetch-Site exists " +
+          "for, and it is not hypothetical",
+      ).to.contain("vpay_dash_session");
+      expect(
+        interception.response?.statusCode,
+        "403 — and Sec-Fetch-Site is the ONLY check that can have produced " +
+          "it, because there was no Origin and there was a good cookie",
+      ).to.equal(403);
+    });
+  });
+
+  it("answers a browser's OPTIONS with 405 and no Allow header", () => {
+    // The exp56 middleware, in a browser rather than against Next's own
+    // helper. `middleware.test.ts` measures that Next would auto-implement
+    // `OPTIONS` as a `204` carrying `Allow: GET, HEAD, OPTIONS`, answered
+    // before the origin check and before the cookie is read; this is the
+    // same URL asked the same question by Chrome, through the real Next
+    // server, with the middleware in front of it.
+    cy.intercept("OPTIONS", "**/api/dash/payment_intents*").as("bffOptions");
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.window()
+      .then((win) =>
+        win
+          .fetch("/api/dash/payment_intents", {
+            method: "OPTIONS",
+            credentials: "same-origin",
+          })
+          .then((response) => ({
+            status: response.status,
+            allow: response.headers.get("allow"),
+          })),
+      )
+      .then((answer) => {
+        expect(answer.status, "not Next's 204").to.equal(405);
+        expect(
+          answer.allow,
+          "and no method list, which is the half a 405 could still have leaked",
+        ).to.equal(null);
+      });
+
+    cy.wait("@bffOptions").then((interception) => {
+      // Measured, and worth writing down beside the list case above: this
+      // request DOES carry an `Origin`, on the same origin, because a
+      // browser attaches one to every request whose method is not `GET` or
+      // `HEAD`. That asymmetry is precisely why `Sec-Fetch-Site` has to be
+      // read for the reads — `Origin` is present exactly on the methods this
+      // surface does not serve.
+      expect(interception.request.headers["origin"]).to.equal(
+        Cypress.config("baseUrl"),
+      );
+      expect(interception.response?.statusCode).to.equal(405);
+      expect(interception.response?.headers["allow"] ?? null).to.equal(null);
     });
   });
 
