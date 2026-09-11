@@ -902,7 +902,7 @@ holding a webhook that said the opposite.
   `CheckoutSessions::find_latest_by_intent` reads the newest row, and
   `checkout_sessions_one_open_per_intent` is what makes "an open session is
   the newest" true rather than hoped for
-  ([vpay-db.md](vpay-db.md#find_latest_by_intent--the-same-question-with-the-status-filter-off)).
+  ([vpay-db.md](vpay-db/payment-intents-and-checkout-sessions.md#find_latest_by_intent--the-same-question-with-the-status-filter-off)).
 
 The refusal and the return URL are **one read**, not two. Asking separately
 would race the hourly sweep: a gate that read `open`, followed by a
@@ -1001,7 +1001,7 @@ reusing a completed key with a newly added refused field answers that field's
 ## Checkout Sessions (`v1/checkout_sessions.rs`, `browser/checkout_sessions.rs`)
 
 Step 9. Four merchant routes and three payer routes over one object. The
-schema reasoning is in [vpay-db.md](vpay-db.md#checkout_sessions); what
+schema reasoning is in [vpay-db.md](vpay-db/payment-intents-and-checkout-sessions.md#checkout_sessions); what
 follows is what the HTTP layer adds.
 
 The merchant surface is ordinary `/v1`: token-authenticated, tenant-scoped,
@@ -1114,7 +1114,7 @@ from them, and a uniform refusal would leave them unable to tell a typo from a
 key they forgot to register. The key is echoed back for the same reason.
 
 The chosen key is **stored on the row**, not re-derived on read — see
-[vpay-db.md](vpay-db.md#publishable_key-is-a-column-and-return_page_url-is-a-method)
+[vpay-db.md](vpay-db/payment-intents-and-checkout-sessions.md#publishable_key-is-a-column-and-return_page_url-is-a-method)
 for why a key rotation would otherwise strand payers mid-flight.
 
 The hosted `url` is `{base}/c/{cs_id}?key={pk}#{client_secret}`, and the two
@@ -1406,7 +1406,7 @@ unauthenticated route needs to know about.)
 
 That write is new, and it is deliberately **not** `enqueue_in_tx` growing a
 `DO UPDATE`. The argument against the upsert
-([vpay-db.md](vpay-db.md#enqueue_in_tx-exists-only-in-the-transactional-form))
+([vpay-db.md](vpay-db/jobs.md#enqueue_in_tx-exists-only-in-the-transactional-form))
 is unchanged: the backstop scan re-enqueues every live charge's key every ten
 minutes, and an upserting enqueue would drag a job scheduled a quarter of an
 hour out back to now on every pass — a ladder that silently becomes a hot

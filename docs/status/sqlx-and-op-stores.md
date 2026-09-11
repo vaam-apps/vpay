@@ -2,6 +2,11 @@
 
 _Archived from [docs/status.md](../status.md) on 2026-09-11 by exp57, which split a 6 151-line page into pages a person can read. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the relative links gained a `../` because the file moved one directory down._
 
+_One link in it also changed target, in the same pass that split
+`docs/reference/vpay-db.md`: the section it pointed at, "Dynamic SQL strings and
+sqlx 0.9", moved to `vpay-db/dynamic-sql.md`, so the link names that page instead of
+an anchor that no longer exists. The sentence around it is untouched._
+
 _It still says "above" and "below" where it once pointed at another part of the same page. Those targets are on sibling pages now, and [README.md](README.md) is the index of them._
 
 ### sqlx 0.8 -> 0.9 (2026-09-05)
@@ -101,7 +106,7 @@ two-literal `if`; and wrapping a fresh `format!` in `AssertSqlSafe` instead of
 the audited `sql` variable. The third is the one that matters — without it the
 audit could be bypassed by not using the variable the audit looks at. Full
 reasoning: [docs/reference/vpay-db.md § dynamic SQL strings and
-sqlx 0.9](../reference/vpay-db.md#dynamic-sql-strings-and-sqlx-09).
+sqlx 0.9](../reference/vpay-db/dynamic-sql.md#dynamic-sql-strings-and-sqlx-09).
 `QueryBuilder` was considered and rejected there.
 
 **The MSRV floor moved, 1.88 -> 1.94.** `rust-version` in the root

@@ -159,7 +159,7 @@ The fourth is **not** a delete. It moves `open` to `expired` and leaves
 session what happened must still be told; only the label "is this still
 payable?" changes. A session whose intent has a live charge is skipped by a
 `NOT EXISTS` inside the `UPDATE` — see
-[vpay-db.md](vpay-db.md#expire_due-is-the-same-guard-on-a-clock-and-it-emits-the-event)
+[vpay-db.md](vpay-db/payment-intents-and-checkout-sessions.md#expire_due-is-the-same-guard-on-a-clock-and-it-emits-the-event)
 for why the guard has to be in the statement.
 
 It is here rather than in a job of its own because it runs on the same schedule
@@ -449,7 +449,7 @@ Three things about that shape are deliberate:
   whose fleet clocks had drifted, and with nothing in the data looking wrong.
   The age now comes from `vpay_db::Charges::get_by_id_as_of`, which selects
   `now()` on the same statement that reads the row
-  ([vpay-db.md](vpay-db.md#the-charge-read-carries-postgres-clock)), and
+  ([vpay-db.md](vpay-db/charges-and-settlement.md#the-charge-read-carries-postgres-clock)), and
   `recovery_step` takes **durations** rather than instants, so there is no
   parameter left for a caller to read off the wrong clock. `past_the_horizon`
   takes the same age; its skew was the milder direction (escalating early,
