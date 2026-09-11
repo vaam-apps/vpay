@@ -854,6 +854,30 @@ directly, by name, as NULL.
   wants them out, the shape is a `deleted` filter in the same `WHERE` as
   `merchant_id`, and nobody has asked.
 
+**Updated 2026-09-11 ([issue #70](https://github.com/vaam-apps/vpay/issues/70)):
+`CustomerObject`'s own `Debug` is hand-written, and a checkout session's
+`customer` can now be sent, not only read.** Nothing formatted a
+`CustomerObject` before this change, but `#[derive(Debug)]` on a type
+carrying a payer's name, email, phone, postal address and GPS point (the
+address and coordinates landed the same day, in the GPS paragraph above) was
+a redaction with a hole waiting for the first `{:?}`. The hand-written impl
+redacts `name`/`email`/`phone` as character counts — the judgement
+`vpay_db::CustomerRow`'s own `Debug` already makes, for the same reason — and
+delegates `address` to `AddressObject`'s own (also hand-written) `Debug`,
+which redacts every component and the GPS pair as a count rather than a
+value. A first pass at this issue redacted the three identifiers and left
+`address` on a derived `Debug`, printing the payer's street and coordinates
+in the clear; `a_customer_object_debug_output_redacts_personal_identifiers`
+now builds a fixture with a full address and both coordinates, and a
+mutation restoring the leak fails it. Re-adding `#[derive(Debug)]` to either
+type is not a test to keep green — it is `E0119`, a `cargo check` failure,
+confirmed by mutation. Separately, `CreateCheckoutSessionParams` gained a
+`customer` field in both SDKs, wired into the request body: the field
+existed on the response type in both SDKs since 2026-09-06, but nothing sent
+one, and a first pass at this issue described the capability as "already
+implemented" on the strength of the read half alone. The parity row in
+[../sdks/parity.md](../sdks/parity.md) is now ✅/✅.
+
 ### Correction, 2026-09-07 (S4b)
 
 This section listed **Invoices** as a gap until 2026-09-07: "the definition of

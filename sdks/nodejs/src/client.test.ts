@@ -1822,6 +1822,9 @@ describe("checkout.sessions", () => {
     cancel_url: "https://shop.example/cancel",
     return_url: null,
     url: "https://checkout.example/c/cs_123#cs_123_secret_abc123",
+    // `customer` since issue #70: the SDK must read and decode it, and verify
+    // the parity gate catches divergence when one SDK omits it.
+    customer: null,
     expires_at: 1_700_086_400,
     created: 1_700_000_000,
     ...overrides,
@@ -1842,6 +1845,10 @@ describe("checkout.sessions", () => {
         ui_mode: "hosted",
         success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
         cancel_url: "https://shop.example/cancel",
+        // Issue #70: the request side. This body previously never sent
+        // `customer` at all, in either SDK — only the response decode was
+        // proven.
+        customer: "cus_send1",
       },
       { idempotencyKey: "order_1234_session_1" },
     );
@@ -1853,7 +1860,7 @@ describe("checkout.sessions", () => {
     );
     expect(req.headers["idempotency-key"]).toBe("order_1234_session_1");
     expect(req.body).toBe(
-      "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel",
+      "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel&customer=cus_send1",
     );
     expect(session.id).toBe("cs_123");
     expect(session.object).toBe("checkout.session");
@@ -1894,11 +1901,12 @@ describe("checkout.sessions", () => {
       payment_intent: "pi_123",
       ui_mode: "embedded",
       return_url: "https://shop.example/order/42",
+      customer: "cus_777",
     });
 
     const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
     expect(req.body).toBe(
-      "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42",
+      "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42&customer=cus_777",
     );
     expect(session.url).toBeNull();
     expect(session.client_secret).toBe("cs_123_secret_abc123");
@@ -2134,6 +2142,22 @@ describe("checkout.sessions", () => {
     const rendered = inspect(session);
     expect(rendered).not.toContain("chars redacted");
     expect(rendered).toContain("url: null");
+  });
+
+  it("decodes a checkout session's customer field when present", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ customer: "cus_abc123" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.retrieve("cs_123");
+
+    // The session's customer field is correctly decoded when the server sends
+    // it (issue #70), and the SDK can read it to verify parity.
+    expect(session.customer).toBe("cus_abc123");
   });
 });
 

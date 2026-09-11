@@ -1384,7 +1384,7 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
 /// type deliberately does not re-express: a Rust enum over "which one is
 /// here" would be a second copy of a rule the database already owns, and it
 /// would have to be exhaustive over a set that grows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CustomerObject {
     /// `cus_…` — `vpay_core::ids::customer_id`.
@@ -1495,7 +1495,7 @@ pub struct CustomerObject {
 /// the same eight fields in `vpay_api::v1::customers`, because the wire is
 /// form-encoded and every incoming value is text — the same split
 /// [`CustomerObject`] and `CreateParams` already make.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AddressObject {
     /// Street address, line 1.
@@ -1537,6 +1537,42 @@ impl From<&vpay_db::CustomerAddress> for AddressObject {
             latitude_microdeg: address.latitude_microdeg,
             longitude_microdeg: address.longitude_microdeg,
         }
+    }
+}
+
+/// Redacts every component, printing a count rather than a value — the same
+/// judgement `vpay_db::CustomerRow`'s hand-written `Debug` makes for the row
+/// this type is rendered from (see that impl). `CustomerObject::fmt` reaches
+/// this type through its own `address` field, and without this impl a
+/// derived one would defeat that redaction outright: a name is how somebody
+/// is addressed, but a street and a GPS point are where they can be found,
+/// which makes them at least as identifying, not less.
+///
+/// The coordinate pair counts as **one** component rather than two, for the
+/// same reason it does in `CustomerRow`: `address_coordinates_are_both_or_neither`
+/// makes the pair the value, and reporting two would claim a customer with a
+/// point and a city has three components rather than two.
+impl std::fmt::Debug for AddressObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let components = [
+            self.line1.is_some(),
+            self.line2.is_some(),
+            self.city.is_some(),
+            self.state.is_some(),
+            self.postal_code.is_some(),
+            self.country.is_some(),
+            self.latitude_microdeg.is_some() || self.longitude_microdeg.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+        f.debug_struct("AddressObject")
+            .field(
+                "redacted",
+                &format_args!("{{{components} component(s) redacted}}"),
+            )
+            .finish()
     }
 }
 
@@ -1615,6 +1651,46 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
             // `0041` will not let lie about it.
             deleted: row.anonymized_at.is_some().then_some(DeletedTrue),
         })
+    }
+}
+
+/// Redacts the personal identifiers a customer object carries — `name`,
+/// `email`, `phone`, and, through [`AddressObject`]'s own `Debug`, every
+/// address component and the GPS pair — leaving every other field exactly as
+/// a derived `Debug` would render it. The merchant collected these values
+/// and holds them in their database; redacting them here would hide their
+/// own data from them while doing nothing about the copy they already have.
+/// The redaction place that *counts* is the server: vpay's `CustomerRow`
+/// redacts the same set, because vpay's logs are not the merchant's. See
+/// `docs/flows/customers.md`.
+///
+/// A street address and a GPS point are at least as identifying as a name,
+/// so `address` cannot be the one field here left to a derive: delegating to
+/// [`AddressObject`]'s own (also hand-written) `Debug` is what keeps this
+/// impl from being a redaction with a hole in it.
+impl std::fmt::Debug for CustomerObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// `[N chars redacted]`, or `None` — so "which identifiers does this
+        /// customer have?" is still answerable from a log line.
+        fn redacted(value: &Option<String>) -> String {
+            value.as_ref().map_or_else(
+                || "None".to_owned(),
+                |value| format!("[{} chars redacted]", value.chars().count()),
+            )
+        }
+
+        f.debug_struct("CustomerObject")
+            .field("id", &self.id)
+            .field("object", &self.object)
+            .field("name", &format_args!("{}", redacted(&self.name)))
+            .field("email", &format_args!("{}", redacted(&self.email)))
+            .field("phone", &format_args!("{}", redacted(&self.phone)))
+            .field("address", &self.address)
+            .field("metadata", &self.metadata)
+            .field("created", &self.created)
+            .field("livemode", &self.livemode)
+            .field("deleted", &self.deleted)
+            .finish()
     }
 }
 
@@ -2954,6 +3030,91 @@ mod tests {
         );
     }
 
+    /// A customer's debug output redacts every personal identifier —
+    /// `name`, `email`, `phone` as character counts, and a present `address`
+    /// (formal components **and** the GPS pair, landed the same day as this
+    /// test) as a component count through [`AddressObject`]'s own `Debug` —
+    /// while leaving every other field visible. The merchant collected this
+    /// data and holds it in their database; redacting it in logs would hide
+    /// their own information from them. The actual redaction place that
+    /// counts is the server, where `CustomerRow`'s Debug impl prevents this
+    /// data from reaching vpay's logs at all.
+    ///
+    /// Every negative assertion below checks a value this test's own fixture
+    /// actually carries — not a stand-in like Stripe's `"John Doe"` — because
+    /// a check against a value that was never going to be printed passes
+    /// whether or not redaction works.
+    #[test]
+    fn a_customer_object_debug_output_redacts_personal_identifiers() {
+        let row = vpay_db::CustomerRow {
+            address: vpay_db::CustomerAddress {
+                line1: Some("12 Rue de la Paix".to_owned()),
+                line2: Some("Apt 4".to_owned()),
+                city: Some("Douala".to_owned()),
+                state: Some("Littoral".to_owned()),
+                postal_code: Some("00237".to_owned()),
+                country: Some("CM".to_owned()),
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_702_000),
+            },
+            ..customer_row()
+        };
+        let customer = CustomerObject::try_from(&row).expect("a well-formed row renders");
+
+        let formatted = format!("{customer:?}");
+
+        // Redactions are visible but values are hidden.
+        assert!(
+            formatted.contains("[") && formatted.contains("chars redacted]"),
+            "identifier redactions must be visible in debug output: {formatted}"
+        );
+        assert!(
+            formatted.contains("component(s) redacted"),
+            "address redaction must be visible in debug output: {formatted}"
+        );
+
+        // Specific identifiers are redacted — checked against the values
+        // this fixture actually carries (see `customer_row`).
+        assert!(
+            !formatted.contains("Ada Ngo"),
+            "name must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("ada@example.cm"),
+            "email must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("237600000200"),
+            "phone must not appear in debug output: {formatted}"
+        );
+
+        // The address — formal components and the GPS pair — is redacted
+        // too. A payer's coordinates name where they can be found as
+        // precisely as their street does, so this is not optional.
+        assert!(
+            !formatted.contains("Rue de la Paix"),
+            "street address must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("Douala"),
+            "city must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("4061000") && !formatted.contains("9702000"),
+            "GPS coordinates must not appear in debug output: {formatted}"
+        );
+
+        // Other fields are still visible and useful.
+        assert!(
+            formatted.contains("cus_1"),
+            "customer id must be visible: {formatted}"
+        );
+        assert!(
+            formatted.contains("CustomerTag"),
+            "object type tag must be visible: {formatted}"
+        );
+    }
+
     /// The object `docs/flows/merchant-auth.md` documents, key for key.
     ///
     /// Ten keys since issue #46, and the count is the tripwire: an eleventh
@@ -3742,5 +3903,67 @@ mod tests {
             "{formatted}"
         );
         assert!(formatted.contains("shop.example/cancel"), "{formatted}");
+    }
+
+    /// The object `docs/flows/merchant-auth.md` documents, key for key.
+    ///
+    /// Fourteen keys since issue #70, and the count is the tripwire: an
+    /// undocumented key added here reaches every `checkout.session.*` event
+    /// body — signed, delivered at-least-once and stored in `events` forever
+    /// — before anybody writes it down. A merchant SDK that sees a key the
+    /// server documents reaches a decode failure; one that sees a key the
+    /// server doesn't document reads it silently. This asserts the field first.
+    #[test]
+    fn the_checkout_session_object_is_the_documented_fourteen_keys() {
+        let rendered = serde_json::to_value(CheckoutSessionObject::from_row(
+            &session_row(),
+            Some("https://checkout.example/c/cs_1#secret".to_owned()),
+        ))
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id",
+            "object",
+            "livemode",
+            "payment_intent",
+            "ui_mode",
+            "status",
+            "payment_status",
+            "success_url",
+            "cancel_url",
+            "return_url",
+            "url",
+            "customer",
+            "expires_at",
+            "created",
+        ] {
+            assert!(object.contains_key(key), "`{key}` is missing");
+        }
+        assert_eq!(
+            object.len(),
+            14,
+            "an undocumented key was added: {object:?}"
+        );
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "cs_0123456789abcdefghjkmnpq",
+                "object": "checkout.session",
+                "livemode": false,
+                "payment_intent": "pi_3MtwBwLkdIwHu7ix28a3tqPa",
+                "ui_mode": "hosted",
+                "status": "open",
+                "payment_status": "unpaid",
+                "success_url": "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+                "cancel_url": "https://shop.example/cancel",
+                "return_url": null,
+                "url": "https://checkout.example/c/cs_1#secret",
+                "customer": null,
+                "expires_at": 1_757_000_000,
+                "created": 1_756_913_600,
+            })
+        );
     }
 }

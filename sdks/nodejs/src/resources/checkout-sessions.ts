@@ -127,6 +127,9 @@ export class CheckoutSessionsResource {
     if (params.return_url !== undefined) {
       body["return_url"] = params.return_url;
     }
+    if (params.customer !== undefined) {
+      body["customer"] = params.customer;
+    }
     return withRedactedInspect(
       await this.#http.request<CheckoutSession>(
         "POST",
