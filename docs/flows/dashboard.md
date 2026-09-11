@@ -668,6 +668,49 @@ can drift. And a session that still owes a password change gets a `403` where
 a page would send it to `/login/password`: an endpoint has nowhere to send
 anybody, and no client exists yet to route the person.
 
+**The security review of that surface, 2026-09-11 (exp55).** The three checks
+above were re-run as mutations by a reviewer rather than taken on the
+implementer's word, and each went red on the case it names. What the review
+found on top of them, and what it did about it:
+
+- **A refusal with no response behind it named vpay's internal address.**
+  `api.ts`'s `unreachable` writes its message out of the thrown error, so the
+  `502` carried `connect ECONNREFUSED 10.42.3.17:8080
+(vpay-server.vpay-prod.svc.cluster.local)` to the browser, and a `200` that
+  was not JSON carried the first bytes of whatever answered instead. On a page
+  that reaches a staff member who is already signed in; here it is a
+  scriptable endpoint reached by **any** cookie value, because the read that
+  fails is the session read. Fixed: a `status: 0` now answers this surface's
+  own sentence, and `api.ts` is untouched.
+- **A `200` whose body was not the expected document answered `500`.**
+  `getJson` casts the parsed body to `T` unchecked and `pageCursors` indexes
+  `rows[0]`; five of six malformed shapes threw a `TypeError` out of the
+  handler, which Next answers as its own error, and the sixth answered `200`
+  with rows that were an object. The page render had the same exposure through
+  the same seam. Fixed in `src/dash/provider.ts`: such a body is a `502`
+  refusal, never an empty list — an empty list is a claim about the merchant's
+  payments.
+- **Parameter smuggling and the `[id]` segment were attacked and held.**
+  Duplicated parameters, `status[]`, `__proto__`/`constructor`/`prototype`,
+  percent-encoded and full-width spellings, a 200 kB value, and an id that is
+  a URL, a link-local address, `../staff/session`, `//evil.example/x` or
+  carries `?`, `#`, `%2F` or a CRLF: none reached the upstream URL or headers
+  unescaped, and `Object.prototype` was untouched. The cases are now in
+  `bff.test.ts` so a later change cannot quietly make one of them reach it.
+- **Two claims in the code were corrected rather than the code changed.** The
+  test file named the list case as the one pinning the projection; it is the
+  detail case — `getList` has already rebuilt its shape field by field, so the
+  list handler's projection renames three keys and drops nothing. And "absent
+  `Sec-Fetch-Site` is a pre-2020 browser" understated the availability cost:
+  **Safari has sent it only since 16.4 (March 2023)**, so this surface refuses
+  every older WebKit with a `403`. That costs nothing while nothing calls
+  these handlers, and is a decision for whatever eventually does.
+
+**What the review could not check, and what would:** that a real browser's
+`Sec-Fetch-Site`, `Origin` and cookie arrive as this code assumes. Every case
+here is a synthetic `Request` against a stubbed `fetch`. Only a Cypress spec
+against `compose.e2e.yml` can answer it, and there is none.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
