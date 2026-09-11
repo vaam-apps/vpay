@@ -2,8 +2,19 @@
 
 _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57, which split a 3 330-line reference into pages a person can read. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the relative links gained a `../` because the file moved one directory down._
 
-The per-step record — what runs through it today, migrations 0032 and 0033, the money
-tables and the first `procedure` — is on the sibling pages this one ends with.
+This page carries the seam itself. **The per-step record is on four sibling pages**,
+and the text below jumps straight from "Re-checked at 0.12.0" to "Why the generated
+module is private" because they sit between the two on `vpay-db.md` as it was:
+
+- [cratestack-what-runs-through-it.md](cratestack-what-runs-through-it.md) — the
+  transaction seam measured rather than argued, `events.data`, the event vocabulary
+  hazard, and the per-action cost of a missing policy
+- [cratestack-currencies-and-providers.md](cratestack-currencies-and-providers.md) —
+  migrations 0032 and 0033, `reconcile`, and decision D7
+- [cratestack-money-tables.md](cratestack-money-tables.md) — migration 0037, the
+  `jsonb` blocker, and the ten report lines that are false
+- [cratestack-procedure.md](cratestack-procedure.md) — the `procedure` seam and
+  `searchPaymentIntents`, the schema's first, 2026-09-11
 
 ## CrateStack
 
