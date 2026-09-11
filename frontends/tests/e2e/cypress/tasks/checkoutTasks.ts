@@ -5,12 +5,23 @@
  * example by hand.
  *
  * Runs outside the browser sandbox `cy.task` exists for exactly this reason
- * — the spec needs a MERCHANT credential (the `demo-merchant` OAuth keypair
+ * — the spec needs a MERCHANT credential (the `shop-merchant` OAuth keypair
  * `just gen-demo-keys` writes to `.e2e/`) to create the intent, and that
  * credential must never reach the page under test: the whole point of
  * `/v1/browser` is that a payer's browser holds only a publishable key and a
  * `client_secret`, never the merchant's private key
  * (`docs/flows/browser-checkout.md`).
+ *
+ * # Why `shop-merchant` and not `demo-merchant`
+ *
+ * Changed 2026-09-11 (exp51). The demo stack registers two merchant clients
+ * on two tenants, and the dashboard reads exactly one of them — the shop's
+ * (`demo_dashboard_merchant`). The intent minted here is looked up by id in
+ * `dashboard.cy.ts`, so minted as `demo-merchant` it was a payment the
+ * dashboard could not show and the by-id read answered the uniform
+ * cross-tenant 404. Nothing about `checkout.cy.ts` cares which tenant pays:
+ * it drives a publishable key and a `client_secret`, and both merchants have
+ * one.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -36,14 +47,14 @@ export interface MintedCheckout {
  */
 export async function mintCheckoutPaymentIntent(): Promise<MintedCheckout> {
   const baseUrl = process.env["VPAY_BASE_URL"] ?? "http://localhost:8080";
-  const clientId = process.env["VPAY_MERCHANT_CLIENT_ID"] ?? "demo-merchant";
+  const clientId = process.env["VPAY_MERCHANT_CLIENT_ID"] ?? "shop-merchant";
   const privateKeyPath =
     process.env["VPAY_MERCHANT_PRIVATE_KEY_PATH"] ??
-    join(repoRoot, ".e2e", "demo-merchant", "oauth-signing-key.pem");
+    join(repoRoot, ".e2e", "shop-merchant", "oauth-signing-key.pem");
   // Fixed literal `just gen-demo-keys` writes into `.e2e/application-demo.yml`
   // — see that recipe's own comment on why it is fixed rather than generated.
   const publishableKey =
-    process.env["CHECKOUT_PUBLISHABLE_KEY"] ?? "pk_test_demomerchantsandbox01";
+    process.env["CHECKOUT_PUBLISHABLE_KEY"] ?? "pk_test_shopmerchantsandbox1";
 
   let privateKeyPem: string;
   try {

@@ -362,6 +362,24 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
         exit 1
     fi
 
+    # THE MINTED FIXTURE IS THE SHOP'S MERCHANT, not `demo-merchant`, and has
+    # been since 2026-09-11 (exp51). `cy.task('mintCheckoutPaymentIntent')`
+    # creates the PaymentIntent `checkout.cy.ts` confirms and the one
+    # `dashboard.cy.ts` looks up by id, and the dashboard reads exactly one
+    # tenant — `demo_dashboard_merchant`, the shop's. Minted as `demo-merchant`
+    # those two specs paid into a tenant the dashboard does not show, which is
+    # the same invisibility a person hit through the shop by hand.
+    #
+    # Fixed here rather than derived from `demo_dashboard_merchant`, on
+    # purpose: under `just demo_dashboard_merchant=demo-merchant-tenant
+    # test-e2e` the dashboard spec must FAIL, because that override is exactly
+    # the arrangement this variable exists to prevent. A recipe that moved the
+    # fixture with the binding would make the override look harmless.
+    #
+    # `examples/checkout-browser/mint.mjs` — the same mint, run by hand —
+    # carries the same three defaults, so a payment minted there is visible on
+    # the dashboard too.
+    #
     # What the specs need, all of it a published host port, a public key, or —
     # for the dashboard — a PATH to a credential rather than the credential.
     # `dashboardTasks.ts` reads the file in Node; the password never reaches
@@ -380,8 +398,9 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
       VPAY_SHOP_URL=http://localhost:{{demo_shop_port}} \
       VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
-      VPAY_MERCHANT_CLIENT_ID=demo-merchant \
-      VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
+      VPAY_MERCHANT_CLIENT_ID=shop-merchant \
+      VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/shop-merchant/oauth-signing-key.pem" \
+      CHECKOUT_PUBLISHABLE_KEY=pk_test_shopmerchantsandbox1 \
       pnpm --filter @vpay/e2e e2e
     e2e_status=$?
 
@@ -2457,6 +2476,53 @@ demo_shop_port := "3001"
 # a different one.
 demo_dashboard_port := "3000"
 
+# THE ONE TENANT THE DEMO DASHBOARD SHOWS, and the variable that decides it.
+#
+# Added 2026-09-11 (exp51). This stack registers TWO merchant clients, and
+# `just gen-demo-keys`'s generated overlay is where you can read both:
+#
+#     demo-merchant  -> demo-merchant-tenant   what `just demo-walk` pays as
+#     shop-merchant  -> shop-merchant-tenant   what `examples/shop` pays as
+#
+# A `/dash/v1` request reads exactly one tenant's rows — the one
+# `dashboard_client.merchant_id` names, checked at boot and filtered on in
+# every repository call (`vpay_api::dash`'s module doc). So the dashboard can
+# show one of those two and not both, and the two cannot be merged into one
+# tenant either: `ConfigError::DuplicateMerchantId` refuses a config where two
+# `merchant_clients` share a `merchant_id`, deliberately, because two
+# credentials on one tenant could read each other's objects.
+#
+# **It is the SHOP's tenant, and that is a choice about who is looking.** The
+# shop is the clickable surface — the thing a person opens in a browser, buys
+# a tote bag on, and then goes looking for on the dashboard. Until this
+# variable existed the binding was `demo-merchant-tenant`, so a payment made
+# by hand through the shop was invisible on the dashboard and looking it up by
+# id answered the uniform cross-tenant `404`. Nothing was broken: the
+# dashboard was showing its tenant, correctly, and its tenant was the one
+# nobody had clicked anything in. Reported by the maintainer on 2026-09-11.
+#
+# `just demo-walk`'s payments therefore land in a tenant this dashboard does
+# NOT show. That is stated where a reader signs in
+# (`docs/runbooks/demo.md` §6), and this is the override that points it the
+# other way:
+#
+#     just demo_dashboard_merchant=demo-merchant-tenant demo-up
+#     just demo_dashboard_merchant=demo-merchant-tenant demo-staff
+#
+# Both halves move together because `demo_staff_merchant` below is this
+# variable: the staff member must be created in the tenant the dashboard is
+# bound to, or /authorize refuses to mint a code for a tenant this dashboard
+# may not read. `gen-demo-keys` regenerates an overlay whose binding no longer
+# matches, the same job its checks do for `demo_dashboard_port` and
+# `demo_staff_token_ttl`, and refuses a value that names neither registered
+# tenant rather than letting the server exit 78 in a restart loop.
+#
+# What the override does NOT do is keep `just test-e2e` green:
+# `dashboard.cy.ts` asserts that the payment it makes through the SHOP is
+# visible to the demo staff member, and under the override it is not. That
+# spec failing is the proof this variable is load-bearing, not a regression.
+demo_dashboard_merchant := "shop-merchant-tenant"
+
 # The demo dashboard's one staff member — ADR-0017 decision 1's only way in.
 #
 # There is no self-service sign-up and no HTTP endpoint that creates a staff
@@ -2469,11 +2535,12 @@ demo_dashboard_port := "3000"
 # `demo_staff_merchant` must be a `merchant_id` some `merchant_clients` entry
 # registers — `staff add` refuses otherwise, before it opens the database —
 # AND the one `dashboard_client.merchant_id` is bound to, or /authorize
-# refuses to mint a code for a tenant this dashboard may not read. Both are
-# `demo-merchant-tenant` in the generated overlay.
+# refuses to mint a code for a tenant this dashboard may not read. It is
+# therefore `demo_dashboard_merchant` itself rather than a second literal:
+# two literals is how the two went out of step in the first place.
 demo_staff_email := "ada@example.test"
 demo_staff_name := "Ada Demo"
-demo_staff_merchant := "demo-merchant-tenant"
+demo_staff_merchant := demo_dashboard_merchant
 
 # Where the one-time password lands. Under `.e2e/<project>/` so two concurrent
 # demo stacks do not overwrite each other's, and git-ignored like everything
@@ -2539,6 +2606,27 @@ gen-demo-keys: gen-e2e-signing-key
     for tool in cargo jq; do
         command -v "$tool" >/dev/null 2>&1 || { echo "gen-demo-keys: needs '$tool' on PATH" >&2; exit 1; }
     done
+
+    # `demo_dashboard_merchant` has to name a tenant this overlay actually
+    # registers, and there are exactly two of them — the heredoc below writes
+    # both and nothing else. Checked HERE, before a key is generated, because
+    # the failure it pre-empts is silent at this end and loud in the wrong
+    # place at the other: an unregistered tenant is
+    # `ConfigError::DashboardUnknownMerchant` and exit 78 on every restart,
+    # i.e. a `just demo-up` that spends its whole readiness budget on a crash
+    # loop while this recipe reports success. `vpay-server staff add` refuses
+    # it too, one recipe later, with a message about staff rather than about
+    # this variable.
+    case "{{demo_dashboard_merchant}}" in
+        demo-merchant-tenant|shop-merchant-tenant) ;;
+        *)
+            echo "gen-demo-keys: FAIL — demo_dashboard_merchant is '{{demo_dashboard_merchant}}', which is neither" >&2
+            echo "gen-demo-keys: tenant this overlay registers. It must be one of:" >&2
+            echo "gen-demo-keys:   shop-merchant-tenant  what examples/shop pays as (the default)" >&2
+            echo "gen-demo-keys:   demo-merchant-tenant  what \`just demo-walk\` pays as" >&2
+            exit 1
+            ;;
+    esac
 
     # The Orange stub's mappings, COPIED into `.e2e/<demo_project>/` with the
     # payer-facing port substituted — BEFORE the overlay's early exit below,
@@ -2698,9 +2786,22 @@ gen-demo-keys: gen-e2e-signing-key
     # exist, keeping them" and `just demo-up` left server and worker in a
     # restart loop. Keyed on the top-level block header and the one line it
     # carries, so a `merchant_id:` under `merchant_clients` cannot satisfy it.
+    #
+    # Keyed on the CURRENT `demo_dashboard_merchant` since 2026-09-11 (exp51),
+    # so this is also what regenerates a stale overlay after
+    # `just demo_dashboard_merchant=… demo` — the same job
+    # `dashboard_redirect_present` does for `demo_dashboard_port`. Without
+    # that the override would keep an overlay bound to the other tenant while
+    # `just demo-staff` created the staff member in the one asked for, and
+    # every sign-in would die at /authorize rather than at anything naming a
+    # tenant.
+    #
+    # Anchored at both ends and not a `grep -F`, for the reason
+    # `demo_staff_token_ttl` records: a merchant id is a bare token and one
+    # legal value can be a prefix of another.
     dashboard_binding_present() {
         grep -A1 '^dashboard_client:$' "$overlay" \
-            | grep -qE '^  merchant_id: demo-merchant-tenant$'
+            | grep -qE '^  merchant_id: {{demo_dashboard_merchant}}$'
     }
 
     # Added 2026-09-07 (exp28). The base config's redirect_uris names port
@@ -2810,7 +2911,9 @@ gen-demo-keys: gen-e2e-signing-key
             # server log.
             echo "gen-demo-keys: $overlay does not allow http://localhost:{{demo_shop_port}} to frame the checkout page — regenerating the pair"
         elif ! dashboard_binding_present; then
-            echo "gen-demo-keys: $overlay predates the dashboard client's \`merchant_id\` binding (PR #69) — regenerating the pair"
+            # Since exp51 this also fires when `demo_dashboard_merchant`
+            # MOVED rather than only when the line is absent altogether.
+            echo "gen-demo-keys: $overlay does not bind the dashboard client to {{demo_dashboard_merchant}} — regenerating the pair"
         elif ! dashboard_redirect_present; then
             # Added 2026-09-07 (exp28). The base config registers port 8080;
             # the dashboard app is published on `demo_dashboard_port` and
@@ -3038,7 +3141,7 @@ gen-demo-keys: gen-e2e-signing-key
     # stack's \`demo-walk\` down with it (\`invalid_client\`; see
     # docs/runbooks/demo.md §7 for why a regenerated pair does that).
     dashboard_client:
-      merchant_id: demo-merchant-tenant
+      merchant_id: {{demo_dashboard_merchant}}
       redirect_uris:
         - http://localhost:{{demo_dashboard_port}}/dash/v1/callback
 

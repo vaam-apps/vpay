@@ -8,10 +8,13 @@
  * `cypress/tasks/checkoutBrowserServer.ts` for why a child process rather
  * than an import). The PaymentIntent it confirms is minted server-side, in
  * Node, by `cy.task('mintCheckoutPaymentIntent')`
- * (`cypress/tasks/checkoutTasks.ts`) using the `demo-merchant` OAuth keypair
+ * (`cypress/tasks/checkoutTasks.ts`) using the `shop-merchant` OAuth keypair
  * `just gen-demo-keys` writes to `.e2e/` — the same credential
- * `examples/merchant-demo` and `just stripe-compat` use, never present in
- * this spec's browser.
+ * `examples/shop` pays with, and the tenant the demo dashboard is bound to
+ * (`demo_dashboard_merchant`), never present in this spec's browser. It was
+ * `demo-merchant` until 2026-09-11 (exp51); which merchant pays makes no
+ * difference to anything asserted here, and every difference to whether
+ * `dashboard.cy.ts` can find the intent afterwards.
  *
  * `237600000ce0` is `examples/merchant-demo/src/main.rs`'s `DEMO_MSISDN`: a
  * documentation number that keys WireMock scenario `mtn-e2e-poll`
