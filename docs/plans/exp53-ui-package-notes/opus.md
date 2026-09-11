@@ -23,7 +23,7 @@ and held five primitives; the other fifteen each held a component and its `cva`
 map in one file, and a component's test and story sat beside them in the same
 flat directory as everybody else's.
 
-It is **28 folders** now. Each holds the component, its `cva` variant map in
+It is **29 folders** now. Each holds the component, its `cva` variant map in
 its own file, its test, its story, and an `index.ts`:
 
 ```
@@ -34,6 +34,11 @@ src/components/button/
   button.stories.tsx   38
   index.ts              2   re-exports both
 ```
+
+Every one of the 29 has a test, a story and an `index.ts`; fifteen have a
+`*.variants.ts`, which is exactly the fifteen with a `cva` map (the other
+fourteen are static-class or pure composition, and a variants file for them
+would be an empty ceremony).
 
 `layout.tsx`'s five primitives — and the two the plan's own count forgot —
 became seven folders: `stack`, `text`, `visually-hidden`, `logo`, `heading`,
