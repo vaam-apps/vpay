@@ -94,10 +94,10 @@ components a design system usually has.
 
 | Found in the apps                                             | Count                        | Built                        |
 | ------------------------------------------------------------- | ---------------------------- | ---------------------------- |
-| Bare `<code>`                                                 | 18, across 6 dashboard files | `Code`                       |
+| Bare `<code>`                                                 | 19, across 7 dashboard files | `Code`                       |
 | Unstyled `next/link` anchors                                  | 5                            | `Link` (Base UI `useRender`) |
 | `<div aria-live="polite" aria-atomic="true">`, byte-identical | 2                            | `LiveRegion`                 |
-| Bare `<section>`, none with an accessible name                | 11                           | `Section`                    |
+| Bare `<section>`, none with an accessible name                | 11 — 5 dashboard, 6 checkout | `Section` (dashboard only)   |
 | `<table><tbody><tr><th scope="row">` key/value markup         | 2 blocks, 20 rows            | `DataList` / `DataListRow`   |
 | `EmptyState` — a primitive living in an app                   | 1                            | moved into `@vpay/ui`        |
 | `Pager` — a primitive living in an app                        | 1                            | `Pagination`                 |
@@ -107,8 +107,24 @@ Three things the audit found that are worth naming individually.
 
 **A `<section>` with no accessible name is not a landmark.** axe-core's
 `region` rule does not count one, and a heading merely sitting inside a
-`<section>` does not name it. All eleven of the dashboard's were `<div>`s with
-extra steps. `Section` takes the heading as a **required** `string` prop and
+`<section>` does not name it. All eleven were `<div>`s with extra steps.
+
+**Corrected by the exp53 review, 2026-09-11: only FIVE of the eleven were
+converted, and this section said all of them were.** The five are the
+dashboard's, in `payment-detail.tsx`. The other six are the checkout's, all in
+`screens.tsx` (lines 283, 450, 524, 568, 659 and 708), and they are still bare
+and still nameless — `git grep '<section' -- frontends/apps` finds them. They
+are not a regression (they are what `master` has) and they raise no axe
+violation, because `checkout-view.tsx` and `return-view.tsx` each wrap the
+page in `<main>` and the `region` rule asks only that content sit inside SOME
+landmark. What a payer using a screen reader still cannot do is jump to one by
+name. Converting them is not the mechanical edit the dashboard's was: each
+checkout `<section>` heads itself with `ScreenHeading`, which owns
+`data-screen`, `tabIndex` and the focus-on-screen-change behaviour a state
+machine needs, and `Section` renders a `Heading` of its own from a required
+`title` string. Reconciling the two is a change to the payer-facing app's
+focus handling, which is a decision for the maintainer rather than a
+reviewer's drive-by. It is listed in §7 as not done. `Section` takes the heading as a **required** `string` prop and
 puts those same words on the section as its accessible name, so the labelled
 form is the only form; `section.test.tsx` asserts
 `getByRole('region', { name: 'Charge' })`, which only matches when the name
@@ -338,6 +354,11 @@ read.
   stylesheet (`theme-contrast.test.ts`) and not from a rendered glyph; plan §7
   row 6's `cypress-axe` is still built by nobody, and this branch did not
   build it.
+- **The checkout's six bare `<section>` elements were NOT converted**, only
+  the dashboard's five, and §3 above has been corrected where it said
+  otherwise. See the reason there: `ScreenHeading` and `Section` both want to
+  own the heading, and reconciling them touches the checkout's focus
+  management. Six nameless sections remain in `screens.tsx`.
 - **No screenshots committed.** Previous lanes committed before/after PNGs;
   this pass did not take any, so nothing here is claimed on the strength of
   one.

@@ -468,12 +468,15 @@ without copying it — so they are `EmptyState`, `Pagination` and `Timeline` in
 the shared package. What is left in the app is `PaymentsPager`: the two
 `next/link` elements `Pagination` renders, because the router is the app's.
 
-Three more things this app wrote by hand are primitives too: eighteen bare
+Three more things this app wrote by hand are primitives too: nineteen bare
 `<code>` tags are `Code`, five unstyled `next/link` anchors are `Link`, and
-the eleven bare `<section>` elements are `Section` — which matters beyond
+this app's five bare `<section>` elements are `Section` — which matters beyond
 tidiness, because a `<section>` with no accessible name is not a landmark at
 all, and a heading merely sitting inside one does not give it a name. All
-eleven were `<div>`s with extra steps. `payment-detail.tsx` fell from 264
+five were `<div>`s with extra steps. (Six more, all in the checkout's
+`screens.tsx`, were found by the same audit and are NOT converted — see
+[the exp53 notes](../plans/exp53-ui-package-notes/opus.md) §7.)
+`payment-detail.tsx` fell from 264
 lines to 207 with nothing removed from the screen, `DataList`/`DataListRow`
 having taken over the twenty rows of `<th scope="row">` markup it repeated
 twice.
