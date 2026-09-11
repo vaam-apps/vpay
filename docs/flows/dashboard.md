@@ -500,6 +500,48 @@ rendered page.
 rotation. See "What slice 1 did NOT build" above and
 [../status.md](../status.md) for the row-by-row picture.
 
+**Built and proven, 2026-09-11 (exp56): the BFF's method policy and its first
+browser evidence.** `frontends/apps/dashboard/middleware.ts` closes the
+`OPTIONS` answer that Next gave before this app's own checks ran, and five
+cases in `dashboard.cy.ts` drive `/api/dash/**` from a real browser. Both are
+described in full further down this document; what belongs here is the count:
+the dashboard suite is **243 vitest cases in 22 files, 0 skipped**, and
+`just test-e2e` is **27 Cypress tests, 27 passing**, of which `dashboard.cy.ts`
+holds 16.
+
+**Deliberately NOT built in exp56: Lane 3 of
+[the Refine plan](../plans/exp55-refine-seam-bff-notes/refine-plan.md), so the
+BFF still has no consumer.** It was in that change's brief and was declined
+rather than started, for reasons that are the plan's own and are worth naming
+so the next attempt does not rediscover them:
+
+- **The plan's file map says `src/dash/provider.ts` is "Lane 1 → Lane 3
+  dataProvider", and it cannot be.** That module takes a `DashSession`
+  carrying the `/dash/v1` bearer and calls `readDash`; a browser holds
+  neither. Lane 3 needs a **second**, client-side provider over
+  `/api/dash/**`, which is a module and a test suite the plan does not
+  account for.
+- **`notFound()` is a server-only API, and the detail page's use of it is a
+  security property.** `app/payments/[id]/page.tsx` maps vpay's `404` to
+  `notFound()` precisely because `/dash/v1` answers the identical body for
+  another merchant's id and for one that never existed
+  (`dashboard_read_surface.rs:531`). Lane 3's own decisive check 3 requires
+  that mapping to survive — but a `useOne` in a client component cannot call
+  `notFound()` on a resolved fetch, and the plan does not say what replaces
+  it. Choosing is a decision about a cross-tenant id oracle on a payment
+  system, not a plumbing detail.
+- Around those two: two new dependencies on independent majors
+  (`@refinedev/core` 5, `@refinedev/nextjs-router` 7), a route-group move of
+  both pages, R4 (filters stay in the URL and work with JS off), R11 (no
+  `useTable` page count against a surface that returns no total), R10's
+  before/after bundle measurement, and rework of `layout.test.tsx`,
+  `a11y.test.tsx` and both component suites once the table is client-fetched.
+
+Nothing was half-done: no Refine package is installed, no page moved, and the
+BFF is exactly as unused as the Lane 2 row says. **The `OPTIONS` fix and the
+browser evidence stand on their own** — they are about a surface that exists
+either way.
+
 **Restyled, 2026-09-07 (exp26 Lane D):** the scaffold's `app/layout.tsx` and
 `app/page.tsx` onto `@vpay/ui`'s components — `styling_files` 2 → 0,
 `class_tokens_distinct` 17 → 0 in both files (`exp26-plan-count.sh`); Tailwind
