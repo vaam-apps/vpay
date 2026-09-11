@@ -3474,15 +3474,21 @@ fn check_parity_cell(
         }
         for name in names {
             if index.contains(&name) {
-                // Verify that the test actually contains assertions about request body or path.
-                // A test that exists but contains no such assertions proves only that the
-                // test exists, not that the SDK actually sends the capability.
-                if !assertions.contains(&name) {
+                // For rows that explicitly claim to test body or path, verify that the
+                // test actually contains assertions about them. A test that exists but
+                // contains no such assertions proves only that the test exists, not that
+                // the SDK actually sends the capability as documented.
+                let row_claims_body_or_path = row.capability.to_lowercase().contains("body")
+                    || row.capability.to_lowercase().contains("path")
+                    || row.capability.to_lowercase().contains("exact");
+
+                if row_claims_body_or_path && !assertions.contains(&name) {
                     problems.push(format!(
                         "{at}: the test `{name}` exists but contains no assertion about the \
-                         request body or path — a test that merely exists proves the name is \
-                         correct, not that the SDK sends the capability. Add an assertion like \
-                         `expect(req.body).toContain(...)` or check `req.path` or `req.url`"
+                         request body or path — the row claims to prove the capability by \
+                         checking request format, so the test must assert on the request. \
+                         Add an assertion like `expect(req.body).toContain(...)` or check \
+                         `req.path` or `req.url`"
                     ));
                 } else {
                     *proven += 1;
@@ -4420,69 +4426,50 @@ fn rust_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
 }
 
 /// Extract TypeScript test names that contain `.body` or `.path` assertions.
+/// Uses a simple string-based approach to find test names and check their bodies.
 fn ts_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0usize;
+    // Find all test functions and check if they contain body/path assertions
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Look for it("test name", ...)  or test("test name", ...)
+        if (trimmed.starts_with("it(\"") || trimmed.starts_with("test(\"")) {
+            // Extract the test name
+            if let Some(name_end) = trimmed.find("\", ") {
+                let name_start = if trimmed.starts_with("it(\"") { 4 } else { 6 };
+                let test_name = trimmed[name_start..name_end].to_string();
 
-    while i < chars.len() {
-        let Some(after_keyword) = ts_test_keyword_at(&chars, i) else {
-            i += 1;
-            continue;
-        };
-        let mut j = after_keyword;
+                // Find the position of this test in the text to scan its body
+                if let Some(test_pos) = text.find(&format!("{}(\"{}",
+                    if trimmed.starts_with("it(") { "it" } else { "test" },
+                    &test_name)) {
+                    // Find the opening brace
+                    if let Some(brace_start) = text[test_pos..].find('{') {
+                        let start = test_pos + brace_start + 1;
+                        // Find the closing brace (simple: just look for the next closing brace at depth 0)
+                        let mut depth = 1;
+                        let mut pos = start;
+                        let mut end = start;
+                        for ch in text[start..].chars() {
+                            if ch == '{' {
+                                depth += 1;
+                            } else if ch == '}' {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = pos;
+                                    break;
+                                }
+                            }
+                            pos += ch.len_utf8();
+                        }
 
-        // Skip whitespace and opening paren
-        while j < chars.len() && (chars[j] == ' ' || chars[j] == '(' || chars[j] == '"') {
-            j += 1;
-        }
-
-        // Extract test name
-        let name_start = j;
-        while j < chars.len() && chars[j] != '"' && chars[j] != ')' {
-            j += 1;
-        }
-
-        if j > name_start {
-            let test_name: String = chars[name_start..j].iter().collect();
-
-            // Find the opening brace of the test function
-            while j < chars.len() && chars[j] != '{' {
-                j += 1;
-            }
-
-            if j < chars.len() {
-                j += 1; // Skip opening brace
-                let brace_depth_start = j;
-                let mut depth = 1;
-                let test_start = j;
-
-                // Scan through test body looking for body/path assertions
-                let mut has_assertion = false;
-                while j < chars.len() && depth > 0 {
-                    if chars[j] == '{' {
-                        depth += 1;
-                    } else if chars[j] == '}' {
-                        depth -= 1;
-                    }
-
-                    // Check for body/path patterns
-                    if depth > 0 && j + 4 < chars.len() {
-                        let segment: String = chars[j..j.min(j+20)].iter().collect();
-                        if segment.contains(".body") || segment.contains(".path") {
-                            has_assertion = true;
-                            break;
+                        let test_body = &text[start..end];
+                        if test_body.contains(".body") || test_body.contains(".path") {
+                            out.insert(test_name);
                         }
                     }
-                    j += 1;
-                }
-
-                if has_assertion {
-                    out.insert(test_name);
                 }
             }
         }
-
-        i = j;
     }
 }
 
