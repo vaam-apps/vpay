@@ -339,7 +339,7 @@ pub(crate) async fn transition_in_tx(
 /// with the status flip or not at all — the outbox rule this crate applies
 /// to every other terminal transition ([`crate::settlement`],
 /// [`crate::checkout_sessions::CheckoutSessions::expire_due`],
-/// [`crate::Customers::delete_idle`]). There *was* a pooled
+/// [`crate::Customers::erase_idle`]). There *was* a pooled
 /// `PaymentIntents::cancel`, and it was the whole of the bug: the row moved
 /// to `canceled` on its own connection and no merchant was ever told, so a
 /// shop driven by webhooks could not reach a cancelled state at all. Deleting

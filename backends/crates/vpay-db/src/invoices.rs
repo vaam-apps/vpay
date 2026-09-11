@@ -45,7 +45,7 @@
 //! renders the wire object *from that row*, and appends the event beside it.
 //!
 //! That is a departure from [`crate::settlement`] and
-//! [`crate::customers::Customers::delete_idle`], which take a caller-rendered
+//! [`crate::customers::Customers::erase_idle`], which take a caller-rendered
 //! `event_data` as a parameter, and the reason is specific rather than
 //! stylistic: those two describe an object whose post-write shape the caller
 //! can *project* exactly (an intent that is about to be `succeeded`; a

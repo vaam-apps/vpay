@@ -193,9 +193,71 @@ pub(crate) fn customer_json(id: &str) -> Value {
         // Canonical, as the server stores and renders it — not the `+237 6 …`
         // a merchant would have typed.
         "phone": "237600000200",
+        // The server renders one nested object with all EIGHT components,
+        // nulls included, or `null` for a customer with no address at all.
+        // This fixture carries the object, so a decode that dropped the key
+        // or flattened it fails rather than reading as "no address".
+        //
+        // `latitude_microdeg` / `longitude_microdeg` are vpay's own — Stripe's
+        // address has no coordinate — and they are whole microdegrees, never
+        // degrees. Written as bare JSON integers here on purpose: if `Address`
+        // typed them as a float this fixture would still decode, so
+        // `create_customer_sends_the_documented_body_and_decodes_the_object`
+        // asserts the decoded value against an `i64` rather than only that it
+        // decoded. (This comment named
+        // `a_customer_decodes_its_coordinate_as_whole_microdegrees` until the
+        // review of 2026-09-11 — a test that exists in no file.)
+        "address": {
+            "line1": "12 Rue Njo-Njo",
+            "line2": null,
+            "city": "Douala",
+            "state": null,
+            "postal_code": null,
+            "country": "CM",
+            "latitude_microdeg": 4_061_000,
+            "longitude_microdeg": 9_786_000,
+        },
         "metadata": { "order_id": "1234" },
         "created": 1_753_401_600,
         "livemode": false,
+    })
+}
+
+/// The customer object as it comes back **after an erasure**: every
+/// identifier the redaction marker, `deleted: true`, and the merchant's own
+/// `metadata` untouched.
+///
+/// A fixture of its own rather than a flag on [`customer_json`], because it
+/// is a different shape — ten keys rather than nine — and the test that reads
+/// it is about the key that is only there sometimes.
+///
+/// The address is the marker in the six formal components and **`null`** in
+/// the two coordinate ones, which is what the server really sends: a
+/// coordinate is an integer and there is no integer that is not a possible
+/// place, so the marker is not a value it can take. A fixture that put the
+/// marker there instead would be asserting a body the server cannot produce
+/// — and, with `Option<i64>`, would not even decode.
+pub(crate) fn erased_customer_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "object": "customer",
+        "name": "[redacted]",
+        "email": "[redacted]",
+        "phone": "[redacted]",
+        "address": {
+            "line1": "[redacted]",
+            "line2": "[redacted]",
+            "city": "[redacted]",
+            "state": "[redacted]",
+            "postal_code": "[redacted]",
+            "country": "[redacted]",
+            "latitude_microdeg": null,
+            "longitude_microdeg": null,
+        },
+        "metadata": { "order_id": "1234" },
+        "created": 1_753_401_600,
+        "livemode": false,
+        "deleted": true,
     })
 }
 

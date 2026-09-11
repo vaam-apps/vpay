@@ -226,7 +226,7 @@ end.
 statement lives in `payment_intents::cancel_in_tx`, reachable only through
 `TxRepositories`, because a cancel emits `payment_intent.canceled` and that
 event has to commit with the status flip or not at all — the same rule
-`settlement`, `checkout_sessions::expire_due` and `customers::delete_idle`
+`settlement`, `checkout_sessions::expire_due` and `customers::erase_idle`
 already apply. Leaving the pooled variant beside the transactional one would
 have kept "cancel without an event" one call away; deleting it makes it not
 expressible. `Ok(None)` is the answer that must write **no** event, and
@@ -535,11 +535,11 @@ product document; this section is why the code is shaped the way it is.
 
 ### Two of eight methods go through CrateStack, and one column decides which
 
-| Method                                                                                                          |                                            |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `touch_last_used`                                                                                               | **CrateStack** — `update_many(..).set(..)` |
-| `delete`                                                                                                        | **CrateStack** — `delete_many(..)`         |
-| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `delete_idle` | hand-written `sqlx`                        |
+| Method                                                                                                                                                                                |                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `touch_last_used`                                                                                                                                                                     | **CrateStack** — `update_many(..).set(..)`       |
+| the hard-delete branch of `erase_in_tx`                                                                                                                                               | **CrateStack** — `delete_many(..).run_in_tx(..)` |
+| `insert_in_tx`, `lock_for_update`, `update_in_tx`, `get_for_merchant`, `list_page`, `idle_since`, `erase_idle`, and the anonymise branch and six trailing statements of `erase_in_tx` | hand-written `sqlx`                              |
 
 _(The table read `create`, `update` and "two of seven" until 2026-09-10. The
 two pooled writers are gone: `POST /v1/customers` and
@@ -555,6 +555,27 @@ invisible while the _declared_ one became a `[blocking]` drift line; and
 `Value::from_plain_json` demotes any JSON number outside `i64` to `f64`,
 silently, on a column that is merchant-authored and echoed back verbatim.
 
+**That second cost is also what decided the shape of the GPS half of the
+address** (2026-09-11, "address in our system means both formal as well as
+GPS"). A coordinate had to be something this stack can carry exactly, and
+`from_plain_json` routes every JSON number through `Number::as_i64()` — so a
+decimal degree is a value CrateStack rounds. `address_latitude_microdeg` and
+`address_longitude_microdeg` are therefore `BIGINT` counts of millionths of a
+degree, declared on `model Customer` as `Int?` with a `@range` mirroring
+`0041`'s CHECKs, and the unit is in the column name so no layer can read the
+number as degrees. It is the money layer's rule — integer minor units with the
+scale named — applied to the other quantity vpay stores at a fixed scale. The
+[customers flow doc](../flows/customers.md) carries the product half.
+
+What that model **cannot** say is the pair rule:
+`address_coordinates_are_both_or_neither` is multi-column, this grammar has no
+cross-field validator, and so the only places the rule exists are migration
+`0041` and `vpay_api::v1::customers`' `400`. Two columns and three constraints
+cost exactly **two** drift lines — the two single-column range CHECKs, which
+are reported once each as `[safe] … is not declared` exactly as the six
+`address_*_length` bounds are; the columns themselves and the multi-column pair
+rule cost nothing. `EXPECTED_DRIFT_CHANGES` 177 → 179, measured.
+
 The consequence is not obvious and is worth stating: because the model does
 not declare the column, the generated model _struct_ has no field for it
 either, so a CrateStack **read** could not render the wire object at all.
@@ -564,7 +585,13 @@ seven.
 
 That is not a consolation prize. The two that did move are the two where being
 wrong is irreversible: `touch_last_used` is the write the twelve-month
-retention sweep reads, and `delete` is the hard delete of personal data. Both
+retention sweep reads, and `delete_many` is the hard delete of personal data.
+It stayed on CrateStack through migration `0041` deliberately, even though its
+caller became a `pub(crate)` function inside a larger transaction, because
+`a_customer_delete_is_a_delete_and_not_a_soft_delete` pins the _rendered_
+statement — and adding `@@soft_delete` to `model Customer` is a one-line
+schema edit that compiles, passes `check-schema`, and turns every erasure into
+a flag on a row that keeps the payer. Both
 policy failures are **silent** — `update_many` and `delete_many` compile the
 `@@allow` into the statement's own `WHERE`, so a deleted arm matches zero rows
 and returns `Ok` — which is why `every_action_this_module_calls_has_an_allow_arm`
@@ -581,20 +608,86 @@ between the two reads the cursor row can be deleted, and this table's rows
 **are** deleted, by both `DELETE /v1/customers/{id}` and the retention sweep.
 The one-statement form degrades to an empty page there.
 
-`idle_since` and `delete_idle` share a `NOT EXISTS` pair over
-`payment_intents` and `checkout_sessions` — correlated subqueries over
-_different_ tables, which `Filter` compares nothing of, and for which there is
-no `@relation` to side-load because neither of those tables is modelled.
+`erase_in_tx` reads a `NOT EXISTS` triple over `payment_intents`,
+`checkout_sessions` and `invoices` — correlated subqueries over _different_
+tables, which `Filter` compares nothing of, and for which there is no
+`@relation` to side-load because none of those tables is modelled.
 
-The pair is one `const UNREFERENCED`, and it is a constant because
-`sql_audit` made it one: it was first written as a function taking the outer
-query's alias, and the gate failed on the computed `{guard}`. Both call sites
-spell the table `customers`, so there was no alias to parameterise. The
-duplication that matters is the _other_ direction — a table in the read's
-guard and not the write's would render a `customer.deleted` object for a
-customer the write then refuses to delete — and
+It is one `const UNREFERENCED`, and it is a constant because `sql_audit` made
+it one: it was first written as a function taking the outer query's alias, and
+the gate failed on the computed `{guard}`. Both call sites spelled the table
+`customers`, so there was no alias to parameterise.
+
+**It stopped being a guard and became a branch on 2026-09-10** (migration
+`0041`, issue #68). It used to be in `idle_since`'s `WHERE` as well, so a
+customer any of the three tables referenced was skipped by the sweep and
+refused by `DELETE /v1/customers/{id}` — which exempted from the twelve-month
+retention promise exactly the payers vpay had taken money from. It now selects
+between hard-deleting the row and anonymising it, and what a missing table
+costs got worse: the branch would choose the hard delete, the `NO ACTION`
+foreign key would raise `23503`, and the whole erasure — event and four
+redaction statements included — would roll back, leaving the payer un-erased
+with the merchant told nothing.
 `the_sweep_guard_names_every_table_that_can_reference_a_customer` pins the
-count at two so the day invoices exist, the omission is a test failure.
+count at three, and
+`an_invoiced_customer_is_anonymised_rather_than_deleted` is the behavioural
+half.
+
+### The erasure is seven statements in one transaction, and six of them are not about `customers`
+
+`erase_in_tx` is the whole of issue #68, and the shape is what the issue got
+wrong. The issue asks for identifiers to be redacted "on retained intents and
+sessions"; an intent has never carried one. The copies that survived a
+customer deletion were `events.data` — every `customer.*` body ever written,
+in a table nothing prunes — `charges.payer_ref`/`payer_ref_masked`, reachable
+from a customer only _through_ an intent, and
+`idempotency_keys.response_body`, the exact JSON a `POST /v1/customers`
+answered. The sabotage review of 2026-09-11 added two more found the same way:
+`charges.failure_raw` and `refunds.failure_raw`, which are not identifier
+columns and hold identifiers anyway — the rail's message kept verbatim, and a
+rail refusing a collection names the subscriber. All five are rewritten in the
+transaction that erases the row, because "vpay erased this payer" may not be
+true of one table and false of four.
+
+The seventh statement is not about a copy of the payer at all: rewriting
+`events.data` changes the bytes a webhook delivery already mid-ladder would
+re-render, and `webhook_deliveries.payload_sha256` is the digest the first
+signed attempt recorded. So the deliveries of those events that are still
+`pending` or `failed` have that column cleared in the same transaction, and
+the next attempt signs and sends the redacted body. Without it the erasure
+dead-letters exactly the delivery that announces it — measured, not argued,
+in `an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`.
+
+The `events` and `idempotency_keys` statements share one `const
+REDACT_CUSTOMER_KEY` — a `CASE` over `jsonb_each`'s key, naming the four
+identifier keys and passing everything else through, so `metadata` (the
+merchant's data) and `id` survive.
+
+**The `address` arm replaces the whole key rather than walking into it**, and
+since 2026-09-11 that is what makes the erasure reach a payer's GPS point
+inside `data.object.address`. The replacement is `redacted_address_json()`,
+which has to be key-for-key what `vpay_api::model::AddressObject` renders —
+a stored body this rewrites is read back by a merchant on a replay or a
+redelivery, and a key here the object does not have is a shape they meet
+there and nowhere else. Its six formal components carry the marker and its
+two coordinate keys carry JSON `null`, for the reason the column does: a
+coordinate is an integer, the marker is not a value it can take, and a string
+in a field both SDKs decode as an integer fails the decode rather than reading
+as redacted. `the_redacted_address_body_is_the_shape_the_wire_renders` pins
+the key set and the per-type value in milliseconds; the container-backed
+scanner cannot tell an `address` reduced to `{}` from a redacted one, because
+an absent key holds no identifier either. They cannot share the whole statement:
+one reads `events.data` and the other `idempotency_keys.response_body`, and
+`sql_audit` refuses a computed fragment, so the `FROM` differs and only the
+rule is shared. That is the half that could drift, and the half a test can
+read: `the_event_redaction_names_the_identifiers_and_spares_the_merchants_data`
+asserts both directions of it in milliseconds.
+
+`provider_requests` needs no statement, and that is a property of migration
+`0016` rather than an omission: it stores a status code, an attempt number and
+an operator-facing `error_kind` and no bodies at all. `webhook_deliveries`
+holds no copy either — `0022` keeps a `payload_sha256` and not the payload —
+and gets its statement for the opposite reason to a leak, above.
 
 ### The customer writes are transactional, and there is no pooled variant
 
@@ -712,7 +805,7 @@ also had to be readable through this layer.
 
 ### The transactions are opened by `vpay-api`, not here, and that is a departure
 
-`settlement` and `Customers::delete_idle` both take a caller-rendered
+`settlement` and `Customers::erase_idle` both take a caller-rendered
 `event_data` parameter and open their own transaction. The three invoice
 transitions that emit an event do the opposite: they are
 [`TxRepositories`] methods, so `vpay_api::v1::invoices` opens the transaction,
@@ -1486,9 +1579,14 @@ therefore no longer compiles as a statement. Under 0.8 this crate passed
 issue #45, **39 since 2026-09-06**, when `refunds::list_for_intent` and
 `events::list_for_objects` landed with the `/dash/v1` payment detail (exp23),
 and **45 since the same day**, when `customers` landed with S4a
-(`create`, `get_for_merchant`, `update`, `list_page`, `idle_since`,
-`delete_idle` — six of that module's eight methods; `touch_last_used` and
-`delete` go through CrateStack and build no string at all). Taking the
+(`insert_in_tx`, `get_for_merchant`, `update_in_tx`, `list_page`,
+`idle_since`, `erase_idle` and, since migration `0041`, `erase_in_tx`'s
+branch query, its anonymising `UPDATE` and two of its five redaction
+statements — the other three are plain `&'static str` and need no wrapper;
+`touch_last_used` and the hard-delete branch go through CrateStack and build
+no string at all).
+`EXPECTED_ASSERT_SITES` went **56 -> 60** in that change, a net +4 over five
+additions and one removal, and its own doc comment enumerates them. Taking the
 `String` **by value** rather than `AssertSqlSafe(&sql)` is
 deliberate: the borrowed form goes through `AssertSqlSafe<&str>`, which sqlx's
 own docs describe as copying the string.

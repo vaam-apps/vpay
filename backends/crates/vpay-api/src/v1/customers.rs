@@ -1,9 +1,12 @@
 //! `/v1/customers` — create, retrieve, update, list, delete.
 //!
 //! The merchant-owned record of a payer they expect to see again (S4a). It is
-//! Stripe's `customer`, narrowed: `id`, `name`, `email`, `phone`, `metadata`,
-//! `created`, `livemode`, and nothing else. `docs/flows/customers.md` is the
-//! long version of everything below; this header is the short one.
+//! Stripe's `customer`, narrowed in every field but one: `id`, `name`,
+//! `email`, `phone`, `address`, `metadata`, `created`, `livemode` — and
+//! `deleted`, which appears only on an erased one. The exception is
+//! `address`, which is *wider* than Stripe's; see below.
+//! `docs/flows/customers.md` is the long version of everything below; this
+//! header is the short one.
 //!
 //! **Tenancy.** Every query takes the [`MerchantScope`] the authentication
 //! middleware resolved. A merchant asking for another merchant's `cus_…` gets
@@ -11,6 +14,24 @@
 //! and a merchant naming another merchant's `cus_…` in `customer` on an
 //! intent or a session gets the same `400` as one naming an id that does not
 //! exist.
+//!
+//! # The address is the formal address AND the GPS point
+//!
+//! The maintainer, 2026-09-11: *"address in our system means both formal as
+//! well as GPS"*. `address` therefore carries `latitude_microdeg` and
+//! `longitude_microdeg` beside Stripe's six components — a **deliberate
+//! divergence**, since Stripe's address has no coordinate at all, and one
+//! stated in `docs/api/README.md` and in both SDKs rather than left to be
+//! discovered from a response.
+//!
+//! Two things about the wire shape are rules and not details. The value is a
+//! whole number of **microdegrees** and the unit is in the field name, so no
+//! JSON float ever appears on this object — a field called `latitude` would
+//! be read as degrees, and the first `4.061` would be a value CrateStack's
+//! `Value::from_plain_json` demotes to `f64`. And the two halves are sent
+//! together or not at all: half a coordinate names no place, so
+//! [`validated_address`] answers a `400` naming `address` rather than letting
+//! `address_coordinates_are_both_or_neither` answer a `503`.
 //!
 //! # The three rules that are this resource and not the others
 //!
@@ -23,21 +44,36 @@
 //!    `2376XXXXXXXX` form a rail is given, through
 //!    [`super::account_holders::canonical_msisdn`], so vpay never holds two
 //!    spellings of one payer.
-//! 2. **`DELETE` is a hard delete.** No `deleted_at`, no status column, no
-//!    tombstone. A row that says "this person asked to be forgotten" is still
-//!    the record of that person.
-//! 3. **A customer with payment history cannot be deleted.** The foreign keys
-//!    migration `0034` adds are `NO ACTION`, so an intent or a session
-//!    pinning the customer refuses both this route and the retention sweep.
-//!    That is a deliberate trade and not a bug: the payment record survives,
-//!    and "delete this customer" is therefore not a complete erasure of the
-//!    payer. [`delete`] answers a `409` that says so.
+//! 2. **`DELETE` erases the payer; it never flags them.** There is no
+//!    `deleted_at` and no tombstone, because a row that says "this person
+//!    asked to be forgotten" is still the record of that person. Since
+//!    migration `0041` the erasure has two shapes and neither is a soft
+//!    delete: a customer nothing references is **hard-deleted** and a later
+//!    `GET` is a `404`; one an intent, a session or an invoice references is
+//!    **anonymised** — the row stays, every identifier on it becomes
+//!    `[redacted]`, and a later `GET` answers `200` with `deleted: true`.
+//!    `anonymized_customers_carry_the_marker` is what makes the second a
+//!    database invariant rather than two call sites remembering.
+//! 3. **A customer with payment history is never *detached* from it.** The
+//!    foreign keys migration `0034` adds are `NO ACTION` and stay that way,
+//!    so the payment record survives the erasure with no payer on it. What
+//!    changed on 2026-09-10 (issues #68, #96 item 2) is what happens instead
+//!    of refusing: this route used to answer a `409` advising the merchant
+//!    to clear `name`, `email` and `phone` — advice
+//!    `at_least_one_identifier` refuses, so it could never be followed. The
+//!    `409` is gone; [`delete`] now always succeeds or answers the uniform
+//!    `404`, and the erasure covers every copy of the payer vpay kept
+//!    outside `customers` too (`vpay_db::customers::erase_in_tx`).
+//!
+//!    The one `409` left on this resource is the opposite fact: an **erased**
+//!    customer cannot be updated or attached to a new payment ([`delete`]'s
+//!    own doc, and `erased_customer`).
 //!
 //! # What is *not* here
 //!
 //! The twelve-month retention sweep is `vpay_worker::handlers`' —
-//! `sweep_idle_customers`, a job kind of its own. This module never deletes
-//! on a timer and has no idea what the horizon is.
+//! `sweep_idle_customers`, a job kind of its own. This module never erases on
+//! a timer and has no idea what the horizon is.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,8 +86,8 @@ use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use vpay_core::ids;
 use vpay_db::{
-    CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer, Repositories, TxOutcome,
-    UnitOfWork as _,
+    CustomerAddress, CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer,
+    Repositories, TxOutcome, UnitOfWork as _,
 };
 
 use crate::error::ApiError;
@@ -100,6 +136,36 @@ const NAME_MAX_CHARS: usize = 256;
 /// [`NAME_MAX_CHARS`].
 const EMAIL_MAX_CHARS: usize = 512;
 
+/// Every free-text address component's ceiling — migration `0041`'s five
+/// `address_*_length` CHECKs. See [`NAME_MAX_CHARS`] for why the bound is
+/// here at all.
+///
+/// The same number as [`NAME_MAX_CHARS`] on purpose: a street line and a city
+/// are the same order of thing as a person's name, and a merchant who hits
+/// one bound and not the other for no reason they can see is a worse API than
+/// one number.
+const ADDRESS_MAX_CHARS: usize = 256;
+
+/// `address[postal_code]`'s ceiling — migration `0041`'s
+/// `address_postal_code_length`. Shorter than [`ADDRESS_MAX_CHARS`] because
+/// the longest postal code in use anywhere is ten characters and a 256-
+/// character one is a merchant putting the wrong field in the box.
+const POSTAL_CODE_MAX_CHARS: usize = 64;
+
+/// `|address[latitude_microdeg]|`'s ceiling — 90 degrees, in millionths.
+///
+/// The **definition of the unit** rather than a product limit, which is why
+/// it is `90_000_000` here and `90000000` in migration `0041`'s
+/// `address_latitude_microdeg_range` and nowhere else in between: a value
+/// outside it is not a place. `the_coordinate_bounds_are_the_ones_the_migration_enforces`
+/// reads the migration off disk and compares, so the two cannot drift into
+/// disagreeing about what a latitude is.
+const LATITUDE_MAX_MICRODEG: i64 = 90_000_000;
+
+/// `|address[longitude_microdeg]|`'s ceiling — 180 degrees, in millionths.
+/// See [`LATITUDE_MAX_MICRODEG`].
+const LONGITUDE_MAX_MICRODEG: i64 = 180_000_000;
+
 // ----------------------------------------------------------------- create
 
 /// `POST /v1/customers`'s fields, as the form decoder produces them.
@@ -115,10 +181,74 @@ struct CreateParams {
     name: Option<String>,
     email: Option<String>,
     phone: Option<String>,
+    /// Bracket-encoded (`address[line1]=…`) by [`crate::form::parse_form`],
+    /// exactly as `payment_method_data[mtn_momo][msisdn]` is.
+    address: Option<AddressParam>,
     /// Bracket-encoded (`metadata[order_id]=1234`) by
     /// [`crate::form::parse_form`], exactly as on an intent.
     #[serde(default)]
     metadata: BTreeMap<String, String>,
+}
+
+/// `address` as it arrives, in the two shapes the wire can spell it.
+///
+/// # Why an untagged enum and not `Option<AddressParams>`
+///
+/// The form decoder turns `address[city]=Douala` into an object and
+/// `address=` into the empty **string**, and both are things a merchant
+/// legitimately sends: the first sets the address and the second clears it.
+/// An `Option<AddressParams>` could only decode the first, and `address=`
+/// would come back as serde's "invalid type: string" with `param: "body"` —
+/// a sentence about the request's shape rather than the name of the field
+/// the merchant is trying to clear.
+///
+/// The variant order is load-bearing. `untagged` tries them in order, and
+/// [`Self::Cleared`] is first because a `String` cannot absorb an object
+/// while an all-optional struct *can* absorb almost anything: the other order
+/// would make `address=` decode as an `AddressParams` with every field
+/// absent, which is silently the same as "the request did not mention
+/// address" and would make clearing an address impossible.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", untagged)]
+enum AddressParam {
+    /// `address=` — the whole address, cleared. Any *non*-blank scalar is
+    /// refused by [`validated_address`] rather than accepted here, because
+    /// `address=Douala` is a merchant reaching for `address[city]`.
+    Cleared(String),
+    /// `address[line1]=…` — the address, replaced by these components.
+    ///
+    /// Boxed for `clippy::large_enum_variant`: eight `Option<String>`s beside
+    /// a `String` is exactly the imbalance that lint is about — six since
+    /// 2026-09-10, eight since the GPS half landed on 2026-09-11.
+    Components(Box<AddressParams>),
+}
+
+/// The eight components, as the form decoder produces them — Stripe's six
+/// formal ones and vpay's coordinate.
+///
+/// Every one is `Option<String>` for [`CreateParams`]' reason — the wire is
+/// text — and there is no `deny_unknown_fields`, which is this API's standing
+/// behaviour rather than a decision taken here: `address[county]=…` is
+/// ignored exactly as `nonsense=1` is on every other route.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct AddressParams {
+    line1: Option<String>,
+    line2: Option<String>,
+    city: Option<String>,
+    state: Option<String>,
+    postal_code: Option<String>,
+    country: Option<String>,
+    /// The GPS half, in whole microdegrees. `Option<String>` like every other
+    /// field here and **not** an `Option<i64>`, for [`CreateParams`]' reason
+    /// applied where it matters most: typing it would hand `4.061` to serde,
+    /// which answers `param: "body"` and a sentence about the request's shape
+    /// — where the merchant needs to be told that this field is millionths of
+    /// a degree and that `4.061` is spelled `4061000`. See
+    /// [`checked_microdeg`].
+    latitude_microdeg: Option<String>,
+    /// See [`Self::latitude_microdeg`].
+    longitude_microdeg: Option<String>,
 }
 
 /// `POST /v1/customers`.
@@ -162,6 +292,7 @@ pub(crate) async fn create(
         name: validated.name,
         email: validated.email,
         phone: validated.phone,
+        address: validated.address,
         metadata: Value::Object(validated.metadata),
         created_at: OffsetDateTime::now_utc(),
     };
@@ -181,6 +312,7 @@ struct ValidCreate {
     name: Option<String>,
     email: Option<String>,
     phone: Option<String>,
+    address: CustomerAddress,
     metadata: Map<String, Value>,
 }
 
@@ -191,6 +323,10 @@ async fn validate_create(post: &PostRequest) -> Result<ValidCreate, ApiError> {
     let name = checked_text(present(params.name), "name", NAME_MAX_CHARS)?;
     let email = checked_text(present(params.email), "email", EMAIL_MAX_CHARS)?;
     let phone = checked_phone(present(params.phone))?;
+    // `address=` on a **create** means "no address", not "clear the address":
+    // it is what a client templating an optional field emits, and there is
+    // nothing to clear. `present`'s rule applied one level up.
+    let address = validated_address(params.address)?.unwrap_or_default();
 
     // The one-of rule, at the boundary, where it can name all three
     // parameters. Migration `0034`'s `at_least_one_identifier` is the
@@ -205,6 +341,7 @@ async fn validate_create(post: &PostRequest) -> Result<ValidCreate, ApiError> {
         name,
         email,
         phone,
+        address,
         metadata: validated_metadata(&params.metadata)?,
     })
 }
@@ -245,6 +382,10 @@ struct UpdateParams {
     name: Option<String>,
     email: Option<String>,
     phone: Option<String>,
+    /// Absent leaves the address alone; `address=` clears it; components
+    /// **replace** it whole. See [`vpay_db::CustomerPatch::address`] for why
+    /// the third is a replacement rather than a component-wise merge.
+    address: Option<AddressParam>,
     /// Absent means "leave metadata alone". Present means "merge these keys",
     /// per key, which is Stripe's semantics and is why the merge needs the
     /// stored map — see [`update`].
@@ -331,6 +472,21 @@ async fn update_once(
                 else {
                     return Ok::<_, ApiError>(TxOutcome::Abandon(UpdateOutcome::NotFound));
                 };
+
+                if current.anonymized_at.is_some() {
+                    // An anonymised customer is a record with no payer in it,
+                    // kept only so a merchant's stored `cus_…` resolves. An
+                    // update would put a name, an email or an address back on
+                    // to it — undoing an erasure a payer was promised — and
+                    // `at_least_one_identifier` would not object, because
+                    // `[redacted]` is not NULL. It has to be refused here.
+                    //
+                    // A `409` and not a `404`: the object exists and a `GET`
+                    // answers it, so a `404` would be two routes disagreeing
+                    // about whether a `cus_…` is real. `Category::Conflict`'s
+                    // own definition is "the object's state forbids it".
+                    return Err(erased_customer());
+                }
 
                 let patch = validate_update(params, &current)?;
                 if patch.is_empty() {
@@ -487,6 +643,7 @@ fn validate_update(params: UpdateParams, current: &CustomerRow) -> Result<Custom
         None => None,
         Some(raw) => Some(checked_phone(present(Some(raw)))?),
     };
+    let address = validated_address(params.address)?;
 
     // What each field will be once this patch lands: the patch's value where
     // it says something, the stored value where it does not.
@@ -511,6 +668,7 @@ fn validate_update(params: UpdateParams, current: &CustomerRow) -> Result<Custom
         name,
         email,
         phone,
+        address,
         metadata,
     })
 }
@@ -633,25 +791,39 @@ pub(crate) async fn list(
 /// # Why this carries an `Idempotency-Key` when Stripe's does not
 ///
 /// Every write under `/v1` does (`docs/flows/merchant-auth.md`), and a
-/// `DELETE` is the write where a replay is *most* confusing without one: the
-/// second call would otherwise answer 404 for a deletion that succeeded, and
-/// a merchant retrying a timed-out request cannot tell that from "somebody
-/// else deleted it". With the key, the replay answers the stored
-/// `{deleted: true}`.
+/// `DELETE` is the write where a replay is *most* confusing without one.
+/// Since migration `0041` a second `DELETE` is idempotent on its own — the
+/// customer is already erased, and this answers the same `{deleted: true}`
+/// without writing anything or emitting a second event — but only for the
+/// branch where a row survives to say so. A hard-deleted customer's second
+/// `DELETE` is still a `404` without the key, and the key is what turns it
+/// back into the stored answer.
 ///
-/// # The two refusals, and why one of them is a `409`
+/// # There is one refusal now, not two, and the `409` is gone
 ///
-/// * no such customer **for this merchant** → the uniform `404`;
-/// * a customer an intent or a session references → `409`, because it is a
-///   fact about the object's state rather than about the request's shape, and
-///   because it may stop being true (the referencing objects are not
-///   deletable either, so in practice it never does — which the message says
-///   plainly rather than implying a retry will help).
+/// Until 2026-09-10 a customer an intent, a session or an invoice referenced
+/// was refused with a `409` whose message advised clearing `name`, `email`
+/// and `phone` instead — advice `at_least_one_identifier` refuses, so it
+/// could not be followed. It has been replaced rather than reworded:
+/// `DELETE` now **anonymises** such a customer (issues #68, #96 item 2).
+/// The foreign keys are still `NO ACTION` and the payment record still
+/// survives; what does not survive is the payer on it. So this route answers
+/// the uniform `404` or it succeeds, and `ApiError::Conflict` is no longer
+/// reachable from here.
 ///
-/// The `409` is decided by the **foreign key**, not by a preceding `SELECT`.
-/// A count-then-delete would let a concurrent `POST /v1/payment_intents`
-/// commit a reference between the two, and the customer a merchant is about
-/// to take a payment from would be erased.
+/// # What a merchant sees afterwards, and why the two branches differ
+///
+/// A customer with **no** payment history is hard-deleted and a later `GET`
+/// is the same `404` an id that never existed gets. One **with** history is
+/// anonymised: the row stays, every identifier on it is `[redacted]`,
+/// `metadata` is untouched because it is the merchant's own data, and a later
+/// `GET` answers `200` with `deleted: true`. That asymmetry is Stripe's and
+/// it is the one that keeps a merchant's stored `cus_…` resolving to
+/// something for the customers vpay took money from.
+///
+/// The response body is the same either way, and it is deliberately **not**
+/// the customer: a merchant confirming an erasure is the caller most likely
+/// to log the whole response.
 pub(crate) async fn delete(
     State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
@@ -669,15 +841,88 @@ pub(crate) async fn delete(
         .await
 }
 
-/// The delete itself, and the mapping from the foreign key's refusal to the
-/// merchant's `409`.
+/// The three endings [`delete_once`]'s transaction has.
+///
+/// Two of them answer identically and are still two, because only one of them
+/// wrote anything: naming them apart is what stops a future edit emitting a
+/// second `customer.deleted` for a customer that was already erased.
+enum DeleteOutcome {
+    /// No such customer for this merchant.
+    NotFound,
+    /// Already anonymised. Answered `{deleted: true}`, nothing written, and —
+    /// the part that matters — **no second event**.
+    AlreadyErased,
+    /// Hard-deleted or anonymised, with one `customer.deleted` in the same
+    /// transaction.
+    Erased,
+}
+
+/// The erasure itself: one transaction that takes the row's lock, decides the
+/// `404`, renders what the merchant will be told, and hands the writes to
+/// `vpay-db`.
+///
+/// # Why the body is rendered here and before the write
+///
+/// `customer.deleted` carries the **redacted** object, and the branch this
+/// cannot see from here — hard delete or anonymise — decides whether there is
+/// a row left to render it from afterwards. `CustomerRow::redacted` is a pure
+/// projection of the row this transaction already holds, so one call serves
+/// both branches and the two bodies are identical in shape. A merchant cannot
+/// tell from the webhook which branch ran, and there is no reason they
+/// should.
+///
+/// # Why the merchant is told the ids and not the payer
+///
+/// The body carries `id`, `object`, `created`, `livemode`, the merchant's own
+/// `metadata` and `deleted: true`; every identifier in it is `[redacted]`.
+/// That is a deliberate reversal of what this event used to carry, and the
+/// argument that changed is written down in `docs/flows/customers.md`: the
+/// merchant already received the payer's details in `customer.created` and in
+/// every `customer.updated`, and holds their own copy — but the copy vpay
+/// stores in `events` is vpay's, is never pruned, and is the one the
+/// retention promise is about. `vpay_db::customers::erase_in_tx` redacts the
+/// stored bodies of those earlier events in the same transaction, including
+/// this one.
 async fn delete_once(
     repositories: &dyn Repositories,
     scope: &MerchantScope,
     id: &str,
 ) -> Result<Response, ApiError> {
-    match Customers::delete(repositories, scope.merchant_id(), id).await {
-        Ok(true) => json_response(
+    let outcome: TxOutcome<DeleteOutcome> = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                // Scoped and locked for `update_once`'s reasons: a foreign
+                // `cus_…` is indistinguishable from a missing one, and
+                // nothing may change the row between the branch decision and
+                // the write that acts on it.
+                let Some(row) = tx.lock_customer_for_update(scope.merchant_id(), id).await? else {
+                    return Ok::<_, ApiError>(TxOutcome::Abandon(DeleteOutcome::NotFound));
+                };
+
+                if row.anonymized_at.is_some() {
+                    // Idempotent by the object's own state rather than by the
+                    // `Idempotency-Key`, which only covers a replay of *this*
+                    // request. Abandoned, so no second `customer.deleted`
+                    // describes an erasure that already happened.
+                    return Ok(TxOutcome::Abandon(DeleteOutcome::AlreadyErased));
+                }
+
+                let now = OffsetDateTime::now_utc();
+                let object = CustomerObject::try_from(&row.redacted(now))?;
+                let data =
+                    serde_json::to_value(&object).map_err(ApiError::internal_serialization)?;
+
+                tx.erase_customer_in_tx(&row, now, &ids::event_id(), &data)
+                    .await?;
+
+                Ok(TxOutcome::Commit(DeleteOutcome::Erased))
+            })
+        })
+        .await?;
+
+    match outcome.into_inner() {
+        DeleteOutcome::NotFound => Err(not_found(id)),
+        DeleteOutcome::AlreadyErased | DeleteOutcome::Erased => json_response(
             StatusCode::OK,
             &DeletedObject {
                 id: id.to_owned(),
@@ -685,18 +930,6 @@ async fn delete_once(
                 deleted: DeletedTrue,
             },
         ),
-        Ok(false) => Err(not_found(id)),
-        Err(vpay_db::DbError::Persistence(vpay_db::PersistenceError::ForeignKey { .. })) => {
-            Err(ApiError::Conflict {
-                message: "This customer is referenced by a PaymentIntent or a Checkout \
-                          Session and cannot be deleted. vpay keeps a payment attached to \
-                          the payer it was taken from, so the payment record has to go \
-                          first — and it never does. Clear the customer's `name`, `email` \
-                          and `phone` instead if you need to remove the payer's details."
-                    .to_owned(),
-            })
-        }
-        Err(other) => Err(ApiError::from(other)),
     }
 }
 
@@ -752,6 +985,204 @@ fn checked_phone(value: Option<String>) -> Result<Option<String>, ApiError> {
                  digits, with or without a leading `+` and with or without separators.",
             )
         })
+}
+
+/// The address, bounded and shaped, or a `400` naming `address`.
+///
+/// `Ok(None)` means the request did not mention it. `Ok(Some(address))` means
+/// "this is the address now" — and an empty one is how the wire spells
+/// *clear it*, which is the same value `address=` produces. There is
+/// deliberately no third state: see [`vpay_db::CustomerPatch::address`].
+///
+/// # Errors
+///
+/// [`ApiError::invalid_param`] naming `address` for a non-blank scalar, an
+/// over-long component, a `country` that is not two letters, a coordinate
+/// that is not a whole number or is out of range, or half a coordinate.
+fn validated_address(param: Option<AddressParam>) -> Result<Option<CustomerAddress>, ApiError> {
+    let components = match param {
+        None => return Ok(None),
+        // `address=` — every component absent, which is the clear.
+        Some(AddressParam::Cleared(raw)) if raw.trim().is_empty() => {
+            return Ok(Some(CustomerAddress::default()));
+        }
+        // `address=Douala` is a merchant reaching for `address[city]`, and
+        // silently dropping it would store no address while answering `200`.
+        Some(AddressParam::Cleared(_)) => {
+            return Err(ApiError::invalid_param(
+                "address",
+                "`address` is an object: send its components as `address[line1]`, \
+                 `address[city]`, `address[country]` and so on. Send `address=` with no \
+                 value to remove the address entirely.",
+            ));
+        }
+        Some(AddressParam::Components(components)) => components,
+    };
+
+    let address = CustomerAddress {
+        line1: checked_text(present(components.line1), "address", ADDRESS_MAX_CHARS)?,
+        line2: checked_text(present(components.line2), "address", ADDRESS_MAX_CHARS)?,
+        city: checked_text(present(components.city), "address", ADDRESS_MAX_CHARS)?,
+        state: checked_text(present(components.state), "address", ADDRESS_MAX_CHARS)?,
+        postal_code: checked_text(
+            present(components.postal_code),
+            "address",
+            POSTAL_CODE_MAX_CHARS,
+        )?,
+        country: checked_country(present(components.country))?,
+        latitude_microdeg: checked_microdeg(
+            present(components.latitude_microdeg),
+            "latitude_microdeg",
+            LATITUDE_MAX_MICRODEG,
+        )?,
+        longitude_microdeg: checked_microdeg(
+            present(components.longitude_microdeg),
+            "longitude_microdeg",
+            LONGITUDE_MAX_MICRODEG,
+        )?,
+    };
+
+    // The pair rule, decided here rather than left to
+    // `address_coordinates_are_both_or_neither` for `checked_text`'s reason:
+    // the CHECK is a `23514`, `classify_write` routes a CHECK violation to
+    // `Category::Storage`, and a merchant who sent half a coordinate would be
+    // told to wait for a database that is fine. It is asked of the value
+    // `vpay-db` itself owns the rule for, so the two cannot disagree about
+    // what `paired` means.
+    if !address.coordinate_is_paired() {
+        return Err(ApiError::invalid_param(
+            "address",
+            "`address[latitude_microdeg]` and `address[longitude_microdeg]` are sent \
+             together or not at all. Half a coordinate names no place: a latitude on its \
+             own is a line right round the planet, and storing one is worse than storing \
+             nothing, because whoever completes it later produces a plausible wrong place.",
+        ));
+    }
+
+    Ok(Some(address))
+}
+
+/// One coordinate, in whole microdegrees, or a `400` naming `address`.
+///
+/// # Why the unit is in the parameter name and the value is an integer
+///
+/// vpay stores a coordinate as a whole count of millionths of a degree and
+/// never as a float — `vpay_db::CustomerAddress::latitude_microdeg` carries
+/// the two measurements that decide it. This function is where that contract
+/// is enforced against a merchant rather than against the database: `4.061`
+/// is refused with a sentence that says what to send instead, because a
+/// merchant who sent it and got a `200` would have had their payer's position
+/// silently truncated or rounded by some layer.
+///
+/// # What the message does not contain, deliberately
+///
+/// **Not the value the merchant sent.** Every other refusal on this resource
+/// names the parameter and states the rule without echoing the input, and
+/// here there is a second reason on top of consistency: this field is a
+/// payer's position, error bodies are the part of a response an integration
+/// is most likely to log, and echoing it back would write a payer's
+/// coordinates into a merchant's logs *because* they were malformed.
+///
+/// # Errors
+///
+/// [`ApiError::invalid_param`] naming `address` — the top-level parameter a
+/// merchant's error handler can act on, exactly as [`checked_country`]'s
+/// does — for a value that is not a whole number or is outside the range of
+/// the axis.
+fn checked_microdeg(
+    value: Option<String>,
+    component: &'static str,
+    max_microdeg: i64,
+) -> Result<Option<i64>, ApiError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+
+    let Ok(microdeg) = raw.parse::<i64>() else {
+        return Err(ApiError::invalid_param(
+            "address",
+            format!(
+                "`address[{component}]` is a whole number of microdegrees — millionths \
+                 of a degree — so 4.061 degrees is sent as `4061000` and -3.75 as \
+                 `-3750000`. vpay stores no floating-point coordinate: a decimal \
+                 point, an exponent or a unit suffix is refused rather than rounded."
+            ),
+        ));
+    };
+
+    // `-max..=max`, symmetric, because both axes are: the bound is the
+    // definition of the unit and not a product limit. `-90000000` is the
+    // South Pole and is as legal as the North.
+    if microdeg < -max_microdeg || microdeg > max_microdeg {
+        return Err(ApiError::invalid_param(
+            "address",
+            format!(
+                "`address[{component}]` must be between -{max_microdeg} and \
+                 {max_microdeg} — the whole range of the axis, in microdegrees. A \
+                 value outside it is not a place."
+            ),
+        ));
+    }
+
+    Ok(Some(microdeg))
+}
+
+/// The country code, upper-cased and shape-checked, or a `400` naming
+/// `address`.
+///
+/// # Why the shape and not a list of the 249 assigned codes
+///
+/// The list changes — South Sudan was assigned in 2011 and the Netherlands
+/// Antilles withdrawn in 2010 — and nothing in vpay resolves a country code
+/// to anything: it is stored, echoed back, and read by a human or by the
+/// merchant's own address book. A list here would refuse a merchant's
+/// perfectly real address until somebody shipped a release, which is the
+/// trade `checked_phone` makes in the opposite direction and for the opposite
+/// reason (a rail *does* resolve an MSISDN).
+///
+/// The value is **upper-cased** rather than refused for being lower case, and
+/// that is the same wire contract `phone`'s canonicalisation is: `cm` and
+/// `CM` are one country, so vpay must not hold two spellings of it. What is
+/// refused is anything that is not two letters — `CMR`, `237`, `Cameroon`.
+///
+/// # Errors
+///
+/// [`ApiError::invalid_param`] naming `address`.
+fn checked_country(value: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let upper = raw.to_uppercase();
+    if upper.len() == 2 && upper.bytes().all(|byte| byte.is_ascii_uppercase()) {
+        return Ok(Some(upper));
+    }
+    Err(ApiError::invalid_param(
+        "address",
+        "`address[country]` must be an ISO 3166-1 alpha-2 country code — two letters, such \
+         as `CM` or `FR`. Lower case is accepted and stored upper case; a three-letter code \
+         or a country name is not.",
+    ))
+}
+
+/// The refusal an update to — or an attachment of — an erased customer gets.
+///
+/// One function and two call sites, so a merchant cannot tell from the
+/// message which route refused: both are the same fact about the object.
+///
+/// It is a `409` rather than a `404` because the object is still readable —
+/// `GET /v1/customers/{id}` answers it with `deleted: true` — and a `404`
+/// here would have two routes disagreeing about whether a `cus_…` exists.
+/// It is not the `409` that went away in the same change: that one was about
+/// a delete this API now performs, and this one is about a write to a record
+/// there is deliberately nothing left in.
+fn erased_customer() -> ApiError {
+    ApiError::Conflict {
+        message: "This Customer has been deleted: its identifiers are erased and it cannot be \
+                  changed or attached to new payments. It is still readable, and answers \
+                  `deleted: true`, so your own records keep resolving. Create a new Customer \
+                  for a new payer."
+            .to_owned(),
+    }
 }
 
 /// The refusal a customer with no identifier gets, on create and on update.
@@ -885,6 +1316,17 @@ pub(crate) async fn resolve_for_attachment(
         .await?
         .ok_or_else(unknown_customer)?;
 
+    // An erased customer is not attachable. Taking a payment "from" a payer
+    // whose identifiers vpay deleted would put a `NO ACTION` reference on a
+    // record that exists only because the last such reference could not be
+    // removed — and it would restart the twelve-month retention clock on it.
+    // Refused with the state refusal rather than with `unknown_customer`,
+    // because this id *is* this merchant's and answering "no such Customer"
+    // would send them looking for a typo.
+    if row.anonymized_at.is_some() {
+        return Err(erased_customer());
+    }
+
     touch(repositories, &row.id).await;
     Ok(Some(row.id))
 }
@@ -937,7 +1379,9 @@ mod tests {
             name: Some("Ada Ngo".to_owned()),
             email: None,
             phone: Some("237600000200".to_owned()),
+            address: CustomerAddress::default(),
             metadata,
+            anonymized_at: None,
             last_used_at: OffsetDateTime::UNIX_EPOCH,
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
@@ -970,6 +1414,7 @@ mod tests {
             name: None,
             email: None,
             phone: None,
+            address: None,
             metadata: None,
         };
         // The update path's version of the same rule: a customer whose only
@@ -999,6 +1444,7 @@ mod tests {
             name: Some(String::new()),
             email: None,
             phone: Some(String::new()),
+            address: None,
             metadata: None,
         };
 
@@ -1024,6 +1470,7 @@ mod tests {
             name: Some(String::new()),
             email: None,
             phone: None,
+            address: None,
             metadata: None,
         };
 
@@ -1046,6 +1493,7 @@ mod tests {
             name: Some("Ada Ngo".to_owned()),
             email: None,
             phone: Some(String::new()),
+            address: None,
             metadata: None,
         };
 
@@ -1152,6 +1600,421 @@ mod tests {
         let error = checked_phone(Some("not-a-phone".to_owned()))
             .expect_err("a value that is not a phone number");
         assert_eq!(param_of(&error), Some("phone"));
+    }
+
+    /// The three things the wire can say about `address`, told apart at the
+    /// **decoder**, from the JSON the form parser really produces.
+    ///
+    /// This is the assertion the untagged enum exists for, and it is written
+    /// against `serde_json::from_value` rather than against `AddressParam`
+    /// directly because the failure it guards is a *decoding* one: swap the
+    /// variant order in [`AddressParam`] and `address=` starts decoding as an
+    /// `AddressParams` with every field absent, which is byte-identical to
+    /// "the request did not mention address". A merchant's `address=` would
+    /// then answer `200` and change nothing, for ever, and every other test
+    /// here would stay green.
+    #[test]
+    fn the_wire_tells_leave_the_address_alone_set_it_and_clear_it_apart() {
+        let decode = |body: Value| {
+            serde_json::from_value::<UpdateParams>(body).expect("the form decoder's own shape")
+        };
+
+        assert!(
+            decode(serde_json::json!({ "name": "Ada" }))
+                .address
+                .is_none(),
+            "an absent key leaves the address alone"
+        );
+
+        let cleared = decode(serde_json::json!({ "address": "" }));
+        assert_eq!(
+            validated_address(cleared.address).expect("`address=` is the clear"),
+            Some(CustomerAddress::default()),
+            "`address=` clears every component; decoding it as `None` would make an address \
+             unremovable through the API that documents how to remove it"
+        );
+
+        let set = decode(serde_json::json!({
+            "address": { "line1": "12 Rue Njo-Njo", "city": "Douala", "country": "cm" }
+        }));
+        assert_eq!(
+            validated_address(set.address).expect("components set the address"),
+            Some(CustomerAddress {
+                line1: Some("12 Rue Njo-Njo".to_owned()),
+                city: Some("Douala".to_owned()),
+                country: Some("CM".to_owned()),
+                ..CustomerAddress::default()
+            }),
+            "the components the request did not name are absent — the address is replaced \
+             whole, never merged component-wise"
+        );
+    }
+
+    /// `address=Douala` is a merchant reaching for `address[city]`, and is
+    /// refused rather than silently storing no address.
+    #[test]
+    fn a_scalar_address_is_refused_and_not_read_as_a_clear() {
+        let error = validated_address(Some(AddressParam::Cleared("Douala".to_owned())))
+            .expect_err("a non-blank scalar names no component");
+        assert_eq!(param_of(&error), Some("address"));
+        assert!(
+            format!("{error}").contains("address[line1]"),
+            "the message has to show the merchant the shape it wanted"
+        );
+    }
+
+    /// The country code is ISO 3166-1 alpha-2, upper-cased on the way in and
+    /// refused when it is not two letters.
+    ///
+    /// The upper-casing is the same wire contract `phone`'s canonicalisation
+    /// is: `cm` and `CM` are one country, and vpay must not hold two
+    /// spellings of it. What this pins in the other direction is that a
+    /// three-letter code, a dialling code and a country name are all refused
+    /// naming `address` — the mutation being "delete `checked_country` and
+    /// route `country` through `checked_text`", which compiles and stores
+    /// `Cameroon`.
+    #[test]
+    fn the_country_is_two_letters_upper_cased_and_nothing_else() {
+        for typed in ["CM", "cm", "cM"] {
+            assert_eq!(
+                checked_country(Some(typed.to_owned())).expect("an alpha-2 code"),
+                Some("CM".to_owned()),
+                "`{typed}` must store as `CM`"
+            );
+        }
+        for refused in ["CMR", "237", "Cameroon", "C", "C1", "C-", "ÉM"] {
+            let error = checked_country(Some(refused.to_owned()))
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("`{refused}` is not an ISO 3166-1 alpha-2 code and must be refused")
+                });
+            assert_eq!(
+                param_of(&error),
+                Some("address"),
+                "the refusal points at the top-level parameter a merchant's error handler \
+                 can act on"
+            );
+        }
+    }
+
+    /// An update to an **erased** customer is a `409`, on the route and on
+    /// the attachment path both.
+    ///
+    /// It cannot be a `400` about a parameter and it cannot be a `404`: the
+    /// object is readable, `GET` answers it with `deleted: true`, and the
+    /// refusal is a fact about its state. What this pins is that the message
+    /// says so — a merchant who reads it must not go looking for a typo in
+    /// the id.
+    #[test]
+    fn a_write_to_an_erased_customer_is_a_conflict_that_says_why() {
+        let error = erased_customer();
+        assert!(
+            matches!(error, ApiError::Conflict { .. }),
+            "an erased customer is a state refusal, not a missing object"
+        );
+        let rendered = format!("{error}");
+        assert!(rendered.contains("deleted"), "{rendered}");
+        assert!(
+            rendered.contains("Create a new Customer"),
+            "the merchant needs to be told what to do instead: {rendered}"
+        );
+    }
+
+    /// An address is bounded per component, and the refusal names `address`
+    /// rather than the component.
+    ///
+    /// `param` is the top-level parameter Stripe's error shape carries, and
+    /// pointing at `address` is what a merchant's error handler can act on;
+    /// the sentence names the bound. The bounds themselves are migration
+    /// `0041`'s CHECKs, and this is the `400` that keeps one from arriving as
+    /// a `500`.
+    #[test]
+    fn an_over_long_address_component_is_a_400_naming_address() {
+        let long = "é".repeat(ADDRESS_MAX_CHARS + 1);
+        let error = validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+            line1: Some(long),
+            line2: None,
+            city: None,
+            state: None,
+            postal_code: None,
+            country: None,
+            latitude_microdeg: None,
+            longitude_microdeg: None,
+        }))))
+        .expect_err("over the component bound");
+        assert_eq!(param_of(&error), Some("address"));
+
+        // Characters and not bytes, for `checked_text`'s reason: 256
+        // non-ASCII characters is 512 bytes and is a legal street address in
+        // the market this API exists for.
+        let at_bound = "é".repeat(ADDRESS_MAX_CHARS);
+        assert!(
+            validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+                line1: Some(at_bound),
+                line2: None,
+                city: None,
+                state: None,
+                postal_code: None,
+                country: None,
+                latitude_microdeg: None,
+                longitude_microdeg: None,
+            }))))
+            .is_ok()
+        );
+    }
+
+    /// A coordinate is a **whole number of microdegrees**, and a decimal
+    /// degree is refused with a sentence that says how to spell it.
+    ///
+    /// This is the assertion the field's *name* exists for, made at the one
+    /// place a merchant's `4.061` can still be turned into something. Every
+    /// layer below is integer-typed, so if this accepted a float it would
+    /// have to round it — and a payer's position rounded by an API that did
+    /// not say so is the failure this whole shape is chosen to avoid.
+    ///
+    /// The refused list is the spellings a merchant actually reaches for:
+    /// degrees with a point, degrees in exponent form, a unit suffix, a
+    /// thousands separator, and a bare sign.
+    #[test]
+    fn a_coordinate_is_a_whole_number_of_microdegrees_and_never_a_degree() {
+        for typed in ["4061000", "+4061000", "-3750000", "0", "90000000"] {
+            assert_eq!(
+                checked_microdeg(
+                    Some(typed.to_owned()),
+                    "latitude_microdeg",
+                    LATITUDE_MAX_MICRODEG
+                )
+                .unwrap_or_else(|error| panic!("`{typed}` is a whole number: {error}")),
+                Some(
+                    typed
+                        .trim_start_matches('+')
+                        .parse::<i64>()
+                        .expect("parses")
+                ),
+                "`{typed}` must be stored as the integer it is"
+            );
+        }
+
+        let mut messages = std::collections::BTreeSet::new();
+        for refused in [
+            "4.061",
+            "4061000.0",
+            "4.061e6",
+            "4061000m",
+            "4_061_000",
+            "-",
+            "north",
+        ] {
+            let error = checked_microdeg(
+                Some(refused.to_owned()),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG,
+            )
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{refused}` is not a whole number of microdegrees and must be refused \
+                     rather than rounded"
+                )
+            });
+            assert_eq!(
+                param_of(&error),
+                Some("address"),
+                "the refusal points at the top-level parameter a merchant's error handler \
+                 can act on"
+            );
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("latitude_microdeg") && rendered.contains("4061000"),
+                "the message has to show the merchant how to spell 4.061: {rendered}"
+            );
+            messages.insert(rendered);
+        }
+
+        // ONE message for all seven, which is how "the refusal does not echo
+        // the value" is asserted without a substring test that the message's
+        // own example (`4.061`) would defeat. An error body is the part of a
+        // response an integration is most likely to log, and this field is a
+        // payer's position: a message that varied with the input would be
+        // carrying it.
+        assert_eq!(
+            messages.len(),
+            1,
+            "the refusal varies with the value the merchant sent, which writes a payer's \
+             position into their logs BECAUSE it was malformed: {messages:?}"
+        );
+
+        // A blank is not a refusal at all: `present` turns it into "absent"
+        // one level up, which is what a client templating an optional field
+        // emits. Asserted here because it is the one input that looks like it
+        // belongs in the list above and does not.
+        assert_eq!(
+            checked_microdeg(
+                present(Some("  ".to_owned())),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG
+            )
+            .expect("a blank is absent, not malformed"),
+            None
+        );
+    }
+
+    /// Each axis is bounded by its own range, and the bound is symmetric.
+    ///
+    /// The South Pole is as legal as the North, and 180 degrees east is as
+    /// legal as 180 west: the bound is the definition of the unit and not a
+    /// product limit, so an off-by-one in the wrong direction would refuse a
+    /// real place. What it refuses is one microdegree outside, on each axis
+    /// and each sign — four cases, which is what catches a `max` used for
+    /// both axes.
+    #[test]
+    fn each_axis_is_bounded_by_its_own_range_and_the_bound_is_symmetric() {
+        for (component, max) in [
+            ("latitude_microdeg", LATITUDE_MAX_MICRODEG),
+            ("longitude_microdeg", LONGITUDE_MAX_MICRODEG),
+        ] {
+            for legal in [max, -max, 0] {
+                assert_eq!(
+                    checked_microdeg(Some(legal.to_string()), component, max)
+                        .unwrap_or_else(|error| panic!("`{legal}` is on the axis: {error}")),
+                    Some(legal)
+                );
+            }
+            for over in [max + 1, -max - 1] {
+                let error = checked_microdeg(Some(over.to_string()), component, max)
+                    .expect_err("one microdegree outside the axis is not a place");
+                assert_eq!(param_of(&error), Some("address"));
+                assert!(
+                    format!("{error}").contains(component),
+                    "the message names the axis, because `which one and which bound` is \
+                     the fact a merchant needs"
+                );
+            }
+        }
+
+        // And the two axes really are bounded differently: 100 degrees east
+        // is a place and 100 degrees north is not. A single shared constant
+        // would pass every assertion above and fail this one.
+        assert!(
+            checked_microdeg(
+                Some("100000000".to_owned()),
+                "longitude_microdeg",
+                LONGITUDE_MAX_MICRODEG
+            )
+            .is_ok()
+        );
+        assert!(
+            checked_microdeg(
+                Some("100000000".to_owned()),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG
+            )
+            .is_err()
+        );
+    }
+
+    /// Half a coordinate is a `400` naming `address`, decided here and not by
+    /// the database.
+    ///
+    /// `address_coordinates_are_both_or_neither` is the backstop and it is a
+    /// `23514`; `classify_write` routes a CHECK violation to
+    /// `Category::Storage`, which is a `503` telling a merchant to wait for a
+    /// database that is fine. So this is one of the two rules on this
+    /// resource that has to be decided above the statement — the other being
+    /// "clearing the last identifier" — and for the same reason.
+    ///
+    /// Both directions, because the plausible mutation is a check written
+    /// against one field.
+    #[test]
+    fn half_a_coordinate_is_refused_by_the_api_and_not_by_the_check() {
+        for (latitude, longitude) in [
+            (Some("4061000".to_owned()), None),
+            (None, Some("9786000".to_owned())),
+        ] {
+            let error =
+                validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+                    line1: None,
+                    line2: None,
+                    city: None,
+                    state: None,
+                    postal_code: None,
+                    country: None,
+                    latitude_microdeg: latitude,
+                    longitude_microdeg: longitude,
+                }))))
+                .expect_err("half a coordinate names no place");
+            assert_eq!(param_of(&error), Some("address"));
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("latitude_microdeg") && rendered.contains("longitude_microdeg"),
+                "the message names both halves, since which one the merchant meant to send \
+                 is theirs to decide: {rendered}"
+            );
+        }
+
+        // The whole pair is accepted, so this is a test of the pair rule and
+        // not of the coordinate being refused outright.
+        assert_eq!(
+            validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+                line1: None,
+                line2: None,
+                city: None,
+                state: None,
+                postal_code: None,
+                country: None,
+                latitude_microdeg: Some("4061000".to_owned()),
+                longitude_microdeg: Some("9786000".to_owned()),
+            }))))
+            .expect("a whole coordinate is an address"),
+            Some(CustomerAddress {
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_786_000),
+                ..CustomerAddress::default()
+            })
+        );
+
+        // And `address=` still clears both halves with the rest, which is the
+        // one path through `validated_address` that does not build the struct
+        // field by field and could therefore have been missed.
+        assert_eq!(
+            validated_address(Some(AddressParam::Cleared(String::new())))
+                .expect("`address=` is the clear"),
+            Some(CustomerAddress::default()),
+            "`address=` clears the point as well as the street: the address is one fact"
+        );
+    }
+
+    /// The two bounds this module refuses with are the two migration `0041`
+    /// enforces, read off disk rather than restated.
+    ///
+    /// The pair is what keeps a `400` from becoming a `503`: if this module's
+    /// ceiling were the higher of the two, a value between them would pass
+    /// the boundary and trip `address_latitude_microdeg_range` as a `23514`,
+    /// which `classify_write` routes to `Category::Storage` — a merchant told
+    /// to wait for a database that is fine. If it were the lower, vpay would
+    /// refuse a real place. `the_redaction_marker_is_the_one_the_migration_enforces`
+    /// in `vpay-db` is the same device applied to the marker.
+    #[test]
+    fn the_coordinate_bounds_are_the_ones_the_migration_enforces() {
+        let migration =
+            include_str!("../../../../migrations/0041_customers-address-and-anonymisation.sql");
+
+        for (constant, name) in [
+            (LATITUDE_MAX_MICRODEG, "address_latitude_microdeg_range"),
+            (LONGITUDE_MAX_MICRODEG, "address_longitude_microdeg_range"),
+        ] {
+            let clause = migration
+                .split_once(name)
+                .and_then(|(_, rest)| rest.split_once(");"))
+                .map(|(clause, _)| clause.to_owned())
+                .unwrap_or_else(|| panic!("`{name}` is not in migration 0041"));
+            assert!(
+                clause.contains(&format!("BETWEEN -{constant} AND {constant}")),
+                "`{name}` does not enforce the bound this module refuses with ({constant}); a \
+                 value between the two would reach Postgres and come back as a 503. \
+                 Clause: {clause}"
+            );
+        }
     }
 
     /// Blank is absent on create: `name=` from a client templating an

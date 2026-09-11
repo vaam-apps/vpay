@@ -2304,6 +2304,7 @@ fn fixture_customer(id: &str) -> vpay_db::NewCustomer {
         name: None,
         email: None,
         phone: Some("237600000200".to_owned()),
+        address: vpay_db::CustomerAddress::default(),
         metadata: json!({}),
         created_at: time::OffsetDateTime::now_utc(),
     }

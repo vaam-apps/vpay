@@ -1665,21 +1665,30 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
     Ok(())
 }
 
-/// An invoiced customer is never offered to the twelve-month retention sweep.
+/// An invoiced customer is **anonymised**, never row-deleted — and its
+/// invoice survives whole.
 ///
-/// Migration `0036` makes `invoices.customer_id` a `NO ACTION` foreign key,
-/// so a customer with an invoice cannot be deleted — and
-/// `vpay_db::customers`' `UNREFERENCED` grew a third `NOT EXISTS` in the same
-/// commit so the sweep stops *offering* one. Without that clause nothing
-/// breaks loudly: the sweep renders a `customer.deleted` object for a payer
-/// whose record is not going anywhere, once an hour, forever, and the failure
-/// arrives as a `23503` inside a rolled-back transaction.
+/// # What this case asserted until 2026-09-10, and why it had to change
 ///
-/// **The decisive mutation:** delete the third `NOT EXISTS` from
-/// `UNREFERENCED` — the first assertion below finds the customer in the
-/// sweep's backlog.
+/// It asserted the opposite: that an invoiced customer never reached the
+/// retention sweep at all, and that `DELETE /v1/customers/{id}` answered a
+/// `409`. Both were consequences of `invoices.customer_id` being a `NO
+/// ACTION` foreign key (migration `0036`) rather than decisions — and
+/// together they meant the twelve-month retention promise did not apply to a
+/// payer a merchant had ever billed. Migration `0041` separates the two
+/// things that were conflated: the invoice is not detached from its payer,
+/// **and** the payer is erased.
+///
+/// # The clause is still load-bearing, and what it now guards is worse
+///
+/// `vpay_db::customers`' `UNREFERENCED` still names `invoices`, and it is now
+/// what makes `erase_in_tx` choose the anonymise branch here. Delete that
+/// third `NOT EXISTS` and the erasure takes the **hard-delete** branch, the
+/// foreign key raises `23503`, and the whole transaction — event, redactions
+/// and all — rolls back: the payer is not erased, the merchant is told
+/// nothing, and the `DELETE` answers a `500`. The `200` below is what fails.
 #[tokio::test]
-async fn an_invoiced_customer_is_never_offered_to_the_sweep() -> anyhow::Result<()> {
+async fn an_invoiced_customer_is_anonymised_rather_than_deleted() -> anyhow::Result<()> {
     use vpay_db::Customers;
 
     let harness = harness().await?;
@@ -1692,6 +1701,11 @@ async fn an_invoiced_customer_is_never_offered_to_the_sweep() -> anyhow::Result<
         )
         .await?;
     assert_eq!(status, 201, "{invoice}");
+    let invoice_id = invoice
+        .pointer("/id")
+        .and_then(serde_json::Value::as_str)
+        .expect("the created invoice's id")
+        .to_owned();
 
     // Age it well past any horizon a sweep would use.
     sqlx::query("UPDATE customers SET last_used_at = now() - interval '400 days' WHERE id = $1")
@@ -1700,6 +1714,9 @@ async fn an_invoiced_customer_is_never_offered_to_the_sweep() -> anyhow::Result<
         .await
         .context("ageing the customer")?;
 
+    // It IS offered to the sweep now — the `NOT EXISTS` triple left
+    // `idle_since` in migration 0041, because a customer that can be erased
+    // must not be exempt from the retention promise for having been billed.
     let backlog = Customers::idle_since(
         harness.repositories.as_ref(),
         time::OffsetDateTime::now_utc(),
@@ -1708,16 +1725,37 @@ async fn an_invoiced_customer_is_never_offered_to_the_sweep() -> anyhow::Result<
     .await
     .context("reading the sweep's backlog")?;
     assert!(
-        backlog.iter().all(|row| row.id != customer),
-        "an invoiced customer must not reach the sweep: it cannot be deleted, so every pass \
-         would mint an evt_ and build a customer.deleted object for nothing"
+        backlog.iter().any(|row| row.id == customer),
+        "an invoiced customer must reach the sweep: it can be anonymised, and exempting it \
+         is what left every billed payer outside the twelve-month promise"
     );
 
-    // And the API refuses the manual delete, for the same foreign key.
+    // And the API erases it rather than refusing. The 409 this case used to
+    // assert is gone: its advice — clear name, email and phone — is what
+    // `at_least_one_identifier` refuses, so no merchant could follow it.
     let (status, body) = harness
         .delete(CLIENT_A, &format!("/v1/customers/{customer}"))
         .await?;
-    assert_eq!(status, 409, "{body}");
+    assert_eq!(status, 200, "{body}");
+
+    let (name, anonymized): (String, bool) =
+        sqlx::query_as("SELECT name, anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+            .bind(&customer)
+            .fetch_one(&harness.pool)
+            .await
+            .context("the anonymised customer's row must still exist")?;
+    assert!(anonymized);
+    assert_eq!(name.as_str(), vpay_db::REDACTED);
+
+    // The invoice is untouched and still names its customer — the whole
+    // reason the row could not simply be deleted.
+    let (invoice_customer,): (String,) =
+        sqlx::query_as("SELECT customer_id FROM invoices WHERE id = $1")
+            .bind(&invoice_id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("the invoice after its customer was erased")?;
+    assert_eq!(invoice_customer, customer);
 
     harness.shutdown().await;
     Ok(())

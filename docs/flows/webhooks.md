@@ -26,23 +26,23 @@ the worst possible carrier for "money actually arrived".
 its `events` row in the _same transaction_ as the transition it reports;
 there is no other shape in this repository, and TX 1 below is the reason.
 
-| Type                            | Written by                                                                                                                   | Since                                                                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `payment_intent.created`        | — nothing                                                                                                                    | —                                                                                               |
-| `payment_intent.processing`     | — nothing                                                                                                                    | —                                                                                               |
-| `payment_intent.succeeded`      | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                | 2026-09-03                                                                                      |
-| `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
-| `payment_intent.canceled`       | `vpay_api::v1::payment_intents::cancel_with_event`                                                                           | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57))                             |
-| `charge.refunded`               | — nothing                                                                                                                    | —                                                                                               |
-| `charge.refund.updated`         | — nothing                                                                                                                    | —                                                                                               |
-| `checkout.session.expired`      | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep                                                              | 2026-09-04                                                                                      |
-| `customer.created`              | `vpay_api::v1::customers::create_with_event`                                                                                 | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
-| `customer.updated`              | `vpay_api::v1::customers::update_once`, under the row's lock                                                                 | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
-| `customer.deleted`              | `vpay_db::customers::delete_idle`, from the retention sweep                                                                  | 2026-09-06                                                                                      |
-| `invoice.created`               | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
-| `invoice.finalized`             | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
-| `invoice.paid`                  | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                | 2026-09-07                                                                                      |
-| `invoice.voided`                | `vpay_api::v1::invoices::write_with_event`                                                                                   | 2026-09-07                                                                                      |
+| Type                            | Written by                                                                                                                                                                                                                                               | Since                                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `payment_intent.created`        | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
+| `payment_intent.processing`     | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
+| `payment_intent.succeeded`      | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                                                                                                                                            | 2026-09-03                                                                                      |
+| `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit                                                                                                                             | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
+| `payment_intent.canceled`       | `vpay_api::v1::payment_intents::cancel_with_event`                                                                                                                                                                                                       | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57))                             |
+| `charge.refunded`               | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
+| `charge.refund.updated`         | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
+| `checkout.session.expired`      | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep                                                                                                                                                                                          | 2026-09-04                                                                                      |
+| `customer.created`              | `vpay_api::v1::customers::create_with_event`                                                                                                                                                                                                             | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
+| `customer.updated`              | `vpay_api::v1::customers::update_once`, under the row's lock                                                                                                                                                                                             | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
+| `customer.deleted`              | `vpay_db::customers::erase_idle` (the retention sweep) and `vpay_api::v1::customers::delete_once` (the route, **2026-09-10**, [#96](https://github.com/vaam-apps/vpay/issues/96) item 2 — until then `DELETE /v1/customers/{id}` emitted nothing at all) | 2026-09-06                                                                                      |
+| `invoice.created`               | `vpay_api::v1::invoices::write_with_event`                                                                                                                                                                                                               | 2026-09-07                                                                                      |
+| `invoice.finalized`             | `vpay_api::v1::invoices::write_with_event`                                                                                                                                                                                                               | 2026-09-07                                                                                      |
+| `invoice.paid`                  | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                                                                                                                                            | 2026-09-07                                                                                      |
+| `invoice.voided`                | `vpay_api::v1::invoices::write_with_event`                                                                                                                                                                                                               | 2026-09-07                                                                                      |
 
 The four with no writer are documented shapes nothing emits — events are
 written for terminal transitions only, and `created`/`processing` are
@@ -107,14 +107,25 @@ merchant learns about a write-off from
 
 **`customer.deleted` is the one type a merchant cannot substitute polling
 for.** Every other event describes a row that is still there afterwards, so a
-merchant who missed one can re-read the object. This one describes a **hard
-delete**: the row is gone, and a `GET /v1/customers/{id}` afterwards is
-byte-identical to one for an id that never existed. `data.object` is the
-customer as it stood immediately before the delete — `name`, `email` and
-`phone` included, because after the delete there is nothing else to read. It
-is written inside the same transaction as the delete, so a crash cannot leave
-a customer erased with nobody told; see
+merchant who missed one can re-read the object. This one describes an
+**erasure**: a customer nothing references is removed and a
+`GET /v1/customers/{id}` afterwards is byte-identical to one for an id that
+never existed, and one an intent, a session or an invoice references is
+anonymised in place. It is written inside the same transaction as the write it
+describes, so a crash cannot leave a customer erased with nobody told; see
 [customers.md](customers.md).
+
+**Its `data.object` carries no identifier of the payer's**, and that reverses
+what this paragraph said until 2026-09-10 ([issue
+#68](https://github.com/vaam-apps/vpay/issues/68)). It said `name`, `email`
+and `phone` were included "because after the delete there is nothing else to
+read". They are `[redacted]` now, and so are the stored bodies of that
+customer's earlier `customer.created` and `customer.updated` events, rewritten
+in the same transaction. The merchant did receive those identifiers when the
+events were delivered and holds their own copy — that is theirs. What changed
+is the conclusion that vpay may therefore keep its own copy for ever in a
+table nothing prunes. `events` is never pruned, which made it the largest
+surviving copy of a payer vpay had been asked to forget.
 
 **`customer.created` and `customer.updated` joined the list on 2026-09-10**
 ([issue #66](https://github.com/vaam-apps/vpay/issues/66)), in migration
@@ -237,11 +248,21 @@ rather than arguing because that body is the only
 `payment_intent.payment_failed` in the system rendered by `vpay-api` instead
 of by `vpay_db::settlement`.
 
-`customer.created` and `customer.updated` are still asserted at the `events`
-row and no further. The fan-out is type-agnostic — it reads by `seq` and
-branches on nothing, and has now been observed carrying four types — so "they
-would deliver too" remains an argument for those two, and it is written here
-in those words.
+`customer.created` **has** now been driven to the receiver, and
+`customer.updated` has not. That happened sideways, on 2026-09-11: the
+sabotage review of the customer erasure needed a delivery in flight when a
+payer was erased, so
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`
+takes a real `customer.created` through the shipping fan-out and the shipping
+delivery handler, reads the bytes out of the WireMock receiver's journal
+twice, and asserts what changed between them. It is recorded here rather than
+left as a side effect, because "which types have been observed on a wire" is
+the number this section exists to keep honest — it is five now, not four.
+
+`customer.updated` is still asserted at the `events` row and no further. The
+fan-out is type-agnostic — it reads by `seq` and branches on nothing — so
+"it would deliver too" remains an argument for that one, and it is written
+here in those words.
 
 **Updated 2026-09-07: CrateStack 0.11.1 → 0.12.0 changed nothing here.** The
 `events.data` blocker above is `Value::from_plain_json`'s `f64` demotion, and
@@ -422,7 +443,20 @@ second time uses the wrong secret, and requires
 unmodified" is an observation now, not an argument from the scheme being
 identical. The body is not stored; `payload_sha256` is written on the
 first attempt and compared on every later one, and a mismatch is
-`JobError::Poisoned`. Non-2xx and transport failures walk
+`JobError::Poisoned`. **There is exactly one place vpay clears that digest on
+purpose** (2026-09-11): erasing a customer rewrites `events.data` for every
+`customer.*` body of that payer, which changes the bytes a delivery already
+mid-ladder would re-render, so
+`vpay_db::customers::erase_in_tx` clears `payload_sha256` on the deliveries
+of those events that are still `pending` or `failed` — in the same
+transaction — and the next attempt signs and sends the redacted body.
+Without it the guard dead-letters exactly the delivery that tells the
+merchant the erasure happened, blaming a renderer change that did not
+happen. `succeeded` and `exhausted` rows keep their digest: nothing
+re-renders them, and it is the record of what a merchant was actually sent.
+See [customers.md](customers.md) § "A delivery already in flight" and
+`an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering`.
+Non-2xx and transport failures walk
 `vpay_worker::delivery_delay` — the seven rungs above, rung by rung — and the
 eighth failure is `state = 'exhausted'` with an `alert = true` log line, never
 another rung (`the_ladder_walks_delivery_delay_and_then_succeeds`,
@@ -735,9 +769,16 @@ delivery has been observed reaching a receiver.**
 - **No deployment has ever emitted a `customer.deleted`.** The event, its
   fan-out and its delivery rows are proven against a real Postgres through the
   real worker loop by
-  `the_sweep_deletes_an_idle_unreferenced_customer_and_keeps_the_other_two`
-  with a horizon that suite controls; no vpay has been up for twelve months,
-  and no merchant endpoint has received one.
+  `the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one`
+  with a horizon that suite controls, and through the shipping router by
+  `a_customer_with_payment_history_is_anonymised_rather_than_deleted`; no vpay
+  has been up for twelve months, and no merchant endpoint has received one.
+- **`DELETE /v1/customers/{id}` emitted nothing at all until 2026-09-10**
+  ([issue #96](https://github.com/vaam-apps/vpay/issues/96) item 2). Only the
+  retention sweep wrote `customer.deleted`, so a merchant who deleted a
+  customer by hand learned about it from the response to their own request and
+  from nowhere else — and any other service of theirs subscribed to the event
+  learned nothing. The route writes it in the delete's own transaction now.
 - **A merchant expiring its own session emits nothing.** `POST
 /v1/checkout/sessions/{id}/expire` moves the row and writes no event, so a
   merchant whose own systems are the ones that need telling has to tell them.

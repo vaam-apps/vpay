@@ -390,8 +390,94 @@ pub struct CreateCustomerParams {
     /// echoed back **canonical**, so what comes back may not be what was
     /// sent — see [`crate::Customer::phone`].
     pub phone: Option<String>,
+    /// The payer's postal address, encoded as `address[line1]=…`.
+    ///
+    /// An address alone does not name anybody, so it does not satisfy the
+    /// one-of rule this struct's doc describes: a create carrying only an
+    /// address is refused exactly as one carrying nothing is.
+    pub address: Option<AddressParams>,
     /// Merchant-owned key/value pairs, encoded as `metadata[key]=value`.
     pub metadata: BTreeMap<String, String>,
+}
+
+/// The address components, in the shape the wire spells them — Stripe's six
+/// **and** the GPS point.
+///
+/// A type of its own rather than [`crate::Address`] — which the *response*
+/// carries — for the reason every params struct on this surface is its own
+/// type: what a merchant may send and what the server returns are two
+/// contracts, and the second one grows keys the first must not accept. They
+/// happen to have the same eight fields today.
+///
+/// The coordinate is vpay's own and has no counterpart on Stripe's address;
+/// see [`crate::Address`] for why it exists and why it is an integer count of
+/// microdegrees rather than degrees.
+///
+/// `country` is sent as typed and stored **upper case**, so what comes back
+/// may not be what was sent. This SDK deliberately does not check the shape
+/// locally, exactly as it does not check an MSISDN: which codes vpay accepts
+/// is a rule vpay owns and may widen, and a copy here would refuse offline an
+/// address a later server accepts. The same line is taken on the coordinate:
+/// the range and the pair rule are the server's, and it answers a `400`
+/// naming `address` one round trip later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddressParams {
+    /// Street address, line 1.
+    pub line1: Option<String>,
+    /// Street address, line 2 — apartment, suite, PO box.
+    pub line2: Option<String>,
+    /// City, district, suburb, town or village.
+    pub city: Option<String>,
+    /// State, county, province or region.
+    pub state: Option<String>,
+    /// ZIP or postal code.
+    pub postal_code: Option<String>,
+    /// ISO 3166-1 alpha-2 — `CM`, `FR`, `NG`.
+    pub country: Option<String>,
+    /// Latitude in **microdegrees** — `4_061_000` for 4.061°N. An `i64` and
+    /// never an `f64`: vpay stores no floating-point coordinate, and a type
+    /// that could hold one here would make `4.061` expressible in Rust and
+    /// refused on the wire. Sent with [`Self::longitude_microdeg`] or not at
+    /// all.
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`].
+    pub longitude_microdeg: Option<i64>,
+}
+
+impl AddressParams {
+    /// The eight components as `address[line1]=…` pairs, with every unset one
+    /// omitted from the body entirely.
+    ///
+    /// Omitted and not sent empty, because on this API those are different
+    /// requests everywhere else — and because the server replaces the address
+    /// whole, so an omitted component is cleared either way and sending
+    /// `address[city]=` would only add a pair that says the same thing.
+    ///
+    /// The coordinate goes out as a decimal integer through
+    /// `FormValue::from(i64)`, which is the same encoder every amount on this
+    /// surface uses — there is no path from this struct to a body containing
+    /// a decimal point.
+    fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("line1".to_string(), FormValue::from(self.line1.clone())),
+            ("line2".to_string(), FormValue::from(self.line2.clone())),
+            ("city".to_string(), FormValue::from(self.city.clone())),
+            ("state".to_string(), FormValue::from(self.state.clone())),
+            (
+                "postal_code".to_string(),
+                FormValue::from(self.postal_code.clone()),
+            ),
+            ("country".to_string(), FormValue::from(self.country.clone())),
+            (
+                "latitude_microdeg".to_string(),
+                FormValue::from(self.latitude_microdeg),
+            ),
+            (
+                "longitude_microdeg".to_string(),
+                FormValue::from(self.longitude_microdeg),
+            ),
+        ])
+    }
 }
 
 impl CreateCustomerParams {
@@ -400,6 +486,12 @@ impl CreateCustomerParams {
             ("name".to_string(), FormValue::from(self.name.clone())),
             ("email".to_string(), FormValue::from(self.email.clone())),
             ("phone".to_string(), FormValue::from(self.phone.clone())),
+            (
+                "address".to_string(),
+                self.address
+                    .as_ref()
+                    .map_or(FormValue::Skip, AddressParams::to_form),
+            ),
             ("metadata".to_string(), metadata_form(&self.metadata)),
         ])
     }
@@ -432,6 +524,17 @@ pub struct UpdateCustomerParams {
     pub email: Option<Option<String>>,
     /// See [`Self::name`].
     pub phone: Option<Option<String>>,
+    /// The address, in the same three states — with one difference worth
+    /// stating, because it is the one a merchant can get wrong silently.
+    ///
+    /// `None` leaves the stored address alone. `Some(None)` removes it
+    /// (sent as `address=`). `Some(Some(address))` **replaces** it whole:
+    /// every component the request does not name is cleared, so correcting a
+    /// street means sending the city again. vpay does not merge components,
+    /// deliberately — an address assembled out of two requests is an address
+    /// that was never anybody's, and its failure mode is a plausible wrong
+    /// address rather than a visible one.
+    pub address: Option<Option<AddressParams>>,
     /// Keys to merge. A key whose value is the empty string is **removed**
     /// from the stored metadata, which is Stripe's own per-key delete.
     pub metadata: BTreeMap<String, String>,
@@ -462,6 +565,22 @@ impl UpdateCustomerParams {
             ("name".to_string(), patch_form(self.name.as_ref())),
             ("email".to_string(), patch_form(self.email.as_ref())),
             ("phone".to_string(), patch_form(self.phone.as_ref())),
+            (
+                "address".to_string(),
+                match self.address.as_ref() {
+                    None => FormValue::Skip,
+                    // `address=` — the wire's own "remove this", the same
+                    // spelling `name=` uses. NOT `address[line1]=` and seven
+                    // more: the server reads a *scalar* `address` as the
+                    // clear, and an object of eight empty components as an
+                    // address whose components are all absent, which it
+                    // stores as no address by a different route. One
+                    // spelling, so a merchant reading the body sees what
+                    // they asked for.
+                    Some(None) => FormValue::from(""),
+                    Some(Some(address)) => address.to_form(),
+                },
+            ),
             ("metadata".to_string(), metadata_form(&self.metadata)),
         ])
     }

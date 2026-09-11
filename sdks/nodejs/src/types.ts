@@ -501,11 +501,73 @@ export type ListParams = {
 };
 
 /**
+ * A postal address on a {@link Customer} — Stripe's six formal components
+ * **and** the GPS point (issue #67).
+ *
+ * # vpay's address is both halves, and this is where Stripe's is not
+ *
+ * `latitude_microdeg` and `longitude_microdeg` have no counterpart on
+ * Stripe's `address`. They are here because vpay's address *means* both
+ * halves (the maintainer, 2026-09-11): formal addressing is unreliable
+ * across the markets vpay serves, and a coordinate is how a place is actually
+ * found. A merchant porting Stripe code to vpay gains two fields; one porting
+ * the other way loses them, and should know that before they discover it.
+ *
+ * Every component is nullable and the server renders all eight even when they
+ * are `null`: an address is one fact about a payer, and a key that appeared
+ * and disappeared would change the shape of a signed `customer.*` webhook
+ * body per payer. The object as a whole is `null` when there is no address.
+ *
+ * The same shape is sent and received. On {@link UpdateCustomerParams} an
+ * address **replaces** the stored one rather than merging with it — a request
+ * that names `line1` and not `city` clears the city — because an address
+ * assembled by the server out of two requests is an address that was never
+ * anybody's. Sending `null` removes it entirely.
+ */
+export interface Address {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  /**
+   * ISO 3166-1 alpha-2 — `CM`, `FR`, `NG`. Lower case is accepted and stored
+   * **upper case**, so what comes back may not be what was sent: the same
+   * wire contract {@link Customer.phone}'s canonicalisation is. A
+   * three-letter code or a country name is a `400` naming `address`.
+   */
+  country: string | null;
+  /**
+   * Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+   * `4061000`.
+   *
+   * A whole number, always. vpay has no floating-point coordinate anywhere —
+   * not on the wire, not in its database — which is what the unit in the
+   * field name is for: a field called `latitude` would be read as degrees,
+   * and `4.061` is a value that cannot be stored without rounding it. The
+   * server answers `400` naming `address` for a decimal rather than
+   * approximating it.
+   *
+   * `null` unless {@link Address.longitude_microdeg} is also set: half a
+   * coordinate names no place, and the server refuses one half.
+   *
+   * On an **erased** customer this is `null` while the six formal components
+   * are `[redacted]`. That asymmetry is deliberate: there is no integer that
+   * is not a possible place, so the marker is not a value this field can
+   * take. See {@link Customer.deleted}.
+   */
+  latitude_microdeg: number | null;
+  /** Longitude in **microdegrees**. See {@link Address.latitude_microdeg}. */
+  longitude_microdeg: number | null;
+}
+
+/**
  * A `customer` — the merchant-owned record of a payer they expect to see
  * again (S4a).
  *
- * Seven keys and no more. `last_used_at` — the clock vpay's twelve-month
- * retention sweep reads — is deliberately **not** on the wire.
+ * Nine keys, plus `deleted` on an erased one. `last_used_at` — the clock
+ * vpay's twelve-month retention sweep reads — is deliberately **not** on the
+ * wire.
  *
  * At least one of `name`, `email` and `phone` is always present. A phone
  * number **alone** is a complete customer, which is what the object is for
@@ -523,10 +585,33 @@ export interface Customer {
    * reference is comparing the same string.
    */
   phone: string | null;
+  /**
+   * The payer's postal address **and** GPS point, or `null`. Two of its keys
+   * have no counterpart on Stripe's address — see {@link Address}.
+   */
+  address: Address | null;
   metadata: Record<string, string>;
   /** Unix seconds. */
   created: number;
   livemode: boolean;
+  /**
+   * `true` on a customer vpay has **erased**, and absent on a live one — the
+   * server omits the key rather than sending `false`.
+   *
+   * `DELETE /v1/customers/{id}` removes a customer with no payment history
+   * outright, and a later retrieve is a `404`. A customer an intent, a
+   * checkout session or an invoice references cannot be removed — vpay never
+   * detaches a payment from the payer it was taken from — so it is
+   * **anonymised** instead: the row and the payment record stay, and every
+   * identifier on it comes back as `[redacted]`. `metadata` is untouched,
+   * because that is the merchant's own data.
+   *
+   * So a `cus_…` in your own records goes on resolving after an erasure,
+   * which is why this key exists. Such a customer cannot be updated or
+   * attached to a new payment — both answer `409`. See
+   * `docs/flows/customers.md`.
+   */
+  deleted?: true | undefined;
 }
 
 /**
@@ -562,8 +647,51 @@ export interface CreateCustomerParams {
    * what comes back may not be what was sent — see {@link Customer.phone}.
    */
   phone?: string | undefined;
+  /**
+   * The payer's postal address, sent as `address[line1]=…`. An address alone
+   * does not name anybody, so it does not satisfy the one-of rule above: a
+   * create carrying only an address is refused exactly as one carrying
+   * nothing is.
+   */
+  address?: AddressParams | undefined;
   metadata?: Record<string, string> | undefined;
 }
+
+/**
+ * The address components, in the shape the wire spells them — Stripe's six
+ * **and** the GPS point.
+ *
+ * A `type` alias rather than an `interface` for {@link ListParams}' reason:
+ * only this form is assignable to the form encoder's
+ * `Record<string, FormValue>` without a cast.
+ *
+ * Separate from {@link Address} — which the *response* carries — because what
+ * a merchant may send and what the server returns are two contracts, and the
+ * second one grows keys the first must not accept. They happen to have the
+ * same eight fields today. This SDK deliberately does not validate `country`
+ * locally, exactly as it does not validate an MSISDN: which codes vpay
+ * accepts is a rule vpay owns and may widen. The same line is taken on the
+ * coordinate's range and its pair rule.
+ */
+export type AddressParams = {
+  line1?: string | undefined;
+  line2?: string | undefined;
+  city?: string | undefined;
+  state?: string | undefined;
+  postal_code?: string | undefined;
+  country?: string | undefined;
+  /**
+   * Latitude in **microdegrees** — `4061000` for 4.061°N, never `4.061`. The
+   * range (±90,000,000) and the rule that it is sent with
+   * {@link AddressParams.longitude_microdeg} or not at all are the server's,
+   * and are not checked here for the reason `country` is not: they are
+   * vpay's to widen, and a copy in this SDK would refuse offline an address a
+   * later server accepts.
+   */
+  latitude_microdeg?: number | undefined;
+  /** Longitude in **microdegrees**. See {@link AddressParams.latitude_microdeg}. */
+  longitude_microdeg?: number | undefined;
+};
 
 /**
  * `POST /v1/customers/{id}` request fields (S4a).
@@ -590,6 +718,18 @@ export interface UpdateCustomerParams {
   name?: string | null | undefined;
   email?: string | null | undefined;
   phone?: string | null | undefined;
+  /**
+   * The address, in the same three states — with one difference worth
+   * stating, because it is the one a merchant can get wrong silently.
+   *
+   * `undefined` leaves the stored address alone. `null` removes it (sent as
+   * `address=`). An object **replaces** it whole: every component the request
+   * does not name is cleared, so correcting a street means sending the city
+   * again. vpay does not merge components, deliberately — an address
+   * assembled out of two requests is an address that was never anybody's, and
+   * its failure mode is a plausible wrong address rather than a visible one.
+   */
+  address?: AddressParams | null | undefined;
   metadata?: Record<string, string> | undefined;
 }
 

@@ -1666,6 +1666,19 @@ async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
                 name: Some("Ada Ngo".to_string()),
                 email: Some("ada@example.com".to_string()),
                 phone: Some("+237 6 00 00 02 00".to_string()),
+                address: Some(vpay_sdk::AddressParams {
+                    line1: Some("12 Rue Njo-Njo".to_string()),
+                    city: Some("Douala".to_string()),
+                    country: Some("CM".to_string()),
+                    // The GPS half, in whole microdegrees. Sent in the same
+                    // bracket-encoded object as the six formal components,
+                    // and rendered as a decimal integer — the body assertion
+                    // below is what proves no decimal point can reach the
+                    // wire from this type.
+                    latitude_microdeg: Some(4_061_000),
+                    longitude_microdeg: Some(9_786_000),
+                    ..Default::default()
+                }),
                 metadata: BTreeMap::from([("order_id".to_string(), "1234".to_string())]),
             },
             RequestOptions::new().with_idempotency_key("idem_cus"),
@@ -1693,7 +1706,101 @@ async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
     assert_eq!(
         body_string(&request),
         "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000\
-         &metadata[order_id]=1234"
+         &address[line1]=12%20Rue%20Njo-Njo&address[city]=Douala&address[country]=CM\
+         &address[latitude_microdeg]=4061000&address[longitude_microdeg]=9786000\
+         &metadata[order_id]=1234",
+        "the address is bracket-encoded per component and every unset component is omitted \
+         entirely — `address[state]=` would be a component the merchant did not send. The \
+         coordinate goes out as a bare decimal integer: `4061000` and never `4061000.0`, \
+         which is the whole reason the field is typed `i64` and named for its unit"
+    );
+    // Byte for byte, the two coordinate keys are in the body and neither
+    // carries a decimal point. Deleting either field from `AddressParams` or
+    // from `AddressParams::to_form` fails the assertion above; this one says
+    // what the failure would MEAN, and fails on its own if a float ever
+    // reached the encoder.
+    let body = body_string(&request);
+    assert!(
+        body.contains("address[latitude_microdeg]=4061000")
+            && body.contains("address[longitude_microdeg]=9786000"),
+        "both halves of the coordinate must reach the wire: {body}"
+    );
+    assert!(
+        !body.contains("microdeg]=4061000."),
+        "a decimal point in a coordinate means this SDK grew a float somewhere between \
+         `AddressParams` and the encoder: {body}"
+    );
+
+    // And it decodes back off the object, as one nested value rather than six
+    // flattened keys.
+    let address = customer.address.expect("the fixture carries an address");
+    assert_eq!(address.line1.as_deref(), Some("12 Rue Njo-Njo"));
+    assert_eq!(address.city.as_deref(), Some("Douala"));
+    assert_eq!(address.country.as_deref(), Some("CM"));
+    assert_eq!(
+        address.state, None,
+        "a component the server rendered `null` decodes as absent, not as an empty string"
+    );
+    // The coordinate decodes as whole microdegrees. `i64` and not `f64`: a
+    // floating field would decode this fixture's `4061000` just as happily,
+    // so the assertion that matters is the TYPE, and this is where the
+    // compiler is made to state it.
+    assert_eq!(address.latitude_microdeg, Some(4_061_000_i64));
+    assert_eq!(address.longitude_microdeg, Some(9_786_000_i64));
+    assert_eq!(
+        customer.deleted, None,
+        "a live customer carries no `deleted` key at all; decoding its absence as `false` \
+         would erase the difference between `the server said nothing` and `the server said \
+         no`"
+    );
+}
+
+/// An **erased** customer decodes: `deleted: true`, every identifier the
+/// marker, and the merchant's own `metadata` still there.
+///
+/// This is the object `GET /v1/customers/{id}` answers after vpay has
+/// anonymised a customer with payment history — a `200`, not a `404`, so a
+/// merchant's stored `cus_…` keeps resolving. A decode that dropped
+/// `deleted` would leave a merchant unable to tell an erased customer from a
+/// live one whose payer happens to be called `[redacted]`.
+#[tokio::test]
+async fn an_erased_customer_decodes_with_deleted_true_and_no_identifier() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/customers/cus_1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::erased_customer_json("cus_1")),
+        )
+        .mount(&server)
+        .await;
+
+    let customer = client.customers().retrieve("cus_1").await.unwrap();
+
+    assert_eq!(customer.deleted, Some(true));
+    assert_eq!(customer.name.as_deref(), Some("[redacted]"));
+    assert_eq!(customer.phone.as_deref(), Some("[redacted]"));
+    assert_eq!(
+        customer
+            .address
+            .as_ref()
+            .and_then(|address| address.country.as_deref()),
+        Some("[redacted]"),
+        "the address is redacted component by component, including the ones this payer \
+         never filled in"
+    );
+    // The coordinate comes back NULL where the formal components come back
+    // marked, and that asymmetry is the server's contract rather than a hole
+    // in this fixture: a coordinate is an integer and there is no integer
+    // that is not a possible place, so the marker is not a value it can take.
+    // A merchant reading `address.latitude_microdeg == None` on an erased
+    // customer is reading the truth, not a decode failure.
+    let address = customer.address.as_ref().expect("an erased address");
+    assert_eq!(address.latitude_microdeg, None);
+    assert_eq!(address.longitude_microdeg, None);
+    assert_eq!(
+        customer.metadata.get("order_id").map(String::as_str),
+        Some("1234"),
+        "`metadata` is the merchant's own data and survives the erasure"
     );
 }
 
@@ -1732,7 +1839,12 @@ async fn a_phone_number_alone_is_a_complete_customer_and_the_rest_is_omitted() {
     assert_eq!(customer.email, None);
 
     let request = only_request(&server, "/v1/customers").await;
-    assert_eq!(body_string(&request), "phone=237600000200");
+    assert_eq!(
+        body_string(&request),
+        "phone=237600000200",
+        "`address` is absent from the body entirely when the merchant sent none — not \
+         `address=`, which is the wire's `remove it`"
+    );
 }
 
 #[tokio::test]
@@ -1785,6 +1897,8 @@ async fn an_update_tells_leave_alone_set_and_clear_apart_on_the_wire() {
                 email: Some(None),
                 // leave alone
                 phone: None,
+                // clear — `address=`, the same spelling `email=` uses
+                address: Some(None),
                 // merge one key, remove another (the empty value)
                 metadata: BTreeMap::from([
                     ("order_id".to_string(), "5678".to_string()),
@@ -1800,8 +1914,9 @@ async fn an_update_tells_leave_alone_set_and_clear_apart_on_the_wire() {
     assert_eq!(request.method.as_str(), "POST");
     assert_eq!(
         body_string(&request),
-        "name=Ada%20Ngo&email=&metadata[order_id]=5678&metadata[tier]=",
-        "`email=` is `clear it`, and `phone` is absent because the patch did not mention it"
+        "name=Ada%20Ngo&email=&address=&metadata[order_id]=5678&metadata[tier]=",
+        "`email=` is `clear it`, `address=` is the same for the whole address, and `phone` \
+         is absent because the patch did not mention it"
     );
     assert_eq!(
         header_value(&request, "idempotency-key").as_deref(),

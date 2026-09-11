@@ -304,6 +304,11 @@ describe("the customer object", () => {
       name: null,
       email: null,
       phone: "237600000200",
+      // Required, not optional: the server renders `address` on every
+      // customer object — `null` when the payer has none — and a type that
+      // let it be omitted would let a merchant's handler read `undefined`
+      // for a key the wire always carries.
+      address: null,
       metadata: { order_id: "1234" },
       created: 1_700_000_000,
       livemode: false,
@@ -334,6 +339,23 @@ describe("the customer object", () => {
       name: "Ada",
       email: null,
       phone: "237600000200",
+      address: {
+        line1: "12 Rue Njo-Njo",
+        line2: null,
+        city: "Douala",
+        state: null,
+        postal_code: null,
+        country: "CM",
+        // The GPS half, in whole microdegrees — 4.061 N, 9.786 E, which is
+        // Douala. A real pair rather than two nulls, so this annotation says
+        // the coordinate is part of the shape a `customer.*` body carries
+        // and not only a key the type happens to allow. The compiler is what
+        // made this change necessary: the two fields are NOT optional on
+        // `Address`, so a body that omits them does not type-check, which is
+        // how a server that stopped sending them would be noticed here.
+        latitude_microdeg: 4_061_000,
+        longitude_microdeg: 9_786_000,
+      },
       metadata: { tier: "gold", order_id: "1234" },
       created: 1_700_000_000,
       livemode: false,

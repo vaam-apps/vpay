@@ -7,18 +7,43 @@
 //! compare-and-swap, and the one unscoped query is named for its caller — and
 //! adds the one this table has and no other does:
 //!
-//! * **a customer is deleted, never flagged.** There is no `deleted_at`, no
-//!   `@@soft_delete`, and no status column. `docs/flows/customers.md` says why
-//!   in full: a row that says "this person asked to be forgotten" is still the
-//!   record of that person.
+//! * **a customer is erased, never flagged.** There is no `deleted_at` and no
+//!   `@@soft_delete`. `docs/flows/customers.md` says why in full: a row that
+//!   says "this person asked to be forgotten" is still the record of that
+//!   person.
+//!
+//!   Since migration `0041` the erasure has two shapes, and neither is a soft
+//!   delete. A customer nothing references is **hard-deleted** and the row is
+//!   gone. A customer an intent, a session or an invoice references cannot be
+//!   — the foreign keys are `NO ACTION`, deliberately, so a payment is never
+//!   detached from the payer it was taken from — and is **anonymised**
+//!   instead: the row stays, `anonymized_at` is stamped, and every identifier
+//!   column on it becomes [`REDACTED`]. The difference from a soft delete is
+//!   the whole point and the database enforces it, in
+//!   `anonymized_customers_carry_the_marker`: a flagged row still holds the
+//!   person, and this one holds nothing of theirs.
+//!
+//!   The erasure is spelled per column type, because migration `0041`'s two
+//!   coordinate columns cannot hold a marker: the nine text identifiers
+//!   become [`REDACTED`] and `address_latitude_microdeg` /
+//!   `address_longitude_microdeg` become `NULL`. There is no integer that is
+//!   not a possible place, so for those two the erasure is the absence.
+//!
+//!   [`erase_in_tx`] also rewrites every copy of those identifiers vpay keeps
+//!   *outside* this table — stored `customer.*` event bodies, `payer_ref` and
+//!   the rail's own `failure_raw` prose on the customer's charges and their
+//!   refunds, and any stored `POST /v1/customers` response — in the same
+//!   transaction, because "vpay erased this payer" may not be true of one
+//!   table and false of five.
 //!
 //! # The split between CrateStack and hand-written SQL, and what decides it
 //!
 //! Two of the seven methods below run through `schemas/vpay.cstack`'s
-//! `model Customer` ([`Customers::touch_last_used`], [`Customers::delete`]);
-//! five are hand-written `sqlx`. The line is drawn by one column —
-//! `metadata JSONB NOT NULL` — for the two costs `model Customer`'s GAP note
-//! measures, and by one query shape (the `seq` cursor's correlated subquery).
+//! `model Customer` ([`Customers::touch_last_used`] and the hard-delete half
+//! of [`erase_in_tx`]); five are hand-written `sqlx`. The line is drawn by one
+//! column — `metadata JSONB NOT NULL` — for the two costs `model Customer`'s
+//! GAP note measures, and by one query shape (the `seq` cursor's correlated
+//! subquery).
 //! `docs/reference/vpay-db.md` §"`customers`" carries the argument; the
 //! per-method docs below name which side each one is on and why.
 
@@ -41,8 +66,32 @@ const MODEL: &str = "Customer";
 
 /// Every column of `customers`, in one place so the statements below cannot
 /// drift on the shape they decode into [`CustomerRow`].
-const COLUMNS: &str = "id, seq, merchant_id, livemode, name, email, phone, metadata, \
-                       last_used_at, created_at, updated_at";
+const COLUMNS: &str = "id, seq, merchant_id, livemode, name, email, phone, \
+                       address_line1, address_line2, address_city, address_state, \
+                       address_postal_code, address_country, \
+                       address_latitude_microdeg, address_longitude_microdeg, metadata, \
+                       last_used_at, anonymized_at, created_at, updated_at";
+
+/// What every identifier column of an anonymised customer holds.
+///
+/// One constant, three writers — the `UPDATE` in [`erase_in_tx`], the
+/// `events.data` rewrite beside it, and [`CustomerRow::redacted`], which is
+/// what the `customer.deleted` body is rendered from. They have to agree
+/// exactly: the body a merchant receives claims to describe the row, and a
+/// marker spelled two ways would make that claim false in a way no test that
+/// looked at one of them could see.
+///
+/// It is also spelled in migration `0041`, in
+/// `anonymized_customers_carry_the_marker` — deliberately, because that is
+/// what turns "the erasure wrote every column" from a promise into something
+/// Postgres refuses to let be untrue. `an_anonymised_customer_carries_the_marker_in_every_identifier_column`
+/// in `postgres_smoke.rs` writes *this* constant into a real row, so changing
+/// it here without changing the migration fails rather than drifts.
+///
+/// Square brackets rather than a bare word so it can never be mistaken for a
+/// value a payer supplied: `redacted` is a plausible surname and a plausible
+/// city, and `[redacted]` is not a plausible anything.
+pub const REDACTED: &str = "[redacted]";
 
 /// The `type` of the event a swept deletion emits.
 ///
@@ -60,6 +109,196 @@ const COLUMNS: &str = "id, seq, merchant_id, livemode, name, email, phone, metad
 /// existed, so polling cannot tell them apart.
 const EVENT_CUSTOMER_DELETED: &str = "customer.deleted";
 
+/// A customer's postal address — Stripe's six formal components **and** the
+/// GPS point (migration `0041`,
+/// [issue #67](https://github.com/vaam-apps/vpay/issues/67)).
+///
+/// # An address here is both halves, and that is a product decision
+///
+/// The maintainer, 2026-09-11: *"address in our system means both formal as
+/// well as GPS"*. Formal addressing is unreliable across the markets vpay
+/// serves and a coordinate is how a place is actually found, so this is one
+/// struct with eight fields rather than an address and a separate location.
+/// It is a deliberate divergence from Stripe, whose `address` has no
+/// coordinate at all — `docs/flows/customers.md` says so in the merchant's
+/// own words, and both SDKs' types repeat it.
+///
+/// # Why a struct here when the table has eight columns
+///
+/// [`CustomerRow`] is otherwise one-to-one with `customers`, and this is the
+/// one place it is not. The reason is that the columns are never meaningful
+/// apart: the wire object nests them under one `address` key, an update
+/// replaces the whole address rather than merging components, and the erasure
+/// writes all of them or none. Eight loose fields on the row would let a
+/// caller do any of those things by halves, and every one of them is a bug
+/// that compiles.
+///
+/// Every formal component is `Option<String>`, and an all-`None` value is the
+/// same thing as "this customer has no address" — see [`Self::is_empty`],
+/// which is what decides whether the object renders `address: null` or an
+/// object.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CustomerAddress {
+    /// Street address, line 1.
+    pub line1: Option<String>,
+    /// Street address, line 2 — apartment, suite, PO box.
+    pub line2: Option<String>,
+    /// City, district, suburb, town or village.
+    pub city: Option<String>,
+    /// State, county, province or region.
+    pub state: Option<String>,
+    /// ZIP or postal code.
+    pub postal_code: Option<String>,
+    /// ISO 3166-1 alpha-2, upper case — `vpay_api::v1::customers` validates
+    /// the shape on the way in and migration `0041`'s
+    /// `address_country_is_iso_3166_1_alpha_2` is the backstop.
+    pub country: Option<String>,
+    /// Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+    /// `4_061_000`.
+    ///
+    /// # `i64` and never a float, and the unit is in the name
+    ///
+    /// Two measurements in this repository decide it, neither of them a
+    /// preference. CrateStack's `Value::from_plain_json` routes every JSON
+    /// number through `Number::as_i64()` and demotes anything else to `f64`
+    /// (`docs/reference/vpay-db.md`), so a decimal degree is a value this
+    /// stack cannot carry without rounding it. And the money layer's own
+    /// precedent is integer minor units with the scale named
+    /// (`docs/flows/money.md`); a coordinate is the same kind of quantity —
+    /// an exact count of a fixed unit, not a measurement for each layer to
+    /// re-round. ADR-0007 denies float arithmetic workspace-wide, which is
+    /// the same argument with a lint on it.
+    ///
+    /// A microdegree is about 0.11 m of latitude, two orders of magnitude
+    /// finer than consumer GPS, so the unit costs no precision anybody can
+    /// observe.
+    ///
+    /// # Both or neither
+    ///
+    /// `None` unless [`Self::longitude_microdeg`] is also `Some` — half a
+    /// coordinate is a line right round the planet. The rule is the
+    /// database's (`address_coordinates_are_both_or_neither`) and the API's
+    /// `400`; this struct cannot express it in the type system, and
+    /// [`Self::coordinate_is_paired`] is what a writer checks.
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`] for the
+    /// unit, the reason it is an integer, and the pair rule.
+    pub longitude_microdeg: Option<i64>,
+}
+
+impl CustomerAddress {
+    /// Whether this customer has no address at all.
+    ///
+    /// The wire object renders `address: null` for an empty address and an
+    /// eight-key object otherwise, so this is the function that decides which —
+    /// and it is `Option`-free on purpose: "an address whose every component
+    /// is absent" and "no address" are the same fact about the payer, and an
+    /// `Option<CustomerAddress>` on the row would have made them two.
+    ///
+    /// ```
+    /// use vpay_db::CustomerAddress;
+    ///
+    /// assert!(CustomerAddress::default().is_empty());
+    /// assert!(!CustomerAddress {
+    ///     city: Some("Douala".to_owned()),
+    ///     ..CustomerAddress::default()
+    /// }
+    /// .is_empty());
+    ///
+    /// // A point with no formal address is an address: in this market it is
+    /// // often the only half a payer can give.
+    /// assert!(!CustomerAddress {
+    ///     latitude_microdeg: Some(4_061_000),
+    ///     longitude_microdeg: Some(9_786_000),
+    ///     ..CustomerAddress::default()
+    /// }
+    /// .is_empty());
+    /// ```
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.line1.is_none()
+            && self.line2.is_none()
+            && self.city.is_none()
+            && self.state.is_none()
+            && self.postal_code.is_none()
+            && self.country.is_none()
+            // The coordinate counts. A customer whose whole address is a
+            // point — no street, no city — has an address, and leaving these
+            // two out of the test would render `address: null` over a stored
+            // pair and make the wire object disagree with the row.
+            && self.latitude_microdeg.is_none()
+            && self.longitude_microdeg.is_none()
+    }
+
+    /// Whether the coordinate is whole: both halves present, or both absent.
+    ///
+    /// Half a coordinate is a line right round the planet, so it is not a
+    /// value this crate will store. The rule is enforced in three places and
+    /// this is the innermost of them: `vpay_api::v1::customers` refuses it
+    /// with a `400` naming `address`, migration `0041`'s
+    /// `address_coordinates_are_both_or_neither` refuses it as a `23514`, and
+    /// this is what a writer with no API in front of it can ask.
+    ///
+    /// It is **not** called by [`insert_in_tx`] or [`update_in_tx`]. That is
+    /// deliberate rather than an omission: a `Result` from those two for a
+    /// shape the API already refuses would be a second error path nothing
+    /// exercises, and the CHECK is the backstop that cannot be bypassed. This
+    /// exists so the refusal can be *asked for* — by a test, or by a future
+    /// batch writer that has no boundary above it.
+    ///
+    /// ```
+    /// use vpay_db::CustomerAddress;
+    ///
+    /// assert!(CustomerAddress::default().coordinate_is_paired());
+    /// assert!(!CustomerAddress {
+    ///     latitude_microdeg: Some(4_061_000),
+    ///     ..CustomerAddress::default()
+    /// }
+    /// .coordinate_is_paired());
+    /// ```
+    #[must_use]
+    pub const fn coordinate_is_paired(&self) -> bool {
+        self.latitude_microdeg.is_some() == self.longitude_microdeg.is_some()
+    }
+
+    /// The address of a customer that has been anonymised: the six formal
+    /// components replaced by [`REDACTED`], the coordinate dropped.
+    ///
+    /// **All six, including the ones the payer never filled in**, which is
+    /// migration `0041`'s rule and not this function's convenience: which
+    /// components a record carried is itself information about the person, so
+    /// an erasure that left the absent ones `NULL` would publish the shape of
+    /// the record it claims to have erased.
+    ///
+    /// # The coordinate goes to `None`, and it is the one field that does
+    ///
+    /// [`Self::latitude_microdeg`] and [`Self::longitude_microdeg`] are
+    /// `i64`, and there is no integer that is not a possible place: a marker
+    /// value would be a coordinate, somewhere. So for those two the erasure
+    /// *is* the absence, which is what migration `0041`'s
+    /// `anonymized_customers_carry_the_marker` requires of them — the nine
+    /// text columns equal the marker and these two are NULL, per column type.
+    ///
+    /// The argument that makes the text columns carry a value rather than
+    /// `NULL` — "which fields did this payer fill in?" is information about
+    /// them — is not lost here: `anonymized_at` is non-NULL on exactly the
+    /// rows this projection describes, so "was there a payer here?" is still
+    /// answerable without the coordinate being one.
+    fn redacted() -> Self {
+        let marker = || Some(REDACTED.to_owned());
+        Self {
+            line1: marker(),
+            line2: marker(),
+            city: marker(),
+            state: marker(),
+            postal_code: marker(),
+            country: marker(),
+            latitude_microdeg: None,
+            longitude_microdeg: None,
+        }
+    }
+}
+
 /// One `customers` row, exactly as stored.
 ///
 /// Not the wire object: `vpay-api` owns that shape (`created` as unix
@@ -68,9 +307,16 @@ const EVENT_CUSTOMER_DELETED: &str = "customer.deleted";
 /// than a silently dropped column.
 ///
 /// `Debug` is **hand-written** below rather than derived, because
-/// [`Self::name`], [`Self::email`] and [`Self::phone`] are a payer's personal
-/// data — see that impl.
-#[derive(Clone, PartialEq, sqlx::FromRow)]
+/// [`Self::name`], [`Self::email`], [`Self::phone`] and [`Self::address`] are
+/// a payer's personal data — see that impl.
+///
+/// `FromRow` is hand-written too, since 2026-09-10, and for a reason that is
+/// not style: [`Self::address`] is one struct over eight columns, and
+/// `#[derive(sqlx::FromRow)]` has no way to say so — there is no field-prefix
+/// attribute in sqlx 0.9, and `#[sqlx(flatten)]` looks for `line1`, not
+/// `address_line1`. The impl below names every column exactly once, which is
+/// the property the derive was here for.
+#[derive(Clone, PartialEq)]
 pub struct CustomerRow {
     /// Public `cus_…` id, supplied by the caller before the insert.
     pub id: String,
@@ -92,6 +338,10 @@ pub struct CustomerRow {
     /// Present by default and with no opt-in anywhere: the maintainer's
     /// decision of 2026-09-05, recorded in `docs/flows/customers.md`.
     pub phone: Option<String>,
+    /// The payer's postal address **and** GPS point, decoded from the eight
+    /// `address_*` columns (migration `0041`). All-`None` means the customer
+    /// has no address — see [`CustomerAddress::is_empty`].
+    pub address: CustomerAddress,
     /// The merchant's own key/value pairs, as stored. The
     /// `metadata_is_object` CHECK guarantees this is a JSON object.
     pub metadata: serde_json::Value,
@@ -105,11 +355,93 @@ pub struct CustomerRow {
     /// and putting it on the object would invite a merchant to build on a
     /// value vpay moves for its own reasons.
     pub last_used_at: OffsetDateTime,
+    /// When this payer's identifiers were erased, or `None` for a live
+    /// customer (migration `0041`).
+    ///
+    /// `Some` is a promise the database keeps rather than one this struct
+    /// makes: `anonymized_customers_carry_the_marker` refuses a row whose
+    /// `anonymized_at` is set and whose identifier columns are anything other
+    /// than [`REDACTED`]. It is **not** a soft-delete flag — there is no
+    /// predicate anywhere that hides such a row, and `GET
+    /// /v1/customers/{id}` answers it with `deleted: true` rather than a
+    /// `404`, which is the whole point: a merchant's stored `cus_…` keeps
+    /// resolving to something.
+    pub anonymized_at: Option<OffsetDateTime>,
     /// When the customer was created, as supplied to [`NewCustomer`].
     pub created_at: OffsetDateTime,
     /// When the row last changed. Maintained by the writers here, not by a
     /// trigger.
     pub updated_at: OffsetDateTime,
+}
+
+/// Decodes every column of `customers`, nesting the eight `address_*` ones
+/// into [`CustomerAddress`].
+///
+/// Hand-written rather than derived only because of that nesting — see
+/// [`CustomerRow`]'s own doc. Each column is named once, so a column added to
+/// [`COLUMNS`] and not here fails to compile rather than being silently
+/// dropped, which is the property the derive provided.
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for CustomerRow {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            seq: row.try_get("seq")?,
+            merchant_id: row.try_get("merchant_id")?,
+            livemode: row.try_get("livemode")?,
+            name: row.try_get("name")?,
+            email: row.try_get("email")?,
+            phone: row.try_get("phone")?,
+            address: CustomerAddress {
+                line1: row.try_get("address_line1")?,
+                line2: row.try_get("address_line2")?,
+                city: row.try_get("address_city")?,
+                state: row.try_get("address_state")?,
+                postal_code: row.try_get("address_postal_code")?,
+                country: row.try_get("address_country")?,
+                latitude_microdeg: row.try_get("address_latitude_microdeg")?,
+                longitude_microdeg: row.try_get("address_longitude_microdeg")?,
+            },
+            metadata: row.try_get("metadata")?,
+            last_used_at: row.try_get("last_used_at")?,
+            anonymized_at: row.try_get("anonymized_at")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+impl CustomerRow {
+    /// This row as it will stand once it is erased: every identifier
+    /// [`REDACTED`], `anonymized_at` set.
+    ///
+    /// # Why the caller renders the event body from this rather than from the
+    /// row the `UPDATE` returns
+    ///
+    /// `customer.deleted` carries the **redacted** object, and it has to be
+    /// built before the write for the branch where there is nothing left to
+    /// read afterwards: a customer with no payment history is hard-deleted,
+    /// so the row the event describes does not exist by the time the event is
+    /// written. One projection serves both branches, which is what keeps the
+    /// two bodies identical in shape — a merchant cannot tell from the
+    /// webhook which branch ran, and there is no reason they should.
+    ///
+    /// `metadata`, `created_at`, `livemode` and the ids are untouched:
+    /// `metadata` is the **merchant's** own data, not the payer's, and the
+    /// rest describes the record rather than the person.
+    #[must_use]
+    pub fn redacted(&self, at: OffsetDateTime) -> Self {
+        let marker = || Some(REDACTED.to_owned());
+        Self {
+            name: marker(),
+            email: marker(),
+            phone: marker(),
+            address: CustomerAddress::redacted(),
+            anonymized_at: Some(at),
+            ..self.clone()
+        }
+    }
 }
 
 /// Redacts the three identifier columns, leaving everything an operator
@@ -146,6 +478,43 @@ impl fmt::Debug for CustomerRow {
             .field("name", &format_args!("{}", redacted(self.name.as_ref())))
             .field("email", &format_args!("{}", redacted(self.email.as_ref())))
             .field("phone", &format_args!("{}", redacted(self.phone.as_ref())))
+            // The address gets a component *count* and not eight redacted
+            // values: an operator debugging `address_line1_length` needs to
+            // know an address is present and which component is over its
+            // bound, and the bound that fired is in the CHECK's own name in
+            // the error. Eight more fields would treble the width of every
+            // line this struct appears on and answer nothing the CHECK name
+            // does not.
+            //
+            // The coordinate is counted and never printed, and it is the one
+            // field here where that is not a judgement call: a name is how
+            // somebody is addressed and a point is where they sleep, so a
+            // `tracing` field carrying one is a payer's home in vpay's logs
+            // for the life of the log retention. It is counted as **one**
+            // component rather than two, because the pair is the value —
+            // `address_coordinates_are_both_or_neither` — and reporting two
+            // would say a customer with a point and a city has three
+            // components of an address, which is not a thing an operator can
+            // act on.
+            .field(
+                "address",
+                &format_args!(
+                    "{{{} component(s) redacted}}",
+                    [
+                        self.address.line1.is_some(),
+                        self.address.line2.is_some(),
+                        self.address.city.is_some(),
+                        self.address.state.is_some(),
+                        self.address.postal_code.is_some(),
+                        self.address.country.is_some(),
+                        self.address.latitude_microdeg.is_some()
+                            || self.address.longitude_microdeg.is_some(),
+                    ]
+                    .iter()
+                    .filter(|present| **present)
+                    .count()
+                ),
+            )
             // The keys, not the values: a merchant's metadata is theirs and
             // may hold anything, but "which keys are on this customer" is
             // what an operator needs and is the merchant's own vocabulary.
@@ -157,6 +526,10 @@ impl fmt::Debug for CustomerRow {
                 ),
             )
             .field("last_used_at", &self.last_used_at)
+            // Printed in full: it is an instant vpay wrote, not anything of
+            // the payer's, and "has this customer been erased?" is the first
+            // question an operator looking at one of these rows has.
+            .field("anonymized_at", &self.anonymized_at)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
             .finish()
@@ -192,6 +565,15 @@ pub struct NewCustomer {
     /// The canonical MSISDN, already canonicalised by the API. See
     /// [`Self::name`].
     pub phone: Option<String>,
+    /// The payer's postal address **and** GPS point, or
+    /// [`CustomerAddress::default`] for none (migration `0041`).
+    ///
+    /// Not one of the identifiers [`Self::name`] describes: an address alone
+    /// does not name anybody — not even a coordinate does, which names a
+    /// place and not a person — so `at_least_one_identifier` ignores the
+    /// whole of it and a create carrying only an address is refused exactly
+    /// as one carrying nothing is.
+    pub address: CustomerAddress,
     /// A JSON **object**; `metadata_is_object` refuses anything else.
     pub metadata: serde_json::Value,
     /// Creation instant, supplied by the caller — and also this customer's
@@ -232,6 +614,27 @@ pub struct CustomerPatch {
     pub email: Option<Option<String>>,
     /// See [`Self::name`].
     pub phone: Option<Option<String>>,
+    /// The address, **replaced whole** rather than merged component-wise.
+    ///
+    /// `None` = the request did not mention `address`. `Some(address)` = this
+    /// is the address now, and every component the request did not name is
+    /// cleared; `Some(CustomerAddress::default())` is therefore how
+    /// `address=` clears it.
+    ///
+    /// # Why replacement and not the three-state merge the scalars get
+    ///
+    /// An address is one fact, not eight. A merchant correcting a payer's
+    /// street who left `city` out of the request meant "this is the address",
+    /// and a component-wise merge would silently keep the old city beside the
+    /// new street — an address that was never anybody's, assembled by vpay
+    /// out of two. The failure mode of replacement is visible on the next
+    /// read; the failure mode of merging is a plausible wrong address.
+    ///
+    /// It also makes the two states enough. Merging would need the third
+    /// (`address[city]=` clearing one component while leaving the rest),
+    /// which is exactly the shape that produces the half-updated address
+    /// above. `docs/flows/customers.md` records this as a decision.
+    pub address: Option<CustomerAddress>,
     /// `None` = the request did not mention `metadata`; `Some(map)` = the
     /// merged map to store. See the struct doc for why this one has two
     /// states and the others three.
@@ -264,6 +667,7 @@ impl CustomerPatch {
         self.name.is_none()
             && self.email.is_none()
             && self.phone.is_none()
+            && self.address.is_none()
             && self.metadata.is_none()
     }
 }
@@ -297,7 +701,7 @@ pub struct CustomerListPage {
 /// `POST /v1/customers` emits `customer.created`, and that event has to
 /// commit with the row or not at all — the rule every other outbox write in
 /// this crate follows ([`crate::settlement`],
-/// [`crate::CheckoutSessions::expire_due`], [`Customers::delete_idle`],
+/// [`crate::CheckoutSessions::expire_due`], [`Customers::erase_idle`],
 /// [`crate::payment_intents::cancel_in_tx`]). `Customers::create` used to be
 /// one statement on the pool; deleting it rather than leaving it beside this
 /// one makes "create a customer and tell nobody" inexpressible instead of
@@ -319,20 +723,28 @@ pub struct CustomerListPage {
 /// [`DbError::UniqueViolation`] naming the primary key if `id` is already
 /// taken — which cannot happen for a freshly minted `cus_…`.
 /// [`DbError::Query`] for anything else, including `at_least_one_identifier`,
-/// `name_length`, `email_length`, `phone_is_a_canonical_msisdn` and
-/// `metadata_is_object`, every one of which the API refuses first with a
-/// `400` naming the parameter — so reaching one here is a vpay bug rather
-/// than a merchant's mistake.
+/// `name_length`, `email_length`, `phone_is_a_canonical_msisdn`,
+/// `address_latitude_microdeg_range`, `address_longitude_microdeg_range`,
+/// `address_coordinates_are_both_or_neither` and `metadata_is_object`, every
+/// one of which the API refuses first with a `400` naming the parameter — so
+/// reaching one here is a vpay bug rather than a merchant's mistake.
 pub(crate) async fn insert_in_tx(
     tx: &mut sqlx::PgConnection,
     new: &NewCustomer,
 ) -> Result<CustomerRow, DbError> {
     // `last_used_at` is `$8` twice over: it is `created_at`, always. See
     // `NewCustomer`'s own doc for why it is not a parameter.
+    // `anonymized_at` is not in the column list at all, and that is the
+    // point rather than an omission: a customer is created live, always, and
+    // a parameter for it would be a way to insert a row that claims a payer
+    // was erased before they ever existed.
     let sql = format!(
-        "INSERT INTO customers (id, merchant_id, livemode, name, email, phone, metadata, \
+        "INSERT INTO customers (id, merchant_id, livemode, name, email, phone, \
+         address_line1, address_line2, address_city, address_state, \
+         address_postal_code, address_country, \
+         address_latitude_microdeg, address_longitude_microdeg, metadata, \
          last_used_at, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) \
          RETURNING {COLUMNS}"
     );
 
@@ -343,6 +755,14 @@ pub(crate) async fn insert_in_tx(
         .bind(new.name.as_deref())
         .bind(new.email.as_deref())
         .bind(new.phone.as_deref())
+        .bind(new.address.line1.as_deref())
+        .bind(new.address.line2.as_deref())
+        .bind(new.address.city.as_deref())
+        .bind(new.address.state.as_deref())
+        .bind(new.address.postal_code.as_deref())
+        .bind(new.address.country.as_deref())
+        .bind(new.address.latitude_microdeg)
+        .bind(new.address.longitude_microdeg)
         .bind(&new.metadata)
         .bind(new.created_at)
         .fetch_one(&mut *tx)
@@ -442,17 +862,45 @@ pub(crate) async fn update_in_tx(
     // nothing else, and the three-state semantics live entirely in the
     // binds: flag false = leave it, flag true + NULL = clear it, flag
     // true + value = set it.
+    // The address is **one** flag over eight columns, which is the statement
+    // saying what `CustomerPatch::address` says: an address is replaced
+    // whole, so a request that named `address[line1]` and not `address[city]`
+    // clears the city. Eight flags would be eight components a caller could
+    // move independently, and the shape this crate would then have to defend
+    // is "half of the payer's old address and half of their new one".
+    //
+    // The coordinate is under the SAME flag as the six formal components and
+    // not one of its own, which is the whole of the maintainer's decision of
+    // 2026-09-11 expressed as a statement: an address here is the formal
+    // address AND the point, so a request that gives a new street without a
+    // coordinate has said the old coordinate is not this place's. A separate
+    // flag would keep a payer's previous GPS point attached to somebody
+    // else's street, which is the one wrong answer a merchant would never
+    // see.
     let sql = format!(
         "UPDATE customers SET \
             name = CASE WHEN $3::BOOLEAN THEN $4::TEXT ELSE name END, \
             email = CASE WHEN $5::BOOLEAN THEN $6::TEXT ELSE email END, \
             phone = CASE WHEN $7::BOOLEAN THEN $8::TEXT ELSE phone END, \
-            metadata = CASE WHEN $9::BOOLEAN THEN $10::JSONB ELSE metadata END, \
-            last_used_at = GREATEST(last_used_at, $11), \
-            updated_at = $11 \
+            address_line1 = CASE WHEN $9::BOOLEAN THEN $10::TEXT ELSE address_line1 END, \
+            address_line2 = CASE WHEN $9::BOOLEAN THEN $11::TEXT ELSE address_line2 END, \
+            address_city = CASE WHEN $9::BOOLEAN THEN $12::TEXT ELSE address_city END, \
+            address_state = CASE WHEN $9::BOOLEAN THEN $13::TEXT ELSE address_state END, \
+            address_postal_code = \
+                CASE WHEN $9::BOOLEAN THEN $14::TEXT ELSE address_postal_code END, \
+            address_country = CASE WHEN $9::BOOLEAN THEN $15::TEXT ELSE address_country END, \
+            address_latitude_microdeg = \
+                CASE WHEN $9::BOOLEAN THEN $16::BIGINT ELSE address_latitude_microdeg END, \
+            address_longitude_microdeg = \
+                CASE WHEN $9::BOOLEAN THEN $17::BIGINT ELSE address_longitude_microdeg END, \
+            metadata = CASE WHEN $18::BOOLEAN THEN $19::JSONB ELSE metadata END, \
+            last_used_at = GREATEST(last_used_at, $20), \
+            updated_at = $20 \
          WHERE merchant_id = $1 AND id = $2 \
          RETURNING {COLUMNS}"
     );
+
+    let address = patch.address.clone().unwrap_or_default();
 
     sqlx::query_as::<_, CustomerRow>(AssertSqlSafe(sql))
         .bind(merchant_id)
@@ -463,12 +911,523 @@ pub(crate) async fn update_in_tx(
         .bind(patch.email.clone().flatten())
         .bind(patch.phone.is_some())
         .bind(patch.phone.clone().flatten())
+        .bind(patch.address.is_some())
+        .bind(address.line1)
+        .bind(address.line2)
+        .bind(address.city)
+        .bind(address.state)
+        .bind(address.postal_code)
+        .bind(address.country)
+        .bind(address.latitude_microdeg)
+        .bind(address.longitude_microdeg)
         .bind(patch.metadata.is_some())
         .bind(patch.metadata.clone())
         .bind(now)
         .fetch_optional(&mut *tx)
         .await
         .map_err(classify_write)
+}
+
+/// Which of the two shapes an erasure took.
+///
+/// Returned rather than inferred by the caller, because the two are
+/// observably different afterwards and a caller that guessed would be
+/// guessing about personal data: after [`Self::HardDeleted`] a `GET` is a
+/// `404`, and after [`Self::Anonymized`] it is a `200` carrying an object
+/// whose every identifier is [`REDACTED`]. `vpay-api` does not currently
+/// branch on it — both answer the same `{deleted: true}` — and it is returned
+/// anyway so that the worker's log line can say which happened, which is the
+/// only place the distinction is visible to an operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomerErasure {
+    /// The customer had no payment history and the row is gone.
+    HardDeleted,
+    /// An intent, a session or an invoice references the customer, so the row
+    /// stays and every identifier on it is now [`REDACTED`].
+    Anonymized,
+}
+
+/// The per-key rule that turns a stored `customer.*` event body — or a stored
+/// `POST /v1/customers` response — into the redacted one.
+///
+/// # Why a stored event body is redacted at all
+///
+/// `events.data` is a snapshot of the whole rendered object (migration
+/// `0018`) and nothing prunes `events`. So every `customer.created` and
+/// `customer.updated` vpay has ever written holds the payer's name, email,
+/// phone and address, forever, on the far side of a "deletion" that erased
+/// the customer row. That was the largest surviving copy of a payer's
+/// identifiers after a delete, and no code named it — issue #68 is written
+/// about intents and sessions, which never carried one.
+///
+/// The merchant *received* those identifiers when the event was delivered and
+/// holds their own copy; that is theirs and vpay cannot reach it. What vpay
+/// can do is stop being a second store of it, and the retention promise to
+/// the payer is what decides between the two.
+///
+/// # Why it names the keys instead of walking for "anything string-shaped"
+///
+/// `metadata` is the merchant's own data and stays — a redaction that
+/// rewrote it would destroy a merchant's records to protect a payer whose
+/// details are not in it. `id`, `object`, `created`, `livemode` and `deleted`
+/// describe the record, not the person. So the set is closed and spelled, and
+/// a tenth identifier added to `CustomerObject` without being added here is
+/// what `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+/// is for: it scans every text and JSONB column in `information_schema`
+/// rather than the ones this constant happens to name.
+///
+/// Every key is rewritten unconditionally, `null` included, for
+/// [`CustomerAddress::redacted`]'s reason: "which fields did this payer fill
+/// in?" is information about them.
+///
+/// `$2` is [`REDACTED`] and `$3` the redacted address — **eight** keys, not
+/// six: the six formal components as the marker and the two coordinate keys
+/// as JSON `null`. A stored `customer.*` body holds the whole rendered object
+/// (migration `0018`), so a payer's GPS point sits inside
+/// `data.object.address` of every `customer.created` and `customer.updated`
+/// vpay has ever written, and nothing prunes `events`. Replacing the
+/// `address` key whole rather than walking into it is what makes that
+/// unmissable: there is no path by which a nested key survives, because the
+/// nested object is not read.
+///
+/// Both are bound by the caller from the same constants the row itself is
+/// written with.
+const REDACT_CUSTOMER_KEY: &str = "CASE \
+     WHEN field.key IN ('name', 'email', 'phone') THEN to_jsonb($2::TEXT) \
+     WHEN field.key = 'address' THEN $3::JSONB \
+     ELSE field.value END";
+
+/// Erases one customer that the caller has already read **under this
+/// transaction's row lock**, and writes the `customer.deleted` that tells its
+/// merchant so.
+///
+/// # The branch, and why the database decides it rather than the caller
+///
+/// `payment_intents.customer_id`, `checkout_sessions.customer_id` (migration
+/// `0034`) and `invoices.customer_id` (`0036`) are `NO ACTION` foreign keys.
+/// A customer any of them references cannot be deleted — that is the property
+/// that keeps a payment attached to the payer it was taken from, and it is
+/// not being given up. What changes (migration `0041`) is what vpay does
+/// instead of refusing: the row stays and every identifier on it becomes
+/// [`REDACTED`], so the payment record survives with **no payer on it**.
+///
+/// A customer with no history is still hard-deleted, through the generated
+/// `delete_many` (see `hard_delete` below, named without a link because it
+/// is private), so `model Customer`'s `@@allow("delete", …)` stays a
+/// permission something exercises.
+///
+/// The `SELECT NOT (…)` that decides between them runs inside this
+/// transaction and under the caller's lock on the customer row — but that
+/// lock does **not** stop a concurrent `POST /v1/payment_intents` inserting a
+/// reference, because the insert only takes a *share* lock on the customer.
+/// So the branch can be wrong by one race, in exactly one direction, and the
+/// database catches it: if history appears between the `SELECT` and the
+/// `DELETE`, the delete raises `23503` and the whole transaction rolls back,
+/// leaving the customer live and the merchant a `409`-free retry that will
+/// take the other branch. The opposite race cannot happen — history is never
+/// removed.
+///
+/// # What else is written, and why each one is here rather than in a sweep
+///
+/// Six more statements, all in this transaction:
+///
+/// 1. the `customer.deleted` event, whose body is the **redacted** object;
+/// 2. every stored `customer.*` event body for this object — see
+///    [`REDACT_CUSTOMER_KEY`] — **including the one step 1 just wrote**, so
+///    the invariant is "no `events` row holds this payer's identifiers" and
+///    not "no `events` row except the newest one";
+/// 3. `charges.payer_ref` for every charge on this customer's intents,
+///    replaced by the marker, with `payer_ref_masked` cleared and the rail's
+///    verbatim `failure_raw` prose replaced too. `payer_ref` is the payer's
+///    MSISDN as the rail was given it and is reachable from a customer only
+///    through an intent, which is why nothing looking at `customers` alone
+///    ever found it; `failure_raw` is unbounded text a rail wrote *about*
+///    this payer and may quote their number back;
+/// 4. `refunds.failure_raw` for the refunds of those charges, for step 3's
+///    reason and reached the same way;
+/// 5. `idempotency_keys.response_body` for any stored `POST /v1/customers`
+///    response naming this customer — the exact JSON that was answered, kept
+///    for 24 hours to replay. A replay after an erasure now answers the
+///    redacted object, which is the same thing a fresh `GET` answers;
+/// 6. `webhook_deliveries.payload_sha256`, cleared on the deliveries of those
+///    events that can still be attempted. This one protects a *delivery*
+///    rather than the payer: step 2 changes the bytes a pending delivery
+///    would re-render, and the digest guard would dead-letter it. See
+///    [`redact_stored_copies`].
+///
+/// A sweep over these afterwards would be a window in which "vpay erased this
+/// payer" is true of one table and false of five, on a promise a payer was
+/// given. One transaction makes that window not exist.
+///
+/// # `event_data` is the caller's
+///
+/// [`Customers::idle_since`]'s reason, unchanged: the body is the *rendered*
+/// wire object and only `vpay-api` knows that shape. It is rendered from
+/// [`CustomerRow::redacted`] before this is called, which is also what makes
+/// one projection serve the branch where the row no longer exists to read.
+///
+/// # Errors
+///
+/// [`DbError::UniqueViolation`] on `events_pkey` for a replayed `event_id`.
+/// [`DbError::Persistence`] wrapping [`crate::PersistenceError::Denied`] if
+/// `model Customer` lost its `@@allow("delete", …)` — the one refusal that is
+/// otherwise silent, spelled here because a hard delete that matched no row
+/// while this transaction holds the row's lock cannot be anything else.
+/// [`DbError::Query`] for any statement that fails, including the `23503`
+/// above; the transaction is rolled back either way, so a failed erasure
+/// leaves a live customer rather than a half-erased one.
+pub(crate) async fn erase_in_tx(
+    cs: &crate::schema::cratestack_schema::Cratestack,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    row: &CustomerRow,
+    now: OffsetDateTime,
+    event_id: &str,
+    event_data: &serde_json::Value,
+) -> Result<CustomerErasure, DbError> {
+    // The variable is `sql`, and shadowed per statement below, because
+    // `crate::sql_audit` requires it: the injection waiver must wrap a
+    // variable of exactly that name, so the interpolation audit and the
+    // waiver are looking at the same string. (This comment cannot spell the
+    // wrapper's name — the scanner matches the literal text and would read
+    // its own quotation as a site.)
+    let sql = format!("SELECT NOT ({UNREFERENCED}) FROM customers WHERE id = $1");
+    let has_history: bool = sqlx::query_scalar(AssertSqlSafe(sql))
+        .bind(&row.id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+
+    let erasure = if has_history {
+        anonymize(tx, row, now).await?;
+        CustomerErasure::Anonymized
+    } else {
+        hard_delete(cs, tx, row).await?;
+        CustomerErasure::HardDeleted
+    };
+
+    // The event first, so the redaction below covers it too — see this
+    // function's own doc, point 2.
+    crate::events::insert_in_tx(
+        &mut *tx,
+        &crate::NewEvent {
+            id: event_id.to_owned(),
+            merchant_id: row.merchant_id.clone(),
+            livemode: row.livemode,
+            event_type: EVENT_CUSTOMER_DELETED.to_owned(),
+            object_id: row.id.clone(),
+            data: event_data.clone(),
+        },
+    )
+    .await?;
+
+    redact_stored_copies(tx, &row.id, &row.merchant_id).await?;
+    Ok(erasure)
+}
+
+/// Replaces every text identifier column with [`REDACTED`], NULLs the
+/// coordinate, and stamps `anonymized_at`.
+///
+/// One statement assigning all eleven columns from **two** literals — the
+/// marker and a NULL — which is the shape migration `0041`'s
+/// `anonymized_customers_carry_the_marker` is written to police: a `SET` list
+/// that missed a column produces a row the database refuses outright rather
+/// than a row that says a payer was erased while holding one of their
+/// details.
+///
+/// # Why the coordinate is NULLed and not marked
+///
+/// It is `BIGINT`, and there is no integer that is not a possible place, so a
+/// marker value would be a coordinate — somewhere real, attached to a row
+/// that claims the payer is gone. [`CustomerAddress::redacted`] carries the
+/// same argument for the projection the event body is rendered from, and the
+/// CHECK requires exactly this pair of behaviours per column type, so the
+/// three cannot drift apart without the erasure failing outright.
+///
+/// The two columns are NULLed **unconditionally**, including for a customer
+/// that never had a coordinate. Assigning only where one existed would be a
+/// `SET` list whose shape depends on the row, which is the read-then-write
+/// this crate does not do — and the CHECK cannot tell the two apart anyway.
+///
+/// `anonymized_at IS NULL` is in the `WHERE` even though the caller checked
+/// it under the row lock, for [`update_in_tx`]'s reason: a guard belongs in
+/// the write. `last_used_at` is deliberately not moved — an erasure is not a
+/// use, and moving it would reset the retention clock of a record there is
+/// nothing left to retain.
+async fn anonymize(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    row: &CustomerRow,
+    now: OffsetDateTime,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE customers SET \
+            name = $2, email = $2, phone = $2, \
+            address_line1 = $2, address_line2 = $2, address_city = $2, \
+            address_state = $2, address_postal_code = $2, address_country = $2, \
+            address_latitude_microdeg = NULL, address_longitude_microdeg = NULL, \
+            anonymized_at = $3, updated_at = $3 \
+         WHERE id = $1 AND merchant_id = $4 AND anonymized_at IS NULL \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, CustomerRow>(AssertSqlSafe(sql))
+        .bind(&row.id)
+        .bind(REDACTED)
+        .bind(now)
+        .bind(&row.merchant_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map(|_| ())
+        .map_err(classify_write)
+}
+
+/// Removes a customer nothing references, through the generated
+/// `delete_many`.
+///
+/// Through CrateStack rather than as a hand-written `DELETE` so that
+/// `a_customer_delete_is_a_delete_and_not_a_soft_delete` goes on pinning the
+/// statement that actually reaches Postgres: adding `@@soft_delete` to
+/// `model Customer` is a one-line schema edit that compiles, passes
+/// `check-schema`, and would turn every hard delete into a flag on a row that
+/// keeps the payer's name, email and phone.
+///
+/// A summary of zero is impossible here — the caller holds this row's lock
+/// and has just read it — with one exception, and it is the exception the
+/// model's own comment calls the most dangerous line in the file: a lost
+/// `@@allow("delete", …)` compiles its refusal into the statement's `WHERE`
+/// and matches nothing, silently. That is why this returns an error rather
+/// than `Ok(())` on zero.
+async fn hard_delete(
+    cs: &crate::schema::cratestack_schema::Cratestack,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    row: &CustomerRow,
+) -> Result<(), DbError> {
+    let summary = cs
+        .customer()
+        .delete_many()
+        .where_(crate::schema::cratestack_schema::customer::id().eq(row.id.clone()))
+        .where_(
+            crate::schema::cratestack_schema::customer::merchant_id().eq(row.merchant_id.clone()),
+        )
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
+
+    // `.value`, because `run_in_tx` wraps the ordinary return in a
+    // `RunInTxOutcome` carrying the audit events it persisted inside this
+    // transaction (cratestack#534). `model Customer` is not `@@audit`-enabled,
+    // so the vector is empty and there is nothing to fan out; the wrapper is
+    // still what a caller who owns the transaction is handed.
+    let summary = summary.value;
+    if summary.ok == 1 {
+        return Ok(());
+    }
+    Err(DbError::from(crate::PersistenceError::Denied {
+        model: MODEL,
+        action: "delete",
+        detail: format!(
+            "delete_many matched {} row(s) for a customer this transaction holds the lock on; \
+             the only way that happens is a lost @@allow(\"delete\", …) on model Customer, \
+             whose policy is compiled into the statement's own WHERE",
+            summary.ok
+        ),
+    }))
+}
+
+/// Rewrites every copy of this payer's identifiers vpay keeps outside
+/// `customers`.
+///
+/// Five statements, and the set is closed by measurement rather than by
+/// intuition: `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+/// scans every `text`, `varchar` and `jsonb` column `information_schema`
+/// knows about, so a sixth store added later fails that test rather than
+/// waiting to be noticed here.
+///
+/// # The rail's own words are a copy too, and they were missed on 2026-09-10
+///
+/// `charges.failure_raw` and `refunds.failure_raw` hold **the rail's
+/// message, verbatim** — `"{code}: {message}"` from MTN's `Reason` and
+/// Orange's `raw_reason` — kept so an unmapped decline survives for whoever
+/// fixes the mapping table (`docs/flows/failures.md`). Neither is an
+/// identifier column and that is exactly why the first pass's enumeration of
+/// "the copies that survived a deletion, in full" did not list them: they are
+/// unbounded text a mobile-money rail wrote about this payer, and a rail that
+/// answers `PAYER_NOT_FOUND: subscriber 2376… is not registered` has put the
+/// payer's MSISDN in vpay's database in a column nothing redacts.
+///
+/// They are replaced by the marker rather than parsed for numbers, because a
+/// redaction that had to recognise every spelling a rail might use is a
+/// redaction that fails silently on the first one it has not seen. The
+/// `failure_code` beside each survives, so *why* the payment failed is still
+/// answerable after the payer is gone; only the rail's prose goes. `NULL`
+/// stays `NULL` — a charge that never failed must not grow a failure, and
+/// `refunds.failure_paired` would refuse the row if it did.
+///
+/// `refunds.reason` is deliberately left alone: it is the **merchant's** free
+/// text about their own refund ("duplicate", "requested\_by\_customer"), the
+/// same kind of thing `metadata` is, and the same argument keeps it.
+///
+/// # `provider_requests` and `webhook_deliveries`
+///
+/// `provider_requests` deliberately has no redaction: migration `0016` stores
+/// no request or response body, only a status code, an attempt number and an
+/// operator-facing `error_kind`. `webhook_deliveries` keeps
+/// `payload_sha256` and not the payload — but it does get a statement, and
+/// for the opposite reason to a leak: see the fourth one below.
+/// The `address` a redacted `customer.*` body carries — the value
+/// [`REDACT_CUSTOMER_KEY`]'s `$3` is bound to.
+///
+/// # It has to be key-for-key what the wire object renders
+///
+/// A stored body this rewrites is read back by a merchant as
+/// `vpay_api::model::AddressObject`, on a replayed `POST /v1/customers` or in
+/// a redelivered webhook. A key here that the object does not have — or one
+/// the object has and this does not — is a shape a merchant's handler meets
+/// on a redelivery and nowhere else, which is the worst place to meet one.
+/// `the_redacted_address_body_is_the_shape_the_wire_renders` pins the key set
+/// and the per-type value; the object's own half is
+/// `an_erased_payers_coordinates_are_null_and_not_a_marker` in `vpay-api`.
+///
+/// # Why the coordinate is `null` and the six are the marker
+///
+/// [`CustomerAddress::redacted`]'s reason, one layer out: the coordinate is
+/// an integer on the wire, so the marker is not a value it can take — and a
+/// JSON string in a field both SDKs decode as an integer would fail the
+/// decode rather than read as redacted.
+///
+/// A function rather than a `const`, because `serde_json::json!` is not
+/// const-evaluable; it is called once per erasure, which is not a path where
+/// building a nine-node `Value` is worth avoiding.
+fn redacted_address_json() -> serde_json::Value {
+    serde_json::json!({
+        "line1": REDACTED,
+        "line2": REDACTED,
+        "city": REDACTED,
+        "state": REDACTED,
+        "postal_code": REDACTED,
+        "country": REDACTED,
+        "latitude_microdeg": serde_json::Value::Null,
+        "longitude_microdeg": serde_json::Value::Null,
+    })
+}
+
+async fn redact_stored_copies(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    customer_id: &str,
+    merchant_id: &str,
+) -> Result<(), DbError> {
+    let address = redacted_address_json();
+
+    // `COALESCE(…, events.data)` and not a bare subquery: `jsonb_object_agg`
+    // over an empty object is NULL, and `events.data` is NOT NULL. A
+    // `customer.*` body is never empty, so the fallback is unreachable — and
+    // an unreachable fallback that keeps the row is the direction to fail in
+    // when the alternative is a violated NOT NULL aborting the erasure.
+    let sql = format!(
+        "UPDATE events SET data = COALESCE( \
+             (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
+              FROM jsonb_each(events.data) AS field(key, value)), \
+             events.data) \
+         WHERE object_id = $1 AND type LIKE 'customer.%'"
+    );
+    sqlx::query(AssertSqlSafe(sql))
+        .bind(customer_id)
+        .bind(REDACTED)
+        .bind(&address)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // The stored `POST /v1/customers` response, kept for 24 hours so a
+    // retried request answers what the original did. Matched on the body's
+    // own `object`/`id` rather than on the request path, because the path is
+    // stored as text and the body is the thing that actually holds the
+    // identifiers. Merchant-scoped as well, because the primary key is
+    // `(merchant_id, idempotency_key)` and this crate never reaches across a
+    // tenant even when the id it holds could only belong to one.
+    let sql = format!(
+        "UPDATE idempotency_keys SET response_body = COALESCE( \
+             (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
+              FROM jsonb_each(idempotency_keys.response_body) AS field(key, value)), \
+             response_body) \
+         WHERE merchant_id = $4 \
+           AND response_body->>'object' = 'customer' \
+           AND response_body->>'id' = $1"
+    );
+    sqlx::query(AssertSqlSafe(sql))
+        .bind(customer_id)
+        .bind(REDACTED)
+        .bind(&address)
+        .bind(merchant_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // `charges.payer_ref` is the payer's MSISDN as the rail was given it and
+    // `payer_ref_masked` the display form of the same number. The marker
+    // rather than NULL for the first, so a charge whose payer vpay *did* know
+    // stays distinguishable from a redirect-rail charge where it never did;
+    // NULL for the second, because a mask is a rendering of a value that no
+    // longer exists and `[redacted]` is already the value.
+    //
+    // Reached through the intents, which is the only path from a customer to
+    // a charge — and the reason this column survived every previous reading
+    // of "what does a customer deletion leave behind?".
+    let charges = "UPDATE charges SET payer_ref = $2, payer_ref_masked = NULL, \
+             failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
+         WHERE payment_intent_id IN \
+               (SELECT id FROM payment_intents WHERE customer_id = $1)";
+    sqlx::query(charges)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // The refund's half of the same column. Reached through the charges,
+    // which are reached through the intents. `failure_code` is untouched, so
+    // `refunds.failure_paired` — "a code with no raw text is a half-written
+    // failure" — still holds either way round.
+    let refunds = "UPDATE refunds SET \
+             failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
+         WHERE charge_id IN \
+               (SELECT c.id FROM charges c \
+                JOIN payment_intents p ON p.id = c.payment_intent_id \
+                WHERE p.customer_id = $1)";
+    sqlx::query(refunds)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    // NOT a leak, and the only statement here that is not about one: the
+    // erasure has just changed the bytes `vpay_worker::webhooks::event_bytes`
+    // renders for every `customer.*` event of this object, and
+    // `webhook_deliveries.payload_sha256` is the digest the FIRST signed
+    // attempt recorded so that a later attempt cannot send different bytes.
+    // A delivery mid-ladder when the erasure lands would therefore re-render
+    // to a different body, fail `refuse_a_re_rendered_body`, and be
+    // DEAD-LETTERED with "a renderer changed under a live delivery" — an
+    // operator sent hunting a deploy that never happened, and a merchant who
+    // never learns the payer was erased.
+    //
+    // Clearing the digest on the deliveries that can still be attempted is
+    // what makes the next attempt re-sign the redacted body instead. It
+    // narrows that guard in exactly one place: the one change of bytes vpay
+    // makes on purpose, in the transaction that makes it. `succeeded` and
+    // `exhausted` are terminal and are left alone — nothing will re-render
+    // them, and the digest of what a merchant was actually sent is forensics.
+    let deliveries = "UPDATE webhook_deliveries SET payload_sha256 = NULL \
+         WHERE state IN ('pending', 'failed') \
+           AND event_id IN \
+               (SELECT id FROM events WHERE object_id = $1 AND type LIKE 'customer.%')";
+    sqlx::query(deliveries)
+        .bind(customer_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -588,48 +1547,8 @@ pub trait Customers: Send + Sync {
     /// own comment, and `every_action_this_module_calls_has_an_allow_arm`.
     async fn touch_last_used(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError>;
 
-    /// Hard-deletes one customer of this merchant's. `false` means there was
-    /// no such customer for this merchant.
-    ///
-    /// # Why a hard delete, and why `delete_many`
-    ///
-    /// The object is personal data. `docs/flows/customers.md` carries the
-    /// argument; the short form is that a soft-deleted customer is still the
-    /// record of the person who asked to be forgotten, and a `deleted_at`
-    /// column would make "erase this" a lie the schema tells.
-    ///
-    /// `delete_many().where_(id).where_(merchant_id)` and **not**
-    /// `delete(pk)`, for [`crate::DisabledClients::enable_client`]'s measured
-    /// reason: `delete_exec.rs` turns "matched no row" into
-    /// `CratestackError::Forbidden`, so the single-row builder cannot tell
-    /// "not yours" from "the policy refused" — and here the first of those is
-    /// an ordinary `404` and the second is a page-an-operator bug. It is also
-    /// the only builder that can carry the tenant filter at all.
-    ///
-    /// # What refuses this, and why that refusal is the point
-    ///
-    /// `payment_intents.customer_id` and `checkout_sessions.customer_id` are
-    /// foreign keys with `NO ACTION`, so a customer with any payment history
-    /// **cannot** be deleted and this returns
-    /// [`DbError::Persistence`] wrapping [`crate::PersistenceError::ForeignKey`].
-    /// The API turns that into a `409` explaining it. That is the deliberate
-    /// trade migration `0034` records: a merchant's payment record survives,
-    /// and "delete this customer" is therefore not a complete erasure of the
-    /// payer. `docs/flows/customers.md` states it plainly rather than
-    /// implying otherwise.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`] — [`crate::PersistenceError::ForeignKey`]
-    /// when an intent or a session references the customer,
-    /// [`crate::PersistenceError::Denied`] if the model loses its
-    /// `@@allow("delete", …)` (silent: see [`Customers::touch_last_used`]),
-    /// [`crate::PersistenceError::Backend`] otherwise.
-    async fn delete(&self, merchant_id: &str, id: &str) -> Result<bool, DbError>;
-
-    /// Every customer idle since before `horizon` that **nothing references**,
-    /// oldest first, at most `limit` of them — the retention sweep's backlog
-    /// query.
+    /// Every live customer idle since before `horizon`, oldest first, at most
+    /// `limit` of them — the retention sweep's backlog query.
     ///
     /// The **read** half of the sweep, split from the delete for
     /// [`crate::CheckoutSessions::due_for_expiry`]'s reason: the
@@ -641,30 +1560,34 @@ pub trait Customers: Send + Sync {
     ///
     /// It selects a *time*, not a tenant — exactly as `due_for_expiry` does.
     ///
-    /// # It carries the same reference guard the delete does
+    /// # It no longer carries the `NOT EXISTS` guard, and that is the change
     ///
-    /// `NOT EXISTS` over `payment_intents`, `checkout_sessions` and — since
-    /// migration `0036` — `invoices`.
-    /// Duplicated rather than left to the delete alone so a referenced
-    /// customer is never *rendered* either: rendering it would mint an
-    /// `evt_…` and build an object claiming a payer's record had been erased,
-    /// which the delete would then correctly refuse — work done for nothing,
-    /// and one more place a future change could leak personal data out of.
+    /// This query excluded every customer an intent, a session or an invoice
+    /// referenced, because the delete that followed it could not have removed
+    /// one: the foreign keys are `NO ACTION`. Offering one would have minted
+    /// an `evt_…` for a deletion Postgres was about to refuse.
     ///
-    /// The guard is `NOT EXISTS` rather than a reliance on the foreign key
-    /// because the two say different things. The FK refuses *any* reference,
-    /// however old; this refuses any reference, full stop, and the pair is
-    /// what makes the sweep's contract — "an unreferenced customer nobody has
-    /// used for twelve months" — one sentence with two enforcers rather than
-    /// an error path.
+    /// Since migration `0041` a referenced customer *is* erasable — it is
+    /// anonymised rather than deleted — so excluding it here would have
+    /// exempted from the twelve-month retention promise exactly the customers
+    /// the promise is about: the ones vpay has taken money from. The
+    /// `NOT EXISTS` triple survives as [`UNREFERENCED`], where
+    /// `erase_in_tx` uses it to choose between the two shapes; this query
+    /// no longer needs it, and `the_sweep_guard_names_every_table_that_can_reference_a_customer`
+    /// still pins the set of tables at three.
+    ///
+    /// What it does exclude is `anonymized_at IS NOT NULL`. Without that
+    /// clause an anonymised customer stays idle for ever and the sweep offers
+    /// it again on the next pass, and the one after — an hourly
+    /// `customer.deleted` about a payer already erased, for the life of the
+    /// deployment.
     ///
     /// # Why this stays raw SQL
     ///
-    /// `NOT EXISTS (SELECT 1 FROM payment_intents WHERE customer_id =
-    /// customers.id)` is a correlated subquery over a *different table*, and
-    /// `cratestack::Filter` compares columns of the model's own table. There
-    /// is no relation declared on `model Customer` to side-load either
-    /// (`payment_intents` is not modelled, and `@relation` needs both ends).
+    /// The `IS NULL` filter alone would go through `find_many`, but this
+    /// query returns a [`CustomerRow`] and that struct carries `metadata`,
+    /// which `model Customer` does not declare and must not (see the model's
+    /// GAP note). A generated read could not build the row at all.
     ///
     /// # Errors
     ///
@@ -675,29 +1598,35 @@ pub trait Customers: Send + Sync {
         limit: i64,
     ) -> Result<Vec<CustomerRow>, DbError>;
 
-    /// Deletes one idle, unreferenced customer **and** appends the
-    /// `customer.deleted` event that tells its merchant so — in one
-    /// transaction. `Ok(false)` means it was no longer eligible.
+    /// Erases one idle customer — hard-deleting it if nothing references it
+    /// and anonymising it if something does — **and** appends the
+    /// `customer.deleted` event that tells its merchant so, in one
+    /// transaction. `Ok(None)` means it was no longer eligible.
     ///
     /// The other half of [`Customers::idle_since`], and the same argument
     /// [`crate::CheckoutSessions::expire_due`] makes for being one function
-    /// rather than two calls: a crash between the delete and the event would
+    /// rather than two calls: a crash between the erasure and the event would
     /// erase a merchant's customer with nobody ever told, and there is no
-    /// sweep over "customers deleted without an event" and no way to build
-    /// one, because the row that would prove it is gone. One transaction
-    /// makes that window not exist.
+    /// sweep over "customers erased without an event" and no way to build one
+    /// for the branch where the row is gone. One transaction makes that
+    /// window not exist.
     ///
     /// # The guard is the statement, and it is re-evaluated here
     ///
-    /// `last_used_at < horizon` **and** the `NOT EXISTS` pair, re-checked
-    /// inside this transaction rather than trusted from
-    /// [`Customers::idle_since`]. A merchant can create an intent for the
+    /// `last_used_at < horizon` and `anonymized_at IS NULL`, re-checked
+    /// inside this transaction under `SELECT … FOR UPDATE` rather than
+    /// trusted from [`Customers::idle_since`]. A merchant can use the
     /// customer between the read and the write, and a customer a payment was
     /// just taken from must not be erased on the strength of a read taken
-    /// before it. `Ok(false)` is the **normal** answer for that, and for a
+    /// before it. `Ok(None)` is the **normal** answer for that, for a
     /// concurrent sweep, and for a merchant who deleted it by hand — and no
     /// event is written on that path, which is what makes a second sweep
     /// produce no second `customer.deleted`.
+    ///
+    /// The `NOT EXISTS` triple is **not** part of the guard any more: since
+    /// migration `0041` a referenced customer is anonymised rather than
+    /// skipped, so it decides the shape of the erasure instead of whether one
+    /// happens. See [`Customers::idle_since`].
     ///
     /// # `horizon` is the caller's
     ///
@@ -708,21 +1637,31 @@ pub trait Customers: Send + Sync {
     /// means a test can sweep a horizon in the future instead of rewriting a
     /// stored timestamp.
     ///
+    /// # `event_data` is rendered from a row this method has not read yet
+    ///
+    /// The caller renders it from the page [`Customers::idle_since`] handed
+    /// it, redacted through [`CustomerRow::redacted`] — which is what lets
+    /// one projection serve both branches, including the one where the row is
+    /// gone by the time the event is written. Everything in a redacted object
+    /// except `metadata` is immutable, so the only value that can be stale is
+    /// a merchant's `metadata` changed between the two reads; that was true
+    /// of the delete this replaces and is not made worse here.
+    ///
     /// # Errors
     ///
     /// [`DbError::UniqueViolation`] on `events_pkey` if `event_id` has
-    /// already been emitted. [`DbError::Query`] if any statement or the
-    /// commit fails — including an `event_data` that is not a JSON object
-    /// (`data_is_object`) or a `type` outside the documented vocabulary, both
-    /// of which are vpay bugs. **The transaction is rolled back either way,
-    /// so the customer survives and the next sweep retries it.**
-    async fn delete_idle(
+    /// already been emitted, and everything `erase_in_tx` lists — named
+    /// without a link because it is `pub(crate)`. **The transaction is rolled
+    /// back on any of them, so the customer survives whole and the next sweep
+    /// retries it.**
+    async fn erase_idle(
         &self,
         id: &str,
         horizon: OffsetDateTime,
+        now: OffsetDateTime,
         event_id: &str,
         event_data: &serde_json::Value,
-    ) -> Result<bool, DbError>;
+    ) -> Result<Option<CustomerErasure>, DbError>;
 }
 
 /// `time::OffsetDateTime` (vpay's convention for every TIMESTAMPTZ this crate
@@ -760,9 +1699,17 @@ fn to_chrono(at: OffsetDateTime) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
 }
 
-/// The `NOT EXISTS` pair that makes a customer sweepable, shared by
-/// [`Customers::idle_since`] and [`Customers::delete_idle`] so the read's
-/// guard and the write's cannot drift.
+/// The `NOT EXISTS` triple that decides which shape an erasure takes, read by
+/// [`erase_in_tx`] and by nothing else since migration `0041`.
+///
+/// **It stopped being a guard and became a branch, and the difference is the
+/// whole of issue #68.** Until 2026-09-10 this was in
+/// [`Customers::idle_since`]'s `WHERE` as well, so a customer any of the
+/// three tables referenced was skipped by the retention sweep and refused by
+/// `DELETE /v1/customers/{id}` — which exempted from the twelve-month
+/// promise exactly the payers the promise is about, the ones vpay had taken
+/// money from. It now selects between hard-deleting the row and anonymising
+/// it; every customer is erasable either way.
 ///
 /// A `const` rather than a function taking the outer query's alias, and that
 /// is a constraint from `crate::sql_audit` rather than a preference: every
@@ -778,14 +1725,15 @@ fn to_chrono(at: OffsetDateTime) -> chrono::DateTime<chrono::Utc> {
 /// exist" while that was true; the clause below is what makes it stop being
 /// a comment.
 ///
-/// Without the third `NOT EXISTS`, nothing breaks *loudly*:
-/// `invoices.customer_id` is a `NO ACTION` foreign key, so `delete_idle`
-/// would still be refused by Postgres. What would happen instead is that
-/// [`Customers::idle_since`] would keep handing the sweep a customer it can
-/// never delete — minting an `evt_…` and building a `customer.deleted` object
-/// for a payer whose record is not going anywhere, once an hour, forever,
-/// with the failure arriving as a `23503` inside a transaction that rolls
-/// back. `an_invoiced_customer_is_never_offered_to_the_sweep` is the test.
+/// Without the third `NOT EXISTS`, nothing breaks *loudly*, and what breaks
+/// changed with the meaning of the constant. It used to be a wasted `evt_…`
+/// once an hour for a customer Postgres would refuse to delete. It is now
+/// worse: [`erase_in_tx`] would take the **hard-delete** branch for an
+/// invoiced customer, `invoices.customer_id`'s `NO ACTION` foreign key would
+/// raise `23503`, and the whole erasure — event, redactions and all — would
+/// roll back. The payer would not be erased, and the merchant would be told
+/// nothing. `an_invoiced_customer_is_anonymised_rather_than_deleted` is the
+/// test, and it is what a missing clause fails on.
 const UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM payment_intents WHERE customer_id = customers.id) \
      AND NOT EXISTS (SELECT 1 FROM checkout_sessions WHERE customer_id = customers.id) \
      AND NOT EXISTS (SELECT 1 FROM invoices WHERE customer_id = customers.id)";
@@ -890,27 +1838,6 @@ impl Customers for crate::repository::PgRepositories {
         Ok(summary.ok == 1)
     }
 
-    async fn delete(&self, merchant_id: &str, id: &str) -> Result<bool, DbError> {
-        // THROUGH CRATESTACK. Both filters are in the statement: the tenant
-        // one is what makes another merchant's `cus_…` answer the same 404 a
-        // missing one does, without this crate ever comparing two merchant
-        // ids in Rust.
-        let cs = &self.cs;
-        let summary = cs
-            .customer()
-            .delete_many()
-            .where_(crate::schema::cratestack_schema::customer::id().eq(id.to_owned()))
-            .where_(
-                crate::schema::cratestack_schema::customer::merchant_id()
-                    .eq(merchant_id.to_owned()),
-            )
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
-
-        Ok(summary.ok == 1)
-    }
-
     async fn idle_since(
         &self,
         horizon: OffsetDateTime,
@@ -918,7 +1845,7 @@ impl Customers for crate::repository::PgRepositories {
     ) -> Result<Vec<CustomerRow>, DbError> {
         let sql = format!(
             "SELECT {COLUMNS} FROM customers \
-             WHERE last_used_at < $1 AND {UNREFERENCED} \
+             WHERE last_used_at < $1 AND anonymized_at IS NULL \
              ORDER BY last_used_at ASC \
              LIMIT $2"
         );
@@ -931,60 +1858,45 @@ impl Customers for crate::repository::PgRepositories {
             .map_err(DbError::Query)
     }
 
-    async fn delete_idle(
+    async fn erase_idle(
         &self,
         id: &str,
         horizon: OffsetDateTime,
+        now: OffsetDateTime,
         event_id: &str,
         event_data: &serde_json::Value,
-    ) -> Result<bool, DbError> {
+    ) -> Result<Option<CustomerErasure>, DbError> {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
 
+        // `FOR UPDATE`, and the whole row rather than a `RETURNING` off the
+        // write, because the branch `erase_in_tx` takes needs the row's
+        // merchant and livemode *before* either write — and on the
+        // hard-delete branch there is nothing left to return them from.
+        // Re-evaluating the guard here rather than trusting `idle_since`'s
+        // page is what makes a customer used between the two survive.
         let sql = format!(
-            "DELETE FROM customers \
-             WHERE id = $1 AND last_used_at < $2 AND {UNREFERENCED} \
-             RETURNING merchant_id, livemode"
+            "SELECT {COLUMNS} FROM customers \
+             WHERE id = $1 AND last_used_at < $2 AND anonymized_at IS NULL \
+             FOR UPDATE"
         );
 
-        // The merchant and livemode come back from the delete itself rather
-        // than from a preceding read, and that is the whole reason this is a
-        // `RETURNING`: the event has to be stamped with the tenant of the row
-        // that was actually removed, and a value carried from
-        // `idle_since`'s page would be a value read before the guard was
-        // re-evaluated.
-        let Some((merchant_id, livemode)) = sqlx::query_as::<_, (String, bool)>(AssertSqlSafe(sql))
+        let Some(row) = sqlx::query_as::<_, CustomerRow>(AssertSqlSafe(sql))
             .bind(id)
             .bind(horizon)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(classify_write)?
+            .map_err(DbError::Query)?
         else {
             // No longer eligible. The transaction is dropped, which rolls it
-            // back; nothing was written, and no event describes a deletion
+            // back; nothing was written, and no event describes an erasure
             // that did not happen.
-            return Ok(false);
+            return Ok(None);
         };
 
-        // The event, in the same transaction. `insert_in_tx` is
-        // `crate::events`' own hand-written statement — the one `model Event`
-        // records as blocked on `events.data` being JSONB — so this reaches
-        // it through the free function rather than through `TxRepositories`,
-        // which is a trait a caller outside this crate holds.
-        crate::events::insert_in_tx(
-            &mut tx,
-            &crate::NewEvent {
-                id: event_id.to_owned(),
-                merchant_id,
-                livemode,
-                event_type: EVENT_CUSTOMER_DELETED.to_owned(),
-                object_id: id.to_owned(),
-                data: event_data.clone(),
-            },
-        )
-        .await?;
+        let erasure = erase_in_tx(&self.cs, &mut tx, &row, now, event_id, event_data).await?;
 
         tx.commit().await.map_err(DbError::Query)?;
-        Ok(true)
+        Ok(Some(erasure))
     }
 }
 
@@ -1042,6 +1954,23 @@ mod tests {
             name: None,
             email: None,
             phone: Some("237600000200".to_owned()),
+            // The eight address columns and `anonymized_at` joined the model
+            // in migration 0041 and are therefore fields of this input.
+            // Spelled out rather than defaulted, because
+            // `CreateCustomerInput` has no `Default` and — more to the point
+            // — a struct literal is what makes a column added to the model
+            // without being thought about here a compile error. That is not
+            // hypothetical: the two coordinate columns were added on
+            // 2026-09-11 and this literal is where the compiler said so.
+            address_line1: None,
+            address_line2: None,
+            address_city: None,
+            address_state: None,
+            address_postal_code: None,
+            address_country: None,
+            address_latitude_microdeg: None,
+            address_longitude_microdeg: None,
+            anonymized_at: None,
             last_used_at: super::to_chrono(time::OffsetDateTime::UNIX_EPOCH),
         };
 
@@ -1197,7 +2126,7 @@ mod tests {
     /// projection whether or not the filter existed, which is a test that
     /// asserts nothing. It is proved by behaviour in
     /// `vpay-db/tests/repositories.rs`
-    /// (`another_merchants_customer_cannot_be_deleted`).
+    /// (`a_customers_erasure_is_scoped_to_its_merchant`).
     #[tokio::test]
     async fn a_customer_delete_is_a_delete_and_not_a_soft_delete() {
         let cs = lazy_cratestack();
@@ -1298,16 +2227,18 @@ mod tests {
         }
     }
 
-    /// The sweep's guard names **every** referencing table, and correlates to
-    /// the alias its caller uses.
+    /// The erasure's branch names **every** referencing table, and correlates
+    /// to the alias its caller uses.
     ///
-    /// One function rather than two copies because
-    /// [`super::Customers::idle_since`] and
-    /// [`super::Customers::delete_idle`] have to agree exactly: a table in
-    /// the read's guard and not the write's would render a
-    /// `customer.deleted` object for a customer the write then refuses to
-    /// delete, and a table in the write's and not the read's would make the
-    /// sweep spend a transaction per pass on rows it can never remove.
+    /// One constant rather than a copy per call site, and since migration
+    /// `0041` there is only one call site — `super::erase_in_tx`, which reads
+    /// it to choose between hard-deleting a customer and anonymising one.
+    /// What a missing table costs changed with that: it used to be a wasted
+    /// `evt_…` per hour, and it is now a **failed erasure**. The branch would
+    /// choose the hard delete, the `NO ACTION` foreign key would raise
+    /// `23503`, and the whole transaction — event and redactions included —
+    /// would roll back, leaving the payer un-erased and the merchant told
+    /// nothing.
     ///
     /// **This is the assertion that caught the invoice omission.** It said
     /// "two referencing tables today. A third — invoices, when they exist —
@@ -1324,6 +2255,217 @@ mod tests {
             3,
             "three referencing tables since migration 0036. A fourth belongs here and in that \
              migration's foreign keys, in the same change: {UNREFERENCED}"
+        );
+    }
+
+    /// The redaction rewrites every identifier key of a stored `customer.*`
+    /// body and **no other key**.
+    ///
+    /// A statement-text assertion and not a behaviour one, deliberately: the
+    /// behaviour is proved against a real Postgres by
+    /// `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`,
+    /// and what *this* pins is the pair of properties that test cannot
+    /// distinguish. A rewrite that also flattened `metadata` would still
+    /// leave no payer identifier anywhere and would have destroyed a
+    /// merchant's own records to get there; a rewrite that dropped `id` would
+    /// leave an event nothing can be correlated to. Both are silent.
+    #[test]
+    fn the_event_redaction_names_the_identifiers_and_spares_the_merchants_data() {
+        for identifier in ["'name'", "'email'", "'phone'", "'address'"] {
+            assert!(
+                super::REDACT_CUSTOMER_KEY.contains(identifier),
+                "{identifier} is a payer identifier on the customer object and is not \
+                 rewritten by the stored-event redaction: {}",
+                super::REDACT_CUSTOMER_KEY
+            );
+        }
+        for merchants_own in ["metadata", "created", "livemode", "object"] {
+            assert!(
+                !super::REDACT_CUSTOMER_KEY.contains(merchants_own),
+                "`{merchants_own}` is the merchant's own data or the record's own shape, and \
+                 rewriting it would destroy a merchant's records to keep a promise made to \
+                 somebody else: {}",
+                super::REDACT_CUSTOMER_KEY
+            );
+        }
+        assert!(
+            super::REDACT_CUSTOMER_KEY.contains("ELSE field.value END"),
+            "without the ELSE arm every key not named above is dropped from the stored body \
+             — `id` included: {}",
+            super::REDACT_CUSTOMER_KEY
+        );
+    }
+
+    /// The redacted address a stored `customer.*` body is rewritten to is the
+    /// shape the wire renders — eight keys, the marker in six, `null` in two.
+    ///
+    /// # Why a key-set assertion and not only a value one
+    ///
+    /// `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+    /// proves nothing of the payer survives, and it would go on passing if
+    /// this rewrite reduced `address` to `{}` or dropped it to `null`: an
+    /// absent key holds no identifier either. What that would break is a
+    /// merchant's handler on a REDELIVERY — the one place a stored body is
+    /// read back — meeting an address of a shape the API never answers with.
+    /// This is the assertion that says the two agree.
+    ///
+    /// # The per-type rule, which is the part that is easy to make uniform
+    ///
+    /// Six components carry the marker and the two coordinate keys carry
+    /// JSON `null`. Making all eight uniform is the tempting edit and it is
+    /// wrong in both directions: a marker in the coordinate is a string in a
+    /// field both SDKs decode as an integer (a decode failure, not a
+    /// redaction), and `null` in the six would publish which components this
+    /// payer filled in, which migration `0041`'s own argument says is
+    /// information about them.
+    #[test]
+    fn the_redacted_address_body_is_the_shape_the_wire_renders() {
+        let address = super::redacted_address_json();
+        let object = address.as_object().expect("the address is a JSON object");
+
+        assert_eq!(
+            object.len(),
+            8,
+            "the redacted address must have the same keys the wire object does — six formal \
+             components and the coordinate — or a redelivered body is a shape the API never \
+             answers with: {address}"
+        );
+
+        for marked in ["line1", "line2", "city", "state", "postal_code", "country"] {
+            assert_eq!(
+                object.get(marked).and_then(serde_json::Value::as_str),
+                Some(super::REDACTED),
+                "`{marked}` must carry the marker, including for a payer who never filled it \
+                 in: which components a record had is itself information about the person"
+            );
+        }
+
+        for nulled in ["latitude_microdeg", "longitude_microdeg"] {
+            assert_eq!(
+                object.get(nulled),
+                Some(&serde_json::Value::Null),
+                "`{nulled}` must be JSON null and NOT the marker: it is an integer on the \
+                 wire, so a string there fails a merchant's decode rather than reading as \
+                 redacted — and there is no integer that is not a possible place"
+            );
+        }
+    }
+
+    /// [`super::CustomerRow::redacted`] — the projection the
+    /// `customer.deleted` body is built from — marks the six formal
+    /// components and **drops** the coordinate.
+    ///
+    /// The row projection and the stored-body rewrite above are two different
+    /// pieces of code that must agree, because one describes the hard-delete
+    /// branch (where no row survives to re-read) and the other rewrites what
+    /// earlier events said. They are asserted against each other here, in
+    /// milliseconds, rather than only by the container case that erases a
+    /// customer and scans every column.
+    ///
+    /// The mutation: make `CustomerAddress::redacted` uniform by dropping the
+    /// two `None`s, and the payer's real point stays on the object vpay signs
+    /// and stores in `events` for ever — while every text-literal scan goes
+    /// on passing, because a coordinate is not a literal anybody wrote.
+    #[test]
+    fn an_erasure_projects_the_coordinate_to_absent_and_the_rest_to_the_marker() {
+        let row = super::CustomerRow {
+            id: "cus_0123456789abcdefghjkmnpq".to_owned(),
+            seq: 1,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            name: Some("Ada Ngo".to_owned()),
+            email: None,
+            phone: Some("237600000200".to_owned()),
+            address: super::CustomerAddress {
+                line1: Some("12 Rue Njo-Njo".to_owned()),
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_786_000),
+                ..super::CustomerAddress::default()
+            },
+            metadata: serde_json::json!({ "order_id": "1234" }),
+            last_used_at: time::OffsetDateTime::UNIX_EPOCH,
+            anonymized_at: None,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+
+        let erased = row.redacted(time::OffsetDateTime::UNIX_EPOCH);
+
+        assert_eq!(
+            erased.address.latitude_microdeg, None,
+            "the payer's position must not survive into the body vpay signs and stores for \
+             ever: it cannot carry the marker, so the erasure is the absence"
+        );
+        assert_eq!(erased.address.longitude_microdeg, None);
+        assert_eq!(erased.address.line1.as_deref(), Some(super::REDACTED));
+        assert_eq!(
+            erased.address.city.as_deref(),
+            Some(super::REDACTED),
+            "a component this payer never filled in is marked too"
+        );
+        assert!(
+            !erased.address.is_empty(),
+            "an erased address is still an address — rendering `address: null` here would \
+             make an erased customer and one that never had an address indistinguishable"
+        );
+        assert_eq!(
+            erased.metadata,
+            serde_json::json!({ "order_id": "1234" }),
+            "`metadata` is the merchant's own data and is not the payer's to erase"
+        );
+
+        // The projection and the stored-body rewrite describe the same
+        // address. Compared through the wire's own key names, which is the
+        // only vocabulary the two have in common.
+        let body = super::redacted_address_json();
+        assert_eq!(
+            body.get("latitude_microdeg"),
+            Some(&serde_json::Value::Null),
+            "the rewrite of an earlier `customer.created` body and the projection of the \
+             row must agree about the coordinate, or an erasure leaves two different \
+             accounts of the same address"
+        );
+        assert_eq!(
+            body.get("line1").and_then(serde_json::Value::as_str),
+            erased.address.line1.as_deref()
+        );
+    }
+
+    /// The marker is what migration `0041`'s CHECK spells, character for
+    /// character.
+    ///
+    /// The two are a pair: the migration refuses an `anonymized_at` row whose
+    /// identifiers are anything but this literal, so changing it here alone
+    /// turns every erasure into a `23514` — at runtime, on the one path that
+    /// must not fail. This reads the migration off disk rather than restating
+    /// it, so the failure arrives at `cargo nextest` instead.
+    #[test]
+    fn the_redaction_marker_is_the_one_the_migration_enforces() {
+        let migration =
+            include_str!("../../../migrations/0041_customers-address-and-anonymisation.sql");
+        // `concat`, not `format!`, and for `the_retention_stamp_moves_one_column_and_never_backwards`'s
+        // reason one line up rather than one line back: `crate::sql_audit`
+        // reads a `format!` as statement-building when the word `sql` appears
+        // in the forty characters before it, and the migration's own
+        // *filename* ends in `.sql`. The audit then reports a positional
+        // capture in a test that touches no database.
+        let quoted = ["'", super::REDACTED, "'"].concat();
+        assert!(
+            migration.contains(&quoted),
+            "`vpay_db::customers::REDACTED` is {quoted}, which \
+             anonymized_customers_carry_the_marker does not name. Every erasure would be a \
+             23514 — a CHECK violation on the one write a payer was promised"
+        );
+        assert_eq!(
+            migration.matches(&quoted).count(),
+            // Nine, once per identifier column of
+            // `anonymized_customers_carry_the_marker` — the migration's prose
+            // spells the marker without quotes, so this counts the CHECK and
+            // only the CHECK. The count rather than a `contains` so that a
+            // column *dropped* from it fails here rather than quietly
+            // stopping being checked.
+            9,
+            "the marker CHECK must name all nine identifier columns"
         );
     }
 

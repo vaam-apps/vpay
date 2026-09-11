@@ -79,10 +79,13 @@ pub enum JobKind {
     /// (`crate::webhooks::handle_scan_deliveries`,
     /// `docs/runbooks/webhook-delivery-failures.md`).
     ScanDeliveries,
-    /// The twelve-month customer retention sweep (S4a, migration `0034`):
-    /// hard-delete every customer nothing has used for twelve months and
-    /// which no payment intent or checkout session references, emitting one
-    /// `customer.deleted` per deletion in the same transaction as the delete.
+    /// The twelve-month customer retention sweep (S4a, migrations `0034` and
+    /// `0041`): erase every customer nothing has used for twelve months,
+    /// emitting one `customer.deleted` per erasure in the same transaction as
+    /// the write. One nothing references is hard-deleted; one a payment
+    /// intent, a checkout session or an invoice references is **anonymised**
+    /// in place — until `0041` those were skipped, which exempted from the
+    /// promise exactly the payers vpay had taken money from.
     ///
     /// A singleton ([`SWEEP_CUSTOMERS_DEDUPE_KEY`]) on
     /// [`Self::SweepExpired`]'s exact terms — and deliberately **not** a

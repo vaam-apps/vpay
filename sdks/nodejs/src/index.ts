@@ -38,6 +38,8 @@ export type {
   ListCheckoutSessionsParams,
   Customer,
   DeletedCustomer,
+  Address,
+  AddressParams,
   CreateCustomerParams,
   UpdateCustomerParams,
   ListCustomersParams,

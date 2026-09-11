@@ -428,11 +428,11 @@ impl std::fmt::Debug for CheckoutSession {
 /// A `customer` — the merchant-owned record of a payer they expect to see
 /// again (S4a).
 ///
-/// Seven keys and no more. `last_used_at` — the clock vpay's twelve-month
-/// retention sweep reads — is deliberately **not** on the wire: vpay moves it
-/// whenever an intent or a session names the customer, and a merchant
-/// building on it would be building on a value whose motion is vpay's
-/// business.
+/// Nine keys, plus `deleted` on an erased one. `last_used_at` — the clock
+/// vpay's twelve-month retention sweep reads — is deliberately **not** on the
+/// wire: vpay moves it whenever an intent or a session names the customer,
+/// and a merchant building on it would be building on a value whose motion is
+/// vpay's business.
 ///
 /// `Debug` is derived, unlike [`PaymentIntent`]'s and
 /// [`CheckoutSession`]'s, and that is a decision rather than an omission.
@@ -465,6 +465,16 @@ pub struct Customer {
     /// present — a phone number alone is a complete customer, which is what
     /// the object is for on a mobile money rail.
     pub phone: Option<String>,
+    /// The payer's postal address **and** GPS point, or `None`.
+    ///
+    /// One nullable object rather than eight nullable fields, which is what
+    /// the server sends and what Stripe's own customer carries. `None` means
+    /// the customer has no address at all; the server never sends an address
+    /// object whose every component is `null`.
+    ///
+    /// The object carries two fields Stripe's does not — see [`Address`].
+    #[serde(default)]
+    pub address: Option<Address>,
     /// The merchant's own key/value pairs, echoed back.
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -472,6 +482,109 @@ pub struct Customer {
     pub created: i64,
     /// `false` for a sandbox deployment's objects.
     pub livemode: bool,
+    /// `Some(true)` on a customer vpay has **erased**, and `None` on a live
+    /// one — the server omits the key rather than sending `false`.
+    ///
+    /// # What it means, and why a retrieve can answer one at all
+    ///
+    /// `DELETE /v1/customers/{id}` removes a customer with no payment
+    /// history outright, and a later retrieve is a `404`. A customer an
+    /// intent, a checkout session or an invoice references cannot be removed
+    /// — vpay never detaches a payment from the payer it was taken from — so
+    /// it is **anonymised** instead: the row and the payment record stay, and
+    /// every identifier on it comes back as `[redacted]`. `metadata` is
+    /// untouched, because that is the merchant's own data.
+    ///
+    /// So a `cus_…` in a merchant's own records goes on resolving after an
+    /// erasure, which is the reason the key exists. Such a customer cannot be
+    /// updated or attached to a new payment — both answer `409`.
+    ///
+    /// `Option<bool>` and not `bool`, so "the server said nothing" and "the
+    /// server said false" stay distinguishable on a decode. See
+    /// `docs/flows/customers.md`.
+    #[serde(default)]
+    pub deleted: Option<bool>,
+}
+
+/// A postal address on a [`Customer`] — Stripe's six formal components
+/// **and** the GPS point.
+///
+/// # vpay's address is both halves, and this is where Stripe's is not
+///
+/// [`Self::latitude_microdeg`] and [`Self::longitude_microdeg`] have no
+/// counterpart on Stripe's `address`. They are here because vpay's address
+/// *means* both halves: formal addressing is unreliable across the markets
+/// vpay serves, and a coordinate is how a place is actually found. A merchant
+/// porting Stripe code to vpay gains two fields; one porting the other way
+/// loses them, and should know that before they discover it.
+///
+/// Every component is nullable, and the server renders all eight even when
+/// they are `null`: an address is one fact about a payer, and a key that
+/// appeared and disappeared would change the shape of a signed `customer.*`
+/// webhook body per payer.
+///
+/// The same type is sent and received. On [`crate::UpdateCustomerParams`] an
+/// address **replaces** the stored one rather than merging with it — a
+/// request that names `line1` and not `city` clears the city — because an
+/// address assembled by the server out of two requests is an address that was
+/// never anybody's. Sending `Some(None)` removes it entirely.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Address {
+    /// Street address, line 1.
+    #[serde(default)]
+    pub line1: Option<String>,
+    /// Street address, line 2 — apartment, suite, PO box.
+    #[serde(default)]
+    pub line2: Option<String>,
+    /// City, district, suburb, town or village.
+    #[serde(default)]
+    pub city: Option<String>,
+    /// State, county, province or region.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// ZIP or postal code.
+    #[serde(default)]
+    pub postal_code: Option<String>,
+    /// ISO 3166-1 alpha-2 — `CM`, `FR`, `NG`.
+    ///
+    /// Lower case is accepted and stored **upper case**, so what comes back
+    /// may not be what was sent — the same wire contract
+    /// [`Customer::phone`]'s canonicalisation is, and for the same reason:
+    /// `cm` and `CM` are one country and vpay must not hold two spellings of
+    /// it. A three-letter code or a country name is a `400` naming `address`.
+    #[serde(default)]
+    pub country: Option<String>,
+    /// Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+    /// `4_061_000`.
+    ///
+    /// # An integer, and the unit is in the field name
+    ///
+    /// vpay has no floating-point coordinate anywhere: not on the wire, not
+    /// in the database, not in this type. That is the same rule the money
+    /// path lives by — integer minor units with the scale named — and it is
+    /// what the field's name is for. `4.061` is refused by the server with a
+    /// `400` naming `address` rather than rounded, so a merchant who sends
+    /// degrees is told, not silently approximated.
+    ///
+    /// # Both or neither
+    ///
+    /// `None` unless [`Self::longitude_microdeg`] is also `Some`. Half a
+    /// coordinate names no place — a latitude on its own is a line right
+    /// round the planet — and the server refuses one half with a `400`
+    /// naming `address`. This SDK does not check it locally, exactly as it
+    /// does not check an MSISDN: the rule is vpay's and a copy here would
+    /// refuse offline what a later server accepts.
+    ///
+    /// On an **erased** customer this comes back `None` while the six formal
+    /// components come back `[redacted]`, and the asymmetry is deliberate:
+    /// there is no integer that is not a possible place, so the marker is
+    /// not a value this field can take. See [`Customer::deleted`].
+    #[serde(default)]
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`] for the
+    /// unit, the integer rule and the pair rule.
+    #[serde(default)]
+    pub longitude_microdeg: Option<i64>,
 }
 
 /// What `DELETE /v1/customers/{id}` answers with.

@@ -155,7 +155,7 @@ const EXPIRY_PAGE: i64 = 100;
 ///
 /// It lives here rather than in `vpay-db` for
 /// `vpay_api::v1::checkout_sessions::SESSION_LIFETIME`'s reason: it is a
-/// product rule, and `Customers::idle_since`/`delete_idle` take the horizon
+/// product rule, and `Customers::idle_since`/`erase_idle` take the horizon
 /// as a parameter so that both sides of the comparison belong to the layer
 /// that owns the rule — and so a test can sweep a horizon in the future
 /// rather than back-dating a stored timestamp.
@@ -1099,9 +1099,21 @@ async fn expire_one_session(
         .is_some())
 }
 
-/// Deletes every customer nothing has used for [`CUSTOMER_IDLE_AFTER`] and
-/// which no payment intent or checkout session references, emitting one
-/// `customer.deleted` per deletion in the same transaction as the delete.
+/// Erases every customer nothing has used for [`CUSTOMER_IDLE_AFTER`],
+/// emitting one `customer.deleted` per erasure in the same transaction as the
+/// write.
+///
+/// # "Erases" and not "deletes", since migration `0041`
+///
+/// This job used to skip every customer a payment intent, a checkout session
+/// or an invoice referenced, because the `NO ACTION` foreign keys made
+/// deleting one impossible. That exempted from the twelve-month retention
+/// promise exactly the payers the promise is about — the ones vpay has taken
+/// money from — and it was not a decision anybody took; it was what the
+/// foreign keys left. A referenced customer is now **anonymised** instead:
+/// the row and the payment record stay, and every identifier on the row
+/// becomes `[redacted]`. One with no history is hard-deleted, as before.
+/// `vpay_db::Customers::erase_idle` decides which, inside the transaction.
 ///
 /// The maintainer's decision of 2026-09-05 — "retention is twelve months" —
 /// is this job. `docs/flows/customers.md` carries the privacy argument;
@@ -1148,27 +1160,40 @@ async fn sweep_idle_customers(
     let page_was_full = i64::try_from(page).unwrap_or(i64::MAX) >= CUSTOMER_PAGE;
     let mut deleted: u64 = 0;
 
+    let mut anonymized: u64 = 0;
+
     for row in &due {
-        match delete_one_customer(repositories, job, row, horizon).await {
-            Ok(true) => deleted = deleted.saturating_add(1),
+        match erase_one_customer(repositories, job, row, horizon).await {
+            Ok(Some(vpay_db::CustomerErasure::HardDeleted)) => {
+                deleted = deleted.saturating_add(1);
+            }
+            Ok(Some(vpay_db::CustomerErasure::Anonymized)) => {
+                anonymized = anonymized.saturating_add(1);
+            }
             // The guard matched nothing: a concurrent sweep, a merchant who
-            // deleted it by hand, an intent created for it between the read
-            // and the write, or a use that stamped it. All four are normal,
-            // and none of them emits an event.
-            Ok(false) => {}
+            // erased it by hand, or a use that stamped it. All three are
+            // normal, and none of them emits an event.
+            Ok(None) => {}
             Err(error) => tracing::warn!(
                 job_id = %job.id,
                 customer_id = %row.id,
                 merchant_id = %row.merchant_id,
                 %error,
-                "an idle customer could not be deleted; it stays and the next sweep \
+                "an idle customer could not be erased; it stays whole and the next sweep \
                  retries it"
             ),
         }
     }
 
+    // The two counts are separate because they are different events in a
+    // deployment's life: a hard delete removed a record nobody ever paid
+    // through, and an anonymisation stripped the payer off a payment history
+    // that stays. An operator watching one number could not tell a month of
+    // ordinary housekeeping from a month in which vpay redacted every paying
+    // customer it had.
     tracing::info!(
         customers_deleted = deleted,
+        customers_anonymized = anonymized,
         customers_page = page,
         horizon_days = CUSTOMER_IDLE_AFTER.whole_days(),
         "customer retention sweep"
@@ -1179,41 +1204,52 @@ async fn sweep_idle_customers(
     // drain at `CUSTOMER_PAGE` an hour. Conditional on progress, because a
     // full page that deleted nothing is a page every row of which lost its
     // guard, and rescheduling on that is a tight loop against Postgres.
-    Ok(Outcome::RescheduleAfter(if page_was_full && deleted > 0 {
+    let erased = deleted.saturating_add(anonymized);
+    Ok(Outcome::RescheduleAfter(if page_was_full && erased > 0 {
         Duration::ZERO
     } else {
         SWEEP_INTERVAL
     }))
 }
 
-/// One customer: render what the merchant is about to be told, then delete it
-/// and emit that in one transaction. `Ok(false)` means it was no longer
+/// One customer: render what the merchant is about to be told, then erase it
+/// and emit that in one transaction. `Ok(None)` means it was no longer
 /// eligible.
-async fn delete_one_customer(
+async fn erase_one_customer(
     repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
     row: &vpay_db::CustomerRow,
     horizon: OffsetDateTime,
-) -> Result<bool, JobError> {
+) -> Result<Option<vpay_db::CustomerErasure>, JobError> {
+    // The instant the erasure is stamped with, taken here so the body this
+    // renders and the `anonymized_at` the row is written with are the same
+    // value. A second `now_utc()` inside the repository would leave the
+    // event's `deleted: true` describing an instant a millisecond off the
+    // one stored.
+    let now = OffsetDateTime::now_utc();
+
     // Rendered through `vpay_api::model::CustomerObject`, the same type
     // `GET /v1/customers/{id}` returns, because `events.data` is a snapshot
     // *of the object* (migration 0018). A second hand-written copy of that
     // shape is how a webhook body and an API response start disagreeing about
     // a field.
     //
-    // The body therefore carries the payer's name, email and phone — which is
-    // the point rather than a leak: a merchant whose customer vpay has just
-    // erased needs to know *which* payer it was, and after the delete there is
-    // nothing left to read. It is the same personal data the merchant gave
-    // vpay and could read from `GET /v1/customers/{id}` a moment earlier, sent
-    // to endpoints they configured, over a signed body. `docs/flows/customers.md`
-    // states it plainly so nobody has to infer it.
-    let object = vpay_api::model::CustomerObject::try_from(row)
+    // Rendered from `CustomerRow::redacted`, so the body carries the ids, the
+    // merchant's own `metadata`, `deleted: true` — and **no identifier of the
+    // payer's**. That is the reverse of what this event carried until
+    // 2026-09-10, and the reversal is the point rather than a side effect:
+    // the merchant received the payer's details in `customer.created` and in
+    // every `customer.updated` and holds their own copy, while the copy vpay
+    // stores in `events` is never pruned and is the one the retention promise
+    // to the payer is about. `vpay_db::Customers::erase_idle` redacts the
+    // stored bodies of those earlier events in the same transaction.
+    // `docs/flows/customers.md` carries the whole argument.
+    let object = vpay_api::model::CustomerObject::try_from(&row.redacted(now))
         .map_err(|error| poisoned(job, format!("a customer row would not render: {error}")))?;
     let data = encode(job, &object)?;
 
     repositories
-        .delete_idle(&row.id, horizon, &ids::event_id(), &data)
+        .erase_idle(&row.id, horizon, now, &ids::event_id(), &data)
         .await
         .map_err(JobError::from)
 }
