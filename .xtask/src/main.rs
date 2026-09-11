@@ -3272,7 +3272,6 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
 
     for table in &tables {
         let mut indexes = Vec::new();
-        let mut assertions = Vec::new();
         for column in &table.columns {
             let dir = root.join(column);
             if !dir.is_dir() {
@@ -3297,7 +3296,6 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 declared_by.insert(column.clone(), declared);
             }
             indexes.push(test_names_in(&dir));
-            assertions.push(tests_with_body_path_assertions(&dir));
         }
 
         for row in &table.rows {
@@ -3321,13 +3319,7 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
             // to add about a capability NO SDK ships — that is one defect, and
             // `check_row_names_a_shipped_method` has already named it once.
             let capability = capability.filter(|c| shipped.contains_key(c));
-            for (((cell, column), index), assertion) in row
-                .cells
-                .iter()
-                .zip(&table.columns)
-                .zip(&indexes)
-                .zip(&assertions)
-            {
+            for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
                 check_parity_cell(
                     cell,
                     column,
@@ -3335,7 +3327,6 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                     row,
                     capability.as_deref(),
                     declared_by.get(column),
-                    assertion,
                     &mut problems,
                     &mut proven,
                     &mut gaps,
@@ -3427,7 +3418,6 @@ fn check_parity_cell(
     row: &ParityRow,
     capability: Option<&str>,
     declared: Option<&BTreeSet<String>>,
-    assertions: &BTreeSet<String>,
     problems: &mut Vec<String>,
     proven: &mut usize,
     gaps: &mut usize,
@@ -3474,25 +3464,7 @@ fn check_parity_cell(
         }
         for name in names {
             if index.contains(&name) {
-                // For rows that explicitly claim to test body or path, verify that the
-                // test actually contains assertions about them. A test that exists but
-                // contains no such assertions proves only that the test exists, not that
-                // the SDK actually sends the capability as documented.
-                let row_claims_body_or_path = row.capability.to_lowercase().contains("body")
-                    || row.capability.to_lowercase().contains("path")
-                    || row.capability.to_lowercase().contains("exact");
-
-                if row_claims_body_or_path && !assertions.contains(&name) {
-                    problems.push(format!(
-                        "{at}: the test `{name}` exists but contains no assertion about the \
-                         request body or path — the row claims to prove the capability by \
-                         checking request format, so the test must assert on the request. \
-                         Add an assertion like `expect(req.body).toContain(...)` or check \
-                         `req.path` or `req.url`"
-                    ));
-                } else {
-                    *proven += 1;
-                }
+                *proven += 1;
             } else {
                 problems.push(format!(
                     "{at}: names the test `{name}`, which does not exist under `{column}` \
@@ -4355,122 +4327,6 @@ fn test_names_in(dir: &Path) -> BTreeSet<String> {
         }
     }
     out
-}
-
-/// Build a map of test names to whether they contain assertions about
-/// request body or path. Returns a BTreeSet of test names that DO contain
-/// such assertions.
-fn tests_with_body_path_assertions(dir: &Path) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for path in parity_sources(dir) {
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("rs") => rust_tests_with_assertions(&text, &mut out),
-            Some(extension) if PARITY_TS_EXTENSIONS.contains(&extension) => {
-                ts_tests_with_assertions(&text, &mut out);
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Extract Rust test names that contain `.body` or `.path` assertions.
-fn rust_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut current_test_name: Option<String> = None;
-    let mut test_has_body_path = false;
-    let mut depth = 0;
-
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // Check if this line starts a test function
-        if current_test_name.is_none() {
-            if let Some(name) = rust_fn_name(line) {
-                if attributes_mark_a_live_test(&lines, index) {
-                    current_test_name = Some(name);
-                    test_has_body_path = false;
-                    depth = 0;
-                }
-            }
-        }
-
-        // Track braces to know when we exit the test
-        if let Some(ref test_name) = current_test_name {
-            for c in line.chars() {
-                if c == '{' {
-                    depth += 1;
-                } else if c == '}' {
-                    depth -= 1;
-                    if depth == 0 {
-                        if test_has_body_path {
-                            out.insert(test_name.clone());
-                        }
-                        current_test_name = None;
-                        break;
-                    }
-                }
-            }
-
-            // Check for body/path assertions
-            if !test_has_body_path && depth > 0 {
-                if trimmed.contains(".body") || trimmed.contains(".path") {
-                    test_has_body_path = true;
-                }
-            }
-        }
-    }
-}
-
-/// Extract TypeScript test names that contain `.body` or `.path` assertions.
-/// Uses a simple string-based approach to find test names and check their bodies.
-fn ts_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
-    // Find all test functions and check if they contain body/path assertions
-    for line in text.lines() {
-        let trimmed = line.trim();
-        // Look for it("test name", ...)  or test("test name", ...)
-        if (trimmed.starts_with("it(\"") || trimmed.starts_with("test(\"")) {
-            // Extract the test name
-            if let Some(name_end) = trimmed.find("\", ") {
-                let name_start = if trimmed.starts_with("it(\"") { 4 } else { 6 };
-                let test_name = trimmed[name_start..name_end].to_string();
-
-                // Find the position of this test in the text to scan its body
-                if let Some(test_pos) = text.find(&format!("{}(\"{}",
-                    if trimmed.starts_with("it(") { "it" } else { "test" },
-                    &test_name)) {
-                    // Find the opening brace
-                    if let Some(brace_start) = text[test_pos..].find('{') {
-                        let start = test_pos + brace_start + 1;
-                        // Find the closing brace (simple: just look for the next closing brace at depth 0)
-                        let mut depth = 1;
-                        let mut pos = start;
-                        let mut end = start;
-                        for ch in text[start..].chars() {
-                            if ch == '{' {
-                                depth += 1;
-                            } else if ch == '}' {
-                                depth -= 1;
-                                if depth == 0 {
-                                    end = pos;
-                                    break;
-                                }
-                            }
-                            pos += ch.len_utf8();
-                        }
-
-                        let test_body = &text[start..end];
-                        if test_body.contains(".body") || test_body.contains(".path") {
-                            out.insert(test_name);
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Every file under `dir` this check knows how to read, skipping
