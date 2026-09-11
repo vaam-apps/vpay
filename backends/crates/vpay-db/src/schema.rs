@@ -22,6 +22,53 @@
 // so it climbs out of `backends/crates/vpay-db`.
 ::cratestack::include_server_schema!("../../../schemas/vpay.cstack", db = Postgres);
 
+// The bodies of this schema's `procedure` declarations — one today. It is a
+// child of *this* module rather than a sibling of it because the
+// `ProcedureRegistry` trait it implements lives inside the expansion above,
+// which is private here and stays that way (ADR-0016 standard 5).
+//
+// `allow(dead_code)` and NOT `expect(...)`, ON PURPOSE, AND IT IS THE GAP
+// RATHER THAN THE LINT THAT MATTERS. Nothing in any shipping binary calls
+// this procedure: no CrateStack axum router and no RPC dispatcher is mounted
+// anywhere in this workspace, and `persistence::system_context` — the only
+// `CratestackContext` vpay mints — carries no tenant, so the body would
+// refuse it. The tests are the only callers, which makes `Payments` an
+// un-constructed struct in a non-test build. `expect` would then fire
+// `unfulfilled_lint_expectation` under `cfg(test)`, where it *is*
+// constructed; `cfg_attr(not(test), ...)` keeps the lint where the deadness
+// actually is. Delete this attribute the day something serves the procedure
+// — and update `docs/status.md` in the same commit.
+//
+// ~~ONE THING THE `cfg_attr` COSTS, measured on 2026-09-11 and written down so
+// nobody counts on the wrong thing: `just verify-docs` lists every
+// `#[allow]`/`#[expect]` in production code and its count did NOT move when
+// this landed — it stayed at six. The scanner reads the attribute text, and
+// this one is spelled `#[cfg_attr(not(test), allow(...))]`. So the report is
+// not where this gap is visible.~~
+//
+// **Corrected the same day by the exp54 review: that was a hole in the
+// report, and the report was fixed rather than worked around.** The
+// measurement above was accurate — the count really did stay at six — but
+// "a lint silenced in every shipping build, absent from the list of silenced
+// lints" is the one thing that list cannot afford, and `cfg_attr` is the
+// *correct* spelling whenever the deadness is conditional, so the hole would
+// have widened every time someone did the right thing. `allow_sites` in
+// `.xtask/src/main.rs` now reads the rejoined attribute, and the report
+// prints **seven**, this line among them. Measured both ways: with the four
+// bare needles restored it prints six and omits this file; the other six
+// entries are byte-identical between the two runs, so nothing else had been
+// hiding. `docs/status.md` § "The first `procedure`", this comment and
+// `search_payment_intents`' own module doc still say it too — the report is
+// now a fourth place rather than the missing one.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "no transport serves searchPaymentIntents yet — docs/status.md § CrateStack"
+    )
+)]
+mod search_payment_intents;
+
 #[cfg(test)]
 mod tests {
     //! No database. Every assertion here is either a question about the
@@ -43,7 +90,12 @@ mod tests {
     /// A pool that has never opened a connection, and cannot: the port is
     /// unroutable. `connect_lazy` does no I/O, and neither does
     /// `preview_sql`. [`crate::disabled_clients`]' device.
-    fn lazy_cratestack() -> cratestack_schema::Cratestack {
+    ///
+    /// `pub(super)` so `search_payment_intents`' own tests can take one:
+    /// that module's `the_tenancy_refusal_happens_before_the_statement_does`
+    /// depends on the pool being *unreachable*, so a second copy of this
+    /// helper would be a second copy of the one property it relies on.
+    pub(super) fn lazy_cratestack() -> cratestack_schema::Cratestack {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
             .expect("a lazy pool parses its URL and connects to nothing");

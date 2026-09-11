@@ -11,12 +11,24 @@
 //! this crate's own container count down: `.config/nextest.toml` bounds
 //! `package(vpay-tests-integration)`'s container tests to one at a time
 //! because 13+ concurrent container starts caused real flakes on this
-//! machine's 4-vCPU Docker Desktop VM (see that file's own comment) — this
-//! crate is *not* covered by that filter (it does not own `.config/
+//! machine's 4-vCPU Docker Desktop VM (see that file's own comment).
+//!
+//! ~~this crate is *not* covered by that filter (it does not own `.config/
 //! nextest.toml` and is told not to add itself to it), so nextest's default
-//! per-CPU parallelism applies to these tests too. Fewer, chunkier tests
-//! here reduces how many containers this crate can have starting at the
-//! same moment regardless.
+//! per-CPU parallelism applies to these tests too.~~ **Corrected
+//! 2026-09-11 (exp54 review).** It is covered, and has been since
+//! 2026-09-02: the `postgres-containers` override's `filter` in
+//! `.config/nextest.toml` reads `package(vpay-tests-integration) |
+//! package(vpay-tests-conformance) | package(vpay-db) | package(vpay-server)
+//! | package(vpay-testkit)`, and that file's own comment records the
+//! widening ("Widened on 2026-09-02 … not only the integration crate").
+//! Every container start in this file is therefore already serialised
+//! against every other one in the workspace.
+//!
+//! Fewer, chunkier tests here are still worth having — they cost fewer
+//! containers and less wall-clock under a `max-threads = 1` group, which is
+//! a weaker reason than the one this paragraph used to give and is the only
+//! one that survives.
 //!
 //! Helper functions return `anyhow::Result` and propagate with `?` rather
 //! than `.expect`/`.unwrap` — the workspace lint policy's test exemption

@@ -7023,12 +7023,6 @@ fn ignore_fences(region: &str) -> Vec<usize> {
     out
 }
 
-/// Every `#[allow]` / `#[expect]` in a production region, with its line.
-///
-/// Read off the comment- and literal-stripped text so an attribute *quoted*
-/// in a doc comment (this file does it twice) or built inside a macro's
-/// string is not counted, then reported from the original line so the message
-/// shows what was actually written.
 /// How many `#[doc = include_str!(…)]` / `#![doc = include_str!(…)]`
 /// attributes a production region carries.
 ///
@@ -7049,15 +7043,42 @@ fn included_doc_sites(region: &str) -> usize {
         .count()
 }
 
+/// Every `#[allow]` / `#[expect]` in a production region, with its line.
+///
+/// Read off the comment- and literal-stripped text so an attribute *quoted*
+/// in a doc comment (this file does it twice) or built inside a macro's
+/// string is not counted, then reported from the original line so the message
+/// shows what was actually written.
+///
+/// **`#[cfg_attr(<cfg>, allow(…))]` counts too, added 2026-09-11, and the
+/// hole it closes was found rather than imagined.** `vpay-db`'s
+/// `mod search_payment_intents` is declared under
+/// `#[cfg_attr(not(test), allow(dead_code, reason = "…"))]`, which silences
+/// `dead_code` in every shipping build exactly as a bare `#[allow]` would —
+/// and matched none of the four needles below, so the report printed six
+/// sites while seven existed. That is the one failure this report cannot
+/// afford: a silenced lint that the list of silenced lints does not
+/// mention. The lint name is looked for in the *whole* attribute
+/// ([`attribute_text`] rejoins the six lines rustfmt wraps this one over)
+/// and in its cleaned spelling, so a `cfg_attr` carrying `serde`, `doc` or
+/// anything else is still not counted.
 fn allow_sites(region: &Region) -> Vec<(usize, String)> {
-    let cleaned = &region.cleaned;
+    let cleaned: Vec<&str> = region.cleaned.lines().collect();
     let raw: Vec<&str> = region.raw.lines().collect();
     let mut out = Vec::new();
-    for (index, line) in cleaned.lines().enumerate() {
-        let hit = ["#[allow(", "#[expect(", "#![allow(", "#![expect("]
+    for (index, line) in cleaned.iter().enumerate() {
+        let direct = ["#[allow(", "#[expect(", "#![allow(", "#![expect("]
             .iter()
             .any(|needle| line.contains(needle));
-        if hit {
+        let conditional = !direct
+            && ["#[cfg_attr(", "#![cfg_attr("]
+                .iter()
+                .any(|needle| line.contains(needle))
+            && {
+                let whole = attribute_text(&cleaned, index);
+                whole.contains("allow(") || whole.contains("expect(")
+            };
+        if direct || conditional {
             out.push((index + 1, attribute_text(&raw, index)));
         }
     }
@@ -7512,6 +7533,47 @@ fn f() -> &'static str {
             "reported as written: {sites:?}"
         );
         assert_eq!(sites.get(1).map(|(line, _)| *line), Some(5));
+    }
+
+    /// A lint silenced through `cfg_attr` is silenced, and is listed.
+    ///
+    /// Decisive: reverting `allow_sites` to the four bare needles fails the
+    /// first assertion with `sites.len() == 0`. That was the shipping
+    /// behaviour until 2026-09-11 and it is what let `vpay-db`'s
+    /// `mod search_payment_intents` carry a `dead_code` allow that the
+    /// `#[allow]` report did not mention.
+    ///
+    /// The second half is the other direction: a `cfg_attr` that silences
+    /// nothing must not be counted, or the report becomes a list of
+    /// conditional attributes rather than a list of silenced lints.
+    #[test]
+    fn a_lint_silenced_through_cfg_attr_is_counted_and_other_cfg_attrs_are_not() {
+        let region = production_region(concat!(
+            "#[cfg_attr(\n",
+            "    not(test),\n",
+            "    allow(\n",
+            "        dead_code,\n",
+            "        reason = \"no transport serves it yet\"\n",
+            "    )\n",
+            ")]\n",
+            "mod m;\n",
+            "#[cfg_attr(feature = \"serde\", derive(Serialize))]\n",
+            "struct S;\n",
+            "#[cfg_attr(unix, expect(unused_mut))]\n",
+            "fn f() {}\n",
+        ));
+        let sites = allow_sites(&region);
+        assert_eq!(
+            sites.iter().map(|(line, _)| *line).collect::<Vec<_>>(),
+            vec![1, 11],
+            "the allow and the expect, and not the derive: {sites:?}"
+        );
+        assert!(
+            sites
+                .first()
+                .is_some_and(|(_, text)| text.contains("allow(")),
+            "reported whole enough to name the lint: {sites:?}"
+        );
     }
 
     /// Every `#[expect]` in `vpay-worker` carries a `reason =` long enough

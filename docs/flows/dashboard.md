@@ -506,6 +506,39 @@ two OAuth legs still have to spell one string identically, and `gen-demo-keys`
 regenerating the overlay when the variable moves is what keeps them doing so.
 Measured in [../plans/exp35-dashboard-port-notes/opus-review.md](../plans/exp35-dashboard-port-notes/opus-review.md).
 
+**A second payments list exists in the schema and nothing serves it,
+2026-09-11 (exp54).** `schemas/vpay.cstack` declares
+`procedure searchPaymentIntents(page: PageInput, filter:
+PaymentIntentListFilter): Page<PaymentIntentSummary>` and `vpay-db`
+implements it — offset paging, the same three filters `GET
+/dash/v1/payment_intents` accepts, a summary row carrying no `metadata` and
+no `client_secret_suffix`, and a tenancy predicate read from the caller's
+context rather than from its arguments. It is **not** wired to this app and
+not to any route: no CrateStack router is mounted in this workspace, and the
+only `CratestackContext` vpay mints carries no tenant. **`GET
+/dash/v1/payment_intents` is unchanged and is still the only payments list
+the dashboard can reach**, and its cursor paging stays cursor paging —
+sharing `crate::v1::paging` with the merchant API is what makes `has_more`
+mean one thing to an operator and to a merchant, and moving it is a
+maintainer's decision, not a consequence of this. What the procedure changes
+today is what a future `/payments` table _could_ be paged by; what it changes
+right now is nothing a user can see.
+[../status.md](../status.md) § "The first `procedure`" has the measurements.
+
+**And the thing to weigh before anyone wires it to a table
+(2026-09-11, exp54 review): offset paging is not stable while payments are
+being created.** `ORDER BY seq DESC` over a UNIQUE `seq` is a total order, so
+a single page is never ambiguous — but `OFFSET` is counted afresh on every
+call, and a payment created between page 1 and page 2 shifts the window by
+one. An operator paging through a busy merchant's list sees the last row of a
+page again at the top of the next one and misses a row at the tail for every
+intent created behind their back; new rows land at offset 0, so this is worst
+exactly where the list matters most. The cursor list `/dash/v1` already serves
+does not have this property — `starting_after` asks for rows below a named
+`seq`, which an insert cannot move. A numbered table is what `Page<T>` buys
+and this is what it costs; neither the procedure nor anything else in vpay
+compensates for it.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this

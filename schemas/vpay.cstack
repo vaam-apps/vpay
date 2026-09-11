@@ -1856,3 +1856,166 @@ model RateLimitWindow {
   // change of schema.
   updated_at DateTime
 }
+
+// --- procedures ----------------------------------------------------------
+
+// THE FIRST `procedure` IN THIS FILE (2026-09-11). Everything above is a
+// `model`, an `enum` or a `datasource`; nothing here had ever declared a
+// call before, so the two paragraphs below say what a procedure is for in
+// this repository rather than assuming a reader knows.
+//
+// A procedure is a HAND-WRITTEN body with a declared signature. The macro
+// emits `pub type Output = <return type>` and one method on the generated
+// `ProcedureRegistry` trait (`cratestack-macros-0.12.0/src/procedure.rs`,
+// `generate_procedure_registry_method`); the body is vpay's, in
+// `backends/crates/vpay-db/src/schema/search_payment_intents.rs`. That is the
+// whole reason a procedure can read `payment_intents` when a generated
+// model read cannot: `model PaymentIntent` carries no `@@allow` arm, so
+// every generated read on it renders the literal `FALSE` and answers zero
+// rows, and that arm must stay absent — in `schema::tests`,
+// `the_three_money_models_answer_no_rows_to_every_action` fails if it ever
+// appears. The procedure does not go near that code path.
+//
+// WHAT THIS PROCEDURE IS NOT. It does not replace
+// `GET /dash/v1/payment_intents`, and nothing serves it over any transport
+// today — no RPC router and no axum router is mounted anywhere in this
+// workspace. It is a tested library call with no caller. docs/status.md
+// says so in the same words; do not read the presence of this declaration
+// as a shipped endpoint.
+
+// One row of the payments list.
+//
+// HAND-WRITTEN, AND THE HAND-WRITING IS THE POINT — three columns of
+// `payment_intents` are deliberately absent and each is absent for its own
+// reason:
+//
+//   * `metadata` and `payment_method_types` are `jsonb`. A `Json` field in
+//     a procedure's return type maps to
+//     `::cratestack::Json<::cratestack::Value>`
+//     (`cratestack-macros-0.12.0/src/procedure/type_tokens.rs:31`), and
+//     building one from merchant JSON goes through
+//     `Value::from_plain_json`, which routes every number through
+//     `Number::as_i64()` with an `as_f64()` fallback — so a `u64` above
+//     `i64::MAX` in a merchant's metadata comes back as a float. The
+//     procedure REPLY path itself does not demote (`cratestack-core-0.12.0/
+//     src/rpc.rs:187` encodes with `serde_json::to_value`), but
+//     constructing the field by hand reintroduces the demotion, so the
+//     answer is not to carry the field. Both `/dash/v1` reads already serve
+//     `metadata` and both stay as they are — they render a raw
+//     `serde_json::Value` straight out of the row with no CrateStack type
+//     in between, which is exactly the property this return type could not
+//     have had.
+//   * `client_secret_suffix` is a live payer credential. `/dash/v1` refuses
+//     to render it at all (ADR-0008: the dashboard observes the object, not
+//     the credential that spends it) and so does this.
+//   * `seq` is vpay's internal counter. Handing it out leaks how many
+//     intents vpay has ever created and lets a caller walk another
+//     merchant's range by arithmetic — `vpay_db::payment_intents::ListPage`
+//     carries the long form of that argument.
+//
+// `last_payment_error_message` is absent too, and that one is a judgement
+// rather than a rule: it is up to 512 characters of a rail's own prose, the
+// detail read serves it, and a list is not where it is read.
+type PaymentIntentSummary {
+  id String
+  // Echoed back although the caller already knows it: it is what
+  // `the_page_is_the_tenants_own_rows_filtered_and_bounded` asserts on, and a
+  // tenancy predicate whose result nothing can be checked against is a
+  // predicate nobody can prove fired.
+  merchant_id String
+  livemode Boolean
+  amount Int
+  amount_received Int
+  amount_refunded Int
+  amount_refund_pending Int
+  currency_code String
+  // The generated `IntentStatus`, not `String`. The column is `TEXT` since
+  // migration 0037, so the body parses it with the enum's generated
+  // `FromStr` and a value outside the vocabulary is an error rather than a
+  // silent default — the database holding something this build cannot name
+  // is a fact an operator has to be told, not one to render.
+  status IntentStatus
+  last_payment_error_code FailureCode?
+  description String?
+  customer_id String?
+  created_at DateTime
+  updated_at DateTime
+}
+
+// The search filters `listPaymentIntents` accepts.
+//
+// HAND-ROLLED RATHER THAN `FindMany<PaymentIntent>`, and the reason is not
+// the one a reading of the find-many guide would suggest. Measured against
+// cratestack-macros 0.12.0 on 2026-09-11:
+//
+//   * enum fields ARE FindMany-filterable in 0.12.0.
+//     `model/find_many_where.rs:35-38`'s `is_filterable_scalar` returns true
+//     for any declared enum ("Enum fields (cratestack#928) are included"),
+//     so `status` would have had `eq`/`ne`/`in`. Enums are excluded from the
+//     ORDERING operators only (`find_many_where_push.rs:24-28`). Anything
+//     that says otherwise is describing a release before cratestack#928.
+//   * what actually rules `FindMany<PaymentIntent>` out is that the only
+//     thing to do with one is `build_payment_intent_query_from_find_many`,
+//     which runs `db.payment_intent().find_many()` — the generated model
+//     read that renders `FALSE`. It would answer zero rows, always.
+//   * and declaring it would publish a filter over EVERY filterable scalar
+//     of the model, `client_secret_suffix` included — a `String` field, so
+//     it would carry `startsWith`, `lt` and `gt` as well as `eq`. That is a
+//     prefix oracle on a live payer credential the surface refuses to
+//     render.
+//
+// So: named scalar fields, and exactly the three
+// `GET /dash/v1/payment_intents` already accepts. Not a fourth,
+// deliberately — a filter this surface has and that one does not is an
+// operator getting different answers from two views of the same rows.
+type PaymentIntentListFilter {
+  // One `IntentStatus` wire value, as TEXT rather than as the enum.
+  //
+  // Deliberate, and it is the 400 that decides it: an `IntentStatus?` field
+  // would refuse an unknown value in serde, before the body runs, with a
+  // decode error naming a Rust type. The existing handler answers a 400
+  // naming the parameter `status` and listing the known values, because
+  // "no payments are `succeded`" is a sentence an operator reads as an
+  // answer about their payments rather than about their typo. The body
+  // validates this against the same vocabulary and refuses the same way.
+  status String?
+  // Inclusive bounds on `created_at`.
+  created_gte DateTime?
+  created_lte DateTime?
+}
+
+// The dashboard's payments list, paginated by offset.
+//
+// OFFSET, NOT CURSOR, AND THAT IS WHY IT IS A SECOND SURFACE RATHER THAN A
+// REPLACEMENT. `GET /dash/v1/payment_intents` shares `crate::v1::paging`
+// with the merchant API on purpose, so that `has_more` means the same thing
+// to an operator and to a merchant; changing that shape is a reserved
+// decision and is not taken here. `PageInput` is `{ limit, offset }`
+// (`cratestack-core-0.12.0/src/page.rs`) and `Page<T>` answers
+// `{ items, total_count, page_info }` — a numbered table's shape, which is
+// what the dashboard's table wants and what a cursor list cannot give it.
+//
+// `@allow(auth() != null)`: the caller must be authenticated. That is the
+// whole of what the POLICY decides — the tenancy predicate is not here,
+// because `inTenant(...)` takes a string literal and cannot name the
+// caller's own tenant. The body reads `ctx.tenant_id()` and refuses when
+// there is none; `backends/crates/vpay-db/src/schema/search_payment_intents.rs`
+// is where that lives and where it is tested.
+//
+// NAMED `search`, NOT `list`, AND NOT BY PREFERENCE. `procedure
+// listPaymentIntents` is rejected outright:
+//
+//     Error: procedure `listPaymentIntents` collides with the generated
+//     `list` CRUD handler for model `PaymentIntent` — both emit
+//     `handle_list_payment_intents` into the axum module generated by
+//     `include_server_schema!` (and the matching RPC dispatch arm), which
+//     fails to compile as `error[E0428]`; rename the procedure
+//
+// (`cratestack check`, 0.11.1, 2026-09-11; the same check is in 0.12.0's
+// `validate/procedure_handler_collisions.rs`.) Every model in this file
+// generates `handle_{list,create}_<plural>` and `handle_{get,update,
+// delete}_<singular>` whether or not anything routes them, so those five
+// stems are taken for all eighteen models — `getPaymentIntent`,
+// `createCharge` and `deleteCustomer` are unavailable for the same reason.
+procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
+  @allow(auth() != null)
