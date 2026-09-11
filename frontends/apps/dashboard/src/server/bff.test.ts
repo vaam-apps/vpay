@@ -14,13 +14,24 @@
  *     `originIsAllowed` call in `apiIsSameOrigin` and it fails. It is written
  *     with `Sec-Fetch-Site: same-origin` on purpose, so that the *other* half
  *     of that function cannot pass it for free.
- *  3. `puts the bearer token in no header and no body, ever` — the upstream
- *     stub echoes the token into a response header, into an extra top-level
- *     body field and into the envelope's `url`, and the assertion is against
- *     the **serialised** response: status line, every header, and the body
- *     text actually read back off it.
+ *  3. `puts it in no part of the detail read either` — the upstream stub
+ *     echoes the token into a response header, into an extra top-level body
+ *     field and into the envelope's `url`, and the assertion is against the
+ *     **serialised** response: status line, every header, and the body text
+ *     actually read back off it. Replace `served(project(result.value))` with
+ *     `served(result.value)` in `bff.ts` and it goes red.
  *
- * The token is spelled out as a distinctive literal for that last case, so a
+ * **This header named the *list* case as the third one until the exp55
+ * security review measured it, and that was wrong.** The list case —
+ * `puts the bearer token in no header and no body, ever` — stays **green**
+ * under that same mutation, because `dashProvider.getList` has already built
+ * `{ data, hasMore, cursor }` field by field before `bff.ts` sees it, so the
+ * list handler's projection renames three keys and drops nothing. It is a
+ * real case about the framing (headers, `set-cookie`, the wire) and it is not
+ * the one that pins the projection. `getOne` is, because it answers the
+ * parsed upstream document whole.
+ *
+ * The token is spelled out as a distinctive literal for those cases, so a
  * substring search cannot match it by accident.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -312,6 +323,134 @@ describe("the session cookie", () => {
   it("is null when there is no cookie header at all", () => {
     expect(sessionCookieOf(new Headers({}))).toBeNull();
   });
+
+  it("percent-decodes, because next/headers percent-encodes on the way in", () => {
+    // exp55 review, finding 4. `setSessionCookie` writes through
+    // `cookies().set`, which serialises with `cookie.serialize` and encodes
+    // the value; `cookies().get()` decodes it again. This file is the second
+    // reader of that one cookie. Nothing vpay mints today is affected —
+    // base64url survives `serialize` untouched — so the divergence has never
+    // fired, and it would fail closed (a differently spelled token, vpay's
+    // `401`) if it did. Drop the `decodeURIComponent` and this goes red.
+    const headers = new Headers({ cookie: `${SESSION_COOKIE}=a%2Bb%2Fc%3D` });
+    expect(sessionCookieOf(headers)).toBe("a+b/c=");
+  });
+
+  it("returns a malformed escape as it was written rather than throwing", () => {
+    const headers = new Headers({ cookie: `${SESSION_COOKIE}=100%` });
+    expect(sessionCookieOf(headers)).toBe("100%");
+  });
+});
+
+describe("what the caller may not smuggle in (exp55 review)", () => {
+  // Every case below was run against the tree as delivered and none of them
+  // reached vpay; they are here so that a later change to `searchRecord` or
+  // `queryFrom` cannot quietly make one of them reach it.
+  it.each([
+    ["__proto__=polluted&constructor=x&prototype=y"],
+    ["status[]=succeeded"],
+    ["STATUS=succeeded"],
+    ["status%00=succeeded"],
+    ["%EF%BD%93tatus=succeeded"],
+    ["merchant_id=mch_other&audience=vpay-merchant&scope=merchant:write"],
+  ])("ignores ?%s entirely", async (query) => {
+    const seen: Seen[] = [];
+    vi.stubGlobal("fetch", stub(seen));
+
+    await paymentIntentsListResponse(
+      request(`https://dash.example/api/dash/payment_intents?${query}`),
+      CONFIG,
+    );
+
+    const upstream = new URL(seen.at(-1)?.url ?? "");
+    expect([...upstream.searchParams.keys()]).toEqual(["limit"]);
+  });
+
+  it("leaves Object.prototype alone", async () => {
+    const seen: Seen[] = [];
+    vi.stubGlobal("fetch", stub(seen));
+
+    await paymentIntentsListResponse(
+      request(
+        "https://dash.example/api/dash/payment_intents?__proto__=polluted&status=succeeded",
+      ),
+      CONFIG,
+    );
+
+    const polluted = Object.prototype as Record<string, unknown>;
+    expect(polluted["status"]).toBeUndefined();
+    expect(polluted["after"]).toBeUndefined();
+    expect(new URL(seen.at(-1)?.url ?? "").searchParams.get("status")).toBe(
+      "succeeded",
+    );
+  });
+
+  it("escapes a value it does forward, so no second parameter appears", async () => {
+    const seen: Seen[] = [];
+    vi.stubGlobal("fetch", stub(seen));
+
+    await paymentIntentsListResponse(
+      request(
+        "https://dash.example/api/dash/payment_intents?status=" +
+          encodeURIComponent("succeeded&merchant_id=mch_other") +
+          "&after=" +
+          encodeURIComponent("pi_1\r\nX-Injected: 1"),
+      ),
+      CONFIG,
+    );
+
+    const upstream = new URL(seen.at(-1)?.url ?? "");
+    expect([...upstream.searchParams.keys()].sort()).toEqual([
+      "limit",
+      "starting_after",
+      "status",
+    ]);
+    expect(upstream.searchParams.get("merchant_id")).toBeNull();
+    expect(upstream.searchParams.get("status")).toBe(
+      "succeeded&merchant_id=mch_other",
+    );
+  });
+
+  it.each([
+    ["pi_1?limit=9999"],
+    ["pi_1#frag"],
+    ["https://evil.example/x"],
+    ["http://169.254.169.254/latest/meta-data/"],
+    ["//evil.example/x"],
+    ["pi_1/../../staff/session"],
+  ])("keeps the id %s inside one upstream path segment", async (id) => {
+    const seen: Seen[] = [];
+    vi.stubGlobal("fetch", stub(seen, { read: {} }));
+
+    await paymentIntentResponse(
+      request("https://dash.example/api/dash/payment_intents/x"),
+      id,
+      CONFIG,
+    );
+
+    const upstream = new URL(seen.at(-1)?.url ?? "");
+    expect(upstream.origin).toBe("http://vpay-server:8080");
+    expect(upstream.search).toBe("");
+    expect(upstream.hash).toBe("");
+    // `['', 'dash', 'v1', 'payment_intents', <the id>]` — the id is exactly
+    // one segment however it was spelled, which is what stops it naming a
+    // different upstream route, a different host, or a link-local address.
+    expect(upstream.pathname.split("/")).toHaveLength(5);
+    expect(upstream.pathname.startsWith("/dash/v1/payment_intents/")).toBe(
+      true,
+    );
+  });
+
+  it("reads a percent-encoded spelling of a parameter as that parameter", () => {
+    // `?%73tatus=succeeded` **does** reach vpay as `status=succeeded`, and
+    // that is right rather than a hole: `URLSearchParams` decodes a key the
+    // way Next decodes the one it hands a Server Component, so the page and
+    // this surface read one URL the same way — which is the property the seam
+    // exists for. It is recorded as a case because "an encoded parameter name
+    // is ignored" would be a plausible thing to assume and is false.
+    const params = new URLSearchParams("%73tatus=succeeded");
+    expect(params.get("status")).toBe("succeeded");
+  });
 });
 
 describe("what goes back on the wire", () => {
@@ -420,6 +559,105 @@ describe("what goes back on the wire", () => {
     vi.stubGlobal("fetch", stub([]));
     const response = await paymentIntentsListResponse(request(), CONFIG);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("says what it could not reach, and never where or what answered", async () => {
+    // exp55 review, finding 1. `api.ts`'s `unreachable` writes its message
+    // from the thrown error, and on this path the thrower is Node: the
+    // message names the address it dialled. On a page that reaches a
+    // signed-in staff member; here it is a scriptable endpoint that answers a
+    // caller holding **any** cookie value, because the read that fails is the
+    // session read. Carry `failure.message` through for a `status: 0` and
+    // this goes red.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.reject(
+          new Error(
+            "connect ECONNREFUSED 10.42.3.17:8080 (vpay-server.vpay-prod.svc.cluster.local)",
+          ),
+        ),
+      ),
+    );
+    const response = await paymentIntentsListResponse(request(), CONFIG);
+    const wire = await serialised(response);
+
+    expect(response.status).toBe(502);
+    expect(wire).not.toContain("10.42.3.17");
+    expect(wire).not.toContain("cluster.local");
+    expect(wire).not.toContain("ECONNREFUSED");
+    expect(wire).toContain("vpay could not be reached.");
+  });
+
+  it("does not hand back a fragment of an unparseable upstream body", async () => {
+    // The same finding's other half. A `200` that is not JSON reaches
+    // `getJson`'s `catch`, and V8's parse error quotes the first bytes of what
+    // it was given — `Unexpected token '<', "<html><hea"... is not valid
+    // JSON`. That is an upstream proxy's error page, one fragment at a time.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (url.includes("/staff/session")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(liveSession()), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(
+            "<html><body>vpay-internal.prod.svc refused the connection</body></html>",
+            { status: 200, headers: { "content-type": "text/html" } },
+          ),
+        );
+      }),
+    );
+    const response = await paymentIntentsListResponse(request(), CONFIG);
+    const wire = await serialised(response);
+
+    expect(response.status).toBe(502);
+    expect(wire).not.toContain("html");
+    expect(wire).not.toContain("vpay-internal");
+    expect(wire).toContain("vpay could not be reached.");
+  });
+
+  it("answers a refusal, not a 500, when vpay's 200 is not the document", async () => {
+    // exp55 review, finding 2. `getJson` casts the parsed body to `T`
+    // unchecked, and `pageCursors` indexes `rows[0]`: a `200` carrying `{}`
+    // used to throw a `TypeError` out of the route handler, which Next
+    // answers as its own `500`. Five of six malformed shapes threw. Remove
+    // the `Array.isArray` guard in `dashProvider.getList` and this goes red
+    // by rejecting rather than by returning a status.
+    vi.stubGlobal("fetch", stub([], { read: { object: "list" } }));
+    const response = await paymentIntentsListResponse(request(), CONFIG);
+    const body = (await response.json()) as { error: { message: string } };
+
+    expect(response.status).toBe(502);
+    expect(body.error.message).toContain("other than a list");
+  });
+
+  it("answers a refusal for a detail read that is not a detail either", async () => {
+    vi.stubGlobal("fetch", stub([], { read: {} }));
+    const response = await paymentIntentResponse(
+      request("https://dash.example/api/dash/payment_intents/pi_example_1"),
+      "pi_example_1",
+      CONFIG,
+    );
+    const body = (await response.json()) as { error: { message: string } };
+
+    // An empty `{}` answered `200 {}` before the guard: every named key was
+    // `undefined` and `JSON.stringify` dropped them all, so the browser was
+    // handed an empty document as a success.
+    expect(response.status).toBe(502);
+    expect(body.error.message).toContain("other than a payment detail");
   });
 
   it("answers the page and its two cursors, and nothing vpay sent besides", async () => {

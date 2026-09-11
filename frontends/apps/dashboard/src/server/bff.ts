@@ -38,8 +38,17 @@
  *    `ApiResult`, so **this file never holds the upstream `Response` at all**
  *    and there is no object in scope for a header to be copied off. The token
  *    is an argument to `readDash` and never reaches a response. The
- *    projection is what the test can still break, and it is the one the
- *    decisive case mutates.
+ *    projection is what the test can still break — **on the detail read, and
+ *    only there.** `serve`'s `project` was described here as the decisive
+ *    thing for both handlers and it is not: `dashProvider.getList` already
+ *    answers `{ data, hasMore, cursor }`, a shape it built field by field, so
+ *    the list handler's own projection renames those three keys and drops
+ *    nothing. Measured, exp55 review: replace `served(project(result.value))`
+ *    with `served(result.value)` and `puts it in no part of the detail read
+ *    either` goes red while `puts the bearer token in no header and no body,
+ *    ever` — the list case — stays green. `getOne` answers the parsed
+ *    upstream document whole, which is why the detail read is where a field
+ *    vpay grew would otherwise reach the browser.
  *
  * # And the one it must never be talked into doing
  *
@@ -125,7 +134,19 @@ interface ErrorBody {
  * | `same-site` | another host under the same registrable domain | refused |
  * | `cross-site` | anybody else | refused |
  * | `none` | a URL typed or bookmarked | refused — this is not a page |
- * | absent | no fetch metadata: `curl`, a pre-2020 browser | refused |
+ * | absent | no fetch metadata at all | refused |
+ *
+ * **"No fetch metadata" is a larger set than it sounds, and this refusal is
+ * the availability cost of the rule rather than a free win.** Chromium has
+ * sent `Sec-Fetch-Site` since 2019 and Firefox since 2020, but **Safari only
+ * since 16.4 (March 2023)** — so every WebKit browser older than that,
+ * including the system web view on an older iOS, is refused by this surface
+ * with a `403` that says the request did not come from this dashboard. The
+ * direction is still the right one (the alternative is a rule an attacker
+ * removes by removing a header), and it costs nothing today because nothing
+ * calls these handlers — but a client that starts to must decide what it
+ * shows such a browser, and this is not something the unit tests below can
+ * see.
  *
  * **Absent is refused, which is the opposite of what `signed-out.ts` does**,
  * and the divergence is deliberate rather than an oversight. That route
@@ -171,6 +192,25 @@ export function apiIsSameOrigin(
  * The value is taken up to the first `;` and after the first `=`, so a token
  * containing `=` survives and a cookie named `x_vpay_dash_session` does not
  * match.
+ *
+ * # And it is percent-decoded, because the writer percent-encodes
+ *
+ * `setSessionCookie` writes through `next/headers`' `cookies().set`, which
+ * serialises with `cookie.serialize` and therefore **percent-encodes** the
+ * value; `cookies().get()` decodes it again, so `session.ts` and this file
+ * are two readers of one cookie and only one of them was undoing the
+ * encoding. Nothing vpay mints today is affected — the session token is
+ * base64url, whose alphabet `serialize` leaves alone — so this is a
+ * divergence that has never fired rather than a bug that has. It would fire
+ * closed if it ever did (this surface would present a differently-spelled
+ * token and get vpay's `401`), which is why it is worth a line and not a
+ * redesign: a second transcription that disagrees with the first only under
+ * a change nobody is thinking about is exactly the shape this file's own doc
+ * comment warns about for `bearerFor`.
+ *
+ * A value that is not valid percent-encoding is returned verbatim rather than
+ * refused: `decodeURIComponent` throws on a lone `%`, and a cookie this app
+ * did not write is vpay's to reject, not this function's.
  */
 export function sessionCookieOf(headers: Headers): string | null {
   const header = headers.get("cookie");
@@ -186,10 +226,40 @@ export function sessionCookieOf(headers: Headers): string | null {
       continue;
     }
     const value = pair.slice(eq + 1).trim();
-    return value.length > 0 ? value : null;
+    return value.length > 0 ? decodeCookieValue(value) : null;
   }
   return null;
 }
+
+/** `decodeURIComponent`, with a malformed escape left as it was written. */
+function decodeCookieValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * The headers every answer of this surface carries, refusal and success alike.
+ *
+ * `cache-control: no-store` — a dashboard that showed a cached payment would
+ * be worse than one that showed none, and a *shared* cache holding one
+ * merchant's page would be worse than either. `api.ts` says the first half of
+ * that for the upstream call; this says the second, for the browser and for
+ * anything in front of it.
+ *
+ * `x-content-type-options: nosniff` — these two URLs are reachable by
+ * same-origin navigation, not only by `fetch`, so a browser can be made to
+ * treat the answer as a document rather than as data. The body is vpay's own
+ * JSON, merchant-authored `description` and `metadata` included; declaring
+ * that its content type is not a suggestion costs nothing and removes the
+ * question.
+ */
+const WIRE_HEADERS: Readonly<Record<string, string>> = {
+  "cache-control": "no-store",
+  "x-content-type-options": "nosniff",
+};
 
 /** A refusal, as JSON, with no upstream header on it and nothing cached. */
 function refusal(
@@ -201,14 +271,32 @@ function refusal(
     { error: { message, request_id: requestId } },
     {
       status,
-      // A dashboard that showed a cached payment would be worse than one that
-      // showed none, and a *shared* cache holding one merchant's page would
-      // be worse than either. `api.ts` says the first half; this says the
-      // second.
-      headers: { "cache-control": "no-store" },
+      headers: WIRE_HEADERS,
     },
   );
 }
+
+/**
+ * What a `status: 0` failure says on the wire, instead of what it says here.
+ *
+ * `api.ts`'s `unreachable` builds its message out of the thrown error, which
+ * on this path is Node's: `connect ECONNREFUSED 10.42.3.17:8080
+ * (vpay-server.vpay-prod.svc.cluster.local)` names the payments API's internal
+ * address, and a `JSON.parse` failure names the first bytes of whatever
+ * answered instead — `Unexpected token '<', "<html><hea"... is not valid
+ * JSON`, which is a fragment of an upstream proxy's error page. `failureOf`
+ * already refuses to render an unparseable body raw for exactly that reason
+ * (`api.ts`, "A body this app cannot parse is **not** rendered raw"); this is
+ * the same rule applied to the other half of the same file, because `status:
+ * 0` is the one failure whose message was written from an exception rather
+ * than from vpay's envelope.
+ *
+ * It matters more here than on a page: a page renders this to a staff member
+ * who is already signed in, and this is a scriptable endpoint that answers a
+ * caller holding **any** cookie value — the session read is what fails, so the
+ * refusal is reached before anybody has been authenticated.
+ */
+const UNREACHABLE = "vpay could not be reached.";
 
 /**
  * An upstream refusal, as this surface's own.
@@ -217,14 +305,14 @@ function refusal(
  * meaning: `refusalFor`'s rule is that `401` ends a session and everything
  * else — `403` included — is an outage (issue #88 item 2), and a client
  * cannot apply that rule to a status this layer flattened. `status: 0` is
- * `api.ts`'s "no response at all", which is a bad gateway and not a `0`.
+ * `api.ts`'s "no response at all", which is a bad gateway and not a `0` — and
+ * is the one case whose *message* is replaced rather than carried: see
+ * {@link UNREACHABLE}.
  */
 function upstreamRefusal(failure: ApiFailure): NextResponse<ErrorBody> {
-  return refusal(
-    failure.status === 0 ? 502 : failure.status,
-    failure.message,
-    failure.requestId,
-  );
+  return failure.status === 0
+    ? refusal(502, UNREACHABLE, failure.requestId)
+    : refusal(failure.status, failure.message, failure.requestId);
 }
 
 /** What {@link bearerFor} answered: a token to read with, or the refusal. */
@@ -267,10 +355,7 @@ async function bearerFor(
   const { session, failure } = await readSession(config, sessionToken);
   if (session === null) {
     if (failure === null) {
-      return {
-        ok: false,
-        response: refusal(502, "vpay could not be reached."),
-      };
+      return { ok: false, response: refusal(502, UNREACHABLE) };
     }
     return { ok: false, response: upstreamRefusal(failure) };
   }
@@ -378,18 +463,27 @@ async function readerFor(
  */
 function searchRecord(url: string): Record<string, string[]> {
   const params = new URL(url).searchParams;
-  const record: Record<string, string[]> = {};
+  // `Object.create(null)` and not `{}`: the keys here are the caller's, and on
+  // a plain object `record['__proto__'] = […]` does not add a key — it invokes
+  // `Object.prototype`'s `__proto__` setter and *replaces this object's
+  // prototype* with the array. `queryFrom` reads five fixed names and was
+  // measured not to be steerable that way (`?__proto__=…` leaves the upstream
+  // query string as `limit=25` and `Object.prototype` untouched), so this is
+  // defence in depth rather than a hole being closed — but a map of
+  // attacker-chosen keys should not be one whose assignment can run a setter
+  // at all.
+  const record = Object.create(null) as Record<string, string[]>;
   for (const key of new Set(params.keys())) {
     record[key] = params.getAll(key);
   }
   return record;
 }
 
-/** A success, as JSON, with nothing on it but a content type and `no-store`. */
+/** A success, as JSON, with nothing on it but a content type and {@link WIRE_HEADERS}. */
 function served(body: unknown): NextResponse {
   return NextResponse.json(body, {
     status: 200,
-    headers: { "cache-control": "no-store" },
+    headers: WIRE_HEADERS,
   });
 }
 

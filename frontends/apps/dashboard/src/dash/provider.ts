@@ -50,6 +50,7 @@ import {
 } from "../payments-query";
 import type { DashboardConfig } from "../config/settings";
 import type {
+  ApiFailure,
   ApiResult,
   PaymentDetail,
   PaymentIntentList,
@@ -162,11 +163,14 @@ export function dashProvider(session: DashSession): DashProvider {
       if (!result.ok) {
         return result;
       }
+      if (!Array.isArray(result.value?.data)) {
+        return { ok: false, failure: notTheDocument("a list") };
+      }
       return {
         ok: true,
         value: {
           data: result.value.data,
-          hasMore: result.value.has_more,
+          hasMore: result.value.has_more === true,
           cursor: pageCursors(query, result.value.data, result.value.has_more),
         },
       };
@@ -176,12 +180,54 @@ export function dashProvider(session: DashSession): DashProvider {
       // `encodeURIComponent` and not a template alone: an id is a path
       // segment here, and a caller-supplied `../staff/session` would
       // otherwise be a different upstream route entirely.
-      return readDash<PaymentDetail>(
+      const result = await readDash<PaymentDetail>(
         session.config,
         `/dash/v1/${resource}/${encodeURIComponent(id)}`,
         session.accessToken,
         session.sessionToken,
       );
+      if (!result.ok) {
+        return result;
+      }
+      if (!isObject(result.value) || !isObject(result.value.payment_intent)) {
+        return { ok: false, failure: notTheDocument("a payment detail") };
+      }
+      return result;
     },
+  };
+}
+
+/** A non-null, non-array object — the only shape either read may be handed. */
+function isObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A `200` whose body is not the document this module asked for, as a refusal.
+ *
+ * `api.ts`'s `getJson` answers `(await response.json()) as T` — an unchecked
+ * cast, which is the right trade for a typed client of a service this
+ * repository also owns, and is not a claim that the body **is** a `T`. Until
+ * this guard existed the claim was load-bearing anyway: a `200` carrying
+ * `{}`, `null`, a bare string, or a `data` that is not an array reached
+ * `pageCursors`, which indexes `rows[0]`, and the `TypeError` propagated out
+ * of a Server Component render and out of `app/api/dash/**`'s route handlers
+ * — where Next answers it as a `500` rather than as anything a caller can
+ * read. Measured on this branch: five of six malformed `200`s threw, and the
+ * sixth (`data: {}`) answered `200` with a page whose rows were an object.
+ *
+ * A refusal and **not** an empty list: an empty list is a claim about the
+ * merchant's payments, and "vpay answered something this app does not
+ * recognise" is a claim about vpay. AGENTS.md rule 2 is the difference.
+ *
+ * `502` and not `0`: there *was* a response, so this is a bad gateway rather
+ * than `api.ts`'s "no response at all", and `bff.ts`'s `upstreamRefusal`
+ * carries the status through untouched.
+ */
+function notTheDocument(expected: string): ApiFailure {
+  return {
+    status: 502,
+    message: `vpay answered something other than ${expected}.`,
+    requestId: null,
   };
 }
