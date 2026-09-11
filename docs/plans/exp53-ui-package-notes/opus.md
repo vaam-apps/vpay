@@ -220,6 +220,63 @@ and empty-state cases (2) for the same reason and gained one for the pager
 composition it did not have before. The package's +22 covers the eight new
 primitives and the four `Code`-inside-`Alert` contrast cases.
 
+## 6b. `just ci` did not go green here, and the step that failed is not mine
+
+`just ci` exit **100** on `bf762f2`, exit code read from a file. It fails at
+`test-rust`, and **only** at `test-rust`.
+
+Every other step of the recipe passed at recipe level on that head, run
+individually after the aborted sweep:
+
+| `just ci` step | Result |
+| --- | --- |
+| `fmt-check` | **exit 0** |
+| `clippy` (`-D warnings`) | **exit 0** |
+| `verify` | **exit 0** — "the twelve gates above passed", four separate runs |
+| `test-rust` | **exit 100**, see below |
+| `test-doc` | **exit 0** — 111 passed, 1 ignored (`sdks/rust`'s README block, pre-existing) |
+| `verify-ignored` | **exit 0** |
+| `lint-web` | **exit 0** |
+| `test-web` | **exit 0** — counts in §6 |
+| `deny` | **exit 0** — advisories, bans, licenses, sources all ok |
+
+`test-rust` was run **five** times. Every run failed the same way and never
+the same test:
+
+| Run | Progress | Test that failed | Error |
+| --- | --- | --- | --- |
+| 1 | 1151/1696 | `vpay-db config_reconcile::…_exactly_as_it_does_through_sqlx` | `failed to create a container: Timeout error` at 120.06 s |
+| 2 | 1151/1696 | the same one | the same, 120.01 s |
+| 3 | 1151/1696 | the same one | the same, 120.02 s |
+| 4 | 1225/1696 | `vpay-db::repositories a_provider_written_through_cratestack_is_rolled_back…` | the same, 120.01 s |
+| 5 | 1270/1696 | `vpay-db::repositories events_list_page_walks_forward_and_backward…` | the same, 120.02 s |
+
+1269 of 1270 tests passed on the furthest run, 0 skipped. Each run got
+further than the last as the host quietened, and each died on a **different**
+container test at exactly the 120-second `testcontainers` create deadline —
+which is the shape of a saturated Docker daemon, not of a failing assertion.
+
+Measured directly rather than inferred: `docker create postgres:16-alpine`
+took **78 seconds** while the host was at load average 25 with another
+worktree's nine-container e2e stack up, and **0 seconds** once that load fell
+to 11. A bare `docker run postgres:16-alpine postgres --version` printed
+`postgres (PostgreSQL) 16.15` throughout — the daemon works, it is just far
+slower than the deadline under load. It is the hazard the project memory
+records for this host's rootless Docker.
+
+**This branch cannot have caused it, and that is checkable rather than
+plausible:** `git diff --name-only 6b1b7d8..HEAD` outside `frontends/` and
+`docs/` is exactly one file, `justfile`, and
+`git diff --stat 6b1b7d8..HEAD -- backends Cargo.toml Cargo.lock
+rust-toolchain.toml .xtask schemas` is **empty**. The Rust that failed is
+byte-identical to the Rust on `master`.
+
+So: **the Rust half of `just ci` is unproven on this branch and I am not
+claiming it**. What is proven is that the Rust source did not change. Re-run
+`just test-rust` on a quiet host — or in the `vpay-ci` VM, which this
+worktree's path rules out, since it lives under a dot-directory snap cannot
+read.
+
 ## 7. What I did NOT do
 
 - **No sortable table headers, and deliberately.** The brief's illustrative
