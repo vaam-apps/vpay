@@ -683,14 +683,14 @@ a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`
    observed — which was never the property #124 asked this test to hold.
    Re-run by the review, not assumed: **39/39 passed**
    (`cargo nextest run -p vpay-sdk --test token_exchange -E
-   'test(a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched)'`
+'test(a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched)'`
    — 30 solo at `--test-threads 16/32`, 5×`-p vpay-sdk` full-suite runs at
    `--test-threads 16`, and 4 copies launched as genuinely simultaneous OS
    processes for real contention, all pass), and the test is not vacuous:
    reverting `invalidate_if_current` to an unconditional clear (the exact bug
    #124's docstring describes) fails it immediately —
    `assertion left == right failed: expected exactly two token requests …,
-   but got 3`.
+but got 3`.
 
 **1698 total, and master's own number was not re-measured on this head** —
 `cargo nextest list` against `5e3a004` needs a full rebuild of a tree this
