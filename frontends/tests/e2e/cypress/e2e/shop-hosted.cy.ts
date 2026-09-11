@@ -390,26 +390,22 @@ describe("the shop, paid on vpay's hosted page", () => {
 
     // vpay's return page: it holds the return token, not the intent's
     // secret, and it polls until the rail's status query settles.
-    cy.origin(
-      checkoutOrigin(),
-      { args: { axeSource } },
-      ({ axeSource }) => {
-        cy.window({ log: false }).then((win) => {
-          win.eval(axeSource);
-        });
+    cy.origin(checkoutOrigin(), { args: { axeSource } }, ({ axeSource }) => {
+      cy.window({ log: false }).then((win) => {
+        win.eval(axeSource);
+      });
 
-        cy.url({ timeout: 60_000 }).should("include", "/return");
-        cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
-          "be.visible",
-        );
-        // color-contrast, `ReturnView`'s succeeded outcome, under bumblebee.
-        cy.window({ log: false }).then((win) =>
-          win.axe.run('[data-outcome="succeeded"]', {
-            runOnly: { type: "rule", values: ["color-contrast"] },
-          }),
-        );
-      },
-    ).then((results) => {
+      cy.url({ timeout: 60_000 }).should("include", "/return");
+      cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
+        "be.visible",
+      );
+      // color-contrast, `ReturnView`'s succeeded outcome, under bumblebee.
+      cy.window({ log: false }).then((win) =>
+        win.axe.run('[data-outcome="succeeded"]', {
+          runOnly: { type: "rule", values: ["color-contrast"] },
+        }),
+      );
+    }).then((results) => {
       reportContrast(
         results as ContrastCheck,
         "ReturnView succeeded outcome",
@@ -475,33 +471,25 @@ describe("the shop, paid on vpay's hosted page", () => {
     // payer lands back on vpay's return page either way and the page polls
     // until the rail's status query settles. What differs from the case
     // above is the outcome it settles on.
-    cy.origin(
-      checkoutOrigin(),
-      { args: { axeSource } },
-      ({ axeSource }) => {
-        cy.window({ log: false }).then((win) => {
-          win.eval(axeSource);
-        });
+    cy.origin(checkoutOrigin(), { args: { axeSource } }, ({ axeSource }) => {
+      cy.window({ log: false }).then((win) => {
+        win.eval(axeSource);
+      });
 
-        cy.url({ timeout: 60_000 }).should("include", "/return");
-        cy.get('[data-outcome="failed"]', { timeout: 120_000 }).should(
-          "be.visible",
-        );
-        cy.get('[data-testid="outcome-body"]').should("not.be.empty");
-        // color-contrast, `ReturnView`'s failed outcome, under bumblebee —
-        // the screen that tells a payer their money did not move.
-        cy.window({ log: false }).then((win) =>
-          win.axe.run('[data-outcome="failed"]', {
-            runOnly: { type: "rule", values: ["color-contrast"] },
-          }),
-        );
-      },
-    ).then((results) => {
-      reportContrast(
-        results as ContrastCheck,
-        "ReturnView failed outcome",
-        2,
+      cy.url({ timeout: 60_000 }).should("include", "/return");
+      cy.get('[data-outcome="failed"]', { timeout: 120_000 }).should(
+        "be.visible",
       );
+      cy.get('[data-testid="outcome-body"]').should("not.be.empty");
+      // color-contrast, `ReturnView`'s failed outcome, under bumblebee —
+      // the screen that tells a payer their money did not move.
+      cy.window({ log: false }).then((win) =>
+        win.axe.run('[data-outcome="failed"]', {
+          runOnly: { type: "rule", values: ["color-contrast"] },
+        }),
+      );
+    }).then((results) => {
+      reportContrast(results as ContrastCheck, "ReturnView failed outcome", 2);
     });
 
     cy.origin(checkoutOrigin(), () => {
