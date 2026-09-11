@@ -400,19 +400,26 @@ pub struct CreateCustomerParams {
     pub metadata: BTreeMap<String, String>,
 }
 
-/// The six address components, in the shape the wire spells them.
+/// The address components, in the shape the wire spells them — Stripe's six
+/// **and** the GPS point.
 ///
 /// A type of its own rather than [`crate::Address`] — which the *response*
 /// carries — for the reason every params struct on this surface is its own
 /// type: what a merchant may send and what the server returns are two
 /// contracts, and the second one grows keys the first must not accept. They
-/// happen to have the same six fields today.
+/// happen to have the same eight fields today.
+///
+/// The coordinate is vpay's own and has no counterpart on Stripe's address;
+/// see [`crate::Address`] for why it exists and why it is an integer count of
+/// microdegrees rather than degrees.
 ///
 /// `country` is sent as typed and stored **upper case**, so what comes back
 /// may not be what was sent. This SDK deliberately does not check the shape
 /// locally, exactly as it does not check an MSISDN: which codes vpay accepts
 /// is a rule vpay owns and may widen, and a copy here would refuse offline an
-/// address a later server accepts.
+/// address a later server accepts. The same line is taken on the coordinate:
+/// the range and the pair rule are the server's, and it answers a `400`
+/// naming `address` one round trip later.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AddressParams {
     /// Street address, line 1.
@@ -427,16 +434,29 @@ pub struct AddressParams {
     pub postal_code: Option<String>,
     /// ISO 3166-1 alpha-2 — `CM`, `FR`, `NG`.
     pub country: Option<String>,
+    /// Latitude in **microdegrees** — `4_061_000` for 4.061°N. An `i64` and
+    /// never an `f64`: vpay stores no floating-point coordinate, and a type
+    /// that could hold one here would make `4.061` expressible in Rust and
+    /// refused on the wire. Sent with [`Self::longitude_microdeg`] or not at
+    /// all.
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`].
+    pub longitude_microdeg: Option<i64>,
 }
 
 impl AddressParams {
-    /// The six components as `address[line1]=…` pairs, with every unset one
+    /// The eight components as `address[line1]=…` pairs, with every unset one
     /// omitted from the body entirely.
     ///
     /// Omitted and not sent empty, because on this API those are different
     /// requests everywhere else — and because the server replaces the address
     /// whole, so an omitted component is cleared either way and sending
     /// `address[city]=` would only add a pair that says the same thing.
+    ///
+    /// The coordinate goes out as a decimal integer through
+    /// `FormValue::from(i64)`, which is the same encoder every amount on this
+    /// surface uses — there is no path from this struct to a body containing
+    /// a decimal point.
     fn to_form(&self) -> FormValue {
         FormValue::Object(vec![
             ("line1".to_string(), FormValue::from(self.line1.clone())),
@@ -448,6 +468,14 @@ impl AddressParams {
                 FormValue::from(self.postal_code.clone()),
             ),
             ("country".to_string(), FormValue::from(self.country.clone())),
+            (
+                "latitude_microdeg".to_string(),
+                FormValue::from(self.latitude_microdeg),
+            ),
+            (
+                "longitude_microdeg".to_string(),
+                FormValue::from(self.longitude_microdeg),
+            ),
         ])
     }
 }

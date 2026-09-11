@@ -456,12 +456,14 @@ pub struct Customer {
     /// present — a phone number alone is a complete customer, which is what
     /// the object is for on a mobile money rail.
     pub phone: Option<String>,
-    /// The payer's postal address, or `None`.
+    /// The payer's postal address **and** GPS point, or `None`.
     ///
-    /// One nullable object rather than six nullable fields, which is what the
-    /// server sends and what Stripe's own customer carries. `None` means the
-    /// customer has no address at all; the server never sends an address
+    /// One nullable object rather than eight nullable fields, which is what
+    /// the server sends and what Stripe's own customer carries. `None` means
+    /// the customer has no address at all; the server never sends an address
     /// object whose every component is `null`.
+    ///
+    /// The object carries two fields Stripe's does not — see [`Address`].
     #[serde(default)]
     pub address: Option<Address>,
     /// The merchant's own key/value pairs, echoed back.
@@ -495,12 +497,22 @@ pub struct Customer {
     pub deleted: Option<bool>,
 }
 
-/// A postal address on a [`Customer`] — Stripe's six components.
+/// A postal address on a [`Customer`] — Stripe's six formal components
+/// **and** the GPS point.
 ///
-/// Every component is nullable, and the server renders all six even when they
-/// are `null`: an address is one fact about a payer, and a key that appeared
-/// and disappeared would change the shape of a signed `customer.*` webhook
-/// body per payer.
+/// # vpay's address is both halves, and this is where Stripe's is not
+///
+/// [`Self::latitude_microdeg`] and [`Self::longitude_microdeg`] have no
+/// counterpart on Stripe's `address`. They are here because vpay's address
+/// *means* both halves: formal addressing is unreliable across the markets
+/// vpay serves, and a coordinate is how a place is actually found. A merchant
+/// porting Stripe code to vpay gains two fields; one porting the other way
+/// loses them, and should know that before they discover it.
+///
+/// Every component is nullable, and the server renders all eight even when
+/// they are `null`: an address is one fact about a payer, and a key that
+/// appeared and disappeared would change the shape of a signed `customer.*`
+/// webhook body per payer.
 ///
 /// The same type is sent and received. On [`crate::UpdateCustomerParams`] an
 /// address **replaces** the stored one rather than merging with it — a
@@ -533,6 +545,37 @@ pub struct Address {
     /// it. A three-letter code or a country name is a `400` naming `address`.
     #[serde(default)]
     pub country: Option<String>,
+    /// Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+    /// `4_061_000`.
+    ///
+    /// # An integer, and the unit is in the field name
+    ///
+    /// vpay has no floating-point coordinate anywhere: not on the wire, not
+    /// in the database, not in this type. That is the same rule the money
+    /// path lives by — integer minor units with the scale named — and it is
+    /// what the field's name is for. `4.061` is refused by the server with a
+    /// `400` naming `address` rather than rounded, so a merchant who sends
+    /// degrees is told, not silently approximated.
+    ///
+    /// # Both or neither
+    ///
+    /// `None` unless [`Self::longitude_microdeg`] is also `Some`. Half a
+    /// coordinate names no place — a latitude on its own is a line right
+    /// round the planet — and the server refuses one half with a `400`
+    /// naming `address`. This SDK does not check it locally, exactly as it
+    /// does not check an MSISDN: the rule is vpay's and a copy here would
+    /// refuse offline what a later server accepts.
+    ///
+    /// On an **erased** customer this comes back `None` while the six formal
+    /// components come back `[redacted]`, and the asymmetry is deliberate:
+    /// there is no integer that is not a possible place, so the marker is
+    /// not a value this field can take. See [`Customer::deleted`].
+    #[serde(default)]
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`] for the
+    /// unit, the integer rule and the pair rule.
+    #[serde(default)]
+    pub longitude_microdeg: Option<i64>,
 }
 
 /// What `DELETE /v1/customers/{id}` answers with.
