@@ -18,6 +18,7 @@
     "metrics",
     "service",
     "ingress",
+    "route",
     "networkPolicy",
     "podDisruptionBudget",
     "serviceAccount"
@@ -141,6 +142,31 @@
             },
             "limitRps": { "type": "integer" },
             "limitBurstMultiplier": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "description": "The payment page's Gateway API route. hostnames-or-path, exactly one, is the \"checkout-templated-when-enabled\" guard, not this schema.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "parentRefs": { "$ref": "#/definitions/parentRefs" },
+            "hostnames": { "type": "array", "items": { "type": "string" } },
+            "path": { "type": "string" },
+            "pathType": {
+              "type": "string",
+              "enum": ["Exact", "PathPrefix", "RegularExpression"]
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "filters": { "$ref": "#/definitions/routeFilters" }
           }
         }
       }
@@ -331,6 +357,36 @@
       }
     },
 
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "parentRefs", "api", "token"],
+      "description": "Gateway API routing, the alternative to `ingress` above for a cluster that runs a Gateway rather than ingress-nginx. Shape only, as everywhere here: an enabled route with no parentRefs, no resolvable hostname, or nothing rate-limiting the token endpoint are the \"route-attachment\" and \"route-rate-limit\" guards in templates/_validate.tpl, so the error can explain the consequence.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "parentRefs": { "$ref": "#/definitions/parentRefs" },
+        "hostnames": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Empty falls back to [ingress.host]. Empty after that fallback is the route-attachment guard."
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "rateLimitedBy": {
+          "type": "string",
+          "description": "One line naming what enforces /v1/oauth/token's rate limit when it is not an ExtensionRef filter on the token rule. Rendered onto the HTTPRoute as the vpay/rate-limited-by annotation. Free text on purpose: the route-rate-limit guard refuses silence, and a boolean would only be a box to tick."
+        },
+        "api": { "$ref": "#/definitions/httpRouteRule" },
+        "token": { "$ref": "#/definitions/httpRouteRule" }
+      }
+    },
+
     "networkPolicy": {
       "type": "object",
       "additionalProperties": false,
@@ -438,6 +494,30 @@
         "limitRps": { "type": "integer" },
         "limitBurstMultiplier": { "type": "integer", "minimum": 1 }
       }
+    },
+    "httpRouteRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "pathType"],
+      "description": "One HTTPRoute rule. `PathPrefix`, not the Ingress spelling `Prefix`: gateway.networking.k8s.io/v1 and networking.k8s.io/v1 disagree on the word, and a values file that carried the Ingress one over would be rejected by the API server rather than by Helm.",
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "pathType": {
+          "type": "string",
+          "enum": ["Exact", "PathPrefix", "RegularExpression"]
+        },
+        "filters": { "$ref": "#/definitions/routeFilters" }
+      }
+    },
+    "parentRefs": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "A list of gateway.networking.k8s.io/v1 ParentReference, passed through verbatim so every field of it — group, kind, namespace, sectionName, port — is available without this chart modelling any of them. `name` is the one required field, and its absence is the \"route-attachment\" guard rather than a schema error, so the message can say what an unparented HTTPRoute actually does."
+    },
+    "routeFilters": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "A list of gateway.networking.k8s.io/v1 HTTPRouteFilter, passed through verbatim. This is the extension point for everything Gateway API leaves to the implementation — an ExtensionRef to a controller's own rate-limit object above all. Modelling its shape here would date the chart against a spec that is still adding filters."
     }
   }
 }

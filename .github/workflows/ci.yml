@@ -774,16 +774,24 @@ jobs:
       # drift. It is deliberately NOT part of `just ci` — kubeconform fetches
       # its schemas over the network, and `just ci` must work offline.
       #
-      # The recipe does all four things this job exists for: `helm lint` and
-      # `helm template` over the default values and over
+      # The recipe does all five things this job exists for: `helm lint` and
+      # `helm template` over the default values, over
       # `deploy/helm/vpay/ci/values-full.yaml` (which turns on every optional
-      # object so kubeconform actually sees them); one `helm template` per
-      # file in `deploy/helm/vpay/ci/guards/`, each of which must exit
-      # non-zero with a message naming the guard the file is called after;
-      # a grep for `nginx.ingress.kubernetes.io/limit-rps` on the rendered
-      # Ingress plus a check that the token endpoint's limit is the tighter
-      # of the two; and `kubeconform -strict -summary` with
+      # object so kubeconform actually sees them) and over
+      # `deploy/helm/vpay/ci/values-route.yaml` (the Gateway API path, which
+      # needs `--api-versions gateway.networking.k8s.io/v1` because its two
+      # templates are gated on `.Capabilities.APIVersions.Has`); one
+      # `helm template` per file in `deploy/helm/vpay/ci/guards/`, each of
+      # which must exit non-zero with a message naming the guard the file is
+      # called after; a grep for `nginx.ingress.kubernetes.io/limit-rps` on
+      # the rendered Ingress plus a check that the token endpoint's limit is
+      # the tighter of the two; the Gateway API counterpart of that, which
+      # cannot be the same grep — there is no portable rate-limit annotation,
+      # so it asserts the rendered HTTPRoute carries either an `ExtensionRef`
+      # filter on the token rule or a `vpay/rate-limited-by` annotation — plus
+      # a check that the same values file renders NO HTTPRoute without the
+      # `--api-versions` flag; and `kubeconform -strict -summary` with
       # `-schema-location default` for the built-in kinds and the
-      # datreeio/CRDs-catalog location for ServiceMonitor and PrometheusRule,
-      # which no built-in schema covers.
+      # datreeio/CRDs-catalog location for ServiceMonitor, PrometheusRule and
+      # HTTPRoute, which no built-in schema covers.
       - run: just helm-check

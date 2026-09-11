@@ -1,0 +1,103 @@
+{{- include "vpay.validate" . -}}
+{{- if and .Values.checkout.enabled .Values.checkout.route.enabled }}
+{{- if .Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1" }}
+{{- $fullName := include "vpay.fullname" . -}}
+{{- $r := .Values.checkout.route -}}
+{{- $parentRefs := $r.parentRefs -}}
+{{- if empty $parentRefs -}}
+{{- $parentRefs = .Values.route.parentRefs -}}
+{{- end -}}
+{{- $hostnames := $r.hostnames -}}
+{{- if empty $hostnames -}}
+{{- if $r.path -}}
+{{- $hostnames = .Values.route.hostnames -}}
+{{- if empty $hostnames -}}
+{{- $hostnames = compact (list .Values.ingress.host) -}}
+{{- end -}}
+{{- else -}}
+{{- $hostnames = compact (list .Values.checkout.ingress.host) -}}
+{{- end -}}
+{{- end -}}
+# The payment page's own HTTPRoute — a SECOND route object, separate from the
+# API's, for the same reason `ingress-checkout.yaml` is a third Ingress: a
+# payer's browser reaches this directly and it carries no `/v1` traffic at
+# all.
+#
+# Two shapes, and the "checkout-templated-when-enabled" guard insists on
+# exactly one:
+#
+#   checkout.route.hostnames  its own hostname. Prefer this. The app's routes
+#                             are `/c/…`, `/e/…` and `/healthz` at the ROOT,
+#                             so nothing has to be rewritten and
+#                             `checkout.public_base_url` is simply that origin.
+#   checkout.route.path       a prefix on the API's hostnames. The app is NOT
+#                             basePath-aware, so the prefix must be rewritten
+#                             away — and here, unlike on the Ingress side,
+#                             the chart can do it: `URLRewrite` with
+#                             `ReplacePrefixMatch: /` is in the
+#                             specification, so no controller-specific
+#                             `rewrite-target` annotation is needed. That is
+#                             a real improvement over
+#                             `templates/ingress-checkout.yaml`, and it is
+#                             still EXTENDED support rather than core — an
+#                             implementation may decline it — and STILL
+#                             NOBODY HAS RUN IT.
+#
+# Whichever shape, `checkout.public_base_url` in vpay's OWN config must be the
+# URL this object serves, or every `session.url` vpay mints points somewhere
+# else. This chart cannot check that: the value lives in the profile overlay,
+# which is opaque YAML to it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}-checkout
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "checkout") | nindent 4 }}
+    {{- with $r.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.commonAnnotations $r.annotations }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $r.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $parentRefs | nindent 4 }}
+  hostnames:
+    {{- toYaml $hostnames | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: {{ $r.pathType }}
+            # A hostname-shaped deployment serves the whole origin; a
+            # path-shaped one serves its prefix and gets the rewrite below.
+            value: {{ default "/" $r.path | quote }}
+      {{- if or $r.path $r.filters }}
+      filters:
+        {{- if $r.path }}
+        # Rendered by the chart rather than left to an annotation, because
+        # Gateway API specifies it. Without it every request arrives at the
+        # app still carrying a prefix none of its routes answer for, and the
+        # symptom is a 404 on the payment page found by a payer.
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        {{- end }}
+        {{- with $r.filters }}
+        # After the rewrite, never before it: a filter added here must not be
+        # able to displace the one that makes the path shape work at all.
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      backendRefs:
+        - name: {{ $fullName }}-checkout
+          port: {{ .Values.checkout.service.port }}
+{{- end }}
+{{- end }}

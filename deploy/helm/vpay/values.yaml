@@ -233,6 +233,45 @@ checkout:
     limitRps: 50
     limitBurstMultiplier: 3
 
+  # The page's Gateway API route — the `route:` block's counterpart for the
+  # checkout page, and the same alternative-not-replacement relationship to
+  # `checkout.ingress` above that `route:` has to `ingress:`.
+  #
+  # The same two shapes, and exactly one may be set (the
+  # "checkout-templated-when-enabled" guard):
+  #
+  #   hostnames: [checkout.example.com]  — its own hostname. Prefer this.
+  #   path: /checkout                    — a prefix on `route.hostnames`.
+  #
+  # The prefix shape is where Gateway API is genuinely better than the Ingress
+  # one: the app's routes are `/c/…`, `/e/…` and `/healthz` at the ROOT and it
+  # is not `basePath`-aware, so the prefix has to be rewritten away. The
+  # Ingress path leaves that to a controller-specific
+  # `nginx.ingress.kubernetes.io/rewrite-target` annotation an operator has to
+  # supply; here the chart renders a `URLRewrite` filter with
+  # `ReplacePrefixMatch: /`, which is in the specification and needs no
+  # annotation. `URLRewrite` is an EXTENDED-support filter, not a core one, so
+  # an implementation may still decline it — and, like the Ingress shape it
+  # improves on, NOBODY HAS RUN IT.
+  route:
+    enabled: false
+    # Empty means `route.parentRefs` — the page usually attaches to the same
+    # Gateway the API does. Set it to attach to a different one.
+    parentRefs: []
+    hostnames: []
+    path: ""
+    pathType: PathPrefix
+    annotations: {}
+    labels: {}
+    # Verbatim `HTTPRouteFilter` list, as on `route.api` / `route.token`.
+    # Appended AFTER the `URLRewrite` filter the path shape renders, so a
+    # filter added here cannot displace the rewrite that makes that shape work
+    # at all. No guard requires a rate limit here: ADR-0009's assumption is
+    # about `/v1/oauth/token`, and `checkout.ingress.limitRps` is deliberately
+    # the loosest limit in the chart. The page is still unmetered without one
+    # — say so to yourself before leaving this empty.
+    filters: []
+
 # ------------------------------------------------------------- workloads ---
 
 server:
@@ -467,6 +506,146 @@ ingress:
     # inversion this split exists to prevent.
     limitRps: 5
     limitBurstMultiplier: 2
+
+# Gateway API routing, for a cluster that runs one (Traefik, Envoy Gateway,
+# Istio, Cilium) rather than ingress-nginx. Added 2026-09-11, because until
+# then `ingress:` above was this chart's ONLY way to express routing: a
+# Gateway API cluster had to hand-write HTTPRoutes outside the chart and keep
+# their paths in step with `ingress.api.path` / `ingress.token.path` by hand.
+#
+# It is an ALTERNATIVE to `ingress:`, not a replacement of it. Enabling this
+# does not disable that, and enabling that does not disable this — a cluster
+# that turns on both gets two controllers answering for the same hostname,
+# which is a decision this chart leaves to whoever made it. The usual shape is
+# one or the other.
+#
+# NOTHING HERE HAS EVER RUN. `helm template` plus `kubeconform` against the
+# upstream HTTPRoute schema is the entire evidence, exactly as it is for the
+# Ingress path. No Gateway has accepted one of these objects, and no request
+# has been served through one.
+#
+# THREE THINGS THE INGRESS PATH DOES THAT THIS ONE DOES NOT, because Gateway
+# API has no portable spelling for any of them:
+#
+#   rate limiting     `nginx.ingress.kubernetes.io/limit-rps`. See
+#                     `rateLimitedBy` below — this is the one the chart
+#                     refuses to let you drop in silence.
+#   request body cap  `nginx.ingress.kubernetes.io/proxy-body-size: 64k`.
+#                     There is no core filter for it; it is a listener or
+#                     implementation setting on the Gateway side.
+#   HTTP -> HTTPS     `nginx.ingress.kubernetes.io/ssl-redirect`. In Gateway
+#                     API that is a SECOND HTTPRoute, attached to the :80
+#                     listener and carrying a `RequestRedirect` filter. This
+#                     chart does not render it: it would have to guess which
+#                     listener, and a wrong guess is a redirect loop.
+#
+# TLS is likewise not here. An Ingress names its own Secret and its own
+# cert-manager issuer; a Gateway terminates TLS on the LISTENER, via that
+# listener's `certificateRefs`, so `ingress.tls` has no equivalent in this
+# block and is not consulted by it. Whoever owns the Gateway owns the
+# certificate.
+route:
+  enabled: false
+
+  # How an HTTPRoute attaches to a Gateway. There is no `className` here: a
+  # route names its Gateway, and the Gateway's `allowedRoutes` decides whether
+  # to accept it. Passed through verbatim, so every field of a
+  # `ParentReference` is available — `group` and `kind` included, for a parent
+  # that is not a Gateway.
+  #
+  #   parentRefs:
+  #     - name: traefik-gateway      # required
+  #       namespace: traefik         # omit when the Gateway is in this namespace
+  #       sectionName: websecure     # the listener; omit to attach to all of them
+  #
+  # Required when `enabled` — the "route-attachment" guard. An HTTPRoute with
+  # no parent is accepted by the API server, reported `Accepted: False` by
+  # nobody in particular, and routes no traffic.
+  parentRefs: []
+
+  # Hostnames this route answers for. Empty falls back to `[ingress.host]`,
+  # which is the usual arrangement — one hostname, served by whichever of the
+  # two mechanisms is enabled — and means an operator switching from Ingress
+  # to Gateway API does not restate it. Set this explicitly to serve more than
+  # one, or to serve a different one from the Ingress path's.
+  #
+  # Empty after that fallback is the "route-attachment" guard: a hostname-less
+  # HTTPRoute matches every request its listener receives, the same failure
+  # the "ingress-host" guard exists for.
+  hostnames: []
+
+  # Extra annotations and labels on the rendered HTTPRoutes. `commonLabels`
+  # and `commonAnnotations` are applied on top of these, as everywhere else.
+  annotations: {}
+  labels: {}
+
+  # WHAT ENFORCES THE TOKEN ENDPOINT'S RATE LIMIT — required when `enabled`,
+  # in one of two spellings, and the "route-rate-limit" guard fails the render
+  # without one.
+  #
+  # ADR-0009 assumes a rate limit exists in front of `/v1/oauth/token`: a
+  # token request costs an RSA verification and a database write
+  # (`oauth_client_assertion_jtis`), and it is the expensive unauthenticated
+  # surface. The Ingress path puts one there with `limit-rps`. Gateway API has
+  # no equivalent — no core filter, no standard-channel policy — so a chart
+  # that simply stopped emitting one here would drop that assumption on the
+  # floor, and the only symptom would be an unmetered token endpoint that
+  # nobody had decided to have.
+  #
+  # Spelling 1, preferred — attach your controller's own extension to the
+  # token rule, which is what `ExtensionRef` exists for:
+  #
+  #   route:
+  #     token:
+  #       filters:
+  #         - type: ExtensionRef
+  #           extensionRef:
+  #             group: traefik.io
+  #             kind: Middleware
+  #             name: vpay-token-ratelimit
+  #
+  # Spelling 2 — the limit is enforced somewhere this chart cannot see (a CDN,
+  # a WAF, a policy object attached to the Gateway listener rather than to the
+  # route). Then say so here, in one line, and it is rendered onto the
+  # HTTPRoute as the `vpay/rate-limited-by` annotation so the claim is
+  # readable in the cluster and greppable in CI:
+  #
+  #   rateLimitedBy: "Cloudflare rate-limiting rule vpay-token, 5 r/s per IP"
+  #
+  # This is deliberately free text and deliberately not a boolean. A boolean
+  # would be a box to tick; a sentence is a thing somebody has to be able to
+  # defend. The chart cannot verify either spelling — what it refuses is
+  # silence.
+  rateLimitedBy: ""
+
+  # The same two path rules as the Ingress path, and the reason there is ONE
+  # HTTPRoute here where there are TWO Ingress objects.
+  #
+  # ingress-nginx applies `limit-rps` per Ingress OBJECT, so expressing a
+  # tighter limit for the token endpoint than for the rest of `/v1` needed a
+  # second object (step-6 decision (4)). Gateway API attaches filters per
+  # RULE, so one object carries both. Precedence is not controller-specific
+  # either: the spec orders an `Exact` match ahead of a `PathPrefix` one, so
+  # `/v1/oauth/token` takes the token rule and everything else under `/v1`
+  # takes the api rule, by the specification rather than by a controller's
+  # habits.
+  #
+  # `filters` on each rule is passed through verbatim — a list of
+  # `HTTPRouteFilter`. That is the extension point for anything this chart
+  # does not model: `ExtensionRef` for an implementation's own policy,
+  # `RequestHeaderModifier`, `RequestRedirect`, `URLRewrite`.
+  api:
+    path: /v1
+    # `PathPrefix` or `Exact`. Note the spelling: Gateway API says
+    # `PathPrefix` where `networking.k8s.io/v1` Ingress says `Prefix`, which
+    # is why this is a separate key rather than a reuse of `ingress.api`.
+    pathType: PathPrefix
+    filters: []
+  token:
+    path: /v1/oauth/token
+    pathType: Exact
+    # Where the rate-limit `ExtensionRef` goes — spelling 1 above.
+    filters: []
 
 networkPolicy:
   # Off by default, deliberately.

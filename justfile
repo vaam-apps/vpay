@@ -1771,12 +1771,15 @@ chart := "deploy/helm/vpay"
 # adding this to it would turn "offline" into "failing". Run it by hand before
 # opening a PR that touches the chart; CI runs it on every PR regardless.
 #
-# What it proves: the chart lints, both value sets render, the nineteen named
-# guards are exactly the nineteen on disk and each fires on its own values
-# file with a non-zero exit, the default render templates no checkout page and
-# `ci/values-full.yaml`'s does, and every rendered object validates against the
-# upstream schemas. What it does not prove: anything at all about a cluster.
-# Nothing here has ever been applied to one.
+# What it proves: the chart lints, all three value sets render, the twenty-one
+# named guards are exactly the twenty-one on disk and each fires on its own
+# values file with a non-zero exit, the default render templates no checkout
+# page and `ci/values-full.yaml`'s does, the Ingress path carries its
+# `limit-rps` annotations and the Gateway API path says what rate-limits its
+# token rule, the HTTPRoute templates render NOTHING without the Gateway API
+# CRDs, and every rendered object validates against the upstream schemas. What
+# it does not prove: anything at all about a cluster. Nothing here has ever
+# been applied to one.
 helm-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1788,21 +1791,30 @@ helm-check:
     out="$(mktemp -d)"
     trap 'rm -rf "$out"' EXIT
 
-    echo "==> helm lint (defaults, then ci/values-full.yaml)"
+    echo "==> helm lint (defaults, then ci/values-full.yaml, then ci/values-route.yaml)"
     helm lint "$chart"
     helm lint "$chart" -f "$chart/ci/values-full.yaml"
+    helm lint "$chart" -f "$chart/ci/values-route.yaml"
 
     echo "==> helm template"
     helm template vpay "$chart" > "$out/default.yaml"
     helm template vpay "$chart" -f "$chart/ci/values-full.yaml" > "$out/full.yaml"
+    # The third render is the Gateway API one, and it needs `--api-versions`
+    # because `httproute.yaml` and `httproute-checkout.yaml` are guarded by
+    # `.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1"`. Under a
+    # plain `helm template` that predicate is false — there is no cluster to
+    # ask — so without the flag the two templates render nothing at all and
+    # everything below would pass over an empty file.
+    gwapi="gateway.networking.k8s.io/v1"
+    helm template vpay "$chart" -f "$chart/ci/values-route.yaml" --api-versions "$gwapi" > "$out/route.yaml"
 
     # Each file under ci/guards/ violates exactly one guard, and the file's
     # basename IS the guard's name. A guard that stops firing — or one whose
     # message stops naming itself — fails here, which is the only thing that
     # keeps these from rotting into decoration.
     #
-    # The expected set is written out rather than counted, because "18 files
-    # were found and 18 fired" is also what deleting a guard *and* its values
+    # The expected set is written out rather than counted, because "21 files
+    # were found and 21 fired" is also what deleting a guard *and* its values
     # file looks like. Adding a guard means adding its name here, its values
     # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
     # one commit.
@@ -1823,6 +1835,8 @@ helm-check:
         rails-egress-except
         rails-secret
         rate-limit-ordering
+        route-attachment
+        route-rate-limit
         signing-key-secret
         worker-concurrency-pool
         worker-replicas
@@ -1898,13 +1912,45 @@ helm-check:
     fi
     echo "    /v1 limit-rps=${rps[0]}, /v1/oauth/token limit-rps=${rps[1]} (tighter, as intended)"
 
+    # The same question on the Gateway API side, which cannot be the same
+    # check: there is no annotation to grep for, because Gateway API has no
+    # portable rate-limit primitive. What the chart insists on instead — the
+    # "route-rate-limit" guard — is that the token rule either carries an
+    # `ExtensionRef` filter (the controller's own rate-limit object) or the
+    # route carries a `vpay/rate-limited-by` annotation saying what else does.
+    # This asserts the rendered YAML actually shows one of the two, so a
+    # template that stopped emitting the filter or the annotation fails here
+    # rather than quietly shipping an unmetered token endpoint.
+    echo "==> httproute rate limit"
+    route_only="$(helm template vpay "$chart" -f "$chart/ci/values-route.yaml" --api-versions "$gwapi" --show-only templates/httproute.yaml)"
+    if printf '%s' "$route_only" | grep -q 'type: ExtensionRef'; then
+        echo "    /v1/oauth/token carries an ExtensionRef filter (the controller's own rate-limit object)"
+    elif printf '%s' "$route_only" | grep -q 'vpay/rate-limited-by:'; then
+        echo "    the route declares vpay/rate-limited-by (enforced outside the chart)"
+    else
+        echo "helm-check: FAIL — the rendered HTTPRoute neither carries an ExtensionRef filter on the token rule nor declares vpay/rate-limited-by; ADR-0009 assumes a rate limit that nothing here would apply" >&2
+        exit 1
+    fi
+
+    # The capability gate, checked rather than assumed. `httproute.yaml` and
+    # `httproute-checkout.yaml` must render NOTHING on a cluster without the
+    # Gateway API CRDs — a chart that emitted them regardless would fail at
+    # `helm install` on every ingress-nginx cluster that set `route.enabled`
+    # by mistake, which is a worse failure than rendering nothing.
+    echo "==> httproute renders nothing without the Gateway API CRDs"
+    if helm template vpay "$chart" -f "$chart/ci/values-route.yaml" | grep -q 'kind: HTTPRoute'; then
+        echo "helm-check: FAIL — an HTTPRoute rendered without --api-versions $gwapi, so the .Capabilities guard is not doing its job" >&2
+        exit 1
+    fi
+    echo "    no HTTPRoute without --api-versions $gwapi"
+
     echo "==> kubeconform (downloads schemas — needs network)"
     kubeconform -strict -summary \
         -schema-location default \
         -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{{{.Group}}/{{{{.ResourceKind}}_{{{{.ResourceAPIVersion}}.json' \
-        "$out/default.yaml" "$out/full.yaml"
+        "$out/default.yaml" "$out/full.yaml" "$out/route.yaml"
 
-    echo "helm-check: ok — lint, render, $guards guards, rate limit, kubeconform. No cluster was involved."
+    echo "helm-check: ok — lint, 3 renders, $guards guards, rate limit (both paths), kubeconform. No cluster was involved."
 
 # --------------------------------------------------------------- release ---
 

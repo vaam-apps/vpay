@@ -1,0 +1,96 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.route.enabled }}
+{{- if .Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1" }}
+{{- $fullName := include "vpay.fullname" . -}}
+{{- $hostnames := .Values.route.hostnames -}}
+{{- if empty $hostnames -}}
+{{- $hostnames = compact (list .Values.ingress.host) -}}
+{{- end -}}
+# ONE HTTPRoute, two rules — where the Ingress path needs two objects.
+#
+# ingress-nginx applies `limit-rps` per Ingress OBJECT, so the only way to
+# give `/v1/oauth/token` a tighter limit than the rest of `/v1` was a second
+# object (step-6 decision (4)). Gateway API attaches filters per RULE, so one
+# object expresses both, and the ordering the "rate-limit-ordering" guard
+# exists to protect on the Ingress side has no equivalent here: there are no
+# two numbers to invert.
+#
+# Precedence between the two rules is the SPECIFICATION's, not a controller's:
+# Gateway API orders an `Exact` path match ahead of a `PathPrefix` one, so a
+# request for `/v1/oauth/token` takes the token rule and everything else under
+# `/v1` takes the api rule. That is the same split the two Ingress objects
+# make, arrived at by a rule somebody wrote down rather than by ingress-nginx's
+# habits.
+#
+# The token rule is listed first regardless. It changes nothing — precedence
+# is by match specificity, not by position — and it puts the endpoint whose
+# rate limit this chart argues about at the top of the object a reader opens.
+#
+# WHAT IS NOT HERE, because Gateway API has no portable spelling for it:
+# the rate limit itself (see `route.rateLimitedBy` and the "route-rate-limit"
+# guard), the 64k request-body cap, the HTTP->HTTPS redirect, and TLS — a
+# Gateway terminates TLS on its listener's `certificateRefs`, so this object
+# names no Secret and no cert-manager issuer. `values.yaml`'s `route:` header
+# is the long form.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+    {{- with .Values.route.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or .Values.route.rateLimitedBy .Values.commonAnnotations .Values.route.annotations }}
+  annotations:
+    {{- if .Values.route.rateLimitedBy }}
+    # Spelling 2 of the "route-rate-limit" guard: what the operator says
+    # enforces the token endpoint's limit, somewhere this chart cannot see.
+    # Rendered so the claim is readable with `kubectl get httproute -o yaml`
+    # and greppable in CI, rather than living only in a values file.
+    vpay/rate-limited-by: {{ .Values.route.rateLimitedBy | quote }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.route.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml .Values.route.parentRefs | nindent 4 }}
+  hostnames:
+    {{- toYaml $hostnames | nindent 4 }}
+  rules:
+    # The expensive unauthenticated surface: an RSA verification and a write
+    # to `oauth_client_assertion_jtis` per request. `Exact`, so it does not
+    # also swallow `/v1/oauth/...` discovery.
+    - matches:
+        - path:
+            type: {{ .Values.route.token.pathType }}
+            value: {{ .Values.route.token.path | quote }}
+      {{- with .Values.route.token.filters }}
+      filters:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      backendRefs:
+        # A `backendRef` takes a port NUMBER, not the port name an Ingress
+        # backend takes — there is no `port: {name: http}` spelling here. It
+        # is `service.port` rather than `server.port` for the same reason the
+        # Ingress uses the Service's `http` port: this addresses the Service.
+        - name: {{ $fullName }}
+          port: {{ .Values.service.port }}
+    - matches:
+        - path:
+            type: {{ .Values.route.api.pathType }}
+            value: {{ .Values.route.api.path | quote }}
+      {{- with .Values.route.api.filters }}
+      filters:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      backendRefs:
+        - name: {{ $fullName }}
+          port: {{ .Values.service.port }}
+{{- end }}
+{{- end }}
