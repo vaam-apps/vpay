@@ -461,6 +461,29 @@ secret the enrolment screen displayed, the forced password change, then the
 code exchange — lists this merchant's payments, opens one, signs out and is
 refused afterwards.
 
+**Amended 2026-09-11 (exp53): three of this app's components were primitives,
+and are `@vpay/ui`'s now.** `EmptyState`, `Pager` and `DetailTimeline` had
+nothing dashboard-specific in them — the checkout could not have used one
+without copying it — so they are `EmptyState`, `Pagination` and `Timeline` in
+the shared package. What is left in the app is `PaymentsPager`: the two
+`next/link` elements `Pagination` renders, because the router is the app's.
+
+Three more things this app wrote by hand are primitives too: eighteen bare
+`<code>` tags are `Code`, five unstyled `next/link` anchors are `Link`, and
+the eleven bare `<section>` elements are `Section` — which matters beyond
+tidiness, because a `<section>` with no accessible name is not a landmark at
+all, and a heading merely sitting inside one does not give it a name. All
+eleven were `<div>`s with extra steps. `payment-detail.tsx` fell from 264
+lines to 207 with nothing removed from the screen, `DataList`/`DataListRow`
+having taken over the twenty rows of `<th scope="row">` markup it repeated
+twice.
+
+The suite is **178** cases in 19 files, down four from 182, and every one is
+accounted for: `empty-state.test.tsx` (1) and `detail-timeline.test.tsx` (2)
+are deleted because both components moved, and have 3 and 2 cases
+respectively in `@vpay/ui`; the a11y suite dropped its two cases for the same
+pair and gained one for the pager composition, which it did not have before.
+
 Four decisive mutations, each measured: drop `httpOnly` from the session
 cookie and `cookies.test.ts` fails; exchange a freshly generated PKCE verifier
 instead of the one the challenge was derived from and `oauth.test.ts` fails;

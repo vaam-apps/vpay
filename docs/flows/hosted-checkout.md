@@ -919,3 +919,19 @@ Enter on the memory opt-in's checkbox**. jsdom does not simulate a native
 `<button>`'s keyboard default action, and no Cypress spec touches this
 control. The label-click path IS measured (`@vpay/ui`'s `CheckboxLabel`
 case clicks the sentence and expects the handler).
+
+**Updated 2026-09-11 (exp53): the page's two live regions are one component.**
+`checkout-view.tsx` and `return-view.tsx` each carried the byte-identical
+`<div aria-live="polite" aria-atomic="true" data-testid="live-region">` — the
+element the whole screen-change announcement depends on, written twice. It is
+`@vpay/ui`'s `LiveRegion` now, and `aria-atomic` is **not** a prop on it: a
+partial announcement of a payment outcome ("failed" without "your payment") is
+worse than none, so no third screen can get it subtly wrong.
+
+Nothing else in this app changed. Its suite is the same **507** cases in 24
+files, and the one that defends the tone of a failed outcome was used as the
+decisive mutation for exp53's variant maps: setting `Alert`'s `error` variant
+to the empty string in `alert.variants.ts` makes
+`checkout-view.test.tsx > does NOT render a failed payment in the neutral tone
+a cancelled one beats` fail with `expected 'mt-4 alert' to contain
+'alert-error'`.
