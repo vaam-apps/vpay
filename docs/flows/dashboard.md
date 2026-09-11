@@ -711,6 +711,43 @@ found on top of them, and what it did about it:
 here is a synthetic `Request` against a stubbed `fetch`. Only a Cypress spec
 against `compose.e2e.yml` can answer it, and there is none.
 
+**The `OPTIONS` oracle is closed, 2026-09-11 (exp56).** The review measured
+that Next auto-implements `OPTIONS` as a `204` carrying
+`Allow: GET, HEAD, OPTIONS`, answered from a closure built at route-compile
+time — so **before** the origin check and before the cookie was read. It was
+the one answer this surface could give without passing its own gate, and it
+was recorded rather than fixed. `frontends/apps/dashboard/middleware.ts` now
+matches `/api/dash/:path*` and answers `405` with **no `Allow` header** to
+every method that is not `GET` or `HEAD`. `HEAD` is deliberately let through:
+Next binds it to the `GET` handler itself, so it takes the identical gate, and
+`/dash/v1` serves it too.
+
+A middleware rather than an `OPTIONS` export in each `route.ts` because
+`:path*` covers the third route nobody has written yet, which an export would
+have to be remembered for. The decisive case is
+`answers OPTIONS 405 with no Allow header, before the route module can` —
+make `middleware` return `NextResponse.next()` unconditionally and it goes red
+on the status and on the header, along with two more of the seven in
+`middleware.test.ts`. The case beside it imports Next's **own**
+`autoImplementMethods` and runs the real route module through it, so the `204`
+and the `Allow` string are measured against the installed Next rather than
+quoted from the review. That mattered: **the review named Next 16.3.4, which
+is `examples/shop`'s pin and not this app's.** The dashboard resolves 15.5.25,
+whose `AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same, so the
+finding held against a version it was not measured on.
+
+**What it closed and what it did not, measured against a real `next start`.**
+The middleware runs on the matched subtree before routing, so `OPTIONS
+/api/dash/nope` — a path no route file serves — answered `404` before and
+answers the same `405` as the real routes now. For `OPTIONS`, route existence
+is genuinely unanswerable. **For `GET` it is not:** an unauthenticated `GET`
+to a route that exists reaches `bff.ts`'s gate where a path nothing serves
+gets Next's `404`. `OPTIONS` was the loudest discriminator and the only one
+reachable without passing a check, never the only one — making the `GET` pair
+uniform would mean answering `404` to an honest signed-out client, and the
+route names are in this repository anyway. `answers alike for a path in the
+subtree that no route file serves` pins the half that is closed.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this

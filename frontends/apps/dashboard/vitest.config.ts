@@ -15,7 +15,13 @@ export default defineConfig({
     // nothing here and ran nowhere — a test file that is silently not a test,
     // which is the class of thing this repository is careful about
     // everywhere else (exp28 review).
-    include: ["{src,app}/**/*.test.{ts,tsx}"],
+    //
+    // And `middleware.test.ts`, which is at the project root because the file
+    // it tests has to be: Next reads a middleware only from there, and its
+    // `config.matcher` must be a literal in that file (`getPageStaticInfo`
+    // extracts it with SWC). Without this entry it would have been the exp28
+    // review's finding again, one directory up.
+    include: ["{src,app}/**/*.test.{ts,tsx}", "middleware.test.ts"],
     setupFiles: ["./vitest.setup.ts"],
   },
 });

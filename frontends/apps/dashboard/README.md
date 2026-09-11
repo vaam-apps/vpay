@@ -102,22 +102,61 @@ Only `GET` is exported and **no write can reach the file** — the same shape
 router matches.
 
 This line went on ~~"so Next answers `405` to everything else"~~ until
-**2026-09-11**, when the exp55 security review read Next 16.3.4's
+**2026-09-11**, when the exp55 security review read
 `app-route/helpers/auto-implement-methods` instead of assuming it. Next
-auto-implements two methods, so the reachable set is three, not one:
+auto-implements two methods:
 
 - **`HEAD` is bound to the `GET` handler itself** (`methods.HEAD =
 handlers.GET`), body discarded — so a `HEAD` costs the same session read,
   the same possible token mint and the same upstream call, and answers the
   status and the headers. Consistent with `/dash/v1`, which admits `GET` and
-  `HEAD`.
-- **`OPTIONS` answers `204` with `Allow: GET, HEAD, OPTIONS` before the
-  handler runs at all**, so before the origin check and before the cookie is
-  read. It carries no data, but it tells an unauthenticated caller that the
-  route exists where a `404` would not. Suppressing it needs a middleware and
-  this app has none, so it is recorded rather than fixed.
+  `HEAD`. Left as it is.
+- **`OPTIONS` answered `204` with `Allow: GET, HEAD, OPTIONS` before the
+  handler ran at all**, so before the origin check and before the cookie was
+  read — the one answer this surface could give without passing its own gate.
+  ~~"Suppressing it needs a middleware and this app has none, so it is
+  recorded rather than fixed."~~ **Fixed the same day (exp56):**
+  [`middleware.ts`](middleware.ts) matches `/api/dash/:path*` and answers
+  `405` with **no `Allow` header** to every method that is not `GET` or
+  `HEAD`, before the route module is reached.
 
-Everything that is not one of those three is Next's `405`.
+So the reachable method set is two, and the review's third — `OPTIONS` — is a
+refusal now. `middleware.test.ts` holds the pair of cases that say so: one
+runs the real route module through **Next's own `autoImplementMethods`** and
+measures the `204` and the `Allow` header it would still produce, and the next
+asserts what the caller actually gets. The decisive one is
+`answers OPTIONS 405 with no Allow header, before the route module can` —
+make `middleware` return `NextResponse.next()` unconditionally and it goes red
+on both the status and the header.
+
+**What it closed and what it did not**, measured against a real `next start`
+rather than reasoned about. The middleware runs on the matched subtree
+**before routing**, so a path under `/api/dash/` that no route file serves
+answers the same as the two that do:
+
+| probe                               | before          | after              |
+| ----------------------------------- | --------------- | ------------------ |
+| `OPTIONS /api/dash/payment_intents` | `204` + `Allow` | `405`              |
+| `OPTIONS /api/dash/nope`            | `404`           | `405`              |
+| `POST /api/dash/payment_intents`    | `405` (Next's)  | `405` (this one's) |
+| `GET /api/dash/payment_intents`     | the gate        | the gate           |
+| `GET /api/dash/nope`                | `404`           | `404`              |
+| `OPTIONS /payments`                 | `400`           | `400`, not matched |
+
+So for `OPTIONS` route existence really is unanswerable now. **For `GET` it is
+not**, and this should not be read as saying otherwise: an unauthenticated
+`GET` to a route that exists reaches `bff.ts`'s gate where a path nothing
+serves gets Next's `404`. `OPTIONS` was the loudest discriminator and the only
+one reachable without passing a check, never the only one — and making the
+`GET` pair uniform would mean answering `404` to an honest signed-out client.
+`answers alike for a path in the subtree that no route file serves` is the
+case that pins the first half.
+
+The review recorded all of this against **Next 16.3.4**, which is
+`examples/shop`'s pin; this app resolves **15.5.25**, whose
+`AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same. The finding held;
+the version named in it was not this app's. The test measures the installed
+one rather than repeating either number.
 
 Two more things the same review corrected, both of them claims rather than
 code. The third bullet above is pinned by the **detail** read's case and not
@@ -135,6 +174,7 @@ whatever eventually does.
 | ----------------------- | ----------------------------------------------------------------------------------------- |
 | `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone          |
 | `app/api/dash/`         | The BFF's two route handlers. Four lines each; `src/server/bff.ts` is the substance       |
+| `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root         |
 | `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`        |
 | `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself        |
 | `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework            |
@@ -239,7 +279,7 @@ point: there is no field there to be null.
 ## Testing this app
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 21 files, 214 tests, 0 skipped
+pnpm --filter @vpay/dashboard test        # 22 files, 243 tests, 0 skipped
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
 pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
@@ -271,7 +311,8 @@ reverted:
 | `pageCursors` reads `has_more` the same way in both paging directions        | `src/dash/provider.test.ts`, and `src/payments-query.test.ts` twice             |
 | the BFF reads the session cookie **after** the upstream session read         | `src/server/bff.test.ts`, twice — vpay is contacted for a caller with no cookie |
 | `apiIsSameOrigin` drops its `originIsAllowed` call                           | `src/server/bff.test.ts`, twice                                                 |
-| the BFF serves the parsed upstream document instead of the named fields      | `src/server/bff.test.ts`, twice                                                 |
+| the BFF serves the parsed upstream document instead of the named fields      | `src/server/bff.test.ts` — the **detail** case only; see below                  |
+| `middleware` returns `NextResponse.next()` unconditionally                   | `middleware.test.ts`, three times; `OPTIONS` gets Next's `204` and `Allow` back |
 
 `oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
 assertion is that the exchange presents the verifier whose `S256` **is** the
