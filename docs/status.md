@@ -510,6 +510,85 @@ network, a database or a binary this workspace does not build.
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
+Last verified: 2026-09-11, on branch `claude/exp51-demo-tenant` at the head of
+the **sabotage review** of the demo-tenancy fix (base `6b1b7d8`; the
+implementation's five commits are kept and the review adds one, and
+[plans/exp51-demo-tenant-notes/opus-review.md](plans/exp51-demo-tenant-notes/opus-review.md)
+says what it found).
+
+**This entry leads with `just test-e2e`, and that is the point of it.** That
+recipe is not part of `just ci` and never has been. The branch's `just ci` was
+clean, its browser specs were not, and its notes recorded neither — §6 of
+them, "Gates, recipe by recipe … filled in below as each was run", is empty,
+and the run that would have filled it had already failed.
+
+**`just test-e2e` exit 0 on the review head**, exit code read from a file:
+**22 Cypress tests, 22 passing, 0 failing, 0 skipped** across four specs and
+two `cypress run`s — `checkout.cy.ts` 1, `dashboard.cy.ts` 11,
+`shop-hosted.cy.ts` 4 in the default run and `shop-embedded.cy.ts` 6 in the
+framed one — against a compose stack of the review's own (project `exp51j`:
+server :19900, dashboard :14900, shop :14902, checkout :14901, orange stub
+:19902), real Postgres, real `vpay-worker`, WireMock rails.
+
+**On the branch as delivered the same command was 20 of 22** —
+`dashboard.cy.ts` 9/11, measured locally and identical to what the
+implementation's own two runs had already seen — and CI's `e2e (compose)` job
+was worse still: `checkout.cy.ts` 0/1 and `dashboard.cy.ts` 8/11 on run
+34555068739, because the workflow carried its own copy of the recipe's
+environment and that copy still named `demo-merchant`. Two independent causes,
+plus a third behind the override the runbook tells a reader to use. All three
+are measured in the review notes.
+
+**The override still fails, and now fails in the right place.**
+`just demo_dashboard_merchant=demo-merchant-tenant … test-e2e` is the
+arrangement that variable exists to prevent. On the review head the staff
+member signs in (four legs green), the shop takes a real payment, and the
+three cases that read a payment out of `/dash/v1` fail. Before the review it
+failed at `/login` instead — `test-e2e`'s `demo-staff` sub-invocation did not
+forward the variable, so the dashboard and the only staff member named
+different tenants — which looks identical from outside and proves nothing.
+
+**`just ci` exit 0 on the review head**, exit code read from a file:
+`fmt-check`; `clippy` `-D warnings`; `verify`, all twelve gates
+(`verify-links` **1067 links in 212 tracked files**, `verify-status` 1 declared
+unimplemented item, `verify-errors` 19 error types / 16 `#[from]` variants,
+`verify-sdk-parity` 455 proving tests / 33 dated gaps, `check-schema` at
+cratestack 0.11.1, `verify-serde` 87 types / 16 exemptions,
+`verify-repositories` 4 implementations, `verify-toolchain` 1.98.0,
+`verify-migrations` 41 files); `test-rust` **1696 tests run, 1696 passed, 0
+skipped** across **46** binaries against a real Postgres and real WireMock
+rails (1239 s); `test-doc` **111 passed, 1 ignored** (`sdks/rust`'s README
+block, pre-existing); `verify-ignored` **0 ignored (expected 0), 46 binaries
+(expected 46), 1696 total (minimum 1080)**; `lint-web`; `test-web` (0 skipped;
+`@vpay/checkout` 507 in 24 files, `@vpay/dashboard` 182 in 21, `examples/shop`
+102 in 12, `@vaam-apps/vpay-sdk` 208 in 9, `@vaam-apps/vpay-stripe-js` 146 in
+9); `deny`. **No Rust, schema or migration changed on this branch**, so
+1696 is the base's number and not this change's.
+
+**Two earlier `just ci` runs on this same head exited 100, and both were this
+host and not this branch.** Each died in `test-rust` on
+`failed to create a container` from `testcontainers` — the first two because
+`DOCKER_HOST` was unset in the runner's environment and this machine's Docker
+is rootless (`unix:///run/user/1000/docker.sock`; the socket at
+`/var/run/docker.sock` belongs to root and refuses the connection), the third
+on one container-start under the load of ~1300 container-backed tests
+alongside another agent's build. The green run sets `DOCKER_HOST` and
+`NEXTEST_TEST_THREADS=4`. Neither changes what is tested, and both are
+recorded here rather than dropped: a green obtained by reruns is worth exactly
+what its reruns are explained by.
+
+**Not run for this entry:** `just docs-check-citations` (network and a token),
+`just helm-check` (network; no chart change), `just demo-walk` (untouched by
+this branch; `docs/runbooks/demo.md` §6 states where its payments land and
+that this dashboard does not show them).
+
+Last verified: 2026-09-10, on branch `claude/exp45-worker-pool-bound` at the
+head of the **sabotage review** of issue #63's worker-concurrency bound (base
+`2c5ef8b`; the haiku draft's five commits are kept and the review adds six,
+and
+[plans/exp45-worker-pool-bound-notes/opus-review.md](plans/exp45-worker-pool-bound-notes/opus-review.md)
+says what each one is for).
+
 Last verified: 2026-09-11, on branch `claude/exp46-customer-address` at the
 head of the **sabotage review** of issues #67/#68/#96 item 2 — the Customer
 address and the erasure (rebased onto `5e3a004`, which is #108's `0040` and

@@ -622,43 +622,36 @@ jobs:
       # `docker compose` lines above brought up.
       - name: create the dashboard's staff member (dashboard.cy.ts signs in as them)
         run: just demo-staff
-      # VPAY_BASE_URL/VPAY_MERCHANT_CLIENT_ID/VPAY_MERCHANT_PRIVATE_KEY_PATH
-      # are read by `checkout.cy.ts`'s `cy.task('mintCheckoutPaymentIntent')`
-      # (`frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`) to mint a real
-      # PaymentIntent through `@vaam-apps/vpay-sdk` before the spec visits the page —
-      # the same three variables the "stripe-node conformance" step below
-      # sets for the same demo-merchant keypair. 8080, not 18080: this job
-      # never sets VPAY_DEMO_PORT, so compose.demo.yml's default stands (see
-      # that file's own comment on why 8080 here is not a coincidence).
-      # TWO Cypress runs, not one (Step 9, lane 6). `pnpm run e2e` chains
-      # `e2e:default` and `e2e:framed`; the second sets `VPAY_E2E_FRAMED=1`,
-      # which is what `cypress.config.ts` reads to select `shop-embedded.cy.ts`
-      # and turn off `chromeWebSecurity` and the frame-busting rewrites — none
-      # of which can be set per test, and each of which the other specs need
-      # left alone. That file's comments carry the measurements.
+      # `just e2e-specs`, NOT a second copy of the environment it sets.
       #
-      # The four URL variables are the compose stack's published ports as a
-      # BROWSER reaches them, with `VPAY_DEMO_*` unset so `compose.demo.yml`'s
-      # defaults stand. They are the config file's own defaults too; they are
-      # spelled here so a port change in one place fails loudly rather than
-      # in a spec's 60-second timeout.
-      - run: pnpm --filter @vpay/e2e e2e
-        env:
-          VPAY_BASE_URL: http://localhost:8080
-          VPAY_SHOP_URL: http://localhost:3001
-          VPAY_CHECKOUT_URL: http://localhost:3080
-          VPAY_ORANGE_STUB_URL: http://localhost:8082
-          VPAY_MERCHANT_CLIENT_ID: demo-merchant
-          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
-          # The staff member the step above created. The address is public;
-          # the PASSWORD is a path and never a value — `dashboardTasks.ts`
-          # reads the file in Node, so the credential is not in `Cypress.env`,
-          # not in a `cypress run` argument list and not in this job's log.
-          # Both are the `demo_staff_email` / `demo_staff_password_file`
-          # defaults from the justfile, spelled here so a change to either
-          # fails loudly rather than inside a 60-second Cypress timeout.
-          VPAY_STAFF_EMAIL: ada@example.test
-          VPAY_STAFF_PASSWORD_FILE: ${{ github.workspace }}/.e2e/vpay-demo/staff-password.txt
+      # This step used to spell out VPAY_BASE_URL, the four browser URLs, the
+      # merchant credential `cy.task('mintCheckoutPaymentIntent')` mints with
+      # and the staff member's address and password path — all of it also
+      # spelled in the `test-e2e` recipe, "so a change in one place fails
+      # loudly". It did not fail loudly. On 2026-09-11 exp51 moved the
+      # browser fixture from `demo-merchant` to `shop-merchant` in the recipe
+      # (the demo dashboard reads exactly one tenant and it is the shop's);
+      # this copy kept saying `demo-merchant`, and run 34555068739 failed
+      # `checkout.cy.ts` 0/1 and `dashboard.cy.ts` 8/11 on a branch whose
+      # `just test-e2e` was green. The recipe is the single source now, the
+      # same arrangement `just demo-staff` above, `just lint-web`,
+      # `just check-schema` and `just helm-check` already use.
+      #
+      # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
+      # defaults stand — 8080, 3000, 3001, 3080, 8082 and
+      # `.e2e/vpay-demo/staff-password.txt`, which are exactly the ports the
+      # `docker compose` lines above published and the file `just demo-staff`
+      # wrote.
+      #
+      # TWO Cypress runs, not one (Step 9, lane 6). The recipe runs
+      # `pnpm --filter @vpay/e2e e2e`, which chains `e2e:default` and
+      # `e2e:framed`; the second sets `VPAY_E2E_FRAMED=1`, which is what
+      # `cypress.config.ts` reads to select `shop-embedded.cy.ts` and turn off
+      # `chromeWebSecurity` and the frame-busting rewrites — none of which can
+      # be set per test, and each of which the other specs need left alone.
+      # That file's comments carry the measurements.
+      - name: the browser specs (the recipe, not a copy of its environment)
+        run: just e2e-specs
       # The official `stripe` package, driven against this same running stack
       # through `createStripeAuthenticator` (docs/flows/stripe-sdk-compat.md).
       # Out of process on purpose: half of what it proves is header behaviour

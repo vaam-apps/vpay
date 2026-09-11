@@ -16,7 +16,7 @@ browser hold) and renders `pk` + `client_secret` into the page; the
 ## Run it against the demo stack (7 steps)
 
 1. `just demo` — boots the compose stack (server, worker, Postgres, both rail
-   stubs) and registers the `demo-merchant` keypair `mint.mjs` needs. Leave it
+   stubs) and registers the `shop-merchant` keypair `mint.mjs` needs. Leave it
    running; `just demo` already runs `examples/merchant-demo`'s own
    walkthrough (four steps, the last of which is six payments on both rails)
    and prints the URLs it used — this example is separate from that.
@@ -25,8 +25,13 @@ browser hold) and renders `pk` + `client_secret` into the page; the
 3. `pnpm install` (once, if you have not already) so this directory's own
    `@vaam-apps/vpay-sdk` dependency is linked.
 4. `node examples/checkout-browser/mint.mjs` — mints a 50.00 EUR `mtn_momo`
-   PaymentIntent through `demo-merchant`'s credential and prints a ready-to-open
+   PaymentIntent through `shop-merchant`'s credential and prints a ready-to-open
    URL, `http://localhost:4180/?pk=...&client_secret=...&api=http://localhost:8080`.
+   `shop-merchant` and not `demo-merchant` since 2026-09-11: that is the tenant
+   the demo dashboard is bound to (`demo_dashboard_merchant`), so a payment
+   minted here is one you can then go and find on the dashboard. Set
+   `VPAY_MERCHANT_CLIENT_ID`, `VPAY_MERCHANT_PRIVATE_KEY_PATH` and
+   `CHECKOUT_PUBLISHABLE_KEY` together to mint as the other merchant.
 5. `node examples/checkout-browser/serve.mjs` (a second terminal) — serves
    this directory on `:4180`.
 6. Open the URL step 4 printed. It renders the intent's `requires_payment_method`

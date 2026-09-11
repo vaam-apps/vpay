@@ -883,8 +883,63 @@ edited back to EUR, which is the one state the check exists to catch.
 ~~The dashboard is out of scope, and why~~ — **rewritten 2026-09-07 (exp28).**
 This section said "there is no data source to show", and that was true right up
 to the moment `/dash/v1` and the staff sign-in landed. The dashboard is a real
-screen now, it shows the payments the walkthrough just created, and this
-section says how to get into it.
+screen now, it shows real payments, and this section says how to get into it.
+
+### Which payments, and why not the walkthrough's
+
+**This dashboard shows the SHOP's payments.** It does not show
+`just demo-walk`'s, and that is a choice rather than a gap.
+
+A `/dash/v1` request reads exactly one tenant's rows — the one
+`dashboard_client.merchant_id` names, checked at boot and filtered on in every
+query ([dashboard.md](../flows/dashboard.md)). This stack registers **two**
+merchant clients, on two tenants, and D12 gave them separate credentials on
+purpose so neither walkthrough can break the other:
+
+| client          | tenant                 | who pays as it                         |
+| --------------- | ---------------------- | -------------------------------------- |
+| `shop-merchant` | `shop-merchant-tenant` | `examples/shop`, and the browser demos |
+| `demo-merchant` | `demo-merchant-tenant` | `just demo-walk`                       |
+
+They cannot be merged into one tenant: `ConfigError::DuplicateMerchantId`
+refuses a config where two `merchant_clients` share a `merchant_id`, because
+two credentials on one tenant could read each other's objects. So the
+dashboard shows one of the two, and `demo_dashboard_merchant` is which —
+defaulting to the shop's, because the shop is the surface a person clicks.
+
+**Until 2026-09-11 it defaulted the other way, and the consequence was
+reported rather than predicted:** a payment made by hand through the shop was
+absent from the list, and its id answered `404` on the detail page. Nothing
+was broken — the dashboard was showing its tenant, correctly, and its tenant
+was the one nobody had clicked anything in. `dashboard.cy.ts` now buys a tote,
+pays for it, and asserts the payment is there, so this cannot go back.
+
+To look at the walkthrough's payments instead, move the binding — and move it
+on **both** commands, because the staff member has to exist in the tenant the
+dashboard is bound to or `/authorize` refuses to mint a code for it:
+
+```bash
+just demo_dashboard_merchant=demo-merchant-tenant demo-up
+just demo_dashboard_merchant=demo-merchant-tenant demo-staff
+```
+
+`just gen-demo-keys` regenerates an overlay whose binding no longer matches,
+the same way it does for a moved `demo_dashboard_port`, so nothing has to be
+cleaned up by hand. What the override does **not** do is keep `just test-e2e`
+green: the spec above asserts the shop's payment is visible, and under the
+override it is not. That failure is the guard working.
+
+**Both commands, and that is not belt-and-braces.** The staff member has to be
+created in the tenant the dashboard is bound to or `/authorize` refuses them —
+the server says so in as many words, `a staff member signed in against a
+deployment whose dashboard is bound to another merchant; refusing to mint a
+code for a tenant they may not read` — and `demo-staff` on its own resolves
+the binding to its default. `just test-e2e` had the same gap internally until
+2026-09-11: it forwards this variable to its own `demo-staff` call now, so
+that under the override the dashboard spec fails on the payment it cannot
+find rather than on a sign-in it cannot complete. Measured both ways;
+[../plans/exp51-demo-tenant-notes/opus-review.md](../plans/exp51-demo-tenant-notes/opus-review.md)
+§3 has the transcript.
 
 ### Create the staff member
 
@@ -903,7 +958,7 @@ to `.e2e/<demo_project>/staff-password.txt`, mode 0600 and git-ignored.
 
 ```console
 $ just demo-staff
-demo-staff: created ada@example.test for demo-merchant-tenant; the one-time password is in .e2e/vpay-demo/staff-password.txt
+demo-staff: created ada@example.test for shop-merchant-tenant; the one-time password is in .e2e/vpay-demo/staff-password.txt
 $ cat .e2e/vpay-demo/staff-password.txt
 ```
 
@@ -948,9 +1003,12 @@ possible at all.
    route until it is replaced, `/oauth/authorize` included, so there is no
    `/dash/v1` token at all until this is done. Twelve characters minimum;
    length is the only rule.
-5. You land on **/payments**, listing the intents `just demo-walk` created for
-   `demo-merchant-tenant`. Click an id for the charge, the refunds, the last
-   error and the event timeline.
+5. You land on **/payments**, listing the intents made for
+   `shop-merchant-tenant` — everything bought through the shop, and anything
+   `examples/checkout-browser` minted, which defaults to the same merchant.
+   Click an id for the charge, the refunds, the last error and the event
+   timeline. `just demo-walk`'s payments are **not** here; see "Which
+   payments, and why not the walkthrough's" above.
 
 **"Sign out" is a real revocation**, not a cookie clear: it deletes the
 `staff_sessions` row, which is the only place the dashboard's server can read

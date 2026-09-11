@@ -11,6 +11,8 @@ import {
 } from "./cypress/tasks/frameFixtureServer.js";
 import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
 import {
+  carriedForward,
+  carryForward,
   secondsLeftInStep,
   staffPassword,
   staffTokenExpiry,
@@ -143,6 +145,13 @@ export default defineConfig({
         // a hash: `access_token_expires_at` is what separates a token
         // replaced BEFORE it expired from one replaced after a read failed.
         staffTokenExpiry,
+        // The fifth and sixth, which read nothing at all: they are where one
+        // test in `dashboard.cy.ts` leaves a value for a later one, because
+        // `Cypress.env` does not survive that spec moving its primary origin
+        // to the shop's port and back. `dashboardTasks.ts` carries the
+        // measurement.
+        carryForward,
+        carriedForward,
         dump(payload: { what: string; value: string }) {
           console.log("PROBE " + payload.what + ": " + payload.value);
           return null;

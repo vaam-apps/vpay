@@ -61,6 +61,44 @@ export const PRODUCT = {
   coffee: "mbanga-coffee-1kg",
 } as const;
 
+/**
+ * Adds one tote to the cart and submits the checkout form, leaving the browser
+ * on vpay's HOSTED page with a live PaymentIntent behind it.
+ *
+ * Here rather than in `shop-hosted.cy.ts` since 2026-09-11 (exp51), because
+ * `dashboard.cy.ts` drives the same three screens: what it asserts is that a
+ * payment a PERSON made through the shop is the one the demo staff member
+ * then sees, so it has to arrive at that payment the way a person does and
+ * not by minting one with a merchant credential.
+ *
+ * Top level, never inside `cy.origin()`: this is the shop's own origin, which
+ * is where `cy.visit` puts the browser.
+ */
+export function buyOnVpaysPage(): void {
+  cy.visit(shopUrl());
+  cy.get(`[data-testid="add-${PRODUCT.tote}"]`).click();
+
+  cy.visit(`${shopUrl()}/cart`);
+  cy.get('[data-testid="cart-table"]').should("be.visible");
+
+  cy.get('[data-testid="to-checkout"]').click();
+  // Still typed, though the field became OPTIONAL on 2026-09-06 (exp22): a
+  // payer who gives one is the case worth driving here, and `checkout.cy.ts`
+  // is not the place to cover the empty one — `orders.test.ts` does, at the
+  // level where the stored value can actually be asserted.
+  cy.get('[data-testid="email"]').type("payer@example.test");
+  // The surface is chosen explicitly rather than relied on. `hosted` is the
+  // default (`SHOP_CHECKOUT_MODE`, unset in the demo stack) and this radio
+  // starts selected; checking it anyway means this helper keeps driving the
+  // redirect the day that default changes, instead of quietly testing
+  // whatever the deployment happens to prefer.
+  cy.get('[data-testid="mode-hosted"]').check();
+  // The shop's server now creates the PaymentIntent and the hosted Checkout
+  // Session through `@vaam-apps/vpay-sdk` and answers with `session.url`; the
+  // browser performs a top-level navigation to vpay's origin.
+  cy.get('[data-testid="pay"]').click();
+}
+
 /** The order id out of `/orders/{id}/…`, whichever shop page we landed on. */
 export function orderIdFromUrl(): Cypress.Chainable<string> {
   return cy.url().then((url) => {

@@ -26,16 +26,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 
 const baseUrl = process.env.VPAY_BASE_URL ?? "http://localhost:8080";
-const clientId = process.env.VPAY_MERCHANT_CLIENT_ID ?? "demo-merchant";
+// `shop-merchant` since 2026-09-11 (exp51), and the twin of
+// `frontends/tests/e2e/cypress/tasks/checkoutTasks.ts`: the demo dashboard
+// reads exactly one tenant (`demo_dashboard_merchant`, the shop's), so an
+// intent minted as `demo-merchant` is one the dashboard cannot show and whose
+// by-id read is the uniform cross-tenant 404. Override the three variables
+// below to mint as the other merchant.
+const clientId = process.env.VPAY_MERCHANT_CLIENT_ID ?? "shop-merchant";
 const privateKeyPath =
   process.env.VPAY_MERCHANT_PRIVATE_KEY_PATH ??
-  join(repoRoot, ".e2e", "demo-merchant", "oauth-signing-key.pem");
+  join(repoRoot, ".e2e", "shop-merchant", "oauth-signing-key.pem");
 // Fixed, not read off the config file: `just gen-demo-keys` writes this
 // exact literal into `.e2e/application-demo.yml` (see that recipe's
 // comment on why it is fixed rather than generated), and this script exists
 // for the same demo stack that overlay registers.
 const publishableKey =
-  process.env.CHECKOUT_PUBLISHABLE_KEY ?? "pk_test_demomerchantsandbox01";
+  process.env.CHECKOUT_PUBLISHABLE_KEY ?? "pk_test_shopmerchantsandbox1";
 const checkoutPort = process.env.CHECKOUT_BROWSER_PORT ?? "4180";
 
 let privateKeyPem;

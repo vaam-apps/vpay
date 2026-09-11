@@ -1,7 +1,7 @@
 /**
  * Node-side helpers for `dashboard.cy.ts`: the staff member's one-time
- * password, and the TOTP codes the spec has to produce to get past the second
- * factor.
+ * password, the TOTP codes the spec has to produce to get past the second
+ * factor, and the handful of values one of its tests leaves for a later one.
  *
  * Both run outside the browser, and both have to.
  *
@@ -30,6 +30,61 @@ import { readFileSync } from "node:fs";
 /** RFC 6238's defaults, which are also `vpay_api::staff_auth::totp`'s. */
 const DIGITS = 6;
 const STEP_SECONDS = 30;
+
+/**
+ * What one test in a spec leaves for a later one — held in **Node**, and
+ * that is the whole point of it.
+ *
+ * `Cypress.env(key, value)` used to carry these two values, and it stopped
+ * working the day `dashboard.cy.ts` grew a test that buys something in the
+ * shop. Cypress treats a differing PORT as a differing origin
+ * (`getSuperDomainOrigin` = protocol + superdomain + port); a test's primary
+ * origin is fixed by its first `cy.visit`; and the `Cypress` object a spec
+ * talks to belongs to that origin's spec bridge. So when the shop test moves
+ * the primary origin off the dashboard's port, the runtime `env` of the
+ * dashboard's bridge goes with it — the TOTP secret stored during the
+ * sign-in was `undefined` by the time the last test re-signed in, and the
+ * payment intent id the shop test stored was `undefined` in the very next
+ * test.
+ *
+ * **Measured, not reasoned about:** CI run 34555068739 and a local
+ * `just test-e2e` on 2026-09-11 failed exactly those two cases, while
+ * `payment_intents` in the running Postgres held the shop's settled payment
+ * in the tenant the dashboard is bound to the whole time. A fix that only
+ * pointed the dashboard at the right tenant would have left both of them
+ * failing.
+ *
+ * A `Map` here survives that, because `cypress run` is one Node process for
+ * the whole run and there are no origins in it. This is per-run scratch for
+ * a spec that is deliberately a sequence (`testIsolation: false`), not a
+ * fixture: nothing seeds it, and nothing reads it once the run is over.
+ */
+const carried = new Map<string, string>();
+
+/** Stores `value` for a later test in the same run. */
+export function carryForward({
+  key,
+  value,
+}: {
+  key: string;
+  value: string;
+}): null {
+  carried.set(key, value);
+  // `cy.task` fails the test if a task resolves `undefined`, so this is
+  // `null` rather than nothing.
+  return null;
+}
+
+/**
+ * Reads back what {@link carryForward} stored, or `null`.
+ *
+ * `null` rather than a throw: the caller knows which test was supposed to
+ * have stored it, and `cypress/support/dashboard.ts` turns the absence into
+ * a message that names the key.
+ */
+export function carriedForward(key: string): string | null {
+  return carried.get(key) ?? null;
+}
 
 /**
  * The one-time password `vpay-server staff add` printed, from the file
