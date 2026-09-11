@@ -77,6 +77,12 @@ header has been read off the wire (`cy.request`) but by nobody's browser, and
 what a browser has been observed refusing is the checkout page's own origin
 check.
 
+**`demo.md` is an overview plus a directory**, since 2026-09-11: it was 1 426
+lines, and §4 to §9 — the pasted walkthrough, the hosted page, what it proves,
+the dashboard sign-in, two stacks on one machine, the hazards and the known
+flake — are one page each under [demo/](demo/), moved verbatim and indexed in
+order from the page itself. Follow it from [demo.md](demo.md) as before.
+
 The paragraph that follows is `demo.md`'s own history and is unchanged.
 
 **[demo.md](demo.md) is the exception, and is a different kind of page.** It

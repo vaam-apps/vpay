@@ -159,7 +159,7 @@ sdks/
   stripe-compat/                           — the official `stripe` package, driven against a real stack
 examples/       merchant-demo (`just demo`) · shop · checkout-browser · merchant-curl
                 merchant-node · merchant-stripe-node · webhook-receiver
-docs/           adr/ · rfc/ · flows/ · reference/ · runbooks/ · sdks/ · api/ · plans/ · status.md
+docs/           README.md (the index) · adr/ · rfc/ · flows/ · reference/ · runbooks/ · sdks/ · api/ · plans/ · status.md
 schemas/        vpay.cstack   (compiled by vpay-db and gated by `just check-schema` — see docs/status.md)
 deploy/         helm/vpay   (rendered and schema-validated; never applied to a cluster)
 .xtask/         repo automation and the verify gates
@@ -448,7 +448,9 @@ deploy`. `just demo-down` removes volumes, which is the fix.
 
 ## Documentation
 
-Start with [`docs/status.md`](docs/status.md), then:
+[`docs/README.md`](docs/README.md) is the index of the whole tree and says
+which page answers which question. Start with
+[`docs/status.md`](docs/status.md), then:
 
 - [Roadmap](docs/roadmap.md) — the phases from scaffold to a deployable
   gateway, and where the project stands in that sequence
