@@ -555,6 +555,27 @@ invisible while the _declared_ one became a `[blocking]` drift line; and
 `Value::from_plain_json` demotes any JSON number outside `i64` to `f64`,
 silently, on a column that is merchant-authored and echoed back verbatim.
 
+**That second cost is also what decided the shape of the GPS half of the
+address** (2026-09-11, "address in our system means both formal as well as
+GPS"). A coordinate had to be something this stack can carry exactly, and
+`from_plain_json` routes every JSON number through `Number::as_i64()` — so a
+decimal degree is a value CrateStack rounds. `address_latitude_microdeg` and
+`address_longitude_microdeg` are therefore `BIGINT` counts of millionths of a
+degree, declared on `model Customer` as `Int?` with a `@range` mirroring
+`0041`'s CHECKs, and the unit is in the column name so no layer can read the
+number as degrees. It is the money layer's rule — integer minor units with the
+scale named — applied to the other quantity vpay stores at a fixed scale. The
+[customers flow doc](../flows/customers.md) carries the product half.
+
+What that model **cannot** say is the pair rule:
+`address_coordinates_are_both_or_neither` is multi-column, this grammar has no
+cross-field validator, and so the only places the rule exists are migration
+`0041` and `vpay_api::v1::customers`' `400`. Two columns and three constraints
+cost exactly **two** drift lines — the two single-column range CHECKs, which
+are reported once each as `[safe] … is not declared` exactly as the six
+`address_*_length` bounds are; the columns themselves and the multi-column pair
+rule cost nothing. `EXPECTED_DRIFT_CHANGES` 177 → 179, measured.
+
 The consequence is not obvious and is worth stating: because the model does
 not declare the column, the generated model _struct_ has no field for it
 either, so a CrateStack **read** could not render the wire object at all.
@@ -640,7 +661,22 @@ in `an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lettering
 The `events` and `idempotency_keys` statements share one `const
 REDACT_CUSTOMER_KEY` — a `CASE` over `jsonb_each`'s key, naming the four
 identifier keys and passing everything else through, so `metadata` (the
-merchant's data) and `id` survive. They cannot share the whole statement:
+merchant's data) and `id` survive.
+
+**The `address` arm replaces the whole key rather than walking into it**, and
+since 2026-09-11 that is what makes the erasure reach a payer's GPS point
+inside `data.object.address`. The replacement is `redacted_address_json()`,
+which has to be key-for-key what `vpay_api::model::AddressObject` renders —
+a stored body this rewrites is read back by a merchant on a replay or a
+redelivery, and a key here the object does not have is a shape they meet
+there and nowhere else. Its six formal components carry the marker and its
+two coordinate keys carry JSON `null`, for the reason the column does: a
+coordinate is an integer, the marker is not a value it can take, and a string
+in a field both SDKs decode as an integer fails the decode rather than reading
+as redacted. `the_redacted_address_body_is_the_shape_the_wire_renders` pins
+the key set and the per-type value in milliseconds; the container-backed
+scanner cannot tell an `address` reduced to `{}` from a redacted one, because
+an absent key holds no identifier either. They cannot share the whole statement:
 one reads `events.data` and the other `idempotency_keys.response_body`, and
 `sql_audit` refuses a computed fragment, so the `FROM` differs and only the
 rule is shared. That is the half that could drift, and the half a test can

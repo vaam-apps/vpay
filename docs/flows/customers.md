@@ -19,7 +19,7 @@ three paragraphs; the rules around it are the rest of the document.
 | `name`     | string or `null`                           |                            |
 | `email`    | string or `null`                           |                            |
 | `phone`    | string or `null`                           | canonicalised — see below  |
-| `address`  | object of six components, or `null`        | see below                  |
+| `address`  | object of eight components, or `null`      | see below                  |
 | `metadata` | ≤ 50 keys, ≤ 40-char key, ≤ 500-char value |                            |
 | `created`  | unix **seconds**                           |                            |
 | `livemode` | boolean                                    |                            |
@@ -35,17 +35,80 @@ refused exactly as one carrying nothing is.
 `vpay_api::model`'s `the_customer_object_is_the_documented_nine_keys` is what
 holds the count. It said _eight_ until 2026-09-10; `address` is the ninth.
 
-### The address (2026-09-10, [issue #67](https://github.com/vaam-apps/vpay/issues/67))
+### The address is the formal address **and** the GPS point (2026-09-11)
 
-`address` is **one nested object with six components**, every one nullable and
-every one rendered — `line1`, `line2`, `city`, `state`, `postal_code`,
-`country` — or `null` when the customer has no address at all. It is Stripe's
-shape, and it is six `TEXT` columns behind the object rather than a `JSONB`
-one: a JSONB column would be invisible to `cratestack migrate baseline` in
-both directions and could not be declared on `model Customer` without
-`Value::from_plain_json`'s number demotion (`../reference/vpay-db.md`).
+> "address in our system means both formal as well as GPS" — the maintainer,
+> 2026-09-11.
 
-Three rules, and none of them is obvious from the shape:
+That sentence is the whole of this section. Formal addressing is unreliable
+across the markets vpay serves: a street with no sign, a quarter with no
+postcode, a building known by the shop on its corner. A coordinate is how a
+place is actually found. So an address in vpay is **one object with two
+halves**, not an address plus a separate location — it is replaced whole,
+cleared whole and erased whole, both halves together.
+
+`address` is **one nested object with eight components**, every one nullable
+and every one rendered, or `null` when the customer has no address at all:
+
+|                                                             |                             |
+| ----------------------------------------------------------- | --------------------------- |
+| `line1`, `line2`, `city`, `state`, `postal_code`, `country` | Stripe's six, as strings    |
+| `latitude_microdeg`, `longitude_microdeg`                   | vpay's own, as **integers** |
+
+**The two coordinate keys are a deliberate divergence from Stripe**, whose
+`address` has no coordinate at all. A merchant porting Stripe code to vpay
+gains two keys, which is additive and safe; one porting the other way loses
+them, and should read that here rather than discover it. It is stated in
+[../api/README.md](../api/README.md), on `vpay_api::model::AddressObject` and
+in both SDKs' types.
+
+Behind the object are eight columns and not one `JSONB` one, for one reason
+stated twice: a JSONB column would be invisible to `cratestack migrate
+baseline` in both directions **and** could not be declared on `model Customer`
+without `Value::from_plain_json`'s number demotion
+(`../reference/vpay-db.md`). The second half of that is also the first reason
+the coordinate is an integer.
+
+#### Microdegrees, and why there is no float anywhere
+
+A microdegree is one millionth of a degree. 4.061°N is `4061000`; the unit is
+in the field name, and that naming is load-bearing rather than pedantic — a
+field called `latitude` would be read as degrees by every merchant who has
+used another API, and the first `4.061` would be a value nothing in this stack
+can store.
+
+Two measurements decide it, both from this repository:
+
+- `Value::from_plain_json` routes every JSON number through `Number::as_i64()`
+  and demotes anything else to `f64` (`../reference/vpay-db.md`). A decimal
+  degree is a value CrateStack cannot carry without rounding it.
+- the money layer's own precedent is integer minor units with the scale named
+  ([money.md](money.md)), and ADR-0007 denies float arithmetic workspace-wide.
+  A coordinate is the same kind of quantity: an exact count of a fixed unit,
+  not a measurement for each layer to re-round.
+
+The resolution is about **0.11 m** — two orders of magnitude finer than
+consumer GPS — so the unit costs no precision anybody can observe. The columns
+are `BIGINT`: longitude runs to ±180,000,000, which `INTEGER` would hold, and
+a pair of columns with two different types would be the thing that needed
+explaining.
+
+`4.061` is a `400` naming `address`, with a sentence that says to send
+`4061000`. It is refused rather than rounded, because a payer's position
+silently rounded by an API that did not say so is exactly the failure this
+shape is chosen to avoid.
+
+#### Both or neither
+
+A latitude on its own is a line right round the planet. Half a coordinate is
+**worse** than none, because whoever "completes" it later produces a plausible
+wrong place. So the pair is the value: sending one half without the other is a
+`400` naming `address`, and `address_coordinates_are_both_or_neither` in
+migration `0041` is the backstop for a writer that never passes the API. The
+ranges are the definition of the units — ±90,000,000 and ±180,000,000 — and
+they are symmetric: the South Pole is as legal as the North.
+
+Five rules, and none of them is obvious from the shape:
 
 **`country` is ISO 3166-1 alpha-2, upper-cased on the way in.** `cm` and `CM`
 are one country, and storing them as typed would leave vpay holding two
@@ -57,14 +120,21 @@ resolves a country code to anything, and a CHECK that had to be migrated
 whenever the world did would refuse a merchant's perfectly real address until
 somebody shipped a release.
 
-**An update replaces the address whole; it never merges components.** A
-request naming `address[line1]` and not `address[city]` clears the city. That
-is a decision rather than an omission, and the argument is about failure
-modes: a merchant correcting a payer's street who left `city` out meant "this
-is the address", and a component-wise merge would keep the old city beside the
-new street — an address that was never anybody's, assembled by vpay out of
-two requests, discovered by whoever eventually posts something to it.
-Replacement fails visibly on the next read.
+**An update replaces the address whole; it never merges components — and the
+coordinate is one of them.** A request naming `address[line1]` and not
+`address[city]` clears the city, and a request naming a street and no
+coordinate clears the point. That is a decision rather than an omission, and
+the argument is about failure modes: a merchant correcting a payer's street
+who left `city` out meant "this is the address", and a component-wise merge
+would keep the old city beside the new street — an address that was never
+anybody's, assembled by vpay out of two requests, discovered by whoever
+eventually posts something to it. Replacement fails visibly on the next read.
+
+The coordinate makes that argument sharper rather than complicating it: a
+merge would leave a payer's **previous position** attached to somebody else's
+street, which is a plausible wrong place and the one wrong answer a merchant
+would never see. One flag over all eight columns in
+`vpay_db::customers::update_in_tx` is what makes it inexpressible.
 
 **`address=` clears it**, exactly as `name=` clears a name; an absent key
 leaves it alone. Both SDKs carry the three states (`Option<Option<…>>`,
@@ -202,9 +272,17 @@ anonymised.** `payment_intents.customer_id`, `checkout_sessions.customer_id`
 `NO ACTION`, and they stay that way: vpay never detaches a payment from the
 payer it was taken from, because that is the record a dispute is settled with.
 `ON DELETE SET NULL` was the alternative and is worse. So the row stays and
-the **payer** goes: every one of the nine identifier columns becomes the
-literal `[redacted]`, `anonymized_at` is stamped, and the object then renders
-`deleted: true`.
+the **payer** goes: all eleven identifier columns are written, `anonymized_at`
+is stamped, and the object then renders `deleted: true`.
+
+Eleven, and they are not written the same way, because they cannot be. The
+nine **text** columns become the literal `[redacted]`. The two **coordinate**
+columns become `NULL` — they are `BIGINT`, and there is no integer that is not
+a possible place, so a marker value would be a coordinate, somewhere real, on
+a row claiming the payer is gone. For those two the erasure is the absence,
+and `anonymized_at` is what still says a payer was there. A payer's
+coordinates are the most sensitive field on this object: a name is how
+somebody is addressed and a point is where they sleep.
 
 `metadata` is untouched. It is the merchant's own key/value data, not the
 payer's, and destroying it would be vpay deleting a merchant's records to keep
@@ -230,11 +308,16 @@ the no-soft-delete rule. A soft delete keeps the record of the person and
 hides it behind a predicate. An anonymised row holds **nothing** of theirs —
 and that is not a promise two call sites remember, it is migration `0041`'s
 `anonymized_customers_carry_the_marker`, which refuses any row whose
-`anonymized_at` is set and whose nine identifier columns are not all
-`[redacted]`.
+`anonymized_at` is set and whose eleven identifier columns are not all in
+their erased state: the marker in the nine text ones, `NULL` in the two
+coordinate ones.
 
-All nine are written, including components the payer never filled in, because
-_which fields a record carried is itself information about the person_.
+All eleven are written, including components the payer never filled in,
+because _which fields a record carried is itself information about the
+person_. That argument is why the nine carry a value rather than a NULL, and
+it is not lost on the two that cannot: `anonymized_at` is non-NULL on exactly
+the rows the constraint applies to, so "was there a payer here?" stays
+answerable without the coordinate being what answers it.
 
 The constraint is spelled `IS NOT DISTINCT FROM '[redacted]'`, not `=`, and
 that is not a stylistic choice. **A CHECK is violated only when its expression
@@ -245,6 +328,15 @@ the columns an erasure most easily misses are the ones nobody filled in. The
 review caught it on 2026-09-11 by holding each of the nine back as `NULL` as
 well as as a value; both halves are in
 `an_anonymised_customer_carries_the_marker_in_every_identifier_column`.
+
+The two coordinate columns are held back the other way round in the same case
+— as an in-range **value**, since `NULL` is their legal erased state — and
+each is held back _alone_. That is only attributable because
+`address_coordinates_are_both_or_neither` carries the same
+`anonymized_at IS NOT NULL` disjunct the two shape CHECKs carry, which leaves
+the marker CHECK the only constraint that can fire on a row claiming to be
+erased. Without it Postgres would name the pair rule instead, and the marker
+CHECK's coverage of the coordinate could not be tested one column at a time.
 
 `at_least_one_identifier` was **not** relaxed for this and does not need to
 be: the marker is not NULL. It now also backstops the erasure in the one
@@ -263,14 +355,19 @@ somewhere else, and no code named them:
 | Where                                         | What was in it                                                                                                            |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `customers.{name,email,phone}`                | the row could not be deleted at all                                                                                       |
+| `customers.address_*_microdeg`                | the payer's position — the most sensitive of the eleven, and the one no literal scan can look for                         |
 | `events.data`                                 | **every** `customer.*` body ever written stores the whole rendered object, and nothing prunes `events`                    |
 | `charges.payer_ref` / `payer_ref_masked`      | the payer's MSISDN as the rail was given it — reachable from a customer only _through_ an intent                          |
 | `charges.failure_raw` / `refunds.failure_raw` | **the rail's own message, verbatim** — a mobile-money rail declining a collection names the subscriber it declined it for |
 | `idempotency_keys.response_body`              | the exact JSON a `POST /v1/customers` answered, kept 24 hours to replay                                                   |
 
-`vpay_db::customers::erase_in_tx` rewrites all five **in the transaction that
-erases the customer**, because "vpay erased this payer" may not be true of one
-table and false of four. `provider_requests` needs no statement and that is a
+`vpay_db::customers::erase_in_tx` rewrites all of them **in the transaction
+that erases the customer**, because "vpay erased this payer" may not be true of
+one table and false of four. The stored `customer.*` bodies have the payer's
+position in them too, nested inside `data.object.address`: the redaction
+replaces the whole `address` key with the redacted object rather than walking
+into it, so there is no path by which a nested component survives — the nested
+object is never read. `provider_requests` needs no statement and that is a
 property of its schema rather than an oversight: it stores a status code and
 an attempt number and no bodies (migration `0016`).
 
@@ -293,12 +390,26 @@ kind of thing `metadata` is.
 
 `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` is the
 proof, and its shape is the point: it scans **every** `text`, `varchar` and
-`jsonb` column `information_schema` reports, before and after, for four
+`jsonb` column `information_schema` reports, before and after, for five
 literals a fixture put there — including one the fixture writes into
 `charges.failure_raw` and `refunds.failure_raw`, which is the assertion that
 does not depend on anybody having thought of the column. A test that named
 tables would have named the wrong ones, which is exactly what happened to the
 issue.
+
+**The scan has three stated limits, and the third is the coordinate's.** It is
+`public` only; it can only find a copy of a literal the fixture wrote; and it
+reads `text`, `character varying` and `jsonb` — so the two `BIGINT` coordinate
+columns are outside it _in principle_. Widening it to numeric columns would
+not help: every integer is a possible coordinate, so a hit would mean nothing
+and a miss would mean nothing. So those two columns are asserted **directly,
+by name, as NULL** after the erasure, both in that case and in
+`a_customer_with_payment_history_is_anonymised_rather_than_deleted`. What the
+scan _does_ cover is the rendered copies: a `jsonb` column cast to `TEXT`
+renders a number as its digits, so the fixture's latitude is findable in
+`events.data` and `idempotency_keys.response_body` before the erasure and must
+not be after — which is what fails if the event-body redaction stops reaching
+inside `data.object.address`.
 
 ### A delivery already in flight, and the digest that would have parked it
 
@@ -401,11 +512,11 @@ not made here.
 
 ### What is logged, and by whom
 
-|                                    | redacts                                                                | why                                                                                                                                                                              |
-| ---------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vpay_db::CustomerRow`'s `Debug`   | `name`, `email`, `phone` (lengths only), `address` (a component count) | vpay's logs are not the merchant's. This struct reaches `tracing` fields, `anyhow` chains and every failing assertion.                                                           |
-| `vpay_sdk::Customer`'s `Debug`     | nothing (derived)                                                      | the merchant collected this data, already holds it, and is responsible for it. Redacting it would hide their own data from them and do nothing about the copy in their database. |
-| `@vaam-apps/vpay-sdk`'s `Customer` | nothing                                                                | same.                                                                                                                                                                            |
+|                                    | redacts                                                                                                                           | why                                                                                                                                                                                                                               |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vpay_db::CustomerRow`'s `Debug`   | `name`, `email`, `phone` (lengths only), `address` (a component count, the coordinate counted as one component and never printed) | vpay's logs are not the merchant's. This struct reaches `tracing` fields, `anyhow` chains and every failing assertion — and a coordinate in a `tracing` field is a payer's home in vpay's logs for the life of the log retention. |
+| `vpay_sdk::Customer`'s `Debug`     | nothing (derived)                                                                                                                 | the merchant collected this data, already holds it, and is responsible for it. Redacting it would hide their own data from them and do nothing about the copy in their database.                                                  |
+| `@vaam-apps/vpay-sdk`'s `Customer` | nothing                                                                                                                           | same.                                                                                                                                                                                                                             |
 
 The asymmetry is deliberate and is the opposite of `CheckoutSession`'s, where
 both SDKs _do_ redact: that object carries a **credential**, and printing one
@@ -674,11 +785,22 @@ mentioned.
 
 **Built and proven against a real Postgres and the shipping router, worker and
 SDKs (2026-09-06, S4a; extended 2026-09-10 twice — issue #66's events, then
-issues #67/#68/#96's address and erasure).**
-`backends/tests/integration/tests/customers.rs` is **twenty-one** cases;
-`postgres_smoke.rs` adds five at the schema; `vpay-db`'s own module adds
-nine with no container plus two container-backed ones for the transaction
+issues #67/#68/#96's address and erasure — and again on 2026-09-11 with the
+GPS half of the address).**
+`backends/tests/integration/tests/customers.rs` is **twenty-three** cases;
+`postgres_smoke.rs` adds six at the schema; `vpay-db`'s own module adds
+eleven with no container plus two container-backed ones for the transaction
 seam.
+
+**The GPS half (2026-09-11).** `address` carries `latitude_microdeg` and
+`longitude_microdeg`, integers, because "address in our system means both
+formal as well as GPS". Round-tripped as a point with no street at all,
+replaced and cleared with the rest of the address, refused as a decimal
+degree, out of range or half a pair with a `400` naming `address`, and NULLed
+by the erasure — with the marker CHECK refusing a row that kept either half.
+Seven mutations were run against it, each against a real Postgres or a real
+wiremock, and each is named in
+[../plans/exp46-customer-address-notes/exp49-gps.md](../plans/exp46-customer-address-notes/exp49-gps.md).
 
 **The retention promise is complete as of 2026-09-10, with the two windows
 above stated (2026-09-11).** Before migration `0041` a customer with payment
@@ -690,13 +812,17 @@ missed — `charges.failure_raw` and `refunds.failure_raw`, the rail's own words
 about the payer — and they are redacted in the same transaction as the rest.
 `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` is the
 evidence: it scans every `text`, `varchar` and `jsonb` column
-`information_schema` reports in `public`, finds four fixture literals in seven
-named places before the `DELETE` and none anywhere after.
+`information_schema` reports in `public`, finds five fixture literals in seven
+named places before the `DELETE` and none anywhere after. Its third limit is
+stated on `scan_for` itself and covered beside it: the two `BIGINT` coordinate
+columns are outside any literal scan in principle, so they are asserted
+directly, by name, as NULL.
 
 **What is not built, and is a gap rather than a decision against it:**
 
 - **Nothing erases a payer from a merchant's own copy**, and nothing can. The
-  merchant received `name`, `email`, `phone` and `address` in
+  merchant received `name`, `email`, `phone` and `address` — the payer's
+  position included — in
   `customer.created` and in every `customer.updated`, over signed bodies to
   endpoints they configured, before the erasure. vpay redacts _its_ stored
   copy of those bodies and cannot reach theirs. What vpay does do is **tell
