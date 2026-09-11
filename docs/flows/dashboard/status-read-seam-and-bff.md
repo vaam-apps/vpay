@@ -231,3 +231,32 @@ to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
 merchant's payments. What the dashboard still cannot do is anything at all to
 them: there is no write path, no other slice, and no audit log — because
 there is nothing yet to audit.
+
+**Issue #88 item 3 — the end-to-end paging test — landed 2026-09-11 (block
+2J), then a review fixed a vacuousness bug in it the same day.** The
+seventeenth case in `dashboard.cy.ts` pages forward through the list and back,
+tying together the API's cursors, `pageCursors` in `payments-query.ts`, and
+the BFF proxy. As first written it clicked "Next" **only if a Next link
+already existed**, falling back to a "stable on revisit" assertion otherwise
+— and measured, by the time that test runs in `e2e:default`'s spec order,
+this tenant carries exactly three payments against a `PAGE_SIZE` of 25 (one
+from `checkout.cy.ts`, which runs first alphabetically, two from earlier
+tests in this same file; `shop-hosted.cy.ts` and `shop-embedded.cy.ts` both
+run later). The forward-paging branch was therefore never the branch that
+ran — a single-page result every time, silently taking the untested arm. The
+issue comment reporting this block ("`ea9c442`... syntax verified... test
+will run in CI") did not say that; it is corrected here.
+
+**Fixed, same day, in the review:** the test now mints 30 extra unconfirmed
+PaymentIntents on the tenant through a new `mintPaymentIntentsForPaging`
+Cypress task (`cypress/tasks/checkoutTasks.ts`) before visiting `/payments`,
+and the "Next" link assertion has no conditional around it — a missing link
+is now a real failure. **What is still unverified:** this fix is checked by
+`tsc --noEmit` and `eslint --max-warnings 0` only. It has not been run
+against `compose.e2e.yml`, and neither has the decisive mutation the brief
+asked for — breaking the backward-page `has_more` inversion in `pageCursors`
+and confirming this Cypress case (rather than only the existing unit case in
+`src/dash/provider.test.ts`) goes red. Bringing up the full compose stack to
+do either was judged too heavy for the shared host this review ran on
+(concurrent builds had already OOM-killed a run earlier the same day); both
+remain open for whoever next runs `just test-e2e` for real.
