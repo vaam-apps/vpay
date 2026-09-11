@@ -353,7 +353,37 @@
           }
         },
         "api": { "$ref": "#/definitions/ingressRule" },
-        "token": { "$ref": "#/definitions/ingressRule" }
+        "token": { "$ref": "#/definitions/ingressRule" },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "path",
+            "pathType",
+            "limitRps",
+            "limitBurstMultiplier"
+          ],
+          "description": "The rail callback's own Ingress object. POST /provider/{code}/callback is mounted at the root of vpay's router, not under /v1, so nothing else in this block routes it. Defaults to enabled; the provider-callback-routable guard is what refuses to turn it off in silence.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "path": { "type": "string", "pattern": "^/" },
+            "pathType": {
+              "type": "string",
+              "enum": ["Exact", "Prefix", "ImplementationSpecific"]
+            },
+            "limitRps": { "type": "integer" },
+            "limitBurstMultiplier": { "type": "integer", "minimum": 1 },
+            "sourceRange": {
+              "type": "string",
+              "description": "nginx.ingress.kubernetes.io/whitelist-source-range, rendered only when set. Empty means no allowlist."
+            },
+            "servedElsewhere": {
+              "type": "string",
+              "description": "One line naming what serves the callback when enabled is false. Free text: the guard refuses an empty one and cannot check a non-empty one."
+            }
+          }
+        }
       }
     },
 
@@ -383,7 +413,23 @@
           "description": "One line naming what enforces /v1/oauth/token's rate limit when it is not an ExtensionRef filter on the token rule. Rendered onto the HTTPRoute as the vpay/rate-limited-by annotation. Free text on purpose: the route-rate-limit guard refuses silence, and a boolean would only be a box to tick."
         },
         "api": { "$ref": "#/definitions/httpRouteRule" },
-        "token": { "$ref": "#/definitions/httpRouteRule" }
+        "token": { "$ref": "#/definitions/httpRouteRule" },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "path", "pathType"],
+          "description": "The rail callback, as a third rule on the same HTTPRoute. See ingress.provider for why it exists and why it defaults on.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "path": { "type": "string", "pattern": "^/" },
+            "pathType": {
+              "type": "string",
+              "enum": ["Exact", "PathPrefix", "RegularExpression"]
+            },
+            "filters": { "$ref": "#/definitions/routeFilters" },
+            "servedElsewhere": { "type": "string" }
+          }
+        }
       }
     },
 

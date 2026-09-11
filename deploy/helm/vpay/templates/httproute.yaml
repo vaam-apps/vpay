@@ -92,5 +92,26 @@ spec:
       backendRefs:
         - name: {{ $fullName }}
           port: {{ .Values.service.port }}
+{{- if .Values.route.provider.enabled }}
+    # The rail callback, which is NOT under `/v1` — `PROVIDER_NEST` is
+    # `/provider`, mounted at the root beside `/v1` and not inside it, and the
+    # URL each rail is given is derived from it in another crate entirely
+    # (`vpay_config::ProviderHost::effective_callback_url`). A route carrying
+    # only the two rules above drops every MTN MoMo and Orange Money callback
+    # at the Gateway, and vpay never learns the charge settled. Defaulted on
+    # for that reason; turning it off is the "provider-callback-routable"
+    # guard unless `route.provider.servedElsewhere` says what does serve it.
+    - matches:
+        - path:
+            type: {{ .Values.route.provider.pathType }}
+            value: {{ .Values.route.provider.path | quote }}
+      {{- with .Values.route.provider.filters }}
+      filters:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      backendRefs:
+        - name: {{ $fullName }}
+          port: {{ .Values.service.port }}
+{{- end }}
 {{- end }}
 {{- end }}

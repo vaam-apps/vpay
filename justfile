@@ -1771,12 +1771,13 @@ chart := "deploy/helm/vpay"
 # adding this to it would turn "offline" into "failing". Run it by hand before
 # opening a PR that touches the chart; CI runs it on every PR regardless.
 #
-# What it proves: the chart lints, all three value sets render, the twenty-one
-# named guards are exactly the twenty-one on disk and each fires on its own
+# What it proves: the chart lints, all three value sets render, the twenty-two
+# named guards are exactly the twenty-two on disk and each fires on its own
 # values file with a non-zero exit, the default render templates no checkout
 # page and `ci/values-full.yaml`'s does, the Ingress path carries its
 # `limit-rps` annotations and the Gateway API path says what rate-limits its
-# token rule, the HTTPRoute templates render NOTHING without the Gateway API
+# token rule, BOTH mechanisms route the rail callback prefix `/provider`, the
+# HTTPRoute templates render NOTHING without the Gateway API
 # CRDs, and every rendered object validates against the upstream schemas. What
 # it does not prove: anything at all about a cluster. Nothing here has ever
 # been applied to one.
@@ -1813,8 +1814,8 @@ helm-check:
     # message stops naming itself — fails here, which is the only thing that
     # keeps these from rotting into decoration.
     #
-    # The expected set is written out rather than counted, because "21 files
-    # were found and 21 fired" is also what deleting a guard *and* its values
+    # The expected set is written out rather than counted, because "22 files
+    # were found and 22 fired" is also what deleting a guard *and* its values
     # file looks like. Adding a guard means adding its name here, its values
     # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
     # one commit.
@@ -1832,6 +1833,7 @@ helm-check:
         observability-port
         overlay-empty
         pdb-minavailable
+        provider-callback-routable
         rails-egress-except
         rails-secret
         rate-limit-ordering
@@ -1912,6 +1914,27 @@ helm-check:
     fi
     echo "    /v1 limit-rps=${rps[0]}, /v1/oauth/token limit-rps=${rps[1]} (tighter, as intended)"
 
+    # The rail callback's own object, which is a THIRD Ingress and therefore a
+    # separate render. `/provider/{code}/callback` is mounted at the root of
+    # vpay's router, not under `/v1`, and the URL each rail is handed is
+    # derived in a crate that does not compile against the one holding the
+    # route — so nothing but this check and the "provider-callback-routable"
+    # guard joins the two halves. Until 2026-09-11 no shape of this chart
+    # routed it at all, and the symptom was a rail's 404 with no vpay log line.
+    provider_only="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/ingress-provider.yaml)"
+    printf '%s' "$provider_only" | grep -q 'path: /provider' \
+        || { echo "helm-check: FAIL — the rendered provider Ingress does not carry a /provider path" >&2; exit 1; }
+    prps=($(printf '%s\n' "$provider_only" | sed -n 's/.*nginx.ingress.kubernetes.io\/limit-rps: "\([0-9]*\)".*/\1/p'))
+    if [ "${#prps[@]}" -ne 1 ]; then
+        echo "helm-check: FAIL — expected exactly one provider Ingress carrying limit-rps, found ${#prps[@]}" >&2
+        exit 1
+    fi
+    if [ "${prps[0]}" -gt "${rps[0]}" ]; then
+        echo "helm-check: FAIL — the provider Ingress limit-rps (${prps[0]}) is looser than /v1's (${rps[0]}), on the one UNAUTHENTICATED route" >&2
+        exit 1
+    fi
+    echo "    /provider limit-rps=${prps[0]} (no looser than /v1's, on the unauthenticated route)"
+
     # The same question on the Gateway API side, which cannot be the same
     # check: there is no annotation to grep for, because Gateway API has no
     # portable rate-limit primitive. What the chart insists on instead — the
@@ -1944,13 +1967,22 @@ helm-check:
     fi
     echo "    no HTTPRoute without --api-versions $gwapi"
 
+    # The same question on the Gateway API side, where the callback is a third
+    # RULE rather than a fourth object. Asserted over the rendered YAML for the
+    # same reason the Ingress half is: the guard checks the values, this checks
+    # that the template actually emitted them.
+    echo "==> httproute routes the rail callback"
+    printf '%s' "$route_only" | grep -q 'value: "/provider"' \
+        || { echo "helm-check: FAIL — the rendered HTTPRoute carries no /provider rule; every MTN MoMo and Orange Money callback would be dropped at the Gateway" >&2; exit 1; }
+    echo "    /provider is a rule on the rendered HTTPRoute"
+
     echo "==> kubeconform (downloads schemas — needs network)"
     kubeconform -strict -summary \
         -schema-location default \
         -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{{{.Group}}/{{{{.ResourceKind}}_{{{{.ResourceAPIVersion}}.json' \
         "$out/default.yaml" "$out/full.yaml" "$out/route.yaml"
 
-    echo "helm-check: ok — lint, 3 renders, $guards guards, rate limit (both paths), kubeconform. No cluster was involved."
+    echo "helm-check: ok — lint, 3 renders, $guards guards, rate limit (both paths), rail callback (both paths), kubeconform. No cluster was involved."
 
 # --------------------------------------------------------------- release ---
 

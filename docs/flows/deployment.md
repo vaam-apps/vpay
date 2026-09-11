@@ -360,10 +360,11 @@ correlation mechanism until an OTLP decision is made.
 
 | Guard                                                                        | Where                                      | Catches                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 21 named `fail` guards                                                       | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README. _Said 15 until 2026-09-10 and 19 until 2026-09-11; the count is the `expected_guards` list in the `helm-check` recipe, which is the copy `just helm-check` actually enforces_ |
+| 22 named `fail` guards                                                       | `deploy/helm/vpay/templates/_validate.tpl` | Value combinations that are well-typed and cannot work — see the chart README. _Said 15 until 2026-09-10 and 19 until 2026-09-11; the count is the `expected_guards` list in the `helm-check` recipe, which is the copy `just helm-check` actually enforces_ |
 | `helm lint` + `helm template` + `kubeconform -strict`                        | CI `deploy` job / `just helm-check`        | Malformed templates, objects that do not match their schema                                                                                                                                                                                                  |
 | `limit-rps` assertion on the rendered Ingress                                | same                                       | The rate limit [ADR-0009](../adr/0009-dashboard-oidc-provider.md) assumes exists silently disappearing                                                                                                                                                       |
 | `ExtensionRef`-or-`vpay/rate-limited-by` assertion on the rendered HTTPRoute | same                                       | The same disappearance on the Gateway API path, where there is no annotation to grep for                                                                                                                                                                     |
+| `/provider` routability, on both mechanisms                                  | same                                       | Every MTN MoMo and Orange Money callback answered by the ingress controller's 404, with no vpay log line — the chart's own defect until 2026-09-11                                                                                                           |
 | `Config::validate_all`                                                       | the process                                | Configuration that would fail at runtime                                                                                                                                                                                                                     |
 
 The rate limit deserves its own sentence. ingress-nginx applies `limit-rps`
@@ -373,7 +374,24 @@ limit is enforced per controller _replica_, so the effective global limit is
 approximately `limit-rps × replicas` — an approximation, stated rather than
 hidden.
 
-**Added 2026-09-11: the same guarantee on the Gateway API path.** The chart can
+**Added 2026-09-11: the rail callback was not routed by either mechanism, and
+now is.** `POST /provider/{code}/callback` is mounted at the ROOT of vpay's
+router — `vpay-api`'s `PROVIDER_NEST`, nested beside `/v1` and not inside it,
+because it is unauthenticated — and the URL each rail is handed is derived
+independently in `vpay-config` as
+`{deployment.public_base_url}/provider/{code}/callback`. This chart routed
+`/v1` and `/v1/oauth/token` and nothing else, so a deployment using it answered
+every MTN MoMo and Orange Money callback with the ingress controller's 404:
+vpay never received the request, logged nothing, and settlement degraded
+silently to the poll ladder while every object reported healthy. Both
+mechanisms now carry the prefix by default — a fourth Ingress object on one
+side (per-object `limit-rps` and `whitelist-source-range`), a third rule on the
+other — and `provider-callback-routable` refuses to turn it off without a
+sentence saying what serves it instead. `deploy/helm/vpay/README.md`'s "The
+rail callback" section is the full statement, including the one arm of that
+guard which reads `config.overlay` rather than treating it as opaque.
+
+**Added 2026-09-11: the rate-limit guarantee on the Gateway API path.** The chart can
 now render `HTTPRoute`s instead of `Ingress`es (`route.enabled`), for a cluster
 that runs a Gateway rather than ingress-nginx. Gateway API has no portable
 rate-limit primitive — no core filter, nothing in the standard channel — so
@@ -506,20 +524,23 @@ What exists:
   for `nginx.ingress.kubernetes.io/limit-rps` on the rendered Ingress plus an
   ordering check, and `kubeconform -strict -summary` over both renders with
   the Prometheus CRD schemas from the datreeio catalog.
-- **Updated 2026-09-11**, when the Gateway API path landed: 21 guards rather
-  than 19, three renders rather than two (the third is `ci/values-route.yaml`,
+- **Updated 2026-09-11**, when the Gateway API path and the rail-callback fix
+  landed together: 22 guards rather than 19, three renders rather than two (the third is `ci/values-route.yaml`,
   which needs `--api-versions gateway.networking.k8s.io/v1` because the two
   HTTPRoute templates are gated on `.Capabilities.APIVersions.Has`), and two
   further assertions — that the rendered HTTPRoute carries an `ExtensionRef`
   filter or the `vpay/rate-limited-by` annotation, and that the same values
   file renders no `HTTPRoute` at all without that flag. Measured on the
-  authoring machine that day: **21 guards, all fired by name; 34 resources
-  validated across the three renders — 34 valid, 0 invalid, 0 skipped.**
+  authoring machine that day: **22 guards, all fired by name; 35 resources
+  validated across the three renders — 35 valid, 0 invalid, 0 skipped.**
   Negative controls run for the new pair as well: neutering the
   `route-rate-limit` `fail` makes `just helm-check` report the guard did not
   fire, and deleting the token rule's `filters` block from
   `templates/httproute.yaml` makes the rendered-YAML assertion fail. The
-  Ingress path's renders are byte-identical to the parent commit's.
+  Ingress path's renders gain **exactly one object** against the parent
+  commit's — the rail callback's `<release>-provider` — and are byte-identical
+  once that one document is stripped; the default render, with
+  `ingress.enabled: false`, is byte-identical outright.
 - Measured on the authoring machine, 2026-09-03: **15 guards, all fired by
   name; 20 resources validated across the two renders — 20 valid, 0 invalid,
   0 skipped.** Negative controls run: disabling the `grace-period` guard, and

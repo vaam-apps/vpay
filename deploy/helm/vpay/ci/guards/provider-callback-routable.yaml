@@ -1,0 +1,18 @@
+# Routing on, and the one route a payment RAIL calls turned off with nothing
+# saying what serves it instead.
+#
+# This is the shape the chart had by default until 2026-09-11 — `/v1` and
+# `/v1/oauth/token` and nothing else — and the reason it is a guard rather
+# than a default is that the failure is invisible from inside the cluster:
+# MTN MoMo and Orange Money get the ingress controller's 404, vpay never
+# receives the request, and every object reports healthy while charges settle
+# only when the poll ladder gets round to them.
+#
+# `host` is set because the "ingress-host" guard sits ahead of this one and
+# would otherwise be what fires.
+ingress:
+  enabled: true
+  host: api.vpay.example
+  provider:
+    enabled: false
+    servedElsewhere: ""

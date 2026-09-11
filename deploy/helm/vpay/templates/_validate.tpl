@@ -138,6 +138,24 @@ inverts the intent silently: nothing else in this repository checks it
 {{- if or (le $api 0) (le $token 0) -}}
 {{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.api.limitRps=%d and ingress.token.limitRps=%d; ingress-nginx treats a non-positive limit-rps as absent, which would render an Ingress that claims a rate limit and applies none." $api $token) -}}
 {{- end -}}
+{{/*
+The rail callback joined this guard on 2026-09-11, because it is the same
+rule and not a second one: `/provider/{code}/callback` is UNAUTHENTICATED and
+`/v1` is not, so a looser limit there is the same inversion the token split
+exists to prevent, one surface along. It is also the surface with no
+application-layer limit at all — `provider_callback.rs`'s own header says
+"nothing else here is a rate limit: there is none" — so the number in this
+chart is the only one that exists for it.
+*/}}
+{{- if .Values.ingress.provider.enabled -}}
+{{- $provider := int .Values.ingress.provider.limitRps -}}
+{{- if gt $provider $api -}}
+{{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.provider.limitRps is %d but ingress.api.limitRps is %d. /provider/{code}/callback takes no bearer token and /v1 does, and the callback route has no rate limit of its own inside the process — so a looser limit at the edge on the unauthenticated surface inverts the intent exactly the way a loose token limit would." $provider $api) -}}
+{{- end -}}
+{{- if le $provider 0 -}}
+{{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.provider.limitRps=%d; ingress-nginx treats a non-positive limit-rps as absent, so this would render an Ingress claiming a rate limit on the one unauthenticated route and applying none." $provider) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* --------------------------------------------------------------- 10 */}}
@@ -487,6 +505,90 @@ refuses is a token endpoint that nobody decided to leave unmetered.
 {{- end -}}
 {{- if and (not $hasExtensionRef) (empty .Values.route.rateLimitedBy) -}}
 {{- fail "vpay chart guard \"route-rate-limit\": route.enabled is true, but nothing here rate-limits /v1/oauth/token. ADR-0009 assumes a limit is in front of it — a token request costs an RSA verification and a write to oauth_client_assertion_jtis, and it is the expensive unauthenticated surface — and the Ingress path supplies one with nginx.ingress.kubernetes.io/limit-rps. Gateway API has no portable equivalent, so this chart will not invent one. Do ONE of: (1) put your controller's own rate-limit object on the token rule as an ExtensionRef filter — route.token.filters: [{type: ExtensionRef, extensionRef: {group: traefik.io, kind: Middleware, name: …}}]; or (2) if the limit is enforced somewhere this chart cannot see (a CDN, a WAF, a policy on the Gateway listener), set route.rateLimitedBy to one line saying what and where, which is rendered onto the HTTPRoute as the vpay/rate-limited-by annotation. Neither is checkable from here; the point is that leaving the endpoint unmetered has to be something somebody wrote down." -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/* --------------------------------------------------------------- 21 */}}
+{{/*
+provider-callback-routable — the one route a payment RAIL calls, and the one
+this chart did not route at all until 2026-09-11.
+
+Three facts, none of which is in the same crate as the others:
+
+  * `vpay-api/src/provider_callback.rs` mounts `PROVIDER_NEST = "/provider"`,
+    and `lib.rs` nests it BESIDE `/v1`, not inside it — deliberately, because
+    the route is unauthenticated and `/v1`'s whole boundary is "everything
+    here carries a bearer token";
+  * `vpay_config::ProviderHost::effective_callback_url` derives the URL each
+    rail is actually handed as `{deployment.public_base_url}/provider/{code}/callback`,
+    unless `providers[].callback_url` overrides it;
+  * this chart's `ingress.api.path` / `route.api.path` are `/v1`.
+
+Nothing compiles those three against each other. Put together they mean a
+deployment that enables this chart's routing and nothing else answers every
+MTN MoMo and Orange Money callback with the CONTROLLER's 404 — vpay never
+receives the request, writes no log line, and settlement degrades silently to
+the poll ladder while every object reports healthy. That is why both provider
+rules default to `true` and why turning one off has to be said out loud.
+
+Three arms:
+
+(a) Routing on, the provider rule off, and nothing saying what serves the
+    callback instead. `servedElsewhere` is one line of free text, the same
+    mechanism as `route.rateLimitedBy` and for the same reason: the chart
+    cannot verify the claim, and what it refuses is silence.
+
+(b) The same, contradicted by the configuration the chart is MOUNTING. When
+    `config.overlay` is present and parses, the chart can read
+    `providers[]` out of it — so an enabled provider with no `callback_url`
+    override, while the provider rule is off, is a sentence that disagrees
+    with a fact in the same values file. The overlay is opaque to the rest of
+    this chart on purpose; it is read HERE because this is the one question
+    where it turns an unverifiable claim into a checkable one. Absent,
+    unparseable or providerless, this arm says nothing and (a) still stands.
+
+(c) The provider rule ON but pointed somewhere the callback is not.
+    `/provider` is a literal owned by `vpay-api`, not by this chart, so the
+    only paths that can route it are `/provider` itself and `/`.
+*/}}
+{{- $routingOn := or .Values.ingress.enabled .Values.route.enabled -}}
+{{- if $routingOn -}}
+{{/*
+The overlay's providers, read once for both mechanisms. `fromYaml` returns an
+empty dict on anything it cannot parse, so every lookup below degrades to
+"the chart could not see" rather than to a template error.
+*/}}
+{{- $overlayProviders := list -}}
+{{- if not (empty (trim (default "" .Values.config.overlay))) -}}
+{{- $parsed := fromYaml .Values.config.overlay -}}
+{{- if kindIs "slice" (dig "providers" (list) $parsed) -}}
+{{- $overlayProviders = dig "providers" (list) $parsed -}}
+{{- end -}}
+{{- end -}}
+{{- $uncovered := list -}}
+{{- range $entry := $overlayProviders -}}
+{{- if and (dig "enabled" true $entry) (empty (dig "callback_url" "" $entry)) -}}
+{{- $uncovered = append $uncovered (dig "code" "<no code>" $entry) -}}
+{{- end -}}
+{{- end -}}
+{{- range $mech := list "ingress" "route" -}}
+{{- $cfg := index $.Values $mech -}}
+{{- if $cfg.enabled -}}
+{{- $rule := $cfg.provider -}}
+{{- if not $rule.enabled -}}
+{{- if empty $rule.servedElsewhere -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.enabled is true but %s.provider.enabled is false, and %s.provider.servedElsewhere is empty. POST /provider/{code}/callback is mounted at the ROOT of vpay's router, not under /v1 (vpay-api's PROVIDER_NEST), and every rail is handed {deployment.public_base_url}/provider/{code}/callback (vpay_config::ProviderHost::effective_callback_url). With %s.provider off and nothing else serving that prefix, MTN MoMo and Orange Money callbacks get the ingress controller's 404: vpay never sees them, logs nothing, and settlement falls back to the poll ladder with every object reporting healthy. Either leave %s.provider.enabled: true, or write one line in %s.provider.servedElsewhere saying what does serve it — an IP-allowlisted host of the rail's own, a separate Ingress you manage, a CDN route. The chart cannot check that sentence; it refuses the silence." $mech $mech $mech $mech $mech $mech) -}}
+{{- end -}}
+{{- if $uncovered -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.provider.servedElsewhere says the rail callback is served elsewhere, but config.overlay — the configuration THIS RELEASE mounts — lists %v as enabled with no providers[].callback_url override. Those rails will be handed {deployment.public_base_url}/provider/<code>/callback, which is the prefix you just turned off. Set providers[].callback_url for each of them in the overlay, or leave %s.provider.enabled: true." $mech $uncovered $mech) -}}
+{{- end -}}
+{{- else -}}
+{{- if not (or (eq $rule.path "/provider") (eq $rule.path "/")) -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.provider.path is %q, which cannot route the rail callback. /provider is a literal owned by vpay-api (PROVIDER_NEST) and derived independently by vpay-config; this chart does not get to rename it. Use /provider, or / if this rule is deliberately a catch-all." $mech $rule.path) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

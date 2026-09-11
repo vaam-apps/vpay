@@ -506,6 +506,74 @@ ingress:
     # inversion this split exists to prevent.
     limitRps: 5
     limitBurstMultiplier: 2
+  # THE RAIL CALLBACK, AND IT IS NOT UNDER `/v1`.
+  #
+  # `POST /provider/{code}/callback` is the one route on this process a
+  # payment rail calls, and it is mounted at the ROOT
+  # (`vpay-api/src/provider_callback.rs`'s `PROVIDER_NEST = "/provider"`,
+  # nested in `lib.rs`'s router beside `/v1` rather than inside it) because it
+  # is not part of the merchant API and carries no bearer token. The URL each
+  # rail is actually given is derived in a different crate —
+  # `vpay_config::ProviderHost::effective_callback_url` is
+  # `{deployment.public_base_url}/provider/{code}/callback` — so an Ingress
+  # that serves only `/v1` answers every MTN MoMo and Orange Money callback
+  # with the CONTROLLER's 404. vpay never sees the request, logs nothing, and
+  # settlement silently falls back to the poll ladder.
+  #
+  # That is why this defaults to **true**. Until 2026-09-11 this block did not
+  # exist and no shape of this chart routed the callback at all; see
+  # `docs/flows/deployment.md`.
+  #
+  # A FOURTH Ingress object, not a third path on the API's, for the same
+  # reason `/v1/oauth/token` is a second: ingress-nginx applies BOTH
+  # `limit-rps` and `whitelist-source-range` per Ingress object, and this
+  # surface wants its own value for each.
+  provider:
+    enabled: true
+    # The literal prefix `PROVIDER_NEST` mounts. The chart does not own this
+    # value — `vpay-api` and `vpay-config` do, and neither compiles against
+    # the other — so the "provider-callback-routable" guard refuses anything
+    # that is not a prefix of `/provider`.
+    path: /provider
+    pathType: Prefix
+    # Tighter than `/v1`'s, and the guard ("rate-limit-ordering") insists it
+    # stays no looser.
+    #
+    # The application layer has NO rate limit on this route and says so in
+    # its own module header: a caller who knows a live charge's v4
+    # `provider_reference_id` can hold that charge at roughly one authenticated
+    # rail request per worker claim, because the pull-forward floor is ten
+    # seconds while the poll ladder's rungs grow. The edge limit is therefore
+    # the only one there is, which is not true of `/v1`.
+    #
+    # 10 is PROPOSED, like every other number in this file. Legitimate traffic
+    # is two rails posting once per charge notification; the generous burst
+    # exists because both rails retry on a non-2xx and their retries arrive
+    # together.
+    limitRps: 10
+    limitBurstMultiplier: 5
+    # `nginx.ingress.kubernetes.io/whitelist-source-range`, rendered only when
+    # set. MTN additionally allows an IP-allowlisted callback host of its own
+    # (`docs/reference/rails.md`), so an operator who has been given the rail's
+    # egress ranges can put them here — and having a separate Ingress object is
+    # what makes that expressible without also allowlisting `/v1`.
+    #
+    # Empty means no allowlist, which is the honest default: nobody has been
+    # given a set of ranges to write down, and inventing one would lock out the
+    # rail rather than protect anything.
+    sourceRange: ""
+    # Set ONLY when `enabled: false`: one line naming what serves
+    # `/provider/{code}/callback` instead — the same mechanism, and the same
+    # reasoning, as `route.rateLimitedBy`. Turning the callback off is
+    # defensible (every rail pointed at an IP-allowlisted host of its own via
+    # `providers[].callback_url`); turning it off in silence is not, because
+    # the failure is a rail's 404 and a charge that never settles.
+    #
+    # The "provider-callback-routable" guard also cross-checks this against
+    # `config.overlay` when the overlay is there to be parsed: a sentence here
+    # that contradicts an enabled provider with no `callback_url` override is
+    # the case it catches.
+    servedElsewhere: ""
 
 # Gateway API routing, for a cluster that runs one (Traefik, Envoy Gateway,
 # Istio, Cilium) rather than ingress-nginx. Added 2026-09-11, because until
@@ -646,6 +714,35 @@ route:
     pathType: Exact
     # Where the rate-limit `ExtensionRef` goes — spelling 1 above.
     filters: []
+  # The rail callback, as a THIRD rule on the same HTTPRoute — where the
+  # Ingress path needs a fourth object. `ingress.provider`'s header is the long
+  # form of why it exists and why it defaults on; the short form is that
+  # `POST /provider/{code}/callback` is mounted at the root, not under `/v1`,
+  # and a route serving only `/v1` drops every MTN MoMo and Orange Money
+  # callback at the Gateway with vpay never learning the charge settled.
+  #
+  # One object here because Gateway API attaches filters per RULE. The Ingress
+  # side needs a separate object for this surface precisely because
+  # `limit-rps` and `whitelist-source-range` are per-object there — the same
+  # asymmetry that makes `/v1` and `/v1/oauth/token` one object here and two
+  # there.
+  #
+  # There is no `sourceRange` counterpart: Gateway API has no core filter for
+  # a source-IP allowlist either, so that goes in `filters` as an
+  # `ExtensionRef` the same way a rate limit does.
+  provider:
+    enabled: true
+    path: /provider
+    pathType: PathPrefix
+    # Where a rate limit and/or a source-IP allowlist for this surface goes.
+    # Unlike the token rule, the "route-rate-limit" guard does NOT require one
+    # here — see its own comment in `templates/_validate.tpl` for why that line
+    # was drawn where it is, and read `ingress.provider.limitRps`'s note on
+    # what the application layer does and does not bound before leaving this
+    # empty.
+    filters: []
+    # As `ingress.provider.servedElsewhere`, for this mechanism.
+    servedElsewhere: ""
 
 networkPolicy:
   # Off by default, deliberately.
