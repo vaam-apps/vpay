@@ -348,6 +348,20 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     # else's stack, on somebody else's machine, with somebody else's data.
     # Measured on the first run of this recipe: it created a one-off container
     # in a stack this run had never brought up.
+    #
+    # `demo_dashboard_merchant` is on that list since 2026-09-11, and it was
+    # missing for the whole of the day exp51 introduced it. `gen-demo-keys` is
+    # a `just` DEPENDENCY of this recipe, so it does see the override and
+    # writes an overlay bound to the tenant asked for; this sub-invocation did
+    # not, so `demo_staff_merchant` — which is `demo_dashboard_merchant` —
+    # resolved to its default. Under
+    # `just demo_dashboard_merchant=demo-merchant-tenant test-e2e` the result
+    # was a dashboard client bound to `demo-merchant-tenant` and a staff
+    # member created in `shop-merchant-tenant`, so every sign-in died at
+    # /authorize and the whole dashboard spec failed on the FIRST leg.
+    # Measured, with `psql` against the running stack. It looked like the
+    # tenancy guard firing and it was not: a spec that cannot sign in proves
+    # nothing about which payments a dashboard shows.
     just demo_project={{demo_project}} \
          demo_port={{demo_port}} \
          demo_receiver_port={{demo_receiver_port}} \
@@ -355,6 +369,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
          demo_checkout_port={{demo_checkout_port}} \
          demo_shop_port={{demo_shop_port}} \
          demo_dashboard_port={{demo_dashboard_port}} \
+         demo_dashboard_merchant={{demo_dashboard_merchant}} \
          demo-staff
     if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
         echo "test-e2e: FAIL — no staff member for the dashboard spec" >&2
@@ -362,35 +377,81 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
         exit 1
     fi
 
-    # THE MINTED FIXTURE IS THE SHOP'S MERCHANT, not `demo-merchant`, and has
-    # been since 2026-09-11 (exp51). `cy.task('mintCheckoutPaymentIntent')`
-    # creates the PaymentIntent `checkout.cy.ts` confirms and the one
-    # `dashboard.cy.ts` looks up by id, and the dashboard reads exactly one
-    # tenant — `demo_dashboard_merchant`, the shop's. Minted as `demo-merchant`
-    # those two specs paid into a tenant the dashboard does not show, which is
-    # the same invisibility a person hit through the shop by hand.
-    #
-    # Fixed here rather than derived from `demo_dashboard_merchant`, on
-    # purpose: under `just demo_dashboard_merchant=demo-merchant-tenant
-    # test-e2e` the dashboard spec must FAIL, because that override is exactly
-    # the arrangement this variable exists to prevent. A recipe that moved the
-    # fixture with the binding would make the override look harmless.
-    #
-    # `examples/checkout-browser/mint.mjs` — the same mint, run by hand —
-    # carries the same three defaults, so a payment minted there is visible on
-    # the dashboard too.
-    #
-    # What the specs need, all of it a published host port, a public key, or —
-    # for the dashboard — a PATH to a credential rather than the credential.
-    # `dashboardTasks.ts` reads the file in Node; the password never reaches
-    # `Cypress.env`, a browser or a `cypress run` argument list.
-    #
-    # VPAY_DASHBOARD_URL is Cypress's own `baseUrl` — every bare `cy.visit("/…")`
-    # in `dashboard.cy.ts` resolves against it. `cypress.config.ts` already read
-    # it, but nothing ever SET it, so until exp35's review every dashboard spec
-    # went to the config's `?? "http://localhost:3000"` fallback whatever
-    # `demo_dashboard_port` said — i.e. at a custom port, straight at whichever
-    # OTHER stack happened to hold 3000, or at nothing.
+    # The Cypress run itself is `e2e-specs` below, CALLED rather than spelled
+    # here, for the reason the `demo-staff` call above states: CI's
+    # `e2e (compose)` job does the same three things in YAML, and a second
+    # copy of this environment is what broke on 2026-09-11. Every override is
+    # repeated on the sub-invocation because `just` passes the environment on
+    # and its variable overrides not at all.
+    just demo_project={{demo_project}} \
+         demo_port={{demo_port}} \
+         demo_orange_port={{demo_orange_port}} \
+         demo_checkout_port={{demo_checkout_port}} \
+         demo_shop_port={{demo_shop_port}} \
+         demo_dashboard_port={{demo_dashboard_port}} \
+         e2e-specs
+    e2e_status=$?
+
+    docker compose {{demo_compose}} down -v
+    exit $e2e_status
+
+# The browser specs against a stack that is ALREADY UP, and the ONE place
+# their environment is spelled.
+#
+# `test-e2e` above brings the stack up, creates the staff member and calls
+# this; CI's `e2e (compose)` job does those same three things in YAML and
+# calls this too. Until 2026-09-11 that job carried its own copy of the block
+# below, and the two went out of step the first time either of them moved:
+# exp51 pointed the browser fixture at `shop-merchant` in the recipe, the
+# workflow went on saying `demo-merchant`, and run 34555068739 failed two
+# specs that had passed locally. CI already calls `just helm-check`,
+# `just lint-web`, `just check-schema` and `just demo-staff` for exactly this
+# reason; this is one more.
+#
+# NO dependencies, deliberately: CI runs `gen-demo-keys`,
+# `build-checkout-browser` and the SDK build as their own steps, and a
+# `just` dependency here would run them a second time against a live stack.
+#
+# THE MINTED FIXTURE IS THE SHOP'S MERCHANT, not `demo-merchant`, and has been
+# since 2026-09-11 (exp51). `cy.task('mintCheckoutPaymentIntent')` creates the
+# PaymentIntent `checkout.cy.ts` confirms and the one `dashboard.cy.ts` looks
+# up by id, and the dashboard reads exactly one tenant —
+# `demo_dashboard_merchant`, the shop's. Minted as `demo-merchant` those two
+# specs paid into a tenant the dashboard does not show, which is the same
+# invisibility a person hit through the shop by hand. Worse, the publishable
+# key the page presents names the SHOP's tenant either way, so the mismatch
+# is not merely invisible: `/v1/browser`'s first read answers the uniform
+# cross-tenant 404 and `checkout.cy.ts` times out on a status that never
+# arrives. That is what run 34555068739 measured, twice.
+#
+# Fixed here rather than derived from `demo_dashboard_merchant`, on purpose:
+# under `just demo_dashboard_merchant=demo-merchant-tenant test-e2e` the
+# dashboard spec must FAIL, because that override is exactly the arrangement
+# this variable exists to prevent. A recipe that moved the fixture with the
+# binding would make the override look harmless.
+#
+# `examples/checkout-browser/mint.mjs` — the same mint, run by hand — carries
+# the same defaults, so a payment minted there is visible on the dashboard
+# too. `CHECKOUT_PUBLISHABLE_KEY` is deliberately NOT set: that literal
+# already exists in three places this recipe cannot reach (the generated
+# overlay, `compose.e2e.yml`'s `vpay-shop`, `cypress.config.ts`) and
+# `checkoutTasks.ts` defaults to the same one. A fourth copy would be the
+# same kind of bug this recipe was just fixed for.
+#
+# Everything below is a published host port, a public key, or — for the
+# dashboard — a PATH to a credential rather than the credential.
+# `dashboardTasks.ts` reads the file in Node; the password never reaches
+# `Cypress.env`, a browser or a `cypress run` argument list.
+#
+# VPAY_DASHBOARD_URL is Cypress's own `baseUrl` — every bare `cy.visit("/…")`
+# in `dashboard.cy.ts` resolves against it. `cypress.config.ts` already read
+# it, but nothing ever SET it, so until exp35's review every dashboard spec
+# went to the config's `?? "http://localhost:3000"` fallback whatever
+# `demo_dashboard_port` said — i.e. at a custom port, straight at whichever
+# OTHER stack happened to hold 3000, or at nothing.
+e2e-specs:
+    #!/usr/bin/env bash
+    set -uo pipefail
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
       VPAY_STAFF_EMAIL={{demo_staff_email}} \
       VPAY_STAFF_PASSWORD_FILE="$PWD/{{demo_staff_password_file}}" \
@@ -400,12 +461,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
       VPAY_MERCHANT_CLIENT_ID=shop-merchant \
       VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/shop-merchant/oauth-signing-key.pem" \
-      CHECKOUT_PUBLISHABLE_KEY=pk_test_shopmerchantsandbox1 \
       pnpm --filter @vpay/e2e e2e
-    e2e_status=$?
-
-    docker compose {{demo_compose}} down -v
-    exit $e2e_status
 
 # ------------------------------------------------------------------ lint ---
 
