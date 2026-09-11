@@ -577,32 +577,95 @@ enum Credentials {
     Rejected,
 }
 
-/// The declines each rail documents, as (reference, expected code) pairs.
+/// One decline, as the stub is configured to produce it.
+struct DocumentedDecline {
+    /// The reference whose WireMock mapping answers with this reason.
+    reference: Uuid,
+    /// The rail's own word, exactly as its mapping spells it. Asserted to
+    /// survive into `ChargeStatus::Failed`'s `raw`, because the taxonomy code
+    /// is what a merchant integrates against and this is the only thing left
+    /// for an operator reading a `failure_raw`.
+    reason: &'static str,
+    /// What the core must make of it.
+    code: FailureCode,
+}
+
+/// The declines each rail documents, one row per mapped rail reason.
 ///
 /// Rail-specific *data*, one shared test body — the line that keeps this a
-/// port test. The codes are `docs/flows/adapter-mtn-momo.md`'s and
+/// port test. The rows are `docs/flows/adapter-mtn-momo.md`'s and
 /// `docs/flows/adapter-orange-money.md`'s mapping tables; a rail that grows a
 /// documented reason grows a row here and a mapping in its own directory.
-fn documented_declines(rail: RailUnderTest) -> Vec<(Uuid, FailureCode)> {
+///
+/// **Every mapped reason has a row, since 2026-09-10 (issue #59).** It used
+/// to have three of MTN's nine and one of Orange's two, which meant the
+/// tables in the flow docs were mostly transcription nothing drove over a
+/// socket. `the_declines_prove_every_code_each_rail_can_produce` is what
+/// keeps that from happening again.
+fn documented_declines(rail: RailUnderTest) -> Vec<DocumentedDecline> {
+    // `0f__` is this suite's decline block; the digits after it are arbitrary
+    // and only have to agree with the rail's mapping directory.
+    let row = |low: u128, reason: &'static str, code: FailureCode| DocumentedDecline {
+        reference: Uuid::from_u128(low),
+        reason,
+        code,
+    };
     match rail {
         RailUnderTest::MtnMomo => vec![
-            (
-                Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0f01),
-                FailureCode::InsufficientFunds,
-            ),
-            (
-                Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0f02),
+            row(0x0f01, "NOT_ENOUGH_FUNDS", FailureCode::InsufficientFunds),
+            row(
+                0x0f02,
+                "COULD_NOT_PERFORM_TRANSACTION",
                 FailureCode::PayerTimeout,
             ),
-            (
-                Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0f03),
-                FailureCode::ProviderAccountBlocked,
+            row(0x0f03, "NOT_ALLOWED", FailureCode::ProviderAccountBlocked),
+            row(0x0f04, "EXPIRED", FailureCode::PayerTimeout),
+            row(0x0f05, "PAYMENT_NOT_APPROVED", FailureCode::PayerDeclined),
+            row(0x0f06, "APPROVAL_REJECTED", FailureCode::PayerDeclined),
+            row(0x0f07, "PAYER_NOT_FOUND", FailureCode::InvalidPayer),
+            row(
+                0x0f08,
+                "PAYER_LIMIT_REACHED",
+                FailureCode::PayerLimitReached,
             ),
+            row(
+                0x0f09,
+                "SENDER_ACCOUNT_NOT_ACTIVE",
+                FailureCode::PayerAccountBlocked,
+            ),
+            row(0x0f0a, "PAYEE_NOT_FOUND", FailureCode::InvalidPayee),
+            row(
+                0x0f0b,
+                "PAYEE_NOT_ALLOWED_TO_RECEIVE",
+                FailureCode::PayeeAccountBlocked,
+            ),
+            row(
+                0x0f0c,
+                "SERVICE_UNAVAILABLE",
+                FailureCode::ProviderUnavailable,
+            ),
+            // The deliberate fallback: published by MTN, mapped by nobody,
+            // and here to prove the raw reason survives the flattening.
+            row(0x0f0d, "TRANSACTION_CANCELED", FailureCode::ProviderError),
         ],
-        RailUnderTest::OrangeMoney => vec![(
-            Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0f01),
-            FailureCode::PayerTimeout,
-        )],
+        RailUnderTest::OrangeMoney => vec![
+            row(0x0f01, "EXPIRED", FailureCode::PayerTimeout),
+            // Orange documents no sub-reason for `FAILED`, so the status
+            // string itself is the whole of the rail's own word.
+            row(0x0f02, "FAILED", FailureCode::ProviderError),
+        ],
+    }
+}
+
+/// Every [`FailureCode`] the rail under test declares it can produce.
+///
+/// Read from the adapter's own `PRODUCED_FAILURE_CODES` rather than repeated
+/// here: this suite asserting its own copy of a list would be the failure
+/// mode the list exists against.
+fn declared_failure_codes(rail: RailUnderTest) -> &'static [FailureCode] {
+    match rail {
+        RailUnderTest::MtnMomo => &vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES,
+        RailUnderTest::OrangeMoney => &vpay_adapter_orange_money::PRODUCED_FAILURE_CODES,
     }
 }
 
@@ -1038,7 +1101,12 @@ async fn a_declined_charge_maps_to_the_documented_failure_code(
 ) {
     let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
 
-    for (reference, expected) in documented_declines(rail_under_test) {
+    for decline in documented_declines(rail_under_test) {
+        let DocumentedDecline {
+            reference,
+            reason,
+            code: expected,
+        } = decline;
         let charge = rail.charge(reference);
         let status = rail
             .adapter
@@ -1048,16 +1116,61 @@ async fn a_declined_charge_maps_to_the_documented_failure_code(
 
         match status {
             ChargeStatus::Failed { code, raw } => {
-                assert_eq!(code, expected, "reference {reference} mapped to {code}");
+                assert_eq!(code, expected, "{reason} ({reference}) mapped to {code}");
+                // Naming the reason, not merely `!raw.is_empty()`: the weaker
+                // assertion passed for every row of a table in which two
+                // reasons' stubs had been transposed, because both were
+                // non-empty. An operator reading `failure_raw` needs the word
+                // the rail actually said.
                 assert!(
-                    !raw.is_empty(),
-                    "the rail's own reason must be carried through for an operator, \
-                     even though the taxonomy is what the merchant sees"
+                    raw.contains(reason),
+                    "the rail's own reason must be carried through for an operator; \
+                     expected {reason:?} inside {raw:?}"
                 );
             }
-            other => panic!("reference {reference} expected a decline, got {other:?}"),
+            other => panic!("{reason} ({reference}) expected a decline, got {other:?}"),
         }
     }
+}
+
+/// **The doc's table is the table this suite proves** (issue #59).
+///
+/// The case above proves each row it is given. This proves the rows are all
+/// of them: every code a rail declares it can produce is reached by a real
+/// decline over a real socket, or by the one case that drives the path which
+/// has no decline at all.
+///
+/// The gap it closes is the one that made issue #59 findable only by reading:
+/// `FailureCode::PayerDeclined` was in the core, in the SDK types and in the
+/// shop's buyer copy, and no adapter emitted it. Nothing failed, because
+/// nothing compared a promise to a producer.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTest) {
+    let mut proven: Vec<FailureCode> = documented_declines(rail)
+        .into_iter()
+        .map(|decline| decline.code)
+        .collect();
+
+    // `provider_account_blocked` is the rail refusing *our* credentials, an
+    // HTTP 401/403 with no reason string and so no row in any decline table.
+    // `bad_credentials_are_not_reported_as_a_payer_problem` is the case that
+    // drives it, on both rails.
+    proven.push(FailureCode::ProviderAccountBlocked);
+
+    proven.sort_unstable_by_key(|code| code.as_str());
+    proven.dedup();
+
+    let mut declared = declared_failure_codes(rail).to_vec();
+    declared.sort_unstable_by_key(|code| code.as_str());
+    declared.dedup();
+
+    assert_eq!(
+        proven, declared,
+        "{rail:?}: every code the adapter declares must have a conformance case, and \
+         no case may prove a code the adapter does not declare"
+    );
 }
 
 /// Proves both ways a rail can be unreachable — an explicit 503, and an answer
@@ -1759,24 +1872,44 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
 /// redirect rail whose submit body carries no MSISDN at all (`order_id`
 /// selects everything), so there is nothing on that rail for a payer's typed
 /// phone number to steer.
-/// `237600000503` (2026-09-06, exp22) has no hex twin and never will: it was
-/// added for `examples/shop`'s test-number panel, after the checkout page's
-/// validator existed, so the only spelling it has ever had is the one a payer
-/// can type. It arms `mtn-demo-unavailable`, whose status mapping answers a
-/// **200 with a `FAILED` body carrying MTN's documented `SERVICE_UNAVAILABLE`
-/// reason** — not an HTTP 503, which would be a transport failure the poll
-/// ladder retries for hours rather than an outcome. That distinction is the
-/// reason this case names `ProviderUnavailable` rather than expecting an
-/// `Err`.
+/// **Two of the cases have no hex twin, and are here anyway.** The name of
+/// this test is about where the numbers came from, not about what it is for:
+/// what it actually proves is that every MSISDN a payer can *type* reaches the
+/// outcome this repository promises for it. A digits-only number added after
+/// the checkout page's validator existed has no twin to agree with, and is
+/// exactly the kind of number that needs driving over a socket — it is the
+/// only spelling anything will ever send.
+///
+/// `237600000503` (2026-09-06, exp22) was the first such row: added for
+/// `examples/shop`'s test-number panel, it arms `mtn-demo-unavailable`, whose
+/// status mapping answers a **200 with a `FAILED` body carrying MTN's
+/// documented `SERVICE_UNAVAILABLE` reason** — not an HTTP 503, which would be
+/// a transport failure the poll ladder retries for hours rather than an
+/// outcome. That distinction is the reason this case names
+/// `ProviderUnavailable` rather than expecting an `Err`.
+///
+/// `237600000103` (2026-09-10, exp48, [issue
+/// #59](https://github.com/vaam-apps/vpay/issues/59)) is the second, and it
+/// was **added to this case list on 2026-09-11, by the review of that
+/// branch**. exp48 shipped the number, its `mtn-demo-refused` mapping and
+/// four documents promising that typing it reaches `payer_declined` — and no
+/// case here, on the stated grounds that a row with no hex twin does not
+/// belong in this test. `237600000503` had been sitting three lines below that
+/// sentence since exp22. So the one core failure code that had just stopped
+/// being unreachable was, for the length of that branch, reachable only
+/// according to prose: `examples/shop`'s vitest proved a mapping *mentions*
+/// the number, and nothing proved the mapping *answers*. That is the shape of
+/// issue #59 itself, one layer down.
 #[rstest]
 #[case::settles("237600000100", None)]
-#[case::insufficient_funds("237600000101", Some(FailureCode::InsufficientFunds))]
-#[case::payer_timeout("237600000102", Some(FailureCode::PayerTimeout))]
-#[case::provider_unavailable("237600000503", Some(FailureCode::ProviderUnavailable))]
+#[case::insufficient_funds("237600000101", Some((FailureCode::InsufficientFunds, "NOT_ENOUGH_FUNDS")))]
+#[case::payer_timeout("237600000102", Some((FailureCode::PayerTimeout, "COULD_NOT_PERFORM_TRANSACTION")))]
+#[case::payer_declined("237600000103", Some((FailureCode::PayerDeclined, "PAYMENT_NOT_APPROVED")))]
+#[case::provider_unavailable("237600000503", Some((FailureCode::ProviderUnavailable, "SERVICE_UNAVAILABLE")))]
 #[tokio::test]
 async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     #[case] msisdn: &str,
-    #[case] expected_decline: Option<FailureCode>,
+    #[case] expected_decline: Option<(FailureCode, &str)>,
 ) {
     let rail = start(
         RailUnderTest::MtnMomo,
@@ -1833,7 +1966,7 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
                 "msisdn {msisdn}: expected to settle on the second query, got {second:?}"
             );
         }
-        Some(expected) => {
+        Some((expected, expected_reason)) => {
             let status = rail
                 .adapter
                 .query_status(&charge, &rail.config)
@@ -1847,10 +1980,18 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
             match status {
                 ChargeStatus::Failed { code, raw } => {
                     assert_eq!(code, expected, "msisdn {msisdn} mapped to {code}");
+                    // Naming the reason rather than `!raw.is_empty()`, which is
+                    // what this asserted until 2026-09-11: the weak form passes
+                    // for a stub answering a *different* reason that happens to
+                    // share a taxonomy code, and `237600000103` and
+                    // `237600000102` are exactly such a pair — `payer_declined`
+                    // and `payer_timeout` are distinct, but `PAYMENT_NOT_APPROVED`
+                    // and `APPROVAL_REJECTED` are not, and the runbook, the shop
+                    // README and `demo-outcomes.json` all name a specific one.
                     assert!(
-                        !raw.is_empty(),
+                        raw.contains(expected_reason),
                         "msisdn {msisdn}: the rail's own reason must be carried through for an \
-                         operator, even though the taxonomy is what the merchant sees"
+                         operator; expected {expected_reason:?} inside {raw:?}"
                     );
                 }
                 other => panic!("msisdn {msisdn}: expected a decline, got {other:?}"),

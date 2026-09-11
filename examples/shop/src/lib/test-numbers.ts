@@ -15,8 +15,9 @@
  *
  * The two rails do not offer the same outcomes, and that is the single most
  * useful thing this table shows a merchant. MTN's `FAILED` bodies carry a
- * `reason` from a nine-row vocabulary; Orange documents five statuses and no
- * sub-reason for `FAILED` at all
+ * `reason` from a twelve-row vocabulary — checked, since 2026-09-10, against
+ * the seventeen codes MTN itself publishes in `ErrorReason.code`; Orange
+ * documents five statuses and no sub-reason for `FAILED` at all
  * ([adapter-mtn-momo.md](../../../../docs/flows/adapter-mtn-momo.md),
  * [adapter-orange-money.md](../../../../docs/flows/adapter-orange-money.md)).
  * So `insufficient_funds` is reachable on MTN and not on Orange, and the
@@ -24,7 +25,12 @@
  *
  * `test-numbers.test.ts` checks this table against
  * `examples/shop/README.md`, in both directions, so the panel a buyer sees
- * and the table a developer reads cannot drift apart.
+ * and the table a developer reads cannot drift apart. Since issue #59 it also
+ * checks it against **the adapters**: every code promised here has to be one
+ * the rail's `PRODUCED_FAILURE_CODES` says that rail can produce, and every
+ * `cannotExpress` row has to name one it says it cannot. Until 2026-09-10
+ * this file claimed MTN could not express `payer_declined`, which was true of
+ * the adapter and not of MTN, and nothing failed.
  */
 import type { FailureCode } from "./failures";
 
@@ -120,6 +126,14 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
         railReason: "COULD_NOT_PERFORM_TRANSACTION",
       },
       {
+        msisdn: "237600000103",
+        display: "+237 6 00 00 01 03",
+        outcome: "Refused on the handset — the payer said no",
+        orderStatus: "failed",
+        failureCode: "payer_declined",
+        railReason: "PAYMENT_NOT_APPROVED",
+      },
+      {
         msisdn: "237600000400",
         display: "+237 6 00 00 04 00",
         outcome:
@@ -137,12 +151,12 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
         railReason: "SERVICE_UNAVAILABLE",
       },
     ],
-    cannotExpress: [
-      {
-        outcome: "payer_declined",
-        why: "MTN documents no reason for a payer who answered the prompt and refused it — its nine-row table has none, so no MSISDN can produce one. `FailureCode::PayerDeclined` is currently produced by no adapter in this repository.",
-      },
-    ],
+    // Nothing. MTN reaches all eleven of the core's codes
+    // (`vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES`), which is what makes
+    // it the rail the Orange gaps below are a gap *against*. This array held
+    // one row until 2026-09-10, claiming `payer_declined` was unreachable —
+    // a true statement about the adapter that read as one about MTN.
+    cannotExpress: [],
   },
   {
     rail: "orange_money",
@@ -178,6 +192,10 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
       },
     ],
     cannotExpress: [
+      {
+        outcome: "payer_declined",
+        why: "A payer who clicks Cancel on Orange's page ends the payment, and what the rail then reports is EXPIRED — so it arrives as `payer_timeout`, exactly as an abandoned page does. Orange documents five statuses and CANCELLED is not one of them, so the distinction between 'said no' and 'never answered' is one this rail does not make and this repository will not invent. MTN's `237600000103` is where you see `payer_declined`.",
+      },
       {
         outcome: "insufficient_funds",
         why: "Orange's documented statuses are INITIATED, PENDING, SUCCESS, EXPIRED and FAILED, and it documents no sub-reason for FAILED. A stub answering `NOT_ENOUGH_FUNDS` here would be this repository inventing a rail vocabulary.",

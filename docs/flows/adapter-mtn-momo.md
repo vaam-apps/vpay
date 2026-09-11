@@ -101,18 +101,91 @@ nothing in this repository has ever called it.**
 
 ## Failure mapping
 
-| MTN `reason`                    | → core code                               |
-| ------------------------------- | ----------------------------------------- |
-| `NOT_ENOUGH_FUNDS`              | `insufficient_funds`                      |
-| `COULD_NOT_PERFORM_TRANSACTION` | `payer_timeout` (PIN not entered, ~5 min) |
-| `PAYER_NOT_FOUND`               | `invalid_payer`                           |
-| `PAYER_LIMIT_REACHED`           | `payer_limit_reached`                     |
-| `SENDER_ACCOUNT_NOT_ACTIVE`     | `payer_account_blocked`                   |
-| `PAYEE_NOT_FOUND`               | `invalid_payee`                           |
-| `PAYEE_NOT_ALLOWED_TO_RECEIVE`  | `payee_account_blocked`                   |
-| `NOT_ALLOWED`                   | `provider_account_blocked`                |
-| `SERVICE_UNAVAILABLE` / 503     | `provider_unavailable`                    |
-| anything else                   | `provider_error` + raw reason             |
+**Where these strings come from, since 2026-09-10.** This table used to be a
+reconstruction with nine rows and no stated source. It is now checked against
+MTN's own vocabulary: the `ErrorReason.code` enum in the Collection API's
+OpenAPI components document, retrieved 2026-09-10 by the same unauthenticated
+portal read [issue #47's notes](../plans/issue-47-notes/impl.md) document for
+`GetBasicUserinfo`:
+
+```text
+GET https://momodeveloper.mtn.com/developer/apis/Collection/schemas/\
+    668d4753d54e6119240c675d?api-version=2022-04-01-preview
+```
+
+It enumerates **seventeen** codes. The comparison, row by row, is in
+[exp48's notes](../plans/exp48-failure-codes-notes/opus.md); the seventeen are
+snapshotted in `vpay_adapter_mtn_momo::mapping`'s tests as
+`PUBLISHED_ERROR_REASONS`, and a code that is neither mapped below nor
+deliberately unmapped fails `every_published_reason_is_mapped_or_deliberately_not`.
+
+**MTN binds this enum to the response this adapter polls**, so the rows below
+are a citation and not an inference. In the same document
+`RequestToPayResult.reason` is `$ref: "#/components/schemas/ErrorReason"`, and
+the portal's `RequesttoPayTransactionStatus` operation
+(`GET /v1_0/requesttopay/{referenceId}`) answers `RequestToPayResult` on its
+`200`, described as "note that a failed request to pay will be returned with
+this status too … the 'reason' field can be used to retrieve a cause in case
+of failure". Two of that response's worked examples carry `PAYER_NOT_FOUND`
+and `PAYEE_NOT_FOUND` in `reason.code`.
+
+_(This paragraph said the reverse when the table was re-grounded on
+2026-09-10 — that `ErrorReason` was "the whole Collection API's error schema,
+not `requesttopay`'s", that MTN "publishes no per-operation subset", and that
+each new row was a deliberate assumption in the safe direction. Re-retrieved
+and corrected 2026-09-11: the schema and the operation document both say
+otherwise. The rows were right; the reason given for them understated the
+evidence, and understating it is what would let someone revert
+`PAYMENT_NOT_APPROVED` as a guess.)_
+
+What is **not** published, and remains the real caveat, is any statement that
+a given reason will ever actually arrive: MTN types the field, it does not
+promise the values. Nothing in this repository has called MTN.
+
+| MTN `reason`                      | → core code                                      | Conformance case |
+| --------------------------------- | ------------------------------------------------ | ---------------- |
+| `NOT_ENOUGH_FUNDS`                | `insufficient_funds`                             | `…0f01`          |
+| `COULD_NOT_PERFORM_TRANSACTION` † | `payer_timeout` (PIN not entered, ~5 min)        | `…0f02`          |
+| `EXPIRED`                         | `payer_timeout` (the prompt's own window closed) | `…0f04`          |
+| `PAYMENT_NOT_APPROVED`            | `payer_declined`                                 | `…0f05`          |
+| `APPROVAL_REJECTED`               | `payer_declined`                                 | `…0f06`          |
+| `PAYER_NOT_FOUND`                 | `invalid_payer`                                  | `…0f07`          |
+| `PAYER_LIMIT_REACHED`             | `payer_limit_reached`                            | `…0f08`          |
+| `SENDER_ACCOUNT_NOT_ACTIVE` †     | `payer_account_blocked`                          | `…0f09`          |
+| `PAYEE_NOT_FOUND`                 | `invalid_payee`                                  | `…0f0a`          |
+| `PAYEE_NOT_ALLOWED_TO_RECEIVE`    | `payee_account_blocked`                          | `…0f0b`          |
+| `NOT_ALLOWED`                     | `provider_account_blocked`                       | `…0f03`          |
+| `SERVICE_UNAVAILABLE` / 503       | `provider_unavailable`                           | `…0f0c`          |
+| anything else                     | `provider_error` + raw reason                    | `…0f0d`          |
+
+The case column is the reference a WireMock mapping in
+`backends/tests/conformance/wiremock/mtn/mappings/requesttopay-status.json`
+keys on; `a_declined_charge_maps_to_the_documented_failure_code` drives every
+one of them against a real container and asserts both the code **and** that
+the rail's own word survives into `failure_raw`. Until 2026-09-10 three of the
+nine rows had a case and the rest were transcription.
+
+**† Two rows are not in MTN's published enum**, and are kept because this
+document and these stubs have carried them since Step 3 — dropping them would
+turn two mapped declines back into `provider_error`. Nothing MTN publishes
+confirms either: they are absent from `ErrorReason` — the enum MTN types
+`RequestToPayResult.reason` with, i.e. the exact field this adapter reads —
+and from every schema the portal serves for the Collection and Remittance
+APIs (the Disbursements API publishes none). Re-checked 2026-09-11. They are declared in
+`vpay_adapter_mtn_momo::UNPUBLISHED_REASONS` rather than left to pass for
+documented, and `a_reason_mtn_does_not_publish_is_declared_as_such` fails if
+that list and this table disagree.
+
+**Four published codes stay `provider_error` on purpose**
+(`vpay_adapter_mtn_momo::UNMAPPED_REASONS`, which also carries the three
+`CONFIGURATION_CODES`):
+
+| Code                        | Why not mapped                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INTERNAL_PROCESSING_ERROR` | On a 500 it is `Transport` and the poll ladder resolves it. On a terminal `FAILED` there is nothing left to retry and nothing to tell a payer — which is what `provider_error` means                                                                                                                                                                    |
+| `RESOURCE_NOT_FOUND`        | About the _reference_, not the payment. The status query answers it as HTTP 404 → `ChargeStatus::NotFound`, which is the whole recovery story                                                                                                                                                                                                           |
+| `RESOURCE_ALREADY_EXIST`    | The duplicate-reference answer, handled as HTTP 409 → `Submitted`. As a `FAILED` reason it would be MTN contradicting itself                                                                                                                                                                                                                            |
+| `TRANSACTION_CANCELED`      | **The one genuinely open row.** `payer_declined` would read well, but MTN publishes no description saying _who_ cancels, and the Collection API's only cancel operations are `CancelInvoice` and `CancelPreApproval`, neither of which vpay calls. Guessing "the payer" would put a sentence in front of a buyer on the strength of a verb. **Ask MTN** |
 
 HTTP: `409 RESOURCE_ALREADY_EXIST` on a duplicate reference — **the adapter must
 report this as `Submitted`**. `404` → `NotFound`, never a failure.
@@ -139,6 +212,27 @@ against a real `wiremock/wiremock` container by the shared conformance suite
 `backends/tests/conformance/wiremock/mtn/mappings/`). The failure table above
 is transcribed into `mapping::FAILURE_REASONS` and every row is asserted, in
 both directions, by a unit test.
+
+**Updated 2026-09-10 (exp48, [issue
+#59](https://github.com/vaam-apps/vpay/issues/59)).** The table went from nine
+rows to twelve and, for the first time, was compared against MTN's own
+`ErrorReason.code` enum instead of only against itself — see "Failure
+mapping" above for the citation and for the two rows MTN does not publish.
+`PAYMENT_NOT_APPROVED` and `APPROVAL_REJECTED` → `payer_declined` is the
+change that matters outside this crate: that code had buyer copy in
+`examples/shop`, a type in both merchant SDKs and a place in
+`FailureCode::ALL`, and no adapter emitted it. **MTN now reaches all eleven
+codes** (`vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES`, pinned by
+`mtn_reaches_every_code_the_core_defines`), and every mapped reason has a
+conformance case where three of nine had one before. A new demo MSISDN,
+`237600000103`, reaches `payer_declined`: proven by
+`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, which drives it
+through `submit` and `query_status` against a real WireMock container. **No
+browser has typed it** — `checkout.cy.ts` drives the hex family, and
+`just demo-walk` does not send this number at all (see
+[../runbooks/demo.md](../runbooks/demo.md) § "The test numbers"). It is a
+number a payer _can_ type that the adapter is proven to honour, which is not
+the same claim as an exercised browser path.
 
 **`refund` is not implemented** and returns
 `ProviderError::NotImplemented("mtn_momo::refund")` — see
@@ -266,22 +360,52 @@ inherits three refusals that are not MTN-specific:
   `backends/tests/integration/tests/provider_callback.rs` POSTs the body
   transcribed above to the URL MTN was handed on the submit, so **a body
   faithful to this document but not to MTN would pass**.
-- The crate runs **48 tests, 48 passed, 0 skipped**
-  (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-03).
+- **Nothing has ever called MTN, and the new rows do not change that.**
+  `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` and `EXPIRED` are real strings
+  from MTN's published enum, and that enum is the declared type of
+  `RequestToPayResult.reason` — so the shape and the vocabulary are cited, not
+  assumed. What no document can tell us is whether MTN's Cameroon deployment
+  ever _emits_ a given one. A stub answering a string MTN may never send
+  proves the mapping row, not the rail.
+
+  _(This bullet said the enum "is the whole Collection API's and says nothing
+  about which operation returns which code" until 2026-09-11; see "Failure
+  mapping" for the correction. The conclusion — that only a real call settles
+  this — is unchanged, and is the reason "Real sandbox" is still ⛔.)_
+
+- The crate runs **62 tests, 62 passed, 0 skipped**
+  (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-10; 48 on
+  2026-09-03, before exp48 added the enum-comparison tests).
 
 ## Documentation MSISDNs (steering table)
 
-Every one of these is a WireMock scenario key, not a real subscriber. Each
-row's two MSISDNs enter the **same** scenario by the **same** mapping (one
-`matches` regex, not two mappings) and therefore the same walk — proven by
-`a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
+Every one of these is a WireMock scenario key, not a real subscriber. Where a
+row has **two** MSISDNs they enter the **same** scenario by the **same**
+mapping (one `matches` regex, not two mappings) and therefore the same walk —
+proven by `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
 `backends/tests/conformance/tests/adapter_conformance.rs`.
+
+**A row with no hex MSISDN is not an omission.** The hex family predates
+`frontends/apps/checkout`'s MSISDN validator and is kept only because it was
+already working; a number added since is digits-only, because that is the only
+form a payer can type. `237600000103` (2026-09-10) is such a row, as
+`237600000503` is — and **both are in the twin test**, which despite its name
+is the case that drives each of these numbers against a real WireMock
+container and asserts the code and the rail's own reason that come back.
+
+_(This paragraph ended "and neither is in the twin test, because there is no
+twin to agree with" when `237600000103` was added on 2026-09-10. That was
+false of `237600000503`, which had had a case since exp22, and it was the
+stated reason `237600000103` was given none — leaving the only number that
+reaches `payer_declined` proven by nothing but this sentence. Corrected
+2026-09-11 with the missing case.)_
 
 | Outcome                       | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario                                      | First status query                                           | Second status query             |
 | ----------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------ | ------------------------------- |
 | The payer approves            | `237600000ce0`                                                                     | `237600000100`                                                                | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING`                                                    | `SUCCESSFUL`                    |
 | The payer has no balance      | `237600000f01`                                                                     | `237600000101`                                                                | `mtn-demo-decline` (`demo-outcomes.json`)     | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds`         | — (terminal on the first query) |
 | The prompt expires unanswered | `237600000f02`                                                                     | `237600000102`                                                                | `mtn-demo-expiry` (`demo-outcomes.json`)      | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
+| The payer refuses the prompt  | — (digits only)                                                                    | `237600000103`                                                                | `mtn-demo-refused` (`demo-outcomes.json`)     | `FAILED` / `PAYMENT_NOT_APPROVED` → `payer_declined`         | — (terminal on the first query) |
 
 The hex family is what `examples/merchant-demo` (`Steering::Msisdn`) and
 `frontends/tests/e2e/cypress/e2e/checkout.cy.ts` (`MTN_E2E_POLL_MSISDN`) send —

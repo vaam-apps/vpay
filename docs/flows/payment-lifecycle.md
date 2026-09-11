@@ -58,6 +58,31 @@ terminal in practice, because only one charge may ever exist per intent.
 **`canceled` is reachable only from `requires_payment_method`.** Once a rail has
 the request you cannot recall it.
 
+**A failure carries a `FailureCode`, and not every rail can produce every
+one.** The vocabulary and what each code means are
+[failures.md](failures.md); the part that belongs to the _lifecycle_ is that
+the code a merchant reads on `last_payment_error` depends on which rail the
+charge went to, and the two MVP rails differ by eight of eleven:
+
+|                                 | MTN MoMo (push)                                                                  | Orange Money (redirect)                                                                         |
+| ------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Codes it can produce            | all eleven                                                                       | `payer_timeout`, `provider_account_blocked`, `provider_error`                                   |
+| Where the vocabulary comes from | MTN's published `ErrorReason.code` enum, seventeen values, twelve of them mapped | five documented statuses, no sub-reason for `FAILED`                                            |
+| A payer who refuses             | `payer_declined` (`PAYMENT_NOT_APPROVED`)                                        | arrives as `EXPIRED` → `payer_timeout`; the rail does not distinguish it from an abandoned page |
+
+The full table — code by code, which rail's reason produces it, and the
+conformance case that proves it — is in
+[failures.md § Which rail can produce which code](failures.md#which-rail-can-produce-which-code).
+A merchant writing one branch per code is doing the right thing; a merchant
+assuming every branch is reachable on the rail in front of them is not.
+
+**A code no rail produces is a reservation, not dead weight.** Until
+2026-09-10 `payer_declined` was one, and it was being promised to buyers by
+`examples/shop` while nothing could emit it
+([issue #59](https://github.com/vaam-apps/vpay/issues/59)). Variants are never
+deleted — the vocabulary is a wire contract — so the answer is to document
+what produces each one and let a test fail when a promise outruns a producer.
+
 **Refunds do not change intent status.** A refund is a separate object.
 
 ## One charge per intent, forever

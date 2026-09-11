@@ -18,6 +18,60 @@ and it does not grow when a rail is added.
 | `provider_unavailable`     | Rail down or timing out                 | Yes, later          | You               |
 | `provider_error`           | Unmapped; carries the raw reason        | Unknown             | Investigate       |
 
+## Which rail can produce which code
+
+The table above says what each code _means_. It does not say whether anything
+can produce it — and until 2026-09-10 one of them could not.
+`payer_declined` was defined by the core, typed in both merchant SDKs and
+given buyer copy by `examples/shop`, and no adapter emitted it
+([issue #59](https://github.com/vaam-apps/vpay/issues/59)). Nothing failed,
+because nothing compared a promise to a producer.
+
+| Code                       | MTN MoMo                                    | Orange Money                | Proven by                                                                        |
+| -------------------------- | ------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | `…0f01`                                                                          |
+| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | MTN `…0f02`, `…0f04`; Orange `…0f01`                                             |
+| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | MTN `…0f05`, `…0f06`                                                             |
+| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | `…0f07`                                                                          |
+| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | `…0f08`                                                                          |
+| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | `…0f09`                                                                          |
+| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | `…0f0a`                                                                          |
+| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | `…0f0b`                                                                          |
+| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem` on both rails |
+| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | `…0f0c`                                                                          |
+| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | MTN `…0f0d`; Orange `…0f02`                                                      |
+
+`…0fxx` is the charge reference a WireMock mapping keys on, under
+`backends/tests/conformance/wiremock/{mtn,orange}/mappings/`.
+`a_declined_charge_maps_to_the_documented_failure_code` drives every row
+against a real container, and
+`the_declines_prove_every_code_each_rail_can_produce` asserts the rows are
+_all_ of them — it holds the cases against each adapter's
+`PRODUCED_FAILURE_CODES`, so a code that gains a producer without a case, or a
+case for a code the adapter does not declare, fails.
+
+**No code is unreachable on every rail**, which is what changed on 2026-09-10.
+Eight of the eleven are unreachable **on Orange**, and that is not a gap in a
+table: Orange documents five statuses (`INITIATED`, `PENDING`, `SUCCESS`,
+`EXPIRED`, `FAILED`) and no sub-reason for `FAILED` at all, so its protocol
+cannot say "not enough funds" or "no such payer". A payer who clicks _Cancel_
+on its hosted page arrives as `EXPIRED` — indistinguishable from one who
+walked away — so `payer_declined` in particular is unreachable there, and
+inventing a `CANCELLED` to make the rails look alike is refused rather than
+done. `examples/shop`'s test-number panel states each of those eight, and its
+`cannotExpress` rows are checked against
+`vpay_adapter_orange_money::PRODUCED_FAILURE_CODES` so a claim cannot outlive
+its truth.
+
+**No variant is deleted, and none should be.** A code nothing produces today
+is a documented reservation: the vocabulary is a wire contract, and removing a
+variant would break a merchant deserialising it.
+
+**† `SENDER_ACCOUNT_NOT_ACTIVE` is not in MTN's published `ErrorReason` enum**,
+nor is `COULD_NOT_PERFORM_TRANSACTION`. Both are mapped and both are declared
+in `vpay_adapter_mtn_momo::UNPUBLISHED_REASONS`; see
+[adapter-mtn-momo.md](adapter-mtn-momo.md) § Failure mapping.
+
 ## `provider_error` is an alert, not a resting place
 
 A rising `provider_error` rate means an adapter's mapping table has drifted
@@ -47,10 +101,12 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
 - **Over the wire**, both are proven by the shared conformance case
   `a_declined_charge_maps_to_the_documented_failure_code`, which drives a
   real `wiremock/wiremock` container per rail and asserts the taxonomy code
-  the documented decline arrives as (MTN `NOT_ENOUGH_FUNDS` →
-  `insufficient_funds`, `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout`,
-  `NOT_ALLOWED` → `provider_account_blocked`; Orange `EXPIRED` →
-  `payer_timeout`). Measured 2026-09-03: 26 conformance tests, 26 passed.
+  the documented decline arrives as — **and, since 2026-09-10, that the
+  rail's own word survives into `failure_raw`**, which the previous
+  `!raw.is_empty()` did not: it passed for a table in which two reasons'
+  stubs had been transposed. **Every mapped reason now has a case**, thirteen
+  on MTN and two on Orange, where three and one had one before. Measured
+  2026-09-10: 53 conformance tests, 53 passed, 0 ignored.
 - **A decline reaches a merchant.** `POST …/confirm` on a rail that refuses
   the charge writes `charges.failure_code` + `failure_raw`, stamps the
   intent's `last_payment_error`, and answers `409 charge_declined`
@@ -67,6 +123,17 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
   who only listens to webhooks hears about a decline made at _submit_ and not
   only about one the poll ladder found. Both paths use the same type on
   purpose — see [webhooks.md](webhooks.md).
+
+**Updated 2026-09-10 (exp48, [issue
+#59](https://github.com/vaam-apps/vpay/issues/59)): the taxonomy is now
+checked against MTN's published vocabulary, not only against this
+repository's own transcription of it.** MTN's `ErrorReason.code` enum
+lists seventeen codes; the adapter mapped nine and had never been compared
+against the list. Three became new rows (`PAYMENT_NOT_APPROVED` and
+`APPROVAL_REJECTED` → `payer_declined`, `EXPIRED` → `payer_timeout`), four
+stay `provider_error` with a written reason each, and two rows this
+repository maps turn out **not** to be published by MTN at all. See "Which
+rail can produce which code" above.
 
 **`provider_error` is still the escape hatch, and it is now reachable from a
 real response path** — an unmapped string arrives as `provider_error`

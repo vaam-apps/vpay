@@ -19,6 +19,8 @@ mod mapping;
 mod token;
 mod wire;
 
+pub use crate::mapping::PRODUCED_FAILURE_CODES;
+
 use std::time::Instant;
 
 use async_trait::async_trait;

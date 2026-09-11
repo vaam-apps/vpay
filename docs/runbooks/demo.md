@@ -585,11 +585,12 @@ a phone number and Orange sends you to the rail's stub page. The steering
 numbers are the same ones the walkthrough uses, with one difference that
 matters:
 
-| What you want            | Type this MSISDN | Why not the one the demo prints                                                                                                                                                                                                     |
-| ------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The payment succeeds     | `237600000100`   | The page validates Cameroon E.164 — `237`, then `6`, then eight **digits** — and correctly refuses `237600000ce0`, which has hex letters in it. Both numbers enter the same WireMock scenario by the same mapping (Step 9, lane 2b) |
-| The payer has no balance | `237600000101`   | as above, twin of `237600000f01`                                                                                                                                                                                                    |
-| The prompt expires       | `237600000102`   | as above, twin of `237600000f02`                                                                                                                                                                                                    |
+| What you want                | Type this MSISDN | Why not the one the demo prints                                                                                                                                                                                                                                                                               |
+| ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The payment succeeds         | `237600000100`   | The page validates Cameroon E.164 — `237`, then `6`, then eight **digits** — and correctly refuses `237600000ce0`, which has hex letters in it. Both numbers enter the same WireMock scenario by the same mapping (Step 9, lane 2b)                                                                           |
+| The payer has no balance     | `237600000101`   | as above, twin of `237600000f01`                                                                                                                                                                                                                                                                              |
+| The prompt expires           | `237600000102`   | as above, twin of `237600000f02`                                                                                                                                                                                                                                                                              |
+| The payer refuses the prompt | `237600000103`   | New 2026-09-10 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)); digits-only and no hex twin, because the hex family predates the page's validator. It arms `mtn-demo-refused`, which answers `FAILED`/`PAYMENT_NOT_APPROVED` → `payer_declined` — a code that until that day no rail could produce |
 
 For Orange, pick it in the selector and follow the redirect: you land on the
 **rail's** stub hosted page on `demo_orange_port`, which has a Pay link and a
@@ -691,10 +692,29 @@ because between them they are most of what a merchant actually has to build.
 - **The test numbers** are documentation MSISDNs the rail stubs are configured
   to answer particular things for. `237600000000` (or anything unlisted) pays;
   `237600000101` is insufficient funds on MTN; `237600000102` is a timeout on
-  either rail; `237600000400` is a refusal on either; `237600000503` is an
-  unavailable rail on MTN. The full table, including the three outcomes Orange
-  **cannot** express, is on the page itself and in
+  either rail; `237600000103` is a payer who refuses the prompt on MTN;
+  `237600000400` is a refusal on either; `237600000503` is an unavailable rail
+  on MTN. The full table, including the **four** outcomes Orange cannot
+  express, is on the page itself and in
   [../../examples/shop/README.md](../../examples/shop/README.md).
+
+  **`just demo-walk` does not send `237600000103`, so this runbook's six
+  outcomes do not include `payer_declined`.** The walkthrough drives the hex
+  family (`237600000ce0`, `…0f01`, `…0f02`) plus two Orange amounts, and that
+  is what the transcript in §4 and every "six outcomes" count on this page
+  mean. `237600000103` is reached by typing it into the checkout page in a
+  browser, and it is proven — against a real WireMock container, through the
+  adapter's `submit` and `query_status` — by
+  `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` in
+  `backends/tests/conformance/tests/adapter_conformance.rs`. No browser test
+  types it either; `checkout.cy.ts` drives the hex family.
+
+  Adding a seventh payment to `examples/merchant-demo` would make the
+  walkthrough cover it, and would also invalidate §4's pasted transcript and
+  the "six outcomes for six" wording in the measurement records further down
+  this page — those are dated records of runs that happened, not
+  descriptions to be edited. **That trade is left to the maintainer**
+  (2026-09-11).
 
 Two things to know before you drive them:
 

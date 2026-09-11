@@ -164,15 +164,29 @@
           "block as the decline pair above; `0f02` names requesttopay-status.json's",
           "reference-keyed equivalent.",
           "",
-          "IT IS NOT SPELLED `EXPIRED`, AND THAT IS DELIBERATE. `EXPIRED` is ORANGE's status",
-          "string (orange/mappings/transactionstatus.json, -> payer_timeout). MTN documents no",
-          "`EXPIRED`: its status vocabulary is PENDING / SUCCESSFUL / FAILED, and the reason on",
-          "a FAILED prompt that timed out is COULD_NOT_PERFORM_TRANSACTION -- which is exactly",
-          "the row vpay_adapter_mtn_momo::mapping::FAILURE_REASONS annotates 'The payer never",
-          "entered their PIN; MTN gives them about five minutes'. Inventing an MTN `EXPIRED`",
-          "to make the two rails look alike would be this stub asserting something about a",
-          "rail nobody has called. Both outcomes still land on the SAME core code,",
-          "payer_timeout, which is the thing a merchant integrates against."
+          "IT IS NOT SPELLED `EXPIRED`, AND THAT IS DELIBERATE -- but the reason is narrower",
+          "than this comment used to give, and the old wording is now wrong. MTN has no",
+          "EXPIRED *status*: RequestToPayResult.status is PENDING / SUCCESSFUL / FAILED and",
+          "nothing else, which is what makes `EXPIRED` here impossible. MTN DOES publish an",
+          "EXPIRED *reason* -- it is one of the seventeen values of ErrorReason.code, and",
+          "since 2026-09-10 vpay_adapter_mtn_momo::mapping::FAILURE_REASONS maps it to",
+          "payer_timeout, the same code this mapping produces.",
+          "",
+          "Until 2026-09-11 these lines said 'MTN documents no `EXPIRED`' flatly, and that",
+          "the row would be 'inventing an MTN EXPIRED'. That was written before anyone had",
+          "read MTN's enum; exp48 read it, added the EXPIRED row, and left this paragraph",
+          "contradicting the table it sits next to. Conflating the status vocabulary with the",
+          "reason vocabulary is what made a true sentence about `status` read as a false one",
+          "about `reason`.",
+          "",
+          "What is still true and is why this stub keeps COULD_NOT_PERFORM_TRANSACTION: it is",
+          "the reason the flow doc has always recorded for a prompt that timed out, and it is",
+          "the row FAILURE_REASONS annotates 'The payer never entered their PIN; MTN gives",
+          "them about five minutes'. Swapping it for EXPIRED would change what this demo",
+          "number demonstrates on the strength of no new evidence -- and note that",
+          "COULD_NOT_PERFORM_TRANSACTION is itself one of the two strings MTN does NOT",
+          "publish (vpay_adapter_mtn_momo::UNPUBLISHED_REASONS). Both land on the SAME core",
+          "code, payer_timeout, which is the thing a merchant integrates against."
         ]
       }
     },
@@ -291,6 +305,118 @@
           "anything else apply here unchanged: priority 4 is below the",
           "reference-keyed status mappings and above the catch-all, the scenario",
           "starts in `Started` in every container, and one answer disarms it."
+        ]
+      }
+    },
+    {
+      "name": "demo: a confirm the PAYER WILL REFUSE, armed by MSISDN",
+      "scenarioName": "mtn-demo-refused",
+      "newScenarioState": "refused-armed",
+      "priority": 4,
+      "request": {
+        "method": "POST",
+        "urlPath": "/collection/v1_0/requesttopay",
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.payer.partyId",
+              "matches": "237600000103"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202
+      },
+      "metadata": {
+        "why": [
+          "Added 2026-09-10 (exp48, issue #59) so examples/shop's test-number panel can",
+          "reach `payer_declined` -- the ONE core failure code that, until this mapping,",
+          "no number on either rail could produce. The shop's README said so in as many",
+          "words: 'FailureCode::PayerDeclined is currently produced by no adapter in this",
+          "repository'. That was true, and it was the wrong thing to be true: the core",
+          "defined the code, both SDKs' types listed it and the shop had written buyer",
+          "copy for it.",
+          "",
+          "DIGITS ONLY, and no hex twin, for the same reason `237600000503` above has",
+          "none: the hex `237600000f0x` family predates the checkout page's MSISDN",
+          "validator and is kept only because it was already working. This number is new,",
+          "so it is only ever the form a payer can actually type",
+          "(frontends/apps/checkout/src/lib/msisdn.ts refuses letters). `103` continues",
+          "the 1xx family, which is this stub's block for outcomes decided at the STATUS",
+          "QUERY -- as against `400`, whose refusal happens at the submit.",
+          "",
+          "202, the ordinary accepted submit, for the reason the pairs above give: this",
+          "mapping exists to MOVE THE SCENARIO, and the confirm must be indistinguishable",
+          "from a settling one right up to the point the worker polls.",
+          "",
+          "No requiredScenarioState, and the same strictly-sequential coupling: see the",
+          "decline pair's comment above, which explains all four properties in full.",
+          "",
+          "NAMED mtn-demo-refused, NOT mtn-demo-declined, since 2026-09-11. The scenario one",
+          "MSISDN above is mtn-demo-decline (insufficient funds), and a name one letter",
+          "longer than its neighbour is a name that cannot be grepped for: `grep",
+          "mtn-demo-decline` matches both, and the two scenarios mean different things to a",
+          "payer. 'Refused' is also what the shop's copy and the runbook already say for",
+          "this outcome."
+        ]
+      }
+    },
+    {
+      "name": "demo: the armed refusal answers PAYMENT_NOT_APPROVED once, then disarms",
+      "scenarioName": "mtn-demo-refused",
+      "requiredScenarioState": "refused-armed",
+      "newScenarioState": "Started",
+      "priority": 4,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/collection/v1_0/requesttopay/.*"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "PAYMENT_NOT_APPROVED",
+            "message": "The payment was not approved by the payer"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_declined (vpay_adapter_mtn_momo::mapping::FAILURE_REASONS,",
+          "docs/flows/adapter-mtn-momo.md).",
+          "",
+          "PAYMENT_NOT_APPROVED IS MTN'S OWN WORD AND IS NOT INVENTED HERE. It is one of",
+          "the seventeen values of `ErrorReason.code` in the Collection API's OpenAPI",
+          "components document, retrieved 2026-09-10 from the developer portal -- the",
+          "citation is in vpay_adapter_mtn_momo::mapping's module header and the full",
+          "seventeen are snapshotted in that module's PUBLISHED_ERROR_REASONS.",
+          "",
+          "MTN also gives this exact field that type: RequestToPayResult.reason is $ref",
+          "ErrorReason, and RequesttoPayTransactionStatus (GET /v1_0/requesttopay/{id})",
+          "answers RequestToPayResult on its 200. Corrected 2026-09-11 -- these lines used",
+          "to say MTN 'does NOT publish which of its operations return which reason', which",
+          "the operation document contradicts.",
+          "",
+          "What MTN does not promise is that the reason ever ARRIVES, and nothing here has",
+          "called MTN. If it never does the row is dead code; if it does, a buyer reads",
+          "'the payment was refused on the handset' instead of 'the rail refused and did",
+          "not say why'.",
+          "",
+          "THE DIFFERENCE FROM ...102 (COULD_NOT_PERFORM_TRANSACTION -> payer_timeout) IS",
+          "THE WHOLE POINT OF HAVING BOTH: a payer who never answered and a payer who",
+          "answered and said no are different events, and a demo that could only show the",
+          "first was a demo whose panel promised an outcome no number could reach.",
+          "",
+          "The object-shaped `reason`, like the expiry pair above; the decline pair uses",
+          "the bare string, so one demo run still exercises both of MTN's documented",
+          "shapes.",
+          "",
+          "The four properties that keep the decline mapping above from swallowing",
+          "anything else apply here unchanged: priority 4 is below the reference-keyed",
+          "status mappings and above the catch-all, the scenario starts in `Started` in",
+          "every container, and one answer disarms it."
         ]
       }
     }

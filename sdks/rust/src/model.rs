@@ -106,6 +106,15 @@ pub enum NextAction {
 /// vocabulary is owned by vpay's core and may grow a code this SDK predates,
 /// and a `#[serde(other)]` fallback variant would still lose the original
 /// string — a `String` field never can.
+///
+/// **Not every rail can produce every code.** On the two MVP rails, MTN MoMo
+/// reaches all eleven and Orange Money reaches three — `payer_timeout`,
+/// `provider_account_blocked` and `provider_error` — because Orange
+/// documents five statuses and no sub-reason for `FAILED`. A payer who
+/// cancels on its hosted page arrives as `payer_timeout`, since the rail
+/// does not distinguish that from an abandoned page. `docs/flows/failures.md`
+/// § "Which rail can produce which code" is the table, with the rail reason
+/// behind each code and the conformance case that proves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastPaymentError {
     /// The failure code, from `docs/flows/failures.md`'s vocabulary. A

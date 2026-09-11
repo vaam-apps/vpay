@@ -185,6 +185,295 @@
           "which is not a thing to check into a repository."
         ]
       }
+    },
+    {
+      "name": "status: declined \u2014 the prompt's own window closed",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f04"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "EXPIRED"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_timeout. MTN publishes `EXPIRED` in `ErrorReason.code` (the Collection",
+          "API's OpenAPI components, retrieved 2026-09-10 -- see",
+          "vpay_adapter_mtn_momo::mapping's header). It is the second reason on this rail",
+          "that means payer_timeout, the other being COULD_NOT_PERFORM_TRANSACTION at",
+          "...0f02, and the two are kept apart here so that the mapping of EACH is proven",
+          "rather than the mapping of whichever one a test happened to pick.",
+          "",
+          "NOTE THE ASYMMETRY WITH demo-outcomes.json, WHICH IS STILL RIGHT: MTN's *status*",
+          "vocabulary is PENDING / SUCCESSFUL / FAILED and has no EXPIRED. This is a",
+          "`reason` on a FAILED status, which is a different field and a different",
+          "enumeration. Orange's EXPIRED is a *status*."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payer refused the prompt",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f05"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "PAYMENT_NOT_APPROVED",
+            "message": "The payment was not approved"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_declined, AND THIS IS THE ROW ISSUE #59 EXISTS FOR. Until 2026-09-10",
+          "FailureCode::PayerDeclined was defined by vpay-core, given buyer copy by",
+          "examples/shop, listed in the SDKs' types -- and produced by NO adapter. The shop",
+          "said so in as many words ('produced by no adapter in this repository'), which",
+          "was true and was the wrong thing to be true.",
+          "",
+          "PAYMENT_NOT_APPROVED is published by MTN in ErrorReason.code, AND ErrorReason is",
+          "the type MTN gives the very field this stub is filling in: RequestToPayResult",
+          "declares reason as $ref ErrorReason, and RequesttoPayTransactionStatus",
+          "(GET /v1_0/requesttopay/{referenceId}) answers RequestToPayResult on its 200.",
+          "So this body's shape is the documented one and this reason is a documented",
+          "value of it.",
+          "",
+          "Corrected 2026-09-11. These lines previously said that 'what is NOT published is",
+          "which operations return it: ErrorReason is the whole Collection API's error",
+          "schema, not requesttopay's', and called the row a deliberate assumption. The",
+          "portal's own operation document says otherwise; the claim was not re-read before",
+          "it was written down in four places.",
+          "",
+          "What is still unproven is that MTN ever SENDS it. A schema types a field; it",
+          "does not promise a value, and nothing in this repository has called MTN. If the",
+          "reason never arrives the mapping row is dead code; if it does, a payer reads",
+          "'the prompt was declined' instead of 'the rail refused and did not say why'."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payer rejected the approval",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f06"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "APPROVAL_REJECTED"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_declined, by the same published enum and the same reasoning as ...0f05.",
+          "Deliberately the BARE STRING shape where 0f05 uses the object, so that both of",
+          "MTN's documented `reason` shapes are exercised over the wire for this code and",
+          "not only for payer_timeout (which has the same pairing at 0f01/0f02).",
+          "",
+          "A separate reference rather than a second body on 0f05 because the two are",
+          "separate published codes: flattening them here would mean the suite proved one",
+          "mapping and the doc's table claimed two."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the rail has no such payer",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f07"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "PAYER_NOT_FOUND"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> invalid_payer. Distinct from the SUBMIT-time PAYER_NOT_FOUND (a 400, mapped",
+          "through the same table by submit_outcome and steered by MSISDN in",
+          "demo-outcomes.json): this is the same reason arriving on a terminal FAILED",
+          "status, which is a different code path in the adapter and was covered by no",
+          "conformance case before 2026-09-10."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payer is over one of the rail's limits",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f08"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "PAYER_LIMIT_REACHED",
+            "message": "Payer limit reached"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_limit_reached. Payer-actionable but not immediately: the shop offers a",
+          "retry (FailureCode::payer_actionable) and the copy says 'per transaction, per",
+          "day, or per month', which is the honest answer to a limit nobody here can read."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the paying wallet is not active",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f09"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "SENDER_ACCOUNT_NOT_ACTIVE"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payer_account_blocked.",
+          "",
+          "ONE OF THE TWO REASONS THIS REPOSITORY MAPS THAT MTN DOES NOT PUBLISH: it is",
+          "absent from ErrorReason.code (retrieved 2026-09-10), as is",
+          "COULD_NOT_PERFORM_TRANSACTION at ...0f02. Both are declared in",
+          "vpay_adapter_mtn_momo::mapping::UNPUBLISHED_REASONS and both are kept, because",
+          "they have been in docs/flows/adapter-mtn-momo.md and in these stubs since Step 3",
+          "and dropping them would turn two mapped declines back into provider_error. This",
+          "case proves the MAPPING, not the rail: a stub answering a string MTN may never",
+          "send proves only that the table row works."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the rail has no such payee",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f0a"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "PAYEE_NOT_FOUND"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> invalid_payee. The merchant's own collection account, not the payer's: this is",
+          "one of the two merchant_actionable codes (vpay_core::FailureCode), and the shop",
+          "deliberately does NOT offer a retry on it -- a buyer pressing 'try again' would",
+          "fail identically a second time."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the payee may not receive",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f0b"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "PAYEE_NOT_ALLOWED_TO_RECEIVE",
+            "message": "Payee not allowed to receive"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> payee_account_blocked. The other merchant_actionable code. Distinct from",
+          "NOT_ALLOWED at ...0f03, which is OUR partner account and pages instead."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 the rail says the service is unavailable",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f0c"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": "SERVICE_UNAVAILABLE"
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> provider_unavailable.",
+          "",
+          "DELIBERATELY NOT THE SAME THING AS ...05aa, AND THE DIFFERENCE IS THE POINT.",
+          "...05aa is an HTTP 503, which is ProviderError::Transport: the charge's fate is",
+          "unknown and the poll ladder keeps asking. This is a 200 whose FAILED body names",
+          "SERVICE_UNAVAILABLE, which is TERMINAL -- the rail answered, and what it said is",
+          "that the charge is dead. Same words, opposite handling, and",
+          "an_unavailable_rail_is_a_transport_error_never_a_decline covers the other one."
+        ]
+      }
+    },
+    {
+      "name": "status: declined \u2014 cancelled, by nobody MTN will name",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/collection/v1_0/requesttopay/00000000-0000-0000-0000-000000000f0d"
+      },
+      "response": {
+        "status": 200,
+        "jsonBody": {
+          "status": "FAILED",
+          "reason": {
+            "code": "TRANSACTION_CANCELED",
+            "message": "Transaction canceled"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "-> provider_error, ON PURPOSE, and this case exists to keep that a decision.",
+          "",
+          "TRANSACTION_CANCELED is published in ErrorReason.code. It is NOT mapped to",
+          "payer_declined, which would read well, because MTN publishes no description",
+          "saying who cancels, and the only cancel operations on the Collection API are",
+          "CancelInvoice and CancelPreApproval -- neither of which vpay calls. Guessing 'the",
+          "payer' would put a sentence in front of a buyer on the strength of a verb.",
+          "",
+          "So it lands in the fallback, and what this case asserts is the OTHER half of the",
+          "contract: the rail's own word survives into ChargeStatus::Failed's `raw`, so an",
+          "operator reading failure_raw sees TRANSACTION_CANCELED and can add the row the",
+          "day MTN answers the question. It is listed in",
+          "vpay_adapter_mtn_momo::mapping::UNMAPPED_REASONS with the other six."
+        ]
+      }
     }
   ]
 }

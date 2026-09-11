@@ -2497,6 +2497,91 @@ witness is a stub; ⛔ means not built.
 | `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | ⛔ `NotImplemented("mtn_momo::refund")`         |
 | `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called | 🟡 parsed, routed, never received; `notif_token` unverified | ✅ `Unsupported` — permanent, capability-driven |
 
+**Failure mapping, re-grounded 2026-09-10 (exp48, [issue
+#59](https://github.com/vaam-apps/vpay/issues/59)).** ✅ in the wire-call
+column above has never meant the _mapping tables_ were faithful to the rails
+— only that the code did what this repository's own documents said. For MTN
+that is now measurably less true than it was: the nine-row table was compared,
+for the first time, against MTN's published `ErrorReason.code` enum, read from
+the Collection API's OpenAPI components document on the developer portal
+(retrieved 2026-09-10; the citation is in
+[plans/exp48-failure-codes-notes/opus.md](plans/exp48-failure-codes-notes/opus.md)
+and in the adapter's module header). MTN publishes **seventeen** codes.
+
+- **Three became rows**: `PAYMENT_NOT_APPROVED` and `APPROVAL_REJECTED` →
+  `payer_declined`, `EXPIRED` → `payer_timeout`. `payer_declined` had been
+  defined by `vpay-core`, typed in both merchant SDKs and given buyer copy by
+  `examples/shop` while **no adapter produced it**; the shop's README said so
+  in as many words, and said it was a fact about MTN when it was a fact about
+  this repository. MTN now reaches all eleven codes; a new demo MSISDN,
+  `237600000103`, reaches `payer_declined` — proven over a socket by
+  `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, **not** by a
+  browser or by `just demo-walk`, neither of which sends this number
+  (corrected 2026-09-11 by the review; exp48 shipped the number with that
+  case missing and the sentence claiming a browser).
+- **Four stay `provider_error` deliberately**, each with a written reason
+  (`vpay_adapter_mtn_momo::UNMAPPED_REASONS`). One of them,
+  `TRANSACTION_CANCELED`, is **an open question for the maintainer**: it would
+  read well as `payer_declined`, MTN publishes no description saying who
+  cancels, and the branch declined to guess.
+- 🟡 **Two rows this repository maps are not in MTN's published enum at all** —
+  `COULD_NOT_PERFORM_TRANSACTION` (which the demo's prompt-expiry number
+  produces) and `SENDER_ACCOUNT_NOT_ACTIVE` (the only producer of
+  `payer_account_blocked` on either rail). They are kept, because dropping
+  them would turn two mapped declines back into `provider_error`, and declared
+  in `vpay_adapter_mtn_momo::UNPUBLISHED_REASONS` rather than left to pass for
+  documented. **Nothing MTN publishes confirms either. Someone should ask.**
+- **Orange is unchanged in behaviour and now states its limits.** It produces
+  three of the eleven codes; the other eight are _unreachable_, not unmapped,
+  because it documents five statuses and no sub-reason for `FAILED`. A payer
+  who cancels on its hosted page arrives as `EXPIRED` → `payer_timeout`, so
+  `payer_declined` in particular cannot happen there — and inventing a
+  `CANCELLED` to make the rails look alike was refused.
+
+**Reviewed 2026-09-11**, and the vendor claim above was re-retrieved rather
+than trusted: MTN's `ErrorReason` enum was fetched again from the portal and
+diffed against the adapter's snapshot — **seventeen for seventeen, in the
+document's own order, no code missing in either direction** — and both
+`UNPUBLISHED_REASONS` confirmed absent from every schema the portal serves for
+the Collection and Remittance APIs. Three corrections came out of it, and the
+notes are
+[plans/exp48-failure-codes-notes/opus-review.md](plans/exp48-failure-codes-notes/opus-review.md):
+
+- 🟡 **The number that reaches `payer_declined` was proven by nothing.**
+  `237600000103`, its stub mapping and five documents promising it shipped
+  without any test that runs it — the suite was green because nothing compared
+  the promise to an execution, which is issue #59's own shape one layer down.
+  It now has a case in
+  `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`, and that case
+  asserts MTN's reason and not only the taxonomy code.
+- **The caveat under the new rows was wrong, in the branch's disfavour.** Five
+  files said MTN publishes no per-operation subset of `ErrorReason`. It does:
+  `RequestToPayResult.reason` is `$ref ErrorReason`, and
+  `RequesttoPayTransactionStatus` answers `RequestToPayResult`. So
+  `PAYMENT_NOT_APPROVED` → `payer_declined` is a citation, not an assumption.
+  **What is still unproven is that MTN ever sends it** — a schema types a
+  field, it does not promise a value — so "Real sandbox" is untouched.
+- A stub comment asserting in capitals that "MTN documents no `EXPIRED`" was
+  left next to the table that now maps MTN's `EXPIRED`. MTN has no EXPIRED
+  _status_; it publishes an EXPIRED _reason_.
+
+Gates at the reviewed head: `just ci` **exit 0** — twelve gates, **1692 Rust
+tests, 1692 passed, 0 skipped**, 111 doctests passed / 1 ignored, every web
+suite green, `cargo deny` ok. Conformance **54/54** (53 before the added
+case); MTN units 62/62, Orange 57/57. `just demo-walk` **exit 0** with the six
+outcomes unchanged — and `payer_declined` is **not** one of them, which the
+runbook now says rather than leaving a reader to infer.
+
+Each rail's `PRODUCED_FAILURE_CODES` is the machine-readable list, the
+per-rail table is [flows/failures.md](flows/failures.md) § "Which rail can
+produce which code", and three checks now hold the pieces to each other:
+`the_declines_prove_every_code_each_rail_can_produce` (conformance),
+`every_published_reason_is_mapped_or_deliberately_not` (MTN unit) and the
+shop's `test-numbers.test.ts`, which reads both adapters' Rust and fails if
+the panel or the README promises a code the rail cannot reach. **The ⛔ in
+"Real sandbox" is untouched: a stub answering a string MTN may never send on a
+`requesttopay` proves the mapping row, not the rail.**
+
 **Account-holder lookup, added 2026-09-05 (issue #47).** A sixth column would
 have made the table unreadable, so it is here instead:
 `supports_account_holder_lookup` is **`true` for `mtn_momo`** and the adapter

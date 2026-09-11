@@ -42,6 +42,46 @@ pub(crate) const STATUS_TABLE: [(&str, Meaning); 5] = [
     ("FAILED", Meaning::Failed(FailureCode::ProviderError)),
 ];
 
+/// Every [`FailureCode`] this adapter can put on a charge, and nothing else.
+///
+/// The rail's *declared vocabulary*, the twin of
+/// `vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES` and the reason issue #59
+/// is about more than one missing row: MTN reaches all eleven of the core's
+/// codes and Orange reaches **three**, so a merchant reading one list for
+/// "what can happen" is reading the wrong thing on whichever rail they did
+/// not have in mind. `docs/flows/failures.md` carries the per-rail table this
+/// is the machine-readable half of, and `examples/shop`'s test-number panel
+/// is checked against it.
+///
+/// Three, and each from a different kind of place:
+///
+/// * [`FailureCode::PayerTimeout`] — [`STATUS_TABLE`]'s `EXPIRED` row, which
+///   is also what the payer's own *cancel* arrives as: Orange documents five
+///   statuses and `CANCELLED` is not one of them, so this adapter will not
+///   invent the distinction (`docs/flows/adapter-orange-money.md`, and
+///   `the_payers_exit_from_the_hosted_page_decides_the_charge` in the
+///   conformance suite). **`payer_declined` is therefore unreachable here**,
+///   not merely unmapped.
+/// * [`FailureCode::ProviderError`] — `FAILED`, for which Orange documents no
+///   sub-reason vocabulary at all, plus `crate::submit_error`'s catch-all.
+/// * [`FailureCode::ProviderAccountBlocked`] — HTTP `401`/`403`, which is
+///   about our credentials and has no status string.
+///
+/// The other eight are not gaps in this table; they are things Orange's
+/// documented protocol cannot say. Adding a row for one would mean this
+/// repository had invented a rail vocabulary.
+pub const PRODUCED_FAILURE_CODES: [FailureCode; 3] = [
+    FailureCode::PayerTimeout,
+    FailureCode::ProviderAccountBlocked,
+    FailureCode::ProviderError,
+];
+
+/// The codes in [`PRODUCED_FAILURE_CODES`] that no row of [`STATUS_TABLE`]
+/// produces, so the test below holds two lists to each other rather than one
+/// to itself.
+#[cfg(test)]
+const NON_TABLE_FAILURE_CODES: [FailureCode; 1] = [FailureCode::ProviderAccountBlocked];
+
 /// Case-insensitive because a rail that starts answering `success` instead of
 /// `SUCCESS` has not changed what it means, and losing a settled payment to a
 /// capitalisation change is not a trade this system should take.
@@ -256,6 +296,57 @@ mod tests {
         );
         assert_eq!(meaning("SETTLED"), None);
         assert_eq!(meaning(""), None);
+    }
+
+    /// The declared vocabulary is exactly the table's failure codes plus the
+    /// one path that has no table row.
+    #[test]
+    fn the_declared_vocabulary_is_the_table_plus_the_path_that_has_no_row() {
+        let mut from_table: Vec<FailureCode> = STATUS_TABLE
+            .iter()
+            .filter_map(|(_, meaning)| match meaning {
+                Meaning::Failed(code) => Some(*code),
+                Meaning::Pending | Meaning::Succeeded => None,
+            })
+            .collect();
+        from_table.extend(NON_TABLE_FAILURE_CODES);
+        from_table.sort_unstable_by_key(|code| code.as_str());
+        from_table.dedup();
+
+        let mut declared = PRODUCED_FAILURE_CODES.to_vec();
+        declared.sort_unstable_by_key(|code| code.as_str());
+        let before = declared.len();
+        declared.dedup();
+        assert_eq!(before, declared.len(), "a code is declared twice");
+
+        assert_eq!(declared, from_table);
+    }
+
+    /// **Orange cannot decline on the payer's behalf, and the shop must not
+    /// say it can** (issue #59). Named codes rather than a count, because
+    /// "three of eleven" says nothing about *which* three and would still
+    /// pass if `payer_declined` replaced `payer_timeout`.
+    #[test]
+    fn the_codes_orange_cannot_express_are_unreachable_and_not_merely_unmapped() {
+        for unreachable in [
+            FailureCode::InsufficientFunds,
+            FailureCode::PayerDeclined,
+            FailureCode::InvalidPayer,
+            FailureCode::PayerLimitReached,
+            FailureCode::PayerAccountBlocked,
+            FailureCode::InvalidPayee,
+            FailureCode::PayeeAccountBlocked,
+            FailureCode::ProviderUnavailable,
+        ] {
+            assert!(
+                !PRODUCED_FAILURE_CODES.contains(&unreachable),
+                "{unreachable} is claimed reachable on Orange; \
+                 docs/flows/adapter-orange-money.md documents five statuses and no sub-reason"
+            );
+        }
+        // The two lists together are the whole taxonomy, so neither can drift
+        // without this failing.
+        assert_eq!(PRODUCED_FAILURE_CODES.len() + 8, FailureCode::ALL.len());
     }
 
     #[test]

@@ -83,6 +83,32 @@ when a Checkout Session drives the charge ([hosted-checkout.md](hosted-checkout.
 `Pending`, not a failure — it is the state a charge sits in if the merchant
 never redirects.
 
+### What this rail therefore cannot say
+
+Two of the five statuses are failures, so this adapter can produce exactly
+three of the core's eleven codes — `payer_timeout`, `provider_error` and
+`provider_account_blocked` (the last from HTTP 401/403, which has no status
+string at all). The list is
+`vpay_adapter_orange_money::PRODUCED_FAILURE_CODES`, and it is machine-read
+by `examples/shop`'s test-number panel so a demo cannot promise an outcome
+this rail cannot reach.
+
+The other **eight are unreachable, not merely unmapped**, and the distinction
+matters: there is no row to add here, because Orange's protocol has no word
+for "not enough funds" or "no such payer". `payer_declined` is the one worth
+naming, because MTN _can_ produce it (issue #59): a payer who clicks **Cancel**
+on Orange's hosted page ends the payment, and what the rail reports is
+`EXPIRED` — the same thing an abandoned page reports. So "said no" and "never
+answered" are one outcome here. Inventing a `CANCELLED` to give this rail a
+`payer_declined` would be this repository writing Orange's documentation for
+it; `the_codes_orange_cannot_express_are_unreachable_and_not_merely_unmapped`
+pins the eight, and
+[failures.md](failures.md#which-rail-can-produce-which-code) is the table
+across both rails.
+
+If Orange turns out to document sub-reasons for `FAILED` at onboarding, they
+become rows in `STATUS_TABLE` and nothing else changes — that is item 9 below.
+
 ## Why refunds are off
 
 No refund API is documented for Web Payment. `supports_refunds: false` means the
@@ -131,6 +157,18 @@ method, not a core change.
    not mistake it for a measurement of Orange. If the real page's window turns
    out to be minutes rather than seconds, the thing that changes is the
    escalation in [reconciler.md](reconciler.md), not this adapter.
+10. **Whether `FAILED` carries a sub-reason, under any field name** (added
+    2026-09-10 with [issue
+    #59](https://github.com/vaam-apps/vpay/issues/59)). This is the item that
+    decides whether the eight codes under "What this rail therefore cannot
+    say" stay unreachable. MTN's equivalent question has a published answer —
+    a seventeen-value `ErrorReason.code` enum — and comparing this adapter's
+    table against it is what closed `payer_declined` on that rail. Orange's
+    documentation in this repository is a reconstruction, so the honest
+    answer here is "we have never seen a `FAILED` body from Orange", and the
+    adapter maps the status alone. If sub-reasons exist, they become rows in
+    `STATUS_TABLE`, `PRODUCED_FAILURE_CODES` grows, and the shop's
+    `cannotExpress` list shrinks — all three checked against each other.
 
 ## Status
 
@@ -141,10 +179,21 @@ default, so it answers `ProviderError::Unsupported` — a permanent capability
 answer, not unbuilt work. There is no `orange_money::*` `NotImplemented` token
 left. See [../status.md](../status.md).
 
+**Updated 2026-09-10 (exp48, [issue
+#59](https://github.com/vaam-apps/vpay/issues/59)).** Nothing about this
+rail's behaviour changed; what changed is that the _limits_ of its vocabulary
+are now stated and machine-checked. `PRODUCED_FAILURE_CODES` names the three
+codes it can emit, the eight it cannot are pinned by
+`the_codes_orange_cannot_express_are_unreachable_and_not_merely_unmapped`, and
+its one unmapped failure status (`FAILED` → `provider_error`) gained the
+conformance case it had never had. The `payer_declined` this rail cannot
+produce is produced by MTN as of the same day, which is what makes the gap
+worth stating rather than a property of the whole system.
+
 **What is proven, and by what.** The pure halves — token-URL derivation, the
 status table, the request body's shape (`amount` as a JSON _number_), callback
-parsing, `ref_extra`'s shape, payment-URL validation — are **53 unit tests in
-the crate, 53 passed, 0 skipped** (`cargo nextest run -p
+parsing, `ref_extra`'s shape, payment-URL validation — are **57 unit tests in
+the crate, 57 passed, 0 skipped** (`cargo nextest run -p
 vpay-adapter-orange-money`, measured 2026-09-03). The wire behaviour is proven
 by `backends/tests/conformance` against a real `wiremock/wiremock` host reached
 over HTTP exactly as the rail is (ADR-0006); the mappings live in

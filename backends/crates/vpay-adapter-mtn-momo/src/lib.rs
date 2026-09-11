@@ -19,6 +19,8 @@ mod mapping;
 mod token;
 mod wire;
 
+pub use crate::mapping::{PRODUCED_FAILURE_CODES, UNMAPPED_REASONS, UNPUBLISHED_REASONS};
+
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use reqwest::header::{HeaderName, HeaderValue};
