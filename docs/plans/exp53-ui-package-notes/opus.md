@@ -178,6 +178,22 @@ That case is the one that matters: the defect it was written for was a payer
 whose payment **failed** reading a grey box while a payer who cancelled read a
 red one.
 
+## 5b. `Code` paints its own chip, and three call sites put one inside an `Alert`
+
+`Code`'s `bg-base-200` overrides an enclosing `Alert`'s background but not
+its text colour, so in `form-alert.tsx`, `read-failure.tsx` and the payment
+detail's "Last error" the glyphs are `--color-<tone>-content` on
+`--color-base-200` — a pair neither daisyUI nor `theme-contrast.test.ts`'s
+existing loop intends.
+
+Measured, not reasoned about: bumblebee's four `*-content` inks are all dark,
+so every one clears AA on `base-200` comfortably — error **12.32:1**, warning
+**8.48:1**, success **9.16:1**, info **9.43:1**. Four cases now hold that,
+because a theme whose `error-content` were light would make the request id on
+a failed sign-in unreadable with every other gate green. The harness was
+proved to discriminate by making `relativeLuminance` return a constant, which
+fails eleven of the file's cases.
+
 ## 6. Numbers
 
 Web suites, before → after:
@@ -196,8 +212,8 @@ individually: `empty-state.test.tsx` (1 case) and `detail-timeline.test.tsx`
 (2) are deleted because both components moved to `@vpay/ui`, where they have
 **3** and **2** cases respectively; the app's a11y suite dropped its timeline
 and empty-state cases (2) for the same reason and gained one for the pager
-composition it did not have before. The package's +18 covers the eight new
-primitives.
+composition it did not have before. The package's +22 covers the eight new
+primitives and the four `Code`-inside-`Alert` contrast cases.
 
 ## 7. What I did NOT do
 

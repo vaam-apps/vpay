@@ -125,6 +125,37 @@ describe("the shipped theme, measured rather than trusted", () => {
     }
   });
 
+  /**
+   * `Code` paints its own `bg-base-200` chip, and three call sites put one
+   * INSIDE an `Alert` — `form-alert.tsx`, `read-failure.tsx` and the payment
+   * detail's "Last error". The chip overrides the alert's background but not
+   * its text colour, so the glyphs are `--color-<tone>-content` on
+   * `--color-base-200`, a pair neither the loop above nor daisyUI's own
+   * design intends.
+   *
+   * Measured rather than reasoned about: bumblebee's four `*-content` inks
+   * are all dark, so every one of them clears AA on `base-200` comfortably
+   * (12.32, 8.48, 9.16, 9.43 at the time of writing). A theme whose
+   * `error-content` were light would make the request id on a failed sign-in
+   * unreadable, with every other gate green — which is why this is a case
+   * and not a sentence in `code.variants.ts`.
+   */
+  for (const tone of ["error", "warning", "success", "info"]) {
+    it(`clears WCAG AA for a Code chip inside an ${tone} Alert`, () => {
+      const fill = colours.get("base-200");
+      const ink = colours.get(`${tone}-content`);
+      expect(fill && ink).toBeTruthy();
+      const ratio = contrastRatio(
+        fill as [number, number, number],
+        ink as [number, number, number],
+      );
+      expect(
+        ratio,
+        `${tone}-content on base-200: ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
   it("keeps the override that makes error and info readable, rather than daisyUI 5 bumblebee’s own", () => {
     // A regression guard with a name, not just a threshold: daisyUI 5's own
     // bumblebee ships 3.53:1 for error and 4.27:1 for info. If this ever
