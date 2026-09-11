@@ -5,7 +5,7 @@
  * been to the rail. What it can show is "still waiting for the rail's
  * answer", an outcome, an expired session, or a read it could not make.
  */
-import { PageShell, Stack } from "@vpay/ui";
+import { LiveRegion, PageShell, Stack } from "@vpay/ui";
 
 import type { Branding } from "../config/settings";
 import type { Locale, Translate } from "../i18n/index";
@@ -61,7 +61,7 @@ export function ReturnView(props: ReturnViewProps) {
           />
         )}
 
-        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
+        <LiveRegion data-testid="live-region">
           {(() => {
             switch (state.name) {
               case "loading":
@@ -140,7 +140,7 @@ export function ReturnView(props: ReturnViewProps) {
               }
             }
           })()}
-        </div>
+        </LiveRegion>
 
         <SupportLine t={t} branding={props.branding} />
       </PageShell>

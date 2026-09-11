@@ -1083,6 +1083,38 @@ verify-ui:
     if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
       echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
     fi
+    # 7. No daisyUI COMPONENT class in an app. `btn`, `card`, `badge`,
+    #    `alert`, `input`, `select`, `modal`, `menu`, `table`, `loading`,
+    #    `link`, `fieldset`, `navbar`, `drawer`, `checkbox`, `radio` are
+    #    components `@vpay/ui` owns, and an app that writes one has written a
+    #    primitive of its own — which is the thing the package exists to stop
+    #    (the maintainer's directive, 2026-09-11: "a @vpay/ui package with all
+    #    UI primitives that we'll use both for checkout but also for
+    #    dashboard").
+    #
+    #    Check 1 above catches a palette COLOUR and check 4 a stray `cva`;
+    #    neither sees `className="btn btn-primary"`, which is how a second
+    #    Button gets written with every gate green. Measured: that exact
+    #    string in `frontends/apps/dashboard/src/nav.tsx` passed checks 1-6.
+    #
+    #    Theme TOKENS are untouched — `bg-base-100`, `text-error`,
+    #    `border-base-300` are not components, and `frontends/apps/checkout/
+    #    app/layout.tsx`'s `<body className="min-h-screen bg-base-100">` is
+    #    layout plus a token on the document itself, which no component owns.
+    #
+    #    `examples/shop` is deliberately NOT in scope: it does not depend on
+    #    `@vpay/ui` at all (its `package.json` takes `@vpay/config` and
+    #    nothing else from this repo), because it is a MERCHANT's storefront
+    #    — a third party who has vpay's SDK and not vpay's design system.
+    #    Holding it to this rule would mean shipping the demo a look no real
+    #    merchant would have.
+    #
+    #    The mutation: add `className="btn btn-primary"` to any component in
+    #    `frontends/apps` and this exits non-zero.
+    if git grep -nE 'className=\{?"[^"]*\b(btn|card|badge|alert|input|select|modal|menu|table|loading|link|fieldset|navbar|drawer|checkbox|radio|tabs|toast|skeleton|join|steps|stat|collapse|dropdown|tooltip|progress|range|toggle|kbd|avatar|chat|carousel|diff|swap|indicator|mask|divider|breadcrumbs|pagination|footer|hero|countdown|timeline|mockup)\b' \
+        -- 'frontends/apps' ; then
+      echo 'verify-ui: a daisyUI component class in an app — compose @vpay/ui instead'; fail=1
+    fi
     # 6. No file in @vpay/ui over 200 lines, imports and comments included.
     #
     #    The maintainer's directive, 2026-09-11, in as many words: "we MUST
