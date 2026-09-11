@@ -17,10 +17,12 @@ export default defineConfig({
     // everywhere else (exp28 review).
     //
     // And `middleware.test.ts`, which is at the project root because the file
-    // it tests has to be: Next reads a middleware only from there, and its
-    // `config.matcher` must be a literal in that file (`getPageStaticInfo`
-    // extracts it with SWC). Without this entry it would have been the exp28
-    // review's finding again, one directory up.
+    // it tests has to be: Next reads a middleware from the directory holding
+    // `app/`, and its `config.matcher` must be a literal in that file —
+    // `extractExportedConstValue` throws `Unknown identifier` for an imported
+    // one, so the rule cannot be moved under `src/` whole. Without this entry
+    // its test would have been the exp28 review's finding again, one
+    // directory up.
     include: ["{src,app}/**/*.test.{ts,tsx}", "middleware.test.ts"],
     setupFiles: ["./vitest.setup.ts"],
   },

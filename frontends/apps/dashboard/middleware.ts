@@ -64,12 +64,20 @@
  * # Why the logic is in this file rather than in `src/server/`
  *
  * `README.md`'s layout rule is that `app/` holds routes and `src/` holds
- * substance, and this file is neither: Next only reads a middleware from the
- * project root, and its `config.matcher` has to be a **literal** — Next's
- * build-time `getPageStaticInfo` extracts it with SWC and an imported
- * constant does not survive that. So the matcher is written here, and
- * `vitest.config.ts` was widened to pick up this file's test, rather than the
- * matcher being hidden behind an indirection that would not have compiled.
+ * substance, and this file is neither. Next reads a middleware from the
+ * project root or from `src/`, whichever holds the app directory — `app/` is
+ * at the root here, so this is the root.
+ *
+ * **And its `config.matcher` has to be a literal in this file**, which is why
+ * the obvious tidying (put the rule in `src/server/`, import the matcher) is
+ * not available. Read rather than assumed, in
+ * `next/dist/build/analysis/extract-const-value.js`: `extractExportedConstValue`
+ * walks the SWC AST of the `config` export, and its `Identifier` branch
+ * admits exactly one name — `undefined` — and throws
+ * `UnsupportedValueError: Unknown identifier "…"` for every other. An
+ * imported constant is an `Identifier`. So the matcher is written out here,
+ * and `vitest.config.ts` was widened to pick up this file's test, rather than
+ * the matcher being hidden behind an indirection Next would have refused.
  */
 import { NextResponse } from "next/server";
 
