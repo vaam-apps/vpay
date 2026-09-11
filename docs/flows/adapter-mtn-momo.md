@@ -4,10 +4,10 @@
 
 ## Preconditions
 
-| Precondition | MTN |
-|---|---|
-| Caller supplies its own reference | **Yes** — `X-Reference-Id`. It *is* the transaction id |
-| Final status queryable by that reference | **Yes** — `GET /collection/v1_0/requesttopay/{ref}` |
+| Precondition                             | MTN                                                    |
+| ---------------------------------------- | ------------------------------------------------------ |
+| Caller supplies its own reference        | **Yes** — `X-Reference-Id`. It _is_ the transaction id |
+| Final status queryable by that reference | **Yes** — `GET /collection/v1_0/requesttopay/{ref}`    |
 
 Both hold, which is why MTN is a safe push rail.
 
@@ -20,7 +20,7 @@ Confusing these three is the most common onboarding bug.
 2. **API User + API Key** — created once via `POST /v1_0/apiuser` (you supply a
    UUID and a `providerCallbackHost`) then `POST /v1_0/apiuser/{uuid}/apikey`.
 3. **Access token** — `POST /collection/token/` with HTTP Basic, `expires_in:
-   3600`. Collections and Disbursements have **separate tokens**, hence the
+3600`. Collections and Disbursements have **separate tokens**, hence the
    `scope` column on cached tokens.
 
 ## The collection call
@@ -74,16 +74,16 @@ the bytes become a Rust value. The port returns a
 whose `Debug` redacts even that. [account-holder-lookup.md](account-holder-lookup.md)
 is the policy; this is the wire.
 
-| HTTP | → |
-|---|---|
-| `200` with a `given_name` and/or a `family_name` | `Ok(Some(AccountHolder))` |
-| `200` with neither | `Malformed` — an answer we cannot act on, and **not** `Ok(None)` |
-| `404` | `Ok(None)` — the rail has no record. **See the note below: MTN does not document this status for this operation** |
-| `401` / `403` | `Rejected { provider_account_blocked }` — our own credentials, and it pages |
-| `400` | `Malformed` naming the status — our request, not the rail's health |
-| `500` | the same three-configuration-codes table `requesttopay` uses; otherwise `Transport` |
-| any other 5xx | `Transport` |
-| any 3xx | `Malformed` — redirects are never followed |
+| HTTP                                             | →                                                                                                                 |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `200` with a `given_name` and/or a `family_name` | `Ok(Some(AccountHolder))`                                                                                         |
+| `200` with neither                               | `Malformed` — an answer we cannot act on, and **not** `Ok(None)`                                                  |
+| `404`                                            | `Ok(None)` — the rail has no record. **See the note below: MTN does not document this status for this operation** |
+| `401` / `403`                                    | `Rejected { provider_account_blocked }` — our own credentials, and it pages                                       |
+| `400`                                            | `Malformed` naming the status — our request, not the rail's health                                                |
+| `500`                                            | the same three-configuration-codes table `requesttopay` uses; otherwise `Transport`                               |
+| any other 5xx                                    | `Transport`                                                                                                       |
+| any 3xx                                          | `Malformed` — redirects are never followed                                                                        |
 
 **Two things about this endpoint are unverified and are recorded rather than
 smoothed over.** First, the `accountHolderIdType` path segment: MTN's portal
@@ -129,34 +129,34 @@ this status too … the 'reason' field can be used to retrieve a cause in case
 of failure". Two of that response's worked examples carry `PAYER_NOT_FOUND`
 and `PAYEE_NOT_FOUND` in `reason.code`.
 
-*(This paragraph said the reverse when the table was re-grounded on
+_(This paragraph said the reverse when the table was re-grounded on
 2026-09-10 — that `ErrorReason` was "the whole Collection API's error schema,
 not `requesttopay`'s", that MTN "publishes no per-operation subset", and that
 each new row was a deliberate assumption in the safe direction. Re-retrieved
 and corrected 2026-09-11: the schema and the operation document both say
 otherwise. The rows were right; the reason given for them understated the
 evidence, and understating it is what would let someone revert
-`PAYMENT_NOT_APPROVED` as a guess.)*
+`PAYMENT_NOT_APPROVED` as a guess.)_
 
 What is **not** published, and remains the real caveat, is any statement that
 a given reason will ever actually arrive: MTN types the field, it does not
 promise the values. Nothing in this repository has called MTN.
 
-| MTN `reason` | → core code | Conformance case |
-|---|---|---|
-| `NOT_ENOUGH_FUNDS` | `insufficient_funds` | `…0f01` |
-| `COULD_NOT_PERFORM_TRANSACTION` † | `payer_timeout` (PIN not entered, ~5 min) | `…0f02` |
-| `EXPIRED` | `payer_timeout` (the prompt's own window closed) | `…0f04` |
-| `PAYMENT_NOT_APPROVED` | `payer_declined` | `…0f05` |
-| `APPROVAL_REJECTED` | `payer_declined` | `…0f06` |
-| `PAYER_NOT_FOUND` | `invalid_payer` | `…0f07` |
-| `PAYER_LIMIT_REACHED` | `payer_limit_reached` | `…0f08` |
-| `SENDER_ACCOUNT_NOT_ACTIVE` † | `payer_account_blocked` | `…0f09` |
-| `PAYEE_NOT_FOUND` | `invalid_payee` | `…0f0a` |
-| `PAYEE_NOT_ALLOWED_TO_RECEIVE` | `payee_account_blocked` | `…0f0b` |
-| `NOT_ALLOWED` | `provider_account_blocked` | `…0f03` |
-| `SERVICE_UNAVAILABLE` / 503 | `provider_unavailable` | `…0f0c` |
-| anything else | `provider_error` + raw reason | `…0f0d` |
+| MTN `reason`                      | → core code                                      | Conformance case |
+| --------------------------------- | ------------------------------------------------ | ---------------- |
+| `NOT_ENOUGH_FUNDS`                | `insufficient_funds`                             | `…0f01`          |
+| `COULD_NOT_PERFORM_TRANSACTION` † | `payer_timeout` (PIN not entered, ~5 min)        | `…0f02`          |
+| `EXPIRED`                         | `payer_timeout` (the prompt's own window closed) | `…0f04`          |
+| `PAYMENT_NOT_APPROVED`            | `payer_declined`                                 | `…0f05`          |
+| `APPROVAL_REJECTED`               | `payer_declined`                                 | `…0f06`          |
+| `PAYER_NOT_FOUND`                 | `invalid_payer`                                  | `…0f07`          |
+| `PAYER_LIMIT_REACHED`             | `payer_limit_reached`                            | `…0f08`          |
+| `SENDER_ACCOUNT_NOT_ACTIVE` †     | `payer_account_blocked`                          | `…0f09`          |
+| `PAYEE_NOT_FOUND`                 | `invalid_payee`                                  | `…0f0a`          |
+| `PAYEE_NOT_ALLOWED_TO_RECEIVE`    | `payee_account_blocked`                          | `…0f0b`          |
+| `NOT_ALLOWED`                     | `provider_account_blocked`                       | `…0f03`          |
+| `SERVICE_UNAVAILABLE` / 503       | `provider_unavailable`                           | `…0f0c`          |
+| anything else                     | `provider_error` + raw reason                    | `…0f0d`          |
 
 The case column is the reference a WireMock mapping in
 `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-status.json`
@@ -180,29 +180,29 @@ that list and this table disagree.
 (`vpay_adapter_mtn_momo::UNMAPPED_REASONS`, which also carries the three
 `CONFIGURATION_CODES`):
 
-| Code | Why not mapped |
-|---|---|
-| `INTERNAL_PROCESSING_ERROR` | On a 500 it is `Transport` and the poll ladder resolves it. On a terminal `FAILED` there is nothing left to retry and nothing to tell a payer — which is what `provider_error` means |
-| `RESOURCE_NOT_FOUND` | About the *reference*, not the payment. The status query answers it as HTTP 404 → `ChargeStatus::NotFound`, which is the whole recovery story |
-| `RESOURCE_ALREADY_EXIST` | The duplicate-reference answer, handled as HTTP 409 → `Submitted`. As a `FAILED` reason it would be MTN contradicting itself |
-| `TRANSACTION_CANCELED` | **The one genuinely open row.** `payer_declined` would read well, but MTN publishes no description saying *who* cancels, and the Collection API's only cancel operations are `CancelInvoice` and `CancelPreApproval`, neither of which vpay calls. Guessing "the payer" would put a sentence in front of a buyer on the strength of a verb. **Ask MTN** |
+| Code                        | Why not mapped                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INTERNAL_PROCESSING_ERROR` | On a 500 it is `Transport` and the poll ladder resolves it. On a terminal `FAILED` there is nothing left to retry and nothing to tell a payer — which is what `provider_error` means                                                                                                                                                                    |
+| `RESOURCE_NOT_FOUND`        | About the _reference_, not the payment. The status query answers it as HTTP 404 → `ChargeStatus::NotFound`, which is the whole recovery story                                                                                                                                                                                                           |
+| `RESOURCE_ALREADY_EXIST`    | The duplicate-reference answer, handled as HTTP 409 → `Submitted`. As a `FAILED` reason it would be MTN contradicting itself                                                                                                                                                                                                                            |
+| `TRANSACTION_CANCELED`      | **The one genuinely open row.** `payer_declined` would read well, but MTN publishes no description saying _who_ cancels, and the Collection API's only cancel operations are `CancelInvoice` and `CancelPreApproval`, neither of which vpay calls. Guessing "the payer" would put a sentence in front of a buyer on the strength of a verb. **Ask MTN** |
 
 HTTP: `409 RESOURCE_ALREADY_EXIST` on a duplicate reference — **the adapter must
 report this as `Submitted`**. `404` → `NotFound`, never a failure.
 
-**MTN's biggest wart: several *logical* errors return HTTP 500** —
+**MTN's biggest wart: several _logical_ errors return HTTP 500** —
 `INVALID_CURRENCY`, `NOT_ALLOWED_TARGET_ENVIRONMENT`, `INVALID_CALLBACK_URL_HOST`,
-and an `INTERNAL_PROCESSING_ERROR` that can mean insufficient funds *or* the
+and an `INTERNAL_PROCESSING_ERROR` that can mean insufficient funds _or_ the
 wallet platform being down. Parse the body's `code` before deciding anything;
 never treat 500 as blind-retry.
 
 ## Environment values (all just config)
 
-| | Sandbox | Cameroon production |
-|---|---|---|
-| `base_url` | `https://sandbox.momodeveloper.mtn.com` | `https://proxy.momoapi.mtn.com` — **confirm** |
-| `target_environment` | `sandbox` | `mtncameroon` — **confirm; subsidiary-specific** |
-| `currency` | **EUR only** | XAF |
+|                      | Sandbox                                 | Cameroon production                              |
+| -------------------- | --------------------------------------- | ------------------------------------------------ |
+| `base_url`           | `https://sandbox.momodeveloper.mtn.com` | `https://proxy.momoapi.mtn.com` — **confirm**    |
+| `target_environment` | `sandbox`                               | `mtncameroon` — **confirm; subsidiary-specific** |
+| `currency`           | **EUR only**                            | XAF                                              |
 
 ## Status
 
@@ -231,19 +231,19 @@ through `submit` and `query_status` against a real WireMock container. **No
 browser has typed it** — `checkout.cy.ts` drives the hex family, and
 `just demo-walk` does not send this number at all (see
 [../runbooks/demo.md](../runbooks/demo.md) § "The test numbers"). It is a
-number a payer *can* type that the adapter is proven to honour, which is not
+number a payer _can_ type that the adapter is proven to honour, which is not
 the same claim as an exercised browser path.
 
 **`refund` is not implemented** and returns
 `ProviderError::NotImplemented("mtn_momo::refund")` — see
-[../status.md](../status.md). MTN refunds are the *Disbursements* product: a
+[../status.md](../status.md). MTN refunds are the _Disbursements_ product: a
 different subscription key, a separately-scoped token and a `transfer` call.
 No deployment holds those credentials, so there is nothing to build against.
-`supports_refunds` stays `true` because the *rail* refunds; it is we who have
+`supports_refunds` stays `true` because the _rail_ refunds; it is we who have
 not built it, and answering `Unsupported` would be a lie about MTN.
 
 **`account_holder_name` IS implemented** (issue #47, 2026-09-05), and
-`supports_account_holder_lookup` is `true` — a claim about the rail *and*
+`supports_account_holder_lookup` is `true` — a claim about the rail _and_
 about this code. Five conformance cases run it against a real WireMock
 container, parameterised over both rails out of one body
 (`an_account_holder_lookup_returns_a_name_and_nothing_else`,
@@ -272,7 +272,7 @@ so that is a real cross-tenant path, not a hypothetical one
 **`api_key` is in the fingerprint because it is the token's password.**
 Leaving it out — as this did until the Step 3 security review — meant a
 deployment that rotated only the API key kept serving calls with the bearer
-minted from the *old* one, until the cached token aged out (up to an hour)
+minted from the _old_ one, until the cached token aged out (up to an hour)
 or the rail answered 401. A key is rotated precisely when it must stop
 working immediately. Hashing it is safe because the cache key is a SHA-256,
 never the credential (`different_credentials_fingerprint_differently`,
@@ -296,7 +296,7 @@ status query is the only thing that moves money
 ([reconciler.md](reconciler.md)).
 
 The reference is recovered from `referenceId` when MTN echoes it, and
-otherwise from `externalId`. `externalId` works because it is what *we* set on
+otherwise from `externalId`. `externalId` works because it is what _we_ set on
 submit: `ChargeRef` carries no charge id — `reference_id` is the only
 identifier the port gives an adapter — so the "charge id" in the request body
 above is that reference, rendered. A body with neither field is refused as
@@ -316,42 +316,42 @@ dropped.
 Every call this adapter makes goes through `vpay_provider::http`, so it
 inherits three refusals that are not MTN-specific:
 
-* **Redirects are returned, never followed.** A 3xx from a rail host is an
+- **Redirects are returned, never followed.** A 3xx from a rail host is an
   answer to look at, not a hop to take — following one would let a
   compromised or misconfigured DNS entry move an authenticated payment
   request to another host (`redirects_are_refused_and_never_followed`,
   conformance, both rails).
-* **`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` are ignored.** A payment
+- **`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` are ignored.** A payment
   gateway's own egress is not a merchant's corporate network. (The merchant
   SDK's copy of this client deliberately keeps proxy support.)
-* **Response bodies are capped at 256 KiB** (`bounded_body`,
+- **Response bodies are capped at 256 KiB** (`bounded_body`,
   `MAX_RAIL_BODY_BYTES`) rather than read to end of stream, so a load
   balancer's HTML error page or a captive portal cannot choose how much
   memory a worker task allocates. Proven live by
   `an_oversized_rail_body_is_refused_at_the_cap`; the truncation of a body
-  that *does* fit but is long is proven by
+  that _does_ fit but is long is proven by
   `a_rails_error_body_is_bounded_before_it_reaches_a_message`.
-* Each request carries `ProviderConfig::request_timeout` explicitly, because
+- Each request carries `ProviderConfig::request_timeout` explicitly, because
   one `reqwest::Client` is shared across rails and a client-level deadline
   could only ever be one rail's.
 
 ### Not proven
 
-* **Nothing here has ever called MTN.** Every wire assertion in this document
+- **Nothing here has ever called MTN.** Every wire assertion in this document
   is against a `wiremock/wiremock` container. Both **confirm** rows in the
   environment table above are still unconfirmed, and a mapping faithful to
   this document but not to MTN would pass.
-* **The 401 → re-mint → retry path is not covered by a test.** The logic is
+- **The 401 → re-mint → retry path is not covered by a test.** The logic is
   there and is bounded at one retry, but no mapping in the conformance suite
   returns 401 from `requesttopay` after a good token, and the adapter's own
-  crate may not stand up an in-process HTTP double (ADR-0006). What *is*
+  crate may not stand up an in-process HTTP double (ADR-0006). What _is_
   proven is the 401 on the token endpoint itself
   (`bad_credentials_are_not_reported_as_a_payer_problem`).
-* The submit mappings for a 400 (`…0400`), a 500 with a code (`…0500`) and a
+- The submit mappings for a 400 (`…0400`), a 500 with a code (`…0500`) and a
   500 with an HTML body (`…05ff`) exist and are correct per this document, but
   no conformance case drives them yet; their outcomes are proven instead by
   `submit_outcome`'s unit tests, which take the same status and body.
-* ~~**No callback route exists.**~~ **Corrected 2026-09-04 (Step 8, lane C):
+- ~~**No callback route exists.**~~ **Corrected 2026-09-04 (Step 8, lane C):
   the callback route exists, and nothing has ever called it but this
   repository's own tests.** `POST /provider/mtn_momo/callback`
   (`vpay_api::provider_callback`) parses this document's notification body into
@@ -360,19 +360,20 @@ inherits three refusals that are not MTN-specific:
   `backends/tests/integration/tests/provider_callback.rs` POSTs the body
   transcribed above to the URL MTN was handed on the submit, so **a body
   faithful to this document but not to MTN would pass**.
-* **Nothing has ever called MTN, and the new rows do not change that.**
+- **Nothing has ever called MTN, and the new rows do not change that.**
   `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` and `EXPIRED` are real strings
   from MTN's published enum, and that enum is the declared type of
   `RequestToPayResult.reason` — so the shape and the vocabulary are cited, not
   assumed. What no document can tell us is whether MTN's Cameroon deployment
-  ever *emits* a given one. A stub answering a string MTN may never send
+  ever _emits_ a given one. A stub answering a string MTN may never send
   proves the mapping row, not the rail.
 
-  *(This bullet said the enum "is the whole Collection API's and says nothing
+  _(This bullet said the enum "is the whole Collection API's and says nothing
   about which operation returns which code" until 2026-09-11; see "Failure
   mapping" for the correction. The conclusion — that only a real call settles
-  this — is unchanged, and is the reason "Real sandbox" is still ⛔.)*
-* The crate runs **62 tests, 62 passed, 0 skipped**
+  this — is unchanged, and is the reason "Real sandbox" is still ⛔.)_
+
+- The crate runs **62 tests, 62 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-10; 48 on
   2026-09-03, before exp48 added the enum-comparison tests).
 
@@ -392,19 +393,19 @@ form a payer can type. `237600000103` (2026-09-10) is such a row, as
 is the case that drives each of these numbers against a real WireMock
 container and asserts the code and the rail's own reason that come back.
 
-*(This paragraph ended "and neither is in the twin test, because there is no
+_(This paragraph ended "and neither is in the twin test, because there is no
 twin to agree with" when `237600000103` was added on 2026-09-10. That was
 false of `237600000503`, which had had a case since exp22, and it was the
 stated reason `237600000103` was given none — leaving the only number that
 reaches `payer_declined` proven by nothing but this sentence. Corrected
-2026-09-11 with the missing case.)*
+2026-09-11 with the missing case.)_
 
-| Outcome | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario | First status query | Second status query |
-|---|---|---|---|---|---|
-| The payer approves | `237600000ce0` | `237600000100` | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING` | `SUCCESSFUL` |
-| The payer has no balance | `237600000f01` | `237600000101` | `mtn-demo-decline` (`demo-outcomes.json`) | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds` | — (terminal on the first query) |
-| The prompt expires unanswered | `237600000f02` | `237600000102` | `mtn-demo-expiry` (`demo-outcomes.json`) | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
-| The payer refuses the prompt | — (digits only) | `237600000103` | `mtn-demo-refused` (`demo-outcomes.json`) | `FAILED` / `PAYMENT_NOT_APPROVED` → `payer_declined` | — (terminal on the first query) |
+| Outcome                       | Hex MSISDN (not a valid E.164 number — `examples/merchant-demo`, `checkout.cy.ts`) | Digits-only MSISDN (a real Cameroon E.164 number — `frontends/apps/checkout`) | Scenario                                      | First status query                                           | Second status query             |
+| ----------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------ | ------------------------------- |
+| The payer approves            | `237600000ce0`                                                                     | `237600000100`                                                                | `mtn-e2e-poll` (`requesttopay-scenario.json`) | `PENDING`                                                    | `SUCCESSFUL`                    |
+| The payer has no balance      | `237600000f01`                                                                     | `237600000101`                                                                | `mtn-demo-decline` (`demo-outcomes.json`)     | `FAILED` / `NOT_ENOUGH_FUNDS` → `insufficient_funds`         | — (terminal on the first query) |
+| The prompt expires unanswered | `237600000f02`                                                                     | `237600000102`                                                                | `mtn-demo-expiry` (`demo-outcomes.json`)      | `FAILED` / `COULD_NOT_PERFORM_TRANSACTION` → `payer_timeout` | — (terminal on the first query) |
+| The payer refuses the prompt  | — (digits only)                                                                    | `237600000103`                                                                | `mtn-demo-refused` (`demo-outcomes.json`)     | `FAILED` / `PAYMENT_NOT_APPROVED` → `payer_declined`         | — (terminal on the first query) |
 
 The hex family is what `examples/merchant-demo` (`Steering::Msisdn`) and
 `frontends/tests/e2e/cypress/e2e/checkout.cy.ts` (`MTN_E2E_POLL_MSISDN`) send —

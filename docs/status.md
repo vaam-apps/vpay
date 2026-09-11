@@ -2499,7 +2499,7 @@ witness is a stub; ⛔ means not built.
 
 **Failure mapping, re-grounded 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** ✅ in the wire-call
-column above has never meant the *mapping tables* were faithful to the rails
+column above has never meant the _mapping tables_ were faithful to the rails
 — only that the code did what this repository's own documents said. For MTN
 that is now measurably less true than it was: the nine-row table was compared,
 for the first time, against MTN's published `ErrorReason.code` enum, read from
@@ -2532,7 +2532,7 @@ and in the adapter's module header). MTN publishes **seventeen** codes.
   in `vpay_adapter_mtn_momo::UNPUBLISHED_REASONS` rather than left to pass for
   documented. **Nothing MTN publishes confirms either. Someone should ask.**
 - **Orange is unchanged in behaviour and now states its limits.** It produces
-  three of the eleven codes; the other eight are *unreachable*, not unmapped,
+  three of the eleven codes; the other eight are _unreachable_, not unmapped,
   because it documents five statuses and no sub-reason for `FAILED`. A payer
   who cancels on its hosted page arrives as `EXPIRED` → `payer_timeout`, so
   `payer_declined` in particular cannot happen there — and inventing a
@@ -2563,7 +2563,7 @@ notes are
   field, it does not promise a value — so "Real sandbox" is untouched.
 - A stub comment asserting in capitals that "MTN documents no `EXPIRED`" was
   left next to the table that now maps MTN's `EXPIRED`. MTN has no EXPIRED
-  *status*; it publishes an EXPIRED *reason*.
+  _status_; it publishes an EXPIRED _reason_.
 
 Gates at the reviewed head: `just ci` **exit 0** — twelve gates, **1692 Rust
 tests, 1692 passed, 0 skipped**, 111 doctests passed / 1 ignored, every web

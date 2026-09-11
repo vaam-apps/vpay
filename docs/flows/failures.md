@@ -20,33 +20,33 @@ and it does not grow when a rail is added.
 
 ## Which rail can produce which code
 
-The table above says what each code *means*. It does not say whether anything
+The table above says what each code _means_. It does not say whether anything
 can produce it — and until 2026-09-10 one of them could not.
 `payer_declined` was defined by the core, typed in both merchant SDKs and
 given buyer copy by `examples/shop`, and no adapter emitted it
 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)). Nothing failed,
 because nothing compared a promise to a producer.
 
-| Code | MTN MoMo | Orange Money | Proven by |
-|---|---|---|---|
-| `insufficient_funds` | `NOT_ENOUGH_FUNDS` | — | `…0f01` |
-| `payer_timeout` | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED` | `EXPIRED` | MTN `…0f02`, `…0f04`; Orange `…0f01` |
-| `payer_declined` | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | — | MTN `…0f05`, `…0f06` |
-| `invalid_payer` | `PAYER_NOT_FOUND` | — | `…0f07` |
-| `payer_limit_reached` | `PAYER_LIMIT_REACHED` | — | `…0f08` |
-| `payer_account_blocked` | `SENDER_ACCOUNT_NOT_ACTIVE` † | — | `…0f09` |
-| `invalid_payee` | `PAYEE_NOT_FOUND` | — | `…0f0a` |
-| `payee_account_blocked` | `PAYEE_NOT_ALLOWED_TO_RECEIVE` | — | `…0f0b` |
-| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403 | HTTP 401/403 | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem` on both rails |
-| `provider_unavailable` | `SERVICE_UNAVAILABLE` on a `FAILED` body | — | `…0f0c` |
-| `provider_error` | anything unmapped | `FAILED`, anything unmapped | MTN `…0f0d`; Orange `…0f02` |
+| Code                       | MTN MoMo                                    | Orange Money                | Proven by                                                                        |
+| -------------------------- | ------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | `…0f01`                                                                          |
+| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | MTN `…0f02`, `…0f04`; Orange `…0f01`                                             |
+| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | MTN `…0f05`, `…0f06`                                                             |
+| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | `…0f07`                                                                          |
+| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | `…0f08`                                                                          |
+| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | `…0f09`                                                                          |
+| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | `…0f0a`                                                                          |
+| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | `…0f0b`                                                                          |
+| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem` on both rails |
+| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | `…0f0c`                                                                          |
+| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | MTN `…0f0d`; Orange `…0f02`                                                      |
 
 `…0fxx` is the charge reference a WireMock mapping keys on, under
 `backends/tests/conformance/wiremock/{mtn,orange}/mappings/`.
 `a_declined_charge_maps_to_the_documented_failure_code` drives every row
 against a real container, and
 `the_declines_prove_every_code_each_rail_can_produce` asserts the rows are
-*all* of them — it holds the cases against each adapter's
+_all_ of them — it holds the cases against each adapter's
 `PRODUCED_FAILURE_CODES`, so a code that gains a producer without a case, or a
 case for a code the adapter does not declare, fails.
 
@@ -54,7 +54,7 @@ case for a code the adapter does not declare, fails.
 Eight of the eleven are unreachable **on Orange**, and that is not a gap in a
 table: Orange documents five statuses (`INITIATED`, `PENDING`, `SUCCESS`,
 `EXPIRED`, `FAILED`) and no sub-reason for `FAILED` at all, so its protocol
-cannot say "not enough funds" or "no such payer". A payer who clicks *Cancel*
+cannot say "not enough funds" or "no such payer". A payer who clicks _Cancel_
 on its hosted page arrives as `EXPIRED` — indistinguishable from one who
 walked away — so `payer_declined` in particular is unreachable there, and
 inventing a `CANCELLED` to make the rails look alike is refused rather than

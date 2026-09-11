@@ -60,15 +60,15 @@ the request you cannot recall it.
 
 **A failure carries a `FailureCode`, and not every rail can produce every
 one.** The vocabulary and what each code means are
-[failures.md](failures.md); the part that belongs to the *lifecycle* is that
+[failures.md](failures.md); the part that belongs to the _lifecycle_ is that
 the code a merchant reads on `last_payment_error` depends on which rail the
 charge went to, and the two MVP rails differ by eight of eleven:
 
-| | MTN MoMo (push) | Orange Money (redirect) |
-|---|---|---|
-| Codes it can produce | all eleven | `payer_timeout`, `provider_account_blocked`, `provider_error` |
-| Where the vocabulary comes from | MTN's published `ErrorReason.code` enum, seventeen values, twelve of them mapped | five documented statuses, no sub-reason for `FAILED` |
-| A payer who refuses | `payer_declined` (`PAYMENT_NOT_APPROVED`) | arrives as `EXPIRED` → `payer_timeout`; the rail does not distinguish it from an abandoned page |
+|                                 | MTN MoMo (push)                                                                  | Orange Money (redirect)                                                                         |
+| ------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Codes it can produce            | all eleven                                                                       | `payer_timeout`, `provider_account_blocked`, `provider_error`                                   |
+| Where the vocabulary comes from | MTN's published `ErrorReason.code` enum, seventeen values, twelve of them mapped | five documented statuses, no sub-reason for `FAILED`                                            |
+| A payer who refuses             | `payer_declined` (`PAYMENT_NOT_APPROVED`)                                        | arrives as `EXPIRED` → `payer_timeout`; the rail does not distinguish it from an abandoned page |
 
 The full table — code by code, which rail's reason produces it, and the
 conformance case that proves it — is in

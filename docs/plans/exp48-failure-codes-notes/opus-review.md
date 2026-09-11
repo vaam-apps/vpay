@@ -36,13 +36,13 @@ unverified.**
 
 ### 1.1 The diff against `PUBLISHED_ERROR_REASONS`
 
-| Check | Result |
-|---|---|
-| Codes in MTN's enum | 17 |
-| Codes in `PUBLISHED_ERROR_REASONS` | 17 |
+| Check                                       | Result   |
+| ------------------------------------------- | -------- |
+| Codes in MTN's enum                         | 17       |
+| Codes in `PUBLISHED_ERROR_REASONS`          | 17       |
 | In the vendor list, absent from the adapter | **none** |
 | In the adapter, absent from the vendor list | **none** |
-| Order identical | **yes** |
+| Order identical                             | **yes**  |
 
 The transcription is exact, value for value and in the document's own order.
 No finding.
@@ -62,7 +62,7 @@ reads it — `docs/flows/failures.md` (dagger footnote on the per-rail table),
 `docs/flows/adapter-mtn-momo.md` (dagger on the mapping table) and
 `docs/status.md`, not only in the `UNPUBLISHED_REASONS` constant. No finding.
 
-### 1.3 What the diff turned up that the branch got *wrong in its own favour's opposite*
+### 1.3 What the diff turned up that the branch got _wrong in its own favour's opposite_
 
 See **Finding 1**. `ErrorReason` is not, as the branch says in five places, a
 schema whose relationship to `requesttopay` is unpublished.
@@ -72,6 +72,7 @@ schema whose relationship to `requesttopay` is unpublished.
 ## 2. Findings
 
 ### Finding 1 — the "load-bearing caveat" is false, and it understates the branch's own evidence
+
 **Severity: misleading-claim.** Fixed.
 
 Five files carried a variant of:
@@ -82,13 +83,13 @@ Five files carried a variant of:
 
 The document says otherwise, at two levels:
 
-* `RequestToPayResult.reason` is `{"$ref": "#/components/schemas/ErrorReason"}`.
+- `RequestToPayResult.reason` is `{"$ref": "#/components/schemas/ErrorReason"}`.
   MTN types this exact field with this exact enum.
-* `RequesttoPayTransactionStatus` (`GET /v1_0/requesttopay/{referenceId}`) —
+- `RequesttoPayTransactionStatus` (`GET /v1_0/requesttopay/{referenceId}`) —
   the call this adapter polls — answers `RequestToPayResult` on its `200`,
-  described as *"note that a failed request to pay will be returned with this
+  described as _"note that a failed request to pay will be returned with this
   status too … the 'reason' field can be used to retrieve a cause in case of
-  failure"*. Two of that response's worked examples carry `PAYER_NOT_FOUND`
+  failure"_. Two of that response's worked examples carry `PAYER_NOT_FOUND`
   and `PAYEE_NOT_FOUND` in `reason.code`. The `404` and `500` responses are
   `ErrorReason` directly.
 
@@ -96,7 +97,7 @@ This is the unusual case of a branch **under**-claiming. `PAYMENT_NOT_APPROVED`
 → `payer_declined` is a citation about `requesttopay`, not an inference from a
 neighbouring operation, and a maintainer reading "this is a deliberate
 assumption" could reasonably have reverted the three new rows as guesswork.
-It also blunts the caveat that *is* real: the two unpublished strings are
+It also blunts the caveat that _is_ real: the two unpublished strings are
 missing not from some large shared error schema but from the enum MTN types
 the very field the adapter reads.
 
@@ -110,6 +111,7 @@ Corrected in `vpay_adapter_mtn_momo::mapping`'s header,
 cited it.
 
 ### Finding 2 — the one number that reaches `payer_declined` was proven by nothing
+
 **Severity: gate-hole.** Fixed.
 
 The branch added `237600000103`, its `mtn-demo-declined` mapping, and a promise
@@ -117,8 +119,8 @@ that typing it reaches `payer_declined` — in `docs/runbooks/demo.md`,
 `docs/flows/adapter-mtn-momo.md`, `docs/status.md`, `examples/shop/README.md`
 and the shop's test-number panel. **Nothing executed it.** Not the conformance
 suite, not `demo-walk` (which sends the hex family), not `checkout.cy.ts`. The
-shop's vitest proves a mapping *mentions* the number; it cannot prove the
-mapping *answers*.
+shop's vitest proves a mapping _mentions_ the number; it cannot prove the
+mapping _answers_.
 
 So issue #59's own shape survived one layer down: the code that had just
 stopped being unreachable was reachable only according to prose.
@@ -131,7 +133,7 @@ The justification was a sentence in `docs/flows/adapter-mtn-momo.md`:
 `237600000503` had been a case in
 `a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin` since exp22
 (`adapter_conformance.rs:1888`), and that test's own doc comment carries a
-paragraph explaining why it is there *despite having no twin*. The sentence
+paragraph explaining why it is there _despite having no twin_. The sentence
 asserted the opposite of the code three lines above it.
 
 Fixed by adding the missing case, correcting the sentence, and rewriting the
@@ -139,15 +141,17 @@ test's doc comment so the test says what it is for (every MSISDN a payer can
 type) rather than only where its numbers came from.
 
 ### Finding 3 — "reaches `payer_declined` from a browser" was never true
+
 **Severity: misleading-claim.** Fixed.
 
 `docs/flows/adapter-mtn-momo.md` and `docs/status.md` both said the new MSISDN
 "reaches `payer_declined` from a browser". No browser has typed it —
 `checkout.cy.ts` drives the hex family — and after Finding 2's fix what is
 proven is a socket-level walk through `submit` and `query_status`. Both
-sentences now say that, and name what does *not* cover it.
+sentences now say that, and name what does _not_ cover it.
 
 ### Finding 4 — the branch left a stub comment asserting the opposite of its own new row
+
 **Severity: correctness (documentation).** Fixed.
 
 `demo-outcomes.json` carried, in capitals, from before this branch:
@@ -168,6 +172,7 @@ records why the stub still answers `COULD_NOT_PERFORM_TRANSACTION` — including
 that this string is itself one of the two MTN does not publish.
 
 ### Nit — `mtn-demo-decline` and `mtn-demo-declined`, one letter apart
+
 Fixed. The new scenario was named one character longer than its neighbour, which
 means `grep mtn-demo-decline` matches both while the two mean different things
 to a payer (no balance vs. refused on the handset). Renamed `mtn-demo-refused`;
@@ -182,18 +187,18 @@ the rename touches only content this branch introduced.
 `STATUS_TABLE` is the five statuses Orange documents. Read case by case, no
 status the adapter can receive means "the payer refused":
 
-* `INITIATED`, `PENDING` → alive; `SUCCESS` → settled.
-* `EXPIRED` → `payer_timeout`, and the conformance case
+- `INITIATED`, `PENDING` → alive; `SUCCESS` → settled.
+- `EXPIRED` → `payer_timeout`, and the conformance case
   `the_payers_exit_from_the_hosted_page_decides_the_charge` asserts that a
   payer clicking **Cancel** arrives this way.
-* `FAILED` → `provider_error`, because Orange documents no sub-reason for it —
+- `FAILED` → `provider_error`, because Orange documents no sub-reason for it —
   so it cannot be read as a refusal either.
-* Anything else is `ProviderError::Malformed`, never a `Failed`, so an unknown
+- Anything else is `ProviderError::Malformed`, never a `Failed`, so an unknown
   word cannot become a decline.
 
 Giving Orange `payer_declined` would have required inventing a `CANCELLED` the
-rail does not document. Refusing was correct, and refusing *and saying so in a
-checked `cannotExpress` row* is better than either.
+rail does not document. Refusing was correct, and refusing _and saying so in a
+checked `cannotExpress` row_ is better than either.
 
 ### Deviation 2 — the authoritative table lives in `failures.md`: **sound, keep it**
 
@@ -215,12 +220,12 @@ special-cased.
 
 ## 4. Blast radius
 
-| Surface | Disagrees with `PRODUCED_FAILURE_CODES`? |
-|---|---|
-| `examples/shop` README + panel | No — checked in both directions by `test-numbers.test.ts`, which reads the adapters' Rust |
-| `frontends/apps/checkout/src/lib/failures.ts` | **No, and it structurally cannot.** It is a `Record<FailureCode, MessageKey>` — total over the taxonomy, enforced by the compiler, and rail-agnostic. It makes no per-rail reachability claim, so there is nothing for a per-rail list to contradict. The implementer's "not done" item — no `verify` gate covering it — is accurate, and the risk it leaves is nil |
-| Both TS SDKs, Rust SDK | Doc prose only; the exported code unions are unchanged eleven |
-| `provider_callback`, `webhooks.rs`, `worker_recovery` | Untouched, green |
+| Surface                                               | Disagrees with `PRODUCED_FAILURE_CODES`?                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `examples/shop` README + panel                        | No — checked in both directions by `test-numbers.test.ts`, which reads the adapters' Rust                                                                                                                                                                                                                                                                           |
+| `frontends/apps/checkout/src/lib/failures.ts`         | **No, and it structurally cannot.** It is a `Record<FailureCode, MessageKey>` — total over the taxonomy, enforced by the compiler, and rail-agnostic. It makes no per-rail reachability claim, so there is nothing for a per-rail list to contradict. The implementer's "not done" item — no `verify` gate covering it — is accurate, and the risk it leaves is nil |
+| Both TS SDKs, Rust SDK                                | Doc prose only; the exported code unions are unchanged eleven                                                                                                                                                                                                                                                                                                       |
+| `provider_callback`, `webhooks.rs`, `worker_recovery` | Untouched, green                                                                                                                                                                                                                                                                                                                                                    |
 
 **Did a code's meaning change under an existing demo number?** `EXPIRED` on MTN
 was previously unmapped (`provider_error` by fallback) and is now
@@ -240,13 +245,13 @@ in §6.
 
 ## 5. Mutations
 
-| # | Mutation | Expected | Result |
-|---|---|---|---|
-| 1 | Swap the codes of `EXPIRED` and `PAYMENT_NOT_APPROVED` in `FAILURE_REASONS` (the implementer's, re-run) | conformance fails | **FAILED as required** — see §6 |
-| 2 | Promise `insufficient_funds` for Orange in **both** `README.md` and `test-numbers.ts` (the implementer's, re-run) | shop vitest fails | **FAILED as required** — see §6 |
-| 3 | **Mine:** delete `FailureCode::PayerDeclined` from MTN's `PRODUCED_FAILURE_CODES` while `…0f05`/`…0f06` still produce it | something must fail | **FAILED as required** — see §6 |
-| 4 | **Mine:** delete the new conformance case's row, keeping every document's promise | the gate hole reopens silently | **PASSED — which is the finding.** conformance 53/53, shop vitest 108/108, MTN units 62/62, all green with five documents promising a number nothing ran |
-| 5 | **Mine:** make the demo stub answer `APPROVAL_REJECTED` instead of `PAYMENT_NOT_APPROVED` — a *different reason with the same taxonomy code* | only a reason-level assertion can catch it | **FAILED as required**: `case_4_payer_declined`, "expected \"PAYMENT_NOT_APPROVED\" inside \"APPROVAL_REJECTED: The payment was not approved by the payer\"". Under the old `!raw.is_empty()` this mutation was invisible |
+| #   | Mutation                                                                                                                                     | Expected                                   | Result                                                                                                                                                                                                                    |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Swap the codes of `EXPIRED` and `PAYMENT_NOT_APPROVED` in `FAILURE_REASONS` (the implementer's, re-run)                                      | conformance fails                          | **FAILED as required** — see §6                                                                                                                                                                                           |
+| 2   | Promise `insufficient_funds` for Orange in **both** `README.md` and `test-numbers.ts` (the implementer's, re-run)                            | shop vitest fails                          | **FAILED as required** — see §6                                                                                                                                                                                           |
+| 3   | **Mine:** delete `FailureCode::PayerDeclined` from MTN's `PRODUCED_FAILURE_CODES` while `…0f05`/`…0f06` still produce it                     | something must fail                        | **FAILED as required** — see §6                                                                                                                                                                                           |
+| 4   | **Mine:** delete the new conformance case's row, keeping every document's promise                                                            | the gate hole reopens silently             | **PASSED — which is the finding.** conformance 53/53, shop vitest 108/108, MTN units 62/62, all green with five documents promising a number nothing ran                                                                  |
+| 5   | **Mine:** make the demo stub answer `APPROVAL_REJECTED` instead of `PAYMENT_NOT_APPROVED` — a _different reason with the same taxonomy code_ | only a reason-level assertion can catch it | **FAILED as required**: `case_4_payer_declined`, "expected \"PAYMENT_NOT_APPROVED\" inside \"APPROVAL_REJECTED: The payment was not approved by the payer\"". Under the old `!raw.is_empty()` this mutation was invisible |
 
 Mutation 4 is recorded because it is the one that says why Finding 2 mattered:
 the branch as delivered had a green suite and an unexecuted promise, and no
@@ -275,17 +280,17 @@ gate; the hole Finding 2 names is one no gate could see.
 
 **Final — `0136bba`, both review commits in.** `just ci` **exit 0**:
 
-| Recipe | Result |
-|---|---|
-| `fmt-check` | ok |
-| `clippy` | ok, no warnings |
-| `verify` | ok — the twelve gates |
-| `test-rust` | **1692 run, 1692 passed, 0 skipped** (1691 baseline + the new case) |
-| `test-doc` | 111 passed, 1 ignored |
-| `verify-ignored` | ok |
-| `lint-web` | ok |
-| `test-web` | 63 + 8 + 146 + 208 + 4 + 74 + **108 (shop)** + 182 + 507, all passed |
-| `deny` | advisories / bans / licenses / sources ok |
+| Recipe           | Result                                                               |
+| ---------------- | -------------------------------------------------------------------- |
+| `fmt-check`      | ok                                                                   |
+| `clippy`         | ok, no warnings                                                      |
+| `verify`         | ok — the twelve gates                                                |
+| `test-rust`      | **1692 run, 1692 passed, 0 skipped** (1691 baseline + the new case)  |
+| `test-doc`       | 111 passed, 1 ignored                                                |
+| `verify-ignored` | ok                                                                   |
+| `lint-web`       | ok                                                                   |
+| `test-web`       | 63 + 8 + 146 + 208 + 4 + 74 + **108 (shop)** + 182 + 507, all passed |
+| `deny`           | advisories / bans / licenses / sources ok                            |
 
 Suite-level, run separately: conformance **54 / 54, 0 skipped** (53 as
 delivered); MTN units **62 / 62**; Orange units **57 / 57**.
@@ -293,14 +298,14 @@ delivered); MTN units **62 / 62**; Orange units **57 / 57**.
 `just demo-walk` on project `exp48-review` (ports 19400/19402/19403,
 14400/14401/14480): **exit 0**, and the six outcomes are unchanged —
 
-| # | Rail | Status | Code |
-|---|---|---|---|
-| 1 | `mtn_momo` | `succeeded` | — |
-| 2 | `mtn_momo` | `requires_payment_method` | `insufficient_funds` |
-| 3 | `mtn_momo` | `requires_payment_method` | `payer_timeout` |
-| 4 | `orange_money` | `succeeded` | — |
-| 5 | `orange_money` | `requires_payment_method` | `payer_timeout` |
-| 6 | `orange_money` | `requires_payment_method` | `provider_error` |
+| #   | Rail           | Status                    | Code                 |
+| --- | -------------- | ------------------------- | -------------------- |
+| 1   | `mtn_momo`     | `succeeded`               | —                    |
+| 2   | `mtn_momo`     | `requires_payment_method` | `insufficient_funds` |
+| 3   | `mtn_momo`     | `requires_payment_method` | `payer_timeout`      |
+| 4   | `orange_money` | `succeeded`               | —                    |
+| 5   | `orange_money` | `requires_payment_method` | `payer_timeout`      |
+| 6   | `orange_money` | `requires_payment_method` | `provider_error`     |
 
 — which is the walkthrough's own table, and which contains no
 `payer_declined`. That is now stated in the runbook rather than left to be
@@ -328,21 +333,21 @@ on it, and that is not this review's call to make.
 
 ## 7. Left alone, deliberately
 
-* **`TRANSACTION_CANCELED` stays `provider_error`.** The implementer reserved
+- **`TRANSACTION_CANCELED` stays `provider_error`.** The implementer reserved
   it for the maintainer and gave three reasons ([opus.md](opus.md) §2). The
   reasons hold, and Finding 1 does not disturb them: MTN publishes the code
   with no description, and typing a field is not the same as saying who
   cancels. A reviewer picking a defensible default here would be taking a
   decision that was explicitly reserved. **Still the maintainer's.**
-* **No seventh demo payment.** Decided against, and the runbook now says so in
+- **No seventh demo payment.** Decided against, and the runbook now says so in
   as many words rather than leaving a reader to infer coverage. Adding one
   would invalidate §4's pasted transcript and the "six outcomes for six"
   wording in the measurement records further down that page — those are dated
   records of runs that happened, not prose to be edited. The number is now
   proven over a socket, which is stronger evidence than a transcript and does
   not require rewriting a record. **The trade is flagged for the maintainer.**
-* **No `verify` gate for the checkout page's `failures.ts`.** See §4: it is
+- **No `verify` gate for the checkout page's `failures.ts`.** See §4: it is
   total and rail-agnostic, so there is no claim for a gate to check.
-* **No prettier sweep.** #109 had not landed; this branch does not reformat.
-* **No rail has been called.** Unchanged, and the reason every ⛔ in
+- **No prettier sweep.** #109 had not landed; this branch does not reformat.
+- **No rail has been called.** Unchanged, and the reason every ⛔ in
   `docs/status.md`'s "Real sandbox" column is still ⛔.
