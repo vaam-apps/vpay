@@ -36,17 +36,17 @@
  *    authorization-code grant with PKCE, whose exchange this app's own server
  *    performed.
  *
- * # One leg that is about the DEMO rather than about the dashboard
+ * # Two legs that are about the DEMO rather than about the dashboard
  *
- * "shows the demo staff member a payment somebody made through the shop" is
- * exp51, and it is the only thing in this repository that fails if the demo
- * dashboard is bound to a tenant nobody clicks anything in. The stack
- * registers two merchant clients on two tenants and `/dash/v1` reads exactly
- * one; that leg buys a tote in the shop, pays for it on vpay's page, and then
- * looks the payment up on the dashboard by its list row and by its id.
- * Nothing about it is stubbed either, and the payment it asserts on is one
- * this spec made through a merchant's own website rather than one it minted
- * with a merchant credential.
+ * "takes a payment through the shop…" and "shows the demo staff member that
+ * payment…" are exp51, and together they are the only thing in this
+ * repository that fails if the demo dashboard is bound to a tenant nobody
+ * clicks anything in. The stack registers two merchant clients on two tenants
+ * and `/dash/v1` reads exactly one. Nothing about them is stubbed either: the
+ * payment asserted on is one this spec made through a merchant's own website
+ * with a phone number, not one it minted with a merchant credential. Two
+ * tests and not one because a test's primary origin is its first `cy.visit`
+ * — the first comment in the pair says what that cost when it was one.
  *
  * # And one leg that is about a token rather than about a person
  *
@@ -334,39 +334,25 @@ describe("the dashboard", { testIsolation: false }, () => {
     });
   });
 
-  it("shows the demo staff member a payment somebody made through the shop", () => {
-    // THE CASE THE MAINTAINER HIT BY HAND, on 2026-09-11: buy something in
-    // the shop, pay for it, go looking for it on the dashboard. It was not
-    // there, and the by-id URL answered 404.
-    //
-    // Nothing was broken. A `/dash/v1` request reads exactly one tenant's
-    // rows — the one `dashboard_client.merchant_id` names — and the demo
-    // registers TWO merchant clients on two tenants: `demo-merchant`
-    // (`just demo-walk`) and `shop-merchant` (`examples/shop`). The binding
-    // named the first, so the shop's payments belonged to a tenant this
-    // dashboard does not show and the detail read gave the uniform
-    // cross-tenant 404 it gives for an id that does not exist at all. The
-    // fix is a choice about who is looking, not a change to either surface:
-    // `demo_dashboard_merchant` binds the demo dashboard to the SHOP's
-    // tenant, because the shop is the clickable one.
-    //
-    // **This test is that choice's only guard, and it is a live one.** Point
-    // `demo_dashboard_merchant` back at `demo-merchant-tenant` and both
-    // assertions below fail: the row is absent from the list, and
-    // `/payments/{id}` is Next's `notFound()` — a 404 `cy.visit` refuses.
+  it("takes a payment through the shop, the way the person who reported this did", () => {
+    // THE CASE THE MAINTAINER HIT BY HAND, on 2026-09-11, in two halves: this
+    // one makes the payment, the next one goes looking for it. They are two
+    // tests rather than one because a Cypress test's PRIMARY ORIGIN is fixed
+    // by its first `cy.visit` — here the shop's — and every later command on
+    // another origin then has to be inside `cy.origin()`. Measured: written
+    // as one test, the dashboard half failed with "the command was expected
+    // to run against origin http://localhost:3001 but the application is at
+    // http://localhost:3000". `testIsolation: false` is what makes the split
+    // free: the dashboard session and the id below both survive into the
+    // next test.
     //
     // Deliberately NOT `cy.task('mintCheckoutPaymentIntent')`. That task
-    // holds a merchant private key and would prove only that a tenant can
-    // read its own rows, which `/dash/v1`'s own tests already prove. What is
-    // under test here is the arrangement of the DEMO, so the payment has to
-    // be made the way the person who reported this made theirs: through the
-    // shop, on vpay's page, with a phone number, and settled by the worker
-    // polling a rail.
-    //
-    // Still signed in from the sign-in test above (`testIsolation: false`);
-    // the shop and vpay's page are other origins and set no cookie this
-    // spec's dashboard session cares about, and `cy.visit("/payments")`
-    // below goes back to Cypress's `baseUrl`.
+    // holds a merchant private key, and a payment minted with it would prove
+    // only that a tenant can read its own rows — which
+    // `dashboard_read_surface.rs` already proves. What is under test across
+    // these two is the arrangement of the DEMO, so the payment has to arrive
+    // the way a person's does: through the shop, on vpay's page, with a
+    // phone number, and settled by `vpay-worker` polling a rail.
     buyOnVpaysPage();
 
     cy.origin(
@@ -389,39 +375,64 @@ describe("the dashboard", { testIsolation: false }, () => {
       },
     );
 
-    // Back on the shop's return page, which reads the shop's own database.
+    // Back on the shop's return page, which reads the shop's own database —
+    // written by the shop's webhook handler after it verified vpay's
+    // signature, and by nothing else.
     cy.url({ timeout: 60_000 }).should("include", "/return");
     cy.get('[data-testid="paid-message"]', { timeout: 120_000 }).should(
       "be.visible",
     );
 
-    // The id comes from the SHOP, not from vpay and not from this spec: it is
-    // what the merchant stored, so a dashboard that shows it is showing the
-    // merchant's own payment and not merely something with the right shape.
+    // The id is read out of the SHOP's own `orders.get`, not out of vpay and
+    // not out of anything this spec minted: it is what the merchant stored,
+    // so a dashboard that shows it is showing the merchant's own payment and
+    // not merely something with the right shape.
     orderIdFromUrl()
       .then((orderId) => readOrder(orderId))
       .then((order) => {
         const intentId = order.paymentIntentId ?? "";
         expect(intentId, "the shop's own paymentIntentId").to.match(/^pi_/);
-
-        cy.visit("/payments");
-        cy.contains("h2", "Payments").should("be.visible");
-        cy.get(`[data-payment-id="${intentId}"]`)
-          .should("exist")
-          .find("a")
-          .click();
-
-        // Not a 404: the by-id read is the second half of what was reported,
-        // and it is answered by the same tenant predicate the list is.
-        cy.location("pathname").should("eq", `/payments/${intentId}`);
-        cy.get('[data-testid="detail-id"]').should("have.text", intentId);
-        // And it settled, so this is a payment with a charge behind it rather
-        // than an intent nobody ever confirmed.
-        cy.get('[data-testid="detail-rail"]').should("have.text", "mtn_momo");
-        cy.screenshot("05-shop-payment-on-the-dashboard", {
-          capture: "fullPage",
-        });
+        Cypress.env("shopPaymentIntentId", intentId);
       });
+  });
+
+  it("shows the demo staff member that payment, in the list and by id", () => {
+    // The other half, and the guard on `demo_dashboard_merchant`.
+    //
+    // A `/dash/v1` request reads exactly one tenant's rows — the one
+    // `dashboard_client.merchant_id` names — and the demo stack registers TWO
+    // merchant clients on two tenants: `demo-merchant` (`just demo-walk`) and
+    // `shop-merchant` (`examples/shop`). The binding named the first, so a
+    // payment made through the shop belonged to a tenant this dashboard does
+    // not show, and the detail read answered the uniform cross-tenant 404 it
+    // answers for an id that exists nowhere. Neither answer was wrong; the
+    // binding named the surface nobody clicks in.
+    //
+    // **Point `demo_dashboard_merchant` back at `demo-merchant-tenant` and
+    // both assertions below fail**: the row is absent from the list, and
+    // `/payments/{id}` is Next's `notFound()`, which `cy.visit` refuses as a
+    // 404. That mutation is this test's whole reason for existing.
+    //
+    // Still signed in from the sign-in test; the shop and vpay's page set no
+    // cookie this spec's dashboard session cares about.
+    const intentId = Cypress.env("shopPaymentIntentId") as string;
+    expect(
+      intentId,
+      "the payment the previous test made through the shop",
+    ).to.match(/^pi_/);
+
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+    cy.get(`[data-payment-id="${intentId}"]`).should("exist").find("a").click();
+
+    // Not a 404: the by-id read is the second half of what was reported, and
+    // it is answered by the same tenant predicate the list is.
+    cy.location("pathname").should("eq", `/payments/${intentId}`);
+    cy.get('[data-testid="detail-id"]').should("have.text", intentId);
+    // And it settled, so this is a payment with a charge behind it rather
+    // than an intent nobody ever confirmed.
+    cy.get('[data-testid="detail-rail"]').should("have.text", "mtn_momo");
+    cy.screenshot("05-shop-payment-on-the-dashboard", { capture: "fullPage" });
   });
 
   it("renders the masked payer as a dash, because nothing writes that column", () => {
