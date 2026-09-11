@@ -1,6 +1,6 @@
 /**
- * The two things `dashboard.cy.ts` needs from Node, wrapped so the spec reads
- * as what it is doing rather than as `cy.task` plumbing.
+ * The things `dashboard.cy.ts` needs from Node, wrapped so the spec reads as
+ * what it is doing rather than as `cy.task` plumbing.
  */
 
 /**
@@ -31,5 +31,32 @@ export function waitForNextTotpStep(): void {
   cy.task<number>("secondsLeftInStep").then((seconds) => {
     // Plus a second, so the boundary is crossed rather than landed on.
     cy.wait((seconds + 1) * 1000);
+  });
+}
+
+/**
+ * Leaves a value for a LATER test in this spec, in Node.
+ *
+ * `Cypress.env(key, value)` is the obvious way to do this and it is the wrong
+ * one here: it does not survive the primary origin moving, which this spec
+ * does every run as soon as it buys something in the shop. The measurement,
+ * and why Node is where the value has to live, are in
+ * `cypress/tasks/dashboardTasks.ts`.
+ */
+export function carryForward(key: string, value: string): void {
+  cy.task("carryForward", { key, value });
+}
+
+/**
+ * Reads back what {@link carryForward} stored, failing with the key's name
+ * if the test that was supposed to store it did not.
+ */
+export function carriedForward(key: string): Cypress.Chainable<string> {
+  return cy.task<string | null>("carriedForward", key).then((value) => {
+    expect(
+      value,
+      `'${key}', which an earlier test in this spec should have stored`,
+    ).to.be.a("string");
+    return String(value);
   });
 }

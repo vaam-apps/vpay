@@ -57,7 +57,12 @@
  * seconds) — at the shipping 900 no browser run could reach the case at all,
  * which is why nothing ever had.
  */
-import { totpDigits, waitForNextTotpStep } from "../support/dashboard";
+import {
+  carriedForward,
+  carryForward,
+  totpDigits,
+  waitForNextTotpStep,
+} from "../support/dashboard";
 import {
   MTN,
   buyOnVpaysPage,
@@ -71,6 +76,20 @@ const staffEmail = (): string => Cypress.expose("STAFF_EMAIL") as string;
 
 /** A password this spec sets, replacing the printed one-time password. */
 const NEW_PASSWORD = "a-long-enough-demo-password";
+
+/**
+ * The two values a test here leaves for a LATER test, by name.
+ *
+ * They live in Node (`carryForward`/`carriedForward`, `../support/dashboard`)
+ * rather than in `Cypress.env`, and that is not a preference: the shop leg
+ * below moves this spec's primary origin off the dashboard's port, and a
+ * runtime `Cypress.env` write does not survive it. Both of these were read
+ * back as `undefined` — measured on CI run 34555068739 and locally — while
+ * the payment they were about sat in Postgres in the right tenant.
+ * `cypress/tasks/dashboardTasks.ts` has the mechanism.
+ */
+const TOTP_SECRET = "dashboardTotpSecret";
+const SHOP_PAYMENT_INTENT_ID = "shopPaymentIntentId";
 
 /**
  * # Why this spec turns test isolation off
@@ -161,10 +180,11 @@ describe("the dashboard", { testIsolation: false }, () => {
     cy.get('[data-testid="totp-secret"]')
       .invoke("text")
       .then((secret) => {
-        // Kept for leg 5's second sign-in, which needs a code from a LATER
-        // step: the replay guard is a compare-and-swap that admits only a
-        // strictly greater one.
-        Cypress.env("dashboardTotpSecret", secret.trim());
+        // Kept for the last test's second sign-in, which needs a code from a
+        // LATER step: the replay guard is a compare-and-swap that admits only
+        // a strictly greater one. In Node, not in `Cypress.env` — see
+        // TOTP_SECRET above.
+        carryForward(TOTP_SECRET, secret.trim());
         return totpDigits(secret.trim());
       })
       .then((code) => {
@@ -342,9 +362,16 @@ describe("the dashboard", { testIsolation: false }, () => {
     // another origin then has to be inside `cy.origin()`. Measured: written
     // as one test, the dashboard half failed with "the command was expected
     // to run against origin http://localhost:3001 but the application is at
-    // http://localhost:3000". `testIsolation: false` is what makes the split
-    // free: the dashboard session and the id below both survive into the
-    // next test.
+    // http://localhost:3000". `testIsolation: false` is what carries the
+    // dashboard SESSION into the next test.
+    //
+    // It does not carry the id, and the first version of this pair said it
+    // did. Cookies survive the split; a `Cypress.env` write does not, because
+    // the `Cypress` object belongs to the spec bridge of the primary origin
+    // this test just moved. The id goes through Node instead
+    // (`carryForward`), and the same mistake had also been silently breaking
+    // the LAST test in this file, whose TOTP secret was stored before this
+    // test runs. Both were `undefined`; neither had been run.
     //
     // Deliberately NOT `cy.task('mintCheckoutPaymentIntent')`. That task
     // holds a merchant private key, and a payment minted with it would prove
@@ -392,7 +419,11 @@ describe("the dashboard", { testIsolation: false }, () => {
       .then((order) => {
         const intentId = order.paymentIntentId ?? "";
         expect(intentId, "the shop's own paymentIntentId").to.match(/^pi_/);
-        Cypress.env("shopPaymentIntentId", intentId);
+        // In Node. This test's primary origin is the SHOP's port, the next
+        // one's is the dashboard's, and a `Cypress.env` write does not cross
+        // that — it was `undefined` one test later, every run. See
+        // SHOP_PAYMENT_INTENT_ID at the top of this file.
+        carryForward(SHOP_PAYMENT_INTENT_ID, intentId);
       });
   });
 
@@ -415,24 +446,44 @@ describe("the dashboard", { testIsolation: false }, () => {
     //
     // Still signed in from the sign-in test; the shop and vpay's page set no
     // cookie this spec's dashboard session cares about.
-    const intentId = Cypress.env("shopPaymentIntentId") as string;
-    expect(
-      intentId,
-      "the payment the previous test made through the shop",
-    ).to.match(/^pi_/);
+    carriedForward(SHOP_PAYMENT_INTENT_ID).then((intentId) => {
+      expect(
+        intentId,
+        "the payment the previous test made through the shop",
+      ).to.match(/^pi_/);
 
-    cy.visit("/payments");
-    cy.contains("h2", "Payments").should("be.visible");
-    cy.get(`[data-payment-id="${intentId}"]`).should("exist").find("a").click();
+      cy.visit("/payments");
+      cy.contains("h2", "Payments").should("be.visible");
+      cy.get(`[data-payment-id="${intentId}"]`)
+        .should("exist")
+        .find("a")
+        .click();
 
-    // Not a 404: the by-id read is the second half of what was reported, and
-    // it is answered by the same tenant predicate the list is.
-    cy.location("pathname").should("eq", `/payments/${intentId}`);
-    cy.get('[data-testid="detail-id"]').should("have.text", intentId);
-    // And it settled, so this is a payment with a charge behind it rather
-    // than an intent nobody ever confirmed.
-    cy.get('[data-testid="detail-rail"]').should("have.text", "mtn_momo");
-    cy.screenshot("05-shop-payment-on-the-dashboard", { capture: "fullPage" });
+      // Not a 404: the by-id read is the second half of what was reported,
+      // and it is answered by the same tenant predicate the list is.
+      cy.location("pathname").should("eq", `/payments/${intentId}`);
+      cy.get('[data-testid="detail-id"]').should("have.text", intentId);
+      // And it settled, so this is a payment with a charge behind it rather
+      // than an intent nobody ever confirmed.
+      cy.get('[data-testid="detail-rail"]').should("have.text", "mtn_momo");
+      cy.screenshot("05-shop-payment-on-the-dashboard", {
+        capture: "fullPage",
+      });
+
+      // THE BY-ID READ ON ITS OWN, not reached through the list.
+      //
+      // "when I was trying to find them by payment id, I was getting a 404"
+      // is half of what was reported, and until this line the only route to
+      // it was a row in the list — so a regression that broke the by-id read
+      // while leaving the list intact would have failed at
+      // `[data-payment-id]` and been read as a list problem, and one that
+      // broke both would have been reported as the list alone. A direct
+      // visit is the reported symptom itself: `dash::payment_intents::
+      // retrieve` answers the uniform cross-tenant 404, the app maps it to
+      // Next's `notFound()`, and `cy.visit` fails on a 404 status.
+      cy.visit(`/payments/${intentId}`);
+      cy.get('[data-testid="detail-id"]').should("have.text", intentId);
+    });
   });
 
   it("renders the masked payer as a dash, because nothing writes that column", () => {
@@ -594,10 +645,16 @@ describe("the dashboard", { testIsolation: false }, () => {
     cy.get('[data-testid="totp-qr"]').should("not.exist");
     cy.contains("h2", "Enter your code").should("be.visible");
 
-    totpDigits(Cypress.env("dashboardTotpSecret") as string).then((code) => {
-      cy.get("#dashboard-totp-code").type(code);
-      cy.contains("button", "Continue").click();
-    });
+    // The secret the enrolment screen showed, back from Node: the shop leg
+    // above moved this spec's primary origin, and `Cypress.env` did not
+    // survive it — this read was `undefined` and `cy.task('totpCode')` died
+    // on it, every run, until 2026-09-11.
+    carriedForward(TOTP_SECRET)
+      .then((secret) => totpDigits(secret))
+      .then((code) => {
+        cy.get("#dashboard-totp-code").type(code);
+        cy.contains("button", "Continue").click();
+      });
 
     // Straight to the payments list: the one-time password is behind them
     // now, so `/login/password` is not on the way any more.
