@@ -1,4 +1,15 @@
-import { Alert, Heading, Stack, StatusBadge, Table, Text } from "@vpay/ui";
+import {
+  Alert,
+  Code,
+  DataList,
+  DataListRow,
+  Section,
+  Stack,
+  StatusBadge,
+  Table,
+  Text,
+  Timeline,
+} from "@vpay/ui";
 
 import {
   ABSENT,
@@ -8,7 +19,7 @@ import {
   formatMethods,
 } from "../format";
 import type { PaymentDetail } from "../server/api";
-import { DetailTimeline } from "./detail-timeline";
+import { TimelineGap } from "./timeline-gap";
 
 export interface PaymentDetailViewProps {
   detail: PaymentDetail;
@@ -20,6 +31,12 @@ export interface PaymentDetailViewProps {
  * Four sections, in the order an operator asks the questions: what is this
  * and what state is it in, why did it fail if it did, which rail took it and
  * what did the rail say, and what happened in what order.
+ *
+ * Composition only — every element here is a `@vpay/ui` primitive. The
+ * `<table><tbody><tr><th scope="row">` markup this file wrote by hand twice,
+ * twenty rows between them, is `DataList`/`DataListRow` now; the bare
+ * `<section>`s that were landmarks in name only are `Section`, which names
+ * itself.
  *
  * # `Payer` is a dash, and that is a fact rather than a placeholder
  *
@@ -43,70 +60,50 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
   const error = intent.last_payment_error;
 
   return (
-    <Stack direction="column" gap="lg">
-      <section>
-        {/*
-          "Summary" and not "Payment": the page around this view already
-          heads itself "Payment", and two <h2>Payment</h2> on one screen was
-          visible in the first committed screenshot of it. Sections here are
-          named for what they contain, not for the object they are about.
-        */}
-        <Heading level={2}>Summary</Heading>
-        <Table>
-          <tbody>
-            <tr>
-              <th scope="row">Id</th>
-              <td>
-                <code data-testid="detail-id">{intent.id}</code>
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">Status</th>
-              <td>
-                {status === null ? (
-                  <Text as="span">{intent.status}</Text>
-                ) : (
-                  <StatusBadge status={status} />
-                )}
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">Amount</th>
-              <td>{formatAmount(intent.amount, intent.currency)}</td>
-            </tr>
-            <tr>
-              <th scope="row">Created (UTC)</th>
-              <td>{formatInstant(intent.created)}</td>
-            </tr>
-            <tr>
-              <th scope="row">Payment methods offered</th>
-              <td>{formatMethods(intent.payment_method_types)}</td>
-            </tr>
-            <tr>
-              <th scope="row">Description</th>
-              <td>{intent.description ?? ABSENT}</td>
-            </tr>
-            <tr>
-              <th scope="row">Customer</th>
-              <td>
-                {intent.customer === null ? (
-                  ABSENT
-                ) : (
-                  <code>{intent.customer}</code>
-                )}
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">Livemode</th>
-              <td>{intent.livemode ? "yes" : "no"}</td>
-            </tr>
-          </tbody>
-        </Table>
-      </section>
+    <Stack direction="column" align="stretch" gap="lg">
+      {/*
+        "Summary" and not "Payment": the page around this view already heads
+        itself "Payment", and two <h2>Payment</h2> on one screen was visible
+        in the first committed screenshot of it. Sections here are named for
+        what they contain, not for the object they are about.
+      */}
+      <Section title="Summary">
+        <DataList>
+          <DataListRow label="Id">
+            <Code wrap="anywhere" data-testid="detail-id">
+              {intent.id}
+            </Code>
+          </DataListRow>
+          <DataListRow label="Status">
+            {status === null ? (
+              <Text as="span">{intent.status}</Text>
+            ) : (
+              <StatusBadge status={status} />
+            )}
+          </DataListRow>
+          <DataListRow label="Amount">
+            {formatAmount(intent.amount, intent.currency)}
+          </DataListRow>
+          <DataListRow label="Created (UTC)">
+            {formatInstant(intent.created)}
+          </DataListRow>
+          <DataListRow label="Payment methods offered">
+            {formatMethods(intent.payment_method_types)}
+          </DataListRow>
+          <DataListRow label="Description">
+            {intent.description ?? ABSENT}
+          </DataListRow>
+          <DataListRow label="Customer">
+            {intent.customer === null ? ABSENT : <Code>{intent.customer}</Code>}
+          </DataListRow>
+          <DataListRow label="Livemode">
+            {intent.livemode ? "yes" : "no"}
+          </DataListRow>
+        </DataList>
+      </Section>
 
       {error === null ? null : (
-        <section>
-          <Heading level={2}>Last error</Heading>
+        <Section title="Last error">
           {/*
             The failure code AND the sentence. The code is the closed
             vocabulary a runbook is written against; the message is what a
@@ -115,83 +112,60 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
           */}
           <Alert tone="error" role="status">
             <Text as="span" data-testid="detail-failure-code">
-              <code>{error.code ?? ABSENT}</code>
+              <Code>{error.code ?? ABSENT}</Code>
             </Text>
             <Text as="span">{error.message ?? ABSENT}</Text>
           </Alert>
-        </section>
+        </Section>
       )}
 
-      <section>
-        <Heading level={2}>Charge</Heading>
+      <Section title="Charge">
         {charge === null ? (
           <Text tone="muted">
             No charge. Nobody has confirmed this payment intent — one charge per
             intent, forever, and this one has none.
           </Text>
         ) : (
-          <Table>
-            <tbody>
-              <tr>
-                <th scope="row">Id</th>
-                <td>
-                  <code>{charge.id}</code>
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Rail</th>
-                <td data-testid="detail-rail">{charge.provider_code}</td>
-              </tr>
-              <tr>
-                <th scope="row">State</th>
-                <td>{charge.state}</td>
-              </tr>
-              <tr>
-                <th scope="row">Amount</th>
-                <td>{formatAmount(charge.amount, charge.currency)}</td>
-              </tr>
-              <tr>
-                <th scope="row">Payer (masked)</th>
-                <td data-testid="detail-payer">
-                  {charge.payer_ref_masked ?? ABSENT}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">vpay reference</th>
-                <td>
-                  <code>{charge.provider_reference_id}</code>
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Rail transaction</th>
-                <td>
-                  {charge.provider_txn_id === null ? (
-                    ABSENT
-                  ) : (
-                    <code>{charge.provider_txn_id}</code>
-                  )}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Failure</th>
-                <td>
-                  {charge.failure_code === null && charge.failure_raw === null
-                    ? ABSENT
-                    : `${charge.failure_code ?? ABSENT} — ${charge.failure_raw ?? ABSENT}`}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Updated (UTC)</th>
-                <td>{formatInstant(charge.updated)}</td>
-              </tr>
-            </tbody>
-          </Table>
+          <DataList>
+            <DataListRow label="Id">
+              <Code wrap="anywhere">{charge.id}</Code>
+            </DataListRow>
+            <DataListRow label="Rail">
+              <span data-testid="detail-rail">{charge.provider_code}</span>
+            </DataListRow>
+            <DataListRow label="State">{charge.state}</DataListRow>
+            <DataListRow label="Amount">
+              {formatAmount(charge.amount, charge.currency)}
+            </DataListRow>
+            <DataListRow label="Payer (masked)">
+              <span data-testid="detail-payer">
+                {charge.payer_ref_masked ?? ABSENT}
+              </span>
+            </DataListRow>
+            <DataListRow label="vpay reference">
+              <Code wrap="anywhere">{charge.provider_reference_id}</Code>
+            </DataListRow>
+            <DataListRow label="Rail transaction">
+              {charge.provider_txn_id === null ? (
+                ABSENT
+              ) : (
+                <Code wrap="anywhere">{charge.provider_txn_id}</Code>
+              )}
+            </DataListRow>
+            <DataListRow label="Failure">
+              {charge.failure_code === null && charge.failure_raw === null
+                ? ABSENT
+                : `${charge.failure_code ?? ABSENT} — ${charge.failure_raw ?? ABSENT}`}
+            </DataListRow>
+            <DataListRow label="Updated (UTC)">
+              {formatInstant(charge.updated)}
+            </DataListRow>
+          </DataList>
         )}
-      </section>
+      </Section>
 
       {detail.refunds.length === 0 ? null : (
-        <section>
-          <Heading level={2}>Refunds</Heading>
+        <Section title="Refunds">
           <Table zebra>
             <thead>
               <tr>
@@ -205,7 +179,7 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
               {detail.refunds.map((refund) => (
                 <tr key={refund.id}>
                   <td>
-                    <code>{refund.id}</code>
+                    <Code wrap="anywhere">{refund.id}</Code>
                   </td>
                   <td>{formatAmount(refund.amount, refund.currency)}</td>
                   <td>{refund.status}</td>
@@ -214,51 +188,20 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
               ))}
             </tbody>
           </Table>
-        </section>
+        </Section>
       )}
 
-      <section>
-        <Heading level={2}>Timeline</Heading>
-        <DetailTimeline
-          events={detail.events.map((event) => ({
+      <Section title="Timeline">
+        <Timeline
+          emptyMessage="No events yet."
+          items={detail.events.map((event) => ({
             id: event.id,
             label: event.type,
             at: formatInstant(event.created),
           }))}
         />
-        {/*
-          THE TIMELINE IS NOT THE HISTORY, AND SAYING SO IS THE POINT.
-
-          `events.type` is constrained to eight documented types (migration
-          `0018`, extended by `0029`), and **five of them are written by
-          nothing at all** (`docs/status.md`, "Events written by the worker"):
-          settlement writes two and the housekeeping sweep writes one, and
-          that is the whole of it.
-
-          So a succeeded payment's timeline has exactly one line on it. An
-          operator reading a section headed "Timeline" with one entry
-          reasonably concludes that is everything that happened to this
-          payment — which is the same failure as an empty table that means
-          "the read was refused": a true rendering of an incomplete source,
-          presented as complete.
-
-          The sentence is on the SCREEN and not only in the flow document,
-          because the person who needs it is reading the screen. It names the
-          five missing types rather than hedging, so the day one of them is
-          written this line is wrong in a way a grep finds. It names only
-          those five — the three that ARE written appear in the list above
-          when they happen, and repeating them here would be two elements on
-          one screen with the same text.
-        */}
-        <Text tone="muted" size="xs" data-testid="timeline-gap">
-          Five of the eight documented event types are written by nothing —{" "}
-          <code>payment_intent.created</code>,{" "}
-          <code>payment_intent.processing</code>,{" "}
-          <code>payment_intent.canceled</code>, <code>charge.refunded</code> and{" "}
-          <code>charge.refund.updated</code> — so this is not the whole history
-          of a payment.
-        </Text>
-      </section>
+        <TimelineGap />
+      </Section>
     </Stack>
   );
 }

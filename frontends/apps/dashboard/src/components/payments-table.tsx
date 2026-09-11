@@ -1,6 +1,6 @@
-import Link from "next/link";
+import NextLink from "next/link";
 
-import { StatusBadge, Table, Text } from "@vpay/ui";
+import { Code, Link, StatusBadge, Table, Text } from "@vpay/ui";
 
 import {
   ABSENT,
@@ -65,8 +65,8 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
           return (
             <tr key={row.id} data-payment-id={row.id}>
               <td>
-                <Link href={`/payments/${row.id}`}>
-                  <code>{row.id}</code>
+                <Link render={<NextLink href={`/payments/${row.id}`} />}>
+                  <Code wrap="anywhere">{row.id}</Code>
                 </Link>
               </td>
               <td>{formatInstant(row.created)}</td>

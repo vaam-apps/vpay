@@ -1,4 +1,4 @@
-import { Alert, Text } from "@vpay/ui";
+import { Alert, Code, Text } from "@vpay/ui";
 
 import type { ApiFailure } from "../server/api";
 
@@ -35,7 +35,7 @@ export function ReadFailure({ failure }: ReadFailureProps) {
       <Text as="span">{failure.message}</Text>
       {failure.requestId === null ? null : (
         <Text as="span" size="xs" tone="muted">
-          Request <code>{failure.requestId}</code>
+          Request <Code>{failure.requestId}</Code>
         </Text>
       )}
     </Alert>

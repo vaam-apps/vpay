@@ -1,4 +1,4 @@
-import { Alert, Text } from "@vpay/ui";
+import { Alert, Code, Text } from "@vpay/ui";
 
 /** What {@link FormAlert} renders, or nothing. */
 export interface FormAlertProps {
@@ -34,7 +34,7 @@ export function FormAlert({ error, requestId = null }: FormAlertProps) {
       <Text as="span">{error}</Text>
       {requestId === null ? null : (
         <Text as="span" size="xs" tone="muted">
-          Request <code>{requestId}</code>
+          Request <Code>{requestId}</Code>
         </Text>
       )}
     </Alert>

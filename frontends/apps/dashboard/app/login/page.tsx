@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-import { Alert, Heading, List, Stack, Text } from "@vpay/ui";
+import { Alert, Code, Heading, List, Stack, Text } from "@vpay/ui";
 
 import { dashboardConfig } from "../../src/config/runtime";
 import { SignInForm } from "../../src/components/sign-in-form";
@@ -41,7 +41,7 @@ export default async function LoginPage() {
         <List>
           {problems.map((problem) => (
             <li key={problem.variable}>
-              <code>{problem.variable}</code> — {problem.detail}
+              <Code>{problem.variable}</Code> — {problem.detail}
             </li>
           ))}
         </List>
@@ -57,7 +57,7 @@ export default async function LoginPage() {
     <Stack direction="column" gap="md">
       <Heading level={2}>Sign in</Heading>
       <Text tone="muted" size="sm">
-        Staff accounts are created with <code>vpay-server staff add</code>.
+        Staff accounts are created with <Code>vpay-server staff add</Code>.
         There is no sign-up.
       </Text>
       <SignInForm action={signIn} />

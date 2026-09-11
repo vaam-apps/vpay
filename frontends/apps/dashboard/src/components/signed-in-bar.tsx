@@ -1,4 +1,4 @@
-import { Button, Stack, Text } from "@vpay/ui";
+import { Button, Code, Stack, Text } from "@vpay/ui";
 
 export interface SignedInBarProps {
   /** The address this session signed in with. */
@@ -33,7 +33,7 @@ export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
     <Stack justify="between" align="center" gap="md" wrap>
       <Text as="span" size="sm" tone="muted">
         Signed in as <strong>{email}</strong> · merchant{" "}
-        <code>{merchantId}</code>
+        <Code>{merchantId}</Code>
       </Text>
       <form action={signOut}>
         <Button type="submit" variant="ghost" size="sm">

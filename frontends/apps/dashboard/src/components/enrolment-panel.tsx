@@ -1,4 +1,4 @@
-import { Alert, Heading, Stack, Text } from "@vpay/ui";
+import { Alert, Code, Heading, Stack, Text } from "@vpay/ui";
 
 export interface EnrolmentPanelProps {
   /** The `otpauth://totp/…` URI vpay minted, as a PNG data URL. */
@@ -57,7 +57,9 @@ export function EnrolmentPanel({ qrDataUrl, secret }: EnrolmentPanelProps) {
         <Stack direction="column" gap="xs">
           <Text size="sm">Cannot scan? Enter this key instead:</Text>
           <Text as="p" size="sm">
-            <code data-testid="totp-secret">{secret}</code>
+            <Code wrap="anywhere" data-testid="totp-secret">
+              {secret}
+            </Code>
           </Text>
         </Stack>
       )}

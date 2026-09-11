@@ -8,7 +8,7 @@
  * drive). A screenshot of a state nobody can produce is how a page ends up
  * with a branch that has never rendered.
  */
-import { PageShell, Stack } from "@vpay/ui";
+import { LiveRegion, PageShell, Stack } from "@vpay/ui";
 
 import type { Branding } from "../config/settings";
 import type { Locale, MessageKey, Translate } from "../i18n/index";
@@ -98,9 +98,9 @@ export function CheckoutView(props: CheckoutViewProps) {
           into it is announced. A live region created together with its own
           text is not.
         */}
-        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
+        <LiveRegion data-testid="live-region">
           {renderScreen(props, amount, merchant)}
-        </div>
+        </LiveRegion>
 
         <SupportLine t={t} branding={props.branding} />
       </PageShell>
