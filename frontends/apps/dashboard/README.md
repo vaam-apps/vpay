@@ -168,6 +168,20 @@ sent it only since 16.4 (March 2023)**, so this surface answers `403` to every
 older WebKit. That costs nothing while nothing calls it, and is a decision for
 whatever eventually does.
 
+The review corrected that in the test file's header and **not in the marker
+inside it**, which went on labelling the list case `// THE THIRD DECISIVE
+CASE` — so a reader following the comment nearest the code would still have
+deleted `project` and seen green. Both say the same thing as of **exp56**, and
+the mutation was re-run to say it: replacing `served(project(result.value))`
+with `served(result.value)` fails **two** cases, and only one of them is about
+a credential. `puts it in no part of the detail read either` is that one.
+`answers the page and its two cursors, and nothing vpay sent besides` is the
+other, and it fails on the envelope's **key names** — `data, hasMore, cursor`
+where the wire promises `object, data, has_more, cursor` — which is evidence
+about the contract this surface publishes, not about the token staying in.
+Named because two red cases read as more corroboration than one, and here they
+are two different claims.
+
 ## How the code is laid out
 
 | Directory               | What lives there                                                                          |

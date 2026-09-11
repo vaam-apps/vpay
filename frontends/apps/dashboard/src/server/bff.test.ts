@@ -31,6 +31,19 @@
  * the one that pins the projection. `getOne` is, because it answers the
  * parsed upstream document whole.
  *
+ * **The marker inside the file went on pointing at the list case until exp56
+ * re-ran the mutation**, so a reader who trusted the `// THE THIRD DECISIVE
+ * CASE` comment rather than this header would still have deleted `project`
+ * and seen green. Both now say the same thing, and the mutation was measured
+ * again to say it: replacing `served(project(result.value))` with
+ * `served(result.value)` fails **two** cases —
+ * `puts it in no part of the detail read either`, which is the credential
+ * one, and `answers the page and its two cursors, and nothing vpay sent
+ * besides`, which fails on the *key names* the list envelope carries
+ * (`data, hasMore, cursor` where the wire promises
+ * `object, data, has_more, cursor`) and not on anything leaking. One of the
+ * two is evidence about the token; the other is evidence about the contract.
+ *
  * The token is spelled out as a distinctive literal for those cases, so a
  * substring search cannot match it by accident.
  */
@@ -455,14 +468,23 @@ describe("what the caller may not smuggle in (exp55 review)", () => {
 
 describe("what goes back on the wire", () => {
   it("puts the bearer token in no header and no body, ever", async () => {
-    // THE THIRD DECISIVE CASE.
+    // NOT THE DECISIVE CASE, and this comment said it was until exp56.
     //
-    // vpay is stubbed to echo the token everywhere a careless proxy would
-    // carry it through: a response header, an unexpected top-level field, and
-    // the envelope's own `url`. The assertion is on the serialised response —
-    // status line, every header, and the body as it is actually read back —
-    // rather than on a mock's arguments, because "the code did not mean to
-    // send it" and "it is not on the wire" are different claims.
+    // It is a real case and it is about the *framing*: vpay is stubbed to
+    // echo the token everywhere a careless proxy would carry it through — a
+    // response header, an unexpected top-level field, and the envelope's own
+    // `url` — and the assertion is on the serialised response (status line,
+    // every header, and the body as it is actually read back) rather than on
+    // a mock's arguments, because "the code did not mean to send it" and "it
+    // is not on the wire" are different claims.
+    //
+    // What it does NOT pin is `serve`'s `project`, which is what a reader
+    // following the old marker would have deleted. `dashProvider.getList`
+    // has already rebuilt `{ data, hasMore, cursor }` field by field, so the
+    // list handler's projection renames three keys and drops nothing — the
+    // token was never in the object `project` was handed. Measured, exp56:
+    // replace `served(project(result.value))` with `served(result.value)` and
+    // this case stays GREEN. The two that go red are named below.
     const seen: Seen[] = [];
     vi.stubGlobal(
       "fetch",
@@ -496,11 +518,21 @@ describe("what goes back on the wire", () => {
   });
 
   it("puts it in no part of the detail read either", async () => {
-    // The same case for the other handler, and it is the one that pins the
-    // *projection* rather than the framing: `getOne` answers the whole parsed
-    // upstream document, so the named keys in `paymentIntentResponse` are the
-    // only thing standing between an upstream field nobody expected and the
-    // browser. Serve `result.value` verbatim instead and this goes red.
+    // THE THIRD DECISIVE CASE — this one, not the list's above it.
+    //
+    // It is the one that pins the *projection* rather than the framing:
+    // `getOne` answers the whole parsed upstream document, so the named keys
+    // in `paymentIntentResponse` are the only thing standing between an
+    // upstream field nobody expected and the browser. Serve `result.value`
+    // verbatim instead and this goes red on a credential reaching the wire,
+    // which is what the check is about.
+    //
+    // The same mutation also reddens `answers the page and its two cursors,
+    // and nothing vpay sent besides`, and that is worth knowing rather than
+    // rounding off: it fails on the *key names* (`data, hasMore, cursor`
+    // instead of `object, data, has_more, cursor`), not on a leak. So the
+    // mutation fails two cases and exactly one of them is evidence that the
+    // token stayed in. Both counts measured on this tree, exp56.
     const seen: Seen[] = [];
     vi.stubGlobal(
       "fetch",

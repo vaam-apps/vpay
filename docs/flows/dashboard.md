@@ -706,6 +706,23 @@ found on top of them, and what it did about it:
   every older WebKit with a `403`. That costs nothing while nothing calls
   these handlers, and is a decision for whatever eventually does.
 
+**The first of those two corrections was made in the wrong place, and exp56
+finished it.** The review rewrote the test file's _header_ and left the marker
+inside it — `// THE THIRD DECISIVE CASE`, sitting on the list case — which is
+the comment nearest the code and the one a reader would actually follow. They
+would have deleted `project`, watched the case they were pointed at stay
+green, and concluded the projection was dead weight. Both now name
+`puts it in no part of the detail read either`.
+
+Re-running that mutation also measured something the review's sentence rounds
+off: it fails **two** cases, and only one of them is about a credential. The
+other is `answers the page and its two cursors, and nothing vpay sent besides`,
+which fails on the envelope's key names — `data, hasMore, cursor` where the
+wire promises `object, data, has_more, cursor`. That is evidence about the
+contract this surface publishes, not about the token staying in, and it is
+named because two red cases read as more corroboration than one when they are
+two different claims.
+
 **What the review could not check, and what would:** that a real browser's
 `Sec-Fetch-Site`, `Origin` and cookie arrive as this code assumes. Every case
 here is a synthetic `Request` against a stubbed `fetch`. Only a Cypress spec

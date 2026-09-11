@@ -43,12 +43,21 @@
  *    thing for both handlers and it is not: `dashProvider.getList` already
  *    answers `{ data, hasMore, cursor }`, a shape it built field by field, so
  *    the list handler's own projection renames those three keys and drops
- *    nothing. Measured, exp55 review: replace `served(project(result.value))`
- *    with `served(result.value)` and `puts it in no part of the detail read
- *    either` goes red while `puts the bearer token in no header and no body,
- *    ever` — the list case — stays green. `getOne` answers the parsed
- *    upstream document whole, which is why the detail read is where a field
- *    vpay grew would otherwise reach the browser.
+ *    nothing. Measured, exp55 review and re-measured in exp56: replace
+ *    `served(project(result.value))` with `served(result.value)` and `puts it
+ *    in no part of the detail read either` goes red while `puts the bearer
+ *    token in no header and no body, ever` — the list case — stays green.
+ *    `getOne` answers the parsed upstream document whole, which is why the
+ *    detail read is where a field vpay grew would otherwise reach the
+ *    browser.
+ *
+ *    That mutation reddens **two** cases and only one of them is about a
+ *    credential; exp56 names the other so the count is not mistaken for
+ *    corroboration. `answers the page and its two cursors, and nothing vpay
+ *    sent besides` also fails, on the list envelope's *key names* —
+ *    `data, hasMore, cursor` where the wire promises
+ *    `object, data, has_more, cursor` — which is evidence about the contract
+ *    this surface publishes, not about the token staying in.
  *
  * # And the one it must never be talked into doing
  *
