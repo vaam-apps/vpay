@@ -62,7 +62,7 @@ The three guards are each refusing a different thing:
   `vpay_worker::poll_delay` — a policy about how often a rail is asked
   anything, which this crate must not hold (ADR-0002). The caller passes
   `vpay_api::provider_callback::PULL_FORWARD_FLOOR`, and
-  [vpay-api.md](../vpay-api.md#what-an-anonymous-caller-can-and-cannot-get-out-of-it)
+  [vpay-api.md](../vpay-api/provider-callback.md#what-an-anonymous-caller-can-and-cannot-get-out-of-it)
   states what it does and does not bound.
 - `run_at < 'infinity'` — a dead letter stays parked. The section below states
   that the occupied `dedupe_key` is what keeps a scan _or a callback_ from
