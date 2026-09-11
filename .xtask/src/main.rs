@@ -3272,6 +3272,7 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
 
     for table in &tables {
         let mut indexes = Vec::new();
+        let mut assertions = Vec::new();
         for column in &table.columns {
             let dir = root.join(column);
             if !dir.is_dir() {
@@ -3296,6 +3297,7 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                 declared_by.insert(column.clone(), declared);
             }
             indexes.push(test_names_in(&dir));
+            assertions.push(tests_with_body_path_assertions(&dir));
         }
 
         for row in &table.rows {
@@ -3319,7 +3321,13 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
             // to add about a capability NO SDK ships — that is one defect, and
             // `check_row_names_a_shipped_method` has already named it once.
             let capability = capability.filter(|c| shipped.contains_key(c));
-            for ((cell, column), index) in row.cells.iter().zip(&table.columns).zip(&indexes) {
+            for (((cell, column), index), assertion) in row
+                .cells
+                .iter()
+                .zip(&table.columns)
+                .zip(&indexes)
+                .zip(&assertions)
+            {
                 check_parity_cell(
                     cell,
                     column,
@@ -3327,6 +3335,7 @@ fn parity_outcome(root: &Path, doc: &str) -> ParityOutcome {
                     row,
                     capability.as_deref(),
                     declared_by.get(column),
+                    assertion,
                     &mut problems,
                     &mut proven,
                     &mut gaps,
@@ -3418,6 +3427,7 @@ fn check_parity_cell(
     row: &ParityRow,
     capability: Option<&str>,
     declared: Option<&BTreeSet<String>>,
+    assertions: &BTreeSet<String>,
     problems: &mut Vec<String>,
     proven: &mut usize,
     gaps: &mut usize,
@@ -3464,7 +3474,19 @@ fn check_parity_cell(
         }
         for name in names {
             if index.contains(&name) {
-                *proven += 1;
+                // Verify that the test actually contains assertions about request body or path.
+                // A test that exists but contains no such assertions proves only that the
+                // test exists, not that the SDK actually sends the capability.
+                if !assertions.contains(&name) {
+                    problems.push(format!(
+                        "{at}: the test `{name}` exists but contains no assertion about the \
+                         request body or path — a test that merely exists proves the name is \
+                         correct, not that the SDK sends the capability. Add an assertion like \
+                         `expect(req.body).toContain(...)` or check `req.path` or `req.url`"
+                    ));
+                } else {
+                    *proven += 1;
+                }
             } else {
                 problems.push(format!(
                     "{at}: names the test `{name}`, which does not exist under `{column}` \
@@ -4327,6 +4349,141 @@ fn test_names_in(dir: &Path) -> BTreeSet<String> {
         }
     }
     out
+}
+
+/// Build a map of test names to whether they contain assertions about
+/// request body or path. Returns a BTreeSet of test names that DO contain
+/// such assertions.
+fn tests_with_body_path_assertions(dir: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for path in parity_sources(dir) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("rs") => rust_tests_with_assertions(&text, &mut out),
+            Some(extension) if PARITY_TS_EXTENSIONS.contains(&extension) => {
+                ts_tests_with_assertions(&text, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Extract Rust test names that contain `.body` or `.path` assertions.
+fn rust_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut current_test_name: Option<String> = None;
+    let mut test_has_body_path = false;
+    let mut depth = 0;
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+
+        // Check if this line starts a test function
+        if current_test_name.is_none() {
+            if let Some(name) = rust_fn_name(line) {
+                if attributes_mark_a_live_test(&lines, index) {
+                    current_test_name = Some(name);
+                    test_has_body_path = false;
+                    depth = 0;
+                }
+            }
+        }
+
+        // Track braces to know when we exit the test
+        if let Some(ref test_name) = current_test_name {
+            for c in line.chars() {
+                if c == '{' {
+                    depth += 1;
+                } else if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        if test_has_body_path {
+                            out.insert(test_name.clone());
+                        }
+                        current_test_name = None;
+                        break;
+                    }
+                }
+            }
+
+            // Check for body/path assertions
+            if !test_has_body_path && depth > 0 {
+                if trimmed.contains(".body") || trimmed.contains(".path") {
+                    test_has_body_path = true;
+                }
+            }
+        }
+    }
+}
+
+/// Extract TypeScript test names that contain `.body` or `.path` assertions.
+fn ts_tests_with_assertions(text: &str, out: &mut BTreeSet<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let Some(after_keyword) = ts_test_keyword_at(&chars, i) else {
+            i += 1;
+            continue;
+        };
+        let mut j = after_keyword;
+
+        // Skip whitespace and opening paren
+        while j < chars.len() && (chars[j] == ' ' || chars[j] == '(' || chars[j] == '"') {
+            j += 1;
+        }
+
+        // Extract test name
+        let name_start = j;
+        while j < chars.len() && chars[j] != '"' && chars[j] != ')' {
+            j += 1;
+        }
+
+        if j > name_start {
+            let test_name: String = chars[name_start..j].iter().collect();
+
+            // Find the opening brace of the test function
+            while j < chars.len() && chars[j] != '{' {
+                j += 1;
+            }
+
+            if j < chars.len() {
+                j += 1; // Skip opening brace
+                let brace_depth_start = j;
+                let mut depth = 1;
+                let test_start = j;
+
+                // Scan through test body looking for body/path assertions
+                let mut has_assertion = false;
+                while j < chars.len() && depth > 0 {
+                    if chars[j] == '{' {
+                        depth += 1;
+                    } else if chars[j] == '}' {
+                        depth -= 1;
+                    }
+
+                    // Check for body/path patterns
+                    if depth > 0 && j + 4 < chars.len() {
+                        let segment: String = chars[j..j.min(j+20)].iter().collect();
+                        if segment.contains(".body") || segment.contains(".path") {
+                            has_assertion = true;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+
+                if has_assertion {
+                    out.insert(test_name);
+                }
+            }
+        }
+
+        i = j;
+    }
 }
 
 /// Every file under `dir` this check knows how to read, skipping

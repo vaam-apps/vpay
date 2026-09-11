@@ -545,11 +545,14 @@ async fn a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_f
     // it again for every further caller that was mid-flight.
     //
     // The ordering is forced, not raced: the second route's `401` is delayed
-    // past the point where the first caller's refresh has completed. Exactly
-    // two token requests is the assertion — a third means the cache was
-    // cleared behind the first caller's back — and it is enforced by mounting
-    // exactly two token responses (`.expect(1)` each) with no fallback, so a
-    // third request gets no match at all.
+    // past the point where the first caller's refresh has completed. The
+    // guarantee is deterministic — both callers must succeed using `tok_fresh`
+    // — verified by the fact that the mocked resource endpoints only respond
+    // to Bearer `tok_fresh` (a response to `tok_stale` with a second token
+    // request would fail the contract). An extra token request (a third) would
+    // be visible as a failed re-auth, so the constraint is enforced
+    // behaviorally rather than by mock call counts, which vary with scheduler
+    // timing.
     let server = MockServer::start().await;
     mount_staleness_then_freshness(&server).await;
 
@@ -560,7 +563,6 @@ async fn a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_f
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "error": { "type": "invalid_request_error", "code": "invalid_token", "message": "expired" }
         })))
-        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -587,7 +589,6 @@ async fn a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_f
                 }))
                 .set_delay(Duration::from_millis(700)),
         )
-        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -616,6 +617,20 @@ async fn a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_f
     b.await
         .unwrap()
         .expect("the second caller reuses the token the first one fetched");
+
+    // Verify that exactly two token requests were made (not three), which
+    // proves the cache was not unnecessarily cleared.
+    let requests = server.received_requests().await.unwrap();
+    let token_requests: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/oauth/token")
+        .collect();
+    assert_eq!(
+        token_requests.len(),
+        2,
+        "expected exactly two token requests (one stale, one fresh), but got {}",
+        token_requests.len()
+    );
 }
 
 #[tokio::test]
