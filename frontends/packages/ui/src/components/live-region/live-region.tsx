@@ -26,10 +26,19 @@ export interface LiveRegionProps extends Omit<
  *
  * No `className`: this element is not seen. Anything visible belongs to the
  * children.
+ *
+ * The spread comes FIRST, and that is load-bearing rather than style. Written
+ * the other way round — `aria-live={politeness} aria-atomic="true" {...rest}`,
+ * which is how this landed on 2026-09-11 — the two attributes the component
+ * exists to own are the two a later prop overwrites. `Omit` keeps a
+ * *typed* call site from passing either, but a spread of a widened object does
+ * not go through that check, and the failure is silent: a payment outcome
+ * that is never announced looks exactly like one that is. `live-region.test.tsx`
+ * pushes both attributes in through a cast and expects them ignored.
  */
 export function LiveRegion({
   politeness = "polite",
   ...rest
 }: LiveRegionProps) {
-  return <div aria-live={politeness} aria-atomic="true" {...rest} />;
+  return <div {...rest} aria-live={politeness} aria-atomic="true" />;
 }

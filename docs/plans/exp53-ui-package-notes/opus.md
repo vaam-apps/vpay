@@ -163,6 +163,38 @@ in the dashboard's `nav.tsx` passed checks 1 through 6.
 - `className="bg-red-500"` in the same place → exits **1** on check 1.
   Removed → exit **0**.
 
+**Corrected by the exp53 review, 2026-09-11 — check 7 as written above was
+mostly decoration, and the two mutations run were the two it could catch.**
+It required a DOUBLE-QUOTED literal immediately after `className=`. Four
+spellings of the same defect passed with exit 0 in a
+`frontends/apps/dashboard` file:
+
+```
+className={cn("btn", "btn-primary")}        exit 0
+className={`btn btn-primary ${extra}`}      exit 0
+className={'btn btn-primary'}               exit 0
+className={clsx("card", "bg-base-100")}     exit 0
+```
+
+and `cn` is exported from `@vpay/ui`'s own public `src/index.ts`, so the first
+of those is one import away from any app file — which is exactly the "second
+Button written with every gate green" this check was added to stop. Check 7 is
+two checks now: **7a**, no `className` written under `frontends/apps` at all
+outside tests, stories and the documented `<body>` line, which is the decisive
+one and which no spelling walks around; and **7b**, the daisyUI component-class
+list widened to read inside a `cn()`, a `clsx()`, a template literal and a
+single-quoted string, so it still names the class in a test or a story that 7a
+exempts. All five mutations re-run, plus a plain `className="mt-2"` (7a fires)
+and a `cn("btn-primary")` inside a `*.test.tsx` (7b fires where 7a is exempt).
+
+The same review found **check 5 vacuous** — the `.js`-import regression guard,
+which `docs/status.md` records as the gate for a build break that "has now
+happened TWICE". It matched only single-quoted imports, and `.prettierrc` sets
+`singleQuote: false`, so it matched nothing this repository can produce:
+`from "../../cn.js"` in `components/code/code.tsx` passed with exit 0, and the
+same line written with single quotes failed. Both quote characters now, and the
+double-quoted mutation is the one recorded beside it.
+
 `examples/shop` is deliberately **out of that scope**, and the recipe says why
 rather than leaving it to be re-derived: it does not depend on `@vpay/ui` at
 all — its `package.json` takes `@vpay/config` and nothing else from this
@@ -205,7 +237,7 @@ Web suites, before → after:
 
 | Package                                  | Before         | After          |
 | ---------------------------------------- | -------------- | -------------- |
-| `@vpay/ui`                               | 74 (18 files)  | 92 (32 files)  |
+| `@vpay/ui`                               | 74 (18 files)  | 96 (32 files)  |
 | `@vpay/dashboard`                        | 182 (21 files) | 178 (19 files) |
 | `@vpay/checkout`                         | 507 (24 files) | 507 (24 files) |
 | `@vpay-examples/shop`                    | 102            | 102            |
@@ -228,28 +260,28 @@ primitives and the four `Code`-inside-`Alert` contrast cases.
 Every other step of the recipe passed at recipe level on that head, run
 individually after the aborted sweep:
 
-| `just ci` step | Result |
-| --- | --- |
-| `fmt-check` | **exit 0** |
-| `clippy` (`-D warnings`) | **exit 0** |
-| `verify` | **exit 0** — "the twelve gates above passed", four separate runs |
-| `test-rust` | **exit 100**, see below |
-| `test-doc` | **exit 0** — 111 passed, 1 ignored (`sdks/rust`'s README block, pre-existing) |
-| `verify-ignored` | **exit 0** |
-| `lint-web` | **exit 0** |
-| `test-web` | **exit 0** — counts in §6 |
-| `deny` | **exit 0** — advisories, bans, licenses, sources all ok |
+| `just ci` step           | Result                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| `fmt-check`              | **exit 0**                                                                    |
+| `clippy` (`-D warnings`) | **exit 0**                                                                    |
+| `verify`                 | **exit 0** — "the twelve gates above passed", four separate runs              |
+| `test-rust`              | **exit 100**, see below                                                       |
+| `test-doc`               | **exit 0** — 111 passed, 1 ignored (`sdks/rust`'s README block, pre-existing) |
+| `verify-ignored`         | **exit 0**                                                                    |
+| `lint-web`               | **exit 0**                                                                    |
+| `test-web`               | **exit 0** — counts in §6                                                     |
+| `deny`                   | **exit 0** — advisories, bans, licenses, sources all ok                       |
 
 `test-rust` was run **five** times. Every run failed the same way and never
 the same test:
 
-| Run | Progress | Test that failed | Error |
-| --- | --- | --- | --- |
-| 1 | 1151/1696 | `vpay-db config_reconcile::…_exactly_as_it_does_through_sqlx` | `failed to create a container: Timeout error` at 120.06 s |
-| 2 | 1151/1696 | the same one | the same, 120.01 s |
-| 3 | 1151/1696 | the same one | the same, 120.02 s |
-| 4 | 1225/1696 | `vpay-db::repositories a_provider_written_through_cratestack_is_rolled_back…` | the same, 120.01 s |
-| 5 | 1270/1696 | `vpay-db::repositories events_list_page_walks_forward_and_backward…` | the same, 120.02 s |
+| Run | Progress  | Test that failed                                                              | Error                                                     |
+| --- | --------- | ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 1   | 1151/1696 | `vpay-db config_reconcile::…_exactly_as_it_does_through_sqlx`                 | `failed to create a container: Timeout error` at 120.06 s |
+| 2   | 1151/1696 | the same one                                                                  | the same, 120.01 s                                        |
+| 3   | 1151/1696 | the same one                                                                  | the same, 120.02 s                                        |
+| 4   | 1225/1696 | `vpay-db::repositories a_provider_written_through_cratestack_is_rolled_back…` | the same, 120.01 s                                        |
+| 5   | 1270/1696 | `vpay-db::repositories events_list_page_walks_forward_and_backward…`          | the same, 120.02 s                                        |
 
 1269 of 1270 tests passed on the furthest run, 0 skipped. Each run got
 further than the last as the host quietened, and each died on a **different**

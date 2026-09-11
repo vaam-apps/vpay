@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Eleven invariants this repo enforces on itself, all wired into `just verify`:
+# Twelve invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -23,19 +23,23 @@
 #   * backends/Dockerfile's `FROM rust:<version>` names the compiler
 #     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
 #   * no palette colour, no daisyUI 4 class daisyUI 5 removed, no
-#     `!important` outside the one documented exception, and no `cva` call
-#     outside `@vpay/ui`, and no file in `@vpay/ui` over 200 lines
-#     (`verify-ui`, 2026-09-07 — exp26 UI revamp; the line ceiling 2026-09-11)
-#
-# `just verify` prints a thirteenth thing that is NOT an invariant and never
+#     `!important` outside the one documented exception, no `cva` call
+#     outside `@vpay/ui`, no file in `@vpay/ui` over 200 lines, and no
+#     `className` written in an app at all (`verify-ui`, 2026-09-07 — exp26
+#     UI revamp; the line ceiling and the class rule 2026-09-11)
 #   * every migration file's SHA256 matches its entry in the manifest; applied
 #     migrations are immutable (`verify-migrations`, 2026-09-07, issue #76)
 #
+# This block said "Eleven" and listed eleven until 2026-09-11: the
+# `verify-migrations` bullet had been pasted into the MIDDLE of the sentence
+# below, which both hid it from the count and left that sentence unreadable.
+#
+# `just verify` prints a thirteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A thirteenth check is a gate that is NOT in `just ci`, because it needs the
+# A fourteenth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -963,16 +967,25 @@ verify-repositories:
 verify-toolchain:
     cargo xtask verify-toolchain
 
-# Six things ESLint cannot express cheaply — a `git grep` is the honest
+# Seven things ESLint cannot express cheaply — a `git grep` is the honest
 # tool here rather than a `cargo xtask verify-ui` matching this repo's other
-# gates, which is more ceremony than six greps and a `wc -l` deserve (plan
+# gates, which is more ceremony than nine greps and a `wc -l` deserve (plan
 # docs/plans/2026-09-07-ui-revamp.md §7, "the class-string rules,
-# concretely"). Each has a decisive mutation: add the offending line,
-# confirm this exits non-zero, remove it.
+# concretely"). Seven numbered checks over nine greps, because 1 and 7 each
+# take two: the recipe below is the list, and if this paragraph and the
+# recipe disagree the recipe is right. Each has a decisive mutation: add the
+# offending line, confirm this exits non-zero, remove it.
 #
 # It said "four" until 2026-09-11 and had been wrong since the `.js`-import
 # regression guard landed as the fifth; the 200-line ceiling on every file in
-# `@vpay/ui` is the sixth.
+# `@vpay/ui` is the sixth and the no-class-in-an-app rule the seventh, both
+# from the exp53 `@vpay/ui` package. It then said "six" for the rest of that
+# day, having counted the two that landed together as one.
+#
+# Two of these were measured to be DECORATION and fixed on 2026-09-11 by the
+# exp53 review, each with the mutation that found it recorded beside the
+# check: 5 matched only single-quoted imports, which `.prettierrc` forbids,
+# and 7 matched only a double-quoted literal, which `cn(…)` is not.
 verify-ui:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1076,31 +1089,70 @@ verify-ui:
     #    by name in docs/status.md's "@vpay/ui production build" row) and
     #    reintroduced across all 48 source files by the exp26 component set.
     #    A gate, because a comment did not hold.
-    if git grep -nE "from '\.{1,2}/[^']*\.js'" -- 'frontends/packages/ui/src' ; then
+    #
+    #    **It matched only SINGLE-quoted imports until 2026-09-11, which is to
+    #    say it matched nothing this repository can produce**: `.prettierrc`
+    #    sets `singleQuote: false`, `just fmt` rewrites every import to double
+    #    quotes, and not one of `@vpay/ui`'s own imports is single-quoted. The
+    #    exp53 review re-ran the original failure and measured it: a
+    #    `from "../../cn.js"` in `components/code/code.tsx` passed this gate
+    #    with exit 0; the same line written `from '../../cn.js'` failed. So
+    #    the guard against a regression that "has now happened TWICE" could
+    #    not have caught either occurrence. Both quote characters now, and the
+    #    mutation to re-run is the double-quoted one.
+    if git grep -nE "from [\"'][.]{1,2}/[^\"']*[.]js[\"']" -- 'frontends/packages/ui/src' ; then
       echo 'verify-ui: a .js-suffixed relative import in @vpay/ui — Next cannot resolve it'; fail=1
     fi
     # 4. No cva outside the shared library — one variant map, not one per app.
     if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
       echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
     fi
-    # 7. No daisyUI COMPONENT class in an app. `btn`, `card`, `badge`,
-    #    `alert`, `input`, `select`, `modal`, `menu`, `table`, `loading`,
-    #    `link`, `fieldset`, `navbar`, `drawer`, `checkbox`, `radio` are
-    #    components `@vpay/ui` owns, and an app that writes one has written a
-    #    primitive of its own — which is the thing the package exists to stop
-    #    (the maintainer's directive, 2026-09-11: "a @vpay/ui package with all
-    #    UI primitives that we'll use both for checkout but also for
-    #    dashboard").
+    # 7. No class name written in an app, and no daisyUI COMPONENT class
+    #    anywhere under `frontends/apps`. Two checks, because they fail for
+    #    two different reasons and a reader should be told which.
     #
-    #    Check 1 above catches a palette COLOUR and check 4 a stray `cva`;
+    #    The directive this serves is the maintainer's, 2026-09-11: "a
+    #    @vpay/ui package with all UI primitives that we'll use both for
+    #    checkout but also for dashboard". An app that writes a class has
+    #    written a primitive of its own, which is the thing the package
+    #    exists to stop. `frontends/apps/dashboard/README.md` already states
+    #    the rule — "Zero `className` strings … not one, under `app/` or
+    #    `src/`, outside the tests" — and said `just verify-ui` was "the gate
+    #    for the parts of that a grep can see". This is now the whole of it.
+    #
+    #    7a is the decisive check, and it is the one a mutation cannot walk
+    #    around. Check 1 catches a palette COLOUR and check 4 a stray `cva`;
     #    neither sees `className="btn btn-primary"`, which is how a second
-    #    Button gets written with every gate green. Measured: that exact
-    #    string in `frontends/apps/dashboard/src/nav.tsx` passed checks 1-6.
+    #    Button gets written with every gate green.
     #
-    #    Theme TOKENS are untouched — `bg-base-100`, `text-error`,
-    #    `border-base-300` are not components, and `frontends/apps/checkout/
-    #    app/layout.tsx`'s `<body className="min-h-screen bg-base-100">` is
-    #    layout plus a token on the document itself, which no component owns.
+    #    **7b alone was not enough, measured on 2026-09-11 by the exp53
+    #    review.** As first written it required a DOUBLE-QUOTED literal
+    #    immediately after `className=`, so four spellings of the same defect
+    #    passed with exit 0 in a `frontends/apps/dashboard` file:
+    #
+    #        className={cn("btn", "btn-primary")}        exit 0
+    #        className={`btn btn-primary ${extra}`}      exit 0
+    #        className={'btn btn-primary'}               exit 0
+    #        className={clsx("card", "bg-base-100")}     exit 0
+    #
+    #    and `cn` is exported from `@vpay/ui`'s own public index, so the
+    #    first of those is one import away from any app file. 7a fails on all
+    #    four because it does not care what is inside the attribute; 7b now
+    #    reads inside a `cn()`/`clsx()`/template literal too, so it still
+    #    names the daisyUI class in a test or a story, which 7a exempts.
+    #
+    #    Exemptions, both measured against this tree rather than assumed:
+    #      - `frontends/apps/checkout/app/layout.tsx`'s
+    #        `<body className="min-h-screen bg-base-100">` — layout plus a
+    #        theme token on the document itself, which no component owns, and
+    #        the one `className=` in shipping app source.
+    #      - `*.test.ts(x)` and `*.stories.tsx` are outside 7a: a test reads
+    #        `element.className` and one of the checkout's quotes the old
+    #        markup in a comment. They stay inside 7b, where only a real
+    #        daisyUI component class matches.
+    #
+    #    Theme TOKENS are untouched by 7b — `bg-base-100`, `text-error`,
+    #    `border-base-300` are not components.
     #
     #    `examples/shop` is deliberately NOT in scope: it does not depend on
     #    `@vpay/ui` at all (its `package.json` takes `@vpay/config` and
@@ -1109,10 +1161,16 @@ verify-ui:
     #    Holding it to this rule would mean shipping the demo a look no real
     #    merchant would have.
     #
-    #    The mutation: add `className="btn btn-primary"` to any component in
-    #    `frontends/apps` and this exits non-zero.
-    if git grep -nE 'className=\{?"[^"]*\b(btn|card|badge|alert|input|select|modal|menu|table|loading|link|fieldset|navbar|drawer|checkbox|radio|tabs|toast|skeleton|join|steps|stat|collapse|dropdown|tooltip|progress|range|toggle|kbd|avatar|chat|carousel|diff|swap|indicator|mask|divider|breadcrumbs|pagination|footer|hero|countdown|timeline|mockup)\b' \
-        -- 'frontends/apps' ; then
+    #    The mutations, all five run: add `className="btn btn-primary"`, or
+    #    any of the four spellings above, to a file under `frontends/apps`
+    #    and this exits non-zero; remove it and it exits 0.
+    if git grep -nE 'className[[:space:]]*=' -- 'frontends/apps' \
+        ':!*.test.ts' ':!*.test.tsx' ':!*.stories.tsx' \
+        ':!frontends/apps/checkout/app/layout.tsx' ; then
+      echo 'verify-ui: a className written in an app — compose a @vpay/ui primitive instead'; fail=1
+    fi
+    daisy_component_class=$'className=[{]?[^}]*[\'"`][^\'"`]*\\b(btn|card|badge|alert|input|select|modal|menu|table|loading|link|fieldset|navbar|drawer|checkbox|radio|tabs|toast|skeleton|join|steps|stat|collapse|dropdown|tooltip|progress|range|toggle|kbd|avatar|chat|carousel|diff|swap|indicator|mask|divider|breadcrumbs|pagination|footer|hero|countdown|timeline|mockup)\\b'
+    if git grep -nE "$daisy_component_class" -- 'frontends/apps' ; then
       echo 'verify-ui: a daisyUI component class in an app — compose @vpay/ui instead'; fail=1
     fi
     # 6. No file in @vpay/ui over 200 lines, imports and comments included.
