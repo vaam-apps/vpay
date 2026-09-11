@@ -612,6 +612,62 @@ reads as data having been lost. Deleting the inversion fails
 ones` and two of `payments-query.test.ts`'s existing cases. Nothing a staff
 member sees changed.
 
+**The dashboard has a browser-reachable read surface of its own now, and
+nothing uses it — 2026-09-11 (exp55 Lane 2).** Two `GET` route handlers,
+`/api/dash/payment_intents` and `/api/dash/payment_intents/{id}`, authenticate
+on the same httpOnly session cookie and proxy to `/dash/v1` with the token
+read out of the `staff_sessions` row on that request. Until they existed
+**nothing in this app was reachable from a browser except a page and four
+Server Actions**, and that sentence was a property of the design rather than
+an accident of it — which is why this is recorded here and not folded into
+the lane that will consume it.
+
+**Whether the app may have such a surface at all is the maintainer's
+decision.** It is RD5 in
+[the Refine plan](../plans/exp55-refine-seam-bff-notes/refine-plan.md) §8. No
+page, no component and no Cypress spec calls these handlers; deleting them
+breaks nothing else in the app.
+
+What they do about being reachable, each written as a mutation that was run
+and reverted:
+
+1. **A request with no session cookie reaches vpay not at all.** The cookie is
+   read before anything is sent, and the test asserts the stubbed `fetch` was
+   never called — not that the status was `401`. An endpoint that answers
+   `401` _after_ asking vpay about the absent session is a surface anyone can
+   use to make this server open a connection to vpay, once per request.
+2. **A request this dashboard did not issue is refused by `csrf.ts`'s own
+   rule.** `originIsAllowed`, the same function the four Server Actions are
+   fronted by, with no second copy of it — plus `Sec-Fetch-Site: same-origin`,
+   because **a browser sends no `Origin` at all on a same-origin `GET`** and
+   script cannot add one, so `Origin` alone could not answer the question on
+   this method. A request with no fetch metadata at all is refused, which is
+   the opposite of what `/signed-out` does with the same absence and
+   deliberately so: that route serves a person arriving on a page, this one
+   serves this app's own script.
+3. **The bearer token is in no response header and no response body**,
+   asserted against the serialised response while the stubbed vpay echoes it
+   into a header, into the list envelope's `url` and into an extra top-level
+   field. The header half is structural rather than disciplined: `api.ts`'s
+   `getJson` answers an `ApiResult`, so the handler never holds the upstream
+   `Response` and there is nothing in scope to copy a header off.
+
+**And no caller-supplied merchant id, audience or scope is forwarded.** The
+upstream query string is built by `apiQueryString` from the five parameters
+`queryFrom` reads, so `?merchant_id=…&audience=…&scope=…` is not denied — it
+is never looked at, which is the property that also holds for the next
+parameter somebody invents. The tenant stays `MerchantScope::for_dashboard`,
+read server-side from the YAML dashboard binding, exactly as § "Merchant scope
+on every query" above requires.
+
+Two gaps are named rather than papered over. The handler's token gate is a
+second transcription of `requireStaff`'s branch table — the decisions are
+reused and only the acting differs, because a `307` to `/login` answered to a
+`fetch` is HTML with a `200` by the time the caller sees it — and two copies
+can drift. And a session that still owes a password change gets a `403` where
+a page would send it to `/login/password`: an endpoint has nowhere to send
+anybody, and no client exists yet to route the person.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
