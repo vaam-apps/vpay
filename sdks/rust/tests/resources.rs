@@ -1365,6 +1365,9 @@ async fn create_checkout_session_sends_the_documented_body_and_decodes_the_objec
         session.client_secret.as_deref(),
         Some("cs_123_secret_abc123")
     );
+    // The fixture includes a `customer` field (issue #70) to verify the SDK
+    // reads it and the parity gate does not miss divergence.
+    assert_eq!(session.customer, None);
 
     let request = only_request(&server, "/v1/checkout/sessions").await;
     assert_eq!(request.method.as_str(), "POST");
@@ -1609,6 +1612,30 @@ async fn a_404_for_an_unknown_checkout_session_maps_to_an_api_error() {
         }
         other => panic!("expected Error::Api, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_checkout_session_decodes_its_customer_field_when_present() {
+    let (server, client) = fixture().await;
+    let mut response = support::checkout_session_json("cs_123", Some("cs_123_secret_abc123"));
+    response["customer"] = json!("cus_abc123");
+    Mock::given(method("GET"))
+        .and(path("/v1/checkout/sessions/cs_123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let session = client
+        .checkout()
+        .sessions()
+        .retrieve("cs_123")
+        .await
+        .unwrap();
+
+    // The session's customer field is correctly decoded when the server sends
+    // it (issue #70), and the SDK can read it to verify parity.
+    assert_eq!(session.customer.as_deref(), Some("cus_abc123"));
 }
 
 #[tokio::test]

@@ -1384,7 +1384,7 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
 /// type deliberately does not re-express: a Rust enum over "which one is
 /// here" would be a second copy of a rule the database already owns, and it
 /// would have to be exhaustive over a set that grows.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CustomerObject {
     /// `cus_…` — `vpay_core::ids::customer_id`.
@@ -1615,6 +1615,39 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
             // `0041` will not let lie about it.
             deleted: row.anonymized_at.is_some().then_some(DeletedTrue),
         })
+    }
+}
+
+/// Redacts the three personal identifiers (`name`, `email`, `phone`) that a
+/// customer object carries, leaving every other field exactly as a derived
+/// `Debug` would render it. The merchant collected these values and holds
+/// them in their database; redacting them here would hide their own data from
+/// them while doing nothing about the copy they already have. The redaction
+/// place that *counts* is the server: vpay's `CustomerRow` redacts all three,
+/// because vpay's logs are not the merchant's. See `docs/flows/customers.md`.
+impl std::fmt::Debug for CustomerObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// `[N chars redacted]`, or `None` — so "which identifiers does this
+        /// customer have?" is still answerable from a log line.
+        fn redacted(value: &Option<String>) -> String {
+            value.as_ref().map_or_else(
+                || "None".to_owned(),
+                |value| format!("[{} chars redacted]", value.chars().count()),
+            )
+        }
+
+        f.debug_struct("CustomerObject")
+            .field("id", &self.id)
+            .field("object", &self.object)
+            .field("name", &format_args!("{}", redacted(&self.name)))
+            .field("email", &format_args!("{}", redacted(&self.email)))
+            .field("phone", &format_args!("{}", redacted(&self.phone)))
+            .field("address", &self.address)
+            .field("metadata", &self.metadata)
+            .field("created", &self.created)
+            .field("livemode", &self.livemode)
+            .field("deleted", &self.deleted)
+            .finish()
     }
 }
 
@@ -2954,6 +2987,51 @@ mod tests {
         );
     }
 
+    /// A customer's debug output redacts the three personal identifiers
+    /// (`name`, `email`, `phone`) — showing character counts instead — while
+    /// leaving every other field visible. The merchant collected this data and
+    /// holds it in their database; redacting it in logs would hide their own
+    /// information from them. The actual redaction place that counts is the
+    /// server, where `CustomerRow`'s Debug impl prevents this data from
+    /// reaching vpay's logs at all.
+    #[test]
+    fn a_customer_object_debug_output_redacts_personal_identifiers() {
+        let row = customer_row();
+        let customer = CustomerObject::try_from(&row).expect("a well-formed row renders");
+
+        let formatted = format!("{customer:?}");
+
+        // Redactions are visible but values are hidden.
+        assert!(
+            formatted.contains("[") && formatted.contains("chars redacted]"),
+            "redactions must be visible in debug output: {formatted}"
+        );
+
+        // Specific identifiers are redacted.
+        assert!(
+            !formatted.contains("John Doe"),
+            "name must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("john@example.com"),
+            "email must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("237600000200"),
+            "phone must not appear in debug output: {formatted}"
+        );
+
+        // Other fields are still visible and useful.
+        assert!(
+            formatted.contains("cus_1"),
+            "customer id must be visible: {formatted}"
+        );
+        assert!(
+            formatted.contains("CustomerTag"),
+            "object type tag must be visible: {formatted}"
+        );
+    }
+
     /// The object `docs/flows/merchant-auth.md` documents, key for key.
     ///
     /// Ten keys since issue #46, and the count is the tripwire: an eleventh
@@ -3742,5 +3820,67 @@ mod tests {
             "{formatted}"
         );
         assert!(formatted.contains("shop.example/cancel"), "{formatted}");
+    }
+
+    /// The object `docs/flows/merchant-auth.md` documents, key for key.
+    ///
+    /// Fourteen keys since issue #70, and the count is the tripwire: an
+    /// undocumented key added here reaches every `checkout.session.*` event
+    /// body — signed, delivered at-least-once and stored in `events` forever
+    /// — before anybody writes it down. A merchant SDK that sees a key the
+    /// server documents reaches a decode failure; one that sees a key the
+    /// server doesn't document reads it silently. This asserts the field first.
+    #[test]
+    fn the_checkout_session_object_is_the_documented_fourteen_keys() {
+        let rendered = serde_json::to_value(CheckoutSessionObject::from_row(
+            &session_row(),
+            Some("https://checkout.example/c/cs_1#secret".to_owned()),
+        ))
+        .expect("serialises");
+        let object = rendered.as_object().expect("an object");
+
+        for key in [
+            "id",
+            "object",
+            "livemode",
+            "payment_intent",
+            "ui_mode",
+            "status",
+            "payment_status",
+            "success_url",
+            "cancel_url",
+            "return_url",
+            "url",
+            "customer",
+            "expires_at",
+            "created",
+        ] {
+            assert!(object.contains_key(key), "`{key}` is missing");
+        }
+        assert_eq!(
+            object.len(),
+            14,
+            "an undocumented key was added: {object:?}"
+        );
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": "cs_0123456789abcdefghjkmnpq",
+                "object": "checkout.session",
+                "livemode": false,
+                "payment_intent": "pi_3MtwBwLkdIwHu7ix28a3tqPa",
+                "ui_mode": "hosted",
+                "status": "open",
+                "payment_status": "unpaid",
+                "success_url": "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
+                "cancel_url": "https://shop.example/cancel",
+                "return_url": null,
+                "url": "https://checkout.example/c/cs_1#secret",
+                "customer": null,
+                "expires_at": 1_757_000_000,
+                "created": 1_756_913_600,
+            })
+        );
     }
 }

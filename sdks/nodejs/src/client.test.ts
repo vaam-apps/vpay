@@ -1822,6 +1822,9 @@ describe("checkout.sessions", () => {
     cancel_url: "https://shop.example/cancel",
     return_url: null,
     url: "https://checkout.example/c/cs_123#cs_123_secret_abc123",
+    // `customer` since issue #70: the SDK must read and decode it, and verify
+    // the parity gate catches divergence when one SDK omits it.
+    customer: null,
     expires_at: 1_700_086_400,
     created: 1_700_000_000,
     ...overrides,
@@ -2134,6 +2137,22 @@ describe("checkout.sessions", () => {
     const rendered = inspect(session);
     expect(rendered).not.toContain("chars redacted");
     expect(rendered).toContain("url: null");
+  });
+
+  it("decodes a checkout session's customer field when present", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleSession({ customer: "cus_abc123" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const session = await client.checkout.sessions.retrieve("cs_123");
+
+    // The session's customer field is correctly decoded when the server sends
+    // it (issue #70), and the SDK can read it to verify parity.
+    expect(session.customer).toBe("cus_abc123");
   });
 });
 
