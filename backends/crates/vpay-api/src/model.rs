@@ -1495,7 +1495,7 @@ pub struct CustomerObject {
 /// the same eight fields in `vpay_api::v1::customers`, because the wire is
 /// form-encoded and every incoming value is text — the same split
 /// [`CustomerObject`] and `CreateParams` already make.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AddressObject {
     /// Street address, line 1.
@@ -1537,6 +1537,42 @@ impl From<&vpay_db::CustomerAddress> for AddressObject {
             latitude_microdeg: address.latitude_microdeg,
             longitude_microdeg: address.longitude_microdeg,
         }
+    }
+}
+
+/// Redacts every component, printing a count rather than a value — the same
+/// judgement `vpay_db::CustomerRow`'s hand-written `Debug` makes for the row
+/// this type is rendered from (see that impl). `CustomerObject::fmt` reaches
+/// this type through its own `address` field, and without this impl a
+/// derived one would defeat that redaction outright: a name is how somebody
+/// is addressed, but a street and a GPS point are where they can be found,
+/// which makes them at least as identifying, not less.
+///
+/// The coordinate pair counts as **one** component rather than two, for the
+/// same reason it does in `CustomerRow`: `address_coordinates_are_both_or_neither`
+/// makes the pair the value, and reporting two would claim a customer with a
+/// point and a city has three components rather than two.
+impl std::fmt::Debug for AddressObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let components = [
+            self.line1.is_some(),
+            self.line2.is_some(),
+            self.city.is_some(),
+            self.state.is_some(),
+            self.postal_code.is_some(),
+            self.country.is_some(),
+            self.latitude_microdeg.is_some() || self.longitude_microdeg.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+        f.debug_struct("AddressObject")
+            .field(
+                "redacted",
+                &format_args!("{{{components} component(s) redacted}}"),
+            )
+            .finish()
     }
 }
 
@@ -1618,13 +1654,20 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
     }
 }
 
-/// Redacts the three personal identifiers (`name`, `email`, `phone`) that a
-/// customer object carries, leaving every other field exactly as a derived
-/// `Debug` would render it. The merchant collected these values and holds
-/// them in their database; redacting them here would hide their own data from
-/// them while doing nothing about the copy they already have. The redaction
-/// place that *counts* is the server: vpay's `CustomerRow` redacts all three,
-/// because vpay's logs are not the merchant's. See `docs/flows/customers.md`.
+/// Redacts the personal identifiers a customer object carries — `name`,
+/// `email`, `phone`, and, through [`AddressObject`]'s own `Debug`, every
+/// address component and the GPS pair — leaving every other field exactly as
+/// a derived `Debug` would render it. The merchant collected these values
+/// and holds them in their database; redacting them here would hide their
+/// own data from them while doing nothing about the copy they already have.
+/// The redaction place that *counts* is the server: vpay's `CustomerRow`
+/// redacts the same set, because vpay's logs are not the merchant's. See
+/// `docs/flows/customers.md`.
+///
+/// A street address and a GPS point are at least as identifying as a name,
+/// so `address` cannot be the one field here left to a derive: delegating to
+/// [`AddressObject`]'s own (also hand-written) `Debug` is what keeps this
+/// impl from being a redaction with a hole in it.
 impl std::fmt::Debug for CustomerObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         /// `[N chars redacted]`, or `None` — so "which identifiers does this
@@ -2987,16 +3030,35 @@ mod tests {
         );
     }
 
-    /// A customer's debug output redacts the three personal identifiers
-    /// (`name`, `email`, `phone`) — showing character counts instead — while
-    /// leaving every other field visible. The merchant collected this data and
-    /// holds it in their database; redacting it in logs would hide their own
-    /// information from them. The actual redaction place that counts is the
-    /// server, where `CustomerRow`'s Debug impl prevents this data from
-    /// reaching vpay's logs at all.
+    /// A customer's debug output redacts every personal identifier —
+    /// `name`, `email`, `phone` as character counts, and a present `address`
+    /// (formal components **and** the GPS pair, landed the same day as this
+    /// test) as a component count through [`AddressObject`]'s own `Debug` —
+    /// while leaving every other field visible. The merchant collected this
+    /// data and holds it in their database; redacting it in logs would hide
+    /// their own information from them. The actual redaction place that
+    /// counts is the server, where `CustomerRow`'s Debug impl prevents this
+    /// data from reaching vpay's logs at all.
+    ///
+    /// Every negative assertion below checks a value this test's own fixture
+    /// actually carries — not a stand-in like Stripe's `"John Doe"` — because
+    /// a check against a value that was never going to be printed passes
+    /// whether or not redaction works.
     #[test]
     fn a_customer_object_debug_output_redacts_personal_identifiers() {
-        let row = customer_row();
+        let row = vpay_db::CustomerRow {
+            address: vpay_db::CustomerAddress {
+                line1: Some("12 Rue de la Paix".to_owned()),
+                line2: Some("Apt 4".to_owned()),
+                city: Some("Douala".to_owned()),
+                state: Some("Littoral".to_owned()),
+                postal_code: Some("00237".to_owned()),
+                country: Some("CM".to_owned()),
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_702_000),
+            },
+            ..customer_row()
+        };
         let customer = CustomerObject::try_from(&row).expect("a well-formed row renders");
 
         let formatted = format!("{customer:?}");
@@ -3004,21 +3066,42 @@ mod tests {
         // Redactions are visible but values are hidden.
         assert!(
             formatted.contains("[") && formatted.contains("chars redacted]"),
-            "redactions must be visible in debug output: {formatted}"
+            "identifier redactions must be visible in debug output: {formatted}"
+        );
+        assert!(
+            formatted.contains("component(s) redacted"),
+            "address redaction must be visible in debug output: {formatted}"
         );
 
-        // Specific identifiers are redacted.
+        // Specific identifiers are redacted — checked against the values
+        // this fixture actually carries (see `customer_row`).
         assert!(
-            !formatted.contains("John Doe"),
+            !formatted.contains("Ada Ngo"),
             "name must not appear in debug output: {formatted}"
         );
         assert!(
-            !formatted.contains("john@example.com"),
+            !formatted.contains("ada@example.cm"),
             "email must not appear in debug output: {formatted}"
         );
         assert!(
             !formatted.contains("237600000200"),
             "phone must not appear in debug output: {formatted}"
+        );
+
+        // The address — formal components and the GPS pair — is redacted
+        // too. A payer's coordinates name where they can be found as
+        // precisely as their street does, so this is not optional.
+        assert!(
+            !formatted.contains("Rue de la Paix"),
+            "street address must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("Douala"),
+            "city must not appear in debug output: {formatted}"
+        );
+        assert!(
+            !formatted.contains("4061000") && !formatted.contains("9702000"),
+            "GPS coordinates must not appear in debug output: {formatted}"
         );
 
         // Other fields are still visible and useful.

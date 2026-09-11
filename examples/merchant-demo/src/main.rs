@@ -1503,6 +1503,7 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
             success_url: Some(SESSION_SUCCESS_URL.to_owned()),
             cancel_url: Some(SESSION_CANCEL_URL.to_owned()),
             return_url: None,
+            customer: None,
         },
     )
     .await?;
@@ -1544,6 +1545,7 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
             success_url: None,
             cancel_url: None,
             return_url: Some(SESSION_RETURN_URL.to_owned()),
+            customer: None,
         },
     )
     .await?;

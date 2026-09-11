@@ -1135,6 +1135,14 @@ export interface CreateCheckoutSessionParams {
   cancel_url?: string | undefined;
   /** Where vpay's framed page forwards the payer at the end. Embedded mode. */
   return_url?: string | undefined;
+  /**
+   * The `cus_…` this session is for (issue #70), or omit to inherit the
+   * intent's customer — see {@link CheckoutSession.customer}.
+   *
+   * Refused `409` naming `customer` when the session's PaymentIntent already
+   * names a *different* customer; the server never lets the two disagree.
+   */
+  customer?: string | undefined;
 }
 
 /**

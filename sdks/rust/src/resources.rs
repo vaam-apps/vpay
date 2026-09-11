@@ -303,6 +303,14 @@ pub struct CreateCheckoutSessionParams {
     pub cancel_url: Option<String>,
     /// Where vpay's framed page forwards the payer at the end. Embedded mode.
     pub return_url: Option<String>,
+    /// The `cus_…` this session is for (issue #70), or `None` to inherit the
+    /// intent's customer — see [`crate::model::CheckoutSession::customer`]
+    /// for the inheritance rule this SDK does not duplicate.
+    ///
+    /// Refused `409` naming `customer` when the session's `PaymentIntent`
+    /// already names a *different* customer; the server never lets the two
+    /// disagree.
+    pub customer: Option<String>,
 }
 
 impl CreateCheckoutSessionParams {
@@ -327,6 +335,10 @@ impl CreateCheckoutSessionParams {
             (
                 "return_url".to_string(),
                 FormValue::from(self.return_url.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
             ),
         ])
     }

@@ -1845,6 +1845,10 @@ describe("checkout.sessions", () => {
         ui_mode: "hosted",
         success_url: "https://shop.example/ok?sid={CHECKOUT_SESSION_ID}",
         cancel_url: "https://shop.example/cancel",
+        // Issue #70: the request side. This body previously never sent
+        // `customer` at all, in either SDK — only the response decode was
+        // proven.
+        customer: "cus_send1",
       },
       { idempotencyKey: "order_1234_session_1" },
     );
@@ -1856,7 +1860,7 @@ describe("checkout.sessions", () => {
     );
     expect(req.headers["idempotency-key"]).toBe("order_1234_session_1");
     expect(req.body).toBe(
-      "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel",
+      "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel&customer=cus_send1",
     );
     expect(session.id).toBe("cs_123");
     expect(session.object).toBe("checkout.session");
@@ -1897,11 +1901,12 @@ describe("checkout.sessions", () => {
       payment_intent: "pi_123",
       ui_mode: "embedded",
       return_url: "https://shop.example/order/42",
+      customer: "cus_777",
     });
 
     const req = server.requests.find((r) => r.url === "/v1/checkout/sessions")!;
     expect(req.body).toBe(
-      "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42",
+      "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42&customer=cus_777",
     );
     expect(session.url).toBeNull();
     expect(session.client_secret).toBe("cs_123_secret_abc123");

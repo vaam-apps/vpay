@@ -1349,6 +1349,11 @@ async fn create_checkout_session_sends_the_documented_body_and_decodes_the_objec
                 success_url: Some("https://shop.example/ok?sid={CHECKOUT_SESSION_ID}".to_string()),
                 cancel_url: Some("https://shop.example/cancel".to_string()),
                 return_url: None,
+                // Issue #70: the request side. `sdks/rust/tests/resources.rs`
+                // and `sdks/nodejs/src/client.test.ts` previously only
+                // proved the *response* carried `customer` — the create
+                // body never sent it, in either SDK.
+                customer: Some("cus_send1".to_string()),
             },
             RequestOptions::new().with_idempotency_key("order_1234_session_1"),
         )
@@ -1381,7 +1386,7 @@ async fn create_checkout_session_sends_the_documented_body_and_decodes_the_objec
     );
     assert_eq!(
         body_string(&request),
-        "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel"
+        "payment_intent=pi_123&ui_mode=hosted&success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel&customer=cus_send1"
     );
 }
 
@@ -1397,6 +1402,7 @@ async fn create_checkout_session_body_matches_the_node_sdk_byte_for_byte() {
         success_url: None,
         cancel_url: None,
         return_url: Some("https://shop.example/order/42".to_string()),
+        customer: Some("cus_777".to_string()),
     };
     let (server, client) = fixture().await;
     Mock::given(method("POST"))
@@ -1419,7 +1425,7 @@ async fn create_checkout_session_body_matches_the_node_sdk_byte_for_byte() {
     let request = only_request(&server, "/v1/checkout/sessions").await;
     assert_eq!(
         body_string(&request),
-        "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42"
+        "payment_intent=pi_123&ui_mode=embedded&return_url=https%3A%2F%2Fshop.example%2Forder%2F42&customer=cus_777"
     );
 }
 
