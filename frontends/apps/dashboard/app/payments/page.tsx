@@ -1,8 +1,7 @@
-import { Heading, Stack } from "@vpay/ui";
+import { EmptyState, Heading, Stack } from "@vpay/ui";
 
-import { EmptyState } from "../../src/components/empty-state";
+import { PaymentsPager } from "../../src/components/payments-pager";
 import { ReadFailure } from "../../src/components/read-failure";
-import { Pager } from "../../src/components/pager";
 import { PaymentsFilters } from "../../src/components/payments-filters";
 import { PaymentsTable } from "../../src/components/payments-table";
 import { SignedInBar } from "../../src/components/signed-in-bar";
@@ -109,7 +108,7 @@ export default async function PaymentsPage({
       ) : (
         <>
           <PaymentsTable rows={result.value.data} />
-          <Pager
+          <PaymentsPager
             {...pagerHrefs(query, result.value.data, result.value.has_more)}
           />
         </>

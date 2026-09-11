@@ -1,7 +1,7 @@
-import Link from "next/link";
+import NextLink from "next/link";
 import { notFound } from "next/navigation";
 
-import { Heading, Stack } from "@vpay/ui";
+import { Heading, Link, Stack } from "@vpay/ui";
 
 import { PaymentDetailView } from "../../../src/components/payment-detail";
 import { ReadFailure } from "../../../src/components/read-failure";
@@ -63,7 +63,7 @@ export default async function PaymentDetailPage({
 
       <Stack as="header" justify="between" align="center" gap="md" wrap>
         <Heading level={2}>Payment</Heading>
-        <Link href="/payments">Back to payments</Link>
+        <Link render={<NextLink href="/payments" />}>Back to payments</Link>
       </Stack>
 
       {!result.ok ? (

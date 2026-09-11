@@ -1,6 +1,6 @@
-import Link from "next/link";
+import NextLink from "next/link";
 
-import { Heading, PageShell, Stack } from "@vpay/ui";
+import { Heading, Link, PageShell, Stack } from "@vpay/ui";
 
 /**
  * Every internal link the persistent chrome renders, in one array.
@@ -41,9 +41,13 @@ export function PrimaryNav() {
         <Stack justify="between" align="center" gap="md" wrap>
           <Heading level={1}>vpay dashboard</Heading>
           <Stack gap="md" as="div">
-            {NAV_LINKS.map((link) => (
-              <Link key={link.href} href={link.href}>
-                {link.label}
+            {NAV_LINKS.map((entry) => (
+              <Link
+                key={entry.href}
+                render={<NextLink href={entry.href} />}
+                tone="hover"
+              >
+                {entry.label}
               </Link>
             ))}
           </Stack>

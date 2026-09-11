@@ -16,6 +16,11 @@
  * check is `cypress-axe` against a real browser, and is still built by
  * nobody).
  *
+ * `DetailTimeline` and `EmptyState` had cases here until 2026-09-11. Both
+ * are `@vpay/ui` primitives now (`Timeline`, `EmptyState`) and are rendered
+ * by that package's own axe suite, under the same rule list; a second copy
+ * here would check somebody else's markup.
+ *
  * Every screen is covered through the **component** it is made of rather than
  * through its `page.tsx`: every page in this app is an async server component
  * that reads cookies and calls vpay, which jsdom cannot run. What each page
@@ -29,12 +34,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import RootLayout from "../app/layout";
-import { DetailTimeline } from "./components/detail-timeline";
-import { EmptyState } from "./components/empty-state";
 import { EnrolmentPanel } from "./components/enrolment-panel";
 import { PasswordForm } from "./components/password-form";
 import { PaymentDetailView } from "./components/payment-detail";
 import { PaymentsFilters } from "./components/payments-filters";
+import { PaymentsPager } from "./components/payments-pager";
 import { PaymentsTable } from "./components/payments-table";
 import { SignInForm } from "./components/sign-in-form";
 import { SignedInBar } from "./components/signed-in-bar";
@@ -168,28 +172,26 @@ describe("every screen this app renders", () => {
     bare.unmount();
   });
 
-  it("the timeline, populated and empty", async () => {
-    const populated = render(
-      <DetailTimeline
-        events={[{ id: "evt_1", at: "2026-09-07T09:00:00Z", label: "created" }]}
+  it("the pager, on a middle page and on the first one", async () => {
+    // `Pagination` is `@vpay/ui`'s and has its own suite; what is checked
+    // here is this app's composition of it — a `<nav>` whose links are
+    // `next/link` elements. `link-name` and `region` both bite on a nav.
+    const middle = render(
+      <PaymentsPager
+        previousHref="/payments?ending_before=pi_2"
+        nextHref="/payments?starting_after=pi_9"
       />,
     );
-    expect(await violations(populated.container)).toEqual([]);
-    populated.unmount();
+    expect(await violations(middle.container)).toEqual([]);
+    middle.unmount();
 
-    const empty = render(<DetailTimeline events={[]} />);
-    expect(await violations(empty.container)).toEqual([]);
-    empty.unmount();
-  });
-
-  it("the empty state", async () => {
-    const { container, unmount } = render(
-      <EmptyState
-        title="No payments"
-        description="This merchant has no payment intents yet."
+    const first = render(
+      <PaymentsPager
+        previousHref={null}
+        nextHref="/payments?starting_after=pi_9"
       />,
     );
-    expect(await violations(container)).toEqual([]);
-    unmount();
+    expect(await violations(first.container)).toEqual([]);
+    first.unmount();
   });
 });
