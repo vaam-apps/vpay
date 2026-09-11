@@ -1872,9 +1872,9 @@ model RateLimitWindow {
 // whole reason a procedure can read `payment_intents` when a generated
 // model read cannot: `model PaymentIntent` carries no `@@allow` arm, so
 // every generated read on it renders the literal `FALSE` and answers zero
-// rows, and that arm must stay absent (`schema::tests::the_three_money_
-// models_answer_no_rows_to_every_action` fails if it appears). The
-// procedure does not go near that code path.
+// rows, and that arm must stay absent — in `schema::tests`,
+// `the_three_money_models_answer_no_rows_to_every_action` fails if it ever
+// appears. The procedure does not go near that code path.
 //
 // WHAT THIS PROCEDURE IS NOT. It does not replace
 // `GET /dash/v1/payment_intents`, and nothing serves it over any transport
@@ -1900,8 +1900,11 @@ model RateLimitWindow {
 //     procedure REPLY path itself does not demote (`cratestack-core-0.12.0/
 //     src/rpc.rs:187` encodes with `serde_json::to_value`), but
 //     constructing the field by hand reintroduces the demotion, so the
-//     answer is not to carry the field. `GET /dash/v1/payment_intents/{id}`
-//     already serves `metadata` and stays as it is.
+//     answer is not to carry the field. Both `/dash/v1` reads already serve
+//     `metadata` and both stay as they are — they render a raw
+//     `serde_json::Value` straight out of the row with no CrateStack type
+//     in between, which is exactly the property this return type could not
+//     have had.
 //   * `client_secret_suffix` is a live payer credential. `/dash/v1` refuses
 //     to render it at all (ADR-0008: the dashboard observes the object, not
 //     the credential that spends it) and so does this.
@@ -1916,7 +1919,7 @@ model RateLimitWindow {
 type PaymentIntentSummary {
   id String
   // Echoed back although the caller already knows it: it is what
-  // `every_row_in_the_page_belongs_to_the_context_tenant` asserts on, and a
+  // `the_page_is_the_tenants_own_rows_filtered_and_bounded` asserts on, and a
   // tenancy predicate whose result nothing can be checked against is a
   // predicate nobody can prove fired.
   merchant_id String
@@ -2012,7 +2015,7 @@ type PaymentIntentListFilter {
 // `validate/procedure_handler_collisions.rs`.) Every model in this file
 // generates `handle_{list,create}_<plural>` and `handle_{get,update,
 // delete}_<singular>` whether or not anything routes them, so those five
-// stems are taken for all nine models — `getPaymentIntent`,
+// stems are taken for all eighteen models — `getPaymentIntent`,
 // `createCharge` and `deleteCustomer` are unavailable for the same reason.
 procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
   @allow(auth() != null)

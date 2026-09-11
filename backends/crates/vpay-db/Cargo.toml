@@ -44,9 +44,16 @@ tracing.workspace = true
 authkestra-op.workspace = true
 # `ClientAssertionStore::record_jti`'s signature is `chrono::DateTime<Utc>`
 # (authkestra-op-0.7.1/src/client_assertion.rs, unchanged since 0.3.4), not vpay's own `time`-crate
-# convention. Used only to receive/return that one boundary type in
-# src/client_assertion.rs; converted explicitly to time::OffsetDateTime
-# before it ever reaches a query bind — see that module's own comment.
+# convention. Named in TWO places now, both boundaries with someone else's
+# calendar and neither a change of convention: `src/client_assertion.rs`
+# receives/returns that one authkestra-op type, and
+# `src/schema/search_payment_intents.rs` converts to and from it because the
+# `.cstack` grammar's `DateTime` is `chrono::DateTime<Utc>` and the macro
+# emits it (`cratestack-macros-0.12.0/src/shared/types.rs:37`). Both convert
+# explicitly to time::OffsetDateTime before anything reaches a query bind —
+# see each module's own comment. This still does NOT enable sqlx's "chrono"
+# feature; every TIMESTAMPTZ this crate binds or decodes is
+# `time::OffsetDateTime`.
 chrono.workspace = true
 # vpay's own convention (time crate) for every TIMESTAMPTZ column this crate
 # binds directly (oauth_signing_keys.expires_at, disabled_clients.disabled_at
