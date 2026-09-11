@@ -177,10 +177,16 @@ describe("the shipped theme, measured rather than trusted", () => {
     // The list above is only honest while it is complete. `cva` maps are the
     // one place a tone becomes reachable, so this reads them.
     const dir = join(dirname(fileURLToPath(import.meta.url)), "components");
-    const sources = readdirSync(dir)
+    // Recursive since 2026-09-11: every component is a FOLDER now, and its
+    // `cva` map lives in a sibling `*.variants.ts` rather than in the `.tsx`
+    // — a non-recursive `readdirSync` of `components/` returns only directory
+    // names, so this case read an empty string and passed vacuously.
+    const sources = readdirSync(dir, { recursive: true })
+      .map((entry) => entry.toString())
       .filter(
         (f) =>
-          f.endsWith(".tsx") &&
+          (f.endsWith(".tsx") || f.endsWith(".ts")) &&
+          !f.endsWith("index.ts") &&
           !f.includes(".test.") &&
           !f.includes(".stories."),
       )
