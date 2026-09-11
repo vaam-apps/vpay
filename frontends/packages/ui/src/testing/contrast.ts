@@ -8,8 +8,11 @@
  * numbers it produces are measurements, not assertions — the test is the
  * file that decides what a measurement has to clear.
  *
- * Not part of the package's published surface: `package.json` exports
- * `./testing` as `axe.ts` alone.
+ * Published at `./testing/contrast` (2026-09-11, issue #73) so a consumer
+ * app can measure the pairs it actually renders against the compiled
+ * theme rather than duplicating this math — see `frontends/apps/checkout/
+ * src/components/outcome-contrast.test.ts`, which is the only reason this
+ * stopped being test-only.
  */
 import type postcss from "postcss";
 

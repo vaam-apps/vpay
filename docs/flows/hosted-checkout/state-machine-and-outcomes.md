@@ -121,3 +121,89 @@ this page controls not a word of it. `providerReason` strips control
 characters, collapses whitespace and bounds it at 300 characters; React
 escapes the rest, so it reaches the DOM as a text node and never as markup,
 an attribute or a URL.
+
+<!-- Ported during the exp57 docs-split rebase: this is issue #73's contrast answer, which was written against the pre-split hosted-checkout.md. -->
+
+measured. **Still true, more precisely, after 2026-09-11 (b1e review):**
+the bumblebee theme's contrast is checked by nobody, and now there is a
+real-browser harness that has been proven **unable** to check it, rather
+than one nobody had built. `frontends/tests/e2e`'s `shop-hosted.cy.ts`
+runs axe-core's `color-contrast` rule against four of the outcome screens
+in a real browser (not `@vpay/ui`'s Storybook, which still runs it against
+`corporate`/`business`, which this app does not use, and is still not part
+of `just ci`) — and every one of the four checks comes back `incomplete`,
+not a verdict, because daisyUI 5's own base CSS puts an unconditional
+`background-image` on `:root` (its scrollbar-gutter-stability mechanism),
+and axe-core's `color-contrast` rule refuses to evaluate any element with
+such an ancestor. This was confirmed by mutation, three times, including a
+plain-hex, foreground-equal-to-background pair that any measurement should
+catch — see the Status section's b1e entry and `shop-hosted.cy.ts`'s own
+header comment for the full trace. It reaches every daisyUI-5 page, not
+only this one.
+**Updated 2026-09-11 (b1e, corrected in review): the jsdom draft was
+replaced with a real browser check — which was then proven unable to check
+anything, for a reason outside this repository.** This entry first said a
+new vitest suite (`outcomes.axe.test.tsx`, 10 tests) ran axe's
+`color-contrast` rule against the four outcome screens and passed 10/10 —
+true, and stated alongside its own jsdom caveat, but jsdom parses no CSS and
+computes no layout, so that suite could only ever report zero violations.
+Ten tests that cannot fail are worse than none: a reader sees "contrast" in
+the test names and believes the theme was checked. **The review deleted
+that suite** (and the now-dead `axeContrastViolations` helper it was the
+only caller of, in `@vpay/ui`'s testing export) and built a real-browser
+replacement in `frontends/tests/e2e`'s `shop-hosted.cy.ts` — axe-core's
+`color-contrast` rule, run in a real Chrome against the compiled
+`bumblebee` stylesheet, on four outcome screens as they are actually
+reached by that spec's own payment trips: `CheckoutView`'s `succeeded` (MTN
+push) and `failed` (MTN decline), and `ReturnView`'s `succeeded` and
+`failed` (both through Orange's redirect).
+
+**It does not use the `cypress-axe` package plan §7 row 6 names.** Measured,
+in order: `cy.origin()`'s callback runs in its own realm and shares neither
+`Cypress.Commands.add` registrations nor `cy.readFile()`/`cy.task()` with
+the support file cypress-axe's commands depend on — `Cypress.require()`
+(Cypress's own escape hatch) fixes the first, nothing fixes the second, so
+the checks run axe-core directly (`window.eval`, then `win.axe.run()`) and
+hand the result back across the `cy.origin()` boundary as its return value.
+
+**And three rounds of a decisive mutation on `@vpay/ui/src/styles.css`
+found that the check cannot produce a `violation` verdict at all — only
+ever `incomplete`.** Reverting `--color-error-content`'s fix to daisyUI's
+own default (3.53:1, previously measured below AA) did not fail it. Setting
+it identical to `--color-error` (confirmed via `getComputedStyle`, ~1:1)
+did not either. Replacing both with plain, identical, axe-parseable hex —
+`--color-error: red; --color-error-content: red` — still did not. Every
+round's `incomplete` result names the same cause: `messageKey: "bgImage"`
+on the alert element itself. `daisyui@5.7.28`'s own
+`base/rootscrollgutter.css` puts an unconditional `background-image` (a
+scrollbar-gutter-stability trick for locking scroll behind an open
+`<dialog>`/`Drawer`) on `:root`, whether or not a dialog is open — and
+axe-core's `color-contrast` rule gives up the moment any ancestor carries a
+`background-image`. `:root` is an ancestor of everything, so this reaches
+every element on every page built with daisyUI 5's `@plugin 'daisyui'`, not
+only these four screens and not only this repository. The full trace,
+including the three mutations' exact values and results, is
+`shop-hosted.cy.ts`'s own header comment.
+
+**So issue #73's contrast half is still open**, and this is why: the
+harness is real (real browser, real axe-core, correctly wired across
+`cy.origin()`), it is exercised on every CI run and logs what it finds
+(`incomplete`, not silently), and it still cannot confirm or deny WCAG AA
+compliance on this theme. Closing it for real needs one of — an axe-core
+release that tolerates a fully transparent `background-image` ancestor;
+removing or conditioning daisyUI's scroll-lock `background-image` (a
+behavioural change to a third-party base style, and if scroll-locking a
+`<dialog>`/`Drawer` matters here, a real cost); or a measurement that does
+not walk the DOM for a background colour at all. **Not covered: the
+`canceled` outcome kind** (`PaymentIntent.status === "canceled"`, distinct
+from the rail declines the `failed` cases above drive) — no spec anywhere
+cancels an intent out from under an open checkout, so nothing has rendered
+that screen in a browser, on top of the gap above. Locale is whatever
+`shop-hosted.cy.ts` already runs under (English); the French strings on
+these screens ride the same gap. The theme's own tone palette is still
+measured for real, by a method with no DOM-background-walk to trip over:
+`@vpay/ui`'s `theme-contrast.test.ts` compiles the stylesheet and computes
+WCAG ratios from the resolved OKLCh values directly, verifying every
+rendered tone clears AA (4.5:1), including the error/info overrides at
+lines 887–899 above. That check is real, always was, and is unrelated to
+the vitest suite this paragraph corrects.
