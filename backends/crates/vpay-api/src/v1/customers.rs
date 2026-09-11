@@ -1,10 +1,12 @@
 //! `/v1/customers` — create, retrieve, update, list, delete.
 //!
 //! The merchant-owned record of a payer they expect to see again (S4a). It is
-//! Stripe's `customer`, narrowed: `id`, `name`, `email`, `phone`, `address`,
-//! `metadata`, `created`, `livemode` — and `deleted`, which appears only on an
-//! erased one. `docs/flows/customers.md` is the long version of everything
-//! below; this header is the short one.
+//! Stripe's `customer`, narrowed in every field but one: `id`, `name`,
+//! `email`, `phone`, `address`, `metadata`, `created`, `livemode` — and
+//! `deleted`, which appears only on an erased one. The exception is
+//! `address`, which is *wider* than Stripe's; see below.
+//! `docs/flows/customers.md` is the long version of everything below; this
+//! header is the short one.
 //!
 //! **Tenancy.** Every query takes the [`MerchantScope`] the authentication
 //! middleware resolved. A merchant asking for another merchant's `cus_…` gets
@@ -12,6 +14,24 @@
 //! and a merchant naming another merchant's `cus_…` in `customer` on an
 //! intent or a session gets the same `400` as one naming an id that does not
 //! exist.
+//!
+//! # The address is the formal address AND the GPS point
+//!
+//! The maintainer, 2026-09-11: *"address in our system means both formal as
+//! well as GPS"*. `address` therefore carries `latitude_microdeg` and
+//! `longitude_microdeg` beside Stripe's six components — a **deliberate
+//! divergence**, since Stripe's address has no coordinate at all, and one
+//! stated in `docs/api/README.md` and in both SDKs rather than left to be
+//! discovered from a response.
+//!
+//! Two things about the wire shape are rules and not details. The value is a
+//! whole number of **microdegrees** and the unit is in the field name, so no
+//! JSON float ever appears on this object — a field called `latitude` would
+//! be read as degrees, and the first `4.061` would be a value CrateStack's
+//! `Value::from_plain_json` demotes to `f64`. And the two halves are sent
+//! together or not at all: half a coordinate names no place, so
+//! [`validated_address`] answers a `400` naming `address` rather than letting
+//! `address_coordinates_are_both_or_neither` answer a `503`.
 //!
 //! # The three rules that are this resource and not the others
 //!
@@ -132,6 +152,20 @@ const ADDRESS_MAX_CHARS: usize = 256;
 /// character one is a merchant putting the wrong field in the box.
 const POSTAL_CODE_MAX_CHARS: usize = 64;
 
+/// `|address[latitude_microdeg]|`'s ceiling — 90 degrees, in millionths.
+///
+/// The **definition of the unit** rather than a product limit, which is why
+/// it is `90_000_000` here and `90000000` in migration `0041`'s
+/// `address_latitude_microdeg_range` and nowhere else in between: a value
+/// outside it is not a place. `the_coordinate_bounds_are_the_ones_the_migration_enforces`
+/// reads the migration off disk and compares, so the two cannot drift into
+/// disagreeing about what a latitude is.
+const LATITUDE_MAX_MICRODEG: i64 = 90_000_000;
+
+/// `|address[longitude_microdeg]|`'s ceiling — 180 degrees, in millionths.
+/// See [`LATITUDE_MAX_MICRODEG`].
+const LONGITUDE_MAX_MICRODEG: i64 = 180_000_000;
+
 // ----------------------------------------------------------------- create
 
 /// `POST /v1/customers`'s fields, as the form decoder produces them.
@@ -203,6 +237,16 @@ struct AddressParams {
     state: Option<String>,
     postal_code: Option<String>,
     country: Option<String>,
+    /// The GPS half, in whole microdegrees. `Option<String>` like every other
+    /// field here and **not** an `Option<i64>`, for [`CreateParams`]' reason
+    /// applied where it matters most: typing it would hand `4.061` to serde,
+    /// which answers `param: "body"` and a sentence about the request's shape
+    /// — where the merchant needs to be told that this field is millionths of
+    /// a degree and that `4.061` is spelled `4061000`. See
+    /// [`checked_microdeg`].
+    latitude_microdeg: Option<String>,
+    /// See [`Self::latitude_microdeg`].
+    longitude_microdeg: Option<String>,
 }
 
 /// `POST /v1/customers`.
@@ -951,7 +995,8 @@ fn checked_phone(value: Option<String>) -> Result<Option<String>, ApiError> {
 /// # Errors
 ///
 /// [`ApiError::invalid_param`] naming `address` for a non-blank scalar, an
-/// over-long component, or a `country` that is not two letters.
+/// over-long component, a `country` that is not two letters, a coordinate
+/// that is not a whole number or is out of range, or half a coordinate.
 fn validated_address(param: Option<AddressParam>) -> Result<Option<CustomerAddress>, ApiError> {
     let components = match param {
         None => return Ok(None),
@@ -972,7 +1017,7 @@ fn validated_address(param: Option<AddressParam>) -> Result<Option<CustomerAddre
         Some(AddressParam::Components(components)) => components,
     };
 
-    Ok(Some(CustomerAddress {
+    let address = CustomerAddress {
         line1: checked_text(present(components.line1), "address", ADDRESS_MAX_CHARS)?,
         line2: checked_text(present(components.line2), "address", ADDRESS_MAX_CHARS)?,
         city: checked_text(present(components.city), "address", ADDRESS_MAX_CHARS)?,
@@ -983,9 +1028,101 @@ fn validated_address(param: Option<AddressParam>) -> Result<Option<CustomerAddre
             POSTAL_CODE_MAX_CHARS,
         )?,
         country: checked_country(present(components.country))?,
-        latitude_microdeg: None,
-        longitude_microdeg: None,
-    }))
+        latitude_microdeg: checked_microdeg(
+            present(components.latitude_microdeg),
+            "latitude_microdeg",
+            LATITUDE_MAX_MICRODEG,
+        )?,
+        longitude_microdeg: checked_microdeg(
+            present(components.longitude_microdeg),
+            "longitude_microdeg",
+            LONGITUDE_MAX_MICRODEG,
+        )?,
+    };
+
+    // The pair rule, decided here rather than left to
+    // `address_coordinates_are_both_or_neither` for `checked_text`'s reason:
+    // the CHECK is a `23514`, `classify_write` routes a CHECK violation to
+    // `Category::Storage`, and a merchant who sent half a coordinate would be
+    // told to wait for a database that is fine. It is asked of the value
+    // `vpay-db` itself owns the rule for, so the two cannot disagree about
+    // what `paired` means.
+    if !address.coordinate_is_paired() {
+        return Err(ApiError::invalid_param(
+            "address",
+            "`address[latitude_microdeg]` and `address[longitude_microdeg]` are sent \
+             together or not at all. Half a coordinate names no place: a latitude on its \
+             own is a line right round the planet, and storing one is worse than storing \
+             nothing, because whoever completes it later produces a plausible wrong place.",
+        ));
+    }
+
+    Ok(Some(address))
+}
+
+/// One coordinate, in whole microdegrees, or a `400` naming `address`.
+///
+/// # Why the unit is in the parameter name and the value is an integer
+///
+/// vpay stores a coordinate as a whole count of millionths of a degree and
+/// never as a float — `vpay_db::CustomerAddress::latitude_microdeg` carries
+/// the two measurements that decide it. This function is where that contract
+/// is enforced against a merchant rather than against the database: `4.061`
+/// is refused with a sentence that says what to send instead, because a
+/// merchant who sent it and got a `200` would have had their payer's position
+/// silently truncated or rounded by some layer.
+///
+/// # What the message does not contain, deliberately
+///
+/// **Not the value the merchant sent.** Every other refusal on this resource
+/// names the parameter and states the rule without echoing the input, and
+/// here there is a second reason on top of consistency: this field is a
+/// payer's position, error bodies are the part of a response an integration
+/// is most likely to log, and echoing it back would write a payer's
+/// coordinates into a merchant's logs *because* they were malformed.
+///
+/// # Errors
+///
+/// [`ApiError::invalid_param`] naming `address` — the top-level parameter a
+/// merchant's error handler can act on, exactly as [`checked_country`]'s
+/// does — for a value that is not a whole number or is outside the range of
+/// the axis.
+fn checked_microdeg(
+    value: Option<String>,
+    component: &'static str,
+    max_microdeg: i64,
+) -> Result<Option<i64>, ApiError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+
+    let Ok(microdeg) = raw.parse::<i64>() else {
+        return Err(ApiError::invalid_param(
+            "address",
+            format!(
+                "`address[{component}]` is a whole number of microdegrees — millionths \
+                 of a degree — so 4.061 degrees is sent as `4061000` and -3.75 as \
+                 `-3750000`. vpay stores no floating-point coordinate: a decimal \
+                 point, an exponent or a unit suffix is refused rather than rounded."
+            ),
+        ));
+    };
+
+    // `-max..=max`, symmetric, because both axes are: the bound is the
+    // definition of the unit and not a product limit. `-90000000` is the
+    // South Pole and is as legal as the North.
+    if microdeg < -max_microdeg || microdeg > max_microdeg {
+        return Err(ApiError::invalid_param(
+            "address",
+            format!(
+                "`address[{component}]` must be between -{max_microdeg} and \
+                 {max_microdeg} — the whole range of the axis, in microdegrees. A \
+                 value outside it is not a place."
+            ),
+        ));
+    }
+
+    Ok(Some(microdeg))
 }
 
 /// The country code, upper-cased and shape-checked, or a `400` naming
@@ -1599,6 +1736,8 @@ mod tests {
             state: None,
             postal_code: None,
             country: None,
+            latitude_microdeg: None,
+            longitude_microdeg: None,
         }))))
         .expect_err("over the component bound");
         assert_eq!(param_of(&error), Some("address"));
@@ -1615,6 +1754,8 @@ mod tests {
                 state: None,
                 postal_code: None,
                 country: None,
+                latitude_microdeg: None,
+                longitude_microdeg: None,
             }))))
             .is_ok()
         );

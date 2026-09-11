@@ -1404,13 +1404,17 @@ pub struct CustomerObject {
     /// compare against `payer_ref`, so rendering the original spelling would
     /// make two systems that hold the same number disagree about it.
     pub phone: Option<String>,
-    /// The payer's postal address, or `null` (issue #67).
+    /// The payer's postal address **and** GPS point, or `null` (issue #67).
     ///
-    /// **One nullable object, not six nullable keys**, which is Stripe's
+    /// **One nullable object, not eight nullable keys**, which is Stripe's
     /// shape and is also the shape that matches how vpay treats it: an
-    /// address is replaced whole by an update, and rendering the six
-    /// components at the top level would invite a merchant to patch one of
-    /// them and get an address assembled out of two.
+    /// address is replaced whole by an update, and rendering the components
+    /// at the top level would invite a merchant to patch one of them and get
+    /// an address assembled out of two.
+    ///
+    /// The object carries two keys Stripe's does not —
+    /// [`AddressObject::latitude_microdeg`] and its pair — because an address
+    /// in vpay is both halves. See that type.
     ///
     /// `null` when every component is absent — [`vpay_db::CustomerAddress::is_empty`].
     /// A merchant reading `address` therefore never has to distinguish "no
@@ -1455,17 +1459,40 @@ pub struct CustomerObject {
     pub deleted: Option<DeletedTrue>,
 }
 
-/// A postal address on a [`CustomerObject`] — Stripe's six components
-/// (migration `0041`, [issue #67](https://github.com/vaam-apps/vpay/issues/67)).
+/// A postal address on a [`CustomerObject`] — Stripe's six formal components
+/// **and** the GPS point (migration `0041`,
+/// [issue #67](https://github.com/vaam-apps/vpay/issues/67)).
 ///
 /// Every component is nullable and rendered even when `null`, for
 /// [`CustomerObject::name`]'s reason: a key that appears and disappears is a
-/// shape change in a signed webhook body, and both SDKs decode all six as
+/// shape change in a signed webhook body, and both SDKs decode all eight as
 /// nullable. The object as a whole is `null` when there is no address at all,
 /// which is the one distinction worth making.
 ///
+/// # The two coordinate keys are a deliberate divergence from Stripe
+///
+/// Stripe's `address` has **no** coordinate. vpay's has, because the
+/// maintainer's decision of 2026-09-11 is that *"address in our system means
+/// both formal as well as GPS"*: formal addressing is unreliable across the
+/// markets vpay serves, and a point is how a place is actually found. So a
+/// merchant's Stripe-shaped decoder meets two keys it does not know, which is
+/// additive and safe, and a merchant porting the other way loses them. That
+/// is stated in `docs/flows/customers.md`, in `docs/api/README.md` and in
+/// both SDKs' types rather than left to be discovered from a response body.
+///
+/// # The unit is in the field name, and the value is an integer
+///
+/// `latitude_microdeg` and `longitude_microdeg` are whole millionths of a
+/// degree, so 4.061°N is `4061000`. **No JSON float ever appears on this
+/// object**, which is what the naming buys: a field called `latitude` would
+/// be read as degrees by every merchant who has ever used another API, and
+/// the first one to send `4.061` would be storing a value CrateStack's
+/// `Value::from_plain_json` demotes to `f64` and vpay's own ADR-0007 denies
+/// arithmetic on. `vpay_db::CustomerAddress::latitude_microdeg` carries the
+/// measurement.
+///
 /// It is deliberately **not** a `Deserialize` type. The request side spells
-/// the same six fields in `vpay_api::v1::customers`, because the wire is
+/// the same eight fields in `vpay_api::v1::customers`, because the wire is
 /// form-encoded and every incoming value is text — the same split
 /// [`CustomerObject`] and `CreateParams` already make.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1483,6 +1510,19 @@ pub struct AddressObject {
     pub postal_code: Option<String>,
     /// ISO 3166-1 alpha-2, upper case — `CM`, `FR`, `NG`.
     pub country: Option<String>,
+    /// Latitude in **microdegrees** — a whole number, `4061000` for 4.061°N.
+    ///
+    /// `null` unless [`Self::longitude_microdeg`] is also set: half a
+    /// coordinate names no place, and the pair is refused on the way in with
+    /// a `400` and by `address_coordinates_are_both_or_neither` beneath it.
+    ///
+    /// An anonymised customer renders `null` here where the formal
+    /// components render the redaction marker, and that asymmetry is the
+    /// point rather than an oversight: there is no integer that is not a
+    /// possible place, so a marker value would be a coordinate.
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`].
+    pub longitude_microdeg: Option<i64>,
 }
 
 impl From<&vpay_db::CustomerAddress> for AddressObject {
@@ -1494,6 +1534,8 @@ impl From<&vpay_db::CustomerAddress> for AddressObject {
             state: address.state.clone(),
             postal_code: address.postal_code.clone(),
             country: address.country.clone(),
+            latitude_microdeg: address.latitude_microdeg,
+            longitude_microdeg: address.longitude_microdeg,
         }
     }
 }
@@ -2405,14 +2447,20 @@ mod tests {
         );
     }
 
-    /// An address renders as **one nested object with all six components**,
-    /// nulls included, and never as six top-level keys.
+    /// An address renders as **one nested object with all eight components**,
+    /// nulls included, and never as eight top-level keys.
     ///
-    /// The six-key shape is what a merchant's Stripe-shaped code reads, and
+    /// The fixed-key shape is what a merchant's Stripe-shaped code reads, and
     /// the nulls are what stops the object's shape depending on which
     /// components a payer happened to fill in — the same rule
     /// [`a_phone_only_customer_renders_the_absent_identifiers_as_null`](self)
     /// states for the identifiers, applied one level down.
+    ///
+    /// Six of the eight are Stripe's; `latitude_microdeg` and
+    /// `longitude_microdeg` are vpay's own (the maintainer, 2026-09-11) and
+    /// are rendered `null` here because this fixture's payer gave a street
+    /// and no point. `an_address_may_be_a_point_with_no_street_at_all` is the
+    /// other direction.
     #[test]
     fn an_address_renders_as_one_nested_object_with_every_component() {
         let mut row = customer_row();
@@ -2437,8 +2485,10 @@ mod tests {
                 "state": null,
                 "postal_code": null,
                 "country": "CM",
+                "latitude_microdeg": null,
+                "longitude_microdeg": null,
             })),
-            "the address is one object of six keys: {rendered:?}"
+            "the address is one object of eight keys: {rendered:?}"
         );
     }
 
@@ -2506,6 +2556,16 @@ mod tests {
                 "state": vpay_db::REDACTED,
                 "postal_code": vpay_db::REDACTED,
                 "country": vpay_db::REDACTED,
+                // NULL and not the marker, and the asymmetry is the whole of
+                // the reason this is asserted as a literal object rather than
+                // key by key: these two are integers on the wire, so the
+                // marker is not a value they can take, and there is no
+                // integer that is not a possible place.
+                // `an_erased_payers_coordinates_are_null_and_not_a_marker`
+                // is where that is the *subject* rather than a corner of a
+                // bigger assertion.
+                "latitude_microdeg": null,
+                "longitude_microdeg": null,
             })),
             "every component, including the ones this payer never filled in: which fields a \
              record carried is itself information about the person"
