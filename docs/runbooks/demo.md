@@ -929,6 +929,18 @@ cleaned up by hand. What the override does **not** do is keep `just test-e2e`
 green: the spec above asserts the shop's payment is visible, and under the
 override it is not. That failure is the guard working.
 
+**Both commands, and that is not belt-and-braces.** The staff member has to be
+created in the tenant the dashboard is bound to or `/authorize` refuses them —
+the server says so in as many words, `a staff member signed in against a
+deployment whose dashboard is bound to another merchant; refusing to mint a
+code for a tenant they may not read` — and `demo-staff` on its own resolves
+the binding to its default. `just test-e2e` had the same gap internally until
+2026-09-11: it forwards this variable to its own `demo-staff` call now, so
+that under the override the dashboard spec fails on the payment it cannot
+find rather than on a sign-in it cannot complete. Measured both ways;
+[../plans/exp51-demo-tenant-notes/opus-review.md](../plans/exp51-demo-tenant-notes/opus-review.md)
+§3 has the transcript.
+
 ### Create the staff member
 
 There is **no sign-up**. ADR-0017 decision 1: a dashboard account is a

@@ -583,6 +583,15 @@ member in the list **and** by id — point the variable back at
 `demo-merchant-tenant` and that case fails on both. See
 [../runbooks/demo.md](../runbooks/demo.md) §6.
 
+The by-id half is asserted **twice**, and the second one is the point: once by
+clicking the row's link, and once by visiting `/payments/{id}` directly. Only
+the second can fail on its own. Reached through the list, a broken by-id read
+fails at the row selector and reads as a list problem — which is the shape the
+report arrived in, and the shape a fix could restore only half of. Added in
+this flow's review, 2026-09-11;
+[../plans/exp51-demo-tenant-notes/opus-review.md](../plans/exp51-demo-tenant-notes/opus-review.md)
+carries what else that review found.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
