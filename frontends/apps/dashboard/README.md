@@ -327,6 +327,7 @@ reverted:
 | `apiIsSameOrigin` drops its `originIsAllowed` call                           | `src/server/bff.test.ts`, twice                                                 |
 | the BFF serves the parsed upstream document instead of the named fields      | `src/server/bff.test.ts` — the **detail** case only; see below                  |
 | `middleware` returns `NextResponse.next()` unconditionally                   | `middleware.test.ts`, three times; `OPTIONS` gets Next's `204` and `Allow` back |
+| `apiIsSameOrigin` drops its `Sec-Fetch-Site` comparison                      | `dashboard.cy.ts`'s frame case, in a browser — `200` where `403` was expected   |
 
 `oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
 assertion is that the exchange presents the verifier whose `S256` **is** the
@@ -339,6 +340,16 @@ refactor that generated a second pair for the exchange fails it.
 through the real OP against the real compose stack and computes its TOTP codes
 from the secret **the enrolment screen displayed**. `just demo-staff` creates
 the staff member; `just test-e2e` runs the whole thing.
+
+Five of its sixteen cases are the BFF's, and they are the only evidence in
+this repository about what a browser actually puts on the wire. The decisive
+one is `refuses a cross-origin FRAME of the same URL, which carries no Origin
+at all`: an `<iframe>` is a navigation, so it carries no `Origin`, and
+`SameSite=Lax` still attaches the session to a **same-site** request — so it
+reaches this surface with a signed-in cookie and nothing but `Sec-Fetch-Site`
+identifying it. Delete that comparison from `apiIsSameOrigin`, rebuild the
+image and re-run: it fails with **`200` where `403` was expected**, and every
+other case stays green.
 
 ## What this app still cannot do
 
@@ -353,8 +364,12 @@ the staff member; `just test-e2e` runs the whole thing.
 - **Anything through the BFF.** The two handlers under `app/api/dash/` are
   real and tested, and **nothing in this app calls them** — there is no
   client-side data layer yet, and whether there should be one on this origin
-  is RD5. They are exercised by `src/server/bff.test.ts` and by no browser and
-  no Cypress spec, so what is proven about them is what a unit test can prove:
-  which requests they refuse, what they send upstream, and what comes back on
-  the wire. That a real browser's `Sec-Fetch-Site` and cookie arrive as this
-  code expects them to is **not** proven here.
+  is RD5. ~~They are exercised by `src/server/bff.test.ts` and by no browser
+  and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
+  arrive as this code expects them to is not proven here.~~ **They are
+  exercised by a browser since 2026-09-11 (exp56):** five cases in
+  `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` drive them from Chrome
+  against the real stack, and the measured headers are in
+  [`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md). The browser
+  agreed with the code on every assumption. What is still true is the first
+  sentence: **no page and no component in this app calls them.**

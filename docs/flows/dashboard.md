@@ -723,10 +723,60 @@ contract this surface publishes, not about the token staying in, and it is
 named because two red cases read as more corroboration than one when they are
 two different claims.
 
-**What the review could not check, and what would:** that a real browser's
+~~**What the review could not check, and what would:** that a real browser's
 `Sec-Fetch-Site`, `Origin` and cookie arrive as this code assumes. Every case
 here is a synthetic `Request` against a stubbed `fetch`. Only a Cypress spec
-against `compose.e2e.yml` can answer it, and there is none.
+against `compose.e2e.yml` can answer it, and there is none.~~
+
+**Answered 2026-09-11 (exp56), and the browser agreed with the code.** Five
+cases in `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` drive this surface
+from a real browser against the real stack, signed in through the real OP.
+`cy.intercept` is used there as a **spy and never as a stub** — nothing is
+faked, every request reaches the dashboard and vpay — because it is the only
+way to read the headers the browser put on the wire and the status the server
+answered when the calling page is not allowed to see it.
+
+What Chrome 152 actually sent, identical under Cypress's bundled Electron 138:
+
+| the request                         | `Origin`                | `Sec-Fetch-Site` | cookie | answer |
+| ----------------------------------- | ----------------------- | ---------------- | ------ | ------ |
+| `fetch` from `/payments`, signed in | **absent**              | `same-origin`    | sent   | `200`  |
+| the same, cookie cleared            | absent                  | `same-origin`    | none   | `401`  |
+| `fetch` from the shop (`:3101`)     | `http://localhost:3101` | `same-site`      | sent   | `403`  |
+| `<iframe src>` from the shop        | **absent**              | `same-site`      | sent   | `403`  |
+| `OPTIONS` from `/payments`          | `http://localhost:3100` | `same-origin`    | sent   | `405`  |
+
+Three things in that table were assumptions in `bff.ts` and are measurements
+now. A browser really does send **no `Origin` at all** on a same-origin `GET`,
+which is the sentence the whole `Sec-Fetch-Site` rule rests on. It sends one
+on `OPTIONS` from the very same page — `Origin` is attached to every method
+that is not `GET` or `HEAD`, so it is present exactly on the methods this
+surface does not serve. And the httpOnly cookie is attached by the browser on
+all five, including the two the page's own script could not have added it to.
+
+**The frame case is the decisive one and it is the only thing in this
+repository that pins `Sec-Fetch-Site`.** An `<iframe src="…">` is a
+_navigation_, so it carries no `Origin` for `originIsAllowed` to refuse — and
+`SameSite=Lax` does not withhold the session from a **same-site** request,
+which `localhost:3101 → localhost:3100` is, because a port is not part of a
+site. So the request arrives with a signed-in staff member's cookie and
+nothing but `Sec-Fetch-Site` saying where it came from.
+
+Measured by mutation: delete the `Sec-Fetch-Site` comparison from
+`apiIsSameOrigin`, leaving the `Origin` check, rebuild the image and re-run.
+`refuses a cross-origin FRAME of the same URL, which carries no Origin at all`
+fails with **`200` where `403` was expected** — a merchant's payment list
+served into an arbitrary same-site page. Every other case stays green,
+`refuses a cross-origin fetch from another site's page, cookie and all`
+included, because a cross-origin **`fetch`** does carry an `Origin` and is
+refused a step earlier. One case red, fifteen green, and it is the right one.
+
+**What the browser run still does not cover:** Safari, and therefore the
+absent-`Sec-Fetch-Site` refusal that the review measured as this rule's
+availability cost (WebKit has sent the header only since 16.4, March 2023).
+`cypress run` uses Electron by default here and this evidence was gathered in
+Chrome; neither is WebKit, and no case exercises a client that sends no fetch
+metadata at all.
 
 **The `OPTIONS` oracle is closed, 2026-09-11 (exp56).** The review measured
 that Next auto-implements `OPTIONS` as a `204` carrying
