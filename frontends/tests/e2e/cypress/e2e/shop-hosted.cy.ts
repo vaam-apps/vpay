@@ -106,23 +106,39 @@
  * than a silent pass. **A clean run of this file is not evidence the four
  * screens clear WCAG AA — it is evidence axe-core could not check, four
  * times, for a reason outside this file's or this repository's control.**
- * Fixing it means either an axe-core release that tolerates a fully
- * transparent `background-image`, or moving contrast measurement onto
- * something that does not walk the DOM for a background colour at all —
- * `@vpay/ui`'s `theme-contrast.test.ts` already does the latter for the
- * theme's raw tone palette (computes WCAG ratios from the compiled OKLCh
- * values directly), and the 2026-09-07 Lane B review measured this exact
- * regression by sampling a committed screenshot's own pixels instead of
- * asking a browser API to. Neither approach is this file's to build without
- * the maintainer choosing which one is worth building — see
- * `docs/flows/hosted-checkout.md`'s Status section, and issue #73, which
- * this leaves open on the contrast half.
  *
- * Not covered: the `canceled` outcome kind (`PaymentIntent.status ===
- * "canceled"`, distinct from the `failed` cases this file drives). No spec
- * anywhere reaches it — it is not a rail decline, it is the intent being
- * cancelled out from under an open checkout — so its contrast is unmeasured
- * by this file or any other, on top of the gap above.
+ * A check that only ever asserts `violations.length === 0` when every
+ * result is `incomplete` is a check that cannot fail — the same failure
+ * mode this file replaced `outcomes.axe.test.tsx` for. So `reportContrast()`
+ * ALSO pins the number of elements axe reported `incomplete` (2 on every
+ * one of these four checks: the outcome text and the forward button) and
+ * fails if that count ever moves. This asserts a KNOWN UPSTREAM LIMITATION,
+ * not a contrast guarantee — it does not and cannot prove WCAG AA — but it
+ * turns a dead gate into a change detector: if axe-core relaxes its
+ * `bgImage` handling, daisyUI changes its scroll-lock mechanism, or a
+ * screen gains or loses a checked element, this number moves and a person
+ * has to look, rather than the gate staying silently, permanently green.
+ *
+ * **The contrast half of issue #73 itself is answered by
+ * `frontends/apps/checkout/src/components/outcome-contrast.test.ts`,
+ * not this file.** It reuses `@vpay/ui`'s `theme-contrast.test.ts`
+ * machinery — real Tailwind, real daisyUI, real PostCSS compile, no DOM,
+ * no browser, nothing for a `background-image` to block — against the
+ * EXACT pairs `OutcomePanel` renders (confirmed against daisyUI 5.7.28's
+ * own `alert.css`/`button.css`: a plain `color` on `background-color`,
+ * nothing that math doesn't already model), for all three outcome kinds,
+ * including `canceled`, which no browser has ever rendered at all.
+ * Measured: succeeded (success) 5.09:1, failed (error) 4.61:1, canceled
+ * (warning) 5.24:1, the forward button (primary) 5.53:1 — every one clears
+ * AA (4.5:1). See that file for the full account and the `docs/flows/
+ * hosted-checkout.md` Status section for the record of both halves.
+ *
+ * Not covered by either file: whether a rendered glyph actually sits on
+ * the colour this measures — that is what the browser check above was
+ * for, and what it cannot currently confirm on this page. A tone pair that
+ * failed the compiled-theme measurement could not have passed in a
+ * browser either, so this is a floor, not a proxy — the same relationship
+ * `theme-contrast.test.ts` already has to a real render.
  */
 
 import type axeCore from "axe-core";
@@ -180,12 +196,34 @@ interface ContrastCheck {
  * Asserts on `violations` and logs both `violations` and `incomplete` via
  * `cy.task` — called OUTSIDE `cy.origin()`, where `cy.task()` is allowed.
  * See this file's header comment for why `incomplete` is logged rather than
- * asserted on: axe-core's `color-contrast` rule cannot produce a
- * `violation` verdict for any element on this page, because daisyUI 5's own
- * `:root` scroll-lock CSS carries a `background-image` axe's walk gives up
- * on — measured for every one of this file's four checks, every run.
+ * asserted `.to.have.length(0)`: axe-core's `color-contrast` rule cannot
+ * produce a `violation` verdict for any element on this page, because
+ * daisyUI 5's own `:root` scroll-lock CSS carries a `background-image`
+ * axe's walk gives up on — measured for every one of this file's four
+ * checks, every run.
+ *
+ * `expectedIncompleteNodeCount` turns that dead end into a tripwire instead
+ * of leaving it inert: it pins the number of elements axe reported
+ * `incomplete` (summed across `result.incomplete[].nodes`, currently one
+ * rule result — "color-contrast" — covering the outcome text and the
+ * forward button, so 2 on every one of this file's four checks). This
+ * asserts a KNOWN UPSTREAM LIMITATION, not a contrast guarantee — a pass
+ * here says nothing about WCAG AA (see
+ * `outcome-contrast.test.ts` for that). What it buys is that the count
+ * moves, and this fails, the day axe-core stops giving up on a transparent
+ * `background-image`, daisyUI changes its scroll-lock mechanism, or this
+ * screen gains or loses a checked element — any of which is worth a look
+ * rather than a silent, permanent green.
  */
-function reportContrast(result: ContrastCheck, label: string): void {
+function reportContrast(
+  result: ContrastCheck,
+  label: string,
+  expectedIncompleteNodeCount: number,
+): void {
+  const incompleteNodeCount = result.incomplete.reduce(
+    (total, r) => total + r.nodes.length,
+    0,
+  );
   if (result.incomplete.length > 0) {
     cy.task("dump", {
       what: `color-contrast incomplete (${label}) — axe-core could not determine a verdict (daisyUI 5's :root background-image; see this file's header comment)`,
@@ -199,6 +237,13 @@ function reportContrast(result: ContrastCheck, label: string): void {
     result.violations,
     `${label}: color-contrast violations axe-core actually detected`,
   ).to.have.length(0);
+  expect(
+    incompleteNodeCount,
+    `${label}: elements axe-core could not evaluate for contrast has changed ` +
+      `from the pinned ${expectedIncompleteNodeCount} — read why before touching ` +
+      `this number (this file's header comment; it pins a known upstream ` +
+      `limitation, not a contrast guarantee)`,
+  ).to.equal(expectedIncompleteNodeCount);
 }
 
 describe("the shop, paid on vpay's hosted page", () => {
@@ -261,6 +306,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "CheckoutView succeeded outcome",
+        2,
       );
     });
 
@@ -367,6 +413,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "ReturnView succeeded outcome",
+        2,
       );
     });
 
@@ -453,6 +500,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "ReturnView failed outcome",
+        2,
       );
     });
 
@@ -539,6 +587,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "CheckoutView failed outcome",
+        2,
       );
     });
 
