@@ -97,9 +97,37 @@ What they do about it, each written as a mutation in `src/server/bff.test.ts`:
   have made one URL mean two different pages depending on which surface read
   it.
 
-Only `GET` is exported, so Next answers `405` to everything else — the same
-shape `/dash/v1` has, where `dash::required_scope` refuses a non-`GET` before
-the router matches.
+Only `GET` is exported and **no write can reach the file** — the same shape
+`/dash/v1` has, where `dash::required_scope` refuses a non-`GET` before the
+router matches.
+
+This line went on ~~"so Next answers `405` to everything else"~~ until
+**2026-09-11**, when the exp55 security review read Next 16.3.4's
+`app-route/helpers/auto-implement-methods` instead of assuming it. Next
+auto-implements two methods, so the reachable set is three, not one:
+
+- **`HEAD` is bound to the `GET` handler itself** (`methods.HEAD =
+handlers.GET`), body discarded — so a `HEAD` costs the same session read,
+  the same possible token mint and the same upstream call, and answers the
+  status and the headers. Consistent with `/dash/v1`, which admits `GET` and
+  `HEAD`.
+- **`OPTIONS` answers `204` with `Allow: GET, HEAD, OPTIONS` before the
+  handler runs at all**, so before the origin check and before the cookie is
+  read. It carries no data, but it tells an unauthenticated caller that the
+  route exists where a `404` would not. Suppressing it needs a middleware and
+  this app has none, so it is recorded rather than fixed.
+
+Everything that is not one of those three is Next's `405`.
+
+Two more things the same review corrected, both of them claims rather than
+code. The third bullet above is pinned by the **detail** read's case and not
+the list's: `src/dash/provider.ts`'s `getList` has already rebuilt
+`{ data, hasMore, cursor }` field by field, so serving the upstream document
+verbatim leaves the list case green and only the detail case red. And
+`Sec-Fetch-Site` is not merely "a pre-2020 browser" question — **Safari has
+sent it only since 16.4 (March 2023)**, so this surface answers `403` to every
+older WebKit. That costs nothing while nothing calls it, and is a decision for
+whatever eventually does.
 
 ## How the code is laid out
 

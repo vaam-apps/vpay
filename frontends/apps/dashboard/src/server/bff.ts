@@ -336,8 +336,20 @@ type Bearer =
  * | `stale-token`, mint outage → render anyway | the token on the row |
  * | `stale-token`, mint `401` → `/signed-out` | `401` |
  * | `needs-token`, mint `ok` | the minted token |
- * | `needs-token`, mint outage | `502` |
+ * | `needs-token`, mint outage | the upstream status (`0` → `502`) |
  * | `needs-token`, mint `401` → `/signed-out` | `401` |
+ *
+ * The exp55 security review diffed the two branch for branch and they agree;
+ * two things it corrected in this table are worth keeping here, because the
+ * table's whole job is to be checkable. The `needs-token` outage row said
+ * `502` flatly, where the code answers `upstreamRefusal` — so a mint refused
+ * with a `503` is a `503`, and only `api.ts`'s `status: 0` becomes `502`.
+ * And **a `401` here is not the whole of what `requireStaff` does with one:**
+ * that redirect goes to `/signed-out`, which *deletes the session cookie*,
+ * and this answers a status and leaves the cookie where it is. Nothing can
+ * be done about it from a route handler that must also be able to answer a
+ * `200` — but a client that meets a `401` has to navigate to `/signed-out`
+ * itself, and none exists yet to be told so.
  *
  * **`must-change-password` is a `403` and this surface cannot do better.** A
  * page sends such a session to `/login/password`; an endpoint has nowhere to

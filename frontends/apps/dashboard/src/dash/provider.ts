@@ -166,12 +166,19 @@ export function dashProvider(session: DashSession): DashProvider {
       if (!Array.isArray(result.value?.data)) {
         return { ok: false, failure: notTheDocument("a list") };
       }
+      // Read once and passed to both, so the flag this module answers with
+      // and the flag it derives the cursors from cannot be two readings of
+      // one field. `=== true` because a `200` that carried no `has_more` at
+      // all reached `pageCursors` as `undefined` before, where it is falsy
+      // and therefore silently "no more rows" — the same answer an empty
+      // page gives, which is the reading `payments-query.ts` exists to stop.
+      const hasMore = result.value.has_more === true;
       return {
         ok: true,
         value: {
           data: result.value.data,
-          hasMore: result.value.has_more === true,
-          cursor: pageCursors(query, result.value.data, result.value.has_more),
+          hasMore,
+          cursor: pageCursors(query, result.value.data, hasMore),
         },
       };
     },
