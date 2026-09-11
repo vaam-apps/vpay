@@ -21,7 +21,111 @@
  * (`getSuperDomainOrigin` = protocol + superdomain + port), so each leg on a
  * foreign origin is inside its own `cy.origin()` with everything it needs
  * passed through `args`.
+ *
+ * **`color-contrast` checks, issue #73, plan §7 row 6.** Four of this file's
+ * outcome screens — `CheckoutView`'s `succeeded` and `failed`, `ReturnView`'s
+ * `succeeded` and `failed` — run axe-core's `color-contrast` rule in a REAL
+ * browser, against vpay's own compiled stylesheet under `bumblebee`. A first
+ * draft of this fix (`outcomes.axe.test.tsx`, since deleted) ran the same axe
+ * rule in jsdom instead, which parses no CSS and computes no layout — a
+ * `color-contrast` run there always finds zero violations whether or not one
+ * exists, so ten green tests proved nothing and were worse than none: their
+ * names read as "contrast checked". Here the browser paints the page and
+ * axe-core reads its computed styles, so a violation found here is real.
+ *
+ * **Why axe-core directly, and not the `cypress-axe` package plan §7 row 6
+ * names.** Measured, in order:
+ *
+ * 1. `cy.origin()` runs its callback in its own realm and does not inherit
+ *    the support file's `Cypress.Commands.add('injectAxe', …)` registration
+ *    — `TypeError: cy.injectAxe is not a function`.
+ * 2. `Cypress.require("cypress-axe")` (Cypress's own escape hatch, behind
+ *    `experimentalOriginDependencies`) fixes that, but `injectAxe()` itself
+ *    calls `cy.readFile()` to load `axe-core/axe.min.js`, and `cy.readFile()`
+ *    is refused inside `cy.origin()` — "must only be invoked from the spec
+ *    file or support file".
+ * 3. Reading the file once here and `window.eval`-ing it inside `cy.origin()`
+ *    (exactly what `injectAxe()` does internally) works around that. But
+ *    `cy.checkA11y()`'s violation callback also calls `cy.task()` to get a
+ *    violation's ratios into the terminal (Cypress.log's consoleProps never
+ *    reach a headless `cypress run`) — and `cy.task()` is refused inside
+ *    `cy.origin()` for the same reason `cy.readFile()` is. Proven with a
+ *    forced violation (mutation below): the test failed with `CypressError:
+ *    cy.task() must only be invoked from the spec file or support file`
+ *    instead of a useful message.
+ *
+ * So every check below runs axe-core directly inside `cy.origin()` (only
+ * `cy.window()`, unrestricted there) and returns its result as the value
+ * `cy.origin()` yields, exactly like `msisdn` travels in via `args`; the
+ * assertion and the ratio logging happen in `reportContrast()`, outside
+ * `cy.origin()`, where `cy.task()` is allowed. The page's forward button is
+ * clicked in a second, separate `cy.origin()` call to the same origin (no
+ * reload — the browser context is already there) so a click that navigates
+ * away is never the same callback that still has a value to hand back.
+ *
+ * **The decisive mutation, and what it actually found — three rounds.**
+ * (1) Reverting `@vpay/ui/src/styles.css`'s `--color-error-content` fix
+ * (`oklch(32% .13 25.723)`) to daisyUI 5's own bumblebee default
+ * (`oklch(39% .141 25.723)`, the documented 3.53:1) did not fail this check.
+ * (2) Setting it to the exact same value as `--color-error`
+ * (`oklch(70% .191 22.216)`, foreground literally equal to background —
+ * confirmed identical via `getComputedStyle`) did not either. (3) Replacing
+ * BOTH `--color-error` and `--color-error-content` with plain, identical,
+ * axe-parseable hex (`#ff0000`/`#ff0000`, confirmed applied — the compiled
+ * CSS carries `--color-error:red;--color-error-content:red` as an unlayered
+ * override, which wins by CSS cascade-layer rules regardless of source
+ * order) **still did not fail it.**
+ *
+ * Every round's `incomplete` result names the same cause:
+ * `messageKey: "bgImage"` on the `.mt-4.alert.alert-error` element itself —
+ * "Element's background color could not be determined due to a background
+ * image". Not an oklch-parsing problem after all (round 3 used no oklch at
+ * all): axe-core's background-colour walk gives up the moment ANY ancestor
+ * carries a `background-image`, and one always does here. `daisyui@5.7.28`'s
+ * own `base/rootscrollgutter.css` installs, unconditionally, on `:root`:
+ *
+ *     background-image: var(--page-scroll-lock)
+ *       linear-gradient(var(--root-bg,#0000), var(--root-bg,#0000));
+ *
+ * part of a CSS-only scrollbar-gutter-stability trick for locking page
+ * scroll behind an open `<dialog>`/`Drawer` — present, and this rule fires,
+ * on every page using daisyUI 5's `@plugin 'daisyui'` whether or not a
+ * dialog is open or `--root-bg` is anything but transparent. `:root` is an
+ * ancestor of every element on the page, so this is not specific to the
+ * outcome screens, this component, or this repository: **axe-core's
+ * `color-contrast` rule cannot produce a `violation` verdict for ANY element
+ * on ANY daisyUI-5 page**, only ever `incomplete`. `dequelabs/axe-core#4007`
+ * ("Axe fails with new color spec", open) is a related, separately-reported
+ * gap in the same area (oklch parsing) but is not what fires here — this
+ * was traced to a specific rule, in a specific upstream file, not inferred.
+ *
+ * `reportContrast()` still asserts on `violations` (in case some future axe
+ * release, or a change to this backdrop mechanism, lets a real verdict
+ * through) and logs every `incomplete` result via `cy.task('dump', …)`, so
+ * a reader of this file's own CI output sees the gap on every run rather
+ * than a silent pass. **A clean run of this file is not evidence the four
+ * screens clear WCAG AA — it is evidence axe-core could not check, four
+ * times, for a reason outside this file's or this repository's control.**
+ * Fixing it means either an axe-core release that tolerates a fully
+ * transparent `background-image`, or moving contrast measurement onto
+ * something that does not walk the DOM for a background colour at all —
+ * `@vpay/ui`'s `theme-contrast.test.ts` already does the latter for the
+ * theme's raw tone palette (computes WCAG ratios from the compiled OKLCh
+ * values directly), and the 2026-09-07 Lane B review measured this exact
+ * regression by sampling a committed screenshot's own pixels instead of
+ * asking a browser API to. Neither approach is this file's to build without
+ * the maintainer choosing which one is worth building — see
+ * `docs/flows/hosted-checkout.md`'s Status section, and issue #73, which
+ * this leaves open on the contrast half.
+ *
+ * Not covered: the `canceled` outcome kind (`PaymentIntent.status ===
+ * "canceled"`, distinct from the `failed` cases this file drives). No spec
+ * anywhere reaches it — it is not a rail decline, it is the intent being
+ * cancelled out from under an open checkout — so its contrast is unmeasured
+ * by this file or any other, on top of the gap above.
  */
+
+import type axeCore from "axe-core";
 
 import {
   MTN,
@@ -33,14 +137,94 @@ import {
   waitForOrderStatus,
 } from "../support/shop";
 
+/**
+ * `window.axe`, set by `window.eval(axeSource)` below — never imported as a
+ * module (that would pull axe-core into the app bundle instead of the real
+ * one already compiled into the page), only typed so `win.axe.run(…)`
+ * checks.
+ */
+declare global {
+  interface Window {
+    axe: typeof axeCore;
+  }
+}
+
+/** The subset of axe-core's `Result` shape this file reads. */
+interface AxeResult {
+  id: string;
+  impact: string | null;
+  help: string;
+  nodes: Array<{
+    target: string[];
+    failureSummary?: string;
+    html: string;
+    any: Array<{
+      data?: {
+        contrastRatio?: number;
+        expectedContrastRatio?: string;
+        fgColor?: string;
+        bgColor?: string;
+        messageKey?: string;
+      };
+    }>;
+  }>;
+}
+
+/** What each `cy.origin()` color-contrast check below yields. */
+interface ContrastCheck {
+  violations: AxeResult[];
+  incomplete: AxeResult[];
+}
+
+/**
+ * Asserts on `violations` and logs both `violations` and `incomplete` via
+ * `cy.task` — called OUTSIDE `cy.origin()`, where `cy.task()` is allowed.
+ * See this file's header comment for why `incomplete` is logged rather than
+ * asserted on: axe-core's `color-contrast` rule cannot produce a
+ * `violation` verdict for any element on this page, because daisyUI 5's own
+ * `:root` scroll-lock CSS carries a `background-image` axe's walk gives up
+ * on — measured for every one of this file's four checks, every run.
+ */
+function reportContrast(result: ContrastCheck, label: string): void {
+  if (result.incomplete.length > 0) {
+    cy.task("dump", {
+      what: `color-contrast incomplete (${label}) — axe-core could not determine a verdict (daisyUI 5's :root background-image; see this file's header comment)`,
+      value: JSON.stringify(result.incomplete, null, 2),
+    });
+  }
+  if (result.violations.length > 0) {
+    cy.task("logA11yViolations", result.violations);
+  }
+  expect(
+    result.violations,
+    `${label}: color-contrast violations axe-core actually detected`,
+  ).to.have.length(0);
+}
+
 describe("the shop, paid on vpay's hosted page", () => {
+  /**
+   * axe-core's minified source — read once here because `cy.readFile()` is
+   * refused inside `cy.origin()` (see header comment) — and threaded through
+   * every `cy.origin()` call's `args` below, exactly like `msisdn`.
+   */
+  let axeSource = "";
+  before(() => {
+    cy.readFile("node_modules/axe-core/axe.min.js").then((source: string) => {
+      axeSource = source;
+    });
+  });
+
   it("MTN push: the payer pays on vpay's page and the shop reaches `paid` through the webhook", () => {
     buyOnVpaysPage();
 
     cy.origin(
       checkoutOrigin(),
-      { args: { msisdn: MTN.succeeds } },
-      ({ msisdn }) => {
+      { args: { msisdn: MTN.succeeds, axeSource } },
+      ({ msisdn, axeSource }) => {
+        cy.window({ log: false }).then((win) => {
+          win.eval(axeSource);
+        });
+
         // The rail selector, because the shop's intent offers both rails and
         // vpay's page can drive both (D9). Its presence is already a fact
         // about the intent: the page renders what `payment_method_types`
@@ -64,14 +248,32 @@ describe("the shop, paid on vpay's hosted page", () => {
         cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
           "be.visible",
         );
-        // The forward is the merchant's `success_url` with
-        // `{CHECKOUT_SESSION_ID}` substituted (D5). The click is the ONLY way
-        // off this screen: the five-second auto-forward this comment used to
-        // describe was removed on 2026-09-06 and nothing replaced it, so a
-        // spec that merely waited here would wait forever.
-        cy.get('[data-outcome="succeeded"] button').click();
+        // color-contrast, `CheckoutView`'s succeeded outcome, under
+        // bumblebee — the last command, so its result is what cy.origin()
+        // yields. See this file's header comment.
+        cy.window({ log: false }).then((win) =>
+          win.axe.run('[data-outcome="succeeded"]', {
+            runOnly: { type: "rule", values: ["color-contrast"] },
+          }),
+        );
       },
-    );
+    ).then((results) => {
+      reportContrast(
+        results as ContrastCheck,
+        "CheckoutView succeeded outcome",
+      );
+    });
+
+    // The forward is the merchant's `success_url` with `{CHECKOUT_SESSION_ID}`
+    // substituted (D5). The click is the ONLY way off this screen: the
+    // five-second auto-forward this comment used to describe was removed on
+    // 2026-09-06 and nothing replaced it, so a spec that merely waited here
+    // would wait forever. A separate `cy.origin()` call — no reload, the
+    // browser context is already there — because a navigating click cannot
+    // share a callback with a value that still needs handing back.
+    cy.origin(checkoutOrigin(), () => {
+      cy.get('[data-outcome="succeeded"] button').click();
+    });
 
     // Back on the shop. This page reads the shop's database; it takes no
     // decision from the `session_id` vpay put in the query string.
@@ -142,11 +344,33 @@ describe("the shop, paid on vpay's hosted page", () => {
 
     // vpay's return page: it holds the return token, not the intent's
     // secret, and it polls until the rail's status query settles.
-    cy.origin(checkoutOrigin(), () => {
-      cy.url({ timeout: 60_000 }).should("include", "/return");
-      cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
-        "be.visible",
+    cy.origin(
+      checkoutOrigin(),
+      { args: { axeSource } },
+      ({ axeSource }) => {
+        cy.window({ log: false }).then((win) => {
+          win.eval(axeSource);
+        });
+
+        cy.url({ timeout: 60_000 }).should("include", "/return");
+        cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
+          "be.visible",
+        );
+        // color-contrast, `ReturnView`'s succeeded outcome, under bumblebee.
+        cy.window({ log: false }).then((win) =>
+          win.axe.run('[data-outcome="succeeded"]', {
+            runOnly: { type: "rule", values: ["color-contrast"] },
+          }),
+        );
+      },
+    ).then((results) => {
+      reportContrast(
+        results as ContrastCheck,
+        "ReturnView succeeded outcome",
       );
+    });
+
+    cy.origin(checkoutOrigin(), () => {
       cy.get('[data-outcome="succeeded"] button').click();
     });
 
@@ -204,12 +428,35 @@ describe("the shop, paid on vpay's hosted page", () => {
     // payer lands back on vpay's return page either way and the page polls
     // until the rail's status query settles. What differs from the case
     // above is the outcome it settles on.
-    cy.origin(checkoutOrigin(), () => {
-      cy.url({ timeout: 60_000 }).should("include", "/return");
-      cy.get('[data-outcome="failed"]', { timeout: 120_000 }).should(
-        "be.visible",
+    cy.origin(
+      checkoutOrigin(),
+      { args: { axeSource } },
+      ({ axeSource }) => {
+        cy.window({ log: false }).then((win) => {
+          win.eval(axeSource);
+        });
+
+        cy.url({ timeout: 60_000 }).should("include", "/return");
+        cy.get('[data-outcome="failed"]', { timeout: 120_000 }).should(
+          "be.visible",
+        );
+        cy.get('[data-testid="outcome-body"]').should("not.be.empty");
+        // color-contrast, `ReturnView`'s failed outcome, under bumblebee —
+        // the screen that tells a payer their money did not move.
+        cy.window({ log: false }).then((win) =>
+          win.axe.run('[data-outcome="failed"]', {
+            runOnly: { type: "rule", values: ["color-contrast"] },
+          }),
+        );
+      },
+    ).then((results) => {
+      reportContrast(
+        results as ContrastCheck,
+        "ReturnView failed outcome",
       );
-      cy.get('[data-testid="outcome-body"]').should("not.be.empty");
+    });
+
+    cy.origin(checkoutOrigin(), () => {
       cy.get('[data-outcome="failed"] button').click();
     });
 
@@ -263,8 +510,12 @@ describe("the shop, paid on vpay's hosted page", () => {
 
     cy.origin(
       checkoutOrigin(),
-      { args: { msisdn: MTN.insufficientFunds } },
-      ({ msisdn }) => {
+      { args: { msisdn: MTN.insufficientFunds, axeSource } },
+      ({ msisdn, axeSource }) => {
+        cy.window({ log: false }).then((win) => {
+          win.eval(axeSource);
+        });
+
         cy.get('[data-screen="select_rail"]', { timeout: 60_000 }).should(
           "be.visible",
         );
@@ -276,9 +527,24 @@ describe("the shop, paid on vpay's hosted page", () => {
           "be.visible",
         );
         cy.get('[data-testid="outcome-body"]').should("not.be.empty");
-        cy.get('[data-outcome="failed"] button').click();
+        // color-contrast, `CheckoutView`'s failed outcome, under bumblebee —
+        // the screen that tells a payer their money did not move.
+        cy.window({ log: false }).then((win) =>
+          win.axe.run('[data-outcome="failed"]', {
+            runOnly: { type: "rule", values: ["color-contrast"] },
+          }),
+        );
       },
-    );
+    ).then((results) => {
+      reportContrast(
+        results as ContrastCheck,
+        "CheckoutView failed outcome",
+      );
+    });
+
+    cy.origin(checkoutOrigin(), () => {
+      cy.get('[data-outcome="failed"] button').click();
+    });
 
     cy.url({ timeout: 60_000 }).should("include", "/cancelled");
     cy.get('[data-testid="cancelled-message"]').should("be.visible");

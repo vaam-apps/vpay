@@ -45,26 +45,13 @@ export async function axeViolations(container: Element): Promise<axe.Result[]> {
   return results.violations;
 }
 
-/**
- * Runs axe-core's `color-contrast` rule against a rendered subtree — issue #73.
- *
- * **CRITICAL LIMITATION: jsdom computes no styles from the built stylesheet.**
- * A violation that exists in the rendered page will NOT be reported here; a
- * violation reported here is impossible (jsdom would have had to compute the
- * contrast, which it cannot). "A green jsdom contrast run is not evidence"
- * (plan §7 row 6).
- *
- * This function documents the _requirement_ to check contrast on specific
- * component compositions (like the outcome screens under the bumblebee theme).
- * **The real verification is in a real browser** — `cypress-axe` running
- * against the `compose.e2e.yml` stack, plan §7 row 6. When that test is built,
- * this jsdom function can be deleted.
- */
-export async function axeContrastViolations(
-  container: Element,
-): Promise<axe.Result[]> {
-  const results = await axe.run(container, {
-    runOnly: { type: "rule", values: ["color-contrast"] },
-  });
-  return results.violations;
-}
+// `axeContrastViolations` (a jsdom `color-contrast` run) lived here until
+// issue #73 was answered for real. Removed 2026-09-11 (b1e review): jsdom
+// parses no CSS and computes no layout, so the function could only ever
+// return zero violations — a check that cannot fail is worse than none,
+// because a reader trusts it. The ten call sites it had
+// (`outcomes.axe.test.tsx`, deleted) are `cy.checkA11y(…, { runOnly:
+// ['color-contrast'] })` in `frontends/tests/e2e/cypress/e2e/shop-hosted.cy.ts`
+// now — a real browser, against vpay's own compiled stylesheet under
+// `bumblebee`. See that file's header comment and `docs/flows/hosted-
+// checkout.md`'s Status section.

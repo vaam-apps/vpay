@@ -464,6 +464,9 @@ importers:
       '@vpay/config':
         specifier: workspace:*
         version: link:../../packages/config
+      axe-core:
+        specifier: 4.13.0
+        version: 4.13.0
       cypress:
         specifier: ^15.21.1
         version: 15.21.1

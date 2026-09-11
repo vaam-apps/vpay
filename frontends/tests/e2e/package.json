@@ -15,6 +15,7 @@
   "devDependencies": {
     "@vpay/config": "workspace:*",
     "@vaam-apps/vpay-sdk": "workspace:*",
+    "axe-core": "4.13.0",
     "cypress": "^15.21.1",
     "eslint": "9.39.5",
     "typescript": "^5.7.0"

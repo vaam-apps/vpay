@@ -13,6 +13,7 @@ import {
   mintCheckoutPaymentIntent,
   mintPaymentIntentsForPaging,
 } from "./cypress/tasks/checkoutTasks.js";
+import { logA11yViolations } from "./cypress/tasks/a11yTasks.js";
 import {
   carriedForward,
   carryForward,
@@ -138,6 +139,11 @@ export default defineConfig({
       on("task", {
         mintCheckoutPaymentIntent,
         mintPaymentIntentsForPaging,
+        // `shop-hosted.cy.ts`'s `color-contrast` checks (issue #73) — prints
+        // the measured ratio and the element a violation was found on, since
+        // headless `cypress run` never surfaces `Cypress.log`'s
+        // `consoleProps`. See `a11yTasks.ts`.
+        logA11yViolations,
         // `dashboard.cy.ts`'s three, all of them Node-side for
         // `dashboardTasks.ts`'s reasons: the staff password is read from a
         // file so it never enters `Cypress.env`, and the TOTP codes need a
