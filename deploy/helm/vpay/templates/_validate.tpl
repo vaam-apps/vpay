@@ -138,6 +138,24 @@ inverts the intent silently: nothing else in this repository checks it
 {{- if or (le $api 0) (le $token 0) -}}
 {{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.api.limitRps=%d and ingress.token.limitRps=%d; ingress-nginx treats a non-positive limit-rps as absent, which would render an Ingress that claims a rate limit and applies none." $api $token) -}}
 {{- end -}}
+{{/*
+The rail callback joined this guard on 2026-09-11, because it is the same
+rule and not a second one: `/provider/{code}/callback` is UNAUTHENTICATED and
+`/v1` is not, so a looser limit there is the same inversion the token split
+exists to prevent, one surface along. It is also the surface with no
+application-layer limit at all — `provider_callback.rs`'s own header says
+"nothing else here is a rate limit: there is none" — so the number in this
+chart is the only one that exists for it.
+*/}}
+{{- if .Values.ingress.provider.enabled -}}
+{{- $provider := int .Values.ingress.provider.limitRps -}}
+{{- if gt $provider $api -}}
+{{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.provider.limitRps is %d but ingress.api.limitRps is %d. /provider/{code}/callback takes no bearer token and /v1 does, and the callback route has no rate limit of its own inside the process — so a looser limit at the edge on the unauthenticated surface inverts the intent exactly the way a loose token limit would." $provider $api) -}}
+{{- end -}}
+{{- if le $provider 0 -}}
+{{- fail (printf "vpay chart guard \"rate-limit-ordering\": ingress.provider.limitRps=%d; ingress-nginx treats a non-positive limit-rps as absent, so this would render an Ingress claiming a rate limit on the one unauthenticated route and applying none." $provider) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* --------------------------------------------------------------- 10 */}}
@@ -304,8 +322,17 @@ the assertion has two halves: this guard makes the ONE well-typed way to get a
 half-enabled checkout a named error, and `just helm-check` greps the default
 render for `-checkout` to prove the other half.
 */}}
-{{- if and (not .Values.checkout.enabled) .Values.checkout.ingress.enabled -}}
-{{- fail "vpay chart guard \"checkout-not-templated-by-default\": checkout.ingress.enabled is true but checkout.enabled is false. Nothing about the checkout page is templated while it is disabled — not the Deployment, not the Service — so this Ingress would route to a backend that does not exist, and the symptom is a 503 on the payment page found by a payer rather than an error found here. Set checkout.enabled: true, or leave both false." -}}
+{{- if not .Values.checkout.enabled -}}
+{{- $halfOn := list -}}
+{{- if .Values.checkout.ingress.enabled -}}
+{{- $halfOn = append $halfOn "checkout.ingress.enabled" -}}
+{{- end -}}
+{{- if .Values.checkout.route.enabled -}}
+{{- $halfOn = append $halfOn "checkout.route.enabled" -}}
+{{- end -}}
+{{- if $halfOn -}}
+{{- fail (printf "vpay chart guard \"checkout-not-templated-by-default\": %s is true but checkout.enabled is false. Nothing about the checkout page is templated while it is disabled — not the Deployment, not the Service — so that routing would point at a backend that does not exist, and the symptom is a 503 on the payment page found by a payer rather than an error found here. Set checkout.enabled: true, or leave them all false." (join " and " $halfOn)) -}}
+{{- end -}}
 {{- end -}}
 
 {{/* --------------------------------------------------------------- 17 */}}
@@ -348,6 +375,38 @@ be well-typed and still not work.
 {{- fail "vpay chart guard \"checkout-templated-when-enabled\": checkout.ingress.tls.enabled is true but neither clusterIssuer nor secretName is set, so nothing would ever populate the TLS Secret and the payment page would be served under the controller's default certificate. A payer's session credential rides in that URL's fragment." -}}
 {{- end -}}
 {{- end -}}
+{{/*
+(d) The same host-or-path duality on the Gateway API side, plus the one thing
+    an HTTPRoute has that an Ingress does not: a parent. There is no TLS arm
+    here — a Gateway terminates TLS on its listener, so `checkout.route` names
+    no Secret and (c) has no counterpart.
+*/}}
+{{- if .Values.checkout.route.enabled -}}
+{{- $rHosts := .Values.checkout.route.hostnames -}}
+{{- $rPath := .Values.checkout.route.path -}}
+{{- if and (empty $rHosts) (empty $rPath) -}}
+{{- fail "vpay chart guard \"checkout-templated-when-enabled\": checkout.route.enabled is true but neither checkout.route.hostnames nor checkout.route.path is set. Pick one: a hostname of its own (preferred — the app's routes are /c/…, /e/… and /healthz at the root, so nothing has to be rewritten), or a path prefix on the API's hostnames (which the chart rewrites away with a URLRewrite filter, because the app is not basePath-aware). With neither, the rendered route would answer for every path on the API's hostname." -}}
+{{- end -}}
+{{- if and (not (empty $rHosts)) (not (empty $rPath)) -}}
+{{- fail (printf "vpay chart guard \"checkout-templated-when-enabled\": checkout.route sets both hostnames (%v) and path (%q). They are two different deployment shapes — its own hostname, or a prefix on the API's — and setting both renders a prefix rule, with a rewrite, on the checkout's own hostname, which is neither. Clear one." $rHosts $rPath) -}}
+{{- end -}}
+{{- $rParents := .Values.checkout.route.parentRefs -}}
+{{- if empty $rParents -}}
+{{- $rParents = .Values.route.parentRefs -}}
+{{- end -}}
+{{- if empty $rParents -}}
+{{- fail "vpay chart guard \"checkout-templated-when-enabled\": checkout.route.enabled is true but neither checkout.route.parentRefs nor route.parentRefs names a Gateway. An HTTPRoute with no parent is accepted by the API server and routes nothing, so the payment page would be unreachable while every object reported healthy." -}}
+{{- end -}}
+{{- if $rPath -}}
+{{- $inherited := .Values.route.hostnames -}}
+{{- if empty $inherited -}}
+{{- $inherited = compact (list .Values.ingress.host) -}}
+{{- end -}}
+{{- if empty $inherited -}}
+{{- fail "vpay chart guard \"checkout-templated-when-enabled\": checkout.route.path is set — the prefix-on-the-API's-hostname shape — but no hostname resolves for it: route.hostnames is empty and so is ingress.host. A hostname-less HTTPRoute matches every request its listener receives, so vpay's payment page would answer for hostnames belonging to something else. Set route.hostnames, or give the page its own checkout.route.hostnames instead." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* --------------------------------------------------------------- 18 */}}
@@ -374,6 +433,163 @@ not start a pod. What this guard buys is the failure arriving at
 {{- $poolCeiling := 5 -}}
 {{- if gt $concurrency $poolCeiling -}}
 {{- fail (printf "vpay chart guard \"worker-concurrency-pool\": worker.concurrency is %d, but vpay-server worker refuses anything above %d at boot (exit 78) — its database pool holds 10 connections and one webhook fan-out can hold two of them at once. This release would install and then CrashLoopBackOff. Set worker.concurrency to %d or less and raise worker.replicaCount for more throughput; the pool size is a constant in the image, not a chart value." $concurrency $poolCeiling $poolCeiling) -}}
+{{- end -}}
+
+{{/* --------------------------------------------------------------- 19 */}}
+{{/*
+route-attachment — the Gateway API counterpart of "ingress-host", plus the one
+failure that has no Ingress equivalent at all.
+
+An Ingress names a class and the controller watching that class picks it up. An
+HTTPRoute names its PARENT — a specific Gateway, and optionally a specific
+listener on it — and a route with no parent is not rejected by anything: the
+API server accepts it, it sits in the namespace looking exactly like a working
+one, and it routes nothing. `kubectl get httproute` shows it. Nothing shouts.
+
+The hostname arm is the same failure "ingress-host" exists for, one layer
+along: a hostname-less HTTPRoute matches every request the listener it attached
+to receives, so vpay answers for hostnames that belong to something else.
+`route.hostnames` falls back to `[ingress.host]`, so this fires only when both
+are empty.
+*/}}
+{{- if .Values.route.enabled -}}
+{{- if empty .Values.route.parentRefs -}}
+{{- fail "vpay chart guard \"route-attachment\": route.enabled is true but route.parentRefs is empty. An HTTPRoute attaches to a Gateway by naming it — there is no className to watch — and one with no parentRefs is accepted by the API server, listed by kubectl and used by nothing. Set at least `- name: <gateway>` (with `namespace:` when the Gateway is elsewhere, and `sectionName:` to pin one listener)." -}}
+{{- end -}}
+{{- range $i, $ref := .Values.route.parentRefs -}}
+{{- if empty $ref.name -}}
+{{- fail (printf "vpay chart guard \"route-attachment\": route.parentRefs[%d] has no name (%v). `name` is the only required field of a ParentReference; without it the entry names no Gateway and the whole route is rejected at admission with a message about a field, not about a Gateway." $i $ref) -}}
+{{- end -}}
+{{- end -}}
+{{- $hostnames := .Values.route.hostnames -}}
+{{- if empty $hostnames -}}
+{{- $hostnames = compact (list .Values.ingress.host) -}}
+{{- end -}}
+{{- if empty $hostnames -}}
+{{- fail "vpay chart guard \"route-attachment\": route.enabled is true but no hostname resolves for it — route.hostnames is empty and so is ingress.host, which is what it falls back to. A hostname-less HTTPRoute matches every request the listener it attached to receives, so vpay would answer for hostnames that belong to something else. This is the \"ingress-host\" guard's failure, on the Gateway API side." -}}
+{{- end -}}
+{{- end -}}
+
+{{/* --------------------------------------------------------------- 20 */}}
+{{/*
+route-rate-limit — the guarantee the Ingress path makes and this one cannot
+make for itself.
+
+ADR-0009 assumes a rate limit in front of `/v1/oauth/token`. On the Ingress
+side that is `nginx.ingress.kubernetes.io/limit-rps`, the "rate-limit-ordering"
+guard keeps the token limit the tighter of the two, and `just helm-check` greps
+the rendered YAML for the annotation so it cannot quietly disappear. Gateway
+API has no portable equivalent: no core filter, nothing in the standard
+channel. Every implementation does it with its own object reached through an
+`ExtensionRef` filter (Traefik: a `traefik.io` `Middleware`; Envoy Gateway: a
+`BackendTrafficPolicy`), and a chart that guessed at one would be wrong on
+every other controller.
+
+So the chart refuses to GUESS and equally refuses to be SILENT. Either the
+token rule carries an `ExtensionRef` filter — the operator's own rate-limit
+object, whatever it is — or `route.rateLimitedBy` says in one line what else
+enforces it, and that sentence is rendered onto the HTTPRoute as an annotation
+so the claim lives in the cluster rather than in a values file.
+
+Deliberately not a boolean: a boolean is a box to tick, and "the assumption
+under ADR-0009 still holds" is not a thing anyone should be able to assert by
+typing `true`. This guard cannot check that either spelling is TRUE. What it
+refuses is a token endpoint that nobody decided to leave unmetered.
+*/}}
+{{- if .Values.route.enabled -}}
+{{- $hasExtensionRef := false -}}
+{{- range $f := .Values.route.token.filters -}}
+{{- if eq (default "" $f.type) "ExtensionRef" -}}
+{{- $hasExtensionRef = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not $hasExtensionRef) (empty .Values.route.rateLimitedBy) -}}
+{{- fail "vpay chart guard \"route-rate-limit\": route.enabled is true, but nothing here rate-limits /v1/oauth/token. ADR-0009 assumes a limit is in front of it — a token request costs an RSA verification and a write to oauth_client_assertion_jtis, and it is the expensive unauthenticated surface — and the Ingress path supplies one with nginx.ingress.kubernetes.io/limit-rps. Gateway API has no portable equivalent, so this chart will not invent one. Do ONE of: (1) put your controller's own rate-limit object on the token rule as an ExtensionRef filter — route.token.filters: [{type: ExtensionRef, extensionRef: {group: traefik.io, kind: Middleware, name: …}}]; or (2) if the limit is enforced somewhere this chart cannot see (a CDN, a WAF, a policy on the Gateway listener), set route.rateLimitedBy to one line saying what and where, which is rendered onto the HTTPRoute as the vpay/rate-limited-by annotation. Neither is checkable from here; the point is that leaving the endpoint unmetered has to be something somebody wrote down." -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/* --------------------------------------------------------------- 21 */}}
+{{/*
+provider-callback-routable — the one route a payment RAIL calls, and the one
+this chart did not route at all until 2026-09-11.
+
+Three facts, none of which is in the same crate as the others:
+
+  * `vpay-api/src/provider_callback.rs` mounts `PROVIDER_NEST = "/provider"`,
+    and `lib.rs` nests it BESIDE `/v1`, not inside it — deliberately, because
+    the route is unauthenticated and `/v1`'s whole boundary is "everything
+    here carries a bearer token";
+  * `vpay_config::ProviderHost::effective_callback_url` derives the URL each
+    rail is actually handed as `{deployment.public_base_url}/provider/{code}/callback`,
+    unless `providers[].callback_url` overrides it;
+  * this chart's `ingress.api.path` / `route.api.path` are `/v1`.
+
+Nothing compiles those three against each other. Put together they mean a
+deployment that enables this chart's routing and nothing else answers every
+MTN MoMo and Orange Money callback with the CONTROLLER's 404 — vpay never
+receives the request, writes no log line, and settlement degrades silently to
+the poll ladder while every object reports healthy. That is why both provider
+rules default to `true` and why turning one off has to be said out loud.
+
+Three arms:
+
+(a) Routing on, the provider rule off, and nothing saying what serves the
+    callback instead. `servedElsewhere` is one line of free text, the same
+    mechanism as `route.rateLimitedBy` and for the same reason: the chart
+    cannot verify the claim, and what it refuses is silence.
+
+(b) The same, contradicted by the configuration the chart is MOUNTING. When
+    `config.overlay` is present and parses, the chart can read
+    `providers[]` out of it — so an enabled provider with no `callback_url`
+    override, while the provider rule is off, is a sentence that disagrees
+    with a fact in the same values file. The overlay is opaque to the rest of
+    this chart on purpose; it is read HERE because this is the one question
+    where it turns an unverifiable claim into a checkable one. Absent,
+    unparseable or providerless, this arm says nothing and (a) still stands.
+
+(c) The provider rule ON but pointed somewhere the callback is not.
+    `/provider` is a literal owned by `vpay-api`, not by this chart, so the
+    only paths that can route it are `/provider` itself and `/`.
+*/}}
+{{- $routingOn := or .Values.ingress.enabled .Values.route.enabled -}}
+{{- if $routingOn -}}
+{{/*
+The overlay's providers, read once for both mechanisms. `fromYaml` returns an
+empty dict on anything it cannot parse, so every lookup below degrades to
+"the chart could not see" rather than to a template error.
+*/}}
+{{- $overlayProviders := list -}}
+{{- if not (empty (trim (default "" .Values.config.overlay))) -}}
+{{- $parsed := fromYaml .Values.config.overlay -}}
+{{- if kindIs "slice" (dig "providers" (list) $parsed) -}}
+{{- $overlayProviders = dig "providers" (list) $parsed -}}
+{{- end -}}
+{{- end -}}
+{{- $uncovered := list -}}
+{{- range $entry := $overlayProviders -}}
+{{- if and (dig "enabled" true $entry) (empty (dig "callback_url" "" $entry)) -}}
+{{- $uncovered = append $uncovered (dig "code" "<no code>" $entry) -}}
+{{- end -}}
+{{- end -}}
+{{- range $mech := list "ingress" "route" -}}
+{{- $cfg := index $.Values $mech -}}
+{{- if $cfg.enabled -}}
+{{- $rule := $cfg.provider -}}
+{{- if not $rule.enabled -}}
+{{- if empty $rule.servedElsewhere -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.enabled is true but %s.provider.enabled is false, and %s.provider.servedElsewhere is empty. POST /provider/{code}/callback is mounted at the ROOT of vpay's router, not under /v1 (vpay-api's PROVIDER_NEST), and every rail is handed {deployment.public_base_url}/provider/{code}/callback (vpay_config::ProviderHost::effective_callback_url). With %s.provider off and nothing else serving that prefix, MTN MoMo and Orange Money callbacks get the ingress controller's 404: vpay never sees them, logs nothing, and settlement falls back to the poll ladder with every object reporting healthy. Either leave %s.provider.enabled: true, or write one line in %s.provider.servedElsewhere saying what does serve it — an IP-allowlisted host of the rail's own, a separate Ingress you manage, a CDN route. The chart cannot check that sentence; it refuses the silence." $mech $mech $mech $mech $mech $mech) -}}
+{{- end -}}
+{{- if $uncovered -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.provider.servedElsewhere says the rail callback is served elsewhere, but config.overlay — the configuration THIS RELEASE mounts — lists %v as enabled with no providers[].callback_url override. Those rails will be handed {deployment.public_base_url}/provider/<code>/callback, which is the prefix you just turned off. Set providers[].callback_url for each of them in the overlay, or leave %s.provider.enabled: true." $mech $uncovered $mech) -}}
+{{- end -}}
+{{- else -}}
+{{- if not (or (eq $rule.path "/provider") (eq $rule.path "/")) -}}
+{{- fail (printf "vpay chart guard \"provider-callback-routable\": %s.provider.path is %q, which cannot route the rail callback. /provider is a literal owned by vpay-api (PROVIDER_NEST) and derived independently by vpay-config; this chart does not get to rename it. Use /provider, or / if this rule is deliberately a catch-all." $mech $rule.path) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- end -}}

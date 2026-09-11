@@ -18,23 +18,26 @@ Status for what changed and what still has no evidence behind it.
 
 ## What it renders
 
-| Object                | Name                                   | Notes                                                                                     |
-| --------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `Deployment`          | `<release>-server`                     | `server.replicaCount` (2 by default)                                                      |
-| `Deployment`          | `<release>-worker`                     | `worker.replicaCount` (1); `strategy: Recreate`; the server image with `args: ["worker"]` |
-| `Deployment`          | `<release>-checkout`                   | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page             |
-| `Service`             | `<release>`                            | ClusterIP, ports `http` (8080) and `metrics` (9090)                                       |
-| `Service`             | `<release>-worker`                     | Headless, `metrics` only — exists so the worker can be scraped                            |
-| `Service`             | `<release>-checkout`                   | Optional; `http` only — the page emits no metrics                                         |
-| `ServiceAccount`      | `<release>`                            | `automountServiceAccountToken: false`                                                     |
-| `PodDisruptionBudget` | `<release>-server`                     | `minAvailable: 1`; server only                                                            |
-| `ConfigMap`           | `<release>-config-overlay`             | Optional; the profile overlay, mounted with `subPath`                                     |
-| `Ingress`             | `<release>-api`                        | `/v1`, ingress-nginx annotations incl. `limit-rps`                                        |
-| `Ingress`             | `<release>-token`                      | `/v1/oauth/token`, a tighter `limit-rps`                                                  |
-| `Ingress`             | `<release>-checkout`                   | Optional; the payment page, on its own host or a path prefix                              |
-| `NetworkPolicy`       | `<release>-server`, `<release>-worker` | Optional, default-deny both directions                                                    |
-| `ServiceMonitor`      | `<release>-server`, `<release>-worker` | Optional; needs the prometheus-operator CRDs                                              |
-| `PrometheusRule`      | `<release>`                            | Optional; **every threshold is proposed, every metric unemitted**                         |
+| Object                | Name                                   | Notes                                                                                                                               |
+| --------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `Deployment`          | `<release>-server`                     | `server.replicaCount` (2 by default)                                                                                                |
+| `Deployment`          | `<release>-worker`                     | `worker.replicaCount` (1); `strategy: Recreate`; the server image with `args: ["worker"]`                                           |
+| `Deployment`          | `<release>-checkout`                   | Optional (`checkout.enabled`, **false** by default) — vpay's own payment page                                                       |
+| `Service`             | `<release>`                            | ClusterIP, ports `http` (8080) and `metrics` (9090)                                                                                 |
+| `Service`             | `<release>-worker`                     | Headless, `metrics` only — exists so the worker can be scraped                                                                      |
+| `Service`             | `<release>-checkout`                   | Optional; `http` only — the page emits no metrics                                                                                   |
+| `ServiceAccount`      | `<release>`                            | `automountServiceAccountToken: false`                                                                                               |
+| `PodDisruptionBudget` | `<release>-server`                     | `minAvailable: 1`; server only                                                                                                      |
+| `ConfigMap`           | `<release>-config-overlay`             | Optional; the profile overlay, mounted with `subPath`                                                                               |
+| `Ingress`             | `<release>-api`                        | `/v1`, ingress-nginx annotations incl. `limit-rps`                                                                                  |
+| `Ingress`             | `<release>-token`                      | `/v1/oauth/token`, a tighter `limit-rps`                                                                                            |
+| `Ingress`             | `<release>-provider`                   | `/provider`, the rail callback. **On by default** — its own object so it can carry its own `limit-rps` and `whitelist-source-range` |
+| `Ingress`             | `<release>-checkout`                   | Optional; the payment page, on its own host or a path prefix                                                                        |
+| `HTTPRoute`           | `<release>`                            | Optional (`route.enabled`); **one** object, three rules — `/v1`, `/v1/oauth/token` and `/provider`                                  |
+| `HTTPRoute`           | `<release>-checkout`                   | Optional; the payment page, on its own hostname or a rewritten path prefix                                                          |
+| `NetworkPolicy`       | `<release>-server`, `<release>-worker` | Optional, default-deny both directions                                                                                              |
+| `ServiceMonitor`      | `<release>-server`, `<release>-worker` | Optional; needs the prometheus-operator CRDs                                                                                        |
+| `PrometheusRule`      | `<release>`                            | Optional; **every threshold is proposed, every metric unemitted**                                                                   |
 
 It renders **no Secret** and **no database**. See
 [Secrets](#secrets-the-chart-creates-none) and [Postgres](#postgres).
@@ -231,27 +234,30 @@ shutdownGraceSeconds is 25; the kubelet would SIGKILL the process while it is
 still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 ```
 
-| Guard                               | Fires when                                                                                                                             | Why it matters                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `grace-period`                      | `terminationGracePeriodSeconds < shutdownGraceSeconds + 5`                                                                             | The kubelet kills the process mid-drain; every rolling update truncates in-flight work                                                                                                                                                                                                                                                         |
-| `database-secret`                   | either `database.existingSecret` / `.existingSecretKey` is empty                                                                       | `DATABASE_URL` has no other source and the chart creates no Secret                                                                                                                                                                                                                                                                             |
-| `signing-key-secret`                | either `signingKey.existingSecret` / `.key` is empty                                                                                   | `vpay-server` exits 78; a chart-generated key would mint tokens other replicas cannot verify                                                                                                                                                                                                                                                   |
-| `rails-secret`                      | `rails.existingSecret` is empty                                                                                                        | An unresolved `${VAR}` is exit 78 on **both** binaries. The guard checks a Secret is named, never which keys are in it — that list is the image's, not the chart's                                                                                                                                                                             |
-| `image-digest-format`               | a digest is set and is not `sha256:` + 64 hex                                                                                          | A truncated digest fails at image pull, in the cluster, not here                                                                                                                                                                                                                                                                               |
-| `worker-replicas`                   | `worker.replicaCount < 1`                                                                                                              | No job is claimed; intents sit in `processing` while everything reports healthy                                                                                                                                                                                                                                                                |
-| `pdb-minavailable`                  | `podDisruptionBudget.minAvailable >= server.replicaCount`                                                                              | No voluntary eviction is ever allowed, so node drains hang for ever                                                                                                                                                                                                                                                                            |
-| `observability-port`                | `observability.port` equals `server.port` or `service.port`                                                                            | Publishes `/metrics` on the Ingress-facing port                                                                                                                                                                                                                                                                                                |
-| `rate-limit-ordering`               | token `limitRps` > api `limitRps`, or either is ≤ 0                                                                                    | Inverts the whole reason there are two Ingress objects; nginx treats ≤ 0 as no limit at all                                                                                                                                                                                                                                                    |
-| `ingress-host`                      | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret                                                      | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate                                                                                                                                                                                                          |
-| `overlay-empty`                     | overlay ConfigMap requested with empty content, or an empty profile                                                                    | The process treats an empty overlay as success and runs on baked sandbox placeholders                                                                                                                                                                                                                                                          |
-| `dashboard-not-templated`           | `dashboard.enabled: true`                                                                                                              | This chart templates no dashboard workload — see below                                                                                                                                                                                                                                                                                         |
-| `dashboard-public-origin`           | `dashboard.publicOrigin` set to something that is not `scheme://host[:port]` — a bare hostname, a path, a trailing slash               | It is compared against the `Origin` header a browser sends, byte for byte after normalisation; anything else never matches, and every server action on the dashboard is refused                                                                                                                                                                |
-| `checkout-not-templated-by-default` | `checkout.ingress.enabled` with `checkout.enabled: false`                                                                              | An Ingress routing to a Service the chart did not template: a 503 on the payment page, found by a payer                                                                                                                                                                                                                                        |
-| `checkout-templated-when-enabled`   | enabled with no `publicApiUrl`; or an Ingress with neither `host` nor `path`, or with both; or TLS with nothing to populate the Secret | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment                                                                                                                               |
-| `networkpolicy-database`            | NetworkPolicy enabled with no database destination, or with two                                                                        | Locks the server away from its own database, and the symptom blames the database                                                                                                                                                                                                                                                               |
-| `worker-concurrency-pool`           | `worker.concurrency` above 5                                                                                                           | `vpay-server worker` refuses it at boot (exit 78, issue #63): its pool holds 10 connections and one webhook fan-out can hold two. Without the guard the release installs and CrashLoopBackOffs — including on a `helm upgrade` of a working one. The 5 is a literal here; the pool size is a constant in the image, and the chart exposes none |
-| `rails-egress-except`               | `networkPolicy.egress.rails` names a CIDR the `except` list does not fit inside                                                        | _This row and the one below were missing from this table until 2026-09-10; both guards have existed and fired since 2026-09-03_                                                                                                                                                                                                                |
-| `extra-env-collision`               | `server.extraEnv` / `worker.extraEnv` / `checkout.extraEnv` sets a name the chart already sets                                         | Kubernetes keeps the last entry with a given name, so the chart's own value is silently replaced                                                                                                                                                                                                                                               |
+| Guard                               | Fires when                                                                                                                                                                      | Why it matters                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `grace-period`                      | `terminationGracePeriodSeconds < shutdownGraceSeconds + 5`                                                                                                                      | The kubelet kills the process mid-drain; every rolling update truncates in-flight work                                                                                                                                                                                                                                                         |
+| `database-secret`                   | either `database.existingSecret` / `.existingSecretKey` is empty                                                                                                                | `DATABASE_URL` has no other source and the chart creates no Secret                                                                                                                                                                                                                                                                             |
+| `signing-key-secret`                | either `signingKey.existingSecret` / `.key` is empty                                                                                                                            | `vpay-server` exits 78; a chart-generated key would mint tokens other replicas cannot verify                                                                                                                                                                                                                                                   |
+| `rails-secret`                      | `rails.existingSecret` is empty                                                                                                                                                 | An unresolved `${VAR}` is exit 78 on **both** binaries. The guard checks a Secret is named, never which keys are in it — that list is the image's, not the chart's                                                                                                                                                                             |
+| `image-digest-format`               | a digest is set and is not `sha256:` + 64 hex                                                                                                                                   | A truncated digest fails at image pull, in the cluster, not here                                                                                                                                                                                                                                                                               |
+| `worker-replicas`                   | `worker.replicaCount < 1`                                                                                                                                                       | No job is claimed; intents sit in `processing` while everything reports healthy                                                                                                                                                                                                                                                                |
+| `pdb-minavailable`                  | `podDisruptionBudget.minAvailable >= server.replicaCount`                                                                                                                       | No voluntary eviction is ever allowed, so node drains hang for ever                                                                                                                                                                                                                                                                            |
+| `observability-port`                | `observability.port` equals `server.port` or `service.port`                                                                                                                     | Publishes `/metrics` on the Ingress-facing port                                                                                                                                                                                                                                                                                                |
+| `rate-limit-ordering`               | token or provider `limitRps` > api `limitRps`, or any is ≤ 0                                                                                                                    | Inverts the whole reason there are separate Ingress objects; nginx treats ≤ 0 as no limit at all. `/provider` joined it 2026-09-11 — it is the **unauthenticated** surface and the one with no in-process limit                                                                                                                                |
+| `ingress-host`                      | ingress enabled with an empty host, or TLS enabled with neither issuer nor secret                                                                                               | A host-less rule answers for other applications' hostnames; a TLS block nothing populates serves the controller's default certificate                                                                                                                                                                                                          |
+| `route-attachment`                  | route enabled with no `parentRefs`, a `parentRef` with no `name`, or no hostname after the `ingress.host` fallback                                                              | An HTTPRoute with no parent is accepted, listed by `kubectl`, and routes nothing; a hostname-less one answers for other applications' hostnames                                                                                                                                                                                                |
+| `route-rate-limit`                  | route enabled, no `ExtensionRef` filter on the token rule, and no `route.rateLimitedBy`                                                                                         | Gateway API has no portable rate limit, so ADR-0009's assumption would be dropped in silence — see [Gateway API](#gateway-api)                                                                                                                                                                                                                 |
+| `provider-callback-routable`        | routing enabled with the `/provider` rule off and no `servedElsewhere`; that sentence contradicted by `config.overlay`; or the rule pointed anywhere but `/provider` or `/`     | Every MTN MoMo and Orange Money callback gets the controller's 404 — vpay never receives it, logs nothing, and settlement silently degrades to the poll ladder — see [The rail callback](#the-rail-callback)                                                                                                                                   |
+| `overlay-empty`                     | overlay ConfigMap requested with empty content, or an empty profile                                                                                                             | The process treats an empty overlay as success and runs on baked sandbox placeholders                                                                                                                                                                                                                                                          |
+| `dashboard-not-templated`           | `dashboard.enabled: true`                                                                                                                                                       | This chart templates no dashboard workload — see below                                                                                                                                                                                                                                                                                         |
+| `dashboard-public-origin`           | `dashboard.publicOrigin` set to something that is not `scheme://host[:port]` — a bare hostname, a path, a trailing slash                                                        | It is compared against the `Origin` header a browser sends, byte for byte after normalisation; anything else never matches, and every server action on the dashboard is refused                                                                                                                                                                |
+| `checkout-not-templated-by-default` | `checkout.ingress.enabled` or `checkout.route.enabled` with `checkout.enabled: false`                                                                                           | Routing to a Service the chart did not template: a 503 on the payment page, found by a payer                                                                                                                                                                                                                                                   |
+| `checkout-templated-when-enabled`   | enabled with no `publicApiUrl`; or an Ingress/HTTPRoute with neither host nor `path`, or with both; or TLS with nothing to populate the Secret; or a route with no `parentRefs` | The app throws on a missing `NEXT_PUBLIC_VPAY_API_URL`, so the pod starts and never passes readiness; a host-less rule answers for other applications; a payer's session credential rides in that URL's fragment                                                                                                                               |
+| `networkpolicy-database`            | NetworkPolicy enabled with no database destination, or with two                                                                                                                 | Locks the server away from its own database, and the symptom blames the database                                                                                                                                                                                                                                                               |
+| `worker-concurrency-pool`           | `worker.concurrency` above 5                                                                                                                                                    | `vpay-server worker` refuses it at boot (exit 78, issue #63): its pool holds 10 connections and one webhook fan-out can hold two. Without the guard the release installs and CrashLoopBackOffs — including on a `helm upgrade` of a working one. The 5 is a literal here; the pool size is a constant in the image, and the chart exposes none |
+| `rails-egress-except`               | `networkPolicy.egress.rails` names a CIDR the `except` list does not fit inside                                                                                                 | _This row and the one below were missing from this table until 2026-09-10; both guards have existed and fired since 2026-09-03_                                                                                                                                                                                                                |
+| `extra-env-collision`               | `server.extraEnv` / `worker.extraEnv` / `checkout.extraEnv` sets a name the chart already sets                                                                                  | Kubernetes keeps the last entry with a given name, so the chart's own value is silently replaced                                                                                                                                                                                                                                               |
 
 `deploy/helm/vpay/ci/guards/<guard>.yaml` is one values file per guard, each
 violating exactly that guard. `just helm-check` renders each and fails unless
@@ -419,34 +425,52 @@ no HPA either — nothing has measured what would drive one.
 
 ### Network
 
-| Key                                                 | Default                     | Meaning                                                       |
-| --------------------------------------------------- | --------------------------- | ------------------------------------------------------------- |
-| `service.type`                                      | `ClusterIP`                 |                                                               |
-| `service.port`                                      | `8080`                      |                                                               |
-| `service.annotations`                               | `{}`                        |                                                               |
-| `ingress.enabled`                                   | `false`                     |                                                               |
-| `ingress.className`                                 | `nginx`                     | Step-6 decision (4)                                           |
-| `ingress.host`                                      | `""`                        | Required when enabled                                         |
-| `ingress.annotations`                               | `{}`                        | Merged onto both Ingress objects                              |
-| `ingress.tls.enabled`                               | `true`                      |                                                               |
-| `ingress.tls.clusterIssuer`                         | `letsencrypt-prod`          | cert-manager annotation                                       |
-| `ingress.tls.secretName`                            | `""`                        | Empty means `<fullname>-tls`                                  |
-| `ingress.api.path` / `.pathType`                    | `/v1` / `Prefix`            |                                                               |
-| `ingress.api.limitRps` / `.limitBurstMultiplier`    | `20` / `3`                  |                                                               |
-| `ingress.token.path` / `.pathType`                  | `/v1/oauth/token` / `Exact` |                                                               |
-| `ingress.token.limitRps` / `.limitBurstMultiplier`  | `5` / `2`                   | Must be ≤ the api limit                                       |
-| `networkPolicy.enabled`                             | `false`                     | Off until you say where Postgres is                           |
-| `networkPolicy.ingressControllerNamespace`          | `ingress-nginx`             |                                                               |
-| `networkPolicy.monitoringNamespace`                 | `monitoring`                | The only source allowed to reach 9090                         |
-| `networkPolicy.dnsNamespace`                        | `kube-system`               |                                                               |
-| `networkPolicy.database.cidrs`                      | `[]`                        | A managed instance's address                                  |
-| `networkPolicy.database.namespace` / `.podSelector` | `""` / `{}`                 | An in-cluster one                                             |
-| `networkPolicy.database.port`                       | `5432`                      |                                                               |
-| `networkPolicy.railsEgress.enabled`                 | `true`                      | Outbound HTTPS to the rails                                   |
-| `networkPolicy.railsEgress.port`                    | `443`                       |                                                               |
-| `networkPolicy.railsEgress.except`                  | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint |
-| `podDisruptionBudget.enabled`                       | `true`                      | Server only                                                   |
-| `podDisruptionBudget.minAvailable`                  | `1`                         | Integer, never a percentage                                   |
+| Key                                                   | Default                     | Meaning                                                                                                            |
+| ----------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `service.type`                                        | `ClusterIP`                 |                                                                                                                    |
+| `service.port`                                        | `8080`                      |                                                                                                                    |
+| `service.annotations`                                 | `{}`                        |                                                                                                                    |
+| `ingress.enabled`                                     | `false`                     |                                                                                                                    |
+| `ingress.className`                                   | `nginx`                     | Step-6 decision (4)                                                                                                |
+| `ingress.host`                                        | `""`                        | Required when enabled                                                                                              |
+| `ingress.annotations`                                 | `{}`                        | Merged onto both Ingress objects                                                                                   |
+| `ingress.tls.enabled`                                 | `true`                      |                                                                                                                    |
+| `ingress.tls.clusterIssuer`                           | `letsencrypt-prod`          | cert-manager annotation                                                                                            |
+| `ingress.tls.secretName`                              | `""`                        | Empty means `<fullname>-tls`                                                                                       |
+| `ingress.api.path` / `.pathType`                      | `/v1` / `Prefix`            |                                                                                                                    |
+| `ingress.api.limitRps` / `.limitBurstMultiplier`      | `20` / `3`                  |                                                                                                                    |
+| `ingress.token.path` / `.pathType`                    | `/v1/oauth/token` / `Exact` |                                                                                                                    |
+| `ingress.token.limitRps` / `.limitBurstMultiplier`    | `5` / `2`                   | Must be ≤ the api limit                                                                                            |
+| `ingress.provider.enabled`                            | `true`                      | The rail callback's own Ingress. **On by default** — see below                                                     |
+| `ingress.provider.path` / `.pathType`                 | `/provider` / `Prefix`      | `/provider` is a literal owned by `vpay-api`; the guard refuses anything but it or `/`                             |
+| `ingress.provider.limitRps` / `.limitBurstMultiplier` | `10` / `5`                  | Must be ≤ the api limit. Tighter on purpose: unauthenticated, and unlimited inside the process                     |
+| `ingress.provider.sourceRange`                        | `""`                        | `whitelist-source-range`, rendered only when set                                                                   |
+| `ingress.provider.servedElsewhere`                    | `""`                        | Required to set `enabled: false`                                                                                   |
+| `route.enabled`                                       | `false`                     | Gateway API instead of Ingress. Renders nothing without the Gateway API CRDs                                       |
+| `route.parentRefs`                                    | `[]`                        | Verbatim `ParentReference` list. Required when enabled — there is no `className` equivalent                        |
+| `route.hostnames`                                     | `[]`                        | Empty falls back to `[ingress.host]`                                                                               |
+| `route.annotations` / `.labels`                       | `{}`                        | Merged onto the rendered HTTPRoute                                                                                 |
+| `route.rateLimitedBy`                                 | `""`                        | Required unless the token rule carries an `ExtensionRef` filter. Rendered as the `vpay/rate-limited-by` annotation |
+| `route.api.path` / `.pathType`                        | `/v1` / `PathPrefix`        | `PathPrefix`, not the Ingress spelling `Prefix`                                                                    |
+| `route.api.filters`                                   | `[]`                        | Verbatim `HTTPRouteFilter` list                                                                                    |
+| `route.token.path` / `.pathType`                      | `/v1/oauth/token` / `Exact` |                                                                                                                    |
+| `route.token.filters`                                 | `[]`                        | Where the rate-limit `ExtensionRef` goes                                                                           |
+| `route.provider.enabled`                              | `true`                      | The rail callback, as a third rule on the same HTTPRoute                                                           |
+| `route.provider.path` / `.pathType`                   | `/provider` / `PathPrefix`  |                                                                                                                    |
+| `route.provider.filters`                              | `[]`                        | Where a rate limit or source-IP `ExtensionRef` goes                                                                |
+| `route.provider.servedElsewhere`                      | `""`                        | Required to set `enabled: false`                                                                                   |
+| `networkPolicy.enabled`                               | `false`                     | Off until you say where Postgres is                                                                                |
+| `networkPolicy.ingressControllerNamespace`            | `ingress-nginx`             |                                                                                                                    |
+| `networkPolicy.monitoringNamespace`                   | `monitoring`                | The only source allowed to reach 9090                                                                              |
+| `networkPolicy.dnsNamespace`                          | `kube-system`               |                                                                                                                    |
+| `networkPolicy.database.cidrs`                        | `[]`                        | A managed instance's address                                                                                       |
+| `networkPolicy.database.namespace` / `.podSelector`   | `""` / `{}`                 | An in-cluster one                                                                                                  |
+| `networkPolicy.database.port`                         | `5432`                      |                                                                                                                    |
+| `networkPolicy.railsEgress.enabled`                   | `true`                      | Outbound HTTPS to the rails                                                                                        |
+| `networkPolicy.railsEgress.port`                      | `443`                       |                                                                                                                    |
+| `networkPolicy.railsEgress.except`                    | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint                                                      |
+| `podDisruptionBudget.enabled`                         | `true`                      | Server only                                                                                                        |
+| `podDisruptionBudget.minAvailable`                    | `1`                         | Integer, never a percentage                                                                                        |
 
 ### Misc
 
@@ -470,6 +494,12 @@ no HPA either — nothing has measured what would drive one.
 | `checkout.ingress.host`           | `""`                                    | Its own hostname — prefer this shape                                                                                                                                      |
 | `checkout.ingress.path`           | `""`                                    | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape**                                                                        |
 | `checkout.ingress.limitRps`       | `50`                                    | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface                                                                                          |
+| `checkout.route.enabled`          | `false`                                 | The page's HTTPRoute                                                                                                                                                      |
+| `checkout.route.parentRefs`       | `[]`                                    | Empty means `route.parentRefs`                                                                                                                                            |
+| `checkout.route.hostnames`        | `[]`                                    | Its own hostname — prefer this shape                                                                                                                                      |
+| `checkout.route.path`             | `""`                                    | A prefix on `route.hostnames`; the chart renders the `URLRewrite` that strips it. **Nobody has run this shape**                                                           |
+| `checkout.route.pathType`         | `PathPrefix`                            |                                                                                                                                                                           |
+| `checkout.route.filters`          | `[]`                                    | Appended after the `URLRewrite`, never before it                                                                                                                          |
 | `checkout.extraEnv`               | `[]`                                    | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`)                                                                    |
 
 ## Why two Ingress objects
@@ -486,7 +516,159 @@ limit is roughly `limitRps × controller replicas`. That is an approximation,
 and naming it is the point — ADR-0009 assumes a rate limit exists, and until
 now nothing in this repository checked that one was configured at all. An exact
 global limit needs Gateway API's `BackendTrafficPolicy` and a rate-limit
-service, i.e. a second component to operate.
+service, i.e. a second component to operate — and the chart can now render the
+Gateway API routing that policy would attach to, though not the policy itself.
+See [Gateway API](#gateway-api).
+
+## The rail callback
+
+**`POST /provider/{code}/callback` is not under `/v1`, and until 2026-09-11 no
+shape of this chart routed it.** That is a defect in the Ingress path this
+chart has shipped since 2026-09-03, not something the Gateway API work
+introduced; it is fixed on both mechanisms here because fixing one and not the
+other would have left the new path carrying a bug it could have been born
+without.
+
+Three facts, none of which lives in the same crate as the others:
+
+|                                                                                        | Where                                                                                               |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| The route is mounted at the **root**, beside `/v1` and not inside it                   | `vpay-api/src/provider_callback.rs` — `PROVIDER_NEST = "/provider"`, nested in `lib.rs`'s router    |
+| The URL each rail is handed is `{deployment.public_base_url}/provider/{code}/callback` | `vpay_config::ProviderHost::effective_callback_url`, unless `providers[].callback_url` overrides it |
+| This chart's `ingress.api.path` / `route.api.path` are `/v1`                           | `values.yaml`                                                                                       |
+
+Nothing compiles those against each other. Together they mean a deployment
+that enabled this chart's routing and nothing else answered **every MTN MoMo
+and Orange Money callback with the ingress controller's 404** — vpay never
+received the request, wrote no log line, and settlement degraded to the poll
+ladder while every object reported healthy. `docs/reference/rails.md` already
+records that the callback **path** is the half that drifts silently, "because
+the route lives in `vpay-api` and the derivation in `vpay-config`, and neither
+crate compiles against the other".
+
+So `ingress.provider` and `route.provider` are **on by default**: a rail
+callback is not optional for any deployment that takes money. On the Ingress
+side it is a **fourth object**, not a third path on the API's, for the same
+reason the token endpoint is a second — ingress-nginx applies both `limit-rps`
+and `whitelist-source-range` per Ingress object, and this surface wants its own
+value for each. On the Gateway API side it is a third **rule**, because filters
+there are per-rule.
+
+**Its rate limit is tighter than `/v1`'s (10 vs 20), and the
+`rate-limit-ordering` guard keeps it no looser.** `/provider` takes no bearer
+token and `/v1` does; more to the point, `provider_callback.rs`'s own header
+says of the route that "nothing else here is a rate limit: **there is none**".
+A caller who knows a live charge's v4 `provider_reference_id` can hold that
+charge at roughly one authenticated rail request per worker claim, because the
+pull-forward floor is ten seconds while the poll ladder's rungs grow. The edge
+limit is the only one that exists for this surface, which is not true of `/v1`.
+The number itself is proposed, like every number in this chart. The body cap is
+`16k`, matching the handler's own `CALLBACK_BODY_LIMIT_BYTES` rather than
+`/v1`'s 64k.
+
+**Turning it off is defensible and has to be said out loud.** MTN additionally
+allows an IP-allowlisted callback host of its own
+(`docs/reference/rails.md`), reached through `providers[].callback_url`, so an
+operator may legitimately terminate callbacks somewhere this chart does not
+render. The `provider-callback-routable` guard therefore makes it **opt-out,
+not opt-in**: `enabled: false` needs one line in `servedElsewhere` naming what
+serves the prefix instead — the same mechanism, and the same reasoning, as
+`route.rateLimitedBy`.
+
+That guard has one arm the others do not, and it is the only place in this
+chart that reads `config.overlay` as anything but an opaque string: when the
+overlay is present and parses, it lists `providers[]`, so a `servedElsewhere`
+sentence while an **enabled** provider carries no `callback_url` override is a
+claim contradicted by the configuration this same release mounts. Absent,
+unparseable, or listing no providers, that arm says nothing and the
+requirement for a sentence still stands. A third arm refuses a `path` that is
+neither `/provider` nor `/`: the literal belongs to `vpay-api`, and this chart
+does not get to rename it.
+
+## Gateway API
+
+`route.enabled: true` renders `HTTPRoute`s instead of `Ingress`es, for a
+cluster that runs a Gateway (Traefik, Envoy Gateway, Istio, Cilium) rather than
+ingress-nginx. It was added 2026-09-11 because until then this chart could
+express routing in exactly one way: a Gateway API cluster had to hand-write its
+own HTTPRoutes outside the chart and keep their paths in step with
+`ingress.api.path` / `ingress.token.path` by hand — a duplicated list of things
+that move together, which is the defect this repository's own conventions name.
+
+It is an **alternative** to `ingress:`, not a migration of it. Enabling one does
+not disable the other; a cluster that turns on both gets two controllers
+answering for the same hostname, and that is an operator's decision rather than
+the chart's. Both templates are guarded by
+`.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1"`, so a cluster
+without the Gateway API CRDs renders nothing rather than failing at install.
+
+```yaml
+ingress:
+  enabled: false
+route:
+  enabled: true
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+      sectionName: websecure
+  hostnames: [api.vpay.example]
+  token:
+    filters:
+      - type: ExtensionRef
+        extensionRef: { group: traefik.io, kind: Middleware, name: vpay-token-ratelimit }
+```
+
+**One HTTPRoute, two rules — where the Ingress path needs two objects.** The
+split exists because ingress-nginx applies `limit-rps` per Ingress _object_.
+Gateway API attaches filters per _rule_, so one object carries both, and
+precedence between them is the specification's rather than a controller's: an
+`Exact` match is ordered ahead of a `PathPrefix` one, so `/v1/oauth/token` takes
+the token rule and the rest of `/v1` takes the api rule. The
+`rate-limit-ordering` guard has no counterpart here — there are no two numbers
+to invert.
+
+**Four things the Ingress path does that this one does not**, because Gateway
+API has no portable spelling for any of them:
+
+|                  | Ingress                                                  | Gateway API                                                                                                                                                                          |
+| ---------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| rate limit       | `nginx.ingress.kubernetes.io/limit-rps`                  | nothing portable — see below                                                                                                                                                         |
+| request body cap | `proxy-body-size: 64k`                                   | a listener/implementation setting on the Gateway                                                                                                                                     |
+| HTTP → HTTPS     | `ssl-redirect`                                           | a second HTTPRoute on the `:80` listener with a `RequestRedirect` filter — **not rendered**, because the chart would have to guess the listener and a wrong guess is a redirect loop |
+| TLS              | the Ingress names its Secret and its cert-manager issuer | the **listener's** `certificateRefs`. `ingress.tls` has no equivalent here and is not consulted                                                                                      |
+
+**The rate limit is the one the chart refuses to drop in silence.** ADR-0009
+assumes a limit in front of `/v1/oauth/token`. Gateway API has no core filter
+and no standard-channel policy for one: every implementation does it with its
+own object, reached through an `ExtensionRef` filter (Traefik: a `traefik.io`
+`Middleware`; Envoy Gateway: a `BackendTrafficPolicy`). A chart that guessed at
+one would be wrong on every other controller, and a chart that quietly emitted
+none would drop the assumption with no symptom but an unmetered token endpoint.
+
+So the `route-rate-limit` guard insists on one of two things, and fails the
+render without either:
+
+1. **an `ExtensionRef` filter on `route.token.filters`** — your controller's own
+   rate-limit object, whatever it is. Preferred.
+2. **`route.rateLimitedBy`**, one line naming what enforces it somewhere this
+   chart cannot see (a CDN, a WAF, a policy attached to the Gateway listener).
+   It is rendered onto the HTTPRoute as the `vpay/rate-limited-by` annotation,
+   so the claim lives in the cluster and `just helm-check` can grep for it the
+   same way it greps the Ingress for `limit-rps`.
+
+Free text, deliberately, and not a boolean: a boolean is a box to tick, and
+"ADR-0009's assumption still holds" should not be assertable by typing `true`.
+The chart cannot check that either spelling is _true_. What it refuses is
+silence.
+
+**The checkout page's path-prefix shape is the one place Gateway API is
+strictly better here.** The app is not `basePath`-aware, so a prefix has to be
+rewritten away; the Ingress shape leaves that to a controller-specific
+`rewrite-target` annotation the operator supplies, while `checkout.route.path`
+renders a `URLRewrite` filter with `ReplacePrefixMatch: /`, which is in the
+specification. It is still _extended_ support rather than core — an
+implementation may decline it — and, like the Ingress shape it improves on,
+**nobody has run it**.
 
 ## Verifying the chart
 
@@ -496,13 +678,22 @@ just helm-check
 
 which is exactly what CI's `deploy` job runs. It:
 
-1. `helm lint`s the chart with the defaults and with `ci/values-full.yaml`;
-2. `helm template`s both;
+1. `helm lint`s the chart with the defaults, with `ci/values-full.yaml` and
+   with `ci/values-route.yaml`;
+2. `helm template`s all three — the route one needs `--api-versions`, see (5);
 3. renders every file under `ci/guards/`, requiring each to **fail** with its
    own guard name in the message;
 4. greps the rendered Ingress for `nginx.ingress.kubernetes.io/limit-rps` and
-   checks the token limit is the tighter of the two;
-5. runs `kubeconform -strict -summary` over both renders, with
+   checks the token limit is the tighter of the two, then renders the rail
+   callback's own Ingress and checks it carries a `/provider` path and a
+   `limit-rps` no looser than `/v1`'s;
+5. renders `ci/values-route.yaml` with
+   `--api-versions gateway.networking.k8s.io/v1` and checks the rendered
+   HTTPRoute either carries an `ExtensionRef` filter on the token rule or
+   declares `vpay/rate-limited-by` and carries a `/provider` rule, then renders
+   the same file **without** the flag and checks no `HTTPRoute` appears at all
+   — the `.Capabilities` gate, asserted rather than assumed;
+6. runs `kubeconform -strict -summary` over all three renders, with
    `-schema-location default` for built-in kinds and the
    [datreeio/CRDs-catalog](https://github.com/datreeio/CRDs-catalog) location
    for `ServiceMonitor` and `PrometheusRule`.
@@ -522,12 +713,14 @@ Written 2026-09-03, step 6 block B.
 - `helm lint` passes on the defaults and on `ci/values-full.yaml`.
 - `helm template` renders 6 objects with the defaults and 14 with
   `ci/values-full.yaml`.
-- All **19** guards fire on their own values file, each with its own name in
-  the message, and `just helm-check` also checks that the nineteen names it
-  expects are exactly the nineteen files on disk — so deleting a guard _and_
+- All **22** guards fire on their own values file, each with its own name in
+  the message, and `just helm-check` also checks that the twenty-two names it
+  expects are exactly the twenty-two files on disk — so deleting a guard _and_
   its values file fails rather than passing quietly. (**This said "15" until
   2026-09-10** and had been wrong since the sixteenth landed; `worker-concurrency-pool`
-  makes it nineteen. Measured: `19 guards, all fired by name (19 expected)`.) Proven negatively too, which is the
+  made it nineteen, `route-attachment` + `route-rate-limit` made it twenty-one,
+  and `provider-callback-routable` makes it twenty-two. Measured:
+  `22 guards, all fired by name (22 expected)`.) Proven negatively too, which is the
   only thing that says these are checks rather than decoration: disabling the
   `grace-period` and `rate-limit-ordering` guards makes `just helm-check`
   fail, and so — verified in the Step 6 review pass, by neutering each `fail`
@@ -539,6 +732,48 @@ Written 2026-09-03, step 6 block B.
   17 built-in and 3 Prometheus CRDs — with 0 invalid and 0 skipped.
 - Removing the `limit-rps` annotation from the Ingress template makes
   `just helm-check` fail.
+
+**Added 2026-09-11, the Gateway API path** (`route:` and `checkout.route:`):
+
+- `helm lint` passes on `ci/values-route.yaml` too, and `just helm-check` now
+  lints and renders three value sets rather than two.
+- The two new guards, `route-attachment` and `route-rate-limit`, fire on their
+  own values files by name, and — with `provider-callback-routable`, below —
+  the expected set in `just helm-check` is twenty-two rather than nineteen.
+- Proven negatively, the same way the earlier guards were: neutering the
+  `route-rate-limit` `fail` in `templates/_validate.tpl` makes `just
+helm-check` report that the guard "did not fire" and name it. See the
+  "httproute rate limit" step for the other half — it asserts the _rendered_
+  YAML carries either the `ExtensionRef` filter or the annotation, so a
+  template that stopped emitting one would fail even with the guard intact.
+- `kubeconform -strict` validates the rendered `HTTPRoute`s against the
+  upstream `gateway.networking.k8s.io/v1` schema from the CRDs catalog —
+  35 resources across the three renders, 0 invalid, **0 skipped** (a skipped
+  one would mean the schema was never found and nothing was checked).
+- The `.Capabilities.APIVersions.Has` gate is asserted, not assumed: the same
+  values file rendered without `--api-versions gateway.networking.k8s.io/v1`
+  produces no `HTTPRoute` and no error.
+- **The Ingress path gains exactly one object and changes nothing else.** It is
+  NOT byte-identical, and an earlier draft of this section claimed it was —
+  that claim was true of the Gateway API work alone and stopped being true when
+  the rail callback fix landed in the same change. Measured against the parent
+  commit (`6b1b7d8`), rendered from a throwaway worktree:
+  - `helm template` with the **defaults** (`ingress.enabled: false`) is
+    byte-identical — the new object is behind the same switch as the old ones.
+  - `helm template --set ingress.enabled=true --set ingress.host=…` differs by
+    **one added document and nothing else**: the `<release>-provider` Ingress.
+    Stripping that document from the new render makes the two files `diff`
+    clean, so `<release>-api` and `<release>-token` are byte-for-byte what they
+    were.
+  - `ci/values-full.yaml` differs the same way: one added `Ingress`,
+    `vpay-provider`, and no other line.
+
+  **A `helm upgrade` of an existing release therefore creates one new Ingress
+  object it did not have.** That is the fix, not a side effect — before it, the
+  release was dropping every rail callback — but it is a change to a shipped
+  path and an operator who has a hand-written `/provider` Ingress of their own
+  should set `ingress.provider.enabled: false` with a `servedElsewhere`
+  sentence before upgrading, or the two objects will both claim the prefix.
 
 ### What has NOT been verified — most of it
 
@@ -586,6 +821,22 @@ Written 2026-09-03, step 6 block B.
 - **Nothing has verified that ingress-nginx honours `limit-rps` at all.** CI
   checks that the annotation is _present in the rendered YAML_. That is the
   whole claim.
+- No Gateway has ever accepted one of these HTTPRoutes.** Not a Traefik one,
+  not an Envoy Gateway one, not any. Nothing has checked that a `parentRef`
+  resolves, that a Gateway's `allowedRoutes` admits a route from this
+  namespace, that the `Exact`-before-`PathPrefix` precedence the two rules rely
+  on behaves as specified in a real implementation, or that the `URLRewrite`
+  filter on the checkout page's path shape is supported by anything. The claim
+  is the same one the Ingress path makes: it renders, and it validates against
+  the published schema.
+- `route.rateLimitedBy` is an assertion by a human, checked by nobody.** The
+  `route-rate-limit` guard refuses an empty one; it cannot tell a true sentence
+  from a false one, and neither can CI. The `ExtensionRef` spelling is no
+  better off — the chart renders the reference and never looks for the object
+  it names, so a typo'd `Middleware` name is an unmetered token endpoint that
+  renders, validates and reports healthy.
+- The resource requests and limits are placeholders. No profiling exists.
+- The images the chart references have never been pulled from GHCR by this
 - The resource requests and limits are placeholders. No profiling exists.
 - The images the chart references have never been pulled from GHCR by this
   chart; ~~publishing them is block A.~~ **Updated 2026-09-05: publishing has
@@ -602,5 +853,10 @@ Written 2026-09-03, step 6 block B.
 - `helm unittest` for the object shapes, rather than kubeconform alone.
 - A dashboard workload, once someone has run that image with a non-root UID.
 - A cluster run of the checkout page's path-prefix Ingress shape, which is
-  templated and unexercised.
+  templated and unexercised. Its Gateway API twin — `checkout.route.path` and
+  the `URLRewrite` filter — is in exactly the same position.
+- A cluster run of the Gateway API path at all, on any implementation, and a
+  rendered example of the rate-limit object `route.token.filters` is meant to
+  reference. The chart names `traefik.io`/`Middleware` in a comment and
+  templates nothing; whether it should is an open question, not an omission.
 - An HPA, once anything has measured what would drive it.

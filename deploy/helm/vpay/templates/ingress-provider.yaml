@@ -1,0 +1,74 @@
+{{- include "vpay.validate" . -}}
+{{- if and .Values.ingress.enabled .Values.ingress.provider.enabled }}
+{{- $fullName := include "vpay.fullname" . -}}
+{{- $tlsSecret := default (printf "%s-tls" $fullName) .Values.ingress.tls.secretName -}}
+# The rail callback's own Ingress — a FOURTH object, and the one this chart
+# went without until 2026-09-11.
+#
+# `POST /provider/{code}/callback` is mounted at the ROOT of vpay's router
+# (`vpay-api/src/provider_callback.rs`: `PROVIDER_NEST = "/provider"`, nested
+# in `lib.rs` beside `/v1` rather than inside it), and the URL each rail is
+# given is derived in a different crate —
+# `vpay_config::ProviderHost::effective_callback_url` is
+# `{deployment.public_base_url}/provider/{code}/callback`. Neither crate
+# compiles against the other, so nothing but this object and the
+# "provider-callback-routable" guard joins the two halves. Without it an
+# Ingress serving `/v1` answers every MTN MoMo and Orange Money callback with
+# the CONTROLLER's 404: vpay never receives the request, logs nothing, and
+# settlement quietly degrades to the poll ladder.
+#
+# A separate object rather than a third path on `ingress.yaml`'s, for the same
+# reason the token endpoint is a second: ingress-nginx applies `limit-rps`
+# AND `whitelist-source-range` per Ingress object, and this surface wants its
+# own value for both.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-provider
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: {{ .Values.ingress.provider.limitRps | quote }}
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: {{ .Values.ingress.provider.limitBurstMultiplier | quote }}
+    # 16k, matching `provider_callback.rs`'s own
+    # `CALLBACK_BODY_LIMIT_BYTES = 16 * 1024` rather than `/v1`'s 64k. The
+    # handler refuses anything larger; there is no reason for the controller
+    # to have buffered it first.
+    nginx.ingress.kubernetes.io/proxy-body-size: 16k
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingress.tls.enabled | quote }}
+    {{- with .Values.ingress.provider.sourceRange }}
+    # Rendered only when set. MTN additionally allows an IP-allowlisted
+    # callback host of its own (`docs/reference/rails.md`); an operator who
+    # has the rail's egress ranges can pin them here without also
+    # allowlisting `/v1`, which is what the separate object buys.
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ $tlsSecret | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.provider.path }}
+            pathType: {{ .Values.ingress.provider.pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  name: http
+{{- end }}

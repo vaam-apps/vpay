@@ -1,0 +1,12 @@
+# route.enabled with no Gateway to attach to, and no hostname either:
+# ingress.host is empty (ingress is off), so route.hostnames has nothing to
+# fall back to. Well-typed, and the rendered HTTPRoute would route nothing
+# while looking exactly like one that does.
+#
+# rateLimitedBy is set so this file violates the "route-attachment" guard
+# alone, and not "route-rate-limit" as well.
+route:
+  enabled: true
+  parentRefs: []
+  hostnames: []
+  rateLimitedBy: "nothing — this file exists to fail the attachment guard"

@@ -1,0 +1,61 @@
+# The Gateway API half of "everything this chart can render", rendered on its
+# own rather than folded into `values-full.yaml`.
+#
+# Separate for a mechanical reason, not a stylistic one: `httproute.yaml` and
+# `httproute-checkout.yaml` are guarded by
+# `.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1"`, so they
+# render NOTHING under a plain `helm template`. Producing them needs
+# `--api-versions gateway.networking.k8s.io/v1`, and passing that to the
+# `values-full.yaml` render would change what that file proves. `just
+# helm-check` renders this one with the flag and hands the result to
+# kubeconform alongside the other two.
+#
+# `ingress.enabled` stays false here, deliberately: this is the shape a
+# Gateway API cluster actually deploys — one routing mechanism, not both.
+# Rendering both at once is a third render in `just helm-check`, which is
+# where that combination is checked.
+images:
+  server:
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  checkout:
+    digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+config:
+  profile: production
+  createOverlayConfigMap: true
+  overlay: |
+    deployment:
+      name: vpay
+      livemode: true
+      public_base_url: https://api.vpay.example
+
+route:
+  enabled: true
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+      sectionName: websecure
+  hostnames:
+    - api.vpay.example
+  # Spelling 1 of the "route-rate-limit" guard, which is the one to prefer:
+  # the controller's own rate-limit object, reached by the one escape hatch
+  # Gateway API standardises. Traefik's is a `Middleware`; the object itself
+  # is not this chart's to render, and this reference points at nothing.
+  token:
+    filters:
+      - type: ExtensionRef
+        extensionRef:
+          group: traefik.io
+          kind: Middleware
+          name: vpay-token-ratelimit
+
+# The payment page on its own hostname — the shape to prefer, as on the
+# Ingress side. The path-prefix shape renders a URLRewrite filter and is
+# deliberately NOT exercised here: nobody has run it either.
+checkout:
+  enabled: true
+  publicApiUrl: https://api.vpay.example
+  route:
+    enabled: true
+    hostnames:
+      - checkout.vpay.example

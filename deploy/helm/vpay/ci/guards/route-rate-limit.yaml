@@ -1,0 +1,20 @@
+# A fully attached, correctly hostnamed Gateway API route that silently drops
+# ADR-0009's assumption: nothing rate-limits /v1/oauth/token. No ExtensionRef
+# filter on the token rule, no `rateLimitedBy` sentence saying what else does.
+#
+# This is the combination the Ingress path cannot produce — there, the
+# annotation is always rendered — and the one this chart refuses to render
+# without a decision behind it.
+route:
+  enabled: true
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+      sectionName: websecure
+  hostnames:
+    - api.vpay.example
+  rateLimitedBy: ""
+  token:
+    path: /v1/oauth/token
+    pathType: Exact
+    filters: []
