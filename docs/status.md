@@ -231,6 +231,35 @@ test, with `a_dated_gap_is_how_the_sdk_that_lacks_the_method_answers` and
 `a_behaviour_row_is_untouched_by_the_per_column_rule` for the two shapes that
 must keep passing.
 
+**#122 — `verify-sdk-parity` proves a name exists, not that the SDK sends the
+field — attempted 2026-09-11, reverted the same day, still open.**
+`claude/b1b-test-integrity`'s draft added a sixth check: for a row whose
+capability text contains "body", "path" or "exact", the named test's own
+_source lines_ (not its assertions' targets) must contain the substring
+`.body` or `.path`. Reviewed against the issue's own decisive check —
+delete `latitude_microdeg` from the Node SDK's `addressBody`, run
+`cargo xtask verify-sdk-parity`, the mutation must be caught — it is not:
+`verify-sdk-parity`'s output is **byte-for-byte identical with and without
+the mutation** (`diff` of the two runs is empty), because the check reads the
+_test's_ text and the mutation only changes the _SDK's_. Worse, the gate as
+merged already fails on the branch's own, unmutated head: **exit 1 before any
+mutation**, with 33 violations against tests that assert real request shapes
+through helpers the text-scan does not recognise (`the_two_attempts`,
+`req.formData()`, deep-equality on a parsed object, and others) rather than a
+literal `.body`/`.path` substring — landing this would have broken `just
+verify` for the whole tree over false positives, on top of not catching the
+mutation the issue is named after. Reverted: `.xtask/src/main.rs` is back to
+`face3da`'s version (pre-branch); `cargo xtask verify-sdk-parity` again exits
+0, `ok — 463 proving test(s) … all exist`, on the same mutation, which is
+exactly issue #122's original finding, re-confirmed rather than assumed.
+**#122 stays open.** The issue names three options and says picking one is a
+maintainer call; this review's finding is that option 2 (a syntactic
+body/path check) does not survive contact with the mutation it exists to
+catch, and probably cannot be made to without becoming a partial
+re-implementation of a source parser — so the honest remaining choices are
+option 1 (say what the gate actually proves) or option 3 (run the SDK suites
+instead of inspecting them).
+
 **New 2026-09-05: the three publishable npm packages are renamed
 `@vpay/*` → `@vaam-apps/vpay-*`.** The organisation was renamed
 `vaam-store` → `vaam-apps` on 2026-09-04, and the scope now matches it while
@@ -653,7 +682,28 @@ a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`
    **untouched** by this branch (`git diff origin/master..HEAD` is empty for
    it) and the binary passed 17/17 three times in a row immediately
    afterwards, and again in the green run. A load flake, and it is worth
-   re-reading if it recurs on an idle machine.
+   re-reading if it recurs on an idle machine. **Filed as #124 and fixed
+   2026-09-11 (`claude/b1b-test-integrity`, reviewed):** the test's own
+   `.expect(1)` counts on the two GET routes' `401` mocks were the ordering
+   assumption a busy scheduler is free to break, so they are gone; the
+   guarantee is now asserted behaviorally instead — both routes' `200` mocks
+   answer only `Bearer tok_fresh`, so either caller succeeding already proves
+   it holds the fresh token, and a `token_requests.len() == 2` check after
+   both calls (mount_staleness_then_freshness's own `.expect(1)`s cover the
+   same thing) proves the cache was not cleared a third time. Judged net
+   equally strong on the guarantee the test names in its own comment, weaker
+   only on the incidental claim that each caller's `401` was individually
+   observed — which was never the property #124 asked this test to hold.
+   Re-run by the review, not assumed: **39/39 passed**
+   (`cargo nextest run -p vpay-sdk --test token_exchange -E
+'test(a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched)'`
+   — 30 solo at `--test-threads 16/32`, 5×`-p vpay-sdk` full-suite runs at
+   `--test-threads 16`, and 4 copies launched as genuinely simultaneous OS
+   processes for real contention, all pass), and the test is not vacuous:
+   reverting `invalidate_if_current` to an unconditional clear (the exact bug
+   #124's docstring describes) fails it immediately —
+   `assertion left == right failed: expected exactly two token requests …,
+but got 3`.
 
 **1698 total, and master's own number was not re-measured on this head** —
 `cargo nextest list` against `5e3a004` needs a full rebuild of a tree this
