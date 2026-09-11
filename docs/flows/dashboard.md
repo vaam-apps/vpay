@@ -565,6 +565,24 @@ does not have this property — `starting_after` asks for rows below a named
 and this is what it costs; neither the procedure nor anything else in vpay
 compensates for it.
 
+**The demo dashboard follows the SHOP's tenant, 2026-09-11 (exp51).** Nothing
+in this flow changed; what changed is which tenant the demo binds it to. The
+demo stack registers two merchant clients on two tenants — `shop-merchant`
+(`examples/shop`, the clickable surface) and `demo-merchant`
+(`just demo-walk`) — and this surface reads exactly one of them, as the
+boundary above says it must. It was bound to `demo-merchant-tenant`, so a
+payment a person made by hand through the shop was absent from the list and
+its id answered the uniform cross-tenant `404` on the detail page. Both
+answers were correct; the binding named the tenant nobody clicks anything in.
+`demo_dashboard_merchant` is the binding now and defaults to the shop's
+tenant, `demo_staff_merchant` is the same variable so the staff member cannot
+end up in the other one, and `gen-demo-keys` regenerates an overlay whose
+binding no longer matches. `dashboard.cy.ts` buys a tote in the shop, pays for
+it on vpay's hosted page and asserts the payment is visible to the demo staff
+member in the list **and** by id — point the variable back at
+`demo-merchant-tenant` and that case fails on both. See
+[../runbooks/demo.md](../runbooks/demo.md) §6.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this
