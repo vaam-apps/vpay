@@ -65,7 +65,8 @@ any string, raw-string or character literal is prose, and prose declares
 nothing.
 
 `just verify` is **twelve gates and one advisory report**. What each one refuses,
-and what it printed on `face3da` on 2026-09-11:
+and what it printed on 2026-09-11 on `722e579`, this branch's last commit
+before this page was written:
 
 | Gate                  | What it refuses                                                            | Last printed                                 |
 | --------------------- | -------------------------------------------------------------------------- | -------------------------------------------- |
@@ -73,15 +74,23 @@ and what it printed on `face3da` on 2026-09-11:
 | `verify-status`       | an undeclared — or a stale — `NotImplemented` token                        | 1 unimplemented item                         |
 | `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                 | 19 error types, 16 `#[from]` variants        |
 | `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability               | 463 proving tests, 33 dated gaps, 32 methods |
-| `verify-links`        | a repository link that resolves to no tracked path                         | 1 116 links in 222 files                     |
+| `verify-links`        | a repository link that resolves to no tracked path                         | 1 450 links in 309 files                     |
 | `verify-npm-scope`    | an unpublishable manifest, or a retired package name outside the record    | 2 publishable packages, 1 private            |
-| `check-schema`        | a `schemas/vpay.cstack` that does not type-check                           | ok at cratestack 0.11.1                      |
+| `check-schema`        | a `schemas/vpay.cstack` that does not type-check                           | 26 declarations; see the note below          |
 | `verify-serde`        | a serialisable type that does not spell the wire convention                | 90 types, 16 exemptions                      |
 | `verify-repositories` | a repository implementation named outside `vpay-db`, or an exported schema | 4 implementations, 83 source files outside   |
 | `verify-toolchain`    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`             | 1.98.0                                       |
 | `verify-ui`           | a UI primitive built outside `@vpay/ui`                                    | nothing: silent on success, exit 0 only      |
 | `verify-migrations`   | an applied migration whose bytes changed                                   | 42 files                                     |
 | `verify-docs`         | **nothing — it exits 0 whatever it finds**                                 | advisory report                              |
+
+**`check-schema` did not run under the version this repository pins**, and the
+recipe says so out loud rather than passing quietly: `justfile`'s
+`cratestack_version` is `0.12.0`, the CrateStack CLI on the authoring machine's
+`PATH` is **0.11.1**, and the check ran in full against the 0.11.1 grammar — 26
+model/enum declarations, datasource present. That is a property of one machine,
+not of this tree, and it is recorded because a gate that ran against a
+different grammar than CI will is a gate whose green means less than it looks.
 
 Those numbers are a measurement of one tree on one day, not a promise. What each
 gate used to miss, the mutation that proved each hole shut, and the dates every
@@ -214,7 +223,14 @@ unedited — including the runs that failed, the flakes that were kept rather th
 dropped, and the "what this note does _not_ claim" paragraphs, which are the
 half worth reading.
 
-**The two most recent entries are both 2026-09-11**, and neither is this branch:
+**The most recent entry is 2026-09-11, on `claude/exp57-docs-split`** — the
+documentation split this page is the product of. `just ci` exit 0, exit code
+read from a file: **1 748 tests run, 1 748 passed, 0 skipped** across 46
+binaries, `test-doc` 113 passed / 1 ignored, twelve gates, `test-web` 1 386.
+It moved no capability; the one non-documentation change is `verify-npm-scope`'s
+retired-name allowlist, which the split itself broke and which the gate caught.
+
+**The two before it are also 2026-09-11:**
 `claude/exp51-demo-tenant`, whose evidence is `just test-e2e` (22 Cypress tests,
 22 passing) rather than `just ci`, and `claude/exp46-customer-address`, at `just
 ci` exit 0 with **1 698 tests run, 1 698 passed, 0 skipped** across 46 binaries,

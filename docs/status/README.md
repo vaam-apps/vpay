@@ -1,6 +1,6 @@
 # The status archive
 
-[docs/status.md](../status.md) was 6 151 lines on 2026-09-11. It is 259 now.
+[docs/status.md](../status.md) was 6 151 lines on 2026-09-11. It is 275 now.
 **The other 5 996 lines are here, verbatim.** Nothing was summarised away,
 nothing was tidied, and in particular nothing that recorded a mistake was
 dropped: this repository's habit of writing "this said X until date Y and was

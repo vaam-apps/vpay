@@ -35,10 +35,12 @@ A document here is prose unless a gate reads it. These are read:
 
 `verify-links` is the one that touches this page, and it is worth knowing what
 it does not do: **it checks the destination path and never the `#anchor`**, so a
-link to a heading that has been renamed or moved still passes the build. Two
-such links were found stale during the 2026-09-11 split and fixed; one remains
-open, in [flows/invoices.md](flows/invoices.md), and it is named here rather
-than quietly left.
+link to a heading that has been renamed or moved still passes the build. A
+sweep during the 2026-09-11 split found **four** stale ones across the tree —
+three left behind by heading renames on 2026-09-06 and 2026-09-07, which no gate
+had ever objected to. Three are fixed. The fourth is open and is named here
+rather than quietly left: [flows/invoices.md](flows/invoices.md) links to a
+"What is not built" heading that file does not have.
 
 ## Why some pages are an overview and a directory
 
@@ -47,7 +49,7 @@ being readable:
 
 | Page                                                 | Was   | Is  | Where the rest went                              |
 | ---------------------------------------------------- | ----- | --- | ------------------------------------------------ |
-| [status.md](status.md)                               | 6 151 | 259 | [status/](status/README.md)                      |
+| [status.md](status.md)                               | 6 151 | 275 | [status/](status/README.md)                      |
 | [reference/vpay-db.md](reference/vpay-db.md)         | 3 330 | 335 | [reference/vpay-db/](reference/vpay-db/)         |
 | [reference/vpay-api.md](reference/vpay-api.md)       | 1 566 | 203 | [reference/vpay-api/](reference/vpay-api/)       |
 | [roadmap.md](roadmap.md)                             | 1 504 | 110 | [roadmap/](roadmap/)                             |
@@ -68,7 +70,7 @@ gains when its file moves down a directory, and a link whose heading landed on a
 different page. A whitespace-tolerant diff of each original against its new set
 of pages reports zero lines missing, and that check is what this split was
 judged by. The markdown under `docs/` went from **75 956 lines in 206 files to
-76 729 in 292** — it grew, because every new page carries a header saying where
+76 949 in 293** — it grew, because every new page carries a header saying where
 its text came from.
 
 Each split page keeps its own path, so every inbound link and every `docs/…`
