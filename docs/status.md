@@ -510,6 +510,14 @@ network, a database or a binary this workspace does not build.
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](plans/exp10-notes/opus.md).
 
+**2026-09-11 (issues #103, #125): CI gate defects fixed.** (Branch `claude/b1a-ci-gates`)
+
+- **Issue #103**: `audit-web` recipe ran at `--audit-level=high` and was not part of `just ci`, so it missed the moderate advisory GHSA-82fw-gwwq-j7x9 for two days. Fixed: (1) changed the level to `--audit-level=moderate` in both audit invocations; (2) added `audit-web` to the `ci` recipe; (3) updated the error message to say "moderate, high or critical advisory" instead of just "high or critical". CI's workflow already runs `just audit-web`, so the recipe was wired to CI already.
+
+- **Issue #125**: `just test-e2e` tore down only at the **end**, so a re-run against a surviving volume failed on the first leg (sign-in) because `demo-staff` kept an existing member and `dashboard.cy.ts` changes their password in leg 4. Fixed: added `docker compose {{demo_compose}} down -v` at the **start** of the recipe, right after `set -e`, to ensure each run begins from a clean volume. This also ensures test isolation on a developer machine.
+
+**Note**: Full `just ci` was not run per batch constraints (OOM risk with five concurrent agents); the fixes are ready for GitHub Actions verification.
+
 Last verified: 2026-09-11, on branch `claude/exp51-demo-tenant` at the head of
 the **sabotage review** of the demo-tenancy fix (base `6b1b7d8`; the
 implementation's five commits are kept and the review adds one, and

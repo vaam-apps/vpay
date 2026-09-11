@@ -296,6 +296,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
 
     set -e
+    docker compose {{demo_compose}} down -v
     docker compose {{demo_compose}} up -d --build --wait
     set +e
 
@@ -645,7 +646,7 @@ audit-web:
         local attempt out
         for attempt in $(seq 1 {{audit_attempts}}); do
             echo "audit-web: ${label} (attempt ${attempt} of {{audit_attempts}})"
-            if out=$(pnpm audit --audit-level=high "$@" 2>&1); then
+            if out=$(pnpm audit --audit-level=moderate "$@" 2>&1); then
                 printf '%s\n' "$out"
                 return 0
             fi
@@ -660,13 +661,13 @@ audit-web:
                 return 2
             fi
             printf '%s\n' "$out"
-            echo "audit-web: ADVISORY — pnpm audit found a high or critical advisory (${label}); see the report above" >&2
+            echo "audit-web: ADVISORY — pnpm audit found a moderate, high or critical advisory (${label}); see the report above" >&2
             return 1
         done
     }
     audit "production dependency graph only" --prod
     audit "whole workspace, dev dependencies included"
-    echo "audit-web: ok — no high or critical advisory in the workspace"
+    echo "audit-web: ok — no moderate, high or critical advisory in the workspace"
 
 # ---------------------------------------------------- self-verification ----
 
@@ -1950,7 +1951,7 @@ verify-ignored:
 # `test-doc` sits between `test-rust` and `verify-ignored` here and in the
 # `rust` job, because nextest runs no doctests and `verify-ignored`'s counts
 # do not cover them: three different questions, three steps.
-ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web deny
+ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web audit-web deny
 
 # ------------------------------------------------------------------ helm ---
 
