@@ -1670,6 +1670,13 @@ async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
                     line1: Some("12 Rue Njo-Njo".to_string()),
                     city: Some("Douala".to_string()),
                     country: Some("CM".to_string()),
+                    // The GPS half, in whole microdegrees. Sent in the same
+                    // bracket-encoded object as the six formal components,
+                    // and rendered as a decimal integer — the body assertion
+                    // below is what proves no decimal point can reach the
+                    // wire from this type.
+                    latitude_microdeg: Some(4_061_000),
+                    longitude_microdeg: Some(9_786_000),
                     ..Default::default()
                 }),
                 metadata: BTreeMap::from([("order_id".to_string(), "1234".to_string())]),
@@ -1700,9 +1707,28 @@ async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
         body_string(&request),
         "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000\
          &address[line1]=12%20Rue%20Njo-Njo&address[city]=Douala&address[country]=CM\
+         &address[latitude_microdeg]=4061000&address[longitude_microdeg]=9786000\
          &metadata[order_id]=1234",
         "the address is bracket-encoded per component and every unset component is omitted \
-         entirely — `address[state]=` would be a component the merchant did not send"
+         entirely — `address[state]=` would be a component the merchant did not send. The \
+         coordinate goes out as a bare decimal integer: `4061000` and never `4061000.0`, \
+         which is the whole reason the field is typed `i64` and named for its unit"
+    );
+    // Byte for byte, the two coordinate keys are in the body and neither
+    // carries a decimal point. Deleting either field from `AddressParams` or
+    // from `AddressParams::to_form` fails the assertion above; this one says
+    // what the failure would MEAN, and fails on its own if a float ever
+    // reached the encoder.
+    let body = body_string(&request);
+    assert!(
+        body.contains("address[latitude_microdeg]=4061000")
+            && body.contains("address[longitude_microdeg]=9786000"),
+        "both halves of the coordinate must reach the wire: {body}"
+    );
+    assert!(
+        !body.contains("microdeg]=4061000."),
+        "a decimal point in a coordinate means this SDK grew a float somewhere between \
+         `AddressParams` and the encoder: {body}"
     );
 
     // And it decodes back off the object, as one nested value rather than six
@@ -1715,6 +1741,12 @@ async fn create_customer_sends_the_documented_body_and_decodes_the_object() {
         address.state, None,
         "a component the server rendered `null` decodes as absent, not as an empty string"
     );
+    // The coordinate decodes as whole microdegrees. `i64` and not `f64`: a
+    // floating field would decode this fixture's `4061000` just as happily,
+    // so the assertion that matters is the TYPE, and this is where the
+    // compiler is made to state it.
+    assert_eq!(address.latitude_microdeg, Some(4_061_000_i64));
+    assert_eq!(address.longitude_microdeg, Some(9_786_000_i64));
     assert_eq!(
         customer.deleted, None,
         "a live customer carries no `deleted` key at all; decoding its absence as `false` \
@@ -1756,6 +1788,15 @@ async fn an_erased_customer_decodes_with_deleted_true_and_no_identifier() {
         "the address is redacted component by component, including the ones this payer \
          never filled in"
     );
+    // The coordinate comes back NULL where the formal components come back
+    // marked, and that asymmetry is the server's contract rather than a hole
+    // in this fixture: a coordinate is an integer and there is no integer
+    // that is not a possible place, so the marker is not a value it can take.
+    // A merchant reading `address.latitude_microdeg == None` on an erased
+    // customer is reading the truth, not a decode failure.
+    let address = customer.address.as_ref().expect("an erased address");
+    assert_eq!(address.latitude_microdeg, None);
+    assert_eq!(address.longitude_microdeg, None);
     assert_eq!(
         customer.metadata.get("order_id").map(String::as_str),
         Some("1234"),

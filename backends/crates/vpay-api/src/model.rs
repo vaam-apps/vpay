@@ -2492,6 +2492,144 @@ mod tests {
         );
     }
 
+    /// An address may be a **point with no street at all**, and it still
+    /// renders as an address rather than as `null`.
+    ///
+    /// This is the case the maintainer's decision of 2026-09-11 exists for.
+    /// Across vpay's markets a payer often cannot give a street that resolves
+    /// to anything, and the coordinate is the only half they have. If
+    /// `CustomerAddress::is_empty` did not count the two coordinate fields,
+    /// this object would render `address: null` over a stored pair — the wire
+    /// disagreeing with the row about whether vpay holds a payer's position,
+    /// which is the disagreement that matters most to be wrong about.
+    ///
+    /// The mutation: drop the two `is_empty` conjuncts in `vpay-db` and this
+    /// fails on the first assertion.
+    #[test]
+    fn an_address_may_be_a_point_with_no_street_at_all() {
+        let mut row = customer_row();
+        row.address = vpay_db::CustomerAddress {
+            latitude_microdeg: Some(4_061_000),
+            longitude_microdeg: Some(9_786_000),
+            ..vpay_db::CustomerAddress::default()
+        };
+
+        let rendered = serde_json::to_value(
+            CustomerObject::try_from(&row).expect("a row with only a point renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered.get("address"),
+            Some(&json!({
+                "line1": null,
+                "line2": null,
+                "city": null,
+                "state": null,
+                "postal_code": null,
+                "country": null,
+                "latitude_microdeg": 4_061_000,
+                "longitude_microdeg": 9_786_000,
+            })),
+            "a customer whose whole address is a point has an address: {rendered:?}"
+        );
+
+        // And the value is a JSON **number**, not a string and not a float.
+        // `serde_json::Value::is_i64` is the assertion that a future change
+        // to `f64` would fail: `4061000.0` is `is_f64`, serialises as
+        // `4061000.0`, and every other assertion here would still pass.
+        let latitude = rendered
+            .pointer("/address/latitude_microdeg")
+            .expect("the key is present");
+        assert!(
+            latitude.is_i64(),
+            "a coordinate on this API is an integer count of microdegrees; a float here \
+             would be a value CrateStack demotes and ADR-0007 denies arithmetic on: \
+             {latitude:?}"
+        );
+        let address = rendered
+            .pointer("/address")
+            .expect("the address is present")
+            .to_string();
+        assert!(
+            !address.contains('.'),
+            "no decimal point may appear anywhere in a rendered address — an email may \
+             carry one, a coordinate may not: {address}"
+        );
+    }
+
+    /// An erased payer's coordinates come back **`null`**, and not the
+    /// redaction marker.
+    ///
+    /// The six formal components carry the marker because it says "there was
+    /// a payer here and vpay erased them", which is a fact worth keeping.
+    /// These two cannot: they are integers on the wire and in the column, and
+    /// there is no integer that is not a possible place — a marker value
+    /// would BE a coordinate, somewhere real, on an object claiming the payer
+    /// is gone. So for these two the erasure is the absence, and
+    /// `anonymized_at` (not on the wire) plus `deleted: true` (which is)
+    /// carry the "there was somebody here" that the marker carries elsewhere.
+    ///
+    /// Asserted as its own case rather than only inside
+    /// [`an_anonymised_customer_renders_deleted_true_and_no_identifier`](self)
+    /// because the mutation it catches is the plausible one: making
+    /// `CustomerAddress::redacted` uniform. That would not compile with a
+    /// `&str` marker, so the shape it would really take is dropping these two
+    /// from `redacted` entirely — leaving the payer's real point on the
+    /// object vpay signs and stores for ever. This is the assertion that
+    /// names it.
+    #[test]
+    fn an_erased_payers_coordinates_are_null_and_not_a_marker() {
+        let mut row = customer_row();
+        row.address = vpay_db::CustomerAddress {
+            line1: Some("12 Rue Njo-Njo".to_owned()),
+            latitude_microdeg: Some(4_061_000),
+            longitude_microdeg: Some(9_786_000),
+            ..vpay_db::CustomerAddress::default()
+        };
+
+        let erased = row.redacted(
+            time::OffsetDateTime::from_unix_timestamp(1_784_937_600)
+                .expect("a fixed, valid timestamp"),
+        );
+        let rendered = serde_json::to_value(
+            CustomerObject::try_from(&erased).expect("an anonymised row renders"),
+        )
+        .expect("serialises");
+
+        assert_eq!(
+            rendered.pointer("/address/latitude_microdeg"),
+            Some(&Value::Null),
+            "the payer's position survived the erasure into the body vpay signs and stores \
+             for ever: {rendered}"
+        );
+        assert_eq!(
+            rendered.pointer("/address/longitude_microdeg"),
+            Some(&Value::Null)
+        );
+        assert!(
+            !rendered.to_string().contains("4061000") && !rendered.to_string().contains("9786000"),
+            "neither half of the payer's point may appear anywhere in the erased object: \
+             {rendered}"
+        );
+        // The key is still THERE, null — an erased customer and a live one
+        // without a point have the same shape, so the presence of the key
+        // says nothing about whether this payer ever gave a position.
+        assert!(
+            rendered
+                .pointer("/address")
+                .and_then(Value::as_object)
+                .is_some_and(|address| address.len() == 8),
+            "the address is eight keys whether or not the payer had a point: {rendered}"
+        );
+        // And the formal half is still the marker, so this test cannot pass
+        // by the redaction having stopped redacting.
+        assert_eq!(
+            rendered.pointer("/address/line1"),
+            Some(&json!(vpay_db::REDACTED))
+        );
+    }
+
     /// An anonymised customer renders `deleted: true`, the merchant's own
     /// `metadata`, and **not one identifier of the payer's**.
     ///

@@ -1145,6 +1145,301 @@ async fn a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503() -> a
     Ok(())
 }
 
+/// **The GPS half of the address, end to end** — the maintainer's decision of
+/// 2026-09-11, "address in our system means both formal as well as GPS".
+///
+/// # What this pins that the formal round-trip does not
+///
+/// 1. **A point with no street is an address.** The first create below sends
+///    a coordinate and nothing else, and the object must render an `address`
+///    rather than `null`. This is the case the decision exists for: across
+///    vpay's markets a payer often cannot give a street that resolves to
+///    anything, and the point is the only half they have. If
+///    `CustomerAddress::is_empty` stopped counting the coordinate, the wire
+///    would say vpay holds no address over a row that holds the payer's
+///    position.
+/// 2. **No JSON float anywhere.** The value is asserted `is_i64`, and the
+///    rendered `address` is asserted to contain no `.` at all. A field that
+///    became an `f64` would still round-trip 4061000 and would serialise as
+///    `4061000.0`; only these two assertions see it.
+/// 3. **The coordinate is replaced and cleared WITH the address**, under the
+///    same one flag as the six formal components. The second update names a
+///    street and no coordinate, and the stored point must be gone: an address
+///    is one fact, so a new street without a point says the old point is not
+///    this place's. A separate flag would keep a payer's previous position
+///    attached to somebody else's street — the one wrong answer a merchant
+///    would never see.
+///
+/// The `customer.updated` body is asserted for the same reason the formal
+/// round-trip asserts it: that object is stored in `events` for ever.
+#[tokio::test]
+async fn a_gps_point_round_trips_as_integers_and_is_replaced_and_cleared_with_the_address()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    // Douala, to a tenth of a metre. A real place, so nothing here passes by
+    // being outside a range and refused for the wrong reason.
+    const LATITUDE: i64 = 4_061_000;
+    const LONGITUDE: i64 = 9_786_000;
+
+    // 1. A point and no street at all.
+    let created = sdk
+        .customers()
+        .create(
+            CreateCustomerParams {
+                phone: Some(CANONICAL_PHONE.to_owned()),
+                address: Some(vpay_sdk::AddressParams {
+                    latitude_microdeg: Some(LATITUDE),
+                    longitude_microdeg: Some(LONGITUDE),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("cus-gps-1"),
+        )
+        .await
+        .expect("a customer whose whole address is a point");
+
+    let address = created
+        .address
+        .clone()
+        .expect("a point with no street is still an address");
+    assert_eq!(address.latitude_microdeg, Some(LATITUDE));
+    assert_eq!(address.longitude_microdeg, Some(LONGITUDE));
+    assert_eq!(address.line1, None);
+    assert_eq!(address.city, None);
+
+    // 2. On the wire, as integers. Read raw rather than through the SDK,
+    //    because the SDK's `i64` would decode `4061000.0` back to `4061000`
+    //    and hide exactly the thing this asserts.
+    let raw = raw_client()
+        .get(h.url(&format!("/v1/customers/{}", created.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .send()
+        .await
+        .context("retrieving the customer with a point")?;
+    assert_eq!(raw.status().as_u16(), 200);
+    let body: Value = raw.json().await.context("the customer object")?;
+    let latitude = body
+        .pointer("/address/latitude_microdeg")
+        .expect("the key is on the object");
+    assert!(
+        latitude.is_i64(),
+        "a coordinate on this API is a whole number of microdegrees; a JSON float here is a \
+         value CrateStack's `Value::from_plain_json` demotes to f64 and ADR-0007 denies \
+         arithmetic on: {body}"
+    );
+    assert_eq!(latitude.as_i64(), Some(LATITUDE));
+    let rendered_address = body
+        .pointer("/address")
+        .expect("the address is an object")
+        .to_string();
+    assert!(
+        !rendered_address.contains('.'),
+        "no decimal point may appear anywhere in a rendered address: {rendered_address}"
+    );
+    assert_eq!(
+        body.pointer("/address")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(8),
+        "the address is eight keys — Stripe's six and vpay's two — nulls included: {body}"
+    );
+
+    // 3. An update naming a street and no coordinate clears the point.
+    let replaced = sdk
+        .customers()
+        .update(
+            &created.id,
+            UpdateCustomerParams {
+                address: Some(Some(vpay_sdk::AddressParams {
+                    line1: Some("12 Rue Njo-Njo".to_owned()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("cus-gps-2"),
+        )
+        .await
+        .expect("the update");
+    let address = replaced.address.clone().expect("still an address");
+    assert_eq!(address.line1.as_deref(), Some("12 Rue Njo-Njo"));
+    assert_eq!(
+        address.latitude_microdeg, None,
+        "an address is replaced whole, coordinate included: a new street with no point says \
+         the old point is not this place's. A separate flag for the coordinate would leave a \
+         payer's previous position on somebody else's street"
+    );
+    assert_eq!(address.longitude_microdeg, None);
+
+    let events = events_about(&h.pool, &created.id).await?;
+    let (kind, data) = events.last().expect("the create and the update");
+    assert_eq!(kind, "customer.updated");
+    assert_eq!(
+        data.pointer("/address/latitude_microdeg"),
+        Some(&Value::Null),
+        "the stored event body is the object: the cleared coordinate is rendered null, not \
+         omitted and not left at its old value: {data}"
+    );
+
+    // And the columns are NULL rather than zero — 0/0 is a real point in the
+    // Gulf of Guinea, and a `COALESCE`-shaped mistake would store it.
+    let stored: (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT address_latitude_microdeg, address_longitude_microdeg FROM customers \
+         WHERE id = $1",
+    )
+    .bind(&created.id)
+    .fetch_one(&h.pool)
+    .await
+    .context("reading the cleared coordinate")?;
+    assert_eq!(
+        stored,
+        (None, None),
+        "a cleared coordinate is NULL; 0/0 is a real place in the Gulf of Guinea"
+    );
+
+    // 4. `address=` clears the whole thing, point included, over the raw wire.
+    let set_again = sdk
+        .customers()
+        .update(
+            &created.id,
+            UpdateCustomerParams {
+                address: Some(Some(vpay_sdk::AddressParams {
+                    latitude_microdeg: Some(LATITUDE),
+                    longitude_microdeg: Some(LONGITUDE),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            RequestOptions::new().with_idempotency_key("cus-gps-3"),
+        )
+        .await
+        .expect("the point goes back on");
+    assert_eq!(
+        set_again
+            .address
+            .and_then(|address| address.latitude_microdeg),
+        Some(LATITUDE)
+    );
+
+    let cleared = raw_client()
+        .post(h.url(&format!("/v1/customers/{}", created.id)))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "cus-gps-4")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body("address=")
+        .send()
+        .await
+        .context("clearing an address that is a point")?;
+    assert_eq!(cleared.status().as_u16(), 200);
+    let body: Value = cleared.json().await.context("the cleared customer")?;
+    assert_eq!(
+        body.pointer("/address"),
+        Some(&Value::Null),
+        "`address=` removes the point as well as the street: the address is one fact, not \
+         two: {body}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// A malformed, out-of-range or **half-written** coordinate is a `400` naming
+/// `address`, and nothing is written.
+///
+/// The `400` rather than the `503` migration `0041`'s three coordinate CHECKs
+/// would otherwise produce — `classify_write` routes a `23514` to
+/// `Category::Storage`, which reaches a merchant as "wait for a database that
+/// is fine". `a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503`'s
+/// argument, applied to the field where it also protects the *value*: a
+/// decimal degree accepted here would have to be rounded by something, and a
+/// payer's position silently rounded by an API that did not say so is the
+/// failure the whole microdegree shape is chosen to avoid.
+///
+/// **The decisive mutations:** delete the parse refusal and `4.061` answers
+/// `201` with the point truncated or the request rejected by serde with
+/// `param: "body"`; delete the pair check and half a coordinate reaches
+/// Postgres and comes back a `503`; widen either range constant past the
+/// migration's and an impossible latitude does the same.
+#[tokio::test]
+async fn a_malformed_or_half_written_coordinate_is_a_400_and_not_the_databases_503()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+
+    for (case, body) in [
+        // Degrees, which is what a merchant reaches for when they have not
+        // read the field name.
+        (
+            "decimal-degrees",
+            "address[latitude_microdeg]=4.061&address[longitude_microdeg]=9.786",
+        ),
+        // The same value spelled as a float that happens to be whole.
+        (
+            "whole-float",
+            "address[latitude_microdeg]=4061000.0&address[longitude_microdeg]=9786000",
+        ),
+        (
+            "exponent",
+            "address[latitude_microdeg]=4.061e6&address[longitude_microdeg]=9786000",
+        ),
+        // Outside the axis, each axis.
+        (
+            "latitude-over",
+            "address[latitude_microdeg]=90000001&address[longitude_microdeg]=9786000",
+        ),
+        (
+            "longitude-under",
+            "address[latitude_microdeg]=4061000&address[longitude_microdeg]=-180000001",
+        ),
+        // Half a coordinate, both ways round. A latitude on its own is a line
+        // right round the planet.
+        ("latitude-alone", "address[latitude_microdeg]=4061000"),
+        ("longitude-alone", "address[longitude_microdeg]=9786000"),
+    ] {
+        let response = raw_client()
+            .post(h.url("/v1/customers"))
+            .bearer_auth(h.bearer(CLIENT_A))
+            .header("Idempotency-Key", format!("bad-coordinate-{case}"))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(format!("phone={CANONICAL_PHONE}&{body}"))
+            .send()
+            .await
+            .context("creating a customer with a bad coordinate")?;
+
+        assert_eq!(
+            response.status().as_u16(),
+            400,
+            "`{case}` must be refused above the statement"
+        );
+        let error: Value = response.json().await.context("the error body")?;
+        assert_eq!(
+            error.pointer("/error/param").and_then(Value::as_str),
+            Some("address"),
+            "`{case}` must name the top-level parameter a merchant's error handler can act \
+             on — `param: \"body\"` from serde would be a sentence about the request's shape \
+             instead: {error}"
+        );
+        assert_eq!(
+            error.pointer("/error/type").and_then(Value::as_str),
+            Some("invalid_request_error"),
+            "a 503 for `{case}` would tell a merchant to retry against a database that is \
+             fine: {error}"
+        );
+    }
+
+    // Nothing was written by any of the seven, and in particular no customer
+    // with half a point on it.
+    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers")
+        .fetch_one(&h.pool)
+        .await
+        .context("counting customers after seven refused creates")?;
+    assert_eq!(customers, 0);
+
+    h.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------------------------------- delete
 
 /// `DELETE` is a hard delete: the row is gone, a later retrieve is the same
@@ -1235,8 +1530,17 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
                 name: Some("Ada Ngo".to_owned()),
                 email: Some("ada@example.cm".to_owned()),
                 phone: Some(CANONICAL_PHONE.to_owned()),
+                // The payer's position, which is the most sensitive field on
+                // this object: a name is how somebody is addressed and a
+                // point is where they sleep. It is in this fixture so that
+                // assertion 1 below can say the erasure reached it.
+                address: Some(vpay_sdk::AddressParams {
+                    line1: Some("12 Rue Njo-Njo".to_owned()),
+                    latitude_microdeg: Some(4_061_000),
+                    longitude_microdeg: Some(9_786_000),
+                    ..Default::default()
+                }),
                 metadata: BTreeMap::from([("order_id".to_owned(), "1234".to_owned())]),
-                ..Default::default()
             },
             RequestOptions::new(),
         )
@@ -1280,6 +1584,37 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
             "`{column}` still holds the payer's own value after an erasure"
         );
     }
+
+    // 1b. The coordinate, which cannot carry the marker and is NULLed
+    //     instead. Asserted as its own read because it is the one pair of
+    //     columns whose erased state is an ABSENCE — a scan for a literal
+    //     cannot see it, which is exactly the limit
+    //     `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+    //     now states on `scan_for`, and this is where that limit is covered.
+    let coordinates: (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT address_latitude_microdeg, address_longitude_microdeg FROM customers \
+         WHERE id = $1",
+    )
+    .bind(&customer.id)
+    .fetch_one(&h.pool)
+    .await
+    .context("the erased customer's coordinate")?;
+    assert_eq!(
+        coordinates,
+        (None, None),
+        "the payer's position survived an erasure vpay promised. It cannot carry the marker \
+         — there is no integer that is not a possible place — so the erasure is the absence, \
+         and `anonymized_customers_carry_the_marker` refuses a row that kept either half"
+    );
+
+    // And the formal half really did carry the marker, so 1b cannot pass by
+    // the address never having been stored.
+    let line1: String = sqlx::query_scalar("SELECT address_line1 FROM customers WHERE id = $1")
+        .bind(&customer.id)
+        .fetch_one(&h.pool)
+        .await
+        .context("the erased customer's street")?;
+    assert_eq!(line1, vpay_db::REDACTED);
 
     // 2. The payment record is intact, which is the whole reason the row
     //    could not simply be deleted. Amount, status and the `customer`
@@ -1441,6 +1776,12 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     const EMAIL: &str = "zzyzx.quibblewort@example.invalid";
     const PHONE: &str = "237600000771";
     const STREET: &str = "77 Rue Quibblewort";
+    // A real point near Douala, chosen so its digits are a string nothing
+    // else in this database contains by accident — the same property the four
+    // text literals above are chosen for. It is inside both axes, so nothing
+    // here passes by being refused.
+    const LATITUDE: i64 = 4_061_777;
+    const LONGITUDE: i64 = 9_786_777;
 
     let customer = sdk
         .customers()
@@ -1453,6 +1794,22 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
                     line1: Some(STREET.to_owned()),
                     city: Some("Douala".to_owned()),
                     country: Some("CM".to_owned()),
+                    // The payer's position. The literal scan below CANNOT see
+                    // these two — they are BIGINT columns and `scan_for`
+                    // reads text and jsonb — so they are asserted directly
+                    // after the erasure instead, and that limit is stated on
+                    // `scan_for` beside its other two.
+                    //
+                    // They are in the fixture anyway, and not only in the
+                    // direct assertion: the coordinate is rendered INTO
+                    // `events.data` and `idempotency_keys.response_body`,
+                    // which the scan does read, so the digits below are
+                    // findable there before the erasure and must not be
+                    // afterwards. A redaction that reached the customer row
+                    // and not the stored bodies passes the direct assertion
+                    // and fails the scan.
+                    latitude_microdeg: Some(LATITUDE),
+                    longitude_microdeg: Some(LONGITUDE),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1534,7 +1891,14 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     .await
     .context("seeding the refund that carries the rail's words about the payer")?;
 
-    let literals = [NAME, EMAIL, PHONE, STREET];
+    // The coordinate's digits join the literal list: a JSONB column cast to
+    // TEXT renders a number as its digits, so `4061777` IS findable in
+    // `events.data` and in `idempotency_keys.response_body` before the
+    // erasure. What it is NOT findable in is `customers.address_latitude_microdeg`,
+    // which is a BIGINT and outside this scan entirely — hence the direct
+    // assertion further down.
+    let latitude_digits = LATITUDE.to_string();
+    let literals = [NAME, EMAIL, PHONE, STREET, latitude_digits.as_str()];
 
     let (before, columns) = scan_for(&h.pool, &literals).await?;
     assert!(
@@ -1561,6 +1925,10 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
         "refunds.failure_raw",
         "idempotency_keys.response_body",
     ] {
+        // `customers.address_latitude_microdeg` is deliberately NOT in this
+        // list: it is a BIGINT and this scan reads text, varchar and jsonb.
+        // The assertion that the column itself is NULLed is below, by name.
+
         assert!(
             before
                 .values()
@@ -1580,6 +1948,29 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     assert!(
         after.is_empty(),
         "a payer identifier survived the erasure vpay promised: {after:?}"
+    );
+
+    // The scan's THIRD limit, covered here rather than assumed away: the two
+    // coordinate columns are `BIGINT` and `scan_for` reads `text`,
+    // `character varying` and `jsonb`, so no literal search can ever see
+    // them. They are the most sensitive columns on this table, so "the scan
+    // found nothing" is not allowed to be the whole of the evidence about
+    // them. Asserted as an absence, which is what an erased coordinate is:
+    // there is no integer that is not a possible place, so the marker is not
+    // a value these columns can take.
+    let coordinates: (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT address_latitude_microdeg, address_longitude_microdeg FROM customers \
+         WHERE id = $1",
+    )
+    .bind(&customer.id)
+    .fetch_one(&h.pool)
+    .await
+    .context("the erased customer's coordinate")?;
+    assert_eq!(
+        coordinates,
+        (None, None),
+        "the payer's position is still on the row after an erasure, where no literal scan \
+         can find it and `anonymized_customers_carry_the_marker` says it may not be"
     );
 
     // The payment record is untouched, which is the other half of the
@@ -1612,7 +2003,7 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
 /// payer's data, but a scan that matched it would be matching vpay's own
 /// source.
 ///
-/// # The two limits of this scan, stated rather than left to be assumed
+/// # The three limits of this scan, stated rather than left to be assumed
 ///
 /// **It is `table_schema = 'public'` only**, so the `authkestra.*` tables
 /// (migration `0006`) are outside it. Those are the OAuth provider's —
@@ -1627,6 +2018,20 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
 /// fixture never writes is invisible here, which is exactly how
 /// `charges.failure_raw` survived until 2026-09-11. When a new column can
 /// hold one, the fixture is the thing to change.
+///
+/// **It reads `text`, `character varying` and `jsonb` and nothing else**, so
+/// the two `BIGINT` coordinate columns migration `0041` added on 2026-09-11
+/// — `customers.address_latitude_microdeg` and its pair — are outside it in
+/// principle and not by oversight. They are the most sensitive columns on the
+/// table, so the caller asserts them **directly**, by name, as NULL after the
+/// erasure; an erased coordinate is an absence rather than a marker, and an
+/// absence is not a thing a substring search can look for. Widening the scan
+/// to numeric columns would not help: every integer is a possible
+/// coordinate, so a match would mean nothing and a miss would mean nothing.
+/// The digits of the fixture's latitude ARE in the literal list, because a
+/// `jsonb` column cast to `TEXT` renders them — which is how the scan covers
+/// the rendered copies in `events.data` and
+/// `idempotency_keys.response_body`.
 async fn scan_for(
     pool: &PgPool,
     literals: &[&str],

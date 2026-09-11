@@ -854,7 +854,25 @@ async fn a_customer_with_no_name_email_or_phone_is_refused_by_the_database() -> 
 /// A CHECK that named eight columns would pass a `contains` and fail exactly
 /// one iteration of this.
 ///
-/// # Each column is held back TWICE, and the second way is the one that got in
+/// # Eleven columns, and two of them are held back the other way round
+///
+/// The nine text identifiers carry the marker. The two coordinate columns
+/// (`address_latitude_microdeg`, `address_longitude_microdeg`, 2026-09-11)
+/// carry **NULL**: they are `BIGINT`, and there is no integer that is not a
+/// possible place, so a marker value would be a coordinate. For those two the
+/// held-back state is therefore an in-range *value* rather than a NULL, and
+/// the loop below is two loops for that reason rather than one with a special
+/// case.
+///
+/// Each is held back **alone**, with the other coordinate NULL, which is only
+/// attributable because `address_coordinates_are_both_or_neither` carries the
+/// `anonymized_at IS NOT NULL` disjunct the two shape CHECKs carry: without
+/// it Postgres would report the pair rule for this row and the marker CHECK's
+/// coverage of the coordinate would be untestable one column at a time.
+/// Dropping either coordinate conjunct from the marker CHECK fails exactly
+/// one iteration here.
+///
+/// # Each text column is held back TWICE, and the second way is the one that got in
 ///
 /// First as another value (`'Ada Ngo'`), then as `NULL` — and until
 /// 2026-09-11 the second was not tried and the constraint did not refuse it.
@@ -887,6 +905,17 @@ async fn an_anonymised_customer_carries_the_marker_in_every_identifier_column() 
         "address_state",
         "address_postal_code",
         "address_country",
+    ];
+
+    // The other two identifier columns of the same CHECK, and the in-range
+    // value each is held back as. A REAL place (Douala, 4.061 N / 9.786 E) so
+    // that neither `address_latitude_microdeg_range` nor
+    // `address_longitude_microdeg_range` can be the constraint that fires —
+    // the assertion below is about the marker CHECK specifically, and a value
+    // outside the axis would let this pass for the wrong reason.
+    const COORDINATES: [(&str, &str); 2] = [
+        ("address_latitude_microdeg", "4061000"),
+        ("address_longitude_microdeg", "9786000"),
     ];
 
     let marker = vpay_db::REDACTED;
@@ -962,6 +991,181 @@ async fn an_anonymised_customer_carries_the_marker_in_every_identifier_column() 
             );
         }
     }
+
+    // The coordinate half. A surviving coordinate is the WORST of the eleven
+    // to leave behind — a name is how somebody is addressed and a point is
+    // where they sleep — and it is also the one the marker cannot express, so
+    // this is where "the erasure is the absence" is proved rather than
+    // asserted in a comment.
+    for (held_back, value) in COORDINATES {
+        let values = IDENTIFIERS
+            .iter()
+            .map(|_| format!("'{marker}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let outcome = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO customers (id, merchant_id, livemode, metadata, last_used_at, \
+             anonymized_at, {columns}, {held_back}) \
+             VALUES ('cus_partialgps0000000', 'merchant_a', false, '{{}}'::jsonb, now(), \
+             now(), {values}, {value})"
+        )))
+        .execute(&pool)
+        .await;
+
+        let Err(error) = outcome else {
+            panic!(
+                "`{held_back}` survived an anonymisation as {value} and Postgres accepted the \
+                 row: the payer was told they were erased and vpay kept the place they live"
+            );
+        };
+        assert_eq!(
+            error
+                .as_database_error()
+                .expect("a database-level error")
+                .constraint(),
+            Some("anonymized_customers_carry_the_marker"),
+            "`{held_back}` kept through an anonymisation must be refused by the marker CHECK \
+             specifically. If this reports `address_coordinates_are_both_or_neither` instead, \
+             that constraint has lost its `anonymized_at IS NOT NULL` disjunct — and with it \
+             the property that the marker CHECK is the only thing that can fire on a row \
+             claiming to be erased"
+        );
+    }
+
+    Ok(())
+}
+
+/// Half a coordinate is refused, and each axis is bounded by its own range —
+/// `address_coordinates_are_both_or_neither`,
+/// `address_latitude_microdeg_range` and `address_longitude_microdeg_range`,
+/// against a real Postgres.
+///
+/// The API refuses all three first with a `400` naming `address`
+/// (`vpay_api::v1::customers`), so what this proves is the backstop: a
+/// backfill, a repair script or a psql session reaches these CHECKs without
+/// passing the API at all. It is the same division of labour
+/// `an_anonymised_customers_phone_may_be_the_marker_and_nothing_else` states
+/// for the country code.
+///
+/// The pair rule is **multi-column**, so it is invisible to `cratestack
+/// migrate baseline` in both directions and deleting it moves
+/// `EXPECTED_DRIFT_CHANGES` by exactly zero — this case is the only thing
+/// that can see it at all. The two range CHECKs are single-column and each
+/// costs one `[safe] CHECK ... is not declared` drift line, so deleting one of
+/// those WOULD move the count; they are asserted here anyway, because a drift
+/// line falling tells you a constraint left the schema and not which
+/// behaviour went with it.
+#[tokio::test]
+async fn a_half_written_coordinate_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    // A whole coordinate first, so the refusals below are refusals of the
+    // shape and not of the columns existing.
+    sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, \
+         address_latitude_microdeg, address_longitude_microdeg, metadata, last_used_at) \
+         VALUES ('cus_wholepoint0000000000', 'merchant_a', false, '237600000200', \
+                 4061000, 9786000, '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("a customer whose address is a point is a customer with an address")?;
+
+    // Each half alone, both ways round. A latitude on its own is a line right
+    // round the planet; the pair is the value.
+    for (id, columns, values) in [
+        (
+            "cus_latonly000000000000",
+            "address_latitude_microdeg",
+            "4061000",
+        ),
+        (
+            "cus_lononly000000000000",
+            "address_longitude_microdeg",
+            "9786000",
+        ),
+    ] {
+        let error = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO customers (id, merchant_id, livemode, phone, {columns}, \
+             metadata, last_used_at) \
+             VALUES ('{id}', 'merchant_a', false, '237600000200', {values}, \
+                     '{{}}'::jsonb, now())"
+        )))
+        .execute(&pool)
+        .await
+        .expect_err("half a coordinate names no place");
+        assert_eq!(
+            error
+                .as_database_error()
+                .expect("a database-level error")
+                .constraint(),
+            Some("address_coordinates_are_both_or_neither"),
+            "`{columns}` alone must be refused by the pair rule specifically"
+        );
+    }
+
+    // One microdegree outside each axis, each sign, with a legal partner so
+    // the pair rule cannot be what fires. Four cases, which is what catches
+    // one axis's bound being used for both.
+    for (id, latitude, longitude, constraint) in [
+        (
+            "cus_latover0000000000000",
+            "90000001",
+            "9786000",
+            "address_latitude_microdeg_range",
+        ),
+        (
+            "cus_latunder000000000000",
+            "-90000001",
+            "9786000",
+            "address_latitude_microdeg_range",
+        ),
+        (
+            "cus_lonover0000000000000",
+            "4061000",
+            "180000001",
+            "address_longitude_microdeg_range",
+        ),
+        (
+            "cus_lonunder000000000000",
+            "4061000",
+            "-180000001",
+            "address_longitude_microdeg_range",
+        ),
+    ] {
+        let error = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO customers (id, merchant_id, livemode, phone, \
+             address_latitude_microdeg, address_longitude_microdeg, metadata, last_used_at) \
+             VALUES ('{id}', 'merchant_a', false, '237600000200', {latitude}, {longitude}, \
+                     '{{}}'::jsonb, now())"
+        )))
+        .execute(&pool)
+        .await
+        .expect_err("a value outside the axis is not a place");
+        assert_eq!(
+            error
+                .as_database_error()
+                .expect("a database-level error")
+                .constraint(),
+            Some(constraint),
+            "({latitude}, {longitude}) must be refused by `{constraint}` and not by the \
+             other axis's bound or by the pair rule"
+        );
+    }
+
+    // And the poles and the antimeridian are legal: the bound is the
+    // definition of the unit, not a product limit, so an off-by-one in the
+    // other direction would refuse a real place.
+    sqlx::query(
+        "INSERT INTO customers (id, merchant_id, livemode, phone, \
+         address_latitude_microdeg, address_longitude_microdeg, metadata, last_used_at) \
+         VALUES ('cus_southpole00000000000', 'merchant_a', false, '237600000200', \
+                 -90000000, -180000000, '{}'::jsonb, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("the South Pole at 180 degrees west is a place")?;
 
     Ok(())
 }
@@ -2665,25 +2869,40 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     drift going down, which is exactly the direction this constant's own
 ///     warning is about — it is not a sign the schema caught up.
 ///
-/// **What cost nothing is the part to read.** Seven new columns — the six
-/// `address_*` and `anonymized_at` — and **not one column-level line**: no
-/// `column … exists in the live database but is not declared`, no `type
-/// differs`, no `default value differs`. `model Customer` declares all seven
-/// and migration `0041` gave none of them a DB `DEFAULT`, which is the
-/// condition 0034 established for this table and the reason adding to it is
-/// cheap. `address_country_is_iso_3166_1_alpha_2` and
-/// `anonymized_customers_carry_the_marker` are both multi-column and
+/// **What cost nothing is the part to read.** Nine new columns — the six
+/// `address_*`, the two `address_*_microdeg` and `anonymized_at` — and **not
+/// one column-level line**: no `column … exists in the live database but is
+/// not declared`, no `type differs`, no `default value differs`. `model
+/// Customer` declares all nine and migration `0041` gave none of them a DB
+/// `DEFAULT`, which is the condition 0034 established for this table and the
+/// reason adding to it is cheap. `address_country_is_iso_3166_1_alpha_2`,
+/// `address_coordinates_are_both_or_neither` and
+/// `anonymized_customers_carry_the_marker` are all multi-column and
 /// contribute nothing in either direction, like the fifteen cross-column
 /// CHECKs before them — which is why
-/// `an_anonymised_customer_carries_the_marker_in_every_identifier_column`
-/// and `an_anonymised_customers_phone_may_be_the_marker_and_nothing_else`
+/// `an_anonymised_customer_carries_the_marker_in_every_identifier_column`,
+/// `a_half_written_coordinate_is_refused_by_the_database` and
+/// `an_anonymised_customers_phone_may_be_the_marker_and_nothing_else`
 /// assert them against a real Postgres directly.
 /// **176 -> 177 on 2026-09-11**, measured after this branch rebased over
 /// issue #91's `0042`: that migration's own `amount_refunded_non_negative`
-/// is the +1, and the four address CHECKs are unchanged by the rebase. The
-/// number is read off a freshly migrated database, never derived by adding
-/// two branches' deltas.
-const EXPECTED_DRIFT_CHANGES: u32 = 177;
+/// is the +1, and the four address CHECKs are unchanged by the rebase.
+///
+/// **177 -> 179 later the same day**, when `0041` grew the GPS half of the
+/// address (the maintainer: "address in our system means both formal as well
+/// as GPS"). The +2 is `address_latitude_microdeg_range` and
+/// `address_longitude_microdeg_range` — **single**-column CHECKs, so unlike
+/// the pair rule beside them they ARE reported, once each, as `[safe] CHECK …
+/// exists in the live database but is not declared`. The six `address_*_length`
+/// bounds cost exactly the same and for the same reason: `model Customer`
+/// declares the matching `@range` without `@db_enforce`, because promoting it
+/// would emit a drop-and-add PAIR against a hand-named CHECK. Two columns and
+/// three constraints for two drift lines is the shape this file predicts, and
+/// this measurement is what tested the prediction rather than restating it.
+///
+/// The number is read off a freshly migrated database, never derived by
+/// adding two branches' deltas.
+const EXPECTED_DRIFT_CHANGES: u32 = 179;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -3180,14 +3399,32 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         observed,
         [
             ("checkout_sessions", "urls_match_ui_mode"),
+            // Migration 0041's pair rule (2026-09-11): a customer has both
+            // coordinates or neither, because half a coordinate is a line
+            // right round the planet. `(a IS NULL) = (b IS NULL)`, so
+            // multi-column and invisible here — deleting it moves
+            // `EXPECTED_DRIFT_CHANGES` by exactly zero, and
+            // `a_half_written_coordinate_is_refused_by_the_database` is the
+            // only thing that can see it go.
+            //
+            // It carries `anonymized_at IS NOT NULL` like the two shape
+            // CHECKs below, and that disjunct is load-bearing for a reason
+            // none of them has: it is what leaves
+            // `anonymized_customers_carry_the_marker` as the ONLY constraint
+            // that can fire on a row claiming to be erased, so the marker
+            // CHECK's coverage of the coordinate is attributable one column
+            // at a time.
+            ("customers", "address_coordinates_are_both_or_neither"),
             // Migration 0041's country shape, widened by `anonymized_at IS
             // NOT NULL` so the redaction marker is admissible — which is what
             // makes it multi-column and puts it here.
             ("customers", "address_country_is_iso_3166_1_alpha_2"),
             // Migration 0041's erasure invariant, and the most consequential
             // constraint in this list: a row whose `anonymized_at` is set
-            // carries the literal `[redacted]` in all nine identifier
-            // columns. It is what turns "the erasure wrote every column" from
+            // holds nothing of the payer's in any of ELEVEN identifier
+            // columns — the literal `[redacted]` in the nine text ones, and
+            // NULL in the two coordinate ones, which cannot carry a marker
+            // because there is no integer that is not a possible place. It is what turns "the erasure wrote every column" from
             // two call sites remembering into something Postgres refuses to
             // let be untrue — and the drift report cannot see it at all,
             // which is why
@@ -3195,7 +3432,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // asserts it directly.
             ("customers", "anonymized_customers_carry_the_marker"),
             // S4a's one-of rule: a customer must have at least one of `name`,
-            // `email` and `phone`. The eleventh, and the one whose invisibility
+            // `email` and `phone`. The one whose invisibility
             // to the report is *most* consequential, because it is a table
             // `schemas/vpay.cstack` genuinely models — so a reader of the
             // report could reasonably believe `customers` is fully compared.

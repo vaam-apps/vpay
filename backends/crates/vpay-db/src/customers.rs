@@ -1273,23 +1273,32 @@ async fn hard_delete(
 /// operator-facing `error_kind`. `webhook_deliveries` keeps
 /// `payload_sha256` and not the payload — but it does get a statement, and
 /// for the opposite reason to a leak: see the fourth one below.
-async fn redact_stored_copies(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    customer_id: &str,
-    merchant_id: &str,
-) -> Result<(), DbError> {
-    // The redacted address, and it has to be key-for-key what
-    // `vpay_api::model::AddressObject` renders from
-    // `CustomerAddress::redacted()` — a stored body this rewrites is read
-    // back as that object, and a key here that the object does not have (or
-    // one it has and this does not) is a shape a merchant's handler meets on
-    // a replay and nowhere else.
-    //
-    // The two coordinate keys are `null` rather than the marker for
-    // `CustomerAddress::redacted`'s reason: they are integers on the wire, so
-    // the marker is not a value they can take, and a JSON string in an
-    // integer field would break the decode in both SDKs.
-    let address = serde_json::json!({
+/// The `address` a redacted `customer.*` body carries — the value
+/// [`REDACT_CUSTOMER_KEY`]'s `$3` is bound to.
+///
+/// # It has to be key-for-key what the wire object renders
+///
+/// A stored body this rewrites is read back by a merchant as
+/// `vpay_api::model::AddressObject`, on a replayed `POST /v1/customers` or in
+/// a redelivered webhook. A key here that the object does not have — or one
+/// the object has and this does not — is a shape a merchant's handler meets
+/// on a redelivery and nowhere else, which is the worst place to meet one.
+/// `the_redacted_address_body_is_the_shape_the_wire_renders` pins the key set
+/// and the per-type value; the object's own half is
+/// `an_erased_payers_coordinates_are_null_and_not_a_marker` in `vpay-api`.
+///
+/// # Why the coordinate is `null` and the six are the marker
+///
+/// [`CustomerAddress::redacted`]'s reason, one layer out: the coordinate is
+/// an integer on the wire, so the marker is not a value it can take — and a
+/// JSON string in a field both SDKs decode as an integer would fail the
+/// decode rather than read as redacted.
+///
+/// A function rather than a `const`, because `serde_json::json!` is not
+/// const-evaluable; it is called once per erasure, which is not a path where
+/// building a nine-node `Value` is worth avoiding.
+fn redacted_address_json() -> serde_json::Value {
+    serde_json::json!({
         "line1": REDACTED,
         "line2": REDACTED,
         "city": REDACTED,
@@ -1298,7 +1307,15 @@ async fn redact_stored_copies(
         "country": REDACTED,
         "latitude_microdeg": serde_json::Value::Null,
         "longitude_microdeg": serde_json::Value::Null,
-    });
+    })
+}
+
+async fn redact_stored_copies(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    customer_id: &str,
+    merchant_id: &str,
+) -> Result<(), DbError> {
+    let address = redacted_address_json();
 
     // `COALESCE(…, events.data)` and not a bare subquery: `jsonb_object_agg`
     // over an empty object is NULL, and `events.data` is NOT NULL. A
@@ -2276,6 +2293,141 @@ mod tests {
             "without the ELSE arm every key not named above is dropped from the stored body \
              — `id` included: {}",
             super::REDACT_CUSTOMER_KEY
+        );
+    }
+
+    /// The redacted address a stored `customer.*` body is rewritten to is the
+    /// shape the wire renders — eight keys, the marker in six, `null` in two.
+    ///
+    /// # Why a key-set assertion and not only a value one
+    ///
+    /// `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+    /// proves nothing of the payer survives, and it would go on passing if
+    /// this rewrite reduced `address` to `{}` or dropped it to `null`: an
+    /// absent key holds no identifier either. What that would break is a
+    /// merchant's handler on a REDELIVERY — the one place a stored body is
+    /// read back — meeting an address of a shape the API never answers with.
+    /// This is the assertion that says the two agree.
+    ///
+    /// # The per-type rule, which is the part that is easy to make uniform
+    ///
+    /// Six components carry the marker and the two coordinate keys carry
+    /// JSON `null`. Making all eight uniform is the tempting edit and it is
+    /// wrong in both directions: a marker in the coordinate is a string in a
+    /// field both SDKs decode as an integer (a decode failure, not a
+    /// redaction), and `null` in the six would publish which components this
+    /// payer filled in, which migration `0041`'s own argument says is
+    /// information about them.
+    #[test]
+    fn the_redacted_address_body_is_the_shape_the_wire_renders() {
+        let address = super::redacted_address_json();
+        let object = address.as_object().expect("the address is a JSON object");
+
+        assert_eq!(
+            object.len(),
+            8,
+            "the redacted address must have the same keys the wire object does — six formal \
+             components and the coordinate — or a redelivered body is a shape the API never \
+             answers with: {address}"
+        );
+
+        for marked in ["line1", "line2", "city", "state", "postal_code", "country"] {
+            assert_eq!(
+                object.get(marked).and_then(serde_json::Value::as_str),
+                Some(super::REDACTED),
+                "`{marked}` must carry the marker, including for a payer who never filled it \
+                 in: which components a record had is itself information about the person"
+            );
+        }
+
+        for nulled in ["latitude_microdeg", "longitude_microdeg"] {
+            assert_eq!(
+                object.get(nulled),
+                Some(&serde_json::Value::Null),
+                "`{nulled}` must be JSON null and NOT the marker: it is an integer on the \
+                 wire, so a string there fails a merchant's decode rather than reading as \
+                 redacted — and there is no integer that is not a possible place"
+            );
+        }
+    }
+
+    /// [`super::CustomerRow::redacted`] — the projection the
+    /// `customer.deleted` body is built from — marks the six formal
+    /// components and **drops** the coordinate.
+    ///
+    /// The row projection and the stored-body rewrite above are two different
+    /// pieces of code that must agree, because one describes the hard-delete
+    /// branch (where no row survives to re-read) and the other rewrites what
+    /// earlier events said. They are asserted against each other here, in
+    /// milliseconds, rather than only by the container case that erases a
+    /// customer and scans every column.
+    ///
+    /// The mutation: make `CustomerAddress::redacted` uniform by dropping the
+    /// two `None`s, and the payer's real point stays on the object vpay signs
+    /// and stores in `events` for ever — while every text-literal scan goes
+    /// on passing, because a coordinate is not a literal anybody wrote.
+    #[test]
+    fn an_erasure_projects_the_coordinate_to_absent_and_the_rest_to_the_marker() {
+        let row = super::CustomerRow {
+            id: "cus_0123456789abcdefghjkmnpq".to_owned(),
+            seq: 1,
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            name: Some("Ada Ngo".to_owned()),
+            email: None,
+            phone: Some("237600000200".to_owned()),
+            address: super::CustomerAddress {
+                line1: Some("12 Rue Njo-Njo".to_owned()),
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_786_000),
+                ..super::CustomerAddress::default()
+            },
+            metadata: serde_json::json!({ "order_id": "1234" }),
+            last_used_at: time::OffsetDateTime::UNIX_EPOCH,
+            anonymized_at: None,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        };
+
+        let erased = row.redacted(time::OffsetDateTime::UNIX_EPOCH);
+
+        assert_eq!(
+            erased.address.latitude_microdeg, None,
+            "the payer's position must not survive into the body vpay signs and stores for \
+             ever: it cannot carry the marker, so the erasure is the absence"
+        );
+        assert_eq!(erased.address.longitude_microdeg, None);
+        assert_eq!(erased.address.line1.as_deref(), Some(super::REDACTED));
+        assert_eq!(
+            erased.address.city.as_deref(),
+            Some(super::REDACTED),
+            "a component this payer never filled in is marked too"
+        );
+        assert!(
+            !erased.address.is_empty(),
+            "an erased address is still an address — rendering `address: null` here would \
+             make an erased customer and one that never had an address indistinguishable"
+        );
+        assert_eq!(
+            erased.metadata,
+            serde_json::json!({ "order_id": "1234" }),
+            "`metadata` is the merchant's own data and is not the payer's to erase"
+        );
+
+        // The projection and the stored-body rewrite describe the same
+        // address. Compared through the wire's own key names, which is the
+        // only vocabulary the two have in common.
+        let body = super::redacted_address_json();
+        assert_eq!(
+            body.get("latitude_microdeg"),
+            Some(&serde_json::Value::Null),
+            "the rewrite of an earlier `customer.created` body and the projection of the \
+             row must agree about the coordinate, or an erasure leaves two different \
+             accounts of the same address"
+        );
+        assert_eq!(
+            body.get("line1").and_then(serde_json::Value::as_str),
+            erased.address.line1.as_deref()
         );
     }
 

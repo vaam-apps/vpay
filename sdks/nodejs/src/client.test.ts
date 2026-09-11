@@ -2268,10 +2268,15 @@ describe("customers", () => {
     // Canonical, as the server stores and renders it — not the `+237 6 …` a
     // merchant would have typed.
     phone: "237600000200",
-    // The server renders one nested object with all six components, nulls
+    // The server renders one nested object with all EIGHT components, nulls
     // included, or `null` for a customer with no address at all. This fixture
     // carries the object, so a decode that dropped the key or flattened it
     // fails rather than reading as "no address".
+    //
+    // `latitude_microdeg` / `longitude_microdeg` are vpay's own — Stripe's
+    // address has no coordinate — and are whole microdegrees, never degrees.
+    // They are not optional on `Address`, so omitting them here would not
+    // type-check, which is the point of them not being optional.
     address: {
       line1: "12 Rue Njo-Njo",
       line2: null,
@@ -2279,6 +2284,8 @@ describe("customers", () => {
       state: null,
       postal_code: null,
       country: "CM",
+      latitude_microdeg: 4_061_000,
+      longitude_microdeg: 9_786_000,
     },
     metadata: { order_id: "1234" },
     created: 1_700_000_000,
@@ -2297,7 +2304,15 @@ describe("customers", () => {
         name: "Ada Ngo",
         email: "ada@example.com",
         phone: "+237 6 00 00 02 00",
-        address: { line1: "12 Rue Njo-Njo", city: "Douala", country: "CM" },
+        address: {
+          line1: "12 Rue Njo-Njo",
+          city: "Douala",
+          country: "CM",
+          // The GPS half, in whole microdegrees, in the same bracket-encoded
+          // object as the six formal components.
+          latitude_microdeg: 4_061_000,
+          longitude_microdeg: 9_786_000,
+        },
         metadata: { order_id: "1234" },
       },
       { idempotencyKey: "idem_cus" },
@@ -2311,8 +2326,15 @@ describe("customers", () => {
     // refuse offline a number a later vpay accepts. `+` is `%2B` because a
     // bare `+` is a space in a form body.
     expect(req.body).toBe(
-      "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000&address[line1]=12%20Rue%20Njo-Njo&address[city]=Douala&address[country]=CM&metadata[order_id]=1234",
+      "name=Ada%20Ngo&email=ada%40example.com&phone=%2B237%206%2000%2000%2002%2000&address[line1]=12%20Rue%20Njo-Njo&address[city]=Douala&address[country]=CM&address[latitude_microdeg]=4061000&address[longitude_microdeg]=9786000&metadata[order_id]=1234",
     );
+    // The coordinate goes out as a bare decimal integer — `4061000`, never
+    // `4061000.0` and never `4.061e6`. Deleting either key from
+    // `addressBody`'s loop fails the assertion above; this one says what the
+    // failure would mean, and fails on its own if a float ever reached the
+    // encoder.
+    expect(req.body).toContain("address[latitude_microdeg]=4061000&");
+    expect(req.body).not.toMatch(/microdeg\]=[-0-9]*[.e]/);
     expect(customer.id).toBe("cus_123");
     expect(customer.object).toBe("customer");
     // And it decodes back off the object, as one nested value rather than six
@@ -2320,6 +2342,12 @@ describe("customers", () => {
     expect(customer.address?.line1).toBe("12 Rue Njo-Njo");
     expect(customer.address?.country).toBe("CM");
     expect(customer.address?.state).toBeNull();
+    // The coordinate decodes as whole microdegrees, as a `number` that is an
+    // integer. `Number.isInteger` is the assertion a `4061000.0` from a
+    // future server — or a field retyped as a float — would fail; the
+    // equality above it would not.
+    expect(customer.address?.latitude_microdeg).toBe(4_061_000);
+    expect(Number.isInteger(customer.address?.longitude_microdeg)).toBe(true);
     // A live customer carries no `deleted` key at all.
     expect(customer.deleted).toBeUndefined();
   });
@@ -2342,6 +2370,12 @@ describe("customers", () => {
         state: "[redacted]",
         postal_code: "[redacted]",
         country: "[redacted]",
+        // NULL and not the marker, which is what the server really sends:
+        // a coordinate is an integer and there is no integer that is not a
+        // possible place, so the marker is not a value it can take. With
+        // `number | null` this would not even type-check as `"[redacted]"`.
+        latitude_microdeg: null,
+        longitude_microdeg: null,
       },
       deleted: true,
     };
@@ -2355,6 +2389,10 @@ describe("customers", () => {
     expect(customer.deleted).toBe(true);
     expect(customer.phone).toBe("[redacted]");
     expect(customer.address?.country).toBe("[redacted]");
+    // The payer's position is gone rather than marked — the one field on this
+    // object whose erased state is an absence.
+    expect(customer.address?.latitude_microdeg).toBeNull();
+    expect(customer.address?.longitude_microdeg).toBeNull();
     // `metadata` is the merchant's own data and survives the erasure.
     expect(customer.metadata["order_id"]).toBe("1234");
   });

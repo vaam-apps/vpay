@@ -1761,6 +1761,260 @@ mod tests {
         );
     }
 
+    /// A coordinate is a **whole number of microdegrees**, and a decimal
+    /// degree is refused with a sentence that says how to spell it.
+    ///
+    /// This is the assertion the field's *name* exists for, made at the one
+    /// place a merchant's `4.061` can still be turned into something. Every
+    /// layer below is integer-typed, so if this accepted a float it would
+    /// have to round it — and a payer's position rounded by an API that did
+    /// not say so is the failure this whole shape is chosen to avoid.
+    ///
+    /// The refused list is the spellings a merchant actually reaches for:
+    /// degrees with a point, degrees in exponent form, a unit suffix, a
+    /// thousands separator, and a bare sign.
+    #[test]
+    fn a_coordinate_is_a_whole_number_of_microdegrees_and_never_a_degree() {
+        for typed in ["4061000", "+4061000", "-3750000", "0", "90000000"] {
+            assert_eq!(
+                checked_microdeg(
+                    Some(typed.to_owned()),
+                    "latitude_microdeg",
+                    LATITUDE_MAX_MICRODEG
+                )
+                .unwrap_or_else(|error| panic!("`{typed}` is a whole number: {error}")),
+                Some(
+                    typed
+                        .trim_start_matches('+')
+                        .parse::<i64>()
+                        .expect("parses")
+                ),
+                "`{typed}` must be stored as the integer it is"
+            );
+        }
+
+        let mut messages = std::collections::BTreeSet::new();
+        for refused in [
+            "4.061",
+            "4061000.0",
+            "4.061e6",
+            "4061000m",
+            "4_061_000",
+            "-",
+            "north",
+        ] {
+            let error = checked_microdeg(
+                Some(refused.to_owned()),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG,
+            )
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{refused}` is not a whole number of microdegrees and must be refused \
+                     rather than rounded"
+                )
+            });
+            assert_eq!(
+                param_of(&error),
+                Some("address"),
+                "the refusal points at the top-level parameter a merchant's error handler \
+                 can act on"
+            );
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("latitude_microdeg") && rendered.contains("4061000"),
+                "the message has to show the merchant how to spell 4.061: {rendered}"
+            );
+            messages.insert(rendered);
+        }
+
+        // ONE message for all seven, which is how "the refusal does not echo
+        // the value" is asserted without a substring test that the message's
+        // own example (`4.061`) would defeat. An error body is the part of a
+        // response an integration is most likely to log, and this field is a
+        // payer's position: a message that varied with the input would be
+        // carrying it.
+        assert_eq!(
+            messages.len(),
+            1,
+            "the refusal varies with the value the merchant sent, which writes a payer's \
+             position into their logs BECAUSE it was malformed: {messages:?}"
+        );
+
+        // A blank is not a refusal at all: `present` turns it into "absent"
+        // one level up, which is what a client templating an optional field
+        // emits. Asserted here because it is the one input that looks like it
+        // belongs in the list above and does not.
+        assert_eq!(
+            checked_microdeg(
+                present(Some("  ".to_owned())),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG
+            )
+            .expect("a blank is absent, not malformed"),
+            None
+        );
+    }
+
+    /// Each axis is bounded by its own range, and the bound is symmetric.
+    ///
+    /// The South Pole is as legal as the North, and 180 degrees east is as
+    /// legal as 180 west: the bound is the definition of the unit and not a
+    /// product limit, so an off-by-one in the wrong direction would refuse a
+    /// real place. What it refuses is one microdegree outside, on each axis
+    /// and each sign — four cases, which is what catches a `max` used for
+    /// both axes.
+    #[test]
+    fn each_axis_is_bounded_by_its_own_range_and_the_bound_is_symmetric() {
+        for (component, max) in [
+            ("latitude_microdeg", LATITUDE_MAX_MICRODEG),
+            ("longitude_microdeg", LONGITUDE_MAX_MICRODEG),
+        ] {
+            for legal in [max, -max, 0] {
+                assert_eq!(
+                    checked_microdeg(Some(legal.to_string()), component, max)
+                        .unwrap_or_else(|error| panic!("`{legal}` is on the axis: {error}")),
+                    Some(legal)
+                );
+            }
+            for over in [max + 1, -max - 1] {
+                let error = checked_microdeg(Some(over.to_string()), component, max)
+                    .expect_err("one microdegree outside the axis is not a place");
+                assert_eq!(param_of(&error), Some("address"));
+                assert!(
+                    format!("{error}").contains(component),
+                    "the message names the axis, because `which one and which bound` is \
+                     the fact a merchant needs"
+                );
+            }
+        }
+
+        // And the two axes really are bounded differently: 100 degrees east
+        // is a place and 100 degrees north is not. A single shared constant
+        // would pass every assertion above and fail this one.
+        assert!(
+            checked_microdeg(
+                Some("100000000".to_owned()),
+                "longitude_microdeg",
+                LONGITUDE_MAX_MICRODEG
+            )
+            .is_ok()
+        );
+        assert!(
+            checked_microdeg(
+                Some("100000000".to_owned()),
+                "latitude_microdeg",
+                LATITUDE_MAX_MICRODEG
+            )
+            .is_err()
+        );
+    }
+
+    /// Half a coordinate is a `400` naming `address`, decided here and not by
+    /// the database.
+    ///
+    /// `address_coordinates_are_both_or_neither` is the backstop and it is a
+    /// `23514`; `classify_write` routes a CHECK violation to
+    /// `Category::Storage`, which is a `503` telling a merchant to wait for a
+    /// database that is fine. So this is one of the two rules on this
+    /// resource that has to be decided above the statement — the other being
+    /// "clearing the last identifier" — and for the same reason.
+    ///
+    /// Both directions, because the plausible mutation is a check written
+    /// against one field.
+    #[test]
+    fn half_a_coordinate_is_refused_by_the_api_and_not_by_the_check() {
+        for (latitude, longitude) in [
+            (Some("4061000".to_owned()), None),
+            (None, Some("9786000".to_owned())),
+        ] {
+            let error =
+                validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+                    line1: None,
+                    line2: None,
+                    city: None,
+                    state: None,
+                    postal_code: None,
+                    country: None,
+                    latitude_microdeg: latitude,
+                    longitude_microdeg: longitude,
+                }))))
+                .expect_err("half a coordinate names no place");
+            assert_eq!(param_of(&error), Some("address"));
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("latitude_microdeg") && rendered.contains("longitude_microdeg"),
+                "the message names both halves, since which one the merchant meant to send \
+                 is theirs to decide: {rendered}"
+            );
+        }
+
+        // The whole pair is accepted, so this is a test of the pair rule and
+        // not of the coordinate being refused outright.
+        assert_eq!(
+            validated_address(Some(AddressParam::Components(Box::new(AddressParams {
+                line1: None,
+                line2: None,
+                city: None,
+                state: None,
+                postal_code: None,
+                country: None,
+                latitude_microdeg: Some("4061000".to_owned()),
+                longitude_microdeg: Some("9786000".to_owned()),
+            }))))
+            .expect("a whole coordinate is an address"),
+            Some(CustomerAddress {
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_786_000),
+                ..CustomerAddress::default()
+            })
+        );
+
+        // And `address=` still clears both halves with the rest, which is the
+        // one path through `validated_address` that does not build the struct
+        // field by field and could therefore have been missed.
+        assert_eq!(
+            validated_address(Some(AddressParam::Cleared(String::new())))
+                .expect("`address=` is the clear"),
+            Some(CustomerAddress::default()),
+            "`address=` clears the point as well as the street: the address is one fact"
+        );
+    }
+
+    /// The two bounds this module refuses with are the two migration `0041`
+    /// enforces, read off disk rather than restated.
+    ///
+    /// The pair is what keeps a `400` from becoming a `503`: if this module's
+    /// ceiling were the higher of the two, a value between them would pass
+    /// the boundary and trip `address_latitude_microdeg_range` as a `23514`,
+    /// which `classify_write` routes to `Category::Storage` — a merchant told
+    /// to wait for a database that is fine. If it were the lower, vpay would
+    /// refuse a real place. `the_redaction_marker_is_the_one_the_migration_enforces`
+    /// in `vpay-db` is the same device applied to the marker.
+    #[test]
+    fn the_coordinate_bounds_are_the_ones_the_migration_enforces() {
+        let migration =
+            include_str!("../../../../migrations/0041_customers-address-and-anonymisation.sql");
+
+        for (constant, name) in [
+            (LATITUDE_MAX_MICRODEG, "address_latitude_microdeg_range"),
+            (LONGITUDE_MAX_MICRODEG, "address_longitude_microdeg_range"),
+        ] {
+            let clause = migration
+                .split_once(name)
+                .and_then(|(_, rest)| rest.split_once(");"))
+                .map(|(clause, _)| clause.to_owned())
+                .unwrap_or_else(|| panic!("`{name}` is not in migration 0041"));
+            assert!(
+                clause.contains(&format!("BETWEEN -{constant} AND {constant}")),
+                "`{name}` does not enforce the bound this module refuses with ({constant}); a \
+                 value between the two would reach Postgres and come back as a 503. \
+                 Clause: {clause}"
+            );
+        }
+    }
+
     /// Blank is absent on create: `name=` from a client templating an
     /// optional field is not a name of length zero, which the column's
     /// `name_length` floor would refuse as a `500`.
