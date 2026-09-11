@@ -24,7 +24,8 @@
 #     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
 #   * no palette colour, no daisyUI 4 class daisyUI 5 removed, no
 #     `!important` outside the one documented exception, and no `cva` call
-#     outside `@vpay/ui` (`verify-ui`, 2026-09-07 — exp26 UI revamp)
+#     outside `@vpay/ui`, and no file in `@vpay/ui` over 200 lines
+#     (`verify-ui`, 2026-09-07 — exp26 UI revamp; the line ceiling 2026-09-11)
 #
 # `just verify` prints a thirteenth thing that is NOT an invariant and never
 #   * every migration file's SHA256 matches its entry in the manifest; applied
@@ -962,12 +963,16 @@ verify-repositories:
 verify-toolchain:
     cargo xtask verify-toolchain
 
-# Four things ESLint cannot express cheaply — a `git grep` is the honest
+# Six things ESLint cannot express cheaply — a `git grep` is the honest
 # tool here rather than a `cargo xtask verify-ui` matching this repo's other
-# gates, which is more ceremony than four greps deserve (plan
+# gates, which is more ceremony than six greps and a `wc -l` deserve (plan
 # docs/plans/2026-09-07-ui-revamp.md §7, "the class-string rules,
 # concretely"). Each has a decisive mutation: add the offending line,
 # confirm this exits non-zero, remove it.
+#
+# It said "four" until 2026-09-11 and had been wrong since the `.js`-import
+# regression guard landed as the fifth; the 200-line ceiling on every file in
+# `@vpay/ui` is the sixth.
 verify-ui:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1025,14 +1030,14 @@ verify-ui:
     #    plan measured this repository actually used — not the complete
     #    daisyUI 4→5 delta.
     #
-    #    frontends/packages/ui/src/components/field.tsx is exempted: its own
+    #    frontends/packages/ui/src/components/field/field.tsx is exempted: its own
     #    doc comment NAMES form-control/label-text, in prose, to explain
     #    why @vpay/ui's Field replaces them — it does not use either class.
     #    Measured, not assumed: it is the only file in the tree where this
     #    matched and had no actual offending class in it.
     if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
         -- 'frontends' 'examples' ':!docs' \
-        ':!frontends/packages/ui/src/components/field.tsx' ; then
+        ':!frontends/packages/ui/src/components/field/field.tsx' ; then
       echo 'verify-ui: a daisyUI 4 class removed in daisyUI 5'; fail=1
     fi
     # 3. No !important, with three exemptions — measured against this repo's
@@ -1078,6 +1083,32 @@ verify-ui:
     if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
       echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
     fi
+    # 6. No file in @vpay/ui over 200 lines, imports and comments included.
+    #
+    #    The maintainer's directive, 2026-09-11, in as many words: "we MUST
+    #    have components folder with very few lines, max 200 LoC, including
+    #    imports and comments". It is a gate rather than a guideline because
+    #    the shape it forces is the point — a component whose `cva` map has
+    #    been split into its own file, whose test and story sit beside it in
+    #    its own folder, is a component someone else can compose from. The
+    #    file that made the rule was `components/layout.tsx`: 221 lines
+    #    holding FIVE primitives, which is how five things end up with one
+    #    test file and one story between them.
+    #
+    #    Tracked files only (`git ls-files`), so a scratch file in a working
+    #    tree cannot fail somebody else's build, and every extension under
+    #    `src` — a 300-line `.css` or a 300-line `.test.tsx` is the same
+    #    problem as a 300-line component.
+    #
+    #    The mutation: append filler lines to any file under
+    #    frontends/packages/ui/src until it passes 200, and this exits
+    #    non-zero naming that file and its length.
+    while read -r file; do
+      lines=$(wc -l < "$file")
+      if [ "$lines" -gt 200 ]; then
+        echo "verify-ui: $file is $lines lines, over the 200-line limit"; fail=1
+      fi
+    done < <(git ls-files -- 'frontends/packages/ui/src')
     exit $fail
 # Applied migrations are immutable: an applied migration file cannot be edited.
 # This gate verifies that every migration file's SHA256 matches the manifest.
