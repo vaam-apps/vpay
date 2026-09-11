@@ -942,7 +942,34 @@ describe("the dashboard", { testIsolation: false }, () => {
     // unit coverage in `src/dash/provider.test.ts`; what is missing is proof
     // that the BFF and the rendered links also respect it.
     //
+    // # Why this seeds data instead of hoping for it
+    //
+    // `payments-query.ts`'s `PAGE_SIZE` is 25. Measured on 2026-09-11: by the
+    // time this test runs, the tenant `/dash/v1` reads carries exactly three
+    // payments — one from `checkout.cy.ts` (which runs first in
+    // `e2e:default`'s alphabetical spec order) and two from this file's own
+    // earlier tests. `shop-hosted.cy.ts`'s four and `shop-embedded.cy.ts`'s
+    // six all run AFTER this test, in a later spec file or a wholly separate
+    // `cypress run` (`e2e:framed`), so none of them count either. A version
+    // of this test that only clicked "Next" *if a link happened to exist*
+    // would therefore always have taken the single-page branch and never
+    // once walked a second page — green either way, proving nothing about
+    // the backward `has_more` inversion it exists to catch. So this mints
+    // enough rows first that a second page is not optional, then asserts the
+    // "Next" link exists rather than tolerating its absence: if the
+    // precondition (more than one page) is broken, this test must fail
+    // loudly rather than quietly pass on the wrong branch.
+    //
     // Still signed in from the sign-in test; testIsolation is off.
+    cy.task<{ ids: string[] }>("mintPaymentIntentsForPaging", 30).then(
+      (seeded) => {
+        expect(
+          seeded.ids.length,
+          "seeded enough rows on this tenant to force a second page past PAGE_SIZE (25)",
+        ).to.equal(30);
+      },
+    );
+
     cy.visit("/payments");
     cy.contains("h2", "Payments").should("be.visible");
 
@@ -951,70 +978,53 @@ describe("the dashboard", { testIsolation: false }, () => {
       const firstPageIds = [...$rows].map(
         (row) => row.getAttribute("data-payment-id") ?? "",
       );
-      expect(firstPageIds.length, "the first page has at least one row").to.be
-        .greaterThan(0);
+      expect(
+        firstPageIds.length,
+        "the first page has at least one row",
+      ).to.be.greaterThan(0);
 
-      // Check if there is a next link; if not, this test is complete but
-      // passing: a single-page result is stable.
-      cy.contains("a", /next/i)
-        .should("exist")
-        .then(() => {
-          // There is a next link. Click it and capture the second page.
-          cy.contains("a", /next/i).click();
-          cy.location("pathname").should("eq", "/payments");
+      // No conditional: the seeding above guarantees a second page exists,
+      // so a missing "Next" link is a real failure, not a single-page
+      // result to tolerate.
+      cy.contains("a", /next/i).should("exist").click();
+      cy.location("pathname").should("eq", "/payments");
 
-          cy.get("table tbody tr").then(($secondRows) => {
-            const secondPageIds = [...$secondRows].map(
-              (row) => row.getAttribute("data-payment-id") ?? "",
-            );
-            expect(secondPageIds.length, "the second page has at least one row")
-              .to.be.greaterThan(0);
+      cy.get("table tbody tr").then(($secondRows) => {
+        const secondPageIds = [...$secondRows].map(
+          (row) => row.getAttribute("data-payment-id") ?? "",
+        );
+        expect(
+          secondPageIds.length,
+          "the second page has at least one row",
+        ).to.be.greaterThan(0);
 
-            // Verify no overlap between the first and second pages.
-            const overlap = firstPageIds.filter((id) =>
-              secondPageIds.includes(id),
-            );
-            expect(
-              overlap.length,
-              "paging forward does not repeat rows from the first page",
-            ).to.equal(0);
+        // Verify no overlap between the first and second pages.
+        const overlap = firstPageIds.filter((id) => secondPageIds.includes(id));
+        expect(
+          overlap.length,
+          "paging forward does not repeat rows from the first page",
+        ).to.equal(0);
 
-            // Now page backward. There must be a previous link on the second
-            // page, because we reached it by paging forward. If it is absent,
-            // the backward `has_more` inversion is broken.
-            cy.contains("a", /previous|back/i)
-              .should("exist")
-              .click();
-            cy.location("pathname").should("eq", "/payments");
+        // Now page backward. There must be a previous link on the second
+        // page, because we reached it by paging forward. If it is absent,
+        // the backward `has_more` inversion is broken.
+        cy.contains("a", /previous|back/i)
+          .should("exist")
+          .click();
+        cy.location("pathname").should("eq", "/payments");
 
-            // Verify we are back at the first page with the same rows in the
-            // same order.
-            cy.get("table tbody tr").then(($backtrackedRows) => {
-              const backtrackedIds = [...$backtrackedRows].map(
-                (row) => row.getAttribute("data-payment-id") ?? "",
-              );
-              expect(
-                backtrackedIds,
-                "paging backward returns the same rows as the first page, in the same order",
-              ).to.deep.equal(firstPageIds);
-            });
-          });
-        })
-        .catch(() => {
-          // No next link exists: this is a single-page result, which is fine.
-          // The assertion is that it is stable when revisited.
-          cy.visit("/payments");
-          cy.contains("h2", "Payments").should("be.visible");
-          cy.get("table tbody tr").then(($revisited) => {
-            const revisitedIds = [...$revisited].map(
-              (row) => row.getAttribute("data-payment-id") ?? "",
-            );
-            expect(
-              revisitedIds,
-              "a single-page result is stable when revisited",
-            ).to.deep.equal(firstPageIds);
-          });
+        // Verify we are back at the first page with the same rows in the
+        // same order.
+        cy.get("table tbody tr").then(($backtrackedRows) => {
+          const backtrackedIds = [...$backtrackedRows].map(
+            (row) => row.getAttribute("data-payment-id") ?? "",
+          );
+          expect(
+            backtrackedIds,
+            "paging backward returns the same rows as the first page, in the same order",
+          ).to.deep.equal(firstPageIds);
         });
+      });
     });
   });
 

@@ -9,7 +9,10 @@ import {
   startFrameFixtureServer,
   stopFrameFixtureServer,
 } from "./cypress/tasks/frameFixtureServer.js";
-import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
+import {
+  mintCheckoutPaymentIntent,
+  mintPaymentIntentsForPaging,
+} from "./cypress/tasks/checkoutTasks.js";
 import {
   carriedForward,
   carryForward,
@@ -134,6 +137,7 @@ export default defineConfig({
       // the page under test.
       on("task", {
         mintCheckoutPaymentIntent,
+        mintPaymentIntentsForPaging,
         // `dashboard.cy.ts`'s three, all of them Node-side for
         // `dashboardTasks.ts`'s reasons: the staff password is read from a
         // file so it never enters `Cypress.env`, and the TOTP codes need a
