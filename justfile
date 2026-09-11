@@ -810,8 +810,17 @@ verify-links:
 # declares `publishConfig.access: "public"`, names this repository, carries a
 # license, and ships a `files` allowlist with an entry point under `dist/`;
 # every private one declares no `publishConfig` at all; and no retired
-# `@vpay/*` package name survives outside `docs/plans`, `docs/adr` and
-# `docs/status.md`.
+# `@vpay/*` package name survives outside `docs/plans`, `docs/adr`,
+# `docs/status.md` and `docs/status/`.
+#
+# `docs/status/` joined that list on 2026-09-11 and is the same exemption,
+# not a new one: the dated entry that records the `@vpay/*` -> `@vaam-apps/*`
+# rename was on `docs/status.md` when the gate was written, and the split
+# that turned that page into an archive moved it to `docs/status/gates.md`.
+# The allowlist is prefix-matched, so `docs/status.md` did not cover it and
+# the gate failed on seven occurrences. `the_same_retired_name_under_the_docs_status_archive_passes`
+# and `a_retired_name_in_a_path_that_only_looks_like_the_status_archive_fails`
+# in `xtask` pin both halves.
 #
 # The `files`/`main` half is not tidiness. `sdks/stripe-compat` has no build,
 # no `main` and no `files`, so `pnpm pack` on it produces a tarball of five
