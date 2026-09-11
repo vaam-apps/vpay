@@ -432,3 +432,20 @@ to the empty string in `alert.variants.ts` makes
 `checkout-view.test.tsx > does NOT render a failed payment in the neutral tone
 a cancelled one beats` fail with `expected 'mt-4 alert' to contain
 'alert-error'`.
+
+**Updated 2026-09-11 (b1e): axe contrast checks on outcome screens added.**
+The bumblebee theme's contrast had been "checked by nobody" (2026-09-07,
+above) — @vpay/ui's Storybook runs axe against corporate/business (unused
+here), and that Storybook is not in `just ci`. Issue #73 decision: run axe on
+the four outcome screens. `frontends/apps/checkout/src/components/outcomes.axe.test.tsx`
+is a new vitest suite: 10 tests (succeeded/failed/canceled checkout outcomes +
+succeeded/failed return outcomes, each in English and French) running axe's
+`color-contrast` rule. **jsdom limitation:** the tests pass (10/10) with zero
+violations reported because jsdom computes no CSS colors. A violation that
+exists in the rendered page will NOT be caught here. **The real verification is
+in a real browser** — `cypress-axe` running against the `compose.e2e.yml`
+stack, plan §7 row 6 (still unbuilt). This test documents the requirement and
+will catch violations when the real browser implementation is added. The
+theme's own tone palette is measured by `@vpay/ui`'s `theme-contrast.test.ts`,
+which compiles the stylesheet and verifies every rendered tone clears WCAG AA
+(4.5:1), including the error/info overrides at lines 887–899 above.
