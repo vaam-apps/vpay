@@ -2642,7 +2642,10 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 ///     the schema` line, exactly as its six siblings on this table already
 ///     do. Declaring it with `@db_enforce` would make it worse rather than
 ///     better, for the reason `EXPECTED_DRIFT_CHANGES` gives above.
-/// **172 -> 176 on 2026-09-10** (issues #67, #68, #96 item 2, migration
+///
+/// # 172 -> 176 on 2026-09-10
+///
+/// (issues #67, #68, #96 item 2, migration
 /// `0041`), measured against a freshly migrated database rather than
 /// inferred. `customers` goes 10 -> 14 and nothing else moves at all. The +4
 /// is a +5 and a -1, and both halves are worth reading because they are the
