@@ -2880,6 +2880,35 @@ a `count(*) OVER ()` in the same statement, which makes it exact and
 consistent with the page — and absent when the page is past the end of the
 set, because the count travels on a row.
 
+**`resolve` is the clamp _and the default_, and that second half is a trap
+worth naming (2026-09-11, exp54 review).** `resolve(max)` defaults an absent
+`limit` to `max`, so passing `MAX_PAGE_LIMIT` alone answers 100 rows to a
+caller who asked for no page size, where `GET /dash/v1/payment_intents`
+answers 10 (`vpay_api::v1::paging::DEFAULT_LIMIT`). The two surfaces are read
+by the same operator; a 10× difference arriving through the default is the
+same defect as one arriving through the ceiling. `search_payment_intents`
+therefore supplies `DEFAULT_PAGE_LIMIT` (10) before calling `resolve`, and
+hands `resolve` the clamp untouched. A second procedure using `PageInput`
+must do the same or say why not.
+
+**What offset pagination cannot promise, and what `seq` does and does not
+buy.** `payment_intents.seq` carries a UNIQUE index
+(`payment_intents_seq_key`, migration `0014`), so `ORDER BY seq DESC` is a
+_total_ order and one statement never has a tie to break. That is the whole
+of it. **`OFFSET` is counted afresh on every call**, so a payment created
+between one page and the next shifts the window: a caller walking
+`offset = 0, 10, 20` over a list that is being written to sees the last row
+of a page again at the top of the next one, and misses a row at the tail for
+every row inserted behind its back. `seq DESC` puts new rows at offset 0,
+which is the direction that makes this happen on a busy merchant rather than
+a quiet one. It is a property of offset pagination, not a defect in the body,
+and it is the reason `/v1` and `/dash/v1` are cursor-paged: `starting_after`
+resolves an id to a `seq` and asks for rows _below_ it, which an insert
+cannot move. `total_count` is exact for the statement that returned it and
+says nothing about the next call. Anything that must not double-count a
+payment — a reconciliation, an export, a sum — reads the cursor list, not
+this one.
+
 **The statement is a `&'static str`, so no `AssertSqlSafe` site was added** and
 `sql_audit`'s `EXPECTED_ASSERT_SITES` did not move. A procedure has no
 `format!` to make: its filters are `$N IS NULL OR …` bind parameters, exactly

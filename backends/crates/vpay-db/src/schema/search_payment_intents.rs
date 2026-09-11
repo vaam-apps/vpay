@@ -22,6 +22,32 @@
 //! the same thing in the same words; the declaration in
 //! `schemas/vpay.cstack` is not an endpoint.
 //!
+//! # What offset paging cannot promise, and what `seq` does not fix
+//!
+//! Added by the exp54 review, 2026-09-11, because nothing in this branch
+//! said it and the surrounding prose read as if the opposite were true.
+//!
+//! `payment_intents.seq` carries a UNIQUE index (`payment_intents_seq_key`,
+//! migration `0014`), so `ORDER BY seq DESC` is a **total** order: one
+//! statement never has a tie to break and never returns a row twice. That is
+//! the whole of what the index buys, and it is a smaller thing than it
+//! looks. **`OFFSET` is counted afresh on every call**, so a payment created
+//! between one page and the next shifts the window by one: a caller walking
+//! `offset = 0, 10, 20` over a list that is being written to sees the last
+//! row of a page again at the top of the next one, and misses a row at the
+//! tail for every intent inserted behind its back. `seq DESC` puts new rows
+//! at offset 0, which is the direction that makes this happen on a busy
+//! merchant rather than a quiet one.
+//!
+//! This is a property of offset paging, not a defect in this body, and
+//! nothing here compensates for it — which is why `GET /v1/payment_intents`
+//! and `GET /dash/v1/payment_intents` are cursor-paged: `starting_after`
+//! resolves an id to a `seq` and asks for rows *below* it, and an insert
+//! cannot move that. `total_count` is exact for the statement that returned
+//! it and says nothing about the next one. Anything that must not
+//! double-count a payment — a reconciliation, an export, a sum — reads the
+//! cursor list, not this.
+//!
 //! # The three things that would be wrong if they were missing
 //!
 //! Each is named after the mutation it catches, and each mutation was run:
@@ -36,13 +62,14 @@
 //!    `against_postgres::the_page_is_the_tenants_own_rows_filtered_and_bounded`
 //!    — no unit test can catch it, because a predicate is only observable
 //!    through the rows it excluded.
-//! 2. **The limit clamp.** [`cratestack::PageInput::resolve`] is what turns
-//!    an absent or hostile `limit` into a bounded one; without it a caller
-//!    chooses how many rows Postgres materialises. Dropping the call is a
-//!    Postgres `OFFSET must not be negative` and an unclamped
-//!    `MAX_PAGE_LIMIT + 1`, both in that same container test — and it
-//!    leaves `tests::a_hostile_limit_is_clamped_before_it_reaches_postgres`
-//!    green, which is why both exist.
+//! 2. **The limit clamp.** [`cratestack::PageInput::resolve`], reached
+//!    through [`resolve_page`], is what turns an absent or hostile `limit`
+//!    into a bounded one; without it a caller chooses how many rows Postgres
+//!    materialises. Dropping the call is a Postgres `OFFSET must not be
+//!    negative` and an unclamped `MAX_PAGE_LIMIT + 1`, both in that same
+//!    container test — and it leaves
+//!    `tests::a_hostile_limit_is_clamped_before_it_reaches_postgres` green,
+//!    which is why both exist.
 //! 3. **The status refusal.** An unknown status is a `400` naming `status`,
 //!    not an empty page — "no payments are `succeded`" is a sentence an
 //!    operator reads as an answer about their payments rather than about
@@ -53,14 +80,13 @@
 
 use std::str::FromStr as _;
 
-use cratestack::{CratestackContext, CratestackError, Page, PageInfo};
+use cratestack::{CratestackContext, CratestackError, Page, PageInfo, PageInput};
 use time::OffsetDateTime;
 use vpay_core::IntentStatus;
 
 use super::cratestack_schema::{self, procedures, types};
 
-/// The largest page this procedure will answer, and the default when the
-/// caller names no `limit`.
+/// The largest page this procedure will answer.
 ///
 /// **100, which is a deliberate copy of `vpay_api::v1::paging::MAX_LIMIT`**
 /// rather than [`cratestack::MAX_LIST_LIMIT`] (1000). The two surfaces are
@@ -72,6 +98,21 @@ use super::cratestack_schema::{self, procedures, types};
 /// `tests::the_page_ceiling_stays_inside_cratestacks_own` checks that this
 /// never exceeds CrateStack's own resource-exhaustion ceiling.
 const MAX_PAGE_LIMIT: i64 = 100;
+
+/// The page this procedure answers when the caller names no `limit`, and a
+/// copy of `vpay_api::v1::paging::DEFAULT_LIMIT` for the reason
+/// [`MAX_PAGE_LIMIT`] copies `MAX_LIMIT`.
+///
+/// **Separate from the ceiling, and it has to be, because
+/// [`cratestack::PageInput::resolve`] fuses the two.** `resolve(max)`
+/// defaults an absent `limit` *to `max`*, so handing it `MAX_PAGE_LIMIT`
+/// alone answers 100 rows to a caller who named no page size, where
+/// `GET /dash/v1/payment_intents` answers 10. That is exactly the "ten times
+/// the page the REST list does" [`MAX_PAGE_LIMIT`] rules out, arriving
+/// through the default instead of through the ceiling. Found by the exp54
+/// review, 2026-09-11; the ceiling was already right and the default was
+/// not.
+const DEFAULT_PAGE_LIMIT: i64 = 10;
 
 /// Every column [`SummaryRow`] decodes, plus the window count.
 ///
@@ -93,6 +134,13 @@ const MAX_PAGE_LIMIT: i64 = 100;
 /// travels *on a row*, so a page past the end of the set carries no total at
 /// all; [`page_of`] answers `total_count: None` there rather than `0`, which
 /// would be a lie about a set that has rows in it.
+///
+/// **`offset == 0` is the exception, and the exp54 review added it.** The
+/// statement asks for `limit + 1` rows starting at the first one, so an
+/// empty result at offset zero is not "the count fell off the page" — it is
+/// proof the filtered set is empty, and `0` is the truth. Answering `None`
+/// there told an operator filtering by a status they have none of that the
+/// total was unknown when it was known to be none.
 const SEARCH_SQL: &str = "SELECT id, merchant_id, livemode, amount, amount_received, \
                           amount_refunded, amount_refund_pending, currency_code, status, \
                           last_payment_error_code, description, customer_id, created_at, \
@@ -128,7 +176,7 @@ impl procedures::ProcedureRegistry for Payments {
         // predicate a caller chooses is not a tenancy predicate.
         let merchant_id = tenant_of(ctx)?;
         let status = validated_status(args.filter.status.as_deref())?;
-        let (limit, offset) = args.page.resolve(MAX_PAGE_LIMIT);
+        let (limit, offset) = resolve_page(args.page);
 
         // `limit + 1`, the same trick `PaymentIntents::list_page_filtered`
         // uses: one row past the page is how `has_next_page` is learned
@@ -147,6 +195,26 @@ impl procedures::ProcedureRegistry for Payments {
 
         page_of(rows, limit, offset)
     }
+}
+
+/// [`PageInput::resolve`]'s clamp, with vpay's default page size rather
+/// than CrateStack's.
+///
+/// The clamp is **not** reimplemented and must not be: an absent `limit`
+/// becomes [`DEFAULT_PAGE_LIMIT`] here, and everything that makes the
+/// arguments safe — the `[0, MAX_PAGE_LIMIT]` clamp on `limit`, the `>= 0`
+/// clamp on `offset` — is still `resolve`'s. Replacing this body with
+/// `(page.limit.unwrap_or(DEFAULT_PAGE_LIMIT), page.offset.unwrap_or(0))`
+/// still reddens
+/// `against_postgres::the_page_is_the_tenants_own_rows_filtered_and_bounded`
+/// with Postgres' own `OFFSET must not be negative`, which is the mutation
+/// that matters.
+fn resolve_page(page: PageInput) -> (i64, i64) {
+    PageInput {
+        limit: Some(page.limit.unwrap_or(DEFAULT_PAGE_LIMIT)),
+        offset: page.offset,
+    }
+    .resolve(MAX_PAGE_LIMIT)
 }
 
 /// The merchant a context is allowed to read, or a refusal.
@@ -212,8 +280,17 @@ fn page_of(
 ) -> Result<Page<types::PaymentIntentSummary>, CratestackError> {
     let has_next_page = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
     // The window count is the same on every row of the result, so the first
-    // one answers for all of them. No row means no total — see `SEARCH_SQL`.
-    let total_count = rows.first().map(|row| row.total_count);
+    // one answers for all of them. No row means no total — see `SEARCH_SQL`
+    // — *except* at `offset == 0`, where no row is itself the answer: the
+    // statement asked for `limit + 1` rows starting at the first one, so an
+    // empty result proves the filtered set is empty and `0` is the truth
+    // rather than a guess. Without this arm an operator who filters by a
+    // status they have none of is told the total is unknown, which is a
+    // worse answer than "none" and the one a table would render as a blank.
+    let total_count = rows
+        .first()
+        .map(|row| row.total_count)
+        .or_else(|| (offset == 0).then_some(0));
     rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
 
     let items = rows
@@ -384,7 +461,7 @@ fn to_chrono(stored: OffsetDateTime) -> cratestack::chrono::DateTime<cratestack:
 
 #[cfg(test)]
 mod tests {
-    //! Ten cases with no database — the parts of the body that decide
+    //! Eleven cases with no database — the parts of the body that decide
     //! something *before* a statement runs, plus the assembly of the answer
     //! from rows a test supplies — and one, in [`against_postgres`], that
     //! starts a container. The split is not a preference: a tenancy
@@ -395,8 +472,6 @@ mod tests {
     //! `Payments` is `pub(crate)`: the `ProcedureRegistry` trait it
     //! implements is inside `crate::schema`'s private expansion, so no
     //! integration-test crate can name either.
-
-    use cratestack::PageInput;
 
     use super::*;
 
@@ -505,33 +580,98 @@ mod tests {
         assert_eq!(IntentStatus::ALL.len(), 5);
     }
 
-    /// The clamp's contract, at every boundary a caller can reach.
+    /// `schemas/vpay.cstack`'s `enum FailureCode` and
+    /// `vpay_core::FailureCode` are one vocabulary, in both directions.
     ///
-    /// **This pins `resolve`, not the body's use of it, and the difference
-    /// is measured rather than assumed.** Replacing the body's
-    /// `args.page.resolve(MAX_PAGE_LIMIT)` with
-    /// `(args.page.limit.unwrap_or(MAX_PAGE_LIMIT), args.page.offset.unwrap_or(0))`
+    /// **Added by the exp54 review, and the gap it closes is not symmetric
+    /// with the status one.** An unknown `status` is a caller's typo and
+    /// [`validated_status`] answers `400`. An unknown
+    /// `last_payment_error_code` is a *stored* value, and
+    /// [`SummaryRow::into_summary`] answers [`CratestackError::Internal`] —
+    /// correct when the database really does hold something this build
+    /// cannot name, and badly wrong when the two transcriptions of vpay's
+    /// **own** vocabulary have merely drifted. In that case every payment
+    /// that failed for the missing reason becomes a `500` on an operator's
+    /// list, and before this test nothing would have noticed:
+    /// `search_payment_intents.rs` is the only consumer of
+    /// `types::FailureCode` anywhere in the workspace, so the schema's copy
+    /// had no other reader to disagree with.
+    ///
+    /// Decisive: delete any line from `enum FailureCode` in
+    /// `schemas/vpay.cstack` and the first loop fails naming it.
+    #[test]
+    fn the_two_failure_code_vocabularies_are_one_vocabulary() {
+        for code in vpay_core::FailureCode::ALL {
+            let parsed = types::FailureCode::from_str(code.as_str())
+                .unwrap_or_else(|error| panic!("{}: {error}", code.as_str()));
+            assert_eq!(parsed.as_str(), code.as_str());
+        }
+
+        // And back. The generated enum offers no `ALL` and no iterator, so
+        // the eleven labels are written out — the same cost, and the same
+        // admitted limit, as `the_two_intent_status_vocabularies_are_one_
+        // vocabulary`: a variant added to `schemas/vpay.cstack` ALONE still
+        // escapes both halves. The direction that breaks this surface is a
+        // rail code `vpay-core` knows and the schema cannot parse, and the
+        // loop above covers that one.
+        for label in [
+            "insufficient_funds",
+            "payer_timeout",
+            "payer_declined",
+            "invalid_payer",
+            "payer_limit_reached",
+            "payer_account_blocked",
+            "invalid_payee",
+            "payee_account_blocked",
+            "provider_account_blocked",
+            "provider_unavailable",
+            "provider_error",
+        ] {
+            assert!(
+                vpay_core::FailureCode::ALL
+                    .iter()
+                    .any(|code| code.as_str() == label),
+                "the schema declares {label}, vpay-core does not"
+            );
+            assert!(types::FailureCode::from_str(label).is_ok(), "{label}");
+        }
+        assert_eq!(vpay_core::FailureCode::ALL.len(), 11);
+    }
+
+    /// [`resolve_page`]'s contract, at every boundary a caller can reach.
+    ///
+    /// **This pins `resolve_page`, not the body's use of it, and the
+    /// difference is measured rather than assumed.** Replacing the body's
+    /// `resolve_page(args.page)` with
+    /// `(args.page.limit.unwrap_or(DEFAULT_PAGE_LIMIT), args.page.offset.unwrap_or(0))`
     /// leaves this test green — it is
     /// `against_postgres::the_page_is_the_tenants_own_rows_filtered_and_bounded`
     /// that goes red, with `OFFSET must not be negative` from Postgres and a
     /// `limit` of `MAX_PAGE_LIMIT + 1` coming back unclamped. Both tests are
     /// needed: this one says what the clamp must do, that one says the body
     /// still asks for it.
+    ///
+    /// The first row is the one the exp54 review added and the reason
+    /// [`DEFAULT_PAGE_LIMIT`] exists: it was `MAX_PAGE_LIMIT` before, because
+    /// `PageInput::resolve` defaults an absent `limit` to its ceiling, and a
+    /// caller who named no page size got 100 rows where `/dash/v1` gives 10.
     #[test]
     fn a_hostile_limit_is_clamped_before_it_reaches_postgres() {
         let cases = [
-            (None, None, MAX_PAGE_LIMIT, 0),
+            (None, None, DEFAULT_PAGE_LIMIT, 0),
+            (None, Some(30), DEFAULT_PAGE_LIMIT, 30),
             (Some(10), Some(20), 10, 20),
+            (Some(MAX_PAGE_LIMIT), None, MAX_PAGE_LIMIT, 0),
             (Some(MAX_PAGE_LIMIT + 1), None, MAX_PAGE_LIMIT, 0),
             (Some(i64::MAX), None, MAX_PAGE_LIMIT, 0),
             (Some(-1), Some(-1), 0, 0),
+            (Some(i64::MIN), Some(i64::MIN), 0, 0),
             (Some(0), None, 0, 0),
         ];
 
         for (limit, offset, expected_limit, expected_offset) in cases {
-            let page = PageInput { limit, offset };
             assert_eq!(
-                page.resolve(MAX_PAGE_LIMIT),
+                resolve_page(PageInput { limit, offset }),
                 (expected_limit, expected_offset),
                 "limit={limit:?} offset={offset:?}"
             );
@@ -539,15 +679,20 @@ mod tests {
     }
 
     /// The ceiling this procedure applies is never looser than CrateStack's
-    /// own resource-exhaustion ceiling.
+    /// own resource-exhaustion ceiling, and the default never exceeds the
+    /// ceiling.
     ///
     /// The weaker half of `MAX_PAGE_LIMIT`'s contract, and the only half a
     /// test can hold: `vpay-db` cannot see `vpay_api::v1::paging::MAX_LIMIT`
-    /// to compare against it.
+    /// or `DEFAULT_LIMIT` to compare against them. The strong half — that
+    /// these two are the same numbers `/dash/v1` uses — is still ungated,
+    /// and the constants' own doc comments are the only thing saying so.
     #[test]
     fn the_page_ceiling_stays_inside_cratestacks_own() {
         const { assert!(MAX_PAGE_LIMIT > 0) };
         const { assert!(MAX_PAGE_LIMIT <= cratestack::MAX_LIST_LIMIT) };
+        const { assert!(DEFAULT_PAGE_LIMIT > 0) };
+        const { assert!(DEFAULT_PAGE_LIMIT <= MAX_PAGE_LIMIT) };
     }
 
     /// `has_next_page` comes from the extra row, and the total from the
@@ -578,6 +723,20 @@ mod tests {
         assert_eq!(past_end.total_count, None);
         assert!(!past_end.page_info.has_next_page);
         assert!(past_end.page_info.has_previous_page);
+
+        // An empty FIRST page is a different fact, and the exp54 review is
+        // why it is one: the statement asked for `limit + 1` rows starting at
+        // the first one, so no row at `offset == 0` proves the filtered set
+        // is empty. `0` is the truth; `None` was an operator being told the
+        // total was unknown when it was known to be none.
+        //
+        // Decisive: dropping `page_of`'s `(offset == 0).then_some(0)` arm
+        // fails the assertion below and nothing else in this file.
+        let empty_set = page_of(rows(0, 0), 2, 0).expect("an empty result assembles");
+        assert!(empty_set.items.is_empty());
+        assert_eq!(empty_set.total_count, Some(0));
+        assert!(!empty_set.page_info.has_next_page);
+        assert!(!empty_set.page_info.has_previous_page);
     }
 
     /// A stored status this build cannot name is an error, not a default.
@@ -712,9 +871,27 @@ mod tests {
             .await
             .expect_err("no tenant means no rows may be read, not all of them");
         assert!(matches!(error, CratestackError::Forbidden(_)), "{error:?}");
+
+        // **The two refusals compared against each other, not against a
+        // literal** — the exp54 review's change, and the reason is that
+        // "byte for byte what the policy writes" is a claim about
+        // `cratestack_policy::eval`, which this repository does not own.
+        // `eval` builds the message as `format!("{construct} policy denied
+        // this operation")`; the day a CrateStack release rewords it, a
+        // literal here keeps passing while the indistinguishability the
+        // whole design rests on is silently gone. Asserting equality is the
+        // only spelling that fails on that.
         assert_eq!(
             error.public_message(),
-            "procedure policy denied this operation"
+            refused.public_message(),
+            "a caller must not be able to tell 'you are not signed in' from \
+             'you have no tenant'"
+        );
+        assert_eq!(
+            error.public_message(),
+            "procedure policy denied this operation",
+            "and the wording itself, so a change in it is seen rather than \
+             absorbed by the equality above"
         );
     }
 
@@ -746,12 +923,16 @@ mod tests {
     /// The halves of this procedure that only rows can prove, against a real
     /// Postgres.
     ///
-    /// **One container and one test, deliberately.** `tests/postgres.rs`'s
-    /// header explains the constraint: this crate is not covered by
-    /// `.config/nextest.toml`'s one-at-a-time filter, so every container test
-    /// here can be starting at the same moment as the others. One chunky
-    /// test that seeds two tenants once and asks it six questions costs one
-    /// container; six tests would cost six.
+    /// **One container and one test, deliberately** — though not for the
+    /// reason `tests/postgres.rs`' header gave until the exp54 review
+    /// corrected it. `vpay-db` **is** covered by `.config/nextest.toml`'s
+    /// one-at-a-time filter and has been since 2026-09-02: the
+    /// `postgres-containers` override names `package(vpay-db)` explicitly,
+    /// so no container start in this crate races another. The reason that
+    /// survives is cheaper and still real — under a `max-threads = 1` group,
+    /// one chunky test that seeds two tenants once and asks it six questions
+    /// costs one container and one start; six tests would cost six, in
+    /// series.
     mod against_postgres {
         use anyhow::Context as _;
         use sqlx::postgres::PgPoolOptions;
@@ -936,7 +1117,11 @@ mod tests {
             .await
             .context("a status filter")?;
             assert!(canceled.items.is_empty(), "{:?}", canceled.items);
-            assert_eq!(canceled.total_count, None);
+            // `Some(0)`, not `None`: this is the first page of a set that is
+            // genuinely empty, and "you have no canceled payments" is a
+            // different answer from "the total is unknown". `None` is
+            // reserved for a page past the end, which the unit test covers.
+            assert_eq!(canceled.total_count, Some(0));
 
             // 4. A status this tenant does have.
             let succeeded = search(

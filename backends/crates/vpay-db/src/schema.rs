@@ -39,13 +39,27 @@
 // actually is. Delete this attribute the day something serves the procedure
 // — and update `docs/status.md` in the same commit.
 //
-// ONE THING THE `cfg_attr` COSTS, measured on 2026-09-11 and written down so
+// ~~ONE THING THE `cfg_attr` COSTS, measured on 2026-09-11 and written down so
 // nobody counts on the wrong thing: `just verify-docs` lists every
 // `#[allow]`/`#[expect]` in production code and its count did NOT move when
 // this landed — it stayed at six. The scanner reads the attribute text, and
 // this one is spelled `#[cfg_attr(not(test), allow(...))]`. So the report is
-// not where this gap is visible. `docs/status.md` § "The first `procedure`",
-// this comment, and `search_payment_intents`' own module doc are.
+// not where this gap is visible.~~
+//
+// **Corrected the same day by the exp54 review: that was a hole in the
+// report, and the report was fixed rather than worked around.** The
+// measurement above was accurate — the count really did stay at six — but
+// "a lint silenced in every shipping build, absent from the list of silenced
+// lints" is the one thing that list cannot afford, and `cfg_attr` is the
+// *correct* spelling whenever the deadness is conditional, so the hole would
+// have widened every time someone did the right thing. `allow_sites` in
+// `.xtask/src/main.rs` now reads the rejoined attribute, and the report
+// prints **seven**, this line among them. Measured both ways: with the four
+// bare needles restored it prints six and omits this file; the other six
+// entries are byte-identical between the two runs, so nothing else had been
+// hiding. `docs/status.md` § "The first `procedure`", this comment and
+// `search_payment_intents`' own module doc still say it too — the report is
+// now a fourth place rather than the missing one.
 #[cfg_attr(
     not(test),
     allow(

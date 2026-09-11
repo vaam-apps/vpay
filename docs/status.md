@@ -5344,18 +5344,70 @@ operator and to a merchant, and changing that is a maintainer's decision.
 gates into agreement** — `vpay-db` cannot see that constant. If one moves,
 move the other.
 
-**Eleven tests, 0 ignored, and the three mutations were run rather than
-described.** Ten are no-database; one starts a container.
+**Three corrections to the paragraph above, from the exp54 review
+(2026-09-11). All three are in the branch as landed; they are recorded rather
+than silently folded in, because two of them were claims this page made before
+they were true.**
 
-| mutation                                                                            | what goes red                                                                                                                   |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `WHERE merchant_id = $1` → `WHERE ($1::TEXT IS NOT NULL)`                           | `the_page_is_the_tenants_own_rows_filtered_and_bounded`: `merchant_a`'s page comes back `["pi_b_only", "pi_a_new", "pi_a_old"]` |
-| `args.page.resolve(MAX_PAGE_LIMIT)` → `(limit.unwrap_or(MAX), offset.unwrap_or(0))` | the same test, with Postgres' own `OFFSET must not be negative`                                                                 |
-| `validated_status`'s vocabulary check → `if true`                                   | `an_unknown_status_is_refused_rather_than_answered_with_an_empty_page`                                                          |
+1. ~~`total_count` is `null` past the end of the set~~ — it was also `null`
+   for an **empty first page**, which is a different fact and a worse answer.
+   At `offset == 0` the statement asked for `limit + 1` rows starting at the
+   first one, so an empty result _proves_ the filtered set is empty: the
+   answer is `0`, and `page_of` now says so. An operator filtering by a status
+   they have none of was previously told the total was unknown.
+   `the_envelope_reports_the_page_it_actually_has` pins both arms; the
+   container test's `canceled` page asserts `Some(0)` rather than `None`.
+2. **The ceiling was a copy of `MAX_LIMIT`; the _default_ was not a copy of
+   anything.** `PageInput::resolve(max)` defaults an absent `limit` to `max`,
+   so this surface answered 100 rows where `GET /dash/v1/payment_intents`
+   answers 10 (`DEFAULT_LIMIT`) — the exact "ten times the page the REST list
+   does" the constant's own comment ruled out, arriving through the default
+   instead of the ceiling. `DEFAULT_PAGE_LIMIT` (10) is now separate and
+   `resolve_page` supplies it before handing `resolve` the clamp untouched.
+3. **Offset paging is not stable while payments are being created, and
+   nothing here said so.** `payment_intents_seq_key` (migration `0014`) is a
+   UNIQUE index, so `ORDER BY seq DESC` is a total order and a single page is
+   never ambiguous — that is the whole of what it buys. `OFFSET` is counted
+   afresh on every call, so an intent created between page 1 and page 2 shifts
+   the window: the last row of a page reappears at the top of the next one,
+   and a row is missed at the tail for every insert behind the caller's back.
+   New rows land at offset 0, so it is worst on the busiest merchant.
+   **Nothing compensates for it and nothing should pretend to** — a
+   reconciliation, an export or a sum reads `/v1`'s cursor list, which
+   `starting_after` anchors to a `seq` an insert cannot move. This is the
+   honest price of the numbered table `Page<T>` exists to give.
+
+**Twelve tests, 0 ignored, and the three mutations were run rather than
+described.** Eleven are no-database; one starts a container. (Eleven tests
+until the exp54 review added `the_two_failure_code_vocabularies_are_one_
+vocabulary`; every count in this section was re-measured on that review's
+head rather than carried over.) All three mutations were re-run after the
+review's own changes and still redden the same named tests — the tenancy one
+with `merchant_a`'s page coming back as
+`["pi_b_only", "pi_a_new", "pi_a_old"]`, which is the leak itself rather than
+a proxy for it.
+
+| mutation                                                                      | what goes red                                                                                                                   |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `WHERE merchant_id = $1` → `WHERE ($1::TEXT IS NOT NULL)`                     | `the_page_is_the_tenants_own_rows_filtered_and_bounded`: `merchant_a`'s page comes back `["pi_b_only", "pi_a_new", "pi_a_old"]` |
+| `resolve_page(args.page)` → `(limit.unwrap_or(DEFAULT), offset.unwrap_or(0))` | the same test, with Postgres' own `OFFSET must not be negative`                                                                 |
+| `validated_status`'s vocabulary check → `if true`                             | `an_unknown_status_is_refused_rather_than_answered_with_an_empty_page`                                                          |
 
 The second mutation leaves `a_hostile_limit_is_clamped_before_it_reaches_postgres`
-**green** — it pins `PageInput::resolve`'s contract, not the body's use of it
+**green** — it pins `resolve_page`'s contract, not the body's use of it
 — which is why both tests exist and why the module doc says so.
+
+**One vocabulary had no test and now does (exp54 review).**
+`the_two_failure_code_vocabularies_are_one_vocabulary` pins
+`schemas/vpay.cstack`'s `enum FailureCode` against `vpay_core::FailureCode`,
+as the status pair was already pinned. It was missing and the asymmetry
+mattered: an unknown `status` is a caller's typo and answers `400`, but an
+unknown `last_payment_error_code` is a **stored** value and answers
+`Internal` — so a variant present in one transcription and not the other
+turns every payment that failed for that reason into a `500` on an operator's
+list. `search_payment_intents.rs` is the only consumer of
+`types::FailureCode` in the workspace, so the schema's copy had no other
+reader to disagree with.
 
 **What is NOT claimed.** No transport, no dashboard call, no generated client.
 No `@@audit`, for the row above's reason — this is a read. The filter set is
