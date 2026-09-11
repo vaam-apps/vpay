@@ -1602,7 +1602,7 @@ impl TryFrom<&vpay_db::CustomerRow> for CustomerObject {
             name: row.name.clone(),
             email: row.email.clone(),
             phone: row.phone.clone(),
-            // `None` and not an object of six nulls: an address with nothing
+            // `None` and not an object of eight nulls: an address with nothing
             // in it is not an address, and rendering one would make a
             // merchant write `customer.address?.line1 ?? null` where
             // `customer.address` already answers the question.

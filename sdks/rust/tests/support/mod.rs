@@ -202,8 +202,11 @@ pub(crate) fn customer_json(id: &str) -> Value {
         // address has no coordinate — and they are whole microdegrees, never
         // degrees. Written as bare JSON integers here on purpose: if `Address`
         // typed them as a float this fixture would still decode, so
-        // `a_customer_decodes_its_coordinate_as_whole_microdegrees` asserts
-        // the value rather than only the decode.
+        // `create_customer_sends_the_documented_body_and_decodes_the_object`
+        // asserts the decoded value against an `i64` rather than only that it
+        // decoded. (This comment named
+        // `a_customer_decodes_its_coordinate_as_whole_microdegrees` until the
+        // review of 2026-09-11 — a test that exists in no file.)
         "address": {
             "line1": "12 Rue Njo-Njo",
             "line2": null,

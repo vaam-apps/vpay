@@ -570,9 +570,9 @@ impl UpdateCustomerParams {
                 match self.address.as_ref() {
                     None => FormValue::Skip,
                     // `address=` — the wire's own "remove this", the same
-                    // spelling `name=` uses. NOT `address[line1]=` and five
+                    // spelling `name=` uses. NOT `address[line1]=` and seven
                     // more: the server reads a *scalar* `address` as the
-                    // clear, and an object of six empty components as an
+                    // clear, and an object of eight empty components as an
                     // address whose components are all absent, which it
                     // stores as no address by a different route. One
                     // spelling, so a merchant reading the body sees what

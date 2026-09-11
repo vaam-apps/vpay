@@ -172,7 +172,7 @@ export class CustomersResource {
     }
     if (params.address !== undefined) {
       // `address=` — the wire's own "remove this", the same spelling `name=`
-      // uses. NOT six empty components: the server reads a *scalar* `address`
+      // uses. NOT eight empty components: the server reads a *scalar* `address`
       // as the clear, and one spelling means a merchant reading the body sees
       // what they asked for.
       body["address"] =

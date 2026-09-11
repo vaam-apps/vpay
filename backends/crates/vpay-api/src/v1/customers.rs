@@ -217,12 +217,14 @@ enum AddressParam {
     Cleared(String),
     /// `address[line1]=…` — the address, replaced by these components.
     ///
-    /// Boxed for `clippy::large_enum_variant`: six `Option<String>`s beside a
-    /// `String` is exactly the imbalance that lint is about.
+    /// Boxed for `clippy::large_enum_variant`: eight `Option<String>`s beside
+    /// a `String` is exactly the imbalance that lint is about — six since
+    /// 2026-09-10, eight since the GPS half landed on 2026-09-11.
     Components(Box<AddressParams>),
 }
 
-/// The six components, as the form decoder produces them.
+/// The eight components, as the form decoder produces them — Stripe's six
+/// formal ones and vpay's coordinate.
 ///
 /// Every one is `Option<String>` for [`CreateParams`]' reason — the wire is
 /// text — and there is no `deny_unknown_fields`, which is this API's standing

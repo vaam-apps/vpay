@@ -189,8 +189,8 @@ pub struct CustomerAddress {
 impl CustomerAddress {
     /// Whether this customer has no address at all.
     ///
-    /// The wire object renders `address: null` for an empty address and a
-    /// six-key object otherwise, so this is the function that decides which —
+    /// The wire object renders `address: null` for an empty address and an
+    /// eight-key object otherwise, so this is the function that decides which —
     /// and it is `Option`-free on purpose: "an address whose every component
     /// is absent" and "no address" are the same fact about the payer, and an
     /// `Option<CustomerAddress>` on the row would have made them two.
@@ -261,8 +261,8 @@ impl CustomerAddress {
         self.latitude_microdeg.is_some() == self.longitude_microdeg.is_some()
     }
 
-    /// Every component replaced by [`REDACTED`] — the address of a customer
-    /// that has been anonymised.
+    /// The address of a customer that has been anonymised: the six formal
+    /// components replaced by [`REDACTED`], the coordinate dropped.
     ///
     /// **All six, including the ones the payer never filled in**, which is
     /// migration `0041`'s rule and not this function's convenience: which
@@ -311,7 +311,7 @@ impl CustomerAddress {
 /// a payer's personal data — see that impl.
 ///
 /// `FromRow` is hand-written too, since 2026-09-10, and for a reason that is
-/// not style: [`Self::address`] is one struct over six columns, and
+/// not style: [`Self::address`] is one struct over eight columns, and
 /// `#[derive(sqlx::FromRow)]` has no way to say so — there is no field-prefix
 /// attribute in sqlx 0.9, and `#[sqlx(flatten)]` looks for `line1`, not
 /// `address_line1`. The impl below names every column exactly once, which is
@@ -374,7 +374,7 @@ pub struct CustomerRow {
     pub updated_at: OffsetDateTime,
 }
 
-/// Decodes every column of `customers`, nesting the six `address_*` ones
+/// Decodes every column of `customers`, nesting the eight `address_*` ones
 /// into [`CustomerAddress`].
 ///
 /// Hand-written rather than derived only because of that nesting — see
@@ -623,7 +623,7 @@ pub struct CustomerPatch {
     ///
     /// # Why replacement and not the three-state merge the scalars get
     ///
-    /// An address is one fact, not six. A merchant correcting a payer's
+    /// An address is one fact, not eight. A merchant correcting a payer's
     /// street who left `city` out of the request meant "this is the address",
     /// and a component-wise merge would silently keep the old city beside the
     /// new street — an address that was never anybody's, assembled by vpay
