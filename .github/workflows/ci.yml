@@ -382,15 +382,16 @@ jobs:
       # known-vulnerable dependency fails this job in seconds rather than
       # after a Storybook build. `just audit-web`, not a copy of its
       # commands: the recipe is what a contributor runs locally, and the
-      # justfile carries the reasoning (two runs, `--audit-level=high`, and
-      # why dev dependencies are gated too — every JS advisory this repo has
-      # had was in dev tooling). `pnpm audit` resolves from `pnpm-lock.yaml`,
-      # which the step above has just proved is current, so this gates what
-      # would actually be installed rather than what happens to be on disk.
+      # justfile carries the reasoning (two runs, `--audit-level=moderate`
+      # since issue #103, and why dev dependencies are gated too — every JS
+      # advisory this repo has had was in dev tooling). `pnpm audit` resolves
+      # from `pnpm-lock.yaml`, which the step above has just proved is
+      # current, so this gates what would actually be installed rather than
+      # what happens to be on disk.
       #
       # Only this job runs it: `e2e` installs from the same lockfile, and
       # auditing it twice per pull request buys nothing.
-      - name: audit-web (pnpm audit; high and critical fail)
+      - name: audit-web (pnpm audit; moderate, high and critical fail)
         run: just audit-web
       # `just fmt-check-web` (prettier --check over the whole tree), not
       # `cargo fmt`'s half of `just fmt-check` — this job has no Rust
