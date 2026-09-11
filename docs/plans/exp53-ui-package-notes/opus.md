@@ -103,10 +103,24 @@ Three things the audit found that are worth naming individually.
 **A `<section>` with no accessible name is not a landmark.** axe-core's
 `region` rule does not count one, and a heading merely sitting inside a
 `<section>` does not name it. All eleven of the dashboard's were `<div>`s with
-extra steps. `Section` takes the heading as a **required** prop and wires it
-with `aria-labelledby` off `useId`, so the labelled form is the only form;
-`section.test.tsx` asserts `getByRole('region', { name: 'Charge' })`, which
-only matches when the wiring is there.
+extra steps. `Section` takes the heading as a **required** `string` prop and
+puts those same words on the section as its accessible name, so the labelled
+form is the only form; `section.test.tsx` asserts
+`getByRole('region', { name: 'Charge' })`, which only matches when the name
+is actually on the element.
+
+`aria-label` rather than `aria-labelledby` off a generated id, deliberately:
+`useId` would make `Section` a client component, and it is rendered by
+`payment-detail.tsx`, which is a Server Component — a `"use client"` there
+puts a boundary around a presentational wrapper and ships its JavaScript to
+the browser. The usual objection to `aria-label`, invisible text drifting
+from the visible words, cannot happen when both come from one prop.
+
+`Link` is server-safe too, and that was checked rather than assumed: Base UI
+1.8.0's `useRenderElement` is named like a hook but calls none on the server
+— its one hook call sits behind `if (typeof document !== 'undefined')`, with
+a comment saying refs are not used server-side. `payments-table.tsx` renders
+`Link` as a Server Component.
 
 **Three of the dashboard's own components were primitives.** `EmptyState`,
 `Pager` and `DetailTimeline` had nothing dashboard-specific in them — the
