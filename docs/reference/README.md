@@ -63,3 +63,13 @@ A crate with no page here is not a crate whose reasoning is documented
 elsewhere by default. See [../status.md](../status.md) for what is actually
 built; this tier explains code that exists, and says nothing about whether it
 has ever run.
+
+**Two of these pages are an overview plus a directory**, since 2026-09-11:
+[vpay-db.md](vpay-db.md) was 3 330 lines and [vpay-api.md](vpay-api.md) was
+1 566. Each keeps its own path and its own headings — in particular
+`vpay-db.md#cratestack`, which four doc comments in
+`backends/crates/vpay-db/src/` link to — and indexes the per-table and
+per-surface pages beneath it. [vpay-worker.md](vpay-worker.md) is 833 lines and
+was deliberately left whole: it is one process described once. See
+[../README.md](../README.md) for the counts and for what the split did and did
+not change.

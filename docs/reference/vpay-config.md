@@ -467,7 +467,7 @@ language their payers read, and the page escapes it as text.
 Absent is legal and is what most registrations carry. The browser reads then
 fall back to `merchant_id`, which is a true name for who is being paid but an
 internal one — see
-[vpay-api.md](vpay-api.md#merchantname-and-why-there-is-a-fallback) for why the
+[vpay-api.md](vpay-api/checkout-sessions.md#merchantname-and-why-there-is-a-fallback) for why the
 fallback exists at all rather than the read answering without a name. A
 deployment that serves hosted checkout should set this for every merchant.
 

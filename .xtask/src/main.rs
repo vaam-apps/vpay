@@ -28,7 +28,8 @@
 //!   named `@vaam-apps/vpay-*`, says `publishConfig.access: "public"`, and
 //!   ships a `files` allowlist with a `dist/` entry point; every private one
 //!   declares no `publishConfig`; and no retired `@vpay/*` package name
-//!   survives outside `docs/plans`, `docs/adr` and `docs/status.md`. New
+//!   survives outside `docs/plans`, `docs/adr`, `docs/status.md` and
+//!   `docs/status/`. New
 //!   2026-09-05: before it, deleting the one line that makes a scoped
 //!   `npm publish` possible was caught by nothing in the repository.
 //! * `verify-serde`  — every serialisable type under `backends/crates/*/src`
@@ -4664,14 +4665,24 @@ const NPM_RETIRED_NAMES: [&str; 3] = ["@vpay/sdk", "@vpay/stripe-js", "@vpay/str
 /// * `docs/adr/` — AGENTS.md makes ADRs immutable ("supersede, never edit").
 /// * `docs/status.md` — the dated entry recording the rename has to spell
 ///   what it renamed.
+/// * `docs/status/` — added 2026-09-11, and it is the same record. That entry
+///   was on `docs/status.md` when this list was written; the split that turned
+///   a 6 151-line page into an archive moved it, verbatim, to
+///   `docs/status/gates.md`, and this gate failed on seven occurrences the
+///   moment it did. The allowlist is prefix-matched, so `docs/status.md` does
+///   **not** cover `docs/status/…`. This entry is widened deliberately and not
+///   to make a build green: the reason `docs/status.md` was exempt — a dated
+///   record of a rename has to spell what it renamed — is true of every page
+///   under `docs/status/`, which is where those records now live.
 /// * `.xtask/src/main.rs` — this file. The check cannot name what it forbids
 ///   without containing it, and neither can its tests. The cost is stated
 ///   rather than hidden: a retired name that reappears *in this file* is the
 ///   one place this gate cannot see.
-const NPM_RETIRED_NAME_ALLOWED: [&str; 4] = [
+const NPM_RETIRED_NAME_ALLOWED: [&str; 5] = [
     "docs/plans/",
     "docs/adr/",
     "docs/status.md",
+    "docs/status/",
     ".xtask/src/main.rs",
 ];
 
@@ -4854,7 +4865,7 @@ fn verify_npm_scope(root: &Path) -> Result<(), String> {
     }
 
     println!(
-        "verify-npm-scope: ok — {} publishable package(s) under sdks/ ({}), {private_sdk} private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr and docs/status.md",
+        "verify-npm-scope: ok — {} publishable package(s) under sdks/ ({}), {private_sdk} private one(s) declaring no publishConfig, and no retired package name outside docs/plans, docs/adr, docs/status.md and docs/status/",
         publishable.len(),
         publishable.join(", ")
     );
@@ -10698,6 +10709,40 @@ mod npm_scope_tests {
             ),
         ]);
         assert!(verify_npm_scope(repo.path()).is_ok());
+    }
+
+    /// The same again for the status archive, which is where that record
+    /// actually lives since 2026-09-11.
+    ///
+    /// `docs/status.md`'s gate narrative — including the dated entry that
+    /// spells the retired names it renamed — moved to `docs/status/gates.md`
+    /// when the page was split, and this gate failed on seven occurrences the
+    /// moment it did, because the allowlist is prefix-matched and
+    /// `docs/status.md` does not cover `docs/status/`. Delete `docs/status/`
+    /// from [`NPM_RETIRED_NAME_ALLOWED`] and this test fails.
+    #[test]
+    fn the_same_retired_name_under_the_docs_status_archive_passes() {
+        let repo = repo_with(&[
+            ("sdks/nodejs/package.json", &publishable(|m| m)),
+            (
+                "docs/status/gates.md",
+                "Renamed `@vpay/sdk` to `@vaam-apps/vpay-sdk` on 2026-09-05.\n",
+            ),
+        ]);
+        assert!(verify_npm_scope(repo.path()).is_ok());
+    }
+
+    /// And the widening is exactly one directory: a retired name in a document
+    /// whose path merely *starts like* the archive's is still a reference that
+    /// resolves to nothing, and is still refused.
+    #[test]
+    fn a_retired_name_in_a_path_that_only_looks_like_the_status_archive_fails() {
+        let repo = repo_with(&[
+            ("sdks/nodejs/package.json", &publishable(|m| m)),
+            ("docs/statuses.md", "Install `@vpay/sdk`.\n"),
+        ]);
+        let error = verify_npm_scope(repo.path()).expect_err("not the status archive");
+        assert!(error.contains("docs/statuses.md:1: @vpay/sdk"), "{error}");
     }
 
     /// The text matcher reads only *top-level* keys, so a `"private": true`

@@ -14,6 +14,12 @@ just verify    # the self-checks the justfile's `verify` recipe lists — twelve
 cat docs/status.md
 ```
 
+`docs/status.md` is 259 lines as of 2026-09-11 and is meant to be read in one
+sitting; it was 6 151 the day before. Nothing was deleted —
+[docs/status/](docs/status/README.md) carries the whole history, verbatim, one
+page per area and per date, and [docs/README.md](docs/README.md) says which page
+answers which question.
+
 _(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
 said "ten" until `verify-migrations` landed on 2026-09-07.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
@@ -47,8 +53,16 @@ in your summary.
 1. `just ci` — which since Step 7 also runs `just test-doc`
    (`cargo test --doc --workspace`). `cargo nextest` runs no doctests, so an
    example in a doc comment is only checked by that step.
-2. Update `docs/status.md` — in the same commit, not a follow-up.
-3. Update the relevant `docs/flows/*.md` **Status** section.
+2. Update the status pages — in the same commit, not a follow-up. That is
+   `docs/status.md` only if you moved the machine-checked declaration, the
+   banner or the gate table; otherwise it is the area page under
+   `docs/status/`, plus a dated page under `docs/status/verification/` for
+   your gate output. `docs/status.md` § "Where a new row goes" is the map.
+3. Update the relevant `docs/flows/*.md` **Status** section. Six of those
+   flows are an overview plus a directory since 2026-09-11; the **Status**
+   section stayed on the overview in all six. In `webhooks.md` and
+   `dashboard.md` it is a summary plus an index — add your evidence to the
+   page it points at, not to the index.
 4. In your summary to the user, state explicitly what you did **not** do.
 
 ## Verifying rather than assuming
@@ -86,4 +100,6 @@ verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   because the module the macro creates exists in no source file and nothing
   else would object. Adding a `model` is not free either: it must match the
   live table, and `postgres_smoke.rs`'s drift test pins the exact gap. See
-  `docs/reference/vpay-db.md` § CrateStack.
+  `docs/reference/vpay-db/cratestack.md`. `vpay-db.md` § CrateStack is a
+  pointer to it and keeps that heading on purpose: four doc comments in
+  `backends/crates/vpay-db/src/` link to `vpay-db.md#cratestack`.
