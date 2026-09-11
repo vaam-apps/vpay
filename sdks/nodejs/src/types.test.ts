@@ -346,6 +346,15 @@ describe("the customer object", () => {
         state: null,
         postal_code: null,
         country: "CM",
+        // The GPS half, in whole microdegrees — 4.061 N, 9.786 E, which is
+        // Douala. A real pair rather than two nulls, so this annotation says
+        // the coordinate is part of the shape a `customer.*` body carries
+        // and not only a key the type happens to allow. The compiler is what
+        // made this change necessary: the two fields are NOT optional on
+        // `Address`, so a body that omits them does not type-check, which is
+        // how a server that stopped sending them would be noticed here.
+        latitude_microdeg: 4_061_000,
+        longitude_microdeg: 9_786_000,
       },
       metadata: { tier: "gold", order_id: "1234" },
       created: 1_700_000_000,

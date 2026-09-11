@@ -484,10 +484,19 @@ export type ListParams = {
 };
 
 /**
- * A postal address on a {@link Customer} — Stripe's six components (issue
- * #67).
+ * A postal address on a {@link Customer} — Stripe's six formal components
+ * **and** the GPS point (issue #67).
  *
- * Every component is nullable and the server renders all six even when they
+ * # vpay's address is both halves, and this is where Stripe's is not
+ *
+ * `latitude_microdeg` and `longitude_microdeg` have no counterpart on
+ * Stripe's `address`. They are here because vpay's address *means* both
+ * halves (the maintainer, 2026-09-11): formal addressing is unreliable
+ * across the markets vpay serves, and a coordinate is how a place is actually
+ * found. A merchant porting Stripe code to vpay gains two fields; one porting
+ * the other way loses them, and should know that before they discover it.
+ *
+ * Every component is nullable and the server renders all eight even when they
  * are `null`: an address is one fact about a payer, and a key that appeared
  * and disappeared would change the shape of a signed `customer.*` webhook
  * body per payer. The object as a whole is `null` when there is no address.
@@ -511,6 +520,28 @@ export interface Address {
    * three-letter code or a country name is a `400` naming `address`.
    */
   country: string | null;
+  /**
+   * Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+   * `4061000`.
+   *
+   * A whole number, always. vpay has no floating-point coordinate anywhere —
+   * not on the wire, not in its database — which is what the unit in the
+   * field name is for: a field called `latitude` would be read as degrees,
+   * and `4.061` is a value that cannot be stored without rounding it. The
+   * server answers `400` naming `address` for a decimal rather than
+   * approximating it.
+   *
+   * `null` unless {@link Address.longitude_microdeg} is also set: half a
+   * coordinate names no place, and the server refuses one half.
+   *
+   * On an **erased** customer this is `null` while the six formal components
+   * are `[redacted]`. That asymmetry is deliberate: there is no integer that
+   * is not a possible place, so the marker is not a value this field can
+   * take. See {@link Customer.deleted}.
+   */
+  latitude_microdeg: number | null;
+  /** Longitude in **microdegrees**. See {@link Address.latitude_microdeg}. */
+  longitude_microdeg: number | null;
 }
 
 /**
@@ -537,6 +568,10 @@ export interface Customer {
    * reference is comparing the same string.
    */
   phone: string | null;
+  /**
+   * The payer's postal address **and** GPS point, or `null`. Two of its keys
+   * have no counterpart on Stripe's address — see {@link Address}.
+   */
   address: Address | null;
   metadata: Record<string, string>;
   /** Unix seconds. */
@@ -606,7 +641,8 @@ export interface CreateCustomerParams {
 }
 
 /**
- * The six address components, in the shape the wire spells them.
+ * The address components, in the shape the wire spells them — Stripe's six
+ * **and** the GPS point.
  *
  * A `type` alias rather than an `interface` for {@link ListParams}' reason:
  * only this form is assignable to the form encoder's
@@ -615,9 +651,10 @@ export interface CreateCustomerParams {
  * Separate from {@link Address} — which the *response* carries — because what
  * a merchant may send and what the server returns are two contracts, and the
  * second one grows keys the first must not accept. They happen to have the
- * same six fields today. This SDK deliberately does not validate `country`
+ * same eight fields today. This SDK deliberately does not validate `country`
  * locally, exactly as it does not validate an MSISDN: which codes vpay
- * accepts is a rule vpay owns and may widen.
+ * accepts is a rule vpay owns and may widen. The same line is taken on the
+ * coordinate's range and its pair rule.
  */
 export type AddressParams = {
   line1?: string | undefined;
@@ -626,6 +663,17 @@ export type AddressParams = {
   state?: string | undefined;
   postal_code?: string | undefined;
   country?: string | undefined;
+  /**
+   * Latitude in **microdegrees** — `4061000` for 4.061°N, never `4.061`. The
+   * range (±90,000,000) and the rule that it is sent with
+   * {@link AddressParams.longitude_microdeg} or not at all are the server's,
+   * and are not checked here for the reason `country` is not: they are
+   * vpay's to widen, and a copy in this SDK would refuse offline an address a
+   * later server accepts.
+   */
+  latitude_microdeg?: number | undefined;
+  /** Longitude in **microdegrees**. See {@link AddressParams.latitude_microdeg}. */
+  longitude_microdeg?: number | undefined;
 };
 
 /**

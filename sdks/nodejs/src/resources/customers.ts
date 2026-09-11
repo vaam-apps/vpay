@@ -2,7 +2,11 @@
  * `/v1/customers` — the five merchant operations on the Customer object
  * (S4a), and the one thing this file does that no other resource does: it
  * distinguishes *clear this field* from *leave it alone* — for four fields
- * now, `address` included.
+ * now, `address` included. `address` is also the one field on this API that
+ * is WIDER than Stripe's: it carries the GPS point beside the six formal
+ * components (the maintainer, 2026-09-11), and `Address` in `types.ts` says
+ * why — including why the coordinate is a whole count of microdegrees and
+ * never a decimal degree.
  *
  * # The three states, and why `update` looks the way it does
  *
@@ -57,13 +61,19 @@ function patch(value: string | null | undefined): FormValue | undefined {
 }
 
 /**
- * The six address components as a nested body value, with every unset one
+ * The eight address components as a nested body value, with every unset one
  * omitted entirely.
  *
  * Omitted and not sent empty, because on this API those are different
  * requests everywhere else — and because the server replaces the address
  * whole, so an omitted component is cleared either way and `address[city]=`
  * would only add a pair saying the same thing.
+ *
+ * The two coordinate keys go through the same loop as the six formal ones and
+ * are typed `number` rather than `string`: the form encoder renders a number
+ * as a decimal integer with no separators and refuses a non-finite one
+ * (`form.ts`), so there is no path from this function to a body carrying a
+ * float — which is the whole of why the wire field is named for its unit.
  */
 function addressBody(address: AddressParams): Record<string, FormValue> {
   const body: Record<string, FormValue> = {};
@@ -74,6 +84,8 @@ function addressBody(address: AddressParams): Record<string, FormValue> {
     "state",
     "postal_code",
     "country",
+    "latitude_microdeg",
+    "longitude_microdeg",
   ] as const) {
     const value = address[key];
     if (value !== undefined) {
