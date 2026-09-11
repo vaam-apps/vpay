@@ -294,6 +294,8 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
     export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
+    export CHECKOUT_BROWSER_PORT={{demo_fixture_port}}
+    export VPAY_E2E_FRAME_FIXTURE_PORT=$(({{demo_fixture_port}} + 1))
 
     set -e
     docker compose {{demo_compose}} up -d --build --wait
@@ -369,6 +371,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
          demo_checkout_port={{demo_checkout_port}} \
          demo_shop_port={{demo_shop_port}} \
          demo_dashboard_port={{demo_dashboard_port}} \
+         demo_fixture_port={{demo_fixture_port}} \
          demo_dashboard_merchant={{demo_dashboard_merchant}} \
          demo-staff
     if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
@@ -389,6 +392,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
          demo_checkout_port={{demo_checkout_port}} \
          demo_shop_port={{demo_shop_port}} \
          demo_dashboard_port={{demo_dashboard_port}} \
+         demo_fixture_port={{demo_fixture_port}} \
          e2e-specs
     e2e_status=$?
 
@@ -461,6 +465,8 @@ e2e-specs:
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
       VPAY_MERCHANT_CLIENT_ID=shop-merchant \
       VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/shop-merchant/oauth-signing-key.pem" \
+      CHECKOUT_BROWSER_PORT={{demo_fixture_port}} \
+      VPAY_E2E_FRAME_FIXTURE_PORT=$(({{demo_fixture_port}} + 1)) \
       pnpm --filter @vpay/e2e e2e
 
 # ------------------------------------------------------------------ lint ---
@@ -2531,6 +2537,21 @@ demo_shop_port := "3001"
 # CI's e2e job polls; nothing outside a `demo_dashboard_port=…` invocation sees
 # a different one.
 demo_dashboard_port := "3000"
+
+# The base port for Cypress fixture servers (`examples/checkout-browser` and the
+# embedded checkout frame fixture). Two Cypress fixture servers run during
+# `just test-e2e`, and they need consecutive ports: `checkoutBrowserServer` on
+# this port, and `frameFixtureServer` on `demo_fixture_port + 1`.
+#
+# Until 2026-09-11 these were hardcoded to 4180 and 4181, so concurrent
+# `just test-e2e` runs collided (issue #106). Now they derive from this variable,
+# and two concurrent runs can use separate pools (e.g. `just demo_fixture_port=4180 test-e2e`
+# and `just demo_fixture_port=5000 test-e2e`).
+#
+# The env vars `CHECKOUT_BROWSER_PORT` and `VPAY_E2E_FRAME_FIXTURE_PORT` are
+# derived from this and exported to the e2e suite; the TypeScript defaults (also
+# 4180/4181) are kept for backward compatibility when these env vars are not set.
+demo_fixture_port := "4180"
 
 # THE ONE TENANT THE DEMO DASHBOARD SHOWS, and the variable that decides it.
 #
