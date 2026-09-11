@@ -314,10 +314,21 @@ Web suites: `@vpay/ui` **97** (was 96 — this review added one),
 
 ## 8. `just ci`
 
-The implementer's own run (notes §6b) exited 100 at `test-rust` on a Docker
-daemon saturated by another worktree, and that branch's "the Rust is
-byte-identical to master" claim was re-checked rather than accepted:
-`git diff --name-only origin/master...HEAD` outside `frontends/` and `docs/` is
-exactly one file, `justfile`, and `git diff --stat origin/master...HEAD --
-backends Cargo.toml Cargo.lock rust-toolchain.toml schemas clippy.toml
-deny.toml` is empty.
+**Exit 0 on this review's final head, read from a file and not from a banner.**
+`1696 tests run: 1696 passed, 0 skipped`, `verify-ignored: 0 ignored (expected
+0), 46 test binaries (expected 46)`, `verify: ok — the twelve gates above
+passed`, `advisories ok, bans ok, licenses ok, sources ok`. The `test-rust`
+step took 1124 s. Run twice, once on the fix commit and once on the head that
+carries this document, exit 0 both times.
+
+That is the step the branch could not get green. The implementer's notes §6b
+record five consecutive `test-rust` failures — 1151, 1151, 1151, 1225 and 1270
+of 1696 — each one a `failed to create a container: Timeout error` at exactly
+the 120-second `testcontainers` create deadline, on a host at load average 25
+with another worktree's e2e stack up. **That diagnosis was correct**: the same
+suite passes 1696/1696 here at load average 3, with nothing about the Rust
+changed. The branch's "the Rust is byte-identical to master" claim was
+re-checked rather than accepted, and it holds: `git diff --name-only
+origin/master...HEAD` outside `frontends/` and `docs/` is exactly one file,
+`justfile`, and `git diff --stat origin/master...HEAD -- backends Cargo.toml
+Cargo.lock rust-toolchain.toml schemas clippy.toml deny.toml` is empty.
