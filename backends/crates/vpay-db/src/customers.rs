@@ -23,6 +23,12 @@
 //!   `anonymized_customers_carry_the_marker`: a flagged row still holds the
 //!   person, and this one holds nothing of theirs.
 //!
+//!   The erasure is spelled per column type, because migration `0041`'s two
+//!   coordinate columns cannot hold a marker: the nine text identifiers
+//!   become [`REDACTED`] and `address_latitude_microdeg` /
+//!   `address_longitude_microdeg` become `NULL`. There is no integer that is
+//!   not a possible place, so for those two the erasure is the absence.
+//!
 //!   [`erase_in_tx`] also rewrites every copy of those identifiers vpay keeps
 //!   *outside* this table — stored `customer.*` event bodies, `payer_ref` and
 //!   the rail's own `failure_raw` prose on the customer's charges and their
@@ -62,7 +68,8 @@ const MODEL: &str = "Customer";
 /// drift on the shape they decode into [`CustomerRow`].
 const COLUMNS: &str = "id, seq, merchant_id, livemode, name, email, phone, \
                        address_line1, address_line2, address_city, address_state, \
-                       address_postal_code, address_country, metadata, \
+                       address_postal_code, address_country, \
+                       address_latitude_microdeg, address_longitude_microdeg, metadata, \
                        last_used_at, anonymized_at, created_at, updated_at";
 
 /// What every identifier column of an anonymised customer holds.
@@ -102,22 +109,34 @@ pub const REDACTED: &str = "[redacted]";
 /// existed, so polling cannot tell them apart.
 const EVENT_CUSTOMER_DELETED: &str = "customer.deleted";
 
-/// A customer's postal address — Stripe's six components (migration `0041`,
+/// A customer's postal address — Stripe's six formal components **and** the
+/// GPS point (migration `0041`,
 /// [issue #67](https://github.com/vaam-apps/vpay/issues/67)).
 ///
-/// # Why a struct here when the table has six columns
+/// # An address here is both halves, and that is a product decision
+///
+/// The maintainer, 2026-09-11: *"address in our system means both formal as
+/// well as GPS"*. Formal addressing is unreliable across the markets vpay
+/// serves and a coordinate is how a place is actually found, so this is one
+/// struct with eight fields rather than an address and a separate location.
+/// It is a deliberate divergence from Stripe, whose `address` has no
+/// coordinate at all — `docs/flows/customers.md` says so in the merchant's
+/// own words, and both SDKs' types repeat it.
+///
+/// # Why a struct here when the table has eight columns
 ///
 /// [`CustomerRow`] is otherwise one-to-one with `customers`, and this is the
-/// one place it is not. The reason is that the six columns are never
-/// meaningful apart: the wire object nests them under one `address` key, an
-/// update replaces the whole address rather than merging components, and the
-/// erasure writes all six or none. Six loose `Option<String>` fields on the
-/// row would let a caller do five of those things, and every one of the five
-/// is a bug that compiles.
+/// one place it is not. The reason is that the columns are never meaningful
+/// apart: the wire object nests them under one `address` key, an update
+/// replaces the whole address rather than merging components, and the erasure
+/// writes all of them or none. Eight loose fields on the row would let a
+/// caller do any of those things by halves, and every one of them is a bug
+/// that compiles.
 ///
-/// Every component is `Option<String>` and an all-`None` value is the same
-/// thing as "this customer has no address" — see [`Self::is_empty`], which is
-/// what decides whether the object renders `address: null` or an object.
+/// Every formal component is `Option<String>`, and an all-`None` value is the
+/// same thing as "this customer has no address" — see [`Self::is_empty`],
+/// which is what decides whether the object renders `address: null` or an
+/// object.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CustomerAddress {
     /// Street address, line 1.
@@ -134,6 +153,37 @@ pub struct CustomerAddress {
     /// the shape on the way in and migration `0041`'s
     /// `address_country_is_iso_3166_1_alpha_2` is the backstop.
     pub country: Option<String>,
+    /// Latitude in **microdegrees** — millionths of a degree, so 4.061°N is
+    /// `4_061_000`.
+    ///
+    /// # `i64` and never a float, and the unit is in the name
+    ///
+    /// Two measurements in this repository decide it, neither of them a
+    /// preference. CrateStack's `Value::from_plain_json` routes every JSON
+    /// number through `Number::as_i64()` and demotes anything else to `f64`
+    /// (`docs/reference/vpay-db.md`), so a decimal degree is a value this
+    /// stack cannot carry without rounding it. And the money layer's own
+    /// precedent is integer minor units with the scale named
+    /// (`docs/flows/money.md`); a coordinate is the same kind of quantity —
+    /// an exact count of a fixed unit, not a measurement for each layer to
+    /// re-round. ADR-0007 denies float arithmetic workspace-wide, which is
+    /// the same argument with a lint on it.
+    ///
+    /// A microdegree is about 0.11 m of latitude, two orders of magnitude
+    /// finer than consumer GPS, so the unit costs no precision anybody can
+    /// observe.
+    ///
+    /// # Both or neither
+    ///
+    /// `None` unless [`Self::longitude_microdeg`] is also `Some` — half a
+    /// coordinate is a line right round the planet. The rule is the
+    /// database's (`address_coordinates_are_both_or_neither`) and the API's
+    /// `400`; this struct cannot express it in the type system, and
+    /// [`Self::coordinate_is_paired`] is what a writer checks.
+    pub latitude_microdeg: Option<i64>,
+    /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`] for the
+    /// unit, the reason it is an integer, and the pair rule.
+    pub longitude_microdeg: Option<i64>,
 }
 
 impl CustomerAddress {
@@ -154,6 +204,15 @@ impl CustomerAddress {
     ///     ..CustomerAddress::default()
     /// }
     /// .is_empty());
+    ///
+    /// // A point with no formal address is an address: in this market it is
+    /// // often the only half a payer can give.
+    /// assert!(!CustomerAddress {
+    ///     latitude_microdeg: Some(4_061_000),
+    ///     longitude_microdeg: Some(9_786_000),
+    ///     ..CustomerAddress::default()
+    /// }
+    /// .is_empty());
     /// ```
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -163,6 +222,43 @@ impl CustomerAddress {
             && self.state.is_none()
             && self.postal_code.is_none()
             && self.country.is_none()
+            // The coordinate counts. A customer whose whole address is a
+            // point — no street, no city — has an address, and leaving these
+            // two out of the test would render `address: null` over a stored
+            // pair and make the wire object disagree with the row.
+            && self.latitude_microdeg.is_none()
+            && self.longitude_microdeg.is_none()
+    }
+
+    /// Whether the coordinate is whole: both halves present, or both absent.
+    ///
+    /// Half a coordinate is a line right round the planet, so it is not a
+    /// value this crate will store. The rule is enforced in three places and
+    /// this is the innermost of them: `vpay_api::v1::customers` refuses it
+    /// with a `400` naming `address`, migration `0041`'s
+    /// `address_coordinates_are_both_or_neither` refuses it as a `23514`, and
+    /// this is what a writer with no API in front of it can ask.
+    ///
+    /// It is **not** called by [`insert_in_tx`] or [`update_in_tx`]. That is
+    /// deliberate rather than an omission: a `Result` from those two for a
+    /// shape the API already refuses would be a second error path nothing
+    /// exercises, and the CHECK is the backstop that cannot be bypassed. This
+    /// exists so the refusal can be *asked for* — by a test, or by a future
+    /// batch writer that has no boundary above it.
+    ///
+    /// ```
+    /// use vpay_db::CustomerAddress;
+    ///
+    /// assert!(CustomerAddress::default().coordinate_is_paired());
+    /// assert!(!CustomerAddress {
+    ///     latitude_microdeg: Some(4_061_000),
+    ///     ..CustomerAddress::default()
+    /// }
+    /// .coordinate_is_paired());
+    /// ```
+    #[must_use]
+    pub const fn coordinate_is_paired(&self) -> bool {
+        self.latitude_microdeg.is_some() == self.longitude_microdeg.is_some()
     }
 
     /// Every component replaced by [`REDACTED`] — the address of a customer
@@ -173,6 +269,21 @@ impl CustomerAddress {
     /// components a record carried is itself information about the person, so
     /// an erasure that left the absent ones `NULL` would publish the shape of
     /// the record it claims to have erased.
+    ///
+    /// # The coordinate goes to `None`, and it is the one field that does
+    ///
+    /// [`Self::latitude_microdeg`] and [`Self::longitude_microdeg`] are
+    /// `i64`, and there is no integer that is not a possible place: a marker
+    /// value would be a coordinate, somewhere. So for those two the erasure
+    /// *is* the absence, which is what migration `0041`'s
+    /// `anonymized_customers_carry_the_marker` requires of them — the nine
+    /// text columns equal the marker and these two are NULL, per column type.
+    ///
+    /// The argument that makes the text columns carry a value rather than
+    /// `NULL` — "which fields did this payer fill in?" is information about
+    /// them — is not lost here: `anonymized_at` is non-NULL on exactly the
+    /// rows this projection describes, so "was there a payer here?" is still
+    /// answerable without the coordinate being one.
     fn redacted() -> Self {
         let marker = || Some(REDACTED.to_owned());
         Self {
@@ -182,6 +293,8 @@ impl CustomerAddress {
             state: marker(),
             postal_code: marker(),
             country: marker(),
+            latitude_microdeg: None,
+            longitude_microdeg: None,
         }
     }
 }
@@ -225,9 +338,9 @@ pub struct CustomerRow {
     /// Present by default and with no opt-in anywhere: the maintainer's
     /// decision of 2026-09-05, recorded in `docs/flows/customers.md`.
     pub phone: Option<String>,
-    /// The payer's postal address, decoded from the six `address_*` columns
-    /// (migration `0041`). All-`None` means the customer has no address —
-    /// see [`CustomerAddress::is_empty`].
+    /// The payer's postal address **and** GPS point, decoded from the eight
+    /// `address_*` columns (migration `0041`). All-`None` means the customer
+    /// has no address — see [`CustomerAddress::is_empty`].
     pub address: CustomerAddress,
     /// The merchant's own key/value pairs, as stored. The
     /// `metadata_is_object` CHECK guarantees this is a JSON object.
@@ -287,6 +400,8 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for CustomerRow {
                 state: row.try_get("address_state")?,
                 postal_code: row.try_get("address_postal_code")?,
                 country: row.try_get("address_country")?,
+                latitude_microdeg: row.try_get("address_latitude_microdeg")?,
+                longitude_microdeg: row.try_get("address_longitude_microdeg")?,
             },
             metadata: row.try_get("metadata")?,
             last_used_at: row.try_get("last_used_at")?,
@@ -363,27 +478,40 @@ impl fmt::Debug for CustomerRow {
             .field("name", &format_args!("{}", redacted(self.name.as_ref())))
             .field("email", &format_args!("{}", redacted(self.email.as_ref())))
             .field("phone", &format_args!("{}", redacted(self.phone.as_ref())))
-            // The address gets a component *count* and not six redacted
-            // lengths: an operator debugging `address_line1_length` needs to
+            // The address gets a component *count* and not eight redacted
+            // values: an operator debugging `address_line1_length` needs to
             // know an address is present and which component is over its
             // bound, and the bound that fired is in the CHECK's own name in
-            // the error. Six more `[N chars redacted]` fields would treble the
-            // width of every line this struct appears on and answer nothing
-            // the CHECK name does not.
+            // the error. Eight more fields would treble the width of every
+            // line this struct appears on and answer nothing the CHECK name
+            // does not.
+            //
+            // The coordinate is counted and never printed, and it is the one
+            // field here where that is not a judgement call: a name is how
+            // somebody is addressed and a point is where they sleep, so a
+            // `tracing` field carrying one is a payer's home in vpay's logs
+            // for the life of the log retention. It is counted as **one**
+            // component rather than two, because the pair is the value —
+            // `address_coordinates_are_both_or_neither` — and reporting two
+            // would say a customer with a point and a city has three
+            // components of an address, which is not a thing an operator can
+            // act on.
             .field(
                 "address",
                 &format_args!(
                     "{{{} component(s) redacted}}",
                     [
-                        &self.address.line1,
-                        &self.address.line2,
-                        &self.address.city,
-                        &self.address.state,
-                        &self.address.postal_code,
-                        &self.address.country,
+                        self.address.line1.is_some(),
+                        self.address.line2.is_some(),
+                        self.address.city.is_some(),
+                        self.address.state.is_some(),
+                        self.address.postal_code.is_some(),
+                        self.address.country.is_some(),
+                        self.address.latitude_microdeg.is_some()
+                            || self.address.longitude_microdeg.is_some(),
                     ]
                     .iter()
-                    .filter(|component| component.is_some())
+                    .filter(|present| **present)
                     .count()
                 ),
             )
@@ -437,13 +565,14 @@ pub struct NewCustomer {
     /// The canonical MSISDN, already canonicalised by the API. See
     /// [`Self::name`].
     pub phone: Option<String>,
-    /// The payer's postal address, or [`CustomerAddress::default`] for none
-    /// (migration `0041`).
+    /// The payer's postal address **and** GPS point, or
+    /// [`CustomerAddress::default`] for none (migration `0041`).
     ///
     /// Not one of the identifiers [`Self::name`] describes: an address alone
-    /// does not name anybody, so `at_least_one_identifier` ignores it and a
-    /// create carrying only an address is refused exactly as one carrying
-    /// nothing is.
+    /// does not name anybody — not even a coordinate does, which names a
+    /// place and not a person — so `at_least_one_identifier` ignores the
+    /// whole of it and a create carrying only an address is refused exactly
+    /// as one carrying nothing is.
     pub address: CustomerAddress,
     /// A JSON **object**; `metadata_is_object` refuses anything else.
     pub metadata: serde_json::Value,
@@ -594,10 +723,11 @@ pub struct CustomerListPage {
 /// [`DbError::UniqueViolation`] naming the primary key if `id` is already
 /// taken — which cannot happen for a freshly minted `cus_…`.
 /// [`DbError::Query`] for anything else, including `at_least_one_identifier`,
-/// `name_length`, `email_length`, `phone_is_a_canonical_msisdn` and
-/// `metadata_is_object`, every one of which the API refuses first with a
-/// `400` naming the parameter — so reaching one here is a vpay bug rather
-/// than a merchant's mistake.
+/// `name_length`, `email_length`, `phone_is_a_canonical_msisdn`,
+/// `address_latitude_microdeg_range`, `address_longitude_microdeg_range`,
+/// `address_coordinates_are_both_or_neither` and `metadata_is_object`, every
+/// one of which the API refuses first with a `400` naming the parameter — so
+/// reaching one here is a vpay bug rather than a merchant's mistake.
 pub(crate) async fn insert_in_tx(
     tx: &mut sqlx::PgConnection,
     new: &NewCustomer,
@@ -611,9 +741,10 @@ pub(crate) async fn insert_in_tx(
     let sql = format!(
         "INSERT INTO customers (id, merchant_id, livemode, name, email, phone, \
          address_line1, address_line2, address_city, address_state, \
-         address_postal_code, address_country, metadata, \
+         address_postal_code, address_country, \
+         address_latitude_microdeg, address_longitude_microdeg, metadata, \
          last_used_at, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) \
          RETURNING {COLUMNS}"
     );
 
@@ -630,6 +761,8 @@ pub(crate) async fn insert_in_tx(
         .bind(new.address.state.as_deref())
         .bind(new.address.postal_code.as_deref())
         .bind(new.address.country.as_deref())
+        .bind(new.address.latitude_microdeg)
+        .bind(new.address.longitude_microdeg)
         .bind(&new.metadata)
         .bind(new.created_at)
         .fetch_one(&mut *tx)
@@ -729,12 +862,21 @@ pub(crate) async fn update_in_tx(
     // nothing else, and the three-state semantics live entirely in the
     // binds: flag false = leave it, flag true + NULL = clear it, flag
     // true + value = set it.
-    // The address is **one** flag over six columns, which is the statement
+    // The address is **one** flag over eight columns, which is the statement
     // saying what `CustomerPatch::address` says: an address is replaced
     // whole, so a request that named `address[line1]` and not `address[city]`
-    // clears the city. Six flags would be six components a caller could move
-    // independently, and the shape this crate would then have to defend is
-    // "half of the payer's old address and half of their new one".
+    // clears the city. Eight flags would be eight components a caller could
+    // move independently, and the shape this crate would then have to defend
+    // is "half of the payer's old address and half of their new one".
+    //
+    // The coordinate is under the SAME flag as the six formal components and
+    // not one of its own, which is the whole of the maintainer's decision of
+    // 2026-09-11 expressed as a statement: an address here is the formal
+    // address AND the point, so a request that gives a new street without a
+    // coordinate has said the old coordinate is not this place's. A separate
+    // flag would keep a payer's previous GPS point attached to somebody
+    // else's street, which is the one wrong answer a merchant would never
+    // see.
     let sql = format!(
         "UPDATE customers SET \
             name = CASE WHEN $3::BOOLEAN THEN $4::TEXT ELSE name END, \
@@ -747,9 +889,13 @@ pub(crate) async fn update_in_tx(
             address_postal_code = \
                 CASE WHEN $9::BOOLEAN THEN $14::TEXT ELSE address_postal_code END, \
             address_country = CASE WHEN $9::BOOLEAN THEN $15::TEXT ELSE address_country END, \
-            metadata = CASE WHEN $16::BOOLEAN THEN $17::JSONB ELSE metadata END, \
-            last_used_at = GREATEST(last_used_at, $18), \
-            updated_at = $18 \
+            address_latitude_microdeg = \
+                CASE WHEN $9::BOOLEAN THEN $16::BIGINT ELSE address_latitude_microdeg END, \
+            address_longitude_microdeg = \
+                CASE WHEN $9::BOOLEAN THEN $17::BIGINT ELSE address_longitude_microdeg END, \
+            metadata = CASE WHEN $18::BOOLEAN THEN $19::JSONB ELSE metadata END, \
+            last_used_at = GREATEST(last_used_at, $20), \
+            updated_at = $20 \
          WHERE merchant_id = $1 AND id = $2 \
          RETURNING {COLUMNS}"
     );
@@ -772,6 +918,8 @@ pub(crate) async fn update_in_tx(
         .bind(address.state)
         .bind(address.postal_code)
         .bind(address.country)
+        .bind(address.latitude_microdeg)
+        .bind(address.longitude_microdeg)
         .bind(patch.metadata.is_some())
         .bind(patch.metadata.clone())
         .bind(now)
@@ -832,8 +980,18 @@ pub enum CustomerErasure {
 /// [`CustomerAddress::redacted`]'s reason: "which fields did this payer fill
 /// in?" is information about them.
 ///
-/// `$2` is [`REDACTED`] and `$3` the six-component redacted address, bound by
-/// the caller from the same constant the row itself is written with.
+/// `$2` is [`REDACTED`] and `$3` the redacted address — **eight** keys, not
+/// six: the six formal components as the marker and the two coordinate keys
+/// as JSON `null`. A stored `customer.*` body holds the whole rendered object
+/// (migration `0018`), so a payer's GPS point sits inside
+/// `data.object.address` of every `customer.created` and `customer.updated`
+/// vpay has ever written, and nothing prunes `events`. Replacing the
+/// `address` key whole rather than walking into it is what makes that
+/// unmissable: there is no path by which a nested key survives, because the
+/// nested object is not read.
+///
+/// Both are bound by the caller from the same constants the row itself is
+/// written with.
 const REDACT_CUSTOMER_KEY: &str = "CASE \
      WHEN field.key IN ('name', 'email', 'phone') THEN to_jsonb($2::TEXT) \
      WHEN field.key = 'address' THEN $3::JSONB \
@@ -966,14 +1124,29 @@ pub(crate) async fn erase_in_tx(
     Ok(erasure)
 }
 
-/// Replaces every identifier column with [`REDACTED`] and stamps
-/// `anonymized_at`.
+/// Replaces every text identifier column with [`REDACTED`], NULLs the
+/// coordinate, and stamps `anonymized_at`.
 ///
-/// One statement assigning all nine columns from **one** bind, which is the
-/// shape migration `0041`'s `anonymized_customers_carry_the_marker` is
-/// written to police: a `SET` list that missed a column produces a row the
-/// database refuses outright rather than a row that says a payer was erased
-/// while holding one of their details.
+/// One statement assigning all eleven columns from **two** literals — the
+/// marker and a NULL — which is the shape migration `0041`'s
+/// `anonymized_customers_carry_the_marker` is written to police: a `SET` list
+/// that missed a column produces a row the database refuses outright rather
+/// than a row that says a payer was erased while holding one of their
+/// details.
+///
+/// # Why the coordinate is NULLed and not marked
+///
+/// It is `BIGINT`, and there is no integer that is not a possible place, so a
+/// marker value would be a coordinate — somewhere real, attached to a row
+/// that claims the payer is gone. [`CustomerAddress::redacted`] carries the
+/// same argument for the projection the event body is rendered from, and the
+/// CHECK requires exactly this pair of behaviours per column type, so the
+/// three cannot drift apart without the erasure failing outright.
+///
+/// The two columns are NULLed **unconditionally**, including for a customer
+/// that never had a coordinate. Assigning only where one existed would be a
+/// `SET` list whose shape depends on the row, which is the read-then-write
+/// this crate does not do — and the CHECK cannot tell the two apart anyway.
 ///
 /// `anonymized_at IS NULL` is in the `WHERE` even though the caller checked
 /// it under the row lock, for [`update_in_tx`]'s reason: a guard belongs in
@@ -990,6 +1163,7 @@ async fn anonymize(
             name = $2, email = $2, phone = $2, \
             address_line1 = $2, address_line2 = $2, address_city = $2, \
             address_state = $2, address_postal_code = $2, address_country = $2, \
+            address_latitude_microdeg = NULL, address_longitude_microdeg = NULL, \
             anonymized_at = $3, updated_at = $3 \
          WHERE id = $1 AND merchant_id = $4 AND anonymized_at IS NULL \
          RETURNING {COLUMNS}"
@@ -1104,6 +1278,17 @@ async fn redact_stored_copies(
     customer_id: &str,
     merchant_id: &str,
 ) -> Result<(), DbError> {
+    // The redacted address, and it has to be key-for-key what
+    // `vpay_api::model::AddressObject` renders from
+    // `CustomerAddress::redacted()` — a stored body this rewrites is read
+    // back as that object, and a key here that the object does not have (or
+    // one it has and this does not) is a shape a merchant's handler meets on
+    // a replay and nowhere else.
+    //
+    // The two coordinate keys are `null` rather than the marker for
+    // `CustomerAddress::redacted`'s reason: they are integers on the wire, so
+    // the marker is not a value they can take, and a JSON string in an
+    // integer field would break the decode in both SDKs.
     let address = serde_json::json!({
         "line1": REDACTED,
         "line2": REDACTED,
@@ -1111,6 +1296,8 @@ async fn redact_stored_copies(
         "state": REDACTED,
         "postal_code": REDACTED,
         "country": REDACTED,
+        "latitude_microdeg": serde_json::Value::Null,
+        "longitude_microdeg": serde_json::Value::Null,
     });
 
     // `COALESCE(…, events.data)` and not a bare subquery: `jsonb_object_agg`
@@ -1750,18 +1937,22 @@ mod tests {
             name: None,
             email: None,
             phone: Some("237600000200".to_owned()),
-            // The six address columns and `anonymized_at` joined the model in
-            // migration 0041 and are therefore fields of this input. Spelled
-            // out rather than defaulted, because `CreateCustomerInput` has no
-            // `Default` and — more to the point — a struct literal is what
-            // makes a column added to the model without being thought about
-            // here a compile error.
+            // The eight address columns and `anonymized_at` joined the model
+            // in migration 0041 and are therefore fields of this input.
+            // Spelled out rather than defaulted, because
+            // `CreateCustomerInput` has no `Default` and — more to the point
+            // — a struct literal is what makes a column added to the model
+            // without being thought about here a compile error. That is not
+            // hypothetical: the two coordinate columns were added on
+            // 2026-09-11 and this literal is where the compiler said so.
             address_line1: None,
             address_line2: None,
             address_city: None,
             address_state: None,
             address_postal_code: None,
             address_country: None,
+            address_latitude_microdeg: None,
+            address_longitude_microdeg: None,
             anonymized_at: None,
             last_used_at: super::to_chrono(time::OffsetDateTime::UNIX_EPOCH),
         };

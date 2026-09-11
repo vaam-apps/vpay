@@ -983,6 +983,8 @@ fn validated_address(param: Option<AddressParam>) -> Result<Option<CustomerAddre
             POSTAL_CODE_MAX_CHARS,
         )?,
         country: checked_country(present(components.country))?,
+        latitude_microdeg: None,
+        longitude_microdeg: None,
     }))
 }
 

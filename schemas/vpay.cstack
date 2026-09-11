@@ -1367,6 +1367,39 @@ model Customer {
   address_state String? @length(min: 1, max: 256) @sensitive
   address_postal_code String? @length(min: 1, max: 64) @sensitive
   address_country String? @sensitive
+  // The other half of what an address means here (the maintainer,
+  // 2026-09-11: "address in our system means both formal as well as GPS"),
+  // and the most sensitive pair of columns in this file: a name is how
+  // somebody is addressed and a point is where they sleep.
+  //
+  // `Int`, which is BIGINT in the projection this file makes (migration 0032
+  // moved `currencies.exponent` INT -> BIGINT for exactly that reason), and
+  // the unit is in the column name. NOT a `Float` and not a `Decimal`, and
+  // the argument is the same one `metadata`'s GAP note makes one field
+  // group up: `Value::from_plain_json` routes every JSON number through
+  // `Number::as_i64()` and demotes anything else to `f64`
+  // (`cratestack-core-0.12.0/src/value.rs:95-106`), so a decimal degree is a
+  // value this stack cannot carry without rounding it. Integer minor units
+  // with the scale named is also what the money layer already does, and a
+  // coordinate is the same kind of quantity.
+  //
+  // The `@range`s are 0041's `address_latitude_microdeg_range` and
+  // `address_longitude_microdeg_range` — +/-90 and +/-180 degrees, in
+  // millionths — and carry NO `@db_enforce`, for the measured reason every
+  // validator in this file states: the live CHECKs are hand-named,
+  // `@db_enforce` would generate `customers_address_latitude_microdeg_range_
+  // check`, `diff/checks.rs` matches by name first, so promoting them emits
+  // a drop-and-add PAIR where declaring them without it emits nothing.
+  // `inputs.rs::validate_impl_tokens` still builds `input.validate()` from
+  // them, which is a real second refusal above the statement.
+  //
+  // What this file CANNOT say is the pair rule — `address_coordinates_are_
+  // both_or_neither` is multi-column, and this grammar has no cross-field
+  // validator. That is stated rather than left to be noticed: the two
+  // columns are one value, and the only place that is enforced is 0041 and
+  // `vpay_api::v1::customers`' `400`.
+  address_latitude_microdeg Int? @range(min: -90000000, max: 90000000) @sensitive
+  address_longitude_microdeg Int? @range(min: -180000000, max: 180000000) @sensitive
   // The twelve-month sweep's whole input (the maintainer's decision of
   // 2026-09-05). NO `@default(...)`: `touch_last_used` is the only writer
   // that goes through this model, and `Update{Model}Input`'s field for a
