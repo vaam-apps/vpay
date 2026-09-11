@@ -592,6 +592,26 @@ this flow's review, 2026-09-11;
 [../plans/exp51-demo-tenant-notes/opus-review.md](../plans/exp51-demo-tenant-notes/opus-review.md)
 carries what else that review found.
 
+**The two `/dash/v1` reads are one module now, 2026-09-11 (exp55 Lane 1).**
+`/payments` and `/payments/{id}` each assembled their own path, called
+`readDash`, and unpacked the envelope themselves. `frontends/apps/dashboard/src/dash/provider.ts`
+is those three decisions extracted once, named `getList` / `getOne` the way a
+data provider names them, so that the eventual framework is a change of caller
+rather than a rewrite of the read path. **No framework is installed and none
+is imported**; the module's shapes are this app's own, and nothing under
+`src/server/` — `readDash`'s single-`401` re-mint included — was touched.
+
+One rule moved inside `src/payments-query.ts` while this happened, and it is
+the one worth naming: the direction-sensitive reading of `has_more` (§ "the
+paging links"). The pages want two hrefs and the seam wants two cursors, so
+`pageCursors` is the single copy of the rule and `pagerHrefs` is its caller.
+Deriving it twice would be two answers to "which end of the list is this", and
+the symptom of a disagreement is a paging link onto an empty page — which
+reads as data having been lost. Deleting the inversion fails
+`src/dash/provider.test.ts`'s `a backward page reports NEWER rows, not older
+ones` and two of `payments-query.test.ts`'s existing cases. Nothing a staff
+member sees changed.
+
 **The one thing a reader must not conclude from this document:** that the
 dashboard is finished. ~~Two `GET` routes exist that nobody can authenticate
 to.~~ _Corrected 2026-09-07._ A staff member can sign in and read this

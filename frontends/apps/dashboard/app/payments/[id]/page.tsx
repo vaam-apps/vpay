@@ -6,8 +6,7 @@ import { Heading, Link, Stack } from "@vpay/ui";
 import { PaymentDetailView } from "../../../src/components/payment-detail";
 import { ReadFailure } from "../../../src/components/read-failure";
 import { SignedInBar } from "../../../src/components/signed-in-bar";
-import { type PaymentDetail } from "../../../src/server/api";
-import { readDash } from "../../../src/server/dash-read";
+import { dashProvider, PAYMENT_INTENTS } from "../../../src/dash/provider";
 import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 
@@ -39,15 +38,13 @@ export default async function PaymentDetailPage({
     );
   }
   const staff = gate.staff;
-  const { session, config } = staff;
+  const { session } = staff;
   const { id } = await params;
 
-  const result = await readDash<PaymentDetail>(
-    config,
-    `/dash/v1/payment_intents/${encodeURIComponent(id)}`,
-    staff.accessToken,
-    staff.sessionToken,
-  );
+  const result = await dashProvider(staff).getOne({
+    resource: PAYMENT_INTENTS,
+    id,
+  });
 
   if (!result.ok && result.failure.status === 404) {
     notFound();

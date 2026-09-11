@@ -59,6 +59,7 @@ that check in the wrong layer.
 | `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone          |
 | `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`        |
 | `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself        |
+| `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework            |
 | `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once |
 | `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right              |
 | `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                         |
@@ -160,7 +161,7 @@ point: there is no field there to be null.
 ## Testing this app
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 18 files, 136 tests
+pnpm --filter @vpay/dashboard test        # 20 files, 187 tests, 0 skipped
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
 pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
@@ -184,11 +185,12 @@ dropped the `<main>` landmark and every other gate stayed green: `region` went
 Each of these was applied to the tree, the suite run, and the mutation
 reverted:
 
-| Mutation                                                                     | Fails                        |
-| ---------------------------------------------------------------------------- | ---------------------------- |
-| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts` |
-| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`   |
-| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice |
+| Mutation                                                                     | Fails                                                               |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts`                                        |
+| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`                                          |
+| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice                                        |
+| `pageCursors` reads `has_more` the same way in both paging directions        | `src/dash/provider.test.ts`, and `src/payments-query.test.ts` twice |
 
 `oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
 assertion is that the exchange presents the verifier whose `S256` **is** the

@@ -129,7 +129,24 @@ export interface PagerHrefs {
 }
 
 /**
- * The paging links for a page of `rows`.
+ * The row ids the two paging links would page from, or `null` where there is
+ * nowhere to go.
+ *
+ * Ids rather than hrefs because two callers want the same decision in two
+ * shapes: `/payments` wants links, and `src/dash/provider.ts` wants the pair
+ * of cursors a page of results carries. Deriving the inversion below twice
+ * would be two rules that can disagree about which end of a list an operator
+ * is standing at, and the symptom of a disagreement is an empty page.
+ */
+export interface PageCursors {
+  /** The id to page **back** from — towards newer rows — or `null`. */
+  readonly newer: string | null;
+  /** The id to page **forward** from — towards older rows — or `null`. */
+  readonly older: string | null;
+}
+
+/**
+ * Which way a page of `rows` can be walked from, given vpay's `has_more`.
  *
  * # `has_more` means "in the direction you are paging", and that inverts
  *
@@ -160,12 +177,18 @@ export interface PagerHrefs {
  * "We came from there" is not an assumption about the data: a cursor is only
  * ever set by one of these links, so a page reached through one had a page
  * before it by construction.
+ *
+ * **This function is the whole of that rule and the only copy of it.** Refine
+ * has no equivalent — a data provider's cursor is two opaque page params, and
+ * nothing in the framework learns that the flag it was handed changed meaning
+ * halfway down the list — so the seam carries it, and
+ * `src/dash/provider.test.ts` is what goes red when it is deleted.
  */
-export function pagerHrefs(
+export function pageCursors(
   query: PaymentsQuery,
   rows: readonly { readonly id: string }[],
   hasMore: boolean,
-): PagerHrefs {
+): PageCursors {
   const first = rows[0];
   const last = rows[rows.length - 1];
 
@@ -176,14 +199,29 @@ export function pagerHrefs(
   const hasOlder = pagingBackwards ? true : hasMore;
 
   return {
-    previousHref:
-      hasNewer && first !== undefined
-        ? withCursor(query, "before", first.id)
-        : null,
-    nextHref:
-      hasOlder && last !== undefined
-        ? withCursor(query, "after", last.id)
-        : null,
+    newer: hasNewer && first !== undefined ? first.id : null,
+    older: hasOlder && last !== undefined ? last.id : null,
+  };
+}
+
+/**
+ * The paging links for a page of `rows`.
+ *
+ * {@link pageCursors} decides; this turns the decision into two `/payments`
+ * URLs with the filters kept. The split is the one `server/gate.ts` and
+ * `server/session.ts` already make for the session: what is true about the
+ * data is a pure function, and what a particular medium does about it is
+ * somewhere else.
+ */
+export function pagerHrefs(
+  query: PaymentsQuery,
+  rows: readonly { readonly id: string }[],
+  hasMore: boolean,
+): PagerHrefs {
+  const { newer, older } = pageCursors(query, rows, hasMore);
+  return {
+    previousHref: newer === null ? null : withCursor(query, "before", newer),
+    nextHref: older === null ? null : withCursor(query, "after", older),
   };
 }
 
