@@ -169,9 +169,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 41,
-        "all forty-one migration files under backends/migrations should be recorded as applied \
-        "all forty-one migrations under backends/migrations should be recorded as applied \
+        applied, 42,
+        "all forty-two migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -263,20 +262,17 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          refund against a paid invoice moves (D5) -- with no DEFAULT, so \
          every writer of the table names it, and with the over-refund guard \
          refunded_at_most_paid, which is what makes the refund settlement \
-         transaction fail closed. FORTY-ONE FILES, NOT FORTY-TWO NUMBERS: \
-         0041 is taken by a branch that was in flight when this one was \
-         written and is absent from this tree, so the numbering has a \
-         one-wide gap. sqlx applies files in name order and records what it \
-         applied; it does not require the sequence to be dense, which is why \
-         this assertion counts ROWS and the sentence above says `files`.)"
-         and issues #67/#68/#96's 0041, which gives `customers` the six \
-         address columns and the `anonymized_at` that makes \
+         transaction fail closed, \
+         and issues #67/#68/#96's 0041, which gives customers the six \
+         address columns and the anonymized_at that makes \
          DELETE /v1/customers/{{id}} a complete erasure of the payer: a \
          customer with payment history cannot be row-deleted (the FKs are \
          NO ACTION, deliberately) and is anonymised instead, with every \
          identifier column replaced by the literal [redacted] -- which \
          anonymized_customers_carry_the_marker refuses to let the row lie \
-         about.)"
+         about. The numbering is dense again: 0041 was taken by this branch \
+         while 0040 and 0042 were in flight, and all three are in this tree \
+         now, so files and numbers agree at forty-two.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2679,7 +2675,12 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// `an_anonymised_customer_carries_the_marker_in_every_identifier_column`
 /// and `an_anonymised_customers_phone_may_be_the_marker_and_nothing_else`
 /// assert them against a real Postgres directly.
-const EXPECTED_DRIFT_CHANGES: u32 = 176;
+/// **176 -> 177 on 2026-09-11**, measured after this branch rebased over
+/// issue #91's `0042`: that migration's own `amount_refunded_non_negative`
+/// is the +1, and the four address CHECKs are unchanged by the rebase. The
+/// number is read off a freshly migrated database, never derived by adding
+/// two branches' deltas.
+const EXPECTED_DRIFT_CHANGES: u32 = 177;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes

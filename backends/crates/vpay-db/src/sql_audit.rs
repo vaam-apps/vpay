@@ -337,7 +337,10 @@ mod tests {
     /// **bind parameters**: `REDACTED` and a JSON object built from it, never
     /// anything a caller sent. The third redaction, over `charges.payer_ref`,
     /// is a plain `&'static str` and needs no waiver at all.
-    const EXPECTED_ASSERT_SITES: usize = 60;
+    /// **60 → 61 on 2026-09-11**, when this branch rebased over the invoice
+    /// refund's own new site: four are the erasure's (`customers`, `charges`,
+    /// `refunds`, `events`) and the sixty-first is `invoices`'.
+    const EXPECTED_ASSERT_SITES: usize = 61;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.
