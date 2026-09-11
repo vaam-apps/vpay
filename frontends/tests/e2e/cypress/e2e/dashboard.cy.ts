@@ -36,6 +36,18 @@
  *    authorization-code grant with PKCE, whose exchange this app's own server
  *    performed.
  *
+ * # One leg that is about the DEMO rather than about the dashboard
+ *
+ * "shows the demo staff member a payment somebody made through the shop" is
+ * exp51, and it is the only thing in this repository that fails if the demo
+ * dashboard is bound to a tenant nobody clicks anything in. The stack
+ * registers two merchant clients on two tenants and `/dash/v1` reads exactly
+ * one; that leg buys a tote in the shop, pays for it on vpay's page, and then
+ * looks the payment up on the dashboard by its list row and by its id.
+ * Nothing about it is stubbed either, and the payment it asserts on is one
+ * this spec made through a merchant's own website rather than one it minted
+ * with a merchant credential.
+ *
  * # And one leg that is about a token rather than about a person
  *
  * "replaces the access token before it expires" is issue #88 item 1, and it is
@@ -46,6 +58,13 @@
  * which is why nothing ever had.
  */
 import { totpDigits, waitForNextTotpStep } from "../support/dashboard";
+import {
+  MTN,
+  buyOnVpaysPage,
+  checkoutOrigin,
+  orderIdFromUrl,
+  readOrder,
+} from "../support/shop";
 
 /** The staff address `just demo-staff` created. */
 const staffEmail = (): string => Cypress.expose("STAFF_EMAIL") as string;
@@ -313,6 +332,96 @@ describe("the dashboard", { testIsolation: false }, () => {
       // part of the page under discussion is evidence of nothing.
       cy.screenshot("04-payment-detail", { capture: "fullPage" });
     });
+  });
+
+  it("shows the demo staff member a payment somebody made through the shop", () => {
+    // THE CASE THE MAINTAINER HIT BY HAND, on 2026-09-11: buy something in
+    // the shop, pay for it, go looking for it on the dashboard. It was not
+    // there, and the by-id URL answered 404.
+    //
+    // Nothing was broken. A `/dash/v1` request reads exactly one tenant's
+    // rows — the one `dashboard_client.merchant_id` names — and the demo
+    // registers TWO merchant clients on two tenants: `demo-merchant`
+    // (`just demo-walk`) and `shop-merchant` (`examples/shop`). The binding
+    // named the first, so the shop's payments belonged to a tenant this
+    // dashboard does not show and the detail read gave the uniform
+    // cross-tenant 404 it gives for an id that does not exist at all. The
+    // fix is a choice about who is looking, not a change to either surface:
+    // `demo_dashboard_merchant` binds the demo dashboard to the SHOP's
+    // tenant, because the shop is the clickable one.
+    //
+    // **This test is that choice's only guard, and it is a live one.** Point
+    // `demo_dashboard_merchant` back at `demo-merchant-tenant` and both
+    // assertions below fail: the row is absent from the list, and
+    // `/payments/{id}` is Next's `notFound()` — a 404 `cy.visit` refuses.
+    //
+    // Deliberately NOT `cy.task('mintCheckoutPaymentIntent')`. That task
+    // holds a merchant private key and would prove only that a tenant can
+    // read its own rows, which `/dash/v1`'s own tests already prove. What is
+    // under test here is the arrangement of the DEMO, so the payment has to
+    // be made the way the person who reported this made theirs: through the
+    // shop, on vpay's page, with a phone number, and settled by the worker
+    // polling a rail.
+    //
+    // Still signed in from the sign-in test above (`testIsolation: false`);
+    // the shop and vpay's page are other origins and set no cookie this
+    // spec's dashboard session cares about, and `cy.visit("/payments")`
+    // below goes back to Cypress's `baseUrl`.
+    buyOnVpaysPage();
+
+    cy.origin(
+      checkoutOrigin(),
+      { args: { msisdn: MTN.succeeds } },
+      ({ msisdn }) => {
+        cy.get('[data-screen="select_rail"]', { timeout: 60_000 }).should(
+          "be.visible",
+        );
+        cy.get('button[data-rail="mtn_momo"]').click();
+        cy.get('[data-screen="collect_msisdn"]').should("be.visible");
+        cy.get("#vpay-msisdn").type(msisdn);
+        cy.get('button[type="submit"]').click();
+        // `vpay-worker` polling MTN's stub is what moves this; nothing here
+        // pushes the status forward.
+        cy.get('[data-outcome="succeeded"]', { timeout: 120_000 }).should(
+          "be.visible",
+        );
+        cy.get('[data-outcome="succeeded"] button').click();
+      },
+    );
+
+    // Back on the shop's return page, which reads the shop's own database.
+    cy.url({ timeout: 60_000 }).should("include", "/return");
+    cy.get('[data-testid="paid-message"]', { timeout: 120_000 }).should(
+      "be.visible",
+    );
+
+    // The id comes from the SHOP, not from vpay and not from this spec: it is
+    // what the merchant stored, so a dashboard that shows it is showing the
+    // merchant's own payment and not merely something with the right shape.
+    orderIdFromUrl()
+      .then((orderId) => readOrder(orderId))
+      .then((order) => {
+        const intentId = order.paymentIntentId ?? "";
+        expect(intentId, "the shop's own paymentIntentId").to.match(/^pi_/);
+
+        cy.visit("/payments");
+        cy.contains("h2", "Payments").should("be.visible");
+        cy.get(`[data-payment-id="${intentId}"]`)
+          .should("exist")
+          .find("a")
+          .click();
+
+        // Not a 404: the by-id read is the second half of what was reported,
+        // and it is answered by the same tenant predicate the list is.
+        cy.location("pathname").should("eq", `/payments/${intentId}`);
+        cy.get('[data-testid="detail-id"]').should("have.text", intentId);
+        // And it settled, so this is a payment with a charge behind it rather
+        // than an intent nobody ever confirmed.
+        cy.get('[data-testid="detail-rail"]').should("have.text", "mtn_momo");
+        cy.screenshot("05-shop-payment-on-the-dashboard", {
+          capture: "fullPage",
+        });
+      });
   });
 
   it("renders the masked payer as a dash, because nothing writes that column", () => {
