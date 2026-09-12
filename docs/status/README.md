@@ -34,6 +34,9 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-instrument-register.md](verification/2026-09-12-instrument-register.md) —
+  `InstrumentPanel` on the payment detail and `Card glow` on the payer's
+  amount, and the aggregate panel that could not be built honestly
 - [verification/2026-09-12-vaam-apps-ui-012.md](verification/2026-09-12-vaam-apps-ui-012.md) —
   `@vaam-apps/ui` 0.1.1 → 0.1.2: a second theme, and the three places this
   repository assumed there was only one
