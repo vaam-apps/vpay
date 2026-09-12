@@ -251,13 +251,24 @@ claim.
 > entry for a page nobody wrote is the same lie as an empty table."
 > — `docs/flows/dashboard.md`
 
-`NAV_LINKS` in [`src/nav.tsx`](src/nav.tsx) is an exported constant, and
-[`src/layout.test.tsx`](src/layout.test.tsx) checks it **three ways**: every
-entry resolves to an `app/**/page.tsx` on disk; every internal `href` in the
-_rendered_ markup does too; and the nav renders what it declares. The pair of
-the first two is the point — the constant catches a link rendered only in a
-branch no test exercises, the markup catches a link written straight into the
-JSX. Adding `{ href: '/webhooks' }` fails two of the three. Measured.
+**Updated 2026-09-12 (plan lane 4).** `NAV_LINKS` and `src/nav.tsx` are
+deleted. `DASH_RESOURCES` in
+[`src/dash/resources.ts`](src/dash/resources.ts) is the one declaration:
+Refine routes from it and the rail renders from `NAV_ENTRIES`, derived from
+the same array, so the two cannot disagree — which is the failure the old
+pair of lists existed to catch and could only catch by being checked against
+each other.
+
+[`src/layout.test.tsx`](src/layout.test.tsx) checks it three ways still:
+every rail route resolves to a `page.tsx` on disk; every resource Refine
+routes on does too; and the rail's hrefs are exactly the registry's list
+routes. Adding a `resources` entry for `/webhooks` fails two of the three.
+Measured.
+
+`pageExists` resolves **route groups**: `app/(dash)/payments` serves
+`/payments`, and the helper tries the direct path and then each top-level
+`(group)`. Without that it reported every signed-in route as dangling the
+moment the routes moved into `(dash)` — which is how the gap was found.
 
 There is no "Sign out" in the nav, and that is the same rule: this layout
 renders on `/login` too. Who is signed in and the way out are in

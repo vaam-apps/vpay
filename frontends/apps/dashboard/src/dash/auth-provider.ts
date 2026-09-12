@@ -69,14 +69,19 @@ export function dashAuthProvider(actions: DashAuthActions): AuthProvider {
      * it. `check` sending an unauthenticated visitor to `/login` is the
      * whole of this provider's involvement.
      */
-    login: async () => ({
-      success: false,
-      redirectTo: "/login",
-      error: {
-        name: "NotHandledHere",
-        message: "sign-in is the /login routes and their Server Actions",
-      },
-    }),
+    // Not `async`: Refine types every AuthProvider method as returning a
+    // promise, and this one has nothing to await. Returning the promise
+    // directly says that, where an `async` with no `await` in it only looks
+    // like an oversight.
+    login: () =>
+      Promise.resolve({
+        success: false,
+        redirectTo: "/login",
+        error: {
+          name: "NotHandledHere",
+          message: "sign-in is the /login routes and their Server Actions",
+        },
+      }),
 
     logout: async () => {
       await actions.signOut();
@@ -90,14 +95,17 @@ export function dashAuthProvider(actions: DashAuthActions): AuthProvider {
         : { authenticated: false, redirectTo: "/login" };
     },
 
-    onError: async (error) => {
-      // The one rule. See this module's header, and `refusalFor`.
-      if (isSignOut(error)) {
-        return { logout: true, redirectTo: "/login", error: error as Error };
-      }
-      // Everything else — 403, 500, 503, a network failure — is an outage.
-      // The screen renders `ReadFailure`; the session is untouched.
-      return { error: error as Error };
-    },
+    // Pure function of the status, returned as a promise for the same
+    // reason `login` is.
+    onError: (error) =>
+      Promise.resolve(
+        // The one rule. See this module's header, and `refusalFor`.
+        isSignOut(error)
+          ? { logout: true, redirectTo: "/login", error: error as Error }
+          : // Everything else — 403, 500, 503, a network failure — is an
+            // outage. The screen renders `ReadFailure`; the session is
+            // untouched.
+            { error: error as Error },
+      ),
   };
 }

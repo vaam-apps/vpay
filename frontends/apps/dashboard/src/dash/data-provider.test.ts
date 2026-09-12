@@ -137,7 +137,7 @@ describe("the refusals it owes", () => {
   });
 
   it("never sends a credential of its own — the cookie is the browser's", async () => {
-    const fetchSpy = vi.fn(() =>
+    const fetchSpy = vi.fn((_url: string, _init?: RequestInit) =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -146,7 +146,7 @@ describe("the refusals it owes", () => {
     );
     vi.stubGlobal("fetch", fetchSpy);
     await dashDataProvider(BASE).getList({ resource: "payment_intents" });
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const init = fetchSpy.mock.calls[0]?.[1];
     expect(init?.credentials).toBe("same-origin");
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(

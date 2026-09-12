@@ -26,7 +26,7 @@
  */
 import type { DataProvider } from "@refinedev/core";
 
-import { PAYMENT_INTENTS, type DashResource, type ListPage } from "./provider";
+import { PAYMENT_INTENTS, type DashResource } from "./resource-name";
 import type { PaymentIntentObject } from "../server/api";
 import type { PageCursors } from "../payments-query";
 
@@ -157,7 +157,7 @@ export function dashDataProvider(bffBase: string): DataProvider {
       )) as BffList;
 
       return {
-        data: page.data as never,
+        data: page.data,
         // `/dash/v1` is cursor-paged and reports no count. `0` is Refine's
         // documented shape for "unknown", and it is honest here in a way a
         // guess from `data.length` would not be — see the plan's §2.4.
@@ -186,4 +186,4 @@ export function dashDataProvider(bffBase: string): DataProvider {
   };
 }
 
-export type { BffList, ListPage };
+export type { BffList };

@@ -260,3 +260,50 @@ and confirming this Cypress case (rather than only the existing unit case in
 do either was judged too heavy for the shared host this review ran on
 (concurrent builds had already OOM-killed a run earlier the same day); both
 remain open for whoever next runs `just test-e2e` for real.
+
+## 2026-09-12 — lanes 3 and 4: the BFF gets its consumer
+
+The page this sits on recorded that the BFF "has no consumer, and Lane 3 of
+the Refine plan was declined rather than started". Both halves are retired
+here rather than edited away above.
+
+**The payments list and detail render through Refine.**
+`app/(dash)/layout.tsx` mounts `<Refine>` with `dashDataProvider("/api/dash")`
+and `dashAuthProvider`; the screens use `useList` and `useOne`.
+
+**The credential did not move.** Both pages are still Server Components and
+both still call `requireStaff()` before anything renders — the 80 %-of-TTL
+re-mint, the `X-Vpay-Staff-Session` header and the single-`401` retry all
+still run there. `/api/dash` re-does the same gate per request, so the token
+is enforced twice on the server and never once in a browser. Nothing in
+`src/dash/` has seen one, and a client component that reached the resource
+constant through the server-side `provider.ts` failed the build outright
+(`Reading from "node:crypto" is not handled by plugins`) rather than shipping
+that graph to a browser — which is `node-linker=isolated` doing the job it
+exists for.
+
+**`401` and only `401` is a sign-out.** `authProvider.onError` mirrors
+`refusalFor` exactly, and `checkSession` — the Server Action behind Refine's
+`check()` — applies the same rule instead of reusing `alreadySignedIn()`,
+which answers `false` for an outage as well and would have signed every staff
+member out of a rolling deploy. That is issue #88 item 2, and widening
+`onError` to `>= 400` fails **9 of 15** cases in `auth-provider.test.ts`.
+Seven mutations in total, each run and reverted; the table is in
+[../../status/verification/2026-09-12-dashboard-refine.md](../../status/verification/2026-09-12-dashboard-refine.md).
+
+**Lane 4: one array.** `src/dash/resources.ts` replaces `src/nav.tsx`'s
+`NAV_LINKS`, which is deleted. Refine routes from it and the rail renders
+from it, so the two lists that could disagree are one. `layout.test.tsx`'s
+gate moved onto it, and `pageExists` learned about route groups — without
+that it called every signed-in route dangling the moment they moved into
+`(dash)`.
+
+**What did not change, deliberately:** the `h2` page headings (thirteen
+assertions in `dashboard.cy.ts` pin them, and `ScreenHeader` would have made
+them `h1`), and `<a href>` paging (`@vaam-apps/ui`'s `Pagination` renders
+callback buttons and disables rather than omits an absent control; two
+Cypress legs assert on anchors).
+
+**Still one resource.** `/dash/v1` serves `payment_intents` and nothing else,
+so the rail has one entry. A console with more sections is what a backend
+exposes, not what a framework provides.

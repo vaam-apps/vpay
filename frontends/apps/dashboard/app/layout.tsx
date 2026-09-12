@@ -1,9 +1,5 @@
 import type { Metadata } from "next";
 
-import { ScreenStack } from "@vaam-apps/ui";
-
-import { PrimaryNav } from "../src/nav";
-
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,33 +8,23 @@ export const metadata: Metadata = {
 };
 
 /**
- * The dashboard's persistent chrome: the brand, the nav, and the one-column
- * page frame every screen sits in.
+ * The document, and nothing else.
  *
- * `@vpay/ui` was deleted on 2026-09-12; `ScreenStack` from `@vaam-apps/ui`
- * takes over the page frame. It supplies only the vertical rhythm
- * (`flex flex-col gap-6`) — no centring, no `max-w`, no padding — so this is
- * the one place in the app that carries them, in a plain literal `className`
- * the gate's check 7a-i and 7a-iii both permit: a centred column with a
- * generous width for a payments table, not the checkout's narrow
- * `max-w-md`, which this app never had a reason to inherit.
+ * # The nav moved, and that is Lane 4 rather than a tidy-up
  *
- * The nav's links live in `src/nav.tsx` as an exported constant, and
- * `src/layout.test.tsx` resolves every one of them against `app/**\/page.tsx`
- * on disk — the rule that a menu entry for a page nobody wrote is the same
- * lie as an empty table, as a gate rather than as a comment. It was stated in
- * three places and enforced in none until that test
- * (`docs/plans/exp26-notes/lane-d-review.md`, finding 2).
+ * This layout rendered `PrimaryNav` for every route, signed in or not — so
+ * the sign-in form carried a rail linking to a page it could not reach. The
+ * rail is `AppShell`'s now, mounted by `app/(dash)/layout.tsx`, which is the
+ * only group a signed-in staff member is inside. `src/nav.tsx` and its
+ * hand-kept `NAV_LINKS` are deleted: `src/dash/resources.ts` is the one
+ * declaration, and Refine routes from the same array the rail renders from.
  *
- * `<main>` is not decoration. An earlier draft of this composition dropped it
- * and axe-core's `region` rule went from 0 violations to 1 ("All page content
- * should be contained by landmarks"), with every other gate green.
- * `src/a11y.test.tsx` is what noticed, and stays.
+ * # `data-theme="dark"` stays here
  *
- * Nothing here reads the session. The layout renders on `/login` too, so a
- * control that only makes sense signed in — "Sign out", the staff member's
- * address — belongs to the pages behind the gate (`SignedInBar`) and not to
- * chrome shared with a page where nobody is signed in.
+ * `@vaam-apps/ui` registers `dark` as its default and `light` as opt-in
+ * since 0.1.2. Pinning it on `<html>` is what the app actually ships, and
+ * `layout.test.tsx` asserts it; `ThemeSwitcher` in the shell writes the
+ * attribute this element declares.
  */
 export default function RootLayout({
   children,
@@ -47,14 +33,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" data-theme="dark">
-      <body>
-        <PrimaryNav />
-        <main>
-          <ScreenStack className="mx-auto w-full max-w-5xl p-6">
-            {children}
-          </ScreenStack>
-        </main>
-      </body>
+      <body className="min-h-screen bg-base-100">{children}</body>
     </html>
   );
 }

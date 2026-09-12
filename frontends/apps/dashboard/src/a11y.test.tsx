@@ -42,6 +42,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import RootLayout from "../app/layout";
+import LoginLayout from "../app/login/layout";
 import { EnrolmentPanel } from "./components/enrolment-panel";
 import { PasswordForm } from "./components/password-form";
 import { PaymentDetailView } from "./components/payment-detail";
@@ -53,9 +54,30 @@ import { SignedInBar } from "./components/signed-in-bar";
 import { TotpForm } from "./components/totp-form";
 import { DETAIL, INTENT } from "./testing/fixtures";
 
-/** Exactly plan §7 row 5's list, as `frontends/packages/ui/src/testing/axe.ts` spells it. */
+// `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
+// outside a mock, Next throws "invariant expected app router to be mounted"
+// the moment it renders, which is every rendered-component case below since
+// none of them wrap a real `<AppRouterContext.Provider>`.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
+/**
+ * Exactly plan §7 row 5's list, as `frontends/packages/ui/src/testing/axe.ts`
+ * spells it — **plus `select-name`, 2026-09-12**.
+ *
+ * That addition is a hole being closed, not a rule being collected.
+ * axe-core 4.13's `label` rule has the selector `input, textarea`: a
+ * `<select>` is not in it, and is covered by the separate `select-name`
+ * rule instead (read back off the installed build:
+ * `axe._audit.rules.find(r => r.id === "label").selector`). This list
+ * carried `label` and not `select-name`, so the one `<select>` in this app
+ * — `PaymentsFilters`' status filter, the control the payments screen is
+ * filtered by — had its accessible name checked by nothing here. Measured
+ * before adding it: pointing that field's `<label htmlFor>` at an id no
+ * element carries left every case in this file green.
+ */
 const STRUCTURAL_RULES = [
   "label",
+  "select-name",
   "button-name",
   "link-name",
   "aria-required-attr",
@@ -87,12 +109,21 @@ const idle = () => vi.fn(() => Promise.resolve(NO_STATE));
 
 describe("the rendered app", () => {
   it("puts every byte of page content inside a landmark", async () => {
-    // The real `<body>` the layout renders around real page content, not a
+    // The real `<body>` the layouts render around real page content, not a
     // fragment — `region` is a document-level rule and a fragment would pass
     // it vacuously.
+    //
+    // **Two layouts, because that is what a route actually gets.** The root
+    // layout is the document and provides no landmark of its own since the
+    // nav moved out of it; the `<main>` comes from the group a route is in —
+    // `LoginLayout` for the signed-out routes, `AppShell` for `(dash)`.
+    // Rendering the root alone would assert against a composition no URL
+    // resolves to, and it would fail exactly as it did when the nav left.
     const html = renderToStaticMarkup(
       RootLayout({
-        children: <PaymentsTable rows={[INTENT]} />,
+        children: LoginLayout({
+          children: <PaymentsTable rows={[INTENT]} />,
+        }) as ReactElement,
       }) as ReactElement,
     );
     const body = html
