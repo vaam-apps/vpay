@@ -61,7 +61,7 @@ export function DialogDescription({
 }: DialogDescriptionProps) {
   return (
     <BaseDialog.Description
-      className={cn("text-sm opacity-70", className)}
+      className={cn("text-sm text-muted-ink", className)}
       {...rest}
     />
   );

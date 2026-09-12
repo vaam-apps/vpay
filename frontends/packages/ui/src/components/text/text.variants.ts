@@ -13,7 +13,16 @@ import { cva } from "class-variance-authority";
  */
 export const text = cva("", {
   variants: {
-    tone: { default: "", muted: "opacity-60", error: "text-error" },
+    // Colours, not opacities. `muted` was `opacity-60` and `error` was
+    // `text-error` until 2026-09-12; both are measured tokens now, and
+    // `styles.css` carries the numbers and the reason. The short version:
+    // opacity compounds with an ancestor's and colour does not, and
+    // `text-error` is daisyUI's error FILL, which is 2.92:1 on white.
+    tone: {
+      default: "",
+      muted: "text-muted-ink",
+      error: "text-error-ink",
+    },
     size: {
       xs: "text-xs",
       sm: "text-sm",

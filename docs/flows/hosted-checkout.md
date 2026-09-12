@@ -489,3 +489,34 @@ payment-failure alert that two suites pin. The story carries
 the run does not fail — with the measured ratio in a comment beside it, and
 `docs/status/frontend.md` carries the row. **A decision is owed; nothing about
 this screen has been quietly adjusted.**
+
+**Updated 2026-09-12: the rejection message is readable, and the fix is a
+theme token.** The entry above ends by saying a decision was owed on the
+2.92:1 `Mtn Number Rejected` screen. The maintainer's answer was to fix it,
+and it is fixed — **the story now passes axe in a real browser with no
+exemption**, and `a11y: { test: "todo" }` appears nowhere in this repository.
+
+The cause was never this app. daisyUI's `--color-<tone>` is a **fill** — the
+colour `.alert-error` paints as a background, with `--color-error-content` on
+top, which is the pair the 2026-09-07 review corrected and which
+`outcome-contrast.test.ts` pins. `text-error` is a different pair: it puts
+that same fill colour on `--color-base-100`, and bumblebee's error fill is
+2.92:1 on white. Nothing had measured that direction, which is why three
+`@vpay/ui` stories failed on the identical value.
+
+`@vpay/ui/src/styles.css` now defines `--color-error-ink`,
+`oklch(55% .191 22.216)` = `#c92d3a` — daisyUI's own hue and chroma, darkened
+only as far as AA needs plus a margin — at **5.36:1** on `base-100` and
+**4.91:1** on `base-200`. `--color-error` itself is **unchanged**, so nothing
+about the payment-failure alert this document spends three entries on has
+moved: the same background, the same `--color-error-content`, the same 4.62:1
+this page already records. The only thing that changed on this page is the
+colour of the `role="alert"` line telling a payer their MSISDN was refused,
+which went from `#ff6266` to `#c92d3a`.
+
+`frontends/packages/ui/src/theme-ink-contrast.test.ts` measures both
+directions from the compiled stylesheet on every run, so this does not depend
+on anybody remembering to run a browser. It also fails if a component writes
+`text-error` again, and it asserts `--color-error` is **still** unreadable on
+white — so if a daisyUI bump ever fixes it upstream, the extra token gets
+deleted rather than carried out of habit.

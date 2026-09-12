@@ -12,14 +12,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/**
- * `test: "todo"` — same pair, same measurement, same owed decision as
- * `field.stories.tsx`'s `Invalid`: `text-error` is `#ff6266` on `#ffffff`,
- * **2.92:1** at 14px on 2026-09-12. See that file for why it is not fixed
- * here.
- */
 export const Tones: Story = {
-  parameters: { a11y: { test: "todo" } },
   render: () => (
     <>
       <Text>Default</Text>

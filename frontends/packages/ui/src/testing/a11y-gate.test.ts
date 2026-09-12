@@ -63,16 +63,21 @@ function storyFiles(dir: string): string[] {
 }
 
 /**
- * The four stories that are allowed to report instead of fail, each with
- * the measured ratio that earned it. Adding a row here is a deliberate,
- * reviewable act; adding a `test: "todo"` without one fails this file.
+ * Stories allowed to report instead of fail. **It is empty, and keeping it
+ * empty is the point.**
+ *
+ * It held four on 2026-09-12 — the contrast violations the browser suite
+ * found on its first run — for the few hours between finding them and the
+ * maintainer's instruction to fix them. They are fixed at the token level
+ * (`--color-error-ink`, `--color-muted-ink` in `styles.css`), so no story
+ * needs the escape hatch any more.
+ *
+ * Adding a row here is a deliberate, reviewable act and must carry the
+ * ratio it was measured at. Adding a `test: "todo"` WITHOUT one fails the
+ * case below, which is what stops the hatch being used to quiet a real
+ * regression.
  */
-const DECLARED_TODOS: Record<string, string> = {
-  "field.stories.tsx": "2.92:1 — text-error #ff6266 on #ffffff",
-  "text.stories.tsx": "2.92:1 — text-error #ff6266 on #ffffff",
-  "timeline.stories.tsx": "2.71:1 — opacity-60 #9d9d9d on #ffffff",
-  "checkout-screens.stories.tsx": "2.92:1 — text-error #ff6266 on #ffffff",
-};
+const DECLARED_TODOS: Record<string, string> = {};
 
 describe("the browser a11y suite is still a gate", () => {
   it("preview.ts still asks the addon to FAIL on a violation", () => {
@@ -113,6 +118,9 @@ describe("the browser a11y suite is still a gate", () => {
   });
 
   it("each opted-out story states the ratio it was measured at", () => {
+    // Vacuous while DECLARED_TODOS is empty, and deliberately kept: the
+    // moment somebody adds a row, this is the case that demands a number
+    // beside it rather than a shrug.
     for (const [file, evidence] of Object.entries(DECLARED_TODOS)) {
       const match = storyFiles(join(UI_ROOT, "src"))
         .concat(storyFiles(CHECKOUT_SRC))

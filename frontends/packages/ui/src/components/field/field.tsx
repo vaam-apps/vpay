@@ -39,7 +39,7 @@ export function FieldDescription({
 }: FieldDescriptionProps) {
   return (
     <BaseField.Description
-      className={cn("text-xs opacity-70", className)}
+      className={cn("text-xs text-muted-ink", className)}
       {...rest}
     />
   );
@@ -52,7 +52,7 @@ export type FieldErrorProps = React.ComponentPropsWithoutRef<
 export function FieldError({ className, ...rest }: FieldErrorProps) {
   return (
     <BaseField.Error
-      className={cn("text-xs text-error", className)}
+      className={cn("text-xs text-error-ink", className)}
       {...rest}
     />
   );

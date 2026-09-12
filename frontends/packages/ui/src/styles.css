@@ -59,6 +59,48 @@
   --radius-selector: 0.25rem;
 }
 
+/* Two inks for text on a light surface, because daisyUI has none.
+ *
+ * MEASURED 2026-09-12, by the browser a11y suite in `just test-storybook`
+ * — the first thing in this repository able to return a colour-contrast
+ * verdict — and fixed here on the maintainer's instruction.
+ *
+ * daisyUI's `--color-<tone>` is a FILL. `.alert-error` paints it as a
+ * background and puts `--color-error-content` on top, and the block above
+ * corrects that pair. But `text-error` resolves to the same fill colour and
+ * puts it on `--color-base-100`, which is a different pair that nothing had
+ * ever measured: **#ff6266 on #ffffff is 2.92:1**, against AA's 4.5:1. It
+ * was on `FieldError`, on `Text tone="error"`, and — the reason this got
+ * fixed rather than filed — on the checkout's MSISDN rejection message,
+ * the `role="alert"` line telling a payer their number was refused.
+ *
+ * `--color-error-ink` is that missing pair, at daisyUI's own hue and chroma,
+ * darkened only as far as AA needs plus a margin: oklch(55% .191 22.216) is
+ * #c92d3a, **5.36:1** on base-100 and **4.91:1** on base-200. oklch(58%) is
+ * nearer the original red and clears by 0.22 (4.72:1), which is too thin to
+ * spend on a payment failure; oklch(52%) is 6.09:1 and reads brown.
+ * `--color-error` itself is UNCHANGED, so every alert, badge, button and
+ * input border keeps the colour it has and every measurement of those pairs
+ * still holds.
+ *
+ * `--color-muted-ink` replaces `opacity-*` as a way of spelling "quieter
+ * text", and that is a correctness fix, not a tidy-up. **Opacity compounds
+ * and colour does not.** `List` set `opacity-70` and `Text tone="muted"` set
+ * `opacity-60`; a muted line inside a list therefore rendered at 0.42 —
+ * #9d9d9d, **2.71:1** — and nothing at either call site could show you that,
+ * because each is defensible alone (6.70:1 and 4.73:1). oklch(48% 0 0) is
+ * #5d5d5d, **6.54:1** on base-100 and **5.99:1** on base-200; it is within
+ * one sRGB step of what `opacity-70` already rendered, so a list looks as it
+ * did, and two of them nested now produce one colour instead of a third.
+ *
+ * `src/theme-contrast.test.ts` measures both inks on both surfaces on every
+ * run, in the same compiled-stylesheet way it measures daisyUI's own pairs.
+ */
+@theme {
+  --color-error-ink: oklch(55% 0.191 22.216);
+  --color-muted-ink: oklch(48% 0 0);
+}
+
 /* pnpm sets node-linker=isolated, so @vpay/ui reaches consumers through a
  * symlink into .pnpm and Tailwind does not scan node_modules by default.
  * Relative monorepo paths, not package specifiers — see plan §6.4. */
