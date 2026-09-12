@@ -38,7 +38,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-theme="bumblebee">
+    <html lang="en" data-theme="dark">
       <body>
         <PrimaryNav />
         <main>

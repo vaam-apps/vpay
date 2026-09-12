@@ -12,10 +12,10 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@vaam-apps/ui": "^0.1.1",
     "@vpay/api-client": "workspace:*",
     "@vpay/config": "workspace:*",
     "@vpay/tokens": "workspace:*",
-    "@vpay/ui": "workspace:*",
     "next": "^15.5.25",
     "qrcode": "1.5.4",
     "react": "^19.0.0",

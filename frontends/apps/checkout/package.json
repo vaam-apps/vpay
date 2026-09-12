@@ -13,9 +13,9 @@
     "lint": "pnpm run deps && eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@vaam-apps/ui": "^0.1.1",
     "@vaam-apps/vpay-stripe-js": "workspace:*",
     "@vpay/tokens": "workspace:*",
-    "@vpay/ui": "workspace:*",
     "next": "^15.5.25",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
