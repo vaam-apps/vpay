@@ -49,7 +49,8 @@ use time::OffsetDateTime;
 use vpay_core::{IntentStatus, InvoiceStatus, ids};
 use vpay_db::{
     CheckoutSessions, InvoiceListPage, InvoicePatch, InvoiceRow, Invoices, NewCheckoutSession,
-    NewInvoice, NewPaymentIntent, PaymentIntents, Repositories, TxOutcome, UnitOfWork,
+    NewInvoice, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject, TxOutcome,
+    UnitOfWork,
 };
 
 use crate::error::ApiError;
@@ -148,8 +149,14 @@ pub(crate) async fn create(
     };
 
     let outcome = create_once(&post, repositories.as_ref(), &config, &scope).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The create itself, split out of [`create`] so "a failure from here still
@@ -287,8 +294,14 @@ pub(crate) async fn update(
     };
 
     let outcome = update_once(&post, repositories.as_ref(), &config, &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The update itself. See [`update`].
@@ -473,8 +486,14 @@ pub(crate) async fn delete(
     };
 
     let outcome = delete_once(repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The delete itself. See [`delete`].
@@ -602,8 +621,14 @@ pub(crate) async fn mark_uncollectible(
     };
 
     let outcome = mark_uncollectible_once(repositories.as_ref(), &config, &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The write-off itself. See [`mark_uncollectible`].
@@ -675,8 +700,14 @@ async fn transition(
     };
 
     let outcome = transition_once(repositories.as_ref(), &config, &scope, &id, which).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The transition itself. See [`transition`].
@@ -815,8 +846,14 @@ pub(crate) async fn pay(
     };
 
     let outcome = pay_once(&post, repositories.as_ref(), &config, &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// `POST /v1/invoices/{id}/pay`'s fields.

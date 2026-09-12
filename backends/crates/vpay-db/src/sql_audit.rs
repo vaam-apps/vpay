@@ -340,6 +340,17 @@ mod tests {
     /// **60 → 61 on 2026-09-11**, when this branch rebased over the invoice
     /// refund's own new site: four are the erasure's (`customers`, `charges`,
     /// `refunds`, `events`) and the sixty-first is `invoices`'.
+    ///
+    /// **Still 61 on 2026-09-12** (issue #111), and the number not moving is
+    /// the point. The second of the two `jsonb_object_agg` rewrites above —
+    /// the one over `idempotency_keys.response_body` — moved out of
+    /// `redact_stored_copies` into `redact_stored_responses_in_tx`, so that
+    /// `crate::idempotency`'s `store` can run **the same statement** when a
+    /// response it is about to make replayable turns out to name a payer an
+    /// erasure has just removed. One statement, two callers: a second
+    /// spelling of the redaction would have been a second site here, and the
+    /// two sides of that race would then be free to disagree about which keys
+    /// are a payer's.
     const EXPECTED_ASSERT_SITES: usize = 61;
 
     /// **The gate.** No `format!` that becomes a statement interpolates

@@ -2324,6 +2324,28 @@ async fn events_about(pool: &sqlx::PgPool, object_id: &str) -> anyhow::Result<Ve
         .context("reading the events a transaction did or did not commit")
 }
 
+/// A [`vpay_db::StoredResponse`] for a route that is not `/v1/customers`.
+///
+/// Every idempotency case in this file is a payment intent's, so every one of
+/// them is [`vpay_db::ResponseSubject::Verbatim`] — the arm that stores the
+/// body as given, in one statement. The customer arm, which takes the payer's
+/// row lock and redacts a body an erasure has overtaken, is proved where the
+/// race it closes can actually be staged:
+/// `backends/tests/integration/tests/customers.rs`'s
+/// `an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier`.
+fn verbatim<'a>(
+    status: u16,
+    body: &'a serde_json::Value,
+    retry: Option<&'a str>,
+) -> vpay_db::StoredResponse<'a> {
+    vpay_db::StoredResponse {
+        status,
+        body,
+        retry,
+        subject: vpay_db::ResponseSubject::Verbatim,
+    }
+}
+
 /// The `claim_id` a [`vpay_db::IdempotencyClaim::Fresh`] carries, or an
 /// error naming what came back instead.
 ///
@@ -2436,9 +2458,7 @@ async fn reusing_an_idempotency_key_with_a_different_request_is_a_mismatch() -> 
                 "merchant_a",
                 "key-reused",
                 first,
-                200,
-                &json!({"id": "pi_1"}),
-                None,
+                verbatim(200, &json!({"id": "pi_1"}), None),
             )
             .await
             .context("storing the first response must succeed")?,
@@ -2504,7 +2524,12 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
     let body = json!({"id": "pi_replayed", "object": "payment_intent", "amount": 5000});
     assert_eq!(
         repositories
-            .store("merchant_a", "key-replayed", claim_id, 200, &body, None,)
+            .store(
+                "merchant_a",
+                "key-replayed",
+                claim_id,
+                verbatim(200, &body, None),
+            )
             .await
             .context("storing the response must succeed")?,
         vpay_db::IdempotencyStoreOutcome::Stored
@@ -2540,9 +2565,11 @@ async fn a_completed_idempotency_key_replays_its_stored_response() -> anyhow::Re
             "merchant_a",
             "key-replayed",
             claim_id,
-            500,
-            &json!({"error": "would clobber the answer already given"}),
-            Some("false"),
+            verbatim(
+                500,
+                &json!({"error": "would clobber the answer already given"}),
+                Some("false"),
+            ),
         )
         .await
         .expect_err("completing an already-complete key must be refused, not silently applied");
@@ -2613,9 +2640,7 @@ async fn the_retry_advisory_round_trips_and_0025_refuses_anything_else() -> anyh
                     "merchant_a",
                     key,
                     claim_id,
-                    status,
-                    &json!({"stored": key}),
-                    advisory,
+                    verbatim(status, &json!({"stored": key}), advisory),
                 )
                 .await
                 .context("storing the response must succeed")?,
@@ -2804,7 +2829,7 @@ async fn release_hands_back_an_in_flight_key_and_never_a_completed_one() -> anyh
     let done = fresh_claim_id(&claim("key-done").await?)?;
     let body = json!({"id": "pi_stored"});
     repositories
-        .store("merchant_a", "key-done", done, 200, &body, None)
+        .store("merchant_a", "key-done", done, verbatim(200, &body, None))
         .await
         .context("storing the response must succeed")?;
     assert_eq!(
@@ -2908,9 +2933,11 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
                 "merchant_a",
                 "key-aba",
                 r1,
-                200,
-                &json!({"id": "pi_r1", "note": "R1's answer, under R2's claim"}),
-                None,
+                verbatim(
+                    200,
+                    &json!({"id": "pi_r1", "note": "R1's answer, under R2's claim"}),
+                    None,
+                ),
             )
             .await
             .context("a stale store must not be an error")?,
@@ -2940,9 +2967,7 @@ async fn a_reclaimed_key_is_not_writable_by_the_claim_it_replaced() -> anyhow::R
                 "merchant_a",
                 "key-aba",
                 r2,
-                201,
-                &json!({"id": "pi_r2"}),
-                None,
+                verbatim(201, &json!({"id": "pi_r2"}), None),
             )
             .await
             .context("the live claim must still be able to store its response")?,

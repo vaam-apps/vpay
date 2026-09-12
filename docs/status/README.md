@@ -34,6 +34,11 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-erasure-idempotency-window.md](verification/2026-09-12-erasure-idempotency-window.md) —
+  issue #111: the 24-hour window in which an update that lost a race to a
+  `DELETE` put the payer back into `idempotency_keys.response_body` —
+  reproduced, then closed — and the merchant's own copy, which is a contract
+  question and is **not** decided
 - [verification/2026-09-12-worker-claim-latency.md](verification/2026-09-12-worker-claim-latency.md) —
   what a single worker's claim latency actually is (issue #100): one
   `IDLE_SLEEP` plus milliseconds, the same at two workers, the bound now

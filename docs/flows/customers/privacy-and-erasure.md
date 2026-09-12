@@ -236,25 +236,73 @@ it is stated rather than implied". It was stated; it was also not a trade
 anybody had chosen, and it exempted from the twelve-month retention promise
 exactly the payers vpay had taken money from.
 
-### Two windows the erasure does not close, stated rather than implied
+### One window the erasure does not close, and one that used to be two
 
-**One: a response body stored a few milliseconds after the erasure.** Every
-write under `/v1` carries an `Idempotency-Key`, and the response is stored in
-`idempotency_keys.response_body` for 24 hours **after** the handler's
-transaction commits — `PostRequest::finish`, in `vpay_api::v1::payment_intents`.
-A `POST /v1/customers/{id}` that commits, then loses the race to a `DELETE`
-that erases the same customer, then stores its own response, writes the
-payer's identifiers back into a table the erasure has already swept. The two
-transactions serialise on the customer's row lock, so the window is only the
-gap between one committing and its `finish` write — but it is real, it is not
-closed, and the bound on it is `sweep_expired`'s deletion of every row past
-`expires_at`: **24 hours**.
+**The first is closed, since 2026-09-12** — it was open from the moment this
+redaction existed until [issue #111](https://github.com/vaam-apps/vpay/issues/111).
+What follows is what it was, because a window that was real for a day is
+worth more as a record than as a deleted paragraph.
 
-It is left open rather than closed because closing it belongs in the generic
-idempotency store, which knows nothing about customers, and a resource-shaped
-exception there is a worse thing to own than a bounded window somebody can
-read about. Found by the review, 2026-09-11; it is a maintainer's call
-whether 24 hours is acceptable.
+_This section said, until 2026-09-12:_
+
+> **One: a response body stored a few milliseconds after the erasure.** Every
+> write under `/v1` carries an `Idempotency-Key`, and the response is stored in
+> `idempotency_keys.response_body` for 24 hours **after** the handler's
+> transaction commits — `PostRequest::finish`, in `vpay_api::v1::payment_intents`.
+> A `POST /v1/customers/{id}` that commits, then loses the race to a `DELETE`
+> that erases the same customer, then stores its own response, writes the
+> payer's identifiers back into a table the erasure has already swept. The two
+> transactions serialise on the customer's row lock, so the window is only the
+> gap between one committing and its `finish` write — but it is real, it is not
+> closed, and the bound on it is `sweep_expired`'s deletion of every row past
+> `expires_at`: **24 hours**.
+>
+> It is left open rather than closed because closing it belongs in the generic
+> idempotency store, which knows nothing about customers, and a resource-shaped
+> exception there is a worse thing to own than a bounded window somebody can
+> read about. Found by the review, 2026-09-11; it is a maintainer's call
+> whether 24 hours is acceptable.
+
+Every sentence of that description was accurate, and the second paragraph's
+judgement was the part that changed. The window was **demonstrated** first:
+`an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier`, in
+`backends/tests/integration/tests/customers.rs`, drives the two real handlers
+against a real Postgres and pins the interleaving with **row locks the test
+itself takes** — the customer's row, so the update's transaction cannot start;
+the update's own `idempotency_keys` row, so its `finish` cannot write; and a
+`DELETE` queued behind the update so that releasing the first lets the update
+commit and the erasure run second. Against the code as it stood, the payer's
+name, email and phone came straight back out of `response_body`, and replaying
+the update's key handed them over the wire.
+
+What closes it is a **shaped exception, not a smarter store**:
+`vpay_db::Idempotency::store` takes a `StoredResponse`, whose `subject` is
+either `ResponseSubject::Verbatim` — every route but `/v1/customers`, stored in
+one statement exactly as before — or `ResponseSubject::Customer { id }`, which
+the three customer routes pass with the `cus_…` they already hold. The customer
+arm wraps the write in a transaction that first reads the payer's row `FOR
+SHARE`, and redacts the body it just stored if that payer is gone. The share
+lock is the half that matters: every erasure takes `FOR UPDATE` on that row
+first, so the two serialise, and there is no gap left for an erasure to commit
+in between the question and the answer. A hard-deleted customer leaves no row
+at all, so **absence reads as erased**.
+
+Three things it deliberately is not. It does not inspect the body: the id comes
+from the route, and a response that is not that customer's rendered object is
+left alone by the redaction's own `object`/`id` match. It does not define what
+a redacted customer body is — it calls `vpay_db::customers`'
+`redact_stored_responses_in_tx`, the same statement the erasure runs, so
+`cargo xtask`'s SQL-interpolation audit still counts one site and the two sides
+of the race cannot drift. And it does not touch the response the racing request
+is **answered** with: that request committed before the erasure, and telling a
+merchant something its own transaction did not do would be a different lie.
+What is redacted is vpay's stored copy, which is the one the retention promise
+is about.
+
+The decisive mutation is in the test's own doc comment: make `store` treat
+`ResponseSubject::Customer` as `Verbatim` and both rounds — the anonymised
+branch and the hard-deleted one — fail with the payer's name in the stored body.
+Measured 2026-09-12.
 
 **Two: vpay cannot erase the merchant's copy, and there is deliberately no
 second event type for it.** The merchant received the payer's details in
@@ -277,6 +325,83 @@ missing is not a mechanism; it is a **contract**. Whether a merchant is
 obliged to act on `customer.deleted` — and within what window — is a data
 processing agreement, not a webhook, and it is a maintainer's decision. It is
 not made here.
+
+#### The decision, written out — **NOT TAKEN**
+
+Issue #111's second half. It is set out here so that it can be decided rather
+than rediscovered; nothing below is a recommendation, and no code in this
+repository assumes any of it.
+
+**What is being asked.** When vpay erases a payer, does the merchant agreement
+oblige the merchant to erase their own copy — and if so, within what window,
+and is vpay obliged to check?
+
+Three facts bound the answer and none of them is a preference:
+
+1. the merchant **has** the data, lawfully, because they collected it and sent
+   it to vpay. Under the processor reading, they are the controller and vpay is
+   processing on their instructions, so the erasure obligation is theirs to
+   begin with and vpay's obligation is to erase what vpay holds — which it does,
+   in one transaction, and proves;
+2. vpay already gives them everything an erasure requires: `customer.deleted`,
+   in the erasure's own transaction, carrying the `cus_…` and the instant. A
+   merchant who cannot act on it is a merchant who did not keep the `cus_…` →
+   user mapping, and without that mapping they could not have used the object;
+3. vpay **cannot verify** compliance. There is no reachable surface on which to
+   observe a merchant's database, so any term stronger than an obligation is an
+   obligation with no evidence behind it.
+
+**Option A — say nothing.** No term. The merchant's own regulator is the only
+party that acts on it.
+_Costs:_ nothing to build. vpay's own privacy claim stays honest, because it
+has only ever been about what vpay stores. What it gives up is the answer to
+"what happens to the copy you sent them?", which is the first question anybody
+reviewing this asks, and a silence there reads as an oversight rather than as a
+boundary.
+
+**Option B — an obligation with no window.** "On receipt of `customer.deleted`
+the merchant shall erase the personal data of that customer from their own
+systems, save where they are required to retain it." No deadline.
+_Costs:_ a paragraph in the agreement and nothing in code. It is honest about
+what vpay can observe (nothing) while putting the duty where the data is. The
+weakness is "shall, eventually": a term with no window is hard to breach, so it
+documents an intention rather than creating one.
+
+**Option C — an obligation with a window**, e.g. thirty days, or a window that
+matches the merchant's own statutory deadline.
+_Costs:_ the same paragraph, plus a number somebody has to justify. Thirty days
+is a common echo of the GDPR's one-month erasure standard, but
+vpay operates in Cameroon and the applicable instrument is the maintainer's to
+name, alongside whatever an EU-facing merchant is separately bound by. **No
+statute is cited here on purpose**: naming one would be this document deciding
+the half of the question that is actually legal advice, and a citation nobody
+checked is worse than none. The real cost is that a window
+vpay cannot measure is a window vpay cannot enforce, so it buys clarity in a
+dispute and nothing before one.
+
+**Option D — an obligation plus a self-attestation.** C, plus the merchant
+confirming erasure (a dashboard acknowledgement, or a call to an endpoint
+vpay would have to build).
+_Costs:_ the largest, and the one to be most careful about. It is real code —
+an endpoint, a column, a dashboard surface, a report — and what it produces is
+a **record of a claim**, not a verified fact. The failure mode is specific and
+bad: a green "erased" tick in vpay's dashboard that nothing checked, on a
+screen whose whole purpose is to be believed. That is [AGENTS.md](../../../AGENTS.md)'s
+second rule applied to a contract rather than to a function. If this is chosen,
+the surface has to say "the merchant states" everywhere it says anything.
+
+**What is not in scope, and why.** A `customer.redacted` event type — declined
+by the review on 2026-09-11 and again here. It carries no information
+`customer.deleted` does not already carry, a Stripe-shaped handler has no branch
+for it, and a second label for one transition would read as an enforcement vpay
+cannot perform. The gap is contractual; a webhook cannot close it.
+
+**Where the decision lands when it is taken.** The agreement text is not in
+this repository. What belongs here is the consequence: this section, saying
+which option was chosen and on what date, plus a row in
+[customers.md](../customers.md) § "The … decisions the maintainer took" if it
+becomes one, and a runbook step only under option D, where there would be
+something to operate.
 
 ### What is logged, and by whom
 

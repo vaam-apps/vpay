@@ -2073,6 +2073,350 @@ async fn scan_for(
     Ok((found, columns.len()))
 }
 
+// -------------------------------------------- the erasure/idempotency race
+
+/// **Issue #111, window one: a `POST /v1/customers/{id}` that loses the race
+/// to a `DELETE` must not put the payer back into
+/// `idempotency_keys.response_body`.**
+///
+/// `PostRequest::finish` stores the response **after** the handler's
+/// transaction has committed, so the two writes are not one atom. An update
+/// that commits, is overtaken by an erasure — which sweeps every stored copy
+/// it can see — and only then stores its own response, writes the
+/// pre-erasure object into a table the erasure has already been through. The
+/// row lives until `expires_at`, so a payer's name, email and phone were
+/// re-readable for up to **24 hours** after they were erased, by replaying
+/// the update's own `Idempotency-Key`.
+///
+/// # How the interleaving is made deterministic, and why that is honest
+///
+/// Nothing in the shipping code is aware of this test. The ordering is
+/// pinned with **Postgres row locks taken by the test itself**, which is the
+/// same mechanism the handlers use and is available to any client:
+///
+/// 1. the test locks the customer's row, so the update's transaction cannot
+///    start;
+/// 2. the update is sent and claims its key, then blocks there;
+/// 3. the test locks the update's own `idempotency_keys` row — the row its
+///    `finish` is going to write. In production the delay between committing
+///    and storing is a matter of scheduling, a saturated connection pool or a
+///    slow round trip; here it is a lock, so the window is a fact rather than
+///    a coin toss;
+/// 4. the `DELETE` is sent and queues **behind** the update on the customer's
+///    row (Postgres grants waiters in order), so releasing the customer lets
+///    the update commit first and the erasure run second — which is exactly
+///    "the update lost the race";
+/// 5. the erasure completes: it redacts every stored copy, and it cannot see
+///    the update's row, whose `response_body` is still NULL;
+/// 6. the test releases the claimed row and the update stores its response.
+///
+/// Step 5 is the defect in one sentence: the erasure's `UPDATE
+/// idempotency_keys` matches on `response_body->>'object' = 'customer'`, and
+/// a row that has not been written yet matches nothing.
+///
+/// # What is asserted, and what is deliberately not
+///
+/// The update's **own** response still carries the payer. It has to: that
+/// request completed before the erasure, the merchant asked for it, and
+/// answering it with a redacted object would be reporting a state the
+/// transaction did not commit. What must not survive is vpay's **stored**
+/// copy, because that is the one a later replay re-reads and the one the
+/// retention promise is about. So this case asserts the live response still
+/// holds the identifiers and the stored row does not — a fix that redacted
+/// the wrong one fails here.
+///
+/// Both erasure branches run, because the fix has to answer "is this payer
+/// erased?" for a customer that has been **anonymised** (the row is there
+/// with the marker on it) and for one that has been **hard-deleted** (there
+/// is no row at all, and absence must read as erased rather than as live).
+///
+/// **The decisive mutation:** have `vpay_db::idempotency`'s `store` treat
+/// `ResponseSubject::Customer` exactly as `ResponseSubject::Verbatim` — write
+/// the body without the payer's row lock and without the redaction — and both
+/// rounds fail here with the payer's name in the stored body and in the
+/// replay.
+#[tokio::test]
+async fn an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+    let client = raw_client();
+    let token = h.bearer(CLIENT_A);
+
+    // `true` is the anonymise branch (an intent references the customer, so
+    // the row survives with `[redacted]` on it); `false` is the hard delete.
+    for with_history in [true, false] {
+        let round = if with_history {
+            "anonymised"
+        } else {
+            "deleted"
+        };
+        let name = format!("Zeruiah Vexlingham {round}");
+        let email = format!("zeruiah.{round}@example.invalid");
+        let phone = if with_history {
+            "237600000774"
+        } else {
+            "237600000775"
+        };
+        let key = format!("cus-erasure-race-{round}");
+
+        let customer = sdk
+            .customers()
+            .create(
+                CreateCustomerParams {
+                    name: Some(name.clone()),
+                    email: Some(email.clone()),
+                    phone: Some(phone.to_owned()),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .expect("the payer this round erases");
+
+        if with_history {
+            sdk.payment_intents()
+                .create(
+                    create_intent_params(Some(&customer.id)),
+                    RequestOptions::new(),
+                )
+                .await
+                .expect("an intent, so the erasure anonymises rather than hard-deletes");
+        }
+
+        // (1) The customer's row lock, held by the test. Every write path on
+        // this resource takes it first, so nothing can get past here.
+        let mut hold_customer = h.pool.begin().await.context("the customer lock")?;
+        let locked: String =
+            sqlx::query_scalar("SELECT id FROM customers WHERE id = $1 FOR UPDATE")
+                .bind(&customer.id)
+                .fetch_one(&mut *hold_customer)
+                .await
+                .context("locking the customer's row from the test")?;
+        assert_eq!(locked, customer.id);
+
+        // (2) The update. It claims its key, then blocks on the lock above.
+        let update = tokio::spawn({
+            let url = h.url(&format!("/v1/customers/{}", customer.id));
+            let (client, token, key) = (client.clone(), token.clone(), key.clone());
+            async move {
+                client
+                    .post(url)
+                    .bearer_auth(token)
+                    .header("Idempotency-Key", key)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body("metadata[race]=lost")
+                    .send()
+                    .await
+            }
+        });
+        wait_for_in_flight_claim(&h.pool, &key).await?;
+
+        // (3) The row the update's `finish` will write, locked before it can
+        // be written. This is the production delay between "the transaction
+        // committed" and "the response is stored", made deterministic.
+        let mut hold_response = h.pool.begin().await.context("the claimed row")?;
+        sqlx::query_scalar::<_, String>(
+            "SELECT idempotency_key FROM idempotency_keys \
+             WHERE merchant_id = $1 AND idempotency_key = $2 FOR UPDATE",
+        )
+        .bind(MERCHANT_A)
+        .bind(&key)
+        .fetch_one(&mut *hold_response)
+        .await
+        .context("locking the update's claimed idempotency row")?;
+
+        // (4) The erasure, queued behind the update on the customer's row.
+        let erase = tokio::spawn({
+            let url = h.url(&format!("/v1/customers/{}", customer.id));
+            let (client, token, key) = (client.clone(), token.clone(), format!("del-{round}"));
+            async move {
+                client
+                    .delete(url)
+                    .bearer_auth(token)
+                    .header("Idempotency-Key", key)
+                    .send()
+                    .await
+            }
+        });
+        // Both requests waiting: the update on the test's lock, the erasure
+        // behind the update. Waiting for this rather than sleeping is what
+        // makes "the update won the lock and the erasure came second" a fact
+        // rather than a hope.
+        wait_for_blocked(
+            &h.pool,
+            2,
+            "the update and the erasure both queued on the customer row",
+        )
+        .await?;
+
+        // (5) Let them go, and let the erasure finish. The update commits
+        // first and is then stuck at its store; the erasure runs second and
+        // redacts every stored copy it can see.
+        hold_customer
+            .rollback()
+            .await
+            .context("releasing the customer row")?;
+        let erased = erase
+            .await
+            .context("the erasure task")?
+            .context("the erasure request")?;
+        assert_eq!(
+            erased.status().as_u16(),
+            200,
+            "round {round}: the erasure must succeed: {}",
+            erased.text().await.unwrap_or_default()
+        );
+
+        // (6) Now the update may store its response — after the erasure.
+        hold_response
+            .rollback()
+            .await
+            .context("releasing the claimed row")?;
+        let updated = update
+            .await
+            .context("the update task")?
+            .context("the update request")?;
+        assert_eq!(
+            updated.status().as_u16(),
+            200,
+            "round {round}: the update committed before the erasure and must be answered"
+        );
+        let answered = updated.text().await.context("the update's own body")?;
+        // The live answer is the pre-erasure object, and stays that way: it
+        // describes what that request committed. Asserted so a "fix" that
+        // redacted the wrong copy is a failure here rather than a silent
+        // change to what a merchant is told.
+        assert!(
+            answered.contains(&name),
+            "round {round}: the update's own response must still describe what it committed: \
+             {answered}"
+        );
+
+        // What the erasure was supposed to guarantee: nothing in the stored
+        // copy names the payer.
+        let stored: Option<Value> = sqlx::query_scalar(
+            "SELECT response_body FROM idempotency_keys \
+             WHERE merchant_id = $1 AND idempotency_key = $2",
+        )
+        .bind(MERCHANT_A)
+        .bind(&key)
+        .fetch_optional(&h.pool)
+        .await
+        .context("the stored response")?
+        .flatten();
+        let stored = stored.unwrap_or_else(|| {
+            panic!(
+                "round {round}: nothing was stored under `{key}`, so every assertion below \
+                 would be vacuous — the update must have completed its claim"
+            )
+        });
+        // Not vacuous in the other direction either: the row really is this
+        // customer's rendered object, which is what makes "the identifiers
+        // are not in it" a statement about a redaction rather than about an
+        // empty column.
+        assert_eq!(
+            stored.get("object").and_then(Value::as_str),
+            Some("customer"),
+            "round {round}: {stored}"
+        );
+        assert_eq!(
+            stored.get("id").and_then(Value::as_str),
+            Some(customer.id.as_str()),
+            "round {round}: {stored}"
+        );
+        let stored_text = stored.to_string();
+        for identifier in [name.as_str(), email.as_str(), phone] {
+            assert!(
+                !stored_text.contains(identifier),
+                "round {round}: `{identifier}` is back in idempotency_keys.response_body after \
+                 the erasure, where it can be replayed for 24 hours: {stored_text}"
+            );
+        }
+
+        // And the wire proof, which is the thing a payer's erasure is
+        // actually about: replaying the update's own key re-reads the stored
+        // row, and must not hand the payer back.
+        let replayed = client
+            .post(h.url(&format!("/v1/customers/{}", customer.id)))
+            .bearer_auth(&token)
+            .header("Idempotency-Key", &key)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("metadata[race]=lost")
+            .send()
+            .await
+            .context("the replay")?;
+        assert_eq!(
+            replayed.status().as_u16(),
+            200,
+            "round {round}: the same key and the same body replay the stored response"
+        );
+        let replayed = replayed.text().await.context("the replayed body")?;
+        for identifier in [name.as_str(), email.as_str(), phone] {
+            assert!(
+                !replayed.contains(identifier),
+                "round {round}: replaying the update's key after the erasure handed \
+                 `{identifier}` straight back over the wire: {replayed}"
+            );
+        }
+        // The replay is the *stored* response and not a fresh execution —
+        // without this, a route that had started answering 409 `erased` would
+        // satisfy every assertion above while proving nothing about what is
+        // stored.
+        assert!(
+            replayed.contains("\"object\":\"customer\""),
+            "round {round}: the replay must be the stored object: {replayed}"
+        );
+    }
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Waits until `key` has been claimed and is still running.
+///
+/// The claim is the first thing `PostRequest` does and it commits on its own,
+/// so this is how the test knows a spawned request has reached the handler
+/// and is blocked inside it rather than still in flight on the socket.
+async fn wait_for_in_flight_claim(pool: &PgPool, key: &str) -> anyhow::Result<()> {
+    for _ in 0..600 {
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM idempotency_keys WHERE merchant_id = $1 AND idempotency_key = $2",
+        )
+        .bind(MERCHANT_A)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .context("reading the claim's state")?;
+        if state.as_deref() == Some("in_flight") {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    anyhow::bail!("`{key}` was never claimed, so the request never reached the handler")
+}
+
+/// Waits until at least `at_least` statements are waiting on a lock.
+///
+/// `pg_locks` rather than a sleep: the interleaving these cases are about is
+/// an ordering, and an ordering established by sleeping is an ordering that
+/// fails on a loaded machine. A waiter appears as an ungranted lock — on the
+/// holder's `transactionid` for the first, on the first waiter's `tuple` lock
+/// for the second — so counting ungranted locks counts queued requests.
+async fn wait_for_blocked(pool: &PgPool, at_least: i64, what: &str) -> anyhow::Result<()> {
+    for _ in 0..600 {
+        let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE NOT granted")
+            .fetch_one(pool)
+            .await
+            .context("counting the statements waiting on a lock")?;
+        if blocked >= at_least {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    anyhow::bail!("timed out waiting for {what}")
+}
+
 // ------------------------------------------------------- the retention sweep
 
 /// **The twelve-month retention sweep, through the shipping worker loop.**

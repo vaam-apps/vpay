@@ -158,10 +158,28 @@ two deliberate creates are two customers.
 SDKs (2026-09-06, S4a; extended 2026-09-10 twice — issue #66's events, then
 issues #67/#68/#96's address and erasure — and again on 2026-09-11 with the
 GPS half of the address).**
-`backends/tests/integration/tests/customers.rs` is **twenty-three** cases;
+`backends/tests/integration/tests/customers.rs` is **twenty-four** cases (it
+was twenty-three until 2026-09-12, when
+[issue #111](https://github.com/vaam-apps/vpay/issues/111)'s race added one);
 `postgres_smoke.rs` adds six at the schema; `vpay-db`'s own module adds
 eleven with no container plus two container-backed ones for the transaction
 seam.
+
+**The idempotency window closed, 2026-09-12 (issue #111).** A
+`POST /v1/customers/{id}` that committed, lost the race to a `DELETE` and only
+then stored its response wrote the pre-erasure payer back into
+`idempotency_keys.response_body`, where replaying its `Idempotency-Key`
+re-read it for up to 24 hours. This section described it as an open window from
+2026-09-11. It was reproduced before it was closed —
+`an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier` pins
+the interleaving with row locks the test itself takes, and both erasure
+branches run — and `vpay_db::Idempotency::store` now takes a
+`ResponseSubject`: `Verbatim` for every other route, unchanged and one
+statement, and `Customer { id }` for the three customer routes, which reads the
+payer's row `FOR SHARE` and redacts the body it stored if that payer is gone.
+The full argument, and the paragraph this replaced quoted verbatim, are in
+[customers/privacy-and-erasure.md](customers/privacy-and-erasure.md) § "One
+window the erasure does not close".
 
 **The GPS half (2026-09-11).** `address` carries `latitude_microdeg` and
 `longitude_microdeg`, integers, because "address in our system means both
@@ -173,8 +191,9 @@ Seven mutations were run against it, each against a real Postgres or a real
 wiremock, and each is named in
 [../plans/exp46-customer-address-notes/exp49-gps.md](../plans/exp46-customer-address-notes/exp49-gps.md).
 
-**The retention promise is complete as of 2026-09-10, with the two windows
-above stated (2026-09-11).** Before migration `0041` a customer with payment
+**The retention promise is complete as of 2026-09-10; of the two windows
+stated on 2026-09-11, one is closed (2026-09-12) and the other is a
+contract.** Before migration `0041` a customer with payment
 history could not be deleted, so the payer's `name`, `email` and `phone`
 survived every "deletion" — and so did every copy in `events.data`,
 `charges.payer_ref` and `idempotency_keys.response_body`, which no code named.
@@ -201,8 +220,11 @@ directly, by name, as NULL.
   `cus_…` and the instant — and the review of 2026-09-11 declined to add a
   second `customer.redacted` type saying the same thing. What is missing is a
   contract obliging the merchant to act on it, which is a data processing
-  agreement and a maintainer's decision. See "Two windows the erasure does
-  not close" above.
+  agreement and a maintainer's decision. **It is still not taken.** The four
+  options and what each costs are written out in
+  [customers/privacy-and-erasure.md](customers/privacy-and-erasure.md) §
+  "The decision, written out — NOT TAKEN" (2026-09-12, issue #111); nothing
+  in this repository assumes any of them.
 - **No `email` filter on the list.** Stripe's takes one. A filter on a payer
   identifier turns the list into a lookup, and a lookup by email over a table
   holding one merchant's payers is one scoping mistake away from being a

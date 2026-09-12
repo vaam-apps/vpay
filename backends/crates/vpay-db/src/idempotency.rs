@@ -59,6 +59,34 @@
 //! would need a way to make vpay hash a chosen prefix, which is a strange
 //! shape here. It costs one dependency and no branches, and the failure it
 //! rules out is silent.
+//!
+//! # The one thing this store knows about another resource
+//!
+//! [`Idempotency::store`] takes a [`ResponseSubject`], and one of its two
+//! variants names `/v1/customers`. That is a deliberate exception in a store
+//! that is otherwise indifferent to what it is keeping, and it is here
+//! because the alternative was worse rather than because it is tidy.
+//!
+//! A response is stored **after** the handler's transaction has committed
+//! (`vpay_api::v1::payment_intents::PostRequest::finish`), so the two writes
+//! are not one atom. A `POST /v1/customers/{id}` that commits, is overtaken
+//! by a `DELETE` that erases the same payer — sweeping every stored copy that
+//! exists at that moment, `idempotency_keys.response_body` included — and
+//! only then stores its own response, puts the pre-erasure object back into a
+//! table the erasure has already been through. Nothing moves it again until
+//! `expires_at`, so a payer's name, email and phone were re-readable for up
+//! to **24 hours** after they were erased, by replaying that request's own
+//! key. Issue #111.
+//!
+//! Two shapes were available: leave the window and document it, or give the
+//! customer routes an exception here. What decided it is that the exception
+//! can be made **narrow and explicit** — one variant, carrying the `cus_…`
+//! the caller already holds, applying `crate::customers`' existing redaction
+//! and no rule of its own. The store never inspects a body, never guesses
+//! which keys are sensitive, and does nothing at all for
+//! [`ResponseSubject::Verbatim`], which is every other route. A generic store
+//! that sniffed responses for things that look like personal data would be a
+//! far worse thing to own than the window it closed.
 
 use serde_json::Value;
 use subtle::ConstantTimeEq as _;
@@ -126,6 +154,63 @@ pub enum IdempotencyClaim {
     /// answer would be wrong, and executing this one under a key that
     /// already means something else would destroy the guarantee.
     Mismatch,
+}
+
+/// The response [`Idempotency::store`] is being asked to make replayable.
+///
+/// A struct rather than four more parameters because the four belong
+/// together — they are one HTTP response, described — and because
+/// `store(merchant, key, claim, 200, &body, None, subject)` is a call in
+/// which every argument after the third is a positional puzzle. Each field
+/// is named at the call site instead.
+#[derive(Debug, Clone, Copy)]
+pub struct StoredResponse<'a> {
+    /// The status to replay. `u16` on the wire and `SMALLINT` in the table;
+    /// anything above `i16::MAX` is not an HTTP status and is refused rather
+    /// than wrapped into a negative number.
+    pub status: u16,
+    /// The exact JSON body that was sent, to be replayed byte for byte
+    /// rather than re-rendered by a later version of the code.
+    pub body: &'a Value,
+    /// The `stripe-should-retry` value this response actually carried, read
+    /// off its own `HeaderMap` by the caller and never re-derived here from
+    /// `status` — see [`Idempotency::store`]'s `retry` section.
+    pub retry: Option<&'a str>,
+    /// What the body is about. [`ResponseSubject::Verbatim`] for every route
+    /// but `/v1/customers`.
+    pub subject: ResponseSubject<'a>,
+}
+
+/// What the response being stored is *about*, and therefore whether an
+/// erasure racing this write has to be able to beat it.
+///
+/// Two variants and not a `bool`, and not an `Option<&str>`: the customer
+/// case is an exception to this store's whole premise (see the module
+/// comment), so it is spelled at every call site rather than being the
+/// absence of something. A route that adds itself to `/v1` has to say which
+/// of the two it is, which is the one property that keeps the exception from
+/// silently failing to apply to a fourth customer route somebody writes next
+/// year.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseSubject<'a> {
+    /// Store the body exactly as given. Every route but `/v1/customers` —
+    /// an intent, a session, an invoice and an invoice item carry a
+    /// `cus_…` at most, never a payer's identifiers, and the erasure has
+    /// nothing to redact in them.
+    Verbatim,
+    /// `/v1/customers`' shaped exception: this body renders the customer
+    /// `id`, so the write must lose to an erasure of that customer rather
+    /// than re-introducing them.
+    ///
+    /// The id comes from the route — the path segment, or the one a create
+    /// minted — and never from reading the body, so a response that is not a
+    /// customer object (a validation `400`, a `DELETE`'s `{deleted: true}`)
+    /// is carried here too and is simply left alone: the redaction matches on
+    /// the body's own `object` and `id`.
+    Customer {
+        /// The `cus_…` this response is about.
+        id: &'a str,
+    },
 }
 
 /// What [`Idempotency::store`] did with the response it was given.
@@ -224,8 +309,8 @@ pub trait Idempotency: Send + Sync {
     /// [`IdempotencyClaim::Fresh`] — the type is what rules that case out, so
     /// the classification does not have to.
     ///
-    /// `status` is `u16` on the wire and `SMALLINT` in the table; a status
-    /// above `i16::MAX` is not a real HTTP status and is rejected as
+    /// `response.status` is `u16` on the wire and `SMALLINT` in the table; a
+    /// status above `i16::MAX` is not a real HTTP status and is rejected as
     /// [`DbError::WriteMatchedNoRow`] rather than silently wrapping into a
     /// negative number.
     ///
@@ -241,18 +326,35 @@ pub trait Idempotency: Send + Sync {
     /// that is neither `"true"` nor `"false"` — so a caller inventing a third
     /// value fails loudly rather than storing a header nothing can read.
     ///
+    /// # `response.subject`, and the one resource this store knows the name of
+    ///
+    /// [`ResponseSubject::Verbatim`] stores the body as given, in **one**
+    /// statement — the shape every route but `/v1/customers` gets, and the
+    /// reason the compare-and-swap above reads a row back only when it
+    /// matched none.
+    ///
+    /// [`ResponseSubject::Customer`] adds a transaction around that statement
+    /// and two things inside it: the payer's row is read under a **share
+    /// lock**, and if that payer has since been erased the body this write
+    /// just stored is put through `crate::customers`' own redaction before
+    /// the transaction commits. The lock is the half that matters — without
+    /// it the read could be true and the write could land on the far side of
+    /// an erasure committing in between, which is the same race one statement
+    /// smaller. Every erasure takes `FOR UPDATE` on that row first, so the
+    /// two serialise: either the erasure goes first and this write sees it,
+    /// or this write goes first and the erasure's own sweep finds the row.
+    /// See the module comment for why the exception is here at all.
+    ///
     /// # Errors
     ///
     /// [`DbError::WriteMatchedNoRow`] if this claim's row is already complete,
-    /// and [`DbError::Query`] if either statement fails.
+    /// and [`DbError::Query`] if any statement fails.
     async fn store(
         &self,
         merchant_id: &str,
         key: &str,
         claim_id: Uuid,
-        status: u16,
-        body: &Value,
-        retry: Option<&str>,
+        response: StoredResponse<'_>,
     ) -> Result<IdempotencyStoreOutcome, DbError>;
 
     /// Hands back a key this process claimed but will not answer for, so the
@@ -308,6 +410,93 @@ pub trait Idempotency: Send + Sync {
     ///
     /// Returns [`DbError::Query`] if the delete fails.
     async fn sweep_expired(&self) -> Result<u64, DbError>;
+}
+
+/// The compare-and-swap that completes a claim, and the whole of what
+/// [`Idempotency::store`] writes.
+///
+/// One function over an executor rather than one statement per arm of
+/// [`ResponseSubject`]: the `AND claim_id = $3 AND state = 'in_flight'` is
+/// the guard that stops a late writer overwriting a response a merchant has
+/// already been given, and a second copy of it is a second chance to write it
+/// differently.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+async fn complete_claim<'e, E>(
+    executor: E,
+    merchant_id: &str,
+    key: &str,
+    claim_id: Uuid,
+    status: i16,
+    body: &Value,
+    retry: Option<&str>,
+) -> Result<u64, DbError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let affected = sqlx::query(
+        "UPDATE idempotency_keys \
+         SET state = 'complete', response_status = $4, response_body = $5, \
+             response_retry = $6, completed_at = now() \
+         WHERE merchant_id = $1 AND idempotency_key = $2 AND claim_id = $3 \
+           AND state = 'in_flight'",
+    )
+    .bind(merchant_id)
+    .bind(key)
+    .bind(claim_id)
+    .bind(status)
+    .bind(body)
+    .bind(retry)
+    .execute(executor)
+    .await
+    .map_err(DbError::Query)?
+    .rows_affected();
+
+    Ok(affected)
+}
+
+/// Tells a stale claim from a broken invariant, when [`complete_claim`]
+/// matched no row.
+///
+/// Only on that path: the happy case must stay one statement. See
+/// [`Idempotency::store`]'s own doc for why the two causes cannot be
+/// collapsed.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] if the row is still this claim's — which
+/// means it is already `complete`, so the caller is completing one key twice
+/// — and [`DbError::Query`] if the read fails.
+async fn diagnose_empty_store<'e, E>(
+    executor: E,
+    merchant_id: &str,
+    key: &str,
+    claim_id: Uuid,
+) -> Result<IdempotencyStoreOutcome, DbError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let current = sqlx::query_scalar::<_, Uuid>(
+        "SELECT claim_id FROM idempotency_keys \
+         WHERE merchant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(merchant_id)
+    .bind(key)
+    .fetch_optional(executor)
+    .await
+    .map_err(DbError::Query)?;
+
+    match current {
+        // Still this claim's row, and the update still matched nothing: the
+        // only remaining guard is `state`, so it is already complete.
+        Some(current) if current == claim_id => Err(DbError::WriteMatchedNoRow {
+            table: "idempotency_keys",
+            key: format!("{merchant_id}/{key}"),
+        }),
+        _ => Ok(IdempotencyStoreOutcome::StaleClaim),
+    }
 }
 
 #[async_trait::async_trait]
@@ -394,10 +583,14 @@ impl Idempotency for crate::repository::PgRepositories {
         merchant_id: &str,
         key: &str,
         claim_id: Uuid,
-        status: u16,
-        body: &Value,
-        retry: Option<&str>,
+        response: StoredResponse<'_>,
     ) -> Result<IdempotencyStoreOutcome, DbError> {
+        let StoredResponse {
+            status,
+            body,
+            retry,
+            subject,
+        } = response;
         let Ok(status) = i16::try_from(status) else {
             return Err(DbError::WriteMatchedNoRow {
                 table: "idempotency_keys",
@@ -405,48 +598,44 @@ impl Idempotency for crate::repository::PgRepositories {
             });
         };
 
-        let affected = sqlx::query(
-            "UPDATE idempotency_keys \
-         SET state = 'complete', response_status = $4, response_body = $5, \
-             response_retry = $6, completed_at = now() \
-         WHERE merchant_id = $1 AND idempotency_key = $2 AND claim_id = $3 \
-           AND state = 'in_flight'",
-        )
-        .bind(merchant_id)
-        .bind(key)
-        .bind(claim_id)
-        .bind(status)
-        .bind(body)
-        .bind(retry)
-        .execute(&self.pool)
-        .await
-        .map_err(DbError::Query)?
-        .rows_affected();
+        let ResponseSubject::Customer { id } = subject else {
+            // One statement, on the pool, for every route that is not
+            // `/v1/customers`.
+            let affected =
+                complete_claim(&self.pool, merchant_id, key, claim_id, status, body, retry).await?;
+            if affected == 0 {
+                return diagnose_empty_store(&self.pool, merchant_id, key, claim_id).await;
+            }
+            return Ok(IdempotencyStoreOutcome::Stored);
+        };
+
+        // The shaped exception. A transaction, because the question "has this
+        // payer been erased?" is being asked in order to write, so the answer
+        // has to still be true when the write lands — and the share lock is
+        // what makes it so against the `FOR UPDATE` every erasure takes.
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let erased = crate::customers::erased_under_share_lock(&mut tx, merchant_id, id).await?;
+        let affected =
+            complete_claim(&mut *tx, merchant_id, key, claim_id, status, body, retry).await?;
 
         if affected == 0 {
-            // Only on this path: the happy case must stay one statement.
-            let current = sqlx::query_scalar::<_, Uuid>(
-                "SELECT claim_id FROM idempotency_keys \
-             WHERE merchant_id = $1 AND idempotency_key = $2",
-            )
-            .bind(merchant_id)
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(DbError::Query)?;
-
-            return match current {
-                // Still this claim's row, and the update still matched nothing:
-                // the only remaining guard is `state`, so it is already
-                // complete.
-                Some(current) if current == claim_id => Err(DbError::WriteMatchedNoRow {
-                    table: "idempotency_keys",
-                    key: format!("{merchant_id}/{key}"),
-                }),
-                _ => Ok(IdempotencyStoreOutcome::StaleClaim),
-            };
+            // Nothing was written, so there is nothing to redact and no
+            // reason to hold the payer's row: hand it back before the
+            // diagnosis, which is a read this claim no longer owns anything
+            // for.
+            tx.rollback().await.map_err(DbError::Query)?;
+            return diagnose_empty_store(&self.pool, merchant_id, key, claim_id).await;
         }
 
+        if erased {
+            // The row this transaction just wrote is a stored response for a
+            // payer who is gone. `crate::customers`' own statement, so there
+            // is one definition of what a redacted stored body is rather than
+            // this module's opinion of it.
+            crate::customers::redact_stored_responses_in_tx(&mut tx, id, merchant_id).await?;
+        }
+
+        tx.commit().await.map_err(DbError::Query)?;
         Ok(IdempotencyStoreOutcome::Stored)
     }
 

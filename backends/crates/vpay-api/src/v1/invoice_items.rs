@@ -33,7 +33,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use time::OffsetDateTime;
 use vpay_core::ids;
-use vpay_db::{InvoiceItemPatch, Invoices, NewInvoiceItem, Repositories};
+use vpay_db::{InvoiceItemPatch, Invoices, NewInvoiceItem, Repositories, ResponseSubject};
 
 use crate::error::ApiError;
 use crate::model::{DeletedObject, DeletedTrue, InvoiceLineObject, LineItemTag};
@@ -106,8 +106,14 @@ pub(crate) async fn create(
     };
 
     let outcome = create_once(&post, repositories.as_ref(), &scope).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The create itself. See [`create`].
@@ -197,8 +203,14 @@ pub(crate) async fn update(
     };
 
     let outcome = update_once(&post, repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The update itself. See [`update`].
@@ -266,8 +278,14 @@ pub(crate) async fn delete(
     };
 
     let outcome = delete_once(repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The delete itself. See [`delete`].
