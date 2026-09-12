@@ -43,6 +43,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import RootLayout from "../app/layout";
 import LoginLayout from "../app/login/layout";
+import { AppShell } from "./components/app-shell";
 import { EnrolmentPanel } from "./components/enrolment-panel";
 import { PasswordForm } from "./components/password-form";
 import { PaymentDetailView } from "./components/payment-detail";
@@ -57,8 +58,13 @@ import { DETAIL, INTENT } from "./testing/fixtures";
 // `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
 // outside a mock, Next throws "invariant expected app router to be mounted"
 // the moment it renders, which is every rendered-component case below since
-// none of them wrap a real `<AppRouterContext.Provider>`.
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// none of them wrap a real `<AppRouterContext.Provider>`. `AppShell` calls
+// `usePathname()` for the same reason (`app-shell.tsx`'s own doc), following
+// the mock `app-shell.test.tsx` already uses for it.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/payments",
+}));
 
 /**
  * Exactly plan §7 row 5's list, as `frontends/packages/ui/src/testing/axe.ts`
@@ -122,6 +128,34 @@ describe("the rendered app", () => {
     const html = renderToStaticMarkup(
       RootLayout({
         children: LoginLayout({
+          children: <PaymentsTable rows={[INTENT]} />,
+        }) as ReactElement,
+      }) as ReactElement,
+    );
+    const body = html
+      .replace(/^[\s\S]*?<body[^>]*>/, "")
+      .replace(/<\/body>[\s\S]*$/, "");
+    document.body.innerHTML = body;
+
+    expect(await violations(document.body)).toEqual([]);
+  });
+
+  it("puts every byte of the signed-in shell inside a landmark too", async () => {
+    // The `(dash)` composition an operator actually uses — `AppShell` (the
+    // rail, the identity bar, the sign-out form) inside the same real
+    // `RootLayout` — rather than `LoginLayout`'s signed-out shell above.
+    // Nothing before this case rendered `AppShell` through axe at all:
+    // `app-shell.test.tsx` covers its own structural guarantees (one `<h1>`,
+    // every declared route, sign-out as a POST) but never runs it past axe,
+    // and the landmark case above only ever exercised the signed-out shell.
+    // `AppShell` is a client component reading `usePathname()`, mocked above
+    // the same way `app-shell.test.tsx` mocks it.
+    const html = renderToStaticMarkup(
+      RootLayout({
+        children: AppShell({
+          email: "ops@example.test",
+          merchantId: "acct_test",
+          signOut: () => Promise.resolve(),
           children: <PaymentsTable rows={[INTENT]} />,
         }) as ReactElement,
       }) as ReactElement,

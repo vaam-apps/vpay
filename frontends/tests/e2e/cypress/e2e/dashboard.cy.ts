@@ -935,12 +935,21 @@ describe("the dashboard", { testIsolation: false }, () => {
     //    forward page it means "older rows exist" (the next link can go), and on
     //    a backward page it means "newer rows exist" (the previous link can go).
     //
-    // The critical assertion is in the backward half: a reversed inversion in
-    // `pageCursors`'s table would leave the previous link absent when it should
-    // exist, producing an empty page when clicked — the failure mode that would
-    // trigger this case first. The backward `has_more` inversion already has
-    // unit coverage in `src/dash/provider.test.ts`; what is missing is proof
-    // that the BFF and the rendered links also respect it.
+    // The critical assertion is in the backward half, and until 2026-09-12
+    // this case did not actually carry it. **Measured** (an adversarial
+    // review of the issue #88 write-up): apply the very mutation that
+    // write-up calls decisive — `hasNewer = pagingBackwards ? true : …`,
+    // `hasOlder = pagingBackwards ? hasMore : …`, which touches only the
+    // backward branch — and steps 2, 4 and 5 all still held, because nothing
+    // here ever read the links rendered ON a backward page. Run
+    // against `pageCursors` itself for this spec's own three states (33 rows,
+    // PAGE_SIZE 25), the mutation changes exactly one of them: the page
+    // reached by clicking Previous, where it turns `prev` on and `next` off.
+    // The two assertions after that click are therefore the ones that tie
+    // the backward end, and neither existed before. The backward `has_more`
+    // inversion also has unit coverage in `src/payments-query.test.ts` and
+    // `src/dash/provider.test.ts`; what this adds is proof that the BFF and
+    // the rendered links respect it too.
     //
     // # Why this seeds data instead of hoping for it
     //
@@ -1013,6 +1022,32 @@ describe("the dashboard", { testIsolation: false }, () => {
           .click();
         cy.location("pathname").should("eq", "/payments");
 
+        // THE BACKWARD PAGE'S OWN LINKS — the half this case claimed and did
+        // not have.
+        //
+        // We are now on a page reached with `?before=`, so `has_more` means
+        // "NEWER rows exist" here and not "older rows exist"
+        // (`payments-query.ts`'s table). There are exactly PAGE_SIZE rows
+        // newer than the row we paged back from — they are the first page —
+        // so vpay's `limit + 1` probe finds no twenty-sixth and answers
+        // `has_more: false`. The rule therefore says: no Previous
+        // (`hasNewer = hasMore = false`), and a Next unconditionally
+        // (`hasOlder = true` — we came from the page below). Asserted on
+        // `rel`, which `PaymentsPager` sets, rather than on link text, so a
+        // payment id that happened to contain "next" cannot satisfy either
+        // one.
+        //
+        // Swap the two backward branches and BOTH of these fail: the pager
+        // grows a Previous that points at nothing and loses the Next that
+        // goes back to the page we came from.
+        cy.location("search").should("match", /(^|[?&])before=pi_/);
+        cy.get('nav[aria-label="Payments paging"] a[rel="next"]').should(
+          "exist",
+        );
+        cy.get('nav[aria-label="Payments paging"] a[rel="prev"]').should(
+          "not.exist",
+        );
+
         // Verify we are back at the first page with the same rows in the
         // same order.
         cy.get("table tbody tr").then(($backtrackedRows) => {
@@ -1026,6 +1061,90 @@ describe("the dashboard", { testIsolation: false }, () => {
         });
       });
     });
+  });
+
+  it("filters the list by status, and the table narrows to match", () => {
+    // Placed right after the paging test above and nowhere earlier: that
+    // test seeded 30 more `requires_payment_method` intents on top of this
+    // spec's own, so the tenant is guaranteed to carry more than PAGE_SIZE
+    // (25) rows and the unfiltered first page is a FULL page rather than
+    // merely "some" rows. By this point the shop leg has also already driven
+    // one payment all the way to `succeeded` — the checkout page would not
+    // have shown `[data-outcome="succeeded"]` otherwise — and `checkout.cy.ts`
+    // (which runs first, alphabetically) settled a second one on the same
+    // tenant. So a `status=succeeded` filter is guaranteed to match at least
+    // one row and, because unconfirmed intents dominate the tenant by then,
+    // to narrow the page well below 25. Still signed in from the sign-in
+    // test; testIsolation is off.
+    //
+    // No `cy.intercept`/`cy.wait` on `**/api/dash/**` here. `/payments` is a
+    // Server Component (`app/(dash)/payments/page.tsx`) reading
+    // `searchParams`, and Apply navigates with `router.push`
+    // (`payments-filters.tsx`) — a client-side transition Next resolves by
+    // re-rendering that Server Component with fresh `initialData`, not a
+    // browser fetch to the BFF. So there would be nothing for a `cy.wait` on
+    // that alias to consume, and it would hang for its timeout. The four
+    // legs above that DO alias it (`serves the signed-in staff member's own
+    // browser fetch` and the three refusals) each issue the request
+    // themselves; the comment block above them says why spying is the only
+    // use of `cy.intercept` in this spec. And an alias on a request a PAGE
+    // issues is what cost six legs on 2026-09-12, while the reads briefly
+    // lived in the browser: `refuses the same browser fetch the moment the
+    // session cookie is gone` waited on the page's own cookie-bearing
+    // request, died between its `cy.clearCookie` and its `cy.setCookie`, and
+    // left everything after it signed out
+    // (`docs/flows/dashboard/status-read-seam-and-bff.md`, § "2026-09-12,
+    // later").
+    cy.visit("/payments");
+    cy.contains("h2", "Payments").should("be.visible");
+
+    cy.get("table tbody tr").should(($rows) => {
+      expect(
+        $rows.length,
+        "the unfiltered page is a full PAGE_SIZE page — the paging test's own seeding guarantees more than 25 rows exist",
+      ).to.equal(25);
+    });
+
+    cy.get("#payments-filter-status").select("succeeded");
+    cy.contains("button", "Apply").click();
+
+    // The URL carries the filter, and starts from page 1 again — a cursor
+    // from the page this navigated away from would ask for "the page after a
+    // row that is no longer in this result set" (payments-query.ts).
+    cy.location("pathname").should("eq", "/payments");
+    cy.location("search").should("eq", "?status=succeeded");
+
+    cy.get("table tbody tr").should(($rows) => {
+      expect(
+        $rows.length,
+        "the succeeded filter must match at least the payment the shop leg settled",
+      ).to.be.greaterThan(0);
+      expect(
+        $rows.length,
+        "and it must narrow the page below the unfiltered PAGE_SIZE count",
+      ).to.be.lessThan(25);
+    });
+    // Every remaining row is actually `succeeded` — narrowing to the right
+    // COUNT is not the same guarantee as narrowing to the right ROWS.
+    // `PaymentStatusPill` puts BOTH spellings in the row's text: the
+    // operator-facing label from `@vpay/tokens`' `statusLabel` ("Succeeded")
+    // in a visible span, and the wire value ("succeeded") in an `sr-only`
+    // one — read off a real render, not off the types. `contain.text` is
+    // case-sensitive, so the capitalised form matches only the label, which
+    // is the half an operator can see.
+    cy.get("table tbody tr").each(($row) => {
+      cy.wrap($row).should("contain.text", "Succeeded");
+    });
+
+    // Leave the URL on the unfiltered list, so the next leg's assumptions
+    // hold without depending on its own `cy.visit` being the only thing that
+    // resets it. Note this is NOT where this leg found it: the paging test
+    // above ends on `/payments?before=pi_…`, the href its own "Previous"
+    // click followed — which is why this leg opens with a `cy.visit` of its
+    // own rather than trusting the cursor it inherits. The session is
+    // untouched either way; nothing here signs in or out.
+    cy.visit("/payments");
+    cy.location("search").should("eq", "");
   });
 
   it("refuses everything again after signing out", () => {

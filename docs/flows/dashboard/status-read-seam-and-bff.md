@@ -391,3 +391,74 @@ reads five parameter names and `limit` is not one of them, and
 is unaffected — but the provider puts a number on the wire that nothing reads
 and that contradicts `PAGE_SIZE`, and it should either carry `PAGE_SIZE` or
 send nothing.
+
+> **Fixed 2026-09-12, the first of the two options.** `getList` no longer
+> reads `pagination` at all; it sets `limit` from `PAGE_SIZE`, imported from
+> the same `payments-query.ts` `apiQueryString` reads it from, so the number
+> on the browser's wire and the number the BFF asks vpay for cannot drift.
+> `src/dash/data-provider.test.ts`'s "sends the page size the BFF actually
+> uses, never Refine's own default" is the case; restoring
+> `search.set("limit", String(pagination?.pageSize))` turns it red.
+> Re-confirmed while fixing it, against the installed `@refinedev/core`
+> 5.0.12 rather than from the docs: `handlePaginationParams` fills
+> `pageSize ?? 10` and `useList` passes that object straight to `getList`,
+> so `mode: "off"` really did put `limit=10` on the wire.
+> **What this does not buy:** `limit` is still a parameter the BFF never
+> reads, so the client still cannot ask for a page size — the number is now
+> merely true rather than true-and-contradicted. Sending nothing remains the
+> other defensible reading of the sentence above, and swapping to it is a
+> one-line change.
+
+## 2026-09-12 — issue #88 item 3's residual: half closed, then re-measured and found wider
+
+The "Issue #88 item 3" paragraph above named two things as unverified: that
+the fixed paging test had never run against `compose.e2e.yml`, and that
+nobody had run the decisive mutation (invert `pageCursors`'s backward
+`has_more` table, confirm the Cypress case itself goes red).
+
+**The first half is closed, incidentally rather than on purpose.** The
+`just test-e2e` run in the "Numbers" section above — done for the Refine
+work this page's later sections describe, not for this issue — put the
+seventeenth case (the paging test) through the real stack and it is counted
+in the **17 passing, 0 failing** above. That is real evidence the test runs
+and passes against `compose.e2e.yml`, where on 2026-09-11 it had never run at
+all.
+
+**The second half is still open, and running the mutation one layer down is
+not the same claim.** Verified 2026-09-12
+(`docs/status/verification/2026-09-12-issue-88.md`): swapping
+`hasNewer`/`hasOlder` in `pageCursors` turns 2 of `payments-query.test.ts`'s
+14 unit cases red — exactly the block written for this bug — and reverting
+restores 14/14. That shows the function the Cypress test depends on is
+correctly guarded. It does not show the Cypress assertions are actually wired
+to it.
+
+**And the same day's adversarial review found they were not — the residual
+was wider than "not yet run".** Applied to `pageCursors` and evaluated over
+the exact three states `dashboard.cy.ts`'s paging case walks (33 rows on the
+tenant, `PAGE_SIZE` 25):
+
+| Page                      | shipped rule           | the log's mutation     |
+| ------------------------- | ---------------------- | ---------------------- |
+| first (no cursor)         | prev — , next `after=` | prev — , next `after=` |
+| second (`after=`)         | prev `before=`, next — | prev `before=`, next — |
+| back to first (`before=`) | prev — , next `after=` | prev `before=`, next — |
+
+The mutation touches only the `pagingBackwards` branch, and the case read the
+links on the first two rows only — it asserted a Next on row 1, a Previous on
+row 2, and then, on row 3, the row IDs alone. All three of those hold under
+the mutation, so **the Cypress case was green against the very defect it was
+written for**; running the mutation through a browser would have proved
+nothing.
+
+**Closed 2026-09-12 by two assertions, not by a run.** The case now reads the
+backward page's own pager: `a[rel="next"]` must exist and `a[rel="prev"]`
+must not, which is the one row of that table the mutation changes — and it
+changes both cells of it. Asserted on `rel`, which `PaymentsPager` sets, so a
+payment id containing "next" cannot satisfy it. What is **still** unrun is
+the browser-level mutation itself: nobody has broken `pageCursors`, run
+`just test-e2e`, and watched this case go red. The difference from before is
+that it now would; that follows from the table above, which is evidence about
+`pageCursors` and not about Cypress, and it is not the same thing as having
+watched it. Whoever next has a `compose.e2e.yml` stack up for another reason
+should still spend five minutes on it.

@@ -34,6 +34,12 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-issue-88.md](verification/2026-09-12-issue-88.md) —
+  issue #88 item by item: the proactive re-mint, the outage-tolerant cookie,
+  the paging test — which a same-day adversarial review found was green under
+  the very mutation this log calls decisive, and which gained the two
+  assertions that fix that — the CSRF forwarded-host guard, and why item 5 is
+  moot. Amended in place the same day; one residual is named and not closed
 - [verification/2026-09-12-dashboard-refine.md](verification/2026-09-12-dashboard-refine.md) —
   the dashboard on Refine (plan lanes 3 and 4): one array for the rail and the
   router, and the `401`-only sign-out rule carried into `authProvider`

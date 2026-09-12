@@ -60,8 +60,21 @@ export function AppShell({
 
         Still an <h1>, with every screen's own title an <h2> under it — the
         hierarchy `dashboard.cy.ts` asserts in thirteen places.
+
+        Wrapped in a bare `<header>` — a landmark (implicit `banner` role)
+        because it is not nested in `<article>`/`<aside>`/`<main>`/`<nav>`/
+        `<section>` — rather than left a direct child of this flex row: axe's
+        `region` rule ("all page content should be contained by landmarks")
+        does not exempt content that is visually hidden, only content outside
+        the accessibility tree entirely, and `sr-only` keeps this in it. A
+        bare `<div>` here is not a landmark and this h1 was the one thing on
+        the signed-in shell sitting outside one — found by `a11y.test.tsx`'s
+        case for this composition, which had no coverage at all until it was
+        added.
       */}
-      <h1 className="sr-only">vpay dashboard</h1>
+      <header>
+        <h1 className="sr-only">vpay dashboard</h1>
+      </header>
       <SideNav
         /*
           A distinct icon from the group below. `topItem` and the one

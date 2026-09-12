@@ -29,7 +29,7 @@ import type { DataProvider } from "@refinedev/core";
 import { refineCursor } from "./initial";
 import { PAYMENT_INTENTS, type DashResource } from "./resource-name";
 import type { PaymentIntentObject } from "../server/api";
-import type { PageCursors } from "../payments-query";
+import { PAGE_SIZE, type PageCursors } from "../payments-query";
 
 /** The BFF's list envelope, as `paymentIntentsListResponse` serialises it. */
 interface BffList {
@@ -110,7 +110,7 @@ export function dashDataProvider(bffBase: string): DataProvider {
   return {
     getApiUrl: () => base,
 
-    async getList({ resource, filters, pagination, meta }) {
+    async getList({ resource, filters, meta }) {
       assertPaymentIntents(resource);
       const search = new URLSearchParams();
 
@@ -147,10 +147,19 @@ export function dashDataProvider(bffBase: string): DataProvider {
         search.set("before", before);
       }
 
-      const pageSize = pagination?.pageSize;
-      if (typeof pageSize === "number" && Number.isInteger(pageSize)) {
-        search.set("limit", String(pageSize));
-      }
+      // Refine fills `pagination.pageSize` even under the `mode: "off"` this
+      // app's own `useList` call uses (`payments-screen.tsx`) — its own
+      // default of 10, unrelated to anything vpay serves. The BFF's own
+      // `paymentIntentsListResponse` reads no `limit` from this request at
+      // all: `queryFrom` names five parameters and `limit` is not one of
+      // them, and the BFF always asks vpay for `PAGE_SIZE` rows itself
+      // (`payments-query.ts`'s `apiQueryString`). Putting Refine's number on
+      // the wire would read as a request nothing honours while every answer
+      // actually carries `PAGE_SIZE` rows — a request log would believe a
+      // page size this code does not control and did not ask for. Send the
+      // number that is actually true instead, from the one place it is
+      // defined.
+      search.set("limit", String(PAGE_SIZE));
 
       const query = search.toString();
       const page = (await readJson(
