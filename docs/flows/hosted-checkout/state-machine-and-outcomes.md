@@ -218,3 +218,20 @@ WCAG ratios from the resolved OKLCh values directly, verifying every
 rendered tone clears AA (4.5:1), including the error/info overrides at
 lines 887–899 above. That check is real, always was, and is unrelated to
 the vitest suite this paragraph corrects.
+
+## The page frame after the `@vaam-apps/ui` cutover (2026-09-12)
+
+`PageShell` — `mx-auto flex w-full max-w-md flex-col gap-6 p-6` — was replaced
+by `ScreenStack`, which supplies `flex flex-col gap-6` and nothing else. For a
+short window the payer's page therefore rendered **full-bleed**: no centring,
+no max-width, no padding, at any viewport width. The group that made the
+change named the regression in its summary; the group that fixed it fixed the
+dashboard's `app/layout.tsx` and not the checkout's.
+
+`checkout-view.tsx` and `return-view.tsx` now both carry
+`mx-auto w-full max-w-md p-6` — `max-w-md`, the original value, because this
+is a single-column payment form, against the dashboard's `max-w-5xl` for
+tables.
+
+No browser has rendered this. The width is restored from the value the
+deleted component used, not from looking at the page.

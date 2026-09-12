@@ -126,3 +126,45 @@ from `src/payment-status.ts`'s `defineStatusSystem` table, whose `label`
 field still reads `@vpay/tokens`'s `statusLabel`, so the operator-facing copy
 keeps one source. See `docs/status/verification/2026-09-12.md` for what was
 run and measured.
+
+## Contrast under the dark theme, measured 2026-09-12
+
+Moving `data-theme` from `bumblebee` to `@vaam-apps/ui`'s dark theme changed
+every foreground/background pair on every screen at once, and the repo had no
+measurement of any of them: the checkout had `outcome-contrast.test.ts`, the
+dashboard had nothing. `src/payment-status-contrast.test.ts` (10 cases) is
+that measurement.
+
+It checks two render paths, established by reading the package's compiled
+source rather than inferred from its types:
+
+- `PaymentStatusPill`'s glyph paints `--state-<hue>-fg` straight onto the page
+  ground and never paints a `-bg` — both call sites are `quiet` attention,
+  checked rather than assumed. Held to WCAG 1.4.11 non-text contrast, 3:1.
+- `InlineBanner` paints its foreground over the alpha `-bg` composited over
+  the ground. Held to WCAG 1.4.3 AA, 4.5:1.
+
+The hue list is derived from `PAYMENT_STATUS_SYSTEM` itself rather than typed
+out, so a status added without a contrast answer cannot pass unnoticed.
+
+Three properties stop it reporting success without measuring anything — the
+failure the deleted `@vpay/ui` helper would have produced here, since it
+matched `oklch(L% C H)` only and returned silently on anything else while this
+theme is authored in hex:
+
+1. it parses hex and `rgb()`;
+2. it composites the alpha tints over their actual ground, rather than
+   measuring a token nothing paints;
+3. it asserts 44 colours parsed before asserting any ratio, and pins one
+   independently hand-computed value (the `InlineBanner` warning pair,
+   10.2766:1).
+
+Two mutations kill it and both were run and reverted: every parsed colour
+forced to black fails 7 of 10 including the pin; the deleted helper's
+oklch-only regex fails all 10, and in fact fails at module load, because the
+theme is parsed at module scope.
+
+**What this is not.** No browser has rendered these pages. Every number here
+comes from the compiled stylesheet, and nobody has looked at the dashboard
+since it went dark — the `processing` pill's hue in particular is a judgement
+recorded in `src/payment-status.ts`, not an observation.

@@ -49,7 +49,7 @@ export function ReturnView(props: ReturnViewProps) {
 
   return (
     <main>
-      <ScreenStack>
+      <ScreenStack className="mx-auto w-full max-w-md p-6">
         <header className="flex items-center justify-between gap-4">
           <BrandHeader t={t} branding={props.branding} />
           <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />

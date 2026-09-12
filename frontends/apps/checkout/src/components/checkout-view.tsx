@@ -11,11 +11,21 @@
  * **`@vaam-apps/ui` cutover (2026-09-12).** `PageShell` and `Stack` have no
  * counterpart in the new package (verified against `dist/index.d.ts`):
  * `ScreenStack` (`@vaam-apps/ui`) replaces `PageShell` for the vertical
- * rhythm only — no centring, no `max-w`, no padding, so the page is now
- * full-bleed where it used to be a centred column. A plain `<header>`
- * replaces `Stack as="header"`: `checkout-view.test.tsx`'s own "keeps the
- * brand-and-language row a banner landmark" test is exactly the guard
- * against losing that element a second time. `LiveRegion` has no
+ * rhythm only — no centring, no `max-w`, no padding of its own, so a bare
+ * `<ScreenStack>` briefly shipped full-bleed at any viewport width, a
+ * regression on the payer's own page that the dashboard's equivalent
+ * (`app/layout.tsx`) had already been given a fix for. Closed the same way,
+ * here at the call site rather than inside the component, because
+ * `ScreenStack` forwards `className` for exactly this: `className="mx-auto
+ * w-full max-w-md p-6"` restores `PageShell`'s old centred column.
+ * `max-w-md` — not the dashboard's `max-w-5xl` — because this is a
+ * single-column payment form (an amount, a rail, a phone number), not a
+ * table; a wide measure would just stretch that form's line length and its
+ * button width without showing more information. `return-view.tsx` renders
+ * the same shell for the same reason and carries the identical class. A
+ * plain `<header>` replaces `Stack as="header"`: `checkout-view.test.tsx`'s
+ * own "keeps the brand-and-language row a banner landmark" test is exactly
+ * the guard against losing that element a second time. `LiveRegion` has no
  * counterpart either — `@vaam-apps/ui` exports no live region at all — so
  * this is a plain `<div aria-live="polite" aria-atomic="true">`, faithful
  * but without the test `@vpay/ui`'s own `LiveRegion` carried guaranteeing a
@@ -90,7 +100,7 @@ export function CheckoutView(props: CheckoutViewProps) {
 
   return (
     <main>
-      <ScreenStack>
+      <ScreenStack className="mx-auto w-full max-w-md p-6">
         <header className="flex items-center justify-between gap-4">
           <BrandHeader t={t} branding={props.branding} />
           <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
