@@ -137,7 +137,7 @@ const EVENT_CUSTOMER_DELETED: &str = "customer.deleted";
 /// same thing as "this customer has no address" — see [`Self::is_empty`],
 /// which is what decides whether the object renders `address: null` or an
 /// object.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct CustomerAddress {
     /// Street address, line 1.
     pub line1: Option<String>,
@@ -184,6 +184,89 @@ pub struct CustomerAddress {
     /// Longitude in **microdegrees**. See [`Self::latitude_microdeg`] for the
     /// unit, the reason it is an integer, and the pair rule.
     pub longitude_microdeg: Option<i64>,
+}
+
+/// `[N chars redacted]`, or `None` — so "which identifiers does this customer
+/// have?" is still answerable from a log line, and "is one of them over its
+/// length bound?" with it.
+///
+/// Shared by every hand-written `Debug` in this module rather than nested
+/// inside one of them: [`CustomerRow`], [`NewCustomer`] and [`CustomerPatch`]
+/// carry the same three identifiers, and three copies of this would be three
+/// chances for one of them to print a value.
+fn redacted_identifier(value: Option<&String>) -> String {
+    value.map_or_else(
+        || "None".to_owned(),
+        |value| format!("[{} chars redacted]", value.chars().count()),
+    )
+}
+
+/// `{N key(s)}`, or `absent` — the merchant's metadata is counted, never
+/// printed.
+///
+/// The count is [`CustomerRow`]'s own judgement, kept: a merchant may put
+/// anything in a metadata key as well as in a value, and
+/// `metadata[home_4_061_000]=` is a payer's coordinate that nothing in this
+/// module could recognise as one. `absent` is the extra state the two
+/// write-path types need and the row does not, since a patch that does not
+/// mention `metadata` and one that sends an empty map are different requests.
+fn redacted_metadata(value: Option<&serde_json::Value>) -> String {
+    value.map_or_else(
+        || "absent".to_owned(),
+        |value| {
+            format!(
+                "{{{} key(s)}}",
+                value.as_object().map_or(0, serde_json::Map::len)
+            )
+        },
+    )
+}
+
+/// Redacts every component, printing a count rather than a value.
+///
+/// A street and a GPS point are *where somebody can be found*, which makes
+/// them at least as identifying as the name beside them rather than less —
+/// and `{:?}` on the types holding this one appears in `tracing` fields, in
+/// `anyhow` chains and in every failing assertion's output. A coordinate in a
+/// `tracing` field is a payer's home in vpay's logs for the life of the log
+/// retention. `vpay_api::model::AddressObject` makes the same judgement one
+/// layer up, on the wire object rendered from this one.
+///
+/// The coordinate pair counts as **one** component rather than two, because
+/// `address_coordinates_are_both_or_neither` makes the pair the value:
+/// reporting two would claim a customer with a point and a city has three
+/// components of an address rather than two, which is not a thing an operator
+/// can act on.
+///
+/// This is now the **only** place the count is computed. [`CustomerRow`]
+/// spelled out its own copy over `self.address.*` until 2026-09-12 — a second
+/// definition of "an address component" that nothing kept in step with this
+/// one, and one that protected the row alone: this type carried a *derived*
+/// `Debug` until the same day, so [`NewCustomer`], [`CustomerPatch`] and
+/// anything else holding a `CustomerAddress` printed the payer's street and
+/// GPS point in full.
+impl fmt::Debug for CustomerAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let components = [
+            self.line1.is_some(),
+            self.line2.is_some(),
+            self.city.is_some(),
+            self.state.is_some(),
+            self.postal_code.is_some(),
+            self.country.is_some(),
+            self.latitude_microdeg.is_some() || self.longitude_microdeg.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+        f.debug_struct("CustomerAddress")
+            .field(
+                "redacted",
+                &format_args!("{{{components} component(s) redacted}}"),
+            )
+            .finish()
+    }
 }
 
 impl CustomerAddress {
@@ -461,60 +544,30 @@ impl CustomerRow {
 /// data at all.
 impl fmt::Debug for CustomerRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        /// `[N chars redacted]`, or `None` — so "which identifiers does this
-        /// customer have?" is still answerable from a log line.
-        fn redacted(value: Option<&String>) -> String {
-            value.map_or_else(
-                || "None".to_owned(),
-                |value| format!("[{} chars redacted]", value.chars().count()),
-            )
-        }
-
         f.debug_struct("CustomerRow")
             .field("id", &self.id)
             .field("seq", &self.seq)
             .field("merchant_id", &self.merchant_id)
             .field("livemode", &self.livemode)
-            .field("name", &format_args!("{}", redacted(self.name.as_ref())))
-            .field("email", &format_args!("{}", redacted(self.email.as_ref())))
-            .field("phone", &format_args!("{}", redacted(self.phone.as_ref())))
-            // The address gets a component *count* and not eight redacted
-            // values: an operator debugging `address_line1_length` needs to
-            // know an address is present and which component is over its
-            // bound, and the bound that fired is in the CHECK's own name in
-            // the error. Eight more fields would treble the width of every
-            // line this struct appears on and answer nothing the CHECK name
-            // does not.
-            //
-            // The coordinate is counted and never printed, and it is the one
-            // field here where that is not a judgement call: a name is how
-            // somebody is addressed and a point is where they sleep, so a
-            // `tracing` field carrying one is a payer's home in vpay's logs
-            // for the life of the log retention. It is counted as **one**
-            // component rather than two, because the pair is the value —
-            // `address_coordinates_are_both_or_neither` — and reporting two
-            // would say a customer with a point and a city has three
-            // components of an address, which is not a thing an operator can
-            // act on.
             .field(
-                "address",
-                &format_args!(
-                    "{{{} component(s) redacted}}",
-                    [
-                        self.address.line1.is_some(),
-                        self.address.line2.is_some(),
-                        self.address.city.is_some(),
-                        self.address.state.is_some(),
-                        self.address.postal_code.is_some(),
-                        self.address.country.is_some(),
-                        self.address.latitude_microdeg.is_some()
-                            || self.address.longitude_microdeg.is_some(),
-                    ]
-                    .iter()
-                    .filter(|present| **present)
-                    .count()
-                ),
+                "name",
+                &format_args!("{}", redacted_identifier(self.name.as_ref())),
             )
+            .field(
+                "email",
+                &format_args!("{}", redacted_identifier(self.email.as_ref())),
+            )
+            .field(
+                "phone",
+                &format_args!("{}", redacted_identifier(self.phone.as_ref())),
+            )
+            // Delegated to `CustomerAddress`'s own `Debug`, which prints
+            // the component count and never a value, and which says why the
+            // coordinate pair counts as one. The count was spelled out here
+            // until 2026-09-12 — a second definition of "an address
+            // component", and one that protected this struct alone while the
+            // type it reached into still derived `Debug`.
+            .field("address", &self.address)
             // The keys, not the values: a merchant's metadata is theirs and
             // may hold anything, but "which keys are on this customer" is
             // what an operator needs and is the merchant's own vocabulary.
@@ -546,7 +599,7 @@ impl fmt::Debug for CustomerRow {
 /// `customers::insert_in_tx` sets it to `created_at` — named without a
 /// link because it is `pub(crate)`, and rustdoc refuses a public link to a
 /// private item ([`crate::settlement`]'s convention).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct NewCustomer {
     /// Public `cus_…` id, generated by `vpay_core::ids::customer_id` before
     /// the insert — never by the database, so a crash mid-insert still
@@ -581,6 +634,47 @@ pub struct NewCustomer {
     pub created_at: OffsetDateTime,
 }
 
+/// Redacts the payer's identifiers and address, for [`CustomerRow`]'s reason
+/// and one more.
+///
+/// This is the *same* personal data as the row, on its way **in**: the value
+/// a merchant just sent, held in the frame that runs the insert. Every error
+/// path around that insert — a CHECK violation, a pool timeout, a
+/// serialisation failure — is an `anyhow` chain or a `tracing` event that can
+/// carry the inputs, and a payer's position is the field on this struct where
+/// that costs the most.
+///
+/// `id`, `merchant_id`, `livemode` and `created_at` print in full: they are
+/// vpay's own rather than the payer's, and they are what an operator
+/// correlating a failed insert with a request actually needs.
+impl fmt::Debug for NewCustomer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewCustomer")
+            .field("id", &self.id)
+            .field("merchant_id", &self.merchant_id)
+            .field("livemode", &self.livemode)
+            .field(
+                "name",
+                &format_args!("{}", redacted_identifier(self.name.as_ref())),
+            )
+            .field(
+                "email",
+                &format_args!("{}", redacted_identifier(self.email.as_ref())),
+            )
+            .field(
+                "phone",
+                &format_args!("{}", redacted_identifier(self.phone.as_ref())),
+            )
+            .field("address", &self.address)
+            .field(
+                "metadata",
+                &format_args!("{}", redacted_metadata(Some(&self.metadata))),
+            )
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
 /// The fields `POST /v1/customers/{id}` may change, in the wire's own
 /// three-state shape.
 ///
@@ -605,7 +699,7 @@ pub struct NewCustomer {
 /// key-wise and cleared by sending `metadata[key]=` per key, so "absent"
 /// means leave it and a present map is the new map. `vpay_api::v1::customers`
 /// does the merge and hands the result down whole.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct CustomerPatch {
     /// `None` = the request did not mention `name`. `Some(None)` = clear it.
     /// `Some(Some(v))` = set it to `v`.
@@ -639,6 +733,44 @@ pub struct CustomerPatch {
     /// merged map to store. See the struct doc for why this one has two
     /// states and the others three.
     pub metadata: Option<serde_json::Value>,
+}
+
+/// Redacts the payer's identifiers and address, for [`NewCustomer`]'s reason,
+/// while keeping the one thing this type exists to express.
+///
+/// The three-state shape *is* the operator's question here — did the request
+/// leave `phone` alone, clear it, or set it? — and all three answers are
+/// printable without the value: `absent`, `cleared`, or a character count. A
+/// derived `Debug` answered exactly the same question and wrote the payer's
+/// new name, email, phone, street and GPS point beside it.
+impl fmt::Debug for CustomerPatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        /// `absent` / `cleared` / `[N chars redacted]` — the three states of
+        /// [`CustomerPatch`], with no value in any of them.
+        fn patched(value: Option<&Option<String>>) -> String {
+            match value {
+                None => "absent".to_owned(),
+                Some(None) => "cleared".to_owned(),
+                Some(Some(value)) => format!("[{} chars redacted]", value.chars().count()),
+            }
+        }
+
+        f.debug_struct("CustomerPatch")
+            .field("name", &format_args!("{}", patched(self.name.as_ref())))
+            .field("email", &format_args!("{}", patched(self.email.as_ref())))
+            .field("phone", &format_args!("{}", patched(self.phone.as_ref())))
+            // `None` is "the request did not mention an address" and `Some`
+            // is "this is the address now"; the inner value is a
+            // `CustomerAddress`, whose own `Debug` prints the count. So the
+            // two states survive here too, and `address=` — the clear — is
+            // `Some(CustomerAddress { redacted: {0 component(s) redacted} })`.
+            .field("address", &self.address)
+            .field(
+                "metadata",
+                &format_args!("{}", redacted_metadata(self.metadata.as_ref())),
+            )
+            .finish()
+    }
 }
 
 impl CustomerPatch {
@@ -1913,7 +2045,9 @@ mod tests {
 
     use sqlx::postgres::PgPoolOptions;
 
-    use super::{CustomerPatch, UNREFERENCED, to_chrono};
+    use super::{
+        CustomerAddress, CustomerPatch, CustomerRow, NewCustomer, UNREFERENCED, to_chrono,
+    };
 
     /// A pool that has never opened a connection, and cannot: the port is
     /// unroutable. `connect_lazy` does no I/O, and neither does
@@ -2549,6 +2683,179 @@ mod tests {
                 ..CustomerPatch::default()
             }
             .is_empty()
+        );
+    }
+
+    /// The payer this module's `Debug` cases are about: Ada, in Douala.
+    const NAME: &str = "Ada Ngo Bikai";
+    /// See [`NAME`].
+    const EMAIL: &str = "ada@example.cm";
+    /// See [`NAME`]. Canonical, as the column stores it.
+    const PHONE: &str = "237600000200";
+    /// See [`NAME`].
+    const LINE1: &str = "Rue Njo-Njo, Bonapriso";
+    /// See [`NAME`].
+    const CITY: &str = "Douala";
+    /// 4.061°N in microdegrees — the point every coordinate case in this
+    /// repository uses.
+    const LATITUDE: i64 = 4_061_000;
+    /// 9.786°E in microdegrees. See [`LATITUDE`].
+    const LONGITUDE: i64 = 9_786_000;
+
+    /// Four components: a street, a city, a country and **the pair**, which
+    /// is one.
+    fn fixture_address() -> CustomerAddress {
+        CustomerAddress {
+            line1: Some(LINE1.to_owned()),
+            line2: None,
+            city: Some(CITY.to_owned()),
+            state: None,
+            postal_code: None,
+            country: Some("CM".to_owned()),
+            latitude_microdeg: Some(LATITUDE),
+            longitude_microdeg: Some(LONGITUDE),
+        }
+    }
+
+    /// Every personal literal the fixture carries, as it would appear inside
+    /// a formatted string — the coordinate included, as its digits.
+    fn payer_literals() -> Vec<String> {
+        vec![
+            NAME.to_owned(),
+            EMAIL.to_owned(),
+            PHONE.to_owned(),
+            LINE1.to_owned(),
+            CITY.to_owned(),
+            LATITUDE.to_string(),
+            LONGITUDE.to_string(),
+        ]
+    }
+
+    /// **No type in this module prints a payer's identifiers, street or GPS
+    /// point** — on the way out, and since 2026-09-12 on the way in.
+    ///
+    /// [`CustomerRow`] has had a hand-written `Debug` since 2026-09-10 and
+    /// nothing asserted its output. [`CustomerAddress`], [`NewCustomer`] and
+    /// [`CustomerPatch`] **derived** one until 2026-09-12 and printed the
+    /// payer's name, email, phone, street and coordinate in full. The write
+    /// path is where that costs the most: `insert_in_tx` and `update_in_tx`
+    /// hold these values in the frame that runs the statement, so every CHECK
+    /// violation, pool timeout and serialisation failure around them is an
+    /// `anyhow` chain or a `tracing` event able to carry the inputs.
+    ///
+    /// The coordinate is the field this test exists for. The other literals
+    /// are how a payer is named and reached; the pair is where they are, and
+    /// a log line holding it keeps it for the life of the log retention —
+    /// outside `customers`, outside the erasure, and outside everything
+    /// `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+    /// scans.
+    ///
+    /// **Both directions of the regression are covered, by two mechanisms.**
+    /// Restoring `#[derive(Debug)]` on any of the four is `E0119`, a `cargo
+    /// check` failure rather than a test to keep green. Weakening an impl to
+    /// print a value is what this fails on — and the assertions are negative
+    /// *and* positive, because a `Debug` that printed nothing at all would
+    /// pass every substring search and tell an operator nothing.
+    #[test]
+    fn no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point() {
+        let at = time::OffsetDateTime::UNIX_EPOCH;
+        let metadata = serde_json::json!({ "shelf": "row-4" });
+
+        let row = CustomerRow {
+            id: "cus_fixture".to_owned(),
+            seq: 1,
+            merchant_id: "mer_fixture".to_owned(),
+            livemode: false,
+            name: Some(NAME.to_owned()),
+            email: Some(EMAIL.to_owned()),
+            phone: Some(PHONE.to_owned()),
+            address: fixture_address(),
+            metadata: metadata.clone(),
+            last_used_at: at,
+            anonymized_at: None,
+            created_at: at,
+            updated_at: at,
+        };
+        let new = NewCustomer {
+            id: "cus_fixture".to_owned(),
+            merchant_id: "mer_fixture".to_owned(),
+            livemode: false,
+            name: Some(NAME.to_owned()),
+            email: Some(EMAIL.to_owned()),
+            phone: Some(PHONE.to_owned()),
+            address: fixture_address(),
+            metadata: metadata.clone(),
+            created_at: at,
+        };
+        // All three states of the patch at once, which is what makes the
+        // positive assertions at the end possible: `name` set, `email`
+        // cleared, `phone` not mentioned.
+        let patch = CustomerPatch {
+            name: Some(Some(NAME.to_owned())),
+            email: Some(None),
+            phone: None,
+            address: Some(fixture_address()),
+            metadata: Some(metadata),
+        };
+
+        let address_debug = format!("{:?}", fixture_address());
+        let row_debug = format!("{row:?}");
+        let new_debug = format!("{new:?}");
+        let patch_debug = format!("{patch:?}");
+
+        for (label, formatted) in [
+            ("CustomerAddress", &address_debug),
+            ("CustomerRow", &row_debug),
+            ("NewCustomer", &new_debug),
+            ("CustomerPatch", &patch_debug),
+        ] {
+            for literal in payer_literals() {
+                assert!(
+                    !formatted.contains(&literal),
+                    "`{label}`'s Debug wrote one of the payer's own values into a log \
+                     line: `{literal}` is in {formatted}"
+                );
+            }
+
+            // An address is present and has four components — a street, a
+            // city, a country and the pair, which counts as ONE. Without
+            // this, an impl printing nothing would pass every assertion
+            // above, and so would one reporting the coordinate as two
+            // components and quietly telling an operator this payer supplied
+            // five pieces of an address.
+            assert!(
+                formatted.contains("{4 component(s) redacted}"),
+                "`{label}` has to say an address is present and how much of one, without \
+                 saying what it is: {formatted}"
+            );
+        }
+
+        // The three identifiers stay *distinguishable*, which is the whole
+        // reason these impls print a count rather than nothing: the question
+        // an operator brings to `at_least_one_identifier` or a `*_length`
+        // CHECK is which of the three is present and whether one is over its
+        // bound, and no personal data answers it.
+        for (label, formatted) in [("CustomerRow", &row_debug), ("NewCustomer", &new_debug)] {
+            assert!(
+                formatted.contains(&format!("[{} chars redacted]", PHONE.chars().count())),
+                "`{label}` must still answer `which identifiers does this customer have, \
+                 and is one of them over its bound?`: {formatted}"
+            );
+        }
+
+        // And a patch keeps its three states, which are the operator's whole
+        // question on an update. `cleared` is the one that is easy to lose:
+        // it is `Some(None)`, and a `Debug` that collapsed it into `absent`
+        // would say a request left a payer's email alone when it asked for
+        // it to be removed.
+        assert!(
+            patch_debug.contains("email: cleared"),
+            "a patch's three states need no value to be told apart: {patch_debug}"
+        );
+        assert!(patch_debug.contains("phone: absent"), "{patch_debug}");
+        assert!(
+            patch_debug.contains(&format!("[{} chars redacted]", NAME.chars().count())),
+            "{patch_debug}"
         );
     }
 }

@@ -34,6 +34,10 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-customer-debug-redaction.md](verification/2026-09-12-customer-debug-redaction.md) —
+  the customer **write** path's `Debug`, which printed the payer's name, email,
+  phone, street and GPS point until this date; issue #113's two questions about
+  the coordinate are prepared and **not taken**
 - [verification/2026-09-12-issue-88.md](verification/2026-09-12-issue-88.md) —
   issue #88 item by item: the proactive re-mint, the outage-tolerant cookie,
   the paging test — which a same-day adversarial review found was green under

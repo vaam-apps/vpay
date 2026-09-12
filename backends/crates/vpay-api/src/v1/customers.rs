@@ -76,6 +76,7 @@
 //! a timer and has no idea what the horizon is.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use axum::extract::{Path, Request, State};
@@ -175,7 +176,7 @@ const LONGITUDE_MAX_MICRODEG: i64 = 180_000_000;
 /// typing them here would hand "not a phone number" to serde — which answers
 /// with `param: "body"` and a sentence about the request's shape rather than
 /// naming the field.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct CreateParams {
     name: Option<String>,
@@ -188,6 +189,74 @@ struct CreateParams {
     /// [`crate::form::parse_form`], exactly as on an intent.
     #[serde(default)]
     metadata: BTreeMap<String, String>,
+}
+
+/// `[N chars redacted]`, or `None` — so "which identifiers did this request
+/// carry?" is still answerable from a log line, and "is one of them over its
+/// bound?" with it.
+///
+/// Shared by every hand-written `Debug` in this module rather than nested
+/// inside one of them: [`CreateParams`], [`UpdateParams`] and [`ValidCreate`]
+/// carry the same three identifiers, and three copies of this would be three
+/// chances for one of them to print a value. `vpay_db::customers` makes the
+/// same move, one layer down, for the same reason.
+fn redacted_identifier(value: Option<&String>) -> String {
+    value.map_or_else(
+        || "None".to_owned(),
+        |value| format!("[{} chars redacted]", value.chars().count()),
+    )
+}
+
+/// `{N key(s)}`, or `absent` — the merchant's metadata is counted, never
+/// printed.
+///
+/// `vpay_db::CustomerRow`'s judgement, kept at this layer: a merchant may put
+/// anything in a metadata *key* as well as in a value, and
+/// `metadata[home_4_061_000]=` is a payer's coordinate that nothing in this
+/// module could recognise as one. `absent` is the state [`UpdateParams`]
+/// needs and [`CreateParams`] does not, since a patch that does not mention
+/// `metadata` and one that sends an empty map are different requests.
+fn redacted_metadata(value: Option<&BTreeMap<String, String>>) -> String {
+    value.map_or_else(
+        || "absent".to_owned(),
+        |value| format!("{{{} key(s)}}", value.len()),
+    )
+}
+
+/// Redacts the payer's identifiers and address.
+///
+/// This is the merchant's request body, held in the frame that validates it —
+/// one frame *earlier* than the `vpay_db::NewCustomer` it becomes, and
+/// carrying exactly the same personal data. `NewCustomer`, `CustomerPatch`
+/// and `CustomerAddress` stopped deriving `Debug` on 2026-09-12; leaving the
+/// five types in this module derived would have made that a redaction with a
+/// hole in front of it, because every error path around `validate_create` — a
+/// malformed field, a bound, a rejected coordinate — is an `ApiError` or an
+/// `anyhow` chain raised while this value is still live.
+impl fmt::Debug for CreateParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateParams")
+            .field(
+                "name",
+                &format_args!("{}", redacted_identifier(self.name.as_ref())),
+            )
+            .field(
+                "email",
+                &format_args!("{}", redacted_identifier(self.email.as_ref())),
+            )
+            .field(
+                "phone",
+                &format_args!("{}", redacted_identifier(self.phone.as_ref())),
+            )
+            // Delegated to `AddressParam`'s own `Debug`, which prints a
+            // component count and never a value.
+            .field("address", &self.address)
+            .field(
+                "metadata",
+                &format_args!("{}", redacted_metadata(Some(&self.metadata))),
+            )
+            .finish()
+    }
 }
 
 /// `address` as it arrives, in the two shapes the wire can spell it.
@@ -208,7 +277,7 @@ struct CreateParams {
 /// would make `address=` decode as an `AddressParams` with every field
 /// absent, which is silently the same as "the request did not mention
 /// address" and would make clearing an address impossible.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case", untagged)]
 enum AddressParam {
     /// `address=` — the whole address, cleared. Any *non*-blank scalar is
@@ -223,6 +292,24 @@ enum AddressParam {
     Components(Box<AddressParams>),
 }
 
+/// Delegates to [`AddressParams`], and prints neither spelling's value.
+///
+/// [`Self::Cleared`] is usually the empty string, but it is whatever scalar
+/// the merchant sent: `address=Douala` is a merchant reaching for
+/// `address[city]`, and a place name in a log line is the thing this module
+/// is trying not to write. Its length is reported; its text is not.
+impl fmt::Debug for AddressParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cleared(raw) => f
+                .debug_tuple("Cleared")
+                .field(&format_args!("[{} chars redacted]", raw.chars().count()))
+                .finish(),
+            Self::Components(components) => f.debug_tuple("Components").field(components).finish(),
+        }
+    }
+}
+
 /// The eight components, as the form decoder produces them — Stripe's six
 /// formal ones and vpay's coordinate.
 ///
@@ -230,7 +317,7 @@ enum AddressParam {
 /// text — and there is no `deny_unknown_fields`, which is this API's standing
 /// behaviour rather than a decision taken here: `address[county]=…` is
 /// ignored exactly as `nonsense=1` is on every other route.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct AddressParams {
     line1: Option<String>,
@@ -249,6 +336,44 @@ struct AddressParams {
     latitude_microdeg: Option<String>,
     /// See [`Self::latitude_microdeg`].
     longitude_microdeg: Option<String>,
+}
+
+/// Redacts every component, printing a count rather than a value — the rule
+/// `vpay_db::CustomerAddress` and [`crate::model::AddressObject`] both apply,
+/// here on the *text the wire sent* rather than on the parsed value.
+///
+/// This is the type that carried a payer's position furthest in the clear.
+/// Both coordinate fields are `Option<String>`, so a derived `Debug` wrote
+/// the point exactly as the merchant spelled it — before [`checked_microdeg`]
+/// had parsed it, and therefore on every path that rejects it, which are the
+/// paths most likely to be logged.
+///
+/// The coordinate pair counts as **one** component rather than two, for
+/// `CustomerAddress`'s reason: `address_coordinates_are_both_or_neither`
+/// makes the pair the value, so reporting two would claim a customer with a
+/// point and a city has three components of an address rather than two.
+impl fmt::Debug for AddressParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let components = [
+            self.line1.is_some(),
+            self.line2.is_some(),
+            self.city.is_some(),
+            self.state.is_some(),
+            self.postal_code.is_some(),
+            self.country.is_some(),
+            self.latitude_microdeg.is_some() || self.longitude_microdeg.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+
+        f.debug_struct("AddressParams")
+            .field(
+                "redacted",
+                &format_args!("{{{components} component(s) redacted}}"),
+            )
+            .finish()
+    }
 }
 
 /// `POST /v1/customers`.
@@ -307,13 +432,43 @@ pub(crate) async fn create(
 
 /// A create request that has passed every rule, in the shape the insert
 /// needs.
-#[derive(Debug)]
 struct ValidCreate {
     name: Option<String>,
     email: Option<String>,
     phone: Option<String>,
     address: CustomerAddress,
     metadata: Map<String, Value>,
+}
+
+/// Redacts the payer's identifiers, for [`CreateParams`]' reason: this is the
+/// same personal data one step further in, and it is what `create` holds
+/// while `create_with_event` runs the insert.
+///
+/// `address` needs nothing here — it is a `vpay_db::CustomerAddress`, whose
+/// own `Debug` prints a component count — which is the point of that type
+/// carrying the redaction rather than each holder repeating it.
+impl fmt::Debug for ValidCreate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidCreate")
+            .field(
+                "name",
+                &format_args!("{}", redacted_identifier(self.name.as_ref())),
+            )
+            .field(
+                "email",
+                &format_args!("{}", redacted_identifier(self.email.as_ref())),
+            )
+            .field(
+                "phone",
+                &format_args!("{}", redacted_identifier(self.phone.as_ref())),
+            )
+            .field("address", &self.address)
+            .field(
+                "metadata",
+                &format_args!("{{{} key(s)}}", self.metadata.len()),
+            )
+            .finish()
+    }
 }
 
 /// Every rule that can be decided from the request alone.
@@ -376,7 +531,7 @@ pub(crate) async fn retrieve(
 /// empty one, so the two states are already distinguishable here; the
 /// mapping into [`vpay_db::CustomerPatch`]'s double options is
 /// [`patch_field`].
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct UpdateParams {
     name: Option<String>,
@@ -390,6 +545,36 @@ struct UpdateParams {
     /// per key, which is Stripe's semantics and is why the merge needs the
     /// stored map — see [`update`].
     metadata: Option<BTreeMap<String, String>>,
+}
+
+/// Redacts the payer's identifiers and address, for [`CreateParams`]' reason,
+/// while keeping the states this type exists to express.
+///
+/// The operator's question on an update is which fields the request mentioned
+/// — and `None` versus `Some("")` versus `Some(v)` are all printable without
+/// the value, as `None`, an empty count, and a count.
+impl fmt::Debug for UpdateParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateParams")
+            .field(
+                "name",
+                &format_args!("{}", redacted_identifier(self.name.as_ref())),
+            )
+            .field(
+                "email",
+                &format_args!("{}", redacted_identifier(self.email.as_ref())),
+            )
+            .field(
+                "phone",
+                &format_args!("{}", redacted_identifier(self.phone.as_ref())),
+            )
+            .field("address", &self.address)
+            .field(
+                "metadata",
+                &format_args!("{}", redacted_metadata(self.metadata.as_ref())),
+            )
+            .finish()
+    }
 }
 
 /// `POST /v1/customers/{id}`.
@@ -2056,6 +2241,169 @@ mod tests {
                 .expect_err("over")
             ),
             Some("email")
+        );
+    }
+
+    /// The payer these request-shaped `Debug` cases are about: Ada, in
+    /// Douala — the same fixture `vpay-db`'s own case uses, so the two layers
+    /// are asserted against one payer.
+    const DEBUG_NAME: &str = "Ada Ngo Bikai";
+    /// See [`DEBUG_NAME`].
+    const DEBUG_EMAIL: &str = "ada@example.cm";
+    /// See [`DEBUG_NAME`]. Canonical, as the column stores it.
+    const DEBUG_PHONE: &str = "237600000200";
+    /// See [`DEBUG_NAME`].
+    const DEBUG_LINE1: &str = "Rue Njo-Njo, Bonapriso";
+    /// See [`DEBUG_NAME`].
+    const DEBUG_CITY: &str = "Douala";
+    /// 4.061°N in microdegrees, **as the wire spells it** — a string here and
+    /// an `i64` by the time `vpay-db` sees it, which is exactly why this
+    /// layer needed its own case.
+    const DEBUG_LAT: &str = "4061000";
+    /// 9.786°E in microdegrees. See [`DEBUG_LAT`].
+    const DEBUG_LON: &str = "9786000";
+
+    /// Four components: a street, a city, a country and **the pair**, which
+    /// is one.
+    fn debug_address_params() -> AddressParams {
+        AddressParams {
+            line1: Some(DEBUG_LINE1.to_owned()),
+            line2: None,
+            city: Some(DEBUG_CITY.to_owned()),
+            state: None,
+            postal_code: None,
+            country: Some("CM".to_owned()),
+            latitude_microdeg: Some(DEBUG_LAT.to_owned()),
+            longitude_microdeg: Some(DEBUG_LON.to_owned()),
+        }
+    }
+
+    /// **No request type in this module prints a payer's identifiers, street
+    /// or GPS point either** — the same property `vpay-db`'s
+    /// `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point`
+    /// asserts for the types it hands down to, asserted here for the types it
+    /// is handed up from.
+    ///
+    /// `vpay-db`'s `CustomerAddress`, `NewCustomer` and `CustomerPatch`
+    /// stopped deriving `Debug` on 2026-09-12. These four kept deriving it,
+    /// and they are the *first* frame of the same write path:
+    /// [`CreateParams`] is the merchant's body, [`AddressParams`] holds the
+    /// coordinate as the untrusted string the wire sent, and [`ValidCreate`]
+    /// is what `create` holds while the insert runs. Every rejection path —
+    /// a bound, a bad country, a half-written coordinate — raises its
+    /// `ApiError` while these values are live, which makes them the frames
+    /// most likely to be logged.
+    ///
+    /// Both directions, by two mechanisms. Restoring `#[derive(Debug)]` on
+    /// any of the four is `E0119`, a `cargo check` failure rather than a test
+    /// to keep green. Weakening an impl to print a value is what this fails
+    /// on — and the assertions are negative *and* positive, because a `Debug`
+    /// that printed nothing at all would pass every substring search and tell
+    /// an operator nothing.
+    #[test]
+    fn no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point() {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("shelf".to_owned(), "row-4".to_owned());
+
+        let create = CreateParams {
+            name: Some(DEBUG_NAME.to_owned()),
+            email: Some(DEBUG_EMAIL.to_owned()),
+            phone: Some(DEBUG_PHONE.to_owned()),
+            address: Some(AddressParam::Components(Box::new(debug_address_params()))),
+            metadata: metadata.clone(),
+        };
+        let update = UpdateParams {
+            name: Some(DEBUG_NAME.to_owned()),
+            email: Some(DEBUG_EMAIL.to_owned()),
+            phone: Some(DEBUG_PHONE.to_owned()),
+            address: Some(AddressParam::Components(Box::new(debug_address_params()))),
+            metadata: Some(metadata),
+        };
+        let valid = ValidCreate {
+            name: Some(DEBUG_NAME.to_owned()),
+            email: Some(DEBUG_EMAIL.to_owned()),
+            phone: Some(DEBUG_PHONE.to_owned()),
+            address: CustomerAddress {
+                line1: Some(DEBUG_LINE1.to_owned()),
+                line2: None,
+                city: Some(DEBUG_CITY.to_owned()),
+                state: None,
+                postal_code: None,
+                country: Some("CM".to_owned()),
+                latitude_microdeg: Some(4_061_000),
+                longitude_microdeg: Some(9_786_000),
+            },
+            metadata: Map::new(),
+        };
+
+        let params_debug = format!("{:?}", debug_address_params());
+        let create_debug = format!("{create:?}");
+        let update_debug = format!("{update:?}");
+        let valid_debug = format!("{valid:?}");
+
+        for (label, formatted) in [
+            ("AddressParams", &params_debug),
+            ("CreateParams", &create_debug),
+            ("UpdateParams", &update_debug),
+            ("ValidCreate", &valid_debug),
+        ] {
+            for literal in [
+                DEBUG_NAME,
+                DEBUG_EMAIL,
+                DEBUG_PHONE,
+                DEBUG_LINE1,
+                DEBUG_CITY,
+                DEBUG_LAT,
+                DEBUG_LON,
+            ] {
+                assert!(
+                    !formatted.contains(literal),
+                    "`{label}`'s Debug wrote one of the payer's own values into a log \
+                     line: `{literal}` is in {formatted}"
+                );
+            }
+
+            // An address is present and has four components — a street, a
+            // city, a country and the pair, which counts as ONE. Without
+            // this, an impl printing nothing would pass every assertion
+            // above, and so would one reporting the coordinate as two and
+            // quietly telling an operator this payer supplied five pieces of
+            // an address.
+            assert!(
+                formatted.contains("{4 component(s) redacted}"),
+                "`{label}` has to say an address is present and how much of one, without \
+                 saying what it is: {formatted}"
+            );
+        }
+
+        // The three identifiers stay *distinguishable*, which is why these
+        // impls print a count rather than nothing: the question an operator
+        // brings to a `*_length` rejection is which field is over its bound,
+        // and no personal data answers it.
+        for (label, formatted) in [
+            ("CreateParams", &create_debug),
+            ("UpdateParams", &update_debug),
+            ("ValidCreate", &valid_debug),
+        ] {
+            assert!(
+                formatted.contains(&format!("[{} chars redacted]", DEBUG_PHONE.chars().count())),
+                "`{label}` must still answer `which identifiers did this request carry, \
+                 and is one of them over its bound?`: {formatted}"
+            );
+        }
+
+        // `address=` — the clear — is the other spelling of `AddressParam`,
+        // and it carries whatever scalar the merchant sent. `address=Douala`
+        // is a merchant reaching for `address[city]`, and a place name is
+        // the thing this module must not write down.
+        let cleared = format!("{:?}", AddressParam::Cleared(DEBUG_CITY.to_owned()));
+        assert!(
+            !cleared.contains(DEBUG_CITY),
+            "a cleared address still printed the merchant's scalar: {cleared}"
+        );
+        assert!(
+            cleared.contains(&format!("[{} chars redacted]", DEBUG_CITY.chars().count())),
+            "{cleared}"
         );
     }
 }

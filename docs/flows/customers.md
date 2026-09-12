@@ -225,6 +225,55 @@ directly, by name, as NULL.
   wants them out, the shape is a `deleted` filter in the same `WHERE` as
   `merchant_id`, and nobody has asked.
 
+**Updated 2026-09-12 ([issue #113](https://github.com/vaam-apps/vpay/issues/113)):
+the write path now redacts what the read path already did, and the two open
+questions about the coordinate are written up and left open.** Issue #113 asks
+two things — whether the checkout page asks a payer for a location at all, and
+whether a merchant reads back a coarser coordinate by default — and says
+"Decision needed" for both. **Neither is taken**, nothing on that branch moves
+either one, and the write-up that prepares them is
+[../plans/issue-113-notes/decision.md](../plans/issue-113-notes/decision.md):
+the options, what each costs, what "coarser" means in metres at Cameroon's
+latitudes, and a recommendation each, labelled as recommendations. The current
+state it establishes is in
+[customers/address-and-gps.md](customers/address-and-gps.md) § "Two questions
+this shape does not answer". What **was** built is the one defect that is gated
+on neither: `vpay_db::{CustomerAddress, NewCustomer, CustomerPatch}` still
+**derived** `Debug`, so a `{:?}` on the values `insert_in_tx` and
+`update_in_tx` hold — the frame an `anyhow` chain or a `tracing` event carries
+when a CHECK fires — wrote the payer's name, email, phone, street and GPS point
+out in full. That is the same hole #70 closed one layer up, left open on the
+way **in**; `CustomerRow`'s guard did not cover it, and in fact depended on it,
+since the row counted the address components itself rather than delegating.
+All three have hand-written impls now, the count lives in one place per crate,
+and `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
+`vpay-db` asserts all four types at once — negatively, on seven fixture
+literals the coordinate's digits included, and positively, so that an impl
+printing nothing fails too. Restoring any of the four derives is `E0119`, a
+`cargo check` failure rather than a test to keep green. Five mutations, and
+what was and was not run, are in
+[../status/verification/2026-09-12-customer-debug-redaction.md](../status/verification/2026-09-12-customer-debug-redaction.md)
+— that page's first claim is that **`just ci` was not run on this branch**.
+The review of the same day carried the fix the rest of the way in:
+`vpay_api::v1::customers`' request types (`CreateParams`, `UpdateParams`,
+`AddressParam`/`AddressParams`, `ValidCreate`) derived `Debug` too, and
+`AddressParams` holds the coordinate as the **string the wire sent**, before
+`checked_microdeg` parses it. Five more hand-written impls and
+`no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
+close it; four mutations are on the verification page.
+
+**One thin spot named and not closed (2026-09-12).** The twelve-month sweep's
+own case,
+`the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one`,
+builds its fixtures with a `name` and no address, so **no test drives a
+coordinate through `erase_idle`**. The property holds transitively — the sweep
+runs the same `anonymize` statement as `DELETE`, and
+`anonymized_customers_carry_the_marker` would raise a `23514` and roll the
+transaction back — so this is a thin fixture rather than an unproven property.
+The fix is to give the anonymised fixture a point and assert both columns
+`NULL` after the sweep, exactly as
+`a_customer_with_payment_history_is_anonymised_rather_than_deleted` does.
+
 **Updated 2026-09-11 ([issue #70](https://github.com/vaam-apps/vpay/issues/70)):
 `CustomerObject`'s own `Debug` is hand-written, and a checkout session's
 `customer` can now be sent, not only read.** Nothing formatted a
