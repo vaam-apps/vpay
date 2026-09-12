@@ -11,7 +11,6 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @vpay/e2e e2e",
-    "storybook": "pnpm --filter @vpay/ui storybook",
     "typecheck": "pnpm -r typecheck"
   },
   "//pnpm": [

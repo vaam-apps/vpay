@@ -427,7 +427,14 @@ jobs:
       - name: lint-web (pnpm -r typecheck, then pnpm -r lint)
         run: just lint-web
       - run: pnpm -r test
-      - run: pnpm --filter @vpay/ui build-storybook
+      # `pnpm --filter @vpay/ui build-storybook` used to be the last step
+      # here, compiling the checkout's 22 stories and the a11y addon that
+      # reviewed them. DELETED, not moved, 2026-09-12: `@vpay/ui` is deleted
+      # (both apps now compose the published `@vaam-apps/ui`), and nothing
+      # in this job replaces the review surface it built — the jsdom axe
+      # suite (`screens.axe.test.tsx`) never renders in a browser. A chip is
+      # filed to restore Storybook inside `frontends/apps/checkout`; until
+      # it lands, this job compiles no Storybook and reviews no story.
 
   e2e:
     name: e2e (compose)

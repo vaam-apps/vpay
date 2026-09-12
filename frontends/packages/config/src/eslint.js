@@ -7,10 +7,19 @@
  * "the home of the shared tsconfig/tailwind settings"; that sentence was
  * never true (there was no shared tsconfig or Tailwind config here, only
  * this file), and under Tailwind 4 — which has no `tailwind.config.ts` at
- * all — the natural home for shared Tailwind/daisyUI settings is the CSS
- * entry point in `@vpay/ui` (`frontends/packages/ui/src/styles.css`), not a
- * config package. Corrected 2026-09-07 (exp26 UI revamp) rather than
- * inventing a package to make the old sentence true. Every workspace
+ * all — the natural home for shared Tailwind/daisyUI settings used to be
+ * said to be the CSS entry point in `@vpay/ui`
+ * (`frontends/packages/ui/src/styles.css`). Corrected 2026-09-07 (exp26 UI
+ * revamp) rather than inventing a package to make the old sentence true.
+ *
+ * **Corrected again, 2026-09-12**: `@vpay/ui` is deleted from this repository
+ * (both apps now compose the published `@vaam-apps/ui`), and there never was
+ * a single shared Tailwind entry point to begin with — `resolveTailwindEntryPoint`
+ * below reads each CONSUMING package's own stylesheet instead. The trap this
+ * closes: the old constant resolved `../../ui/src/styles.css` from THIS
+ * file's own URL, a path that (a) `examples/shop` loaded despite never
+ * depending on `@vpay/ui` at all, and (b) no `@vpay/ui` grep would ever find,
+ * because it names no package, only a filesystem path. Every workspace
  * package's `eslint.config.js` is a
  * three-line call into `vpayEslintConfig` below, so a rule is added in one
  * place or not at all.
@@ -28,7 +37,8 @@
  *
  * @module
  */
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import js from "@eslint/js";
 import nextPlugin from "@next/eslint-plugin-next";
@@ -136,26 +146,58 @@ const TESTING_IMPORT_PATTERNS = [
  * @property {string[]} [ignores] Extra paths to skip entirely.
  * @property {boolean} [tailwind] Enable the class-string rules
  *   (`eslint-plugin-better-tailwindcss`). Requires the package to resolve
- *   `tailwindcss` **4** — the plugin loads the Tailwind entry point below to
- *   learn which classes exist, and throws outright in a package that only has
+ *   `tailwindcss` **4** — the plugin loads the consuming package's own
+ *   Tailwind entry point (see `resolveTailwindEntryPoint` below) to learn
+ *   which classes exist, and throws outright in a package that only has
  *   Tailwind 3. Off by default for exactly that reason; each app turns it on
  *   in the commit that migrates it.
  */
 
 /**
- * The one Tailwind 4 entry point, `@vpay/ui`'s `styles.css`.
- *
- * `eslint-plugin-better-tailwindcss` compiles it to learn the class universe
- * — which is what lets `no-unknown-classes` know that `btn-primary` exists
- * and that the classes daisyUI 5 removed do not. Resolved from this file's
- * own URL rather
- * than from the linted package, because the path from here is fixed while the
- * path from a consumer is not, and `@vpay/config` cannot depend on `@vpay/ui`
- * without a cycle.
+ * Conventional Next.js locations for a package's own Tailwind entry point,
+ * relative to `tsconfigRootDir`, tried in order.
  */
-const TAILWIND_ENTRY_POINT = fileURLToPath(
-  new URL("../../ui/src/styles.css", import.meta.url),
-);
+const TAILWIND_ENTRY_POINT_CANDIDATES = ["app/globals.css", "src/app/globals.css"];
+
+/**
+ * Resolve the CONSUMING package's own Tailwind 4 entry point.
+ *
+ * `eslint-plugin-better-tailwindcss` compiles this file to learn the class
+ * universe — which is what lets `no-unknown-classes` know that `btn-primary`
+ * exists and that the classes daisyUI 5 removed do not.
+ *
+ * **Not a single shared constant any more.** Until 2026-09-12 this resolved
+ * one fixed path, `../../ui/src/styles.css`, from `@vpay/config`'s own file
+ * URL — `@vpay/ui`'s stylesheet, the one entry point every `tailwind: true`
+ * package compiled against. That broke the moment `@vpay/ui` was deleted
+ * (both apps now compose the published `@vaam-apps/ui`, each with its own
+ * theme import), and it was already wrong for `examples/shop`, which reads
+ * its OWN hand-written `bumblebee` stylesheet and had never depended on
+ * `@vpay/ui` at all — a fact no `@vpay/ui` grep could ever surface, because
+ * the reach was by filesystem path, not by package name.
+ *
+ * Resolving from the CONSUMER's own `tsconfigRootDir` instead — trying the
+ * two conventional Next.js locations for a global stylesheet — means no
+ * per-package option is needed and no consuming `eslint.config.js` has to
+ * name its own entry: today all three (`frontends/apps/checkout`,
+ * `frontends/apps/dashboard`, `examples/shop`) keep their real Tailwind
+ * entry at one of these two paths, verified by reading each on 2026-09-12.
+ *
+ * @param {string} tsconfigRootDir The consuming package's own directory.
+ * @returns {string} Absolute path to that package's Tailwind entry point.
+ */
+function resolveTailwindEntryPoint(tsconfigRootDir) {
+  for (const candidate of TAILWIND_ENTRY_POINT_CANDIDATES) {
+    const absolute = join(tsconfigRootDir, candidate);
+    if (existsSync(absolute)) {
+      return absolute;
+    }
+  }
+  throw new Error(
+    `vpayEslintConfig: tailwind: true but no Tailwind entry point found under ${tsconfigRootDir} ` +
+      `(tried ${TAILWIND_ENTRY_POINT_CANDIDATES.join(", ")})`,
+  );
+}
 
 /**
  * Build the flat config for one workspace package.
@@ -286,13 +328,13 @@ export function vpayEslintConfig(options) {
     // contains "tailwind", and a deliberately six-line class attribute in
     // `badge.tsx` left `pnpm --filter @vpay/ui lint` at exit 0.
     //
-    // On `tailwind`, not on `react`: the plugin compiles TAILWIND_ENTRY_POINT
-    // through the linted package's own `tailwindcss`, so it aborts ESLint
-    // entirely in `@vpay/checkout` and `@vpay/dashboard`, which are still on
-    // Tailwind 3 until lanes B and D migrate them. Measured, not assumed —
-    // enabling it for every React package fails both apps' `lint` at
-    // "@import 'tailwindcss'". Each app flips this flag in the same commit
-    // that moves it to Tailwind 4.
+    // On `tailwind`, not on `react`: the plugin compiles the entry point
+    // `resolveTailwindEntryPoint` resolves through the linted package's own
+    // `tailwindcss`, so it aborts ESLint entirely in a package that only has
+    // Tailwind 3. Measured, not assumed — enabling it for every React
+    // package fails a Tailwind-3 app's `lint` at "@import 'tailwindcss'".
+    // Each app flips this flag in the same commit that moves it to
+    // Tailwind 4.
     //
     // `enforce-consistent-line-wrapping` is the maintainer's "no class
     // attribute longer than one line", expressed in the rule's two
@@ -307,7 +349,9 @@ export function vpayEslintConfig(options) {
             files: ["**/*.tsx", "**/*.jsx"],
             plugins: { "better-tailwindcss": betterTailwind },
             settings: {
-              "better-tailwindcss": { entryPoint: TAILWIND_ENTRY_POINT },
+              "better-tailwindcss": {
+                entryPoint: resolveTailwindEntryPoint(tsconfigRootDir),
+              },
             },
             rules: {
               "better-tailwindcss/enforce-consistent-line-wrapping": [
