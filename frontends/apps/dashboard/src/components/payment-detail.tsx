@@ -4,6 +4,7 @@ import {
   DetailRow,
   InlineBanner,
   InlineEmptyState,
+  InstrumentPanel,
   ScreenStack,
   Table,
   TableBody,
@@ -72,6 +73,67 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
         in the first committed screenshot of it. Sections here are named for
         what they contain, not for the object they are about.
       */}
+      {/*
+        The instrument register, and the only surface on this page that is
+        not diagnostic.
+        `@vaam-apps/ui`'s "Surfaces and registers" doc draws the line by what
+        the reader is doing: you *read* a detail list row by row looking for
+        the one that is wrong, and you *scan* an instrument to find one
+        number at a glance. Everything below is the former and keeps its
+        hairline. The two questions an operator opens this page with — how
+        much, and did it move — were rows 3 and 2 of a seventeen-row read,
+        rendered identically to "Livemode: no".
+
+        Three real fields off one object and no arithmetic. **vpay exposes no
+        aggregate anywhere** (`/dash/v1` is a cursor-paged list and a
+        get-by-id; there is no count, total or summary route), so a panel of
+        the kind that doc illustrates — delivery rates, spend across
+        providers — cannot be built honestly here, and inventing one is the
+        failure `CLAUDE.md` names third. The caption says so on the screen
+        rather than only here.
+
+        No `text-subtle-foreground` inside: the doc measures it at 4.41:1 on
+        this mesh, below AA, and that is the one tier the ground swallows.
+        `muted` is what the panel renders its own caption at and is what the
+        figures below use.
+      */}
+      <InstrumentPanel
+        title="At a glance"
+        caption="This payment only — vpay exposes no aggregates, so nothing here is a total."
+      >
+        <div className="flex flex-wrap gap-8" data-testid="at-a-glance">
+          <div>
+            <p className="text-caption text-muted-foreground">Amount</p>
+            <p className="font-mono text-metric font-semibold">
+              {formatAmount(intent.amount, intent.currency)}
+            </p>
+            <p className="text-caption text-muted-foreground">authorised</p>
+          </div>
+          <div>
+            <p className="text-caption text-muted-foreground">Status</p>
+            {status === null ? (
+              <p className="text-metric">{intent.status}</p>
+            ) : (
+              <PaymentStatusPill state={status} />
+            )}
+            <p className="text-caption text-muted-foreground">
+              {charge === null ? "no charge yet" : charge.provider_code}
+            </p>
+          </div>
+          <div>
+            <p className="text-caption text-muted-foreground">Charged</p>
+            <p className="font-mono text-metric font-semibold">
+              {charge === null
+                ? ABSENT
+                : formatAmount(charge.amount, charge.currency)}
+            </p>
+            <p className="text-caption text-muted-foreground">
+              {charge === null ? "one charge per intent" : charge.state}
+            </p>
+          </div>
+        </div>
+      </InstrumentPanel>
+
       <section aria-label="Summary">
         <h2>Summary</h2>
         <DetailList variant="divided">
