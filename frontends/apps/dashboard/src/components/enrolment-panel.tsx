@@ -76,8 +76,8 @@ export function EnrolmentPanel({ qrDataUrl, secret }: EnrolmentPanelProps) {
 
       <div role="status">
         <InlineBanner variant="warning">
-          This secret is shown once. It is not stored against your account
-          until you enter a code from it below.
+          This secret is shown once. It is not stored against your account until
+          you enter a code from it below.
         </InlineBanner>
       </div>
     </ScreenStack>

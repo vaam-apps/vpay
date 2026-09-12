@@ -591,9 +591,7 @@ describe("the controls do what the screen says", () => {
     // `@base-ui/react`'s button-trigger-plus-popup-listbox. A plain
     // `fireEvent.change` is how a payer's choice reaches it now; there is no
     // popup to open and no option to click-and-pointerdown any more.
-    const combobox = screen.getByLabelText(
-      DICTIONARIES.fr["locale.label"],
-    ) as HTMLSelectElement;
+    const combobox = screen.getByLabelText(DICTIONARIES.fr["locale.label"]);
     fireEvent.change(combobox, { target: { value: "en" } });
     expect(onLocaleChange).toHaveBeenCalledWith("en");
     // No anchor anywhere: a link to `?lang=en` would drop `location.hash`.
@@ -641,7 +639,7 @@ describe("the controls do what the screen says", () => {
       CHECKOUT_SCREENS["collect_msisdn"] as CheckoutState,
       "fr",
     );
-    const combobox = screen.getByRole("combobox") as HTMLSelectElement;
+    const combobox = screen.getByRole("combobox");
     const label = container.querySelector(`label[for="${combobox.id}"]`);
     expect(
       label,

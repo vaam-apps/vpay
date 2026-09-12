@@ -172,9 +172,7 @@ describe("themeStyleSheet", () => {
 
   it("scopes the override to the theme the app actually renders under", () => {
     expect(THEME).toBe("dark");
-    expect(themeStyleSheet("#1d4ed8")).toContain(
-      ':root[data-theme="dark"]{',
-    );
+    expect(themeStyleSheet("#1d4ed8")).toContain(':root[data-theme="dark"]{');
   });
 
   for (const hex of COLOURS) {

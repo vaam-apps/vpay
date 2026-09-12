@@ -149,7 +149,9 @@ backends/
   apps/         vpay-server                    (one musl → scratch image; `worker` is a subcommand)
   tests/        integration (testcontainers) · conformance (shared adapter suite) · webhook-receiver
 frontends/
-  packages/     @vpay/tokens · @vpay/ui (design system) · @vpay/api-client · @vpay/config
+  packages/     @vpay/tokens · @vpay/api-client · @vpay/config
+                (@vpay/ui, the in-repo design system, deleted 2026-09-12 —
+                 both apps compose the published @vaam-apps/ui instead)
   apps/         checkout (the payment page vpay serves) · dashboard (a scaffold, see below)
   tests/        e2e (Cypress)
 sdks/

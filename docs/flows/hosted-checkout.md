@@ -449,3 +449,29 @@ will catch violations when the real browser implementation is added. The
 theme's own tone palette is measured by `@vpay/ui`'s `theme-contrast.test.ts`,
 which compiles the stylesheet and verifies every rendered tone clears WCAG AA
 (4.5:1), including the error/info overrides at lines 887–899 above.
+
+**Updated 2026-09-12: `@vpay/ui` — the package every entry above from
+2026-09-07 onward describes — is deleted.** Both this app and the dashboard
+now compose the published `@vaam-apps/ui` instead (the maintainer's scope for
+this cutover: "both apps, delete `@vpay/ui` in this PR", not the checkout
+alone as some entries above anticipated). What changed for this page,
+concretely: `outcomes.axe.test.tsx` (jsdom, zero-violations-because-no-CSS,
+named above as a documented limitation) is deleted along with the
+`axeContrastViolations` helper only it called — its jsdom limitation was
+real and is not missed. `theme-contrast.test.ts` is deleted with the
+package; `outcome-contrast.test.ts` (same real-Tailwind, no-DOM method,
+already the pattern this page's own b1e entry names) is rewritten against
+the app's own compiled `globals.css` and the theme is now `dark`, not
+`bumblebee` — `src/config/theme.ts`'s runtime brand-colour retargeting
+(decision 3, 2026-09-12) survives unchanged in method, computing contrast
+against the new, darker ground. `LiveRegion` (named above, 2026-09-11) has
+no `@vaam-apps/ui` counterpart; `checkout-view.tsx` and `return-view.tsx`
+each carry a plain `<div aria-live="polite" aria-atomic="true">` again,
+faithful to the same markup but without the test `LiveRegion` used to carry
+guaranteeing a hostile caller cannot weaken those two attributes.
+`LocaleSwitch` moved to a native `<select>` (decision 8): `@vaam-apps/ui`'s
+own `Select` cannot be named by a visible `<label>`, and the control's
+French accessible name is exactly what `checkout-view.test.tsx` pins. See
+`docs/status/verification/2026-09-12.md` for what was run and measured, and
+[hosted-checkout/state-machine-and-outcomes.md](hosted-checkout/state-machine-and-outcomes.md)'s
+own 2026-09-12 entry for the outcome-colour vocabulary's new name.

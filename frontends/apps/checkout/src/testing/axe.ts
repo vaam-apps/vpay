@@ -70,11 +70,17 @@ export async function axeViolations(container: Element): Promise<axe.Result[]> {
  * this helper. Exported so that assertion can be written once and reused,
  * rather than recomputing `axe.run` a second time per test.
  */
-export async function axeEvaluatedRuleCount(container: Element): Promise<number> {
+export async function axeEvaluatedRuleCount(
+  container: Element,
+): Promise<number> {
   const results = await axe.run(container, {
     runOnly: { type: "rule", values: STRUCTURAL_RULES },
   });
-  return results.passes.length + results.violations.length + results.incomplete.length;
+  return (
+    results.passes.length +
+    results.violations.length +
+    results.incomplete.length
+  );
 }
 
 // `axeContrastViolations` (a jsdom `color-contrast` run) lived in the

@@ -110,7 +110,9 @@ function compositeOver(
 }
 
 /** 0-255 sRGB → linear-light, via `theme.ts`'s own transfer function on a synthesised hex string. */
-function srgb255ToLinear(rgb: [number, number, number]): [number, number, number] {
+function srgb255ToLinear(
+  rgb: [number, number, number],
+): [number, number, number] {
   const toHex = (v: number) =>
     Math.round(Math.min(255, Math.max(0, v)))
       .toString(16)

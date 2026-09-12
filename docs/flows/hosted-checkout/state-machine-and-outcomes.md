@@ -98,19 +98,30 @@ that status means "awaiting a payment method" rather than "this failed". The
 mapping was accurate and the screen was wrong: a payer whose payment failed
 read a grey box while a payer who cancelled read a red one. An operator's
 status palette is not a payer's outcome palette, so `@vpay/tokens` now carries
-both — `statusTone` unchanged, and `checkoutOutcomeTone` for these three
+both — ~~`statusTone` unchanged~~, and `checkoutOutcomeTone` for these three
 screens. _Updated 2026-09-07 (decision D4,
 [2026-09-07-ui-revamp.md](../../plans/2026-09-07-ui-revamp.md) §9):_ `canceled`
 now tones `warning`, not `error` — the design call this paragraph used to
 defer is taken, on the reasoning that a payer's own cancellation is not the
 same event as a payment that failed for a reason outside their control.
-`failed` still tones `error`. The token moved in `@vpay/tokens`
+`failed` still tones `error`. ~~The token moved in `@vpay/tokens`
 (`frontends/packages/tokens/src/index.ts`); `OutcomePanel`
 (`frontends/apps/checkout/src/components/screens.tsx`) already carries a
 `warning` entry in its `TONE_CLASS` lookup, so the colour renders correctly
 with no change to this app — the migration of that lookup onto `@vpay/ui`'s
 `Alert` component is separate work, not yet done (`docs/plans/2026-09-07-ui-
-revamp.md` §4.1).
+revamp.md` §4.1).~~ **Updated 2026-09-12, the `@vaam-apps/ui` cutover:**
+`statusTone` is deleted (zero consumers — the dashboard's own status colour
+now comes from `defineStatusSystem`, not a daisyUI tone name), so "unchanged"
+above no longer holds; `checkoutOutcomeTone` survives, unused by
+`OutcomePanel` but kept as the record of decision D4's tone-vs-hue mapping.
+`TONE_CLASS` is gone — deleted with `@vpay/ui`, not migrated onto it.
+`OutcomePanel` now passes `checkoutOutcomeVariant[kind]` (added alongside
+`checkoutOutcomeTone`, expressing the same D4 decision in `@vaam-apps/ui`'s
+own variant vocabulary — `"danger"|"warning"|"success"`, no `"error"`)
+straight into an `InlineBanner`'s `variant` prop, with a test in
+`tokens/src/index.test.ts` asserting the two tables cannot drift apart on
+which outcome is alarming.
 
 **A failed outcome also shows the rail's own words** where the API gave any.
 `last_payment_error.message` is rendered as _data_, under the translated

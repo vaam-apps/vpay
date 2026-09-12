@@ -64,11 +64,24 @@
  *   `{children, className}` and hard-codes `role="alert"`). The MSISDN
  *   field therefore composes `FormField` as a label+layout wrapper only (no
  *   `hint`/`error` props), and writes the hint paragraph and the error text
- *   as explicit children with their own ids and `role="alert"` written by
- *   hand — copying `FieldError`'s own class string rather than using the
- *   component, because `checkout-view.test.tsx` queries the error by
- *   `data-testid` and then reads its `role` off the SAME node, and
- *   `FieldError` cannot carry a `data-testid`. `aria-describedby` on the
+ *   as explicit children with their own ids, because
+ *   `checkout-view.test.tsx` queries the error by `data-testid` and then
+ *   reads its `role` off the SAME node, and `FieldError` cannot carry a
+ *   `data-testid`. **Updated 2026-09-12, reconciling with `verify-ui`'s new
+ *   7a-ii:** an earlier draft copied `FieldError`'s own caption class plus
+ *   its danger-hue text token by hand onto that node — a status colour
+ *   written directly in an app, which check 7a-ii now refuses for exactly
+ *   the reason `AGENTS.md` gives ("never inline a status colour in a
+ *   component"; the token is check 7a-ii's own `text-state-<hue>-fg`
+ *   family, not spelled out here contiguously on purpose — see that
+ *   check's own comment in `justfile` for the exact pattern it refuses).
+ *   The error text is an `InlineBanner variant="danger"`
+ *   instead, nested one level inside the identified node (`id`/`role`/
+ *   `data-testid` live on the wrapping element, matching `ReadyRedirect`'s
+ *   `role="alert"` + `InlineBanner` pairing above) — `InlineBanner` forwards
+ *   neither `id` nor `data-testid` (verified `inline-banner.js`: it
+ *   destructures only `{variant, children, className}`), so those identities
+ *   cannot live on the banner itself. `aria-describedby` on the
  *   input is wired by hand too — the association `@vpay/ui`'s `Field` used
  *   to do through context. This restores the exact order the old markup had
  *   (label, control, hint, error) rather than accepting `FormField`'s own
@@ -83,7 +96,16 @@
  * (replaced with an explicit `w-full` — the three payer-facing CTAs still
  * span full width, just via a class instead of a prop). `CheckboxLabel`
  * has no counterpart either; `CheckboxField` (below) is the closest
- * available primitive, not a port of it.
+ * available primitive, not a port of it. `Input` itself has no error/invalid
+ * variant at all (verified `input.js`: it accepts only `className` and
+ * passthrough props, no `tone`), and the only styling an app is allowed to
+ * reach for on a bad value — a raw `input-error` class — is itself a
+ * daisyUI component class check 7b now refuses in an app. The MSISDN field
+ * therefore renders no visual border change on an invalid value; `aria-invalid`
+ * is still set for assistive technology, and the `InlineBanner` error text
+ * below the field is the payer-visible signal. Named here rather than
+ * worked around, because there is no `@vaam-apps/ui` primitive this could
+ * legitimately compose into.
  *
  * Colour is never written down — it comes from the theme's own variables,
  * which `src/config/theme.ts` lets an operator retint at runtime, and
@@ -134,16 +156,26 @@ import type { RailChoices, SupportedRail } from "../lib/rails";
  * `<label for="…">`.
  *
  * This widens the TYPE to match what the component already does at
- * runtime, in one place, rather than an `as unknown as` cast repeated at
- * every call site below.
+ * runtime, in one place, rather than a cast repeated at every call site
+ * below. **A variable type ANNOTATION, not an `as unknown as` assertion
+ * (2026-09-12):** the assertion form flagged
+ * `@typescript-eslint/no-unnecessary-type-assertion` at this exact
+ * statement — correctly, for the statement in isolation, since assigning
+ * `VaamCheckboxField` to a same-shaped `const` needs no cast — but
+ * `--fix`ing it away breaks every call site below that passes `as`/`type`/
+ * `data-testid`, which JSX's excess-property check then refuses against the
+ * narrow, un-widened type (`tsc` catches it immediately: "Property 'as'
+ * does not exist on type '…CheckboxFieldProps'"). An explicit annotation
+ * widens the same way without asserting anything, so the rule has nothing
+ * to flag.
  */
-const CheckboxField = VaamCheckboxField as unknown as (
+const CheckboxField: (
   props: CheckboxFieldProps & {
     as?: "button";
     type?: "button";
     "data-testid"?: string;
   },
-) => ReturnType<typeof VaamCheckboxField>;
+) => ReturnType<typeof VaamCheckboxField> = VaamCheckboxField;
 
 /**
  * The heading every screen starts with.
@@ -254,7 +286,10 @@ export function SupportLine({
     return null;
   }
   return (
-    <p className="text-caption text-muted-foreground" data-testid="support-contact">
+    <p
+      className="text-caption text-muted-foreground"
+      data-testid="support-contact"
+    >
       {t("page.support", { contact: branding.supportContact })}
     </p>
   );
@@ -297,15 +332,12 @@ export function PaymentSummary({
         <p className="text-caption text-muted-foreground" data-testid="pay-to">
           {merchantLine(t, merchant, "page.pay_to", "page.pay_to_unnamed")}
         </p>
-        <p
-          className="text-metric font-semibold font-mono"
-          data-testid="amount"
-        >
+        <p className="font-mono text-metric font-semibold" data-testid="amount">
           <span className="sr-only">{t("page.amount_label")}: </span>
           {amount}
         </p>
         <p
-          className="text-caption text-muted-foreground wrap-anywhere"
+          className="text-caption wrap-anywhere text-muted-foreground"
           data-testid="reference"
         >
           {t("page.reference_label")}: {reference}
@@ -566,30 +598,24 @@ export function MsisdnForm({
                 aria-describedby={
                   problem === null ? hintId : `${hintId} ${errorId}`
                 }
-                className={problem === null ? undefined : "input-error"}
               />
-              <p
-                id={hintId}
-                className="text-caption text-muted-foreground"
-              >
+              <p id={hintId} className="text-caption text-muted-foreground">
                 {t("msisdn.hint")}
               </p>
               {problem === null ? null : (
                 // Not `<FieldError>`: its own `{children, className}` type
                 // has no `data-testid` and no `id`, and
                 // `checkout-view.test.tsx` queries this exact element by
-                // testid and then reads its `role` — they must be the same
-                // node, not a wrapper around one. `text-caption
-                // text-state-danger-fg` and `role="alert"` are copied
-                // verbatim from `form-field.js`'s own `FieldError`.
-                <p
-                  id={errorId}
-                  role="alert"
-                  className="text-caption text-state-danger-fg"
-                  data-testid="msisdn-problem"
-                >
-                  {t(problem)}
-                </p>
+                // testid and then reads its `role` off the SAME node — they
+                // must be one element, not a wrapper around one. `id`,
+                // `role` and `data-testid` therefore live on this plain
+                // `<div>`; `InlineBanner` carries the colour instead of a
+                // hand-copied danger-hue text token (see the file header),
+                // and it is nested one level in because it forwards neither
+                // `id` nor `data-testid` of its own.
+                <div id={errorId} role="alert" data-testid="msisdn-problem">
+                  <InlineBanner variant="danger">{t(problem)}</InlineBanner>
+                </div>
               )}
             </FormField>
             <MemoryOptIn
@@ -638,10 +664,14 @@ export function RedirectPrompt({
         <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
         <p className="text-muted-foreground">{t("state.redirecting_body")}</p>
         {problem === null ? null : (
-          <div role="alert">
-            <InlineBanner variant="danger" data-testid="redirect-problem">
-              {t(problem)}
-            </InlineBanner>
+          // `data-testid` moved onto this wrapping `<div>`, 2026-09-12:
+          // `InlineBanner` forwards neither `id` nor `data-testid` of its
+          // own (verified `inline-banner.js` — it destructures only
+          // `{variant, children, className}`), so the attribute written
+          // directly on it was silently dropped and never reached the DOM.
+          // Nothing queries it today, which is how that went unnoticed.
+          <div role="alert" data-testid="redirect-problem">
+            <InlineBanner variant="danger">{t(problem)}</InlineBanner>
           </div>
         )}
         <MemoryOptIn
@@ -784,7 +814,9 @@ export function OutcomePanel({
             className="text-caption text-muted-foreground"
             data-testid="provider-reason"
           >
-            <span className="font-semibold">{t("outcome.provider_said")}: </span>
+            <span className="font-semibold">
+              {t("outcome.provider_said")}:{" "}
+            </span>
             {reason}
           </p>
         )}

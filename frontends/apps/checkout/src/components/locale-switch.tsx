@@ -30,10 +30,15 @@
  * `<Label>` is `@vaam-apps/ui`'s own — it renders a real `<label>` and
  * spreads `htmlFor` straight onto it (verified `label.js`), so this is a
  * genuine component, not a hand-rolled substitute. The `<select>` itself
- * has no `@vaam-apps/ui` counterpart at all; `select select-bordered` is
- * daisyUI's own class for a native select, the same pair
- * `SelectTrigger` applies to its own trigger, kept here so the one control
- * on this page with no component still matches the theme.
+ * has no `@vaam-apps/ui` counterpart at all; `select` is daisyUI's own class
+ * for a native select, kept here so the one control on this page with no
+ * component still matches the theme. **The daisyUI 4 border modifier for
+ * this control is deliberately not applied (2026-09-12):** daisyUI 5 does
+ * not define it — the base class carries a border by default now — and
+ * `verify-ui` check 2 refuses that removed class in an app for exactly this
+ * reason (spelled out in full in that check's own comment, not repeated
+ * here on purpose — this file is itself inside the pathspec that check
+ * greps).
  */
 "use client";
 
@@ -57,7 +62,7 @@ export function LocaleSwitch({
       <select
         id={id}
         name="locale"
-        className="select select-bordered select-sm"
+        className="select select-sm"
         value={locale}
         onChange={(event) => onChange(event.target.value as Locale)}
       >

@@ -194,7 +194,9 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
                   <TableCell>
                     <Code>{refund.id}</Code>
                   </TableCell>
-                  <TableCell>{formatAmount(refund.amount, refund.currency)}</TableCell>
+                  <TableCell>
+                    {formatAmount(refund.amount, refund.currency)}
+                  </TableCell>
                   <TableCell>{refund.status}</TableCell>
                   <TableCell>{formatInstant(refund.created)}</TableCell>
                 </TableRow>
@@ -212,7 +214,8 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
           <ul>
             {detail.events.map((event) => (
               <li key={event.id}>
-                <span>{event.type}</span> <span>{formatInstant(event.created)}</span>
+                <span>{event.type}</span>{" "}
+                <span>{formatInstant(event.created)}</span>
               </li>
             ))}
           </ul>

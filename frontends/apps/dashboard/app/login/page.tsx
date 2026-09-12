@@ -35,14 +35,14 @@ export default async function LoginPage() {
         </h2>
         <div role="status">
           <InlineBanner variant="warning">
-            This container has no dashboard client registration, so it can
-            sign nobody in. Nothing is wrong with your account.
+            This container has no dashboard client registration, so it can sign
+            nobody in. Nothing is wrong with your account.
           </InlineBanner>
         </div>
         <p className="text-body text-muted-foreground">
           The operator of this deployment has to set:
         </p>
-        <ul className="flex flex-col gap-1 list-disc pl-5 text-body text-foreground">
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-body text-foreground">
           {problems.map((problem) => (
             <li key={problem.variable}>
               <Code>{problem.variable}</Code> — {problem.detail}

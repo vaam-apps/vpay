@@ -1478,8 +1478,25 @@ verify-ui:
     #        pass); className="select select-bordered" -> non-zero (daisyUI
     #        component, must fail); className="table-fixed" -> exit 0;
     #        className="table table-zebra" -> non-zero.
+    #
+    #        ONE exemption, added 2026-09-12: `locale-switch.tsx`. Decision 8
+    #        (`<SCRATCHPAD>/dashui-decisions.md`) forces a native `<select>`
+    #        there — `@vaam-apps/ui`'s own `Select` cannot be named by a
+    #        visible label (`SelectTrigger` destructures `{id, className,
+    #        children}` and spreads nothing else, so `aria-labelledby` never
+    #        reaches the rendered element) and `checkout-view.test.tsx`
+    #        asserts the control's accessible name comes from a visible
+    #        French label. With no `@vaam-apps/ui` primitive this can
+    #        legally compose into, daisyUI's own `select`/`select-sm` is the
+    #        only way left to theme it — a genuine library gap (the same
+    #        category `screens.tsx`'s own header names for `Input`'s missing
+    #        error variant), not a shortcut around one. Narrowed to this one
+    #        file, not to
+    #        `frontends/apps` generally: nothing else in either app has this
+    #        problem, and a wider exemption would swallow a real regression
+    #        the moment one appears.
     daisy_modifier_class=$'className=[{]?[^}]*[\'"`][^\'"`]*\\b(table|select|mask)(-(zebra|pin-rows|pin-cols|xs|sm|md|lg|xl|bordered|ghost|primary|secondary|accent|info|success|warning|error|squircle|hexagon|star|circle|triangle|half-1|half-2))?([\'"`]|[[:space:]]|$)'
-    if git grep -nE "$daisy_modifier_class" -- 'frontends/apps' ; then
+    if git grep -nE "$daisy_modifier_class" -- 'frontends/apps' ':!frontends/apps/checkout/src/components/locale-switch.tsx' ; then
       echo 'verify-ui: a daisyUI component class in an app — compose a @vaam-apps/ui primitive instead'; fail=1
     fi
     # Check 6 (the 200-line ceiling on every file in @vpay/ui) is DELETED,

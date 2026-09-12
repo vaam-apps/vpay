@@ -93,3 +93,36 @@ report arrived in, and the shape a fix could restore only half of. Added in
 this flow's review, 2026-09-11;
 [../plans/exp51-demo-tenant-notes/opus-review.md](../../plans/exp51-demo-tenant-notes/opus-review.md)
 carries what else that review found.
+
+**Restyled again, 2026-09-12: `@vpay/ui` (this page's first paragraph, above)
+was deleted from the repository, and the dashboard left it for the published
+`@vaam-apps/ui`.** So did the checkout, in the same change — the maintainer's
+own scope for this cutover was "both apps, delete `@vpay/ui` in this PR", not
+the dashboard alone.
+
+`@vaam-apps/ui` ships components but no layout or typography primitive at
+all — no `PageShell`, `Stack`, `Heading`, `Text` or `List` — so unlike the
+2026-09-07 restyle above, this one does not drive `styling_files` or
+`class_tokens_distinct` to zero: both apps now write layout classes
+directly, and `just verify-ui`'s old blanket "no `className` in an app" rule
+was replaced by three narrower ones for exactly that reason (a plain
+literal only, no raw status-colour token, a 60-character budget — see
+[../../status/gates.md](../../status/gates.md)'s `verify-ui` entry for the
+full derivation). `data-theme` moved `bumblebee` → `dark`: `@vaam-apps/ui`
+compiles one theme, registered under daisyUI's built-in name, and
+`src/layout.test.tsx` still pins the attribute directly for the same reason
+as before — a wrong value renders the page completely unthemed, silently.
+
+The two findings the 2026-09-07 review fixed both survive the cutover
+unchanged in substance: `<main>` is still in `app/layout.tsx` (now wrapping
+a `ScreenStack` rather than a `PageShell`), and the nav-honesty test still
+resolves every `href` — rendered and declared — against `app/**/page.tsx` on
+disk.
+
+`statusTone` — daisyUI semantic colour per status, unused after this cutover
+(its one consumer was `@vpay/ui`'s `StatusBadge`) — is deleted from
+`@vpay/tokens`. The dashboard's payment-status colour and glyph now come
+from `src/payment-status.ts`'s `defineStatusSystem` table, whose `label`
+field still reads `@vpay/tokens`'s `statusLabel`, so the operator-facing copy
+keeps one source. See `docs/status/verification/2026-09-12.md` for what was
+run and measured.

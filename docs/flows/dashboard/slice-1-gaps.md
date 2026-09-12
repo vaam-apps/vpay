@@ -281,10 +281,18 @@ constant catches a link rendered only in a branch a test never exercises, and
 the markup catches a link written straight into the JSX. Adding
 `{ href: '/webhooks' }` fails both.
 
-**Styling substrate** (exp26 Lane D, `docs/plans/2026-09-07-ui-revamp.md`
+~~**Styling substrate** (exp26 Lane D, `docs/plans/2026-09-07-ui-revamp.md`
 §4.2): `@base-ui/react` + Tailwind 4 + daisyUI 5 through `@vpay/ui`, theme
 `bumblebee`. Every page and every component composes `@vpay/ui`; there is not
-one `className` string anywhere under `app/` or `src/` outside the tests.
+one `className` string anywhere under `app/` or `src/` outside the tests.~~
+**Corrected 2026-09-12: `@vpay/ui` was deleted (the `@vaam-apps/ui`
+cutover) — both apps now compose the published `@vaam-apps/ui`**, which
+ships components but no layout or typography primitive at all, so this app
+now writes layout classes directly under `app/` and `src/`. `data-theme`
+moved `bumblebee` → `dark`. See
+[status-styling-and-demo.md](status-styling-and-demo.md)'s own 2026-09-12
+entry for the full account, including what `just verify-ui` refuses now that
+a `className` is legal again.
 The four "recipes" that lane compiled are now the components the pages render
 (`src/recipes/` → `src/components/`), and the sign-in recipe — one leg, no
 password control, because the auth decision was open when it was written — is

@@ -76,8 +76,11 @@ default:
   refused with a `WARN` rather than honoured, because honouring it would
   refuse every payment on the deployment.
 - **`primary_color` retints the theme at runtime.** daisyUI compiles a theme
-  into `--p: L% C H` custom properties, so one `:root[data-theme="bumblebee"]`
-  block in `<head>` is enough. `src/config/theme.ts` converts sRGB to OKLCh
+  into `--p: L% C H` custom properties, so one
+  ~~`:root[data-theme="bumblebee"]`~~ **`:root[data-theme="dark"]`
+  (2026-09-12, the `@vaam-apps/ui` cutover — `@vpay/ui` is deleted and this
+  app's theme moved with it, per decision 3: kept, retargeted)** block in
+  `<head>` is enough. `src/config/theme.ts` converts sRGB to OKLCh
   with Ottosson's matrices and daisyUI's own foreground rule — no colour
   library on a payment page — and its tests assert the output against values
   produced by **daisyUI's own converter** for six colours, so a drift is a

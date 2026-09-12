@@ -71,9 +71,8 @@ export default async function PasswordPage() {
       </h2>
       <div role="status">
         <InlineBanner variant="warning">
-          You signed in with the one-time password an operator printed.
-          Replace it before going any further — nothing else is reachable
-          until you do.
+          You signed in with the one-time password an operator printed. Replace
+          it before going any further — nothing else is reachable until you do.
         </InlineBanner>
       </div>
       <p className="text-body text-muted-foreground">

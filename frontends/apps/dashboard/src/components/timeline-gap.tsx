@@ -36,8 +36,8 @@ export function TimelineGap() {
         <Code>payment_intent.created</Code>,{" "}
         <Code>payment_intent.processing</Code>,{" "}
         <Code>payment_intent.canceled</Code>, <Code>charge.refunded</Code> and{" "}
-        <Code>charge.refund.updated</Code> — so this is not the whole history of a
-        payment.
+        <Code>charge.refund.updated</Code> — so this is not the whole history of
+        a payment.
       </InlineBanner>
     </div>
   );

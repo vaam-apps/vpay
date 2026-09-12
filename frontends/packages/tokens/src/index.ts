@@ -94,8 +94,8 @@ export const checkoutOutcomeVariant: Record<
  *
  * **As of 2026-09-12 this is this package's only `PaymentStatus` export.**
  * `statusTone` (daisyUI semantic colour per status) was deleted in the
- * `@vaam-apps/ui` cutover: its one consumer, `@vpay/ui`'s `StatusBadge`, is
- * being deleted with it, and nothing else read it. The dashboard's status
+ * `@vaam-apps/ui` cutover: its one consumer, `@vpay/ui`'s `StatusBadge`, was
+ * deleted with it, and nothing else read it. The dashboard's status
  * colour and glyph now come from
  * `frontends/apps/dashboard/src/payment-status.ts`'s `defineStatusSystem`
  * table, which reads `label` from here so operator-facing copy still has

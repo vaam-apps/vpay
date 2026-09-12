@@ -121,16 +121,21 @@
  *
  * **The contrast half of issue #73 itself is answered by
  * `frontends/apps/checkout/src/components/outcome-contrast.test.ts`,
- * not this file.** It reuses `@vpay/ui`'s `theme-contrast.test.ts`
- * machinery — real Tailwind, real daisyUI, real PostCSS compile, no DOM,
- * no browser, nothing for a `background-image` to block — against the
- * EXACT pairs `OutcomePanel` renders (confirmed against daisyUI 5.7.28's
- * own `alert.css`/`button.css`: a plain `color` on `background-color`,
- * nothing that math doesn't already model), for all three outcome kinds,
- * including `canceled`, which no browser has ever rendered at all.
- * Measured: succeeded (success) 5.09:1, failed (error) 4.61:1, canceled
- * (warning) 5.24:1, the forward button (primary) 5.53:1 — every one clears
- * AA (4.5:1). See that file for the full account and the `docs/flows/
+ * not this file.** **Updated 2026-09-12, the `@vaam-apps/ui` cutover:**
+ * `@vpay/ui` and its `theme-contrast.test.ts` machinery that file used to
+ * reuse are deleted; `outcome-contrast.test.ts` was rewritten, not
+ * re-pointed, against the app's own compiled `globals.css` (real Tailwind,
+ * real daisyUI, real PostCSS compile, no DOM, no browser, nothing for a
+ * `background-image` to block) — against the EXACT pairs `OutcomePanel`
+ * renders, `InlineBanner`'s alpha-composited fill included, not the opaque
+ * pair the old `Alert` painted. For all three outcome kinds, including
+ * `canceled`, which no browser has ever rendered at all. Measured against
+ * the new dark theme: succeeded (success) 11.30:1, failed (danger) 9.32:1,
+ * canceled (warning) 10.24:1, the forward button (primary) 16.34:1 — every
+ * one clears AA (4.5:1), by a wider margin than the old `bumblebee` theme
+ * did (5.09:1 / 4.61:1 / 5.24:1 / 5.53:1), which is expected of light text
+ * on a near-black ground rather than dark text on daisyUI's default
+ * `bumblebee`. See that file for the full account and the `docs/flows/
  * hosted-checkout.md` Status section for the record of both halves.
  *
  * Not covered by either file: whether a rendered glyph actually sits on
@@ -351,9 +356,13 @@ describe("the shop, paid on vpay's hosted page", () => {
       // No form: a redirect rail collects nothing here.
       cy.get('[data-screen="ready_redirect"]').should("be.visible");
       // `data-testid`, not `button.btn-primary`: exp26 (2026-09-07) made
-      // `Button` a `@vpay/ui` component whose primary look is a `cva`
-      // variant default rather than a class this spec should know the name
-      // of — see docs/plans/2026-09-07-ui-revamp.md §4.1.
+      // `Button` a component whose primary look is a variant default rather
+      // than a class this spec should know the name of — see
+      // docs/plans/2026-09-07-ui-revamp.md §4.1. Still true after `@vpay/ui`
+      // was deleted 2026-09-12: the checkout's `Button` is now
+      // `@vaam-apps/ui`'s own, whose `variant="primary"` default compiles
+      // to `btn btn-primary` through that package's internal `cn()`
+      // merge — a class name this spec still has no reason to know.
       cy.get('[data-testid="continue"]').click();
       // The confirm answers `next_action.redirect_to_url` and the page
       // navigates top-level to the rail. `cy.origin` for the rail follows.

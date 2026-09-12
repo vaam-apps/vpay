@@ -17,11 +17,17 @@
  * **What counts as shipping.** `app/`, `middleware.ts` and everything under
  * `src/components`, `src/lib` and `src/i18n` — `next build` reaches all of
  * them. Two file *kinds* are excluded, not two paths: `*.test.ts(x)`, which
- * vitest runs and Next never bundles, and `*.stories.tsx`, which only
- * `pnpm --filter @vpay/ui build-storybook` reads (its glob is
- * `frontends/packages/ui/.storybook/main.ts`). Both are excluded by suffix
- * so that a new one is covered by the same rule rather than by an
- * allowlist entry somebody has to remember to add.
+ * vitest runs and Next never bundles, and `*.stories.tsx`, which Storybook
+ * reads and `next build` never does. Both are excluded by suffix so that a
+ * new one is covered by the same rule rather than by an allowlist entry
+ * somebody has to remember to add. **Updated 2026-09-12:** the `*.stories.tsx`
+ * exclusion was, until this date, `pnpm --filter @vpay/ui build-storybook`
+ * reading `frontends/packages/ui/.storybook/main.ts`'s glob — both deleted
+ * in the `@vaam-apps/ui` cutover, and no `*.stories.tsx` file exists in this
+ * app today (a chip is filed to restore Storybook). The suffix exclusion is
+ * kept rather than removed: it costs nothing while unused, and the day
+ * Storybook returns, a story file is covered by this rule again without
+ * anyone having to remember to re-add it.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

@@ -517,3 +517,86 @@ network, a database or a binary this workspace does not build.
   the declaration scanner they share, 4 for the two report lines. Four of them
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](../plans/exp10-notes/opus.md).
+
+---
+
+## `verify-ui` — added after this archive, documented here for the first time
+
+**A pre-existing gap, not a new one.** `verify-ui` (`justfile`, a frontend
+`just` recipe rather than an `xtask` gate — the only entry on this page that
+is) was added by the 2026-09-07 exp26 UI revamp, after this page's own
+2026-09-11 archival snapshot was frozen. It has carried a row in
+`docs/status.md`'s gate table since, but never a history entry here — this
+is that entry, written on 2026-09-12 because the gate itself just changed
+shape, not merely narrowed.
+
+**What it checked, 2026-09-07 to 2026-09-12.** Seven numbered checks (nine
+greps) over `frontends/apps` and `frontends/packages/ui/src`, refusing a raw
+palette colour, a hard-coded colour value, a daisyUI-4 class daisyUI 5
+removed, a stray `!important`, a `.js`-suffixed relative import inside the
+shared package, any file in that package over 200 lines, and — the
+centrepiece — any `className=` written directly in an app at all. That last
+rule's own remedy was "add the missing primitive to `@vpay/ui`," a package
+every app composed for its layout and typography as well as its daisyUI
+components.
+
+**2026-09-12: `frontends/packages/ui` (`@vpay/ui`) was deleted.** Both apps
+now compose the published `@vaam-apps/ui`, which ships components but no
+layout or typography primitives at all — no `PageShell`, `Stack`, `Heading`,
+`Text`, `List`, `Link`, `Section`, `VisuallyHidden` or `Logo`. The old rule's
+escape hatch stopped existing, so a blanket "no `className` in an app" would
+have refused the layout classes both apps must now write to render at all.
+Two of the seven checks became **vacuous** rather than merely wrong: the
+200-line ceiling's `git ls-files` and the `.js`-import guard's `git grep`
+were both path-scoped to the deleted package, and a `git grep`/`git
+ls-files` against a pathspec matching no tracked file exits non-zero (empty
+result) inside `if …; then`, which reads as "no offence found" — the check
+would have gone on reporting success having measured nothing. Both were
+**removed**, not left: a check that cannot fail reads as coverage it no
+longer provides, which is worse than no check at all. The 200-line ceiling's
+own directive (the maintainer's 2026-09-11 "very few lines per component,
+max 200") is recorded as ungated rather than silently dropped — whether it
+transfers from a shared primitive package to app screens is undecided, and
+three shipping files already exceed it while this same change is still
+rewriting them (measured: 718, 336 and 279 lines the day the package was
+deleted).
+
+The `.js`-import guard was **replaced**, not merely deleted: its slot became
+the permanent regression guard for the deletion itself — nothing may import
+`@vpay/ui` by any spelling (`from`, `require`, `resolve`, a bare `@import`
+in CSS, or a `"@vpay/ui": "…"` manifest entry) and nothing may reach into
+`frontends/packages/ui` by filesystem path either, which is the one that
+would have caught `frontends/packages/config/src/eslint.js`'s Tailwind
+entry-point constant — a path, not a package name, so no import-specifier
+grep would ever have found it.
+
+The blanket `className=` ban became **three narrower rules**, each banning
+one of the three things the old rule was actually written to stop, now that
+layout classes are legal: a _computed_ class string (`cn(...)`, a template
+literal, a ternary — the signature of a hand-rolled variant system, which a
+literal string is not); a raw `text-state-<hue>-fg`/`bg-state-<hue>-bg`/
+`text-destructive` status-colour token, which `@vaam-apps/ui`'s theme
+exposes and the old palette-colour check has never been able to see because
+it is a theme token, not a palette one; and a class attribute over 60
+characters, which is the class-budget half of the same 2026-09-11 directive
+the 200-line ceiling carried the component-size half of. The daisyUI-4 and
+daisyUI-component-class checks survived with their pathspecs narrowed to
+drop the deleted package, and gained one narrow, named, dated exemption
+(`frontends/apps/checkout/src/components/locale-switch.tsx`) for the one
+control in either app with no `@vaam-apps/ui` primitive it could legally
+compose into — a native `<select>`, forced by decision 8, that must remain
+themed in daisyUI's own classes or render completely unstyled.
+
+**Ordering, and why the deletion could not be gated by anyone but the group
+that ran it last.** `frontends/packages/ui`'s presence or absence changes
+what several of these greps refuse, so the checks that assume it is gone had
+to land in the same change as the deletion, verified against a tree with the
+package present (checks 1/1b/2/3/4/7a-ii/7a-iii unaffected either way) and a
+tree without it (checks 5/5b/6/7a-i's replacement all begin refusing, or
+stop being vacuous, only once the directory is actually gone). Both states
+were measured before this entry was written.
+
+**Every mutation named above was run by hand, its exit code recorded, and
+reverted**, per this recipe's own header discipline
+(`justfile`, immediately above `verify-ui`'s definition) — a rule nobody has
+mutated is a claim, not a check.

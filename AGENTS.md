@@ -196,9 +196,23 @@ status. The authenticated status query is the only thing that moves money.
   2026-09-07:** this line named Headless UI, framer-motion and vaul, none of
   which is a dependency of any `package.json` in this repository, and no
   motion or sheet library is. `just verify-ui` is the gate on the daisyUI
-  half.
+  half. **Corrected again, 2026-09-12:** `frontends/packages/ui` (`@vpay/ui`)
+  was deleted — both apps now compose the published `@vaam-apps/ui` instead.
+  `@base-ui/react` leaves the repository entirely with it; `@vaam-apps/ui`'s
+  behaviour comes from Headless UI (`@headlessui/react`) and Radix
+  (`@radix-ui/react-dialog`), and its one theme registers under daisyUI's
+  built-in name `dark`, not `bumblebee` — `frontends/apps/checkout` keeps a
+  runtime brand-colour retarget on top of it (`src/config/theme.ts`), the
+  dashboard does not. `class-variance-authority` remains a real dependency
+  (of `@vaam-apps/ui` itself) but neither app calls it directly any more.
 - Status colour and copy come from `@vpay/tokens`. Never inline a status colour
   in a component — a status must not be green in one view and grey in another.
+  **Extended 2026-09-12:** this is now machine-enforced for the first time —
+  `just verify-ui`'s check 7a-ii refuses any of `@vaam-apps/ui`'s
+  `text-state-<hue>-fg`/`bg-state-<hue>-bg`/`border-state-<hue>-border`/
+  `text-destructive` tokens written directly in an app; status presentation
+  goes through `defineStatusSystem` (`StatusPill`/`StateChip`) or an
+  `InlineBanner` variant, both of which carry the hue for the caller.
 - The dashboard never holds a merchant API key. It calls `/dash/v1` server-side
   under an OIDC session. ([ADR-0008](docs/adr/0008-dashboard-scope.md))
 

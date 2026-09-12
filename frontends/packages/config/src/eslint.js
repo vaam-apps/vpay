@@ -157,7 +157,10 @@ const TESTING_IMPORT_PATTERNS = [
  * Conventional Next.js locations for a package's own Tailwind entry point,
  * relative to `tsconfigRootDir`, tried in order.
  */
-const TAILWIND_ENTRY_POINT_CANDIDATES = ["app/globals.css", "src/app/globals.css"];
+const TAILWIND_ENTRY_POINT_CANDIDATES = [
+  "app/globals.css",
+  "src/app/globals.css",
+];
 
 /**
  * Resolve the CONSUMING package's own Tailwind 4 entry point.
