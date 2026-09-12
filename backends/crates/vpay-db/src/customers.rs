@@ -1337,30 +1337,10 @@ async fn redact_stored_copies(
         .await
         .map_err(classify_write)?;
 
-    // The stored `POST /v1/customers` response, kept for 24 hours so a
-    // retried request answers what the original did. Matched on the body's
-    // own `object`/`id` rather than on the request path, because the path is
-    // stored as text and the body is the thing that actually holds the
-    // identifiers. Merchant-scoped as well, because the primary key is
-    // `(merchant_id, idempotency_key)` and this crate never reaches across a
-    // tenant even when the id it holds could only belong to one.
-    let sql = format!(
-        "UPDATE idempotency_keys SET response_body = COALESCE( \
-             (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
-              FROM jsonb_each(idempotency_keys.response_body) AS field(key, value)), \
-             response_body) \
-         WHERE merchant_id = $4 \
-           AND response_body->>'object' = 'customer' \
-           AND response_body->>'id' = $1"
-    );
-    sqlx::query(AssertSqlSafe(sql))
-        .bind(customer_id)
-        .bind(REDACTED)
-        .bind(&address)
-        .bind(merchant_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(classify_write)?;
+    // The stored `POST /v1/customers` responses. Its own function because
+    // `crate::idempotency` runs the same statement on the other side of the
+    // race — see [`redact_stored_responses_in_tx`].
+    redact_stored_responses_in_tx(tx, customer_id, merchant_id).await?;
 
     // `charges.payer_ref` is the payer's MSISDN as the rail was given it and
     // `payer_ref_masked` the display form of the same number. The marker
@@ -1428,6 +1408,110 @@ async fn redact_stored_copies(
         .map_err(classify_write)?;
 
     Ok(())
+}
+
+/// Rewrites every stored `POST /v1/customers` response that renders
+/// `customer_id` into the redacted object.
+///
+/// The response is kept for 24 hours so a retried request answers what the
+/// original did, which means the exact JSON that was answered — the payer
+/// included — sits in `idempotency_keys.response_body` for a day. Matched on
+/// the body's own `object`/`id` rather than on the request path, because the
+/// path is stored as text and the body is the thing that actually holds the
+/// identifiers. Merchant-scoped as well, because the primary key is
+/// `(merchant_id, idempotency_key)` and this crate never reaches across a
+/// tenant even when the id it holds could only belong to one.
+///
+/// # Why this is a function with two callers and not a line of
+/// [`redact_stored_copies`]
+///
+/// The erasure can only redact rows that exist when it runs, and a
+/// `POST /v1/customers/{id}` stores its response **after** its own
+/// transaction commits (`vpay_api::v1::payment_intents::PostRequest::finish`).
+/// An update that commits, is overtaken by an erasure and only then stores
+/// its response therefore wrote the pre-erasure object into a table this
+/// statement had already been through — issue #111, and it was re-readable
+/// by replaying that request's `Idempotency-Key` until `expires_at`.
+///
+/// So `crate::idempotency`'s `store` calls this too, under the payer's row
+/// lock, when the response it is asked to store is a customer's and that
+/// customer has since been erased. One statement, two callers, one definition
+/// of what a redacted stored body is: a second spelling of this rule is how
+/// the two sides of that race end up disagreeing about which keys are a
+/// payer's.
+///
+/// # Errors
+///
+/// [`DbError`] as [`classify_write`] maps it, for a statement that fails.
+pub(crate) async fn redact_stored_responses_in_tx(
+    tx: &mut sqlx::PgConnection,
+    customer_id: &str,
+    merchant_id: &str,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE idempotency_keys SET response_body = COALESCE( \
+             (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
+              FROM jsonb_each(idempotency_keys.response_body) AS field(key, value)), \
+             response_body) \
+         WHERE merchant_id = $4 \
+           AND response_body->>'object' = 'customer' \
+           AND response_body->>'id' = $1"
+    );
+    sqlx::query(AssertSqlSafe(sql))
+        .bind(customer_id)
+        .bind(REDACTED)
+        .bind(redacted_address_json())
+        .bind(merchant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(classify_write)?;
+
+    Ok(())
+}
+
+/// Answers "has this payer been erased?", and takes the share lock that makes
+/// the answer hold until the caller's transaction ends.
+///
+/// **`FOR SHARE`, not a plain read.** The question is being asked in order to
+/// write, so an answer that can go stale between the read and the write is no
+/// answer at all: an erasure committing in that gap is exactly the race issue
+/// #111 is about, one statement later. A share lock is compatible with other
+/// readers and with a second response being stored, and it conflicts with the
+/// `SELECT … FOR UPDATE` every erasure takes first ([`lock_for_update`], and
+/// the sweep's [`Customers::erase_idle`]) — so the two serialise in whichever
+/// order they arrive, and neither can slip between the other's read and its
+/// write.
+///
+/// # No row is `true`
+///
+/// A customer that has been **hard-deleted** leaves nothing behind, so
+/// absence has to read as erased rather than as live — the opposite default
+/// would leave the whole hard-delete branch of the erasure open. The other
+/// ways to reach `None` are another merchant's id and one that never existed,
+/// and for both of those the caller's body cannot be that customer's rendered
+/// object anyway: the redaction this answer gates is matched on the body's own
+/// `id`, so a `true` that redacts nothing is what they get.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails, including a lock wait that is
+/// cancelled.
+pub(crate) async fn erased_under_share_lock(
+    tx: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+) -> Result<bool, DbError> {
+    let erased: Option<bool> = sqlx::query_scalar(
+        "SELECT anonymized_at IS NOT NULL FROM customers \
+         WHERE merchant_id = $1 AND id = $2 FOR SHARE",
+    )
+    .bind(merchant_id)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(DbError::Query)?;
+
+    Ok(erased.unwrap_or(true))
 }
 
 #[async_trait::async_trait]

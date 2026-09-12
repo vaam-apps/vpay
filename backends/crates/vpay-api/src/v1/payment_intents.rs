@@ -33,7 +33,8 @@ use vpay_core::state::{IntentStatus, Transition, next_status};
 use vpay_core::{Currency, Money, ProviderFlow, ids};
 use vpay_db::{
     ChargeRow, Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome,
-    NewCharge, NewPaymentIntent, PaymentIntents, Repositories, TxOutcome, UnitOfWork as _,
+    NewCharge, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject, StoredResponse,
+    TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
 
@@ -393,8 +394,14 @@ pub(crate) async fn create(
         // saw it here has nothing to put on the page.
         .and_then(|row| object_response(&row, SecretRendering::Include));
 
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// A create request that has passed every rule, in the types the insert
@@ -613,8 +620,14 @@ pub(crate) async fn cancel(
     };
 
     let outcome = cancel_once(repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The `type` of the event a cancel emits.
@@ -858,8 +871,14 @@ pub(crate) async fn confirm(
         SecretRendering::Omit,
     )
     .await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The `payment_method_data[type]` key, and the `param` a caller sees when
@@ -2416,6 +2435,22 @@ impl PostRequest {
     /// response is returned rather than turned into a `500` — it simply
     /// cannot be replayed, and there is no claim of ours left to release.
     ///
+    /// # `subject`, and why the caller says what the body is about
+    ///
+    /// The response is stored **after** the handler's transaction committed,
+    /// which for `/v1/customers` is a window an erasure can land in: an
+    /// update that commits, is overtaken by a `DELETE` and only then stores
+    /// its response puts the pre-erasure payer back into
+    /// `idempotency_keys.response_body`, where replaying the key re-reads it
+    /// until `expires_at` — 24 hours (issue #111). `vpay_db::ResponseSubject`
+    /// is how the store is told which case this is, and the customer routes
+    /// pass the `cus_…` they already hold.
+    ///
+    /// It is a parameter rather than something this method works out from
+    /// `outcome` for the reason the store's own doc gives: a body sniffed for
+    /// things that look like a person is a rule that is wrong quietly. The
+    /// route knows; nothing here has to guess.
+    ///
     /// [release]: vpay_db::idempotency::release
     /// [`IdempotencyStoreOutcome::StaleClaim`]: vpay_db::IdempotencyStoreOutcome::StaleClaim
     pub(crate) async fn finish(
@@ -2424,6 +2459,7 @@ impl PostRequest {
         scope: &MerchantScope,
         claim_id: Uuid,
         outcome: Result<Response, ApiError>,
+        subject: ResponseSubject<'_>,
     ) -> Result<Response, ApiError> {
         let response = match outcome {
             Ok(response) => response,
@@ -2473,9 +2509,12 @@ impl PostRequest {
                 scope.merchant_id(),
                 self.key.as_str(),
                 claim_id,
-                status.as_u16(),
-                &value,
-                retry.as_deref(),
+                StoredResponse {
+                    status: status.as_u16(),
+                    body: &value,
+                    retry: retry.as_deref(),
+                    subject,
+                },
             )
             .await
         {

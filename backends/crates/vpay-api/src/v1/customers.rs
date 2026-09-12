@@ -87,7 +87,7 @@ use time::OffsetDateTime;
 use vpay_core::ids;
 use vpay_db::{
     CustomerAddress, CustomerListPage, CustomerPatch, CustomerRow, Customers, NewCustomer,
-    Repositories, TxOutcome, UnitOfWork as _,
+    Repositories, ResponseSubject, TxOutcome, UnitOfWork as _,
 };
 
 use crate::error::ApiError;
@@ -297,11 +297,16 @@ pub(crate) async fn create(
         created_at: OffsetDateTime::now_utc(),
     };
 
+    // The id is minted above rather than read back out of the response, which
+    // is what lets the store be told what this body is about without anything
+    // here inspecting it. See [`delete`] for the race the subject closes.
+    let subject = ResponseSubject::Customer { id: &new.id };
+
     let outcome = create_with_event(repositories.as_ref(), &new)
         .await
         .and_then(|row| customer_response(StatusCode::CREATED, &row));
 
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
+    post.finish(repositories.as_ref(), &scope, claim_id, outcome, subject)
         .await
 }
 
@@ -444,8 +449,14 @@ pub(crate) async fn update(
     };
 
     let outcome = update_once(&post, repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Customer { id: &id },
+    )
+    .await
 }
 
 /// The update itself, split out of [`update`] so "a failure from here still
@@ -837,8 +848,14 @@ pub(crate) async fn delete(
     };
 
     let outcome = delete_once(repositories.as_ref(), &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Customer { id: &id },
+    )
+    .await
 }
 
 /// The three endings [`delete_once`]'s transaction has.

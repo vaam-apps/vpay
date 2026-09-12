@@ -40,7 +40,7 @@ use time::OffsetDateTime;
 use vpay_core::{IntentStatus, ids};
 use vpay_db::{
     Charges, CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, PaymentIntents,
-    Repositories, SessionListPage,
+    Repositories, ResponseSubject, SessionListPage,
 };
 
 use crate::error::{ApiError, CHECKOUT_BASE_URL_MISSING, PUBLISHABLE_KEY_MISSING};
@@ -339,8 +339,14 @@ pub(crate) async fn create(
             session_response(StatusCode::CREATED, &row, Some(&base_url))
         });
 
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// Decodes the body, checks the deployment, checks every rule, and resolves
@@ -962,8 +968,14 @@ pub(crate) async fn expire(
     };
 
     let outcome = expire_once(repositories.as_ref(), &config, &scope, &id).await;
-    post.finish(repositories.as_ref(), &scope, claim_id, outcome)
-        .await
+    post.finish(
+        repositories.as_ref(),
+        &scope,
+        claim_id,
+        outcome,
+        ResponseSubject::Verbatim,
+    )
+    .await
 }
 
 /// The expiry itself, and the re-read that names which of the three things

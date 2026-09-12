@@ -122,7 +122,10 @@ pub use disabled_clients::DisabledClients;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};
 pub use health::Health;
-pub use idempotency::{Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome};
+pub use idempotency::{
+    Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, ResponseSubject,
+    StoredResponse,
+};
 pub use invoices::{
     InvoiceItemPatch, InvoiceItemRow, InvoiceListPage, InvoicePatch, InvoiceRow, Invoices,
     NewInvoice, NewInvoiceItem,
