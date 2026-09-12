@@ -95,8 +95,15 @@ directly the way `postgres_smoke.rs` reads `currencies.exponent`. A change to
 ### 1.2 Nothing collects a coordinate from a payer, and there is no route that could
 
 `rg -i "geolocation|getCurrentPosition|watchPosition"` over the repository
-returns **zero hits** — not in app code, not in tests, not in either SDK, not
-in the docs.
+returns **no hit in any source file** — not in app code, not in tests, not in
+either SDK. Its only two hits are prose: this sentence, and the same claim on
+[../../flows/customers/address-and-gps.md](../../flows/customers/address-and-gps.md).
+
+_This read "**zero hits** … not in the docs" until the review of 2026-09-12,
+and was false the moment it was written: the command it names returns the
+sentence making the claim. The substance was right and the wording was
+checkable and wrong, which is the combination this repository treats as worse
+than no figure at all._
 
 | Surface                                                              | What it collects from the person in front of it                                                                                                                                                                                                      |
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -424,9 +431,27 @@ it counted the address components itself over `self.address.*`, so anything
 else holding the same `CustomerAddress` printed it whole.
 
 All three now have hand-written impls, the component count lives in exactly one
-place (`CustomerAddress`'s own `Debug`, which `CustomerRow` now delegates to),
-and `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
-`vpay-db` asserts all four at once. It is negative **and** positive: a `Debug`
+place per crate (`CustomerAddress`'s own `Debug`, which `CustomerRow` now
+delegates to), and `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
+`vpay-db` asserts all four at once.
+
+**Extended by the review of 2026-09-12, because the first pass stopped one
+layer short.** The sentence above says this is "the hole #70 closed one layer
+up, left open on the way **in**" — and the way in does not begin at `vpay-db`.
+`vpay_api::v1::customers`' own request types still **derived** `Debug`:
+`CreateParams` and `UpdateParams` (the merchant's body, with `name`, `email`,
+`phone`), `AddressParam`/`AddressParams`, and `ValidCreate`. `AddressParams` is
+the worst of them, and it is the one a `vpay-db`-only fix cannot reach: its
+`latitude_microdeg` and `longitude_microdeg` are `Option<String>`, so a derived
+`Debug` printed a payer's position **as the merchant spelled it**, before
+`checked_microdeg` had parsed it — and therefore on exactly the rejection paths
+most likely to be logged. All five are hand-written now, `ValidCreate`
+delegates its address to `CustomerAddress`, and
+`no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
+in `vpay-api` asserts them the same way, in both directions. The exposure was
+**latent rather than live** — these types are private to the module and nothing
+formats one today — which is the same standing as the `NewCustomer` half, and
+the reason both are worth closing rather than neither. It is negative **and** positive: a `Debug`
 printing nothing would pass every substring search and fails the counts. The
 five mutations, the commands that were run and — as importantly — the ones that
 were **not** are in

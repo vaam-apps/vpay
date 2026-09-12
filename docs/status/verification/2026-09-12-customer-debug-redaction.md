@@ -5,9 +5,17 @@ Last verified: 2026-09-12, on `claude/issue-113`, for
 
 ## What this claims
 
-It claims one thing about behaviour: `vpay_db::CustomerAddress`, `NewCustomer`
-and `CustomerPatch` no longer print a payer's name, email, phone, street or GPS
-point through `Debug`, and a test fails if any of them starts again.
+It claims one thing about behaviour, on **both** sides of one seam:
+`vpay_db::CustomerAddress`, `NewCustomer` and `CustomerPatch`, and
+`vpay_api::v1::customers`' `CreateParams`, `UpdateParams`,
+`AddressParam`/`AddressParams` and `ValidCreate`, no longer print a payer's
+name, email, phone, street or GPS point through `Debug`, and a test in each
+crate fails if any of them starts again.
+
+The `vpay-api` half was **added by the adversarial review of 2026-09-12**, which
+found the first pass had stopped one layer short of its own stated scope. See
+"the second layer" below; that section also says why the exposure was latent
+rather than live, on both halves.
 
 Everything else on this branch is documentation, and the rest of issue #113 is
 **deliberately unbuilt** — see
@@ -60,6 +68,28 @@ still answerable with no personal data in the answer.
 | `cargo clippy -p vpay-db --all-targets -- -D warnings`         | **exit 0**, no warnings                             |
 | `cargo nextest run -p vpay-db` (real Postgres, testcontainers) | **188 tests run, 188 passed, 0 skipped**, 338 s     |
 
+Added by the review of 2026-09-12, for the `vpay-api` half. Exit codes were
+read from a file rather than from a terminal banner.
+
+| Command                                                 | Result                                           |
+| ------------------------------------------------------- | ------------------------------------------------ |
+| `cargo clippy -p vpay-api --all-targets -- -D warnings` | **exit 0**, no warnings                          |
+| `cargo test -p vpay-api --lib`                          | **exit 0** — 363 passed, 0 failed, **0 ignored** |
+| `cargo test -p vpay-db --lib`                           | **exit 0** — 78 passed, 0 failed, **0 ignored**  |
+
+`cargo test -p vpay-db --lib` is **not** a re-run of the 188-test row above,
+and the gap is not skipping. `--lib` runs the library target only: 78 cases,
+none of which needs a container. The other 110 live in `vpay-db`'s two
+**separate test targets**, `tests/postgres.rs` and `tests/repositories.rs`,
+which `--lib` does not build and `cargo nextest run -p vpay-db` does.
+
+The ignored count is given because a skipped test is not a passing test — and
+here it is genuinely zero in both runs: there is **no `#[ignore]` anywhere in
+`vpay-db`**, nor in `vpay-api`. (An earlier draft of this row said the
+container-backed cases were `#[ignore]`d out of `--lib`. That was wrong, was
+caught by reading the run rather than the row, and the real reason is the
+target split above.)
+
 `just fmt-check-web` failed first, on `decision.md` and `backend.md`, and was
 fixed with `prettier --write` rather than by editing around it.
 
@@ -90,6 +120,52 @@ The sixth direction needs no test. Restoring `#[derive(Debug)]` on any of the
 four is `E0119` — a `cargo check` failure, not a green suite — which is the
 same guard issue #70 recorded for `CustomerObject` and `AddressObject`.
 
+## The second layer, found by review and closed
+
+The first pass's own words were that this is "the hole [issue #70] closed one
+layer up, left open on the way **in**". The way in does not begin at `vpay-db`.
+`vpay_api::v1::customers` deserialises the merchant's body into `CreateParams`
+and `UpdateParams` (`name`, `email`, `phone`), nests the address in
+`AddressParam`/`AddressParams`, and hands `create` a `ValidCreate` to hold
+while the insert runs. All five still **derived** `Debug`.
+
+`AddressParams` is the one that matters most and the one a `vpay-db`-only fix
+cannot reach. Its `latitude_microdeg` and `longitude_microdeg` are
+`Option<String>` — deliberately, so that a merchant sending `4.061` is told the
+field is millionths of a degree rather than handed serde's "invalid type" — so
+a derived `Debug` printed a payer's position **as the merchant spelled it**,
+one frame before `checked_microdeg` parsed it, and therefore on precisely the
+rejection paths a service is most likely to log.
+
+All five are hand-written now; `ValidCreate` delegates its address to
+`vpay_db::CustomerAddress`, whose impl the first pass wrote.
+
+**What this is not.** The exposure was **latent, not live**, on both halves:
+every one of these types is private to its module, `ApiError` carries parameter
+_names_ and never values, and nothing in the repository formats one of them
+today. No payer's coordinate is known to have reached a log. The reason to
+close it is the same reason the first pass gave for `NewCustomer` — a `{:?}`
+that a future author adds is a payer's home in vpay's logs for the life of the
+log retention — and that argument does not stop at a crate boundary.
+
+`no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
+in `backends/crates/vpay-api/src/v1/customers.rs` asserts the four rendered
+types against one Douala fixture, negatively on seven literals (the coordinate
+as the **string** the wire carries) and positively on the component count, plus
+the `Cleared` spelling of `AddressParam`, which carries whatever scalar a
+merchant sent — `address=Douala` is a merchant reaching for `address[city]`.
+
+| #   | Mutation                                                                | The assertion that caught it                                                                                                                           |
+| --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M6  | `AddressParams`'s `Debug` prints the pair it just counted               | "`4061000` is in `AddressParams { redacted: {4 component(s) redacted}, latitude_microdeg: Some(\"4061000\"), longitude_microdeg: Some(\"9786000\") }`" |
+| M7  | `CreateParams` prints `self.phone` instead of its length                | "`237600000200` is in `CreateParams { phone: Some(\"237600000200\"), … }`"                                                                             |
+| M8  | `AddressParams`'s `Debug` prints **nothing at all** (the positive half) | "`AddressParams` has to say an address is present and how much of one, without saying what it is: `AddressParams`"                                     |
+| M9  | `#[derive(Debug)]` restored on `AddressParams`                          | `error[E0119]: conflicting implementations of trait Debug` — a `cargo check` failure, not a green suite                                                |
+
+Each was applied to this branch's head, run with
+`cargo test -p vpay-api --lib -- --exact`, and restored; the case was re-run
+green afterwards.
+
 ## The thin spot, named and not closed
 
 `the_sweep_deletes_an_idle_unreferenced_customer_and_anonymises_a_referenced_one`
@@ -106,6 +182,27 @@ It was not closed on this branch because it is a container-backed case in the
 integration binary, whose build is exactly what this branch was capped from
 running. **Adding a test that was never executed would be worse than naming
 one.**
+
+**The review of 2026-09-12 attacked this judgement and upheld it**, on evidence
+rather than on agreement. `anonymize` — the `UPDATE` that sets both coordinate
+columns `NULL` — has exactly **one** call site, `erase_in_tx`; and `erase_in_tx`
+has exactly **two**, `repository.rs`'s `DELETE` path and `customers.rs`'s
+`erase_idle`. So the sweep and the `DELETE` do not merely resemble each other,
+they run the identical statement, and
+`a_customer_with_payment_history_is_anonymised_rather_than_deleted` already
+asserts both columns `NULL` by name on the path that is tested. "Holds
+transitively" is therefore earned rather than hand-waved, and what is genuinely
+unasserted is narrow: the sweep's own wiring, with a coordinate present.
+
+The review also **declined to close it cheaply**, and the reason is worth
+recording. This module already uses container-free statement-text assertions
+(`the_event_redaction_names_the_identifiers_and_spares_the_merchants_data` says
+in as many words that it is "a statement-text assertion and not a behaviour
+one, deliberately"), so one asserting that `anonymize` NULLs both columns would
+have been easy and would have gone green. It would also have proved nothing the
+`DELETE` path's real-Postgres case does not already prove, while **looking**
+like it closed a gap the page names. That is the failure mode `CLAUDE.md` puts
+first. The gap stays open, and it stays a container-backed case.
 
 Smaller, in the same family: nothing asserts the two columns' Postgres **type**
 directly the way `postgres_smoke.rs` does for `currencies.exponent`. A change to

@@ -245,8 +245,8 @@ when a CHECK fires — wrote the payer's name, email, phone, street and GPS poin
 out in full. That is the same hole #70 closed one layer up, left open on the
 way **in**; `CustomerRow`'s guard did not cover it, and in fact depended on it,
 since the row counted the address components itself rather than delegating.
-All three have hand-written impls now, the count lives in one place, and
-`no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
+All three have hand-written impls now, the count lives in one place per crate,
+and `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
 `vpay-db` asserts all four types at once — negatively, on seven fixture
 literals the coordinate's digits included, and positively, so that an impl
 printing nothing fails too. Restoring any of the four derives is `E0119`, a
@@ -254,6 +254,13 @@ printing nothing fails too. Restoring any of the four derives is `E0119`, a
 what was and was not run, are in
 [../status/verification/2026-09-12-customer-debug-redaction.md](../status/verification/2026-09-12-customer-debug-redaction.md)
 — that page's first claim is that **`just ci` was not run on this branch**.
+The review of the same day carried the fix the rest of the way in:
+`vpay_api::v1::customers`' request types (`CreateParams`, `UpdateParams`,
+`AddressParam`/`AddressParams`, `ValidCreate`) derived `Debug` too, and
+`AddressParams` holds the coordinate as the **string the wire sent**, before
+`checked_microdeg` parses it. Five more hand-written impls and
+`no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
+close it; four mutations are on the verification page.
 
 **One thin spot named and not closed (2026-09-12).** The twelve-month sweep's
 own case,
