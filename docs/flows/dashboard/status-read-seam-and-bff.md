@@ -364,6 +364,19 @@ provider, the data provider and the cache; it no longer performs the read.
 whether this app should have a browser-reachable read surface at all, is
 still the maintainer's.
 
+**Narrower correction, 2026-09-12, closing issue #114.** RD5 is not wholly
+open: issue #114's own comment thread already has a maintainer ruling, dated
+2026-09-11, on the half of it the plan called a transport question — "proxy
+via Next.js… Server Actions are not pursued" — conditioned on "its own attack
+review as its own lane", which is exactly the exp55/exp56 review and the
+five-case browser proof above. That review found nothing left unfixed. What
+remains open is narrower than "is this surface acceptable at all": whether a
+page should actually _route a read through it from the browser_, which this
+document's own next section answers "not currently" — not because the
+maintainer said no, but because `just test-e2e` regressed when it was tried
+and the SSR shape was taken instead. Whether that stays the answer once the
+regression is fixed some other way is not decided by anything on record.
+
 **Gated by a unit test, not by a twenty-minute e2e.** Three cases in
 `src/dash/screens.test.tsx`, with a stub provider that **rejects** so that any
 call at all is the defect, and assertions that are deliberately synchronous
