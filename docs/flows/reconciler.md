@@ -56,7 +56,10 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 
 ## Status
 
-**Changed 2026-09-03 (Step 4): the loop exists, and it settles payments.**
+**Changed 2026-09-03 (Step 4): the loop exists, and it settles payments.
+Extended 2026-09-12 (issue #100) with the queue's own claim latency, measured
+and bounded — see the fourth bullet below; nothing in the loop changed,
+because the bound was met.**
 The poll ladder, the recovery table and the 24-hour escalation all run —
 against a real Postgres and a real WireMock rail, in
 `backends/tests/integration/tests/worker_{recovery,e2e}.rs`. What is still
@@ -81,6 +84,21 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
 - **The ladder above, wired.** `vpay_worker::poll_delay(attempt)` is indexed by
   `jobs.attempts - 1` (the claim increments the counter), and a rung is one
   `UPDATE jobs SET run_at = now() + delay`.
+- **And the queue's own latency is measured, not assumed (2026-09-12, issue
+  #100).** A rung says when a job _becomes_ claimable; what a worker then adds
+  before claiming it is `IDLE_SLEEP` (1 s) and nothing else. Measured with one
+  worker at `--worker-concurrency 1`, a backlog of eight, ten rounds, the
+  shipping housekeeping live: the last of the eight is claimed **1.028 s** after
+  the backlog commits at worst, **11.7 ms** at best, and all eight are walked
+  first-to-last in **under 30 ms** — because after a non-empty claim the loop
+  returns straight to `Jobs::claim` with no sleep at all. Two claim tasks
+  measure the same. `worker_claim_latency.rs` pins **3 s** for the claim and
+  **1 s** for the walk, and goes red both for a slower `IDLE_SLEEP` and for a
+  loop that sleeps per claimed job. The loop was not changed; the numbers, the
+  mutations and the one thing this leaves open (a single task runs one job at a
+  time, so a slow handler ahead of an arrival delays it by its whole duration)
+  are in
+  [../status/verification/2026-09-12-worker-claim-latency.md](../status/verification/2026-09-12-worker-claim-latency.md).
 - **The callback endpoint exists.** `POST /provider/{code}/callback`
   (`vpay_api::provider_callback`) is the route the section above describes,
   built 2026-09-04. It never changes state: it enqueues the charge's
