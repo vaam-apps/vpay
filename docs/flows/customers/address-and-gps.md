@@ -107,3 +107,45 @@ would never see. One flag over all eight columns in
 leaves it alone. Both SDKs carry the three states (`Option<Option<…>>`,
 `AddressParams | null | undefined`) and both prove them by asserting the
 **body**.
+
+---
+
+## Two questions this shape does not answer, and neither does anybody else yet (2026-09-12)
+
+_Added by [issue #113](https://github.com/vaam-apps/vpay/issues/113). The
+section above is the **storage** half and it is settled; these two are not, and
+they are **the maintainer's to take**. Nothing has been built in either
+direction, and that is on purpose — a privacy and consent question on a payment
+page is not a default an agent gets to pick._
+
+1. **Does the hosted checkout page ask a payer for their location at all?**
+   Whether it is optional, and what it is for: delivery, a fraud signal, or a
+   merchant record.
+2. **Does a merchant read back the coordinate at full precision, or a coarser
+   one by default?**
+
+The options for each, what each one costs in conversion, consent, regulatory
+exposure and implementation, what "coarser" is worth in metres at Cameroon's
+latitudes, and a recommendation for each clearly labelled as a recommendation,
+are written up in one place:
+**[../../plans/issue-113-notes/decision.md](../../plans/issue-113-notes/decision.md)**.
+
+Three facts from it that this page should carry on its own, because they are
+about the shape above rather than about the decision:
+
+- **Nothing anywhere captures a coordinate from a payer, and no route could.**
+  `navigator.geolocation` appears nowhere in this repository; the hosted
+  checkout collects one field (`msisdn`), the shop demo one optional `email`;
+  and the `/browser` surface a payer's page talks to has **no customer and no
+  address on it at all**. Every coordinate in vpay is a value a merchant's
+  server sent about their own payer.
+- **A merchant reads it back exactly as they sent it**, to any token carrying
+  `payments:read` that owns the customer, on both the retrieve and the list.
+  There is no `expand`, no field-level scope and no per-merchant setting —
+  `required_scopes` is method-based on every resource in vpay, so there is no
+  field-level authorisation anywhere to hang one on.
+- **The two questions are coupled, one way round.** While vpay never collects
+  the point, returning it to the merchant who wrote it is an echo. If a payer
+  ever supplies it, the same response becomes a disclosure by the party that
+  asked — so answering the first question with "yes" reopens the second
+  automatically, and answering the second first decides nothing durable.
