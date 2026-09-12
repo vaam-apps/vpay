@@ -79,6 +79,29 @@ except for their doc comment and one import (`@storybook/react` →
 `@storybook/react-vite`) — `CheckoutView`'s and `ReturnView`'s props did not
 change in the cutover, so this is a restoration rather than a rewrite.
 
+## A second silent failure, found by opening the artefact
+
+**`just build-storybook` exited 0 and produced a Storybook in which every
+single story rendered the red "React is not defined" panel.**
+
+The cause is the same JSX-runtime trap as the vitest suite's: this app's
+`tsconfig.json` says `"jsx": "preserve"` because Next requires it, Vite's
+esbuild reads the nearest tsconfig, and the stories import no React. The fix
+had been applied to `vitest.storybook.config.ts` alone — so
+`just test-storybook` passed all 22 stories while the **other** consumer of
+the same stories, the one a human actually opens, rendered none of them.
+Compiling is not rendering, and the build exits 0 either way.
+
+Nothing measured it. The browser suite was green, `build-storybook` was
+green, `index.json` had its 23 entries and the stylesheet had its theme. It
+was found by serving `storybook-static/` and looking at a screen.
+
+The setting lives in `.storybook/main.ts`'s `viteFinal` now, which
+`build-storybook` and `addon-vitest` both read through `configDir`, and the
+duplicate in the vitest config is deleted. One setting, one place, and the
+suite is the guard: deleting it from `main.ts` fails **all 22 tests** with
+`React is not defined` (measured, reverted), where before it failed none.
+
 ## What keeps it honest
 
 `frontends/apps/checkout/src/a11y-gate.test.ts` — jsdom, so it runs in
