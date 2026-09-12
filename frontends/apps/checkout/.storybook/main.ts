@@ -56,6 +56,29 @@ const config: StorybookConfig = {
    * stylesheet, which is the check that would have caught this on day one.
    */
   viteFinal(config) {
+    /**
+     * **The JSX runtime, set HERE so both pipelines share one setting.**
+     *
+     * This app's `tsconfig.json` says `"jsx": "preserve"` because Next
+     * requires it, and Vite's esbuild reads the tsconfig nearest the file it
+     * transforms — so it emits classic `React.createElement` for stories
+     * that import no React, and every one dies at render with
+     * `ReferenceError: React is not defined`.
+     *
+     * It was set in `vitest.storybook.config.ts` alone for one revision, and
+     * that is exactly long enough to learn why it belongs here: the vitest
+     * suite went green on all 22 stories while `just build-storybook` — the
+     * OTHER consumer of this config, and the one a human opens — produced a
+     * Storybook in which every single story rendered the red
+     * "React is not defined" panel. The build exits 0 either way, because
+     * compiling is not rendering. Found by opening the built artefact and
+     * looking at it, which is the only thing that could have found it.
+     *
+     * `main.ts` is read by `build-storybook` and by `addon-vitest` through
+     * `configDir`, so one setting here covers both and there is no second
+     * place for them to drift apart.
+     */
+    config.esbuild = { ...(config.esbuild || {}), jsx: "automatic" };
     config.resolve ??= {};
     const alias = config.resolve.alias;
     const entry = {

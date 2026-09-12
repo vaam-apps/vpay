@@ -315,7 +315,27 @@ export function PaymentSummary({
   livemode: boolean;
 }) {
   return (
-    <Card>
+    /*
+      `glow` — the instrument register at card scale, and the one place on
+      this page it applies.
+      `@vaam-apps/ui`'s "Surfaces and registers" doc draws the line by what
+      the reader is doing: a hairline for surfaces you work through, an
+      aurora for the one number you scan. This card holds the amount a payer
+      checks before approving — `text-metric`, already the largest thing on
+      the screen — and everything around it is a control rather than a
+      surface, so there is no second card for a glow to be diluted against.
+      "A glow on every card is a glow on none" is satisfied by there being
+      exactly one card.
+
+      **It carries no meaning, and here that is load-bearing rather than a
+      footnote.** This card renders on every screen the machine can be in,
+      unchanged — the same glow on `succeeded`, on `failed`, on the MSISDN
+      form. A payer cannot infer an outcome from it, which is the only
+      reason a coloured surface is safe in a system where colour means
+      status. The outcome is carried by `OutcomePanel`'s `InlineBanner`
+      variant, as it was.
+    */
+    <Card glow>
       <CardBody>
         {/*
           A paragraph, not a daisyUI `badge`. It was a badge for one
