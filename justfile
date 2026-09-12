@@ -2034,7 +2034,19 @@ expected_ignored := "0"
 # SQL against the schema, and the new one has to *declare* an incoherent
 # capability set through the real `ProviderAdapter` port to ask which layer
 # refuses it first. It is one test and it starts one container.
-expected_suites := "46"
+#
+# **46 -> 47 on 2026-09-12 (issue #100)**: one new binary,
+# `backends/tests/integration/tests/worker_claim_latency.rs`, which measures
+# what `vpay_worker::run_loop` costs a job that is waiting to be claimed and
+# pins an upper bound on it. Its own file rather than a case in
+# `worker_recovery.rs` or `worker_e2e.rs` because it is the only suite here
+# whose subject is *time*: it boots a loop with no rail at all (empty adapter
+# and rail maps, which is a tripwire and not a stand-in — see its header) and
+# reads the clock, and a latency case sharing a binary with a rail-driven one
+# would be measuring whatever that one left running. Two tests, one container
+# each, about 23 s together. Measured after adding it: `cargo nextest list
+# --workspace` gives **47** binaries, **1753** total, **0** ignored.
+expected_suites := "47"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
