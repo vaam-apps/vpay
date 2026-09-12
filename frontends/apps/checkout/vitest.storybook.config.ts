@@ -35,15 +35,16 @@ import { defineConfig } from "vitest/config";
  * file, where it reported 93 passing stories while checking none of them.
  */
 export default defineConfig({
-  /**
-   * This app's `tsconfig.json` sets `"jsx": "preserve"` because Next requires
-   * it, and Vite's esbuild reads the tsconfig nearest the file it transforms.
-   * Left alone it emits `React.createElement` for stories that import no
-   * React, and every one dies at render with `ReferenceError: React is not
-   * defined`. This is not a Next build, so the Next constraint does not apply
-   * to it.
-   */
-  esbuild: { jsx: "automatic" },
+  /*
+    No `esbuild.jsx` here on purpose. It lives in `.storybook/main.ts`'s
+    `viteFinal`, which `build-storybook` and this plugin both read through
+    `configDir` — so the setting cannot differ between the artefact a human
+    opens and the one axe measures. It was duplicated here for one revision
+    and that is how the divergence was found: this suite passed all 22
+    stories while the built Storybook rendered "React is not defined" on
+    every one of them. One setting, one place, and THIS suite failing is now
+    the signal that the build's JSX runtime is wrong.
+  */
   /**
    * **Every dependency the stories reach, declared up front.** Without this
    * the suite is a false green rather than a failure: vite discovers a
