@@ -2,7 +2,6 @@
 
 import { useList } from "@refinedev/core";
 import { InlineEmptyState, RouteSkeleton, ScreenStack } from "@vaam-apps/ui";
-import { useSearchParams } from "next/navigation";
 
 import { PaymentsFilters } from "../../../src/components/payments-filters";
 import { PaymentsPager } from "../../../src/components/payments-pager";
@@ -10,8 +9,42 @@ import { PaymentsTable } from "../../../src/components/payments-table";
 import { ReadFailure } from "../../../src/components/read-failure";
 import { PAYMENT_INTENTS } from "../../../src/dash/resource-name";
 import { failureFromError } from "../../../src/dash/failure";
-import { pagerHrefsFromCursors } from "../../../src/payments-query";
+import {
+  initialFailure,
+  initialQueryOptions,
+  type InitialList,
+} from "../../../src/dash/initial";
+import {
+  pagerHrefsFromCursors,
+  type PaymentsQuery,
+} from "../../../src/payments-query";
 import type { PaymentIntentObject } from "../../../src/server/api";
+
+export interface PaymentsScreenProps {
+  /**
+   * The filters and cursor this page was read with — `queryFrom(searchParams)`
+   * as the Server Component parsed them.
+   *
+   * **Not `useSearchParams()`, and that is load-bearing rather than a
+   * preference.** Next updates the URL *optimistically* during a `<Link>`
+   * navigation, so a hook reading it can see the next page's cursor one
+   * render before the next page's rows arrive. The query key would move
+   * first, and this screen would hand Refine the PREVIOUS page's rows as the
+   * new key's `initialData` — rows that, with no re-fetch to correct them,
+   * would then stand as the answer for that cursor. The repair is that the
+   * query and the rows arrive together, out of the one render that produced
+   * both. The URL is still where the query comes from; the server is simply
+   * the one thing reading it.
+   */
+  readonly query: PaymentsQuery;
+  /**
+   * The page the Server Component read on this request, or the refusal it
+   * met. Optional so the component tests can mount this screen against a
+   * stub provider with nothing handed in — which is the only way to reach
+   * the loading and client-error branches below.
+   */
+  readonly initial?: InitialList;
+}
 
 /**
  * The payments list, through Refine.
@@ -19,7 +52,7 @@ import type { PaymentIntentObject } from "../../../src/server/api";
  * # Why the URL is still the source of truth
  *
  * The filters and the cursor live in the query string, exactly as they did
- * when this was a Server Component, and this screen reads them rather than
+ * when this was a Server Component, and this screen renders them rather than
  * holding its own state. That is not inertia: a filtered list an operator
  * cannot send to a colleague is a worse tool, and every Cypress leg asserts
  * on a URL.
@@ -31,17 +64,22 @@ import type { PaymentIntentObject } from "../../../src/server/api";
  * returns. Refine's `useTable` offers offset paging over a `total`; using it
  * here would mean inventing a count, and RD3 (infinite scroll) is a product
  * decision nobody has taken.
+ *
+ * # The page is the SERVER's read, not this hook's
+ *
+ * `initial` is the page `app/(dash)/payments/page.tsx` read on this request,
+ * with the token that never leaves that process. It is handed to the hook as
+ * `initialData` rather than fetched again from the browser, which is what
+ * puts the rows in the very first paint and what stops this screen issuing a
+ * `/api/dash` request for data it was already given. `src/dash/initial.ts`
+ * carries the two measured defects that shape is the repair for. Paging and
+ * filtering are ordinary navigations, and the server reads those too.
  */
-export function PaymentsScreen() {
-  const params = useSearchParams();
+export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
+  const { status, createdFrom, createdTo, after, before } = query;
 
-  const status = params.get("status") ?? "";
-  const createdFrom = params.get("created_from") ?? "";
-  const createdTo = params.get("created_to") ?? "";
-  const after = params.get("after") ?? "";
-  const before = params.get("before") ?? "";
-
-  const { result, query } = useList<PaymentIntentObject>({
+  const serverFailure = initialFailure(initial);
+  const { result, query: listQuery } = useList<PaymentIntentObject>({
     resource: PAYMENT_INTENTS,
     filters: [
       { field: "status", operator: "eq", value: status },
@@ -50,20 +88,36 @@ export function PaymentsScreen() {
     ],
     meta: { after, before },
     pagination: { mode: "off" },
+    queryOptions: initialQueryOptions(initial),
   });
 
-  if (query.isLoading) {
+  if (serverFailure !== null) {
+    // The server met this refusal on this request and the cookie is
+    // untouched. It is rendered rather than re-read from the browser — see
+    // `initial.ts`: a `401` re-read through `/api/dash` reaches
+    // `authProvider.onError`, which signs the person out of a session the
+    // server had just decided to keep.
+    return (
+      <ScreenStack>
+        <h2>Payments</h2>
+        <PaymentsFilters values={{ status, createdFrom, createdTo }} />
+        <ReadFailure failure={serverFailure} />
+      </ScreenStack>
+    );
+  }
+
+  if (listQuery.isLoading) {
     return <RouteSkeleton rows={8} withFilterBar />;
   }
 
-  if (query.isError) {
+  if (listQuery.isError) {
     // An outage renders here and the session is untouched — `onError` only
     // signs anyone out on a 401. See `auth-provider.ts`.
     return (
       <ScreenStack>
         <h2>Payments</h2>
         <PaymentsFilters values={{ status, createdFrom, createdTo }} />
-        <ReadFailure failure={failureFromError(query.error)} />
+        <ReadFailure failure={failureFromError(listQuery.error)} />
       </ScreenStack>
     );
   }
@@ -109,10 +163,10 @@ export function PaymentsScreen() {
             decision; this screen keeps it.
           */}
           <PaymentsPager
-            {...pagerHrefsFromCursors(
-              { status, createdFrom, createdTo, after, before },
-              { newer: cursor?.prev ?? null, older: cursor?.next ?? null },
-            )}
+            {...pagerHrefsFromCursors(query, {
+              newer: cursor?.prev ?? null,
+              older: cursor?.next ?? null,
+            })}
           />
         </>
       )}

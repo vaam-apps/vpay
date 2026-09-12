@@ -8,8 +8,23 @@ import { notFound } from "next/navigation";
 import { PaymentDetailView } from "../../../../src/components/payment-detail";
 import { ReadFailure } from "../../../../src/components/read-failure";
 import { failureFromError } from "../../../../src/dash/failure";
+import {
+  initialFailure,
+  initialQueryOptions,
+  type InitialOne,
+} from "../../../../src/dash/initial";
 import { PAYMENT_INTENTS } from "../../../../src/dash/resource-name";
 import type { PaymentDetail } from "../../../../src/server/api";
+
+export interface PaymentScreenProps {
+  /** The `pi_…` id, unencoded. */
+  readonly id: string;
+  /**
+   * The payment the Server Component read on this request, or the refusal it
+   * met. Optional for the reason `PaymentsScreen`'s is.
+   */
+  readonly initial?: InitialOne;
+}
 
 /**
  * One payment, through Refine.
@@ -26,12 +41,34 @@ import type { PaymentDetail } from "../../../../src/server/api";
  *
  * Every other status is an outage and renders `ReadFailure` with the
  * session intact — `authProvider.onError` signs nobody out below `401`.
+ *
+ * # The payment is the SERVER's read, not this hook's
+ *
+ * `initial` is what `page.tsx` read on this request. It is handed to the
+ * hook as `initialData` rather than fetched again from the browser, so the
+ * detail is in the document at the `load` event rather than a skeleton that
+ * fills in later — which is the difference between
+ * `dashboard.cy.ts`'s masked-payer leg finding a charge and reporting that
+ * this merchant has none. See `src/dash/initial.ts`.
  */
-export function PaymentScreen({ id }: { id: string }) {
+export function PaymentScreen({ id, initial }: PaymentScreenProps) {
+  const serverFailure = initialFailure(initial);
   const { result, query } = useOne<PaymentDetail>({
     resource: PAYMENT_INTENTS,
     id,
+    queryOptions: initialQueryOptions(initial),
   });
+
+  if (serverFailure !== null) {
+    // A `404` never reaches here: `page.tsx` answers it with `notFound()` on
+    // the server, which is what keeps the two 404 bodies indistinguishable.
+    return (
+      <ScreenStack>
+        <h2>Payment</h2>
+        <ReadFailure failure={serverFailure} />
+      </ScreenStack>
+    );
+  }
 
   if (query.isLoading) {
     return <RouteSkeleton rows={10} />;

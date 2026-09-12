@@ -26,6 +26,7 @@
  */
 import type { DataProvider } from "@refinedev/core";
 
+import { refineCursor } from "./initial";
 import { PAYMENT_INTENTS, type DashResource } from "./resource-name";
 import type { PaymentIntentObject } from "../server/api";
 import type { PageCursors } from "../payments-query";
@@ -162,7 +163,11 @@ export function dashDataProvider(bffBase: string): DataProvider {
         // documented shape for "unknown", and it is honest here in a way a
         // guess from `data.length` would not be — see the plan's §2.4.
         total: 0,
-        cursor: { next: page.cursor.older, prev: page.cursor.newer },
+        // `refineCursor` rather than the inversion spelled out again: the
+        // server-rendered first page (`initial.ts`) has to say the same
+        // thing, and two transcriptions of "next is older" could disagree
+        // about which way a pager link walks.
+        cursor: refineCursor(page.cursor),
       } as never;
     },
 

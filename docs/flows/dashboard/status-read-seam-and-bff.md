@@ -307,3 +307,87 @@ Cypress legs assert on anchors).
 **Still one resource.** `/dash/v1` serves `payment_intents` and nothing else,
 so the rail has one entry. A console with more sections is what a backend
 exposes, not what a framework provides.
+
+## 2026-09-12, later — the browser-side read is withdrawn, measured
+
+The section above was written without `just test-e2e` having been run on this
+work. It was run. **`dashboard.cy.ts` failed eight of seventeen legs**, and
+both causes are the same decision: lanes 3 and 4 moved the two `/dash/v1`
+reads out of the Server Components and into the browser.
+
+**What the screenshots show**, not what the failures read like. The eight are
+one independent failure, one cascade and six casualties:
+
+1. `renders the masked payer as a dash` — the leg visits `/payments/{id}` and
+   reads `body` **once**, with no retry. At the `load` event the detail page
+   was `RouteSkeleton`, because `useOne` had not answered yet. It found
+   `[data-testid="detail-payer"]` on none of the four rows and reported "no
+   payment in this merchant's list has a charge" about a merchant whose list
+   held four. The failure screenshot is a blank viewport with the command log
+   showing `visit` / `get body` four times.
+2. `refuses the same browser fetch the moment the session cookie is gone` —
+   the leg aliases `GET **/api/dash/payment_intents*` **before** it visits the
+   page, clears the cookie, fetches once itself, and then waits on that alias.
+   With the page making a read of its own, `cy.wait` consumed the **page's**
+   request, which carried the cookie:
+   `expected vpay_dash_session=OgDPF… to not include vpay_dash_session`. The
+   leg died there — between its `cy.clearCookie` and the `cy.setCookie` that
+   restores the session — so the six legs after it ran in a signed-out
+   browser and failed on markup that was never the problem.
+
+Neither is the hypothesis the failure invites. **The session was never
+revoked**: `authProvider.onError`'s `{ logout: true }` never fired, because no
+read ever answered `401`. The cookie was simply cleared by a test that never
+reached the line restoring it.
+
+**The repair.** `src/dash/initial.ts`: both pages read `/dash/v1` on the
+server, through the same `src/dash/provider.ts` seam they always used, and
+hand the answer to `useList` / `useOne` as `initialData` with
+`refetchOnMount: false`. The first paint carries the rows again, and the
+browser issues no read for data it was handed. A refusal the server met is
+rendered with `enabled: false` rather than re-read — a `401` re-read through
+`/api/dash` would reach `onError`, whose answer is `{ logout: true }`, and
+would end a session `requireStaff` had deliberately kept (issue #88 item 2).
+The list screen also takes its query as a **prop** rather than from
+`useSearchParams()`: Next updates the URL optimistically during a `<Link>`
+navigation, so a hook reading it can move the query key one render before the
+rows arrive, and the previous page's rows would become that cursor's
+`initialData` with no re-fetch to correct them.
+
+**Say plainly what this costs.** This is §2.6's SSR alternative, and that
+section's own words for it are that it "gives up most of what Refine's hooks
+are for, because the first render is still a Server Component doing the
+fetch". Refine still owns the resource registry, the routing, the auth
+provider, the data provider and the cache; it no longer performs the read.
+**The BFF therefore still has no read a page issues** — the sentence in
+`frontends/apps/dashboard/README.md` § "Not built" is true again — and RD5,
+whether this app should have a browser-reachable read surface at all, is
+still the maintainer's.
+
+**Gated by a unit test, not by a twenty-minute e2e.** Three cases in
+`src/dash/screens.test.tsx`, with a stub provider that **rejects** so that any
+call at all is the defect, and assertions that are deliberately synchronous
+(`getBy`, never `findBy` — `findBy` is exactly the retry the browser leg does
+not have).
+
+| Mutation                                                            | Cases red                                    |
+| ------------------------------------------------------------------- | -------------------------------------------- |
+| drop `queryOptions: initialQueryOptions(initial)` from both screens | 3 of 3 (two on absent markup, one on a call) |
+| `refetchOnMount: false` → `true`, `initialData` kept                | 2 of 3, both on `Number of calls: 1`         |
+
+**Numbers.** `just test-e2e` **exit 0**: `checkout.cy.ts` 1/1,
+`dashboard.cy.ts` **17 passing, 0 failing** (no retried leg),
+`shop-hosted.cy.ts` 4/4, then the framed run 6/6 — 22 + 6, all specs passed.
+Before the repair, on the same machine and the same stack: exit 8,
+`dashboard.cy.ts` 9 passing, 8 failing. `pnpm --filter @vpay/dashboard test`
+**301 passing** (298 + 3), `typecheck`, `lint` and `next build` exit 0,
+`just verify-ui` exit 0.
+
+**One thing found and NOT fixed here.** `dashDataProvider.getList` sends
+`limit=10` to the BFF — Refine fills `pagination.pageSize` with its own
+default of 10 even under `mode: "off"`. It is inert: the BFF's `queryFrom`
+reads five parameter names and `limit` is not one of them, and
+`apiQueryString` always sends vpay `limit=25` (`PAGE_SIZE`). So the page size
+is unaffected — but the provider puts a number on the wire that nothing reads
+and that contradicts `PAGE_SIZE`, and it should either carry `PAGE_SIZE` or
+send nothing.

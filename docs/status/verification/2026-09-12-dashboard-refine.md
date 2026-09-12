@@ -192,3 +192,42 @@ Bundle: `/payments` and `/payments/[id]` are **306 kB** First Load JS, from
 235 kB. The three `/login` routes stay at **234 kB** — the route group scopes
 Refine to the signed-in pages, so a visitor who cannot sign in does not
 download a data framework. That is the plan's R10 measurement, taken.
+
+---
+
+## Correction, same day: `just test-e2e` was run, and it failed
+
+Everything above was written **without** `just test-e2e` having been run —
+the exp56 page this work sits on says so in as many words ("both remain open
+for whoever next runs `just test-e2e` for real"). It was run. On
+`63ad7953` it exited **8** with `dashboard.cy.ts` **9 passing, 8 failing**,
+against **17 passing** on `99580522`. Same machine, same stack, same recipe.
+
+**The cause is one decision with two consequences**, both measured from the
+Cypress failure screenshots rather than inferred:
+
+- the two `/dash/v1` reads moved into the browser, so the **first paint
+  carries no data** — `renders the masked payer as a dash` reads `body` once
+  without retrying and saw a skeleton for every row;
+- the pages therefore **issue `/api/dash` requests of their own**, and the BFF
+  legs alias that URL before they visit the page — so
+  `refuses the same browser fetch the moment the session cookie is gone`
+  waited on the page's own cookie-bearing request, failed between its
+  `cy.clearCookie` and its `cy.setCookie`, and left the six legs after it in a
+  signed-out browser.
+
+The session was never revoked and `authProvider.onError` never fired; no read
+answered `401` at any point.
+
+**The repair** is `src/dash/initial.ts`: both pages read on the server, as
+they did before Refine, and hand the answer to the hooks as `initialData`
+with `refetchOnMount: false`; a refusal the server met is rendered rather
+than re-read. That is §2.6's SSR alternative, taken knowingly — **Refine's
+hooks no longer perform the read**, and the BFF is back to having no read a
+page issues. The narrative, the mutation table and the numbers are on
+[../../flows/dashboard/status-read-seam-and-bff.md](../../flows/dashboard/status-read-seam-and-bff.md)
+§ "2026-09-12, later".
+
+`just test-e2e` after the repair: **exit 0**, `dashboard.cy.ts` **17 passing,
+0 failing**, 22 + 6 across both runs. Dashboard unit tests **301 passing**
+(was 298).
