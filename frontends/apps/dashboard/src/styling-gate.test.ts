@@ -48,6 +48,7 @@
  * non-zero match count before asserting what the matches are.
  */
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -97,12 +98,54 @@ describe("the compiled globals.css — the styling gate just ci cannot provide",
     expect(matches.length).toBeGreaterThan(0);
   });
 
-  it("--color-base-100 resolves to the theme's value, and to nothing else", () => {
+  it("every --color-base-100 the build emits is one the package itself declares", () => {
     const matches = [...compiled.matchAll(/--color-base-100:\s*([^;]+);/g)].map(
       (m) => m[1]?.trim(),
     );
-
     expect(matches.length).toBeGreaterThan(0);
-    expect(new Set(matches)).toEqual(new Set(["#0a0b0d"]));
+
+    /**
+     * **Derived from the package, not hardcoded — and that is the fix, not a
+     * relaxation.** This case asserted `new Set(["#0a0b0d"])` until
+     * 2026-09-12, when `@vaam-apps/ui@0.1.2` added an opt-in `light` theme
+     * (`dark` keeps `default: true`) and the build legitimately began
+     * emitting `#fcfcfd` as well. A hardcoded literal cannot tell that
+     * apart from the failure this case exists to catch.
+     *
+     * What it exists to catch is `themes: false` being dropped from
+     * `globals.css`, which lets daisyUI's own built-in themes emit their
+     * own `--color-base-100` — and daisyUI authors those in `oklch()`,
+     * while this package authors in hex. So reading the package's own
+     * theme.css for the permitted set is both version-proof and STRICTER
+     * than the literal was: a stock daisyUI value fails on the set
+     * membership, and the explicit `oklch` assertion below names the
+     * failure mode so a future reader does not have to infer it.
+     */
+    const themeCss = readFileSync(
+      createRequire(import.meta.url).resolve("@vaam-apps/ui/styles/theme.css"),
+      "utf8",
+    );
+    const declared = new Set(
+      [...themeCss.matchAll(/--color-base-100:\s*([^;]+);/g)].map((m) =>
+        m[1]?.trim(),
+      ),
+    );
+    expect(declared.size, "the package declares at least one").toBeGreaterThan(
+      0,
+    );
+    for (const value of matches) {
+      expect(
+        declared.has(value),
+        `${value} is not declared by @vaam-apps/ui — stock daisyUI has leaked in, which means themes:false is gone`,
+      ).toBe(true);
+    }
+    // The shipped default is still the dark one both apps pin with
+    // `data-theme`. A release that changed it would be a visual change to
+    // every screen and should not pass silently.
+    expect(matches, "the dark default is still emitted").toContain("#0a0b0d");
+    expect(
+      compiled.match(/--color-base-100:\s*oklch\(/g),
+      "daisyUI's own themes are still switched off",
+    ).toBeNull();
   });
 });

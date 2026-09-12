@@ -29,16 +29,29 @@ describe("the payments table", () => {
     // and a hard-coded string in the component is caught as a mismatch.
     // `INTENT` is "succeeded", `OTHER_INTENT` is "processing".
     render(<PaymentsTable rows={[INTENT, OTHER_INTENT]} />);
-    const pills = screen.getAllByRole("img");
-    expect(pills).toHaveLength(2);
-    expect(pills[0]).toHaveAccessibleName(
-      `succeeded — ${PAYMENT_STATUS_SYSTEM.succeeded.label}`,
-    );
-    expect(pills[1]).toHaveAccessibleName(
-      `processing — ${PAYMENT_STATUS_SYSTEM.processing.label}`,
-    );
+
+    // **The mechanism changed again with `@vaam-apps/ui@0.1.2`; the
+    // guarantee did not.** The pill was `role="img"` with a synthetic
+    // `aria-label` of `"<literal> — <label>"`, and this case read that name.
+    // 0.1.2 drops both deliberately, and its own note gives the reason: the
+    // `img` role flattens the subtree, so a pill's `detail` text rendered
+    // visually and was announced to nobody. The accessible name now falls
+    // out of the content — the visible label, plus an `sr-only` span
+    // carrying the literal. So the same two facts are asserted off the
+    // rendered text instead of off an attribute, and still read OFF the
+    // shared table rather than typed as literals.
+    for (const state of ["succeeded", "processing"] as const) {
+      const label = PAYMENT_STATUS_SYSTEM[state].label;
+      const pill = screen.getByText(label).parentElement;
+      expect(pill, `a pill rendering ${label}`).not.toBeNull();
+      // The label comes from the shared table...
+      expect(pill?.textContent).toContain(label);
+      // ...and the raw status is still announced alongside it.
+      expect(pill?.textContent).toContain(state);
+    }
     // Mutation note: point `processing`'s row at `succeeded`'s meta in
-    // `payment-status.ts` and this assertion must fail — it currently does.
+    // `payment-status.ts` and this assertion must fail — verified again on
+    // 2026-09-12 after the rewrite above.
   });
 
   it("renders a status this build cannot name as text, never as a coloured pill", () => {

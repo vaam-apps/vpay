@@ -179,8 +179,8 @@ importers:
   frontends/apps/checkout:
     dependencies:
       '@vaam-apps/ui':
-        specifier: ^0.1.1
-        version: 0.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
+        specifier: ^0.1.2
+        version: 0.1.2(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
       '@vaam-apps/vpay-stripe-js':
         specifier: workspace:*
         version: link:../../../sdks/stripe-js
@@ -276,8 +276,8 @@ importers:
   frontends/apps/dashboard:
     dependencies:
       '@vaam-apps/ui':
-        specifier: ^0.1.1
-        version: 0.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
+        specifier: ^0.1.2
+        version: 0.1.2(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
       '@vpay/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
@@ -2202,8 +2202,8 @@ packages:
     resolution: {integrity: sha512-+rmdgPA+EXkNgKYvHvFfhrs35utXbwaC5PGpDquSXcoXQDKUA5UjV0LmTucG/4JXkM31BTu4TilHtrN8IVBe8w==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
-  '@vaam-apps/ui@0.1.1':
-    resolution: {integrity: sha512-7iHQTU2cV/YX7P4h4t3EdggVBof3o4T8qphUaAIlUojPgBt3O+2ZMFCIvEIQSDoiID8E9SczGtpe8E2WP81xNQ==}
+  '@vaam-apps/ui@0.1.2':
+    resolution: {integrity: sha512-8cJnZAqkOE5ZzsgmDji3OEL0dqZ3McYbJveckUfwq5D9hgtcUAVS/Ycsy8VoxdyYYPxZdnyvxJPRvcEvJU83iQ==}
     engines: {node: '>=18'}
     peerDependencies:
       daisyui: ^5
@@ -6309,7 +6309,7 @@ snapshots:
       '@typescript-eslint/types': 8.69.0
       eslint-visitor-keys: 5.0.1
 
-  '@vaam-apps/ui@0.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)':
+  '@vaam-apps/ui@0.1.2(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(daisyui@5.7.28)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)':
     dependencies:
       '@headlessui/react': 2.2.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@radix-ui/react-dialog': 1.1.23(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
