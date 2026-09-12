@@ -55,6 +55,49 @@ export default defineConfig({
    * stories to satisfy a pipeline they are not compiled by.
    */
   esbuild: { jsx: "automatic" },
+  resolve: { dedupe: ["react", "react-dom"] },
+  /**
+   * **Every dependency the stories reach, declared up front.** Without this
+   * the suite is a false green: vite discovers `@base-ui/react`'s subpath
+   * entries while the run is already underway, re-bundles, and the modules
+   * loaded before the re-bundle keep a `null` React — so `SelectRoot`,
+   * `Button` and `RadioGroup` die with `Cannot read properties of null
+   * (reading 'useContext')` and vitest reports **"93 passed" with 34
+   * unhandled errors**, because a story that throws while rendering still
+   * counts as a passing test. axe never ran on those stories at all.
+   *
+   * It reproduces only from a cold dep cache, which is why it survived
+   * several local runs and was caught by CI — 24 errors on the `web` job of
+   * the first push of this branch (the count varies with load; 34 here, 7
+   * with a different `optimizeDeps` setting). `just test-storybook` now
+   * clears that cache before every run for exactly this reason: a local
+   * green that a warm cache produced is not a green.
+   *
+   * `resolve.dedupe` alone does not fix it (measured: 36 errors), and
+   * `optimizeDeps.exclude` makes it worse rather than better (8 test files
+   * failed outright, React `null` at `useRef`) — React is CJS, so excluding
+   * it from pre-bundling is what breaks the import. The fix is to pre-bundle
+   * everything, together, before the first story renders.
+   */
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      "@base-ui/react/button",
+      "@base-ui/react/checkbox",
+      "@base-ui/react/dialog",
+      "@base-ui/react/drawer",
+      "@base-ui/react/field",
+      "@base-ui/react/input",
+      "@base-ui/react/radio",
+      "@base-ui/react/radio-group",
+      "@base-ui/react/select",
+      "@base-ui/react/use-render",
+    ],
+  },
   test: {
     name: "storybook",
     browser: {

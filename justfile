@@ -118,7 +118,19 @@ build-storybook:
 #
 # Needs `just build-storybook` first? No — the vitest plugin builds the
 # stories itself through the same vite config. Run it on its own.
+#
+# THE CACHE IS CLEARED FIRST, AND THAT IS NOT TIDINESS. Vite's dep
+# pre-bundle cache made this suite report "93 passed" while 34 stories threw
+# `Cannot read properties of null (reading 'useContext')` during render and
+# axe never ran on any of them — a story that throws still counts as a
+# passing test, so only the unhandled-error count and the exit code gave it
+# away. It reproduces from a COLD cache only, so it survived several local
+# runs and was caught by CI, which always starts cold. Ten seconds a run is
+# the price of `just test-storybook` meaning the same thing here as it does
+# in the `web` job. `vitest.storybook.config.ts`'s `optimizeDeps.include` is
+# the actual fix; this is the guard on it.
 test-storybook: playwright-browser
+    rm -rf node_modules/.cache/storybook
     pnpm --filter @vpay/ui test-storybook
 
 # Chromium only; `--with-deps` is deliberately not passed, because it needs
