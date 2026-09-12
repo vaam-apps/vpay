@@ -16,7 +16,7 @@
     "test-storybook": "vitest run --config vitest.storybook.config.ts"
   },
   "dependencies": {
-    "@vaam-apps/ui": "^0.1.1",
+    "@vaam-apps/ui": "^0.1.2",
     "@vaam-apps/vpay-stripe-js": "workspace:*",
     "@vpay/tokens": "workspace:*",
     "next": "^15.5.25",

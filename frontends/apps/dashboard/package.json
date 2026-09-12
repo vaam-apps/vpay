@@ -12,7 +12,7 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@vaam-apps/ui": "^0.1.1",
+    "@vaam-apps/ui": "^0.1.2",
     "@vpay/api-client": "workspace:*",
     "@vpay/config": "workspace:*",
     "@vpay/tokens": "workspace:*",

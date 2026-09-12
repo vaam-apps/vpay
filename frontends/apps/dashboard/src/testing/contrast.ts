@@ -157,15 +157,60 @@ function srgb255ToLinear(
  * `transparent` itself (`neutral`/`success`) composites to exactly `over`,
  * which is correct: nothing is painted, so the ground shows through whole.
  */
+/**
+ * Which theme's declarations to read.
+ *
+ * **Required since `@vaam-apps/ui@0.1.2`, which registers two themes.** Every
+ * `--state-*` token is now declared twice — `--state-danger-fg` is `#fca5a5`
+ * under `dark` and `#a80f35` under `light` — and this function keyed a flat
+ * map by variable name, so the later block silently won. `outcome-contrast.
+ * test.ts` then compared the LIGHT foreground against a background
+ * composited over the DARK `--color-base-100`, a pair no screen paints, and
+ * reported the payment-outcome banners at 2.55-2.76:1 against AA's 4.5:1.
+ * Nothing was wrong with the theme; the harness could not represent two of
+ * them. The browser suite (`just test-storybook`), which measures painted
+ * pixels rather than tokens, passed those same screens throughout — which is
+ * how the two were told apart.
+ *
+ * A declaration is skipped when an enclosing selector pins a DIFFERENT
+ * theme. Unpinned declarations (`:where(:root)`) are kept for either, which
+ * is what the cascade does.
+ */
+export type ThemeName = "dark" | "light";
+
+function pinnedToOtherTheme(
+  decl: postcss.Declaration,
+  theme: ThemeName,
+): boolean {
+  let node: postcss.Node | undefined = decl.parent;
+  while (node !== undefined) {
+    if (node.type === "rule") {
+      const selector = (node as postcss.Rule).selector;
+      const pinned = [
+        ...selector.matchAll(/\[data-theme=["']?([\w-]+)["']?\]/g),
+      ].map((m) => m[1]);
+      if (pinned.length > 0 && !pinned.includes(theme)) {
+        return true;
+      }
+    }
+    node = node.parent;
+  }
+  return false;
+}
+
 export function themeColours(
   root: postcss.Root,
-  opts: { over?: [number, number, number] } = {},
+  opts: { over?: [number, number, number]; theme?: ThemeName } = {},
 ): Map<string, [number, number, number]> {
+  const theme: ThemeName = opts.theme ?? "dark";
   const layered = new Map<string, [number, number, number]>();
   const unlayered = new Map<string, [number, number, number]>();
   root.walkDecls(/^--/, (decl) => {
     const key = decl.prop.replace(/^--/, "").replace(/^color-/, "");
     if (key.endsWith("-border")) {
+      return;
+    }
+    if (pinnedToOtherTheme(decl, theme)) {
       return;
     }
     const parsed = parseCssColor(decl.value);
