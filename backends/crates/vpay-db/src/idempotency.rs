@@ -631,8 +631,11 @@ impl Idempotency for crate::repository::PgRepositories {
             // The row this transaction just wrote is a stored response for a
             // payer who is gone. `crate::customers`' own statement, so there
             // is one definition of what a redacted stored body is rather than
-            // this module's opinion of it.
-            crate::customers::redact_stored_responses_in_tx(&mut tx, id, merchant_id).await?;
+            // this module's opinion of it — scoped to `key`, because the row
+            // this write created is the only one it can have put the payer
+            // back into. See that function's `only_key` section.
+            crate::customers::redact_stored_responses_in_tx(&mut tx, id, merchant_id, Some(key))
+                .await?;
         }
 
         tx.commit().await.map_err(DbError::Query)?;

@@ -46,7 +46,8 @@ here; the rest is below, moved **verbatim**:
   neither"
 - [customers/privacy-and-erasure.md](customers/privacy-and-erasure.md) — no
   cross-merchant identity, the two shapes of `DELETE`, why an anonymised row is
-  not a soft delete, **and the two windows the erasure does not close**
+  not a soft delete, **and the window the erasure does not close** — which was
+  two until 2026-09-12, when issue #111 closed the first of them
 - [customers/retention-sweep.md](customers/retention-sweep.md) — the
   twelve-month sweep, and why `customer.deleted` is the only way a merchant
   learns
@@ -55,9 +56,13 @@ here; the rest is below, moved **verbatim**:
 - [customers/events.md](customers/events.md) — which transitions emit, and what
   deliberately does not
 
-**The erasure page is the one with the caveats.** Its "Two windows the erasure
-does not close" is the paragraph that bounds every privacy claim this document
-makes.
+**The erasure page is the one with the caveats.** Its "One window the erasure
+does not close, and one that used to be two" is the paragraph that bounds every
+privacy claim this document makes. _(Both sentences above named "Two windows the
+erasure does not close" until 2026-09-12 and went on naming it after issue #111
+renamed the heading: `verify-links` checks a destination path and never a
+heading, so a reference to a section that no longer exists is not a gate
+failure.)_
 
 ### `last_used_at` is not on the wire
 
