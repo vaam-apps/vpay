@@ -450,6 +450,96 @@ theme's own tone palette is measured by `@vpay/ui`'s `theme-contrast.test.ts`,
 which compiles the stylesheet and verifies every rendered tone clears WCAG AA
 (4.5:1), including the error/info overrides at lines 887–899 above.
 
+**Updated 2026-09-12, and superseded by the entry after it on the same day.**
+The two paragraphs below record a browser-level accessibility gate that
+existed for a few hours and the four defects it found on this page. It was
+built on `@vpay/ui`, which the next entry deletes, so **the gate and the fix
+are both gone**; they are kept here because the defects were real, because
+one of them was on the screen a payer meets, and because a measurement is not
+made wrong by being overtaken. The full record, including two findings that
+transfer to whoever restores Storybook, is in
+[../status/verification/2026-09-12-browser-a11y.md](../status/verification/2026-09-12-browser-a11y.md).
+
+**Updated 2026-09-12: the real browser the entry above said was "still
+unbuilt" now exists — and it failed this page.** That entry ended by naming
+what was missing: "**The real verification is in a real browser** —
+`cypress-axe` running against the `compose.e2e.yml` stack, plan §7 row 6
+(still unbuilt)." It is built, by a different route than the one named:
+`@storybook/addon-vitest` renders every Storybook story in a real Chromium and
+`@storybook/addon-a11y` runs axe-core 4.13.0 over each one, as `just
+test-storybook` and as a step in CI's `web` job. Storybook rather than Cypress
+for a measured reason — `shop-hosted.cy.ts` could never get a colour-contrast
+verdict out of this page at all, because daisyUI 5's `:root` scroll-lock rule
+carries an unconditional `background-image` and axe-core abandons the
+`color-contrast` rule under one, which three rounds of mutation in
+`outcome-contrast.test.ts`'s header record. A story renders inside
+`#storybook-root` with no such ancestor, and the rule returns a verdict.
+
+**The verdict on this page was a violation.** `Mtn Number Rejected` — the
+screen a payer sees when their MSISDN is refused — paints its
+`role="alert"` message in `text-error` at 12px: bumblebee's `--color-error`
+`#ff6266` on `#ffffff`, **2.92:1**, against WCAG AA's 4.5:1 for body text. It
+is the least readable text on a screen whose entire job is to tell someone
+what went wrong. Two `@vpay/ui` stories fail on the identical pair
+(`field.stories.tsx > Invalid`, `text.stories.tsx > Tones`), so the cause is
+the shared `text-error`, not this app.
+
+This is a **different pair** from the one the 2026-09-07 review fixed, and
+that is why nothing caught it earlier: that review corrected
+`--color-error-content`, the foreground `.alert-error` paints **on**
+`--color-error`, and both `theme-contrast.test.ts` and `outcome-contrast.test.ts`
+measure `--color-error` as a background. `--color-error` as a _foreground on
+base-100_ had never been measured by anything.
+
+**Not fixed here**, and the reason is the same one `@vpay/ui/src/styles.css`
+gives for recording its own `--color-error-content` change as the maintainer's
+delegate's decision of 2026-09-07: moving `--color-error` moves the
+payment-failure alert that two suites pin. The story carries
+`a11y: { test: "todo" }` — axe still runs and still reports it on every run,
+the run does not fail — with the measured ratio in a comment beside it, and
+`docs/status/frontend.md` carries the row. **A decision is owed; nothing about
+this screen has been quietly adjusted.**
+
+**Updated 2026-09-12: the rejection message is readable, and the fix is a
+theme token.** The entry above ends by saying a decision was owed on the
+2.92:1 `Mtn Number Rejected` screen. The maintainer's answer was to fix it,
+and it is fixed — **the story now passes axe in a real browser with no
+exemption**, and `a11y: { test: "todo" }` appears nowhere in this repository.
+
+The cause was never this app. daisyUI's `--color-<tone>` is a **fill** — the
+colour `.alert-error` paints as a background, with `--color-error-content` on
+top, which is the pair the 2026-09-07 review corrected and which
+`outcome-contrast.test.ts` pins. `text-error` is a different pair: it puts
+that same fill colour on `--color-base-100`, and bumblebee's error fill is
+2.92:1 on white. Nothing had measured that direction, which is why three
+`@vpay/ui` stories failed on the identical value.
+
+`@vpay/ui/src/styles.css` now defines `--color-error-ink`,
+`oklch(55% .191 22.216)` = `#c92d3a` — daisyUI's own hue and chroma, darkened
+only as far as AA needs plus a margin — at **5.36:1** on `base-100` and
+**4.91:1** on `base-200`. `--color-error` itself is **unchanged**, so nothing
+about the payment-failure alert this document spends three entries on has
+moved: the same background, the same `--color-error-content`, the same 4.62:1
+this page already records. The only thing that changed on this page is the
+colour of the `role="alert"` line telling a payer their MSISDN was refused,
+which went from `#ff6266` to `#c92d3a`.
+
+`frontends/packages/ui/src/theme-ink-contrast.test.ts` measures both
+directions from the compiled stylesheet on every run, so this does not depend
+on anybody remembering to run a browser. It also fails if a component writes
+`text-error` again, and it asserts `--color-error` is **still** unreadable on
+white — so if a daisyUI bump ever fixes it upstream, the extra token gets
+deleted rather than carried out of habit.
+
+**Where that leaves this page, stated plainly.** The entry above it announced
+a real browser finally checking these screens; the entry below it deleted the
+package that ran the check. Both are true and they land the same day. **As of
+this commit the checkout has no visual-review surface and no browser-level
+accessibility check.** `screens.axe.test.tsx` does not replace one — it runs
+in jsdom, which computes no colour, so it can never answer `color-contrast`
+either way. That is a named, accepted gap with a filed task, not an
+oversight, and it is a step backwards from the paragraph above it.
+
 **Updated 2026-09-12: `@vpay/ui` — the package every entry above from
 2026-09-07 onward describes — is deleted.** Both this app and the dashboard
 now compose the published `@vaam-apps/ui` instead (the maintainer's scope for

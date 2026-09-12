@@ -34,6 +34,12 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12.md](verification/2026-09-12.md) —
+  the `@vaam-apps/ui` cutover: both apps move off `@vpay/ui`, and it is
+  deleted along with its Storybook
+- [verification/2026-09-12-browser-a11y.md](verification/2026-09-12-browser-a11y.md) —
+  the browser a11y gate PR #133 built against `@vpay/ui`, the four contrast
+  violations it found, and the deletion that superseded it hours later
 - [verification/2026-09-11.md](verification/2026-09-11.md) —
   `claude/exp51-demo-tenant`, the header of `claude/exp45-worker-pool-bound`,
   and `claude/exp46-customer-address`

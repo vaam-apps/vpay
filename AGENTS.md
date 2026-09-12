@@ -49,6 +49,17 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
+One further gate runs in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict it: `just audit-web`.
+`just build-storybook` was a second until 2026-09-12, when `@vpay/ui` and
+its Storybook install were deleted in the `@vaam-apps/ui` cutover — a named,
+accepted gap, not an oversight. **The checkout has no visual-review surface
+and no browser-level accessibility check today**, and the jsdom axe suite
+does not replace one: it renders in no browser, so it computes no colour and
+can never answer `color-contrast`. Restoring Storybook in
+`frontends/apps/checkout` is a filed task; `justfile`'s `build-storybook`
+slot carries what a rebuild already knows, measured rather than guessed.
+
 ### 1. No test doubles in shipping processes
 
 No mock, fake, stub or dummy may be reachable from `vpay-server` — the one

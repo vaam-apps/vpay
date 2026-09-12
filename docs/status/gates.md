@@ -600,3 +600,48 @@ were measured before this entry was written.
 reverted**, per this recipe's own header discipline
 (`justfile`, immediately above `verify-ui`'s definition) — a rule nobody has
 mutated is a claim, not a check.
+
+<!-- Appended 2026-09-12, below the archived text rather than inside it: the
+     note at the top of this page says its body is the original and unedited. -->
+
+## 2026-09-12 — a thirteenth gate that existed for one day
+
+For a few hours on 2026-09-12 this repository had a gate that ran axe over
+every Storybook story in a real Chromium — `just test-storybook`, built on
+branch `claude/recursing-darwin-204853` ([PR #133](https://github.com/vaam-apps/vpay/pull/133)).
+**It is gone**, because the `@vaam-apps/ui` cutover that landed the same day
+deleted `@vpay/ui`, and that package was where Storybook, the stories' host
+and the gate all lived. It is recorded here rather than dropped, because what
+it measured is still true of this repository and the next attempt should not
+pay for it twice.
+
+It was never one of the twelve: it needed a ~115 MB Playwright Chromium the
+first time and `just ci` must pass offline, the same reason `helm-check` is
+excluded, so it ran in CI's `web` job beside `build-storybook`. The count in
+[../status.md](../status.md)'s gate table was unchanged at twelve then and is
+unchanged now.
+
+**What it found, in one run, none of it planted:** four WCAG AA contrast
+violations, one of them the checkout's MSISDN rejection message — the
+`role="alert"` line telling a payer their number was refused — at 2.92:1
+against AA's 4.5:1. Every other gate in this repository was green on that
+tree. They were fixed, and the fix is gone with the package; the two causes
+are general and are written down in `justfile`'s `build-storybook` slot for
+whoever rebuilds.
+
+**What it proved about gates generally**, which outlives it:
+
+- A CI-only gate needs a lock that runs inside `just ci`, or nothing anyone
+  runs locally notices it being switched off. That branch used a plain jsdom
+  test asserting the addon was still loaded, that a violation still **failed**
+  rather than warned, and that the set of stories opting out was exactly the
+  declared, measured ones.
+- **A story that throws while rendering still counts as a passing test.** The
+  suite reported "93 passed" with 24 unhandled errors and axe had run on none
+  of those 24. A green test count is not evidence that anything rendered.
+- That failure reproduced from a cold dependency cache only, so it passed
+  locally and failed on a fresh runner — CI caught it, this machine never
+  would have.
+
+The full record is
+[verification/2026-09-12-browser-a11y.md](verification/2026-09-12-browser-a11y.md).

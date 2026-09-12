@@ -102,6 +102,46 @@ build-web:
 # browser. See `docs/status/frontend.md` rows 17, 24, 43, 104 (struck
 # through, not edited away) and `docs/status/verification/2026-09-12.md`.
 
+# WHAT A RESTORE ALREADY KNOWS, measured on branch
+# `claude/recursing-darwin-204853` (PR #133) before this deletion landed and
+# superseded it. That branch built exactly this gate against `@vpay/ui` and
+# ran it; the code is unmergeable now, but four findings cost real time and
+# transfer unchanged to a rebuild in `frontends/apps/checkout`:
+#
+#   1. `@storybook/test-runner` does NOT work with Storybook 10.6.0. Its
+#      Jest 30 runtime rejects `module.register()`, which Storybook 10's
+#      `serverRequire` calls unconditionally to load `.storybook/
+#      test-runner.*` — measured, 30 suites failed, 0 tests ran. The config
+#      file is what triggers it, so there is no variant that both loads
+#      hooks and runs. Use `@storybook/addon-vitest` + `@vitest/browser`
+#      instead: it reuses this workspace's own vitest and runs the a11y
+#      check through `addon-a11y`'s own `afterEach`, so there is no second
+#      axe configuration to keep in step.
+#   2. DECLARE EVERY DEP IN `optimizeDeps.include`. Vite discovers a
+#      library's subpath entries mid-run, re-bundles, and modules loaded
+#      before the re-bundle keep a `null` React. The suite then reports
+#      "93 passed" with 24 unhandled errors, because A STORY THAT THROWS
+#      WHILE RENDERING STILL COUNTS AS A PASSING TEST and axe never ran on
+#      it. It reproduces from a COLD dep cache only, so it passes locally
+#      and fails on a fresh runner. `resolve.dedupe` does not fix it and
+#      `optimizeDeps.exclude` makes it worse.
+#   3. Clear `node_modules/.cache/storybook` in the recipe. Ten seconds, so
+#      a local green means what CI's green means.
+#   4. A CI-only gate needs a lock inside `just ci`, or nothing anyone runs
+#      locally notices it being switched off. That branch used a plain jsdom
+#      test asserting the addon is still loaded, that a violation still
+#      FAILS rather than warns, and that the set of stories opting out is
+#      exactly the declared, measured ones.
+#
+# It also found four real WCAG AA violations on its first run, one of them
+# the checkout's MSISDN rejection message. Those numbers were bumblebee's
+# and do NOT carry over — `@vaam-apps/ui` ships a different theme — but the
+# two CAUSES are general and worth re-checking: daisyUI's `--color-<tone>`
+# is a FILL, and using it as text (`text-error`) is a pair nothing measures;
+# and opacity COMPOUNDS, so a dimmed element inside a dimmed ancestor lands
+# somewhere neither call site shows you. See
+# `docs/status/verification/2026-09-12-browser-a11y.md`.
+
 # musl static binaries, as shipped
 build-dist:
     cargo build --profile dist --target x86_64-unknown-linux-musl -p vpay-server
