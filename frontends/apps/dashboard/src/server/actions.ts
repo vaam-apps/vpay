@@ -48,11 +48,13 @@ import {
 import { originRefusal } from "./csrf";
 import { decodePendingEnrolment, encodePendingEnrolment } from "./enrolment";
 import { completeAuthorizationCode } from "./oauth";
+import { refusalFor } from "./gate";
 import {
   clearSessionCookie,
   HOME_PATH,
   LOGIN_PATH,
   PASSWORD_PATH,
+  readSession,
   sessionToken,
   setSessionCookie,
   TOTP_PATH,
@@ -363,6 +365,40 @@ export async function changePassword(
  * cleared whatever vpay answered: a staff member who pressed the button must
  * end up signed out of this browser.
  */
+/**
+ * Whether the session is still live — Refine's `authProvider.check()`.
+ *
+ * **This is not `alreadySignedIn()`, and the difference is issue #88 item 2.**
+ * That function answers `false` for an outage as well as for a dead session,
+ * which is right for `/` — the door only decides which form to show. Here it
+ * would be wrong: Refine signs a person out on `authenticated: false`, so
+ * conflating "vpay is restarting" with "your session is over" would log every
+ * staff member out of a rolling deploy, which is the exact defect
+ * `refusalFor` exists to prevent.
+ *
+ * So the mapping is `refusalFor`'s, unchanged: a `401` — the one answer vpay
+ * gives for every session it refuses — is dead. **Everything else, including
+ * an unreachable vpay, keeps the session.** The screen renders its own
+ * failure; the cookie survives.
+ */
+export async function checkSession(): Promise<boolean> {
+  const { config } = dashboardConfig();
+  if (config === null) {
+    return false;
+  }
+  const token = await sessionToken();
+  if (token === null) {
+    return false;
+  }
+  const { session, failure } = await readSession(config, token);
+  if (session !== null) {
+    return true;
+  }
+  // `failure === null` cannot happen (a null session carries one), but if it
+  // ever does, keeping the session is the safe half of the trade.
+  return failure === null || refusalFor(failure) !== "sign-out";
+}
+
 export async function signOut(): Promise<void> {
   // Issue #88 item 4, and this one is the reason the check is per action
   // rather than per form: a sign-out is the action an `<img src>` or a link

@@ -57,6 +57,7 @@ import type {
   PaymentIntentObject,
 } from "../server/api";
 import { readDash } from "../server/dash-read";
+import { type DashResource } from "./resource-name";
 
 /**
  * The only resource `/dash/v1` serves.
@@ -64,10 +65,10 @@ import { readDash } from "../server/dash-read";
  * A `const` as well as a type, so that a caller naming the resource and this
  * module's own path building are one string rather than two that can drift.
  */
-export const PAYMENT_INTENTS = "payment_intents";
+export { PAYMENT_INTENTS } from "./resource-name";
 
 /** Every resource this app may ask for — there is exactly one. */
-export type DashResource = typeof PAYMENT_INTENTS;
+export type { DashResource } from "./resource-name";
 
 /**
  * What a read needs beyond its own arguments.

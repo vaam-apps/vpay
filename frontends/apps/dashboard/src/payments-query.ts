@@ -225,6 +225,33 @@ export function pagerHrefs(
   };
 }
 
+/**
+ * The same two hrefs, from cursors that have **already** been resolved.
+ *
+ * `pagerHrefs` above derives the cursors from a page of rows and `has_more`,
+ * including the backward-page inversion. When the caller is holding cursors
+ * the seam already resolved — which is every caller since the payments list
+ * began reading through Refine — deriving them a second time would be a
+ * second implementation of that inversion, and two copies of a rule this
+ * subtle is how they drift.
+ *
+ * Both functions end in the same `withCursor`, so the query-string shape and
+ * the filter-preserving behaviour cannot differ between them.
+ */
+export function pagerHrefsFromCursors(
+  query: PaymentsQuery,
+  cursors: PageCursors,
+): PagerHrefs {
+  return {
+    previousHref:
+      cursors.newer === null
+        ? null
+        : withCursor(query, "before", cursors.newer),
+    nextHref:
+      cursors.older === null ? null : withCursor(query, "after", cursors.older),
+  };
+}
+
 /** `/payments` with the filters kept and one cursor set. */
 function withCursor(
   query: PaymentsQuery,

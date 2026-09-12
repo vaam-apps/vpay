@@ -34,6 +34,9 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-dashboard-refine.md](verification/2026-09-12-dashboard-refine.md) —
+  the dashboard on Refine (plan lanes 3 and 4): one array for the rail and the
+  router, and the `401`-only sign-out rule carried into `authProvider`
 - [verification/2026-09-12-instrument-register.md](verification/2026-09-12-instrument-register.md) —
   `InstrumentPanel` on the payment detail and `Card glow` on the payer's
   amount, and the aggregate panel that could not be built honestly

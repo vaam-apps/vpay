@@ -132,8 +132,19 @@ reads, the boundary and the two boot refusals are built and proven
 browser signs in through the real OP and reads this merchant's payments
 (2026-09-07). **Not built: every other slice (2–6); every write, and therefore
 no `audit_log`; no sweep of expired sessions or authorization codes; no key
-rotation.** The BFF added on 2026-09-11 has no consumer, and Lane 3 of the
-Refine plan was declined rather than started.
+rotation.** ~~The BFF added on 2026-09-11 has no consumer, and Lane 3 of the
+Refine plan was declined rather than started.~~ **Corrected 2026-09-12:**
+lanes 3 and 4 are built — the payments list and detail render through Refine
+hooks, and `src/dash/resources.ts` replaced `nav.tsx`'s second list.
+~~the payments list and detail read through Refine hooks against that BFF,
+which is now its consumer~~ **— corrected again the same day, after
+`just test-e2e` was run for the first time on this work and failed eight legs
+of `dashboard.cy.ts`.** The **reads did not move to the browser**: both pages
+are Server Components that call `requireStaff()` and then read `/dash/v1`
+themselves, exactly as before Refine, and hand the answer to the hooks as
+`initialData`. The BFF is wired to the data provider and still has no read a
+page issues. Evidence, and the two defects the browser-side read produced, on
+[dashboard/status-read-seam-and-bff.md](dashboard/status-read-seam-and-bff.md).
 
 **The one thing a reader must not conclude from this document is that the
 dashboard is finished.** A staff member can sign in and read this merchant's

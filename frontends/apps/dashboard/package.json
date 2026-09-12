@@ -12,10 +12,14 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
+    "@refinedev/core": "5.0.12",
+    "@refinedev/nextjs-router": "7.0.5",
+    "@tanstack/react-query": "^5.81.5",
     "@vaam-apps/ui": "^0.1.2",
     "@vpay/api-client": "workspace:*",
     "@vpay/config": "workspace:*",
     "@vpay/tokens": "workspace:*",
+    "lucide-react": "^1.44.0",
     "next": "^15.5.25",
     "qrcode": "1.5.4",
     "react": "^19.0.0",
