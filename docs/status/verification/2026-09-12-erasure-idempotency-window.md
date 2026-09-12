@@ -210,3 +210,139 @@ serialised form. The one thing a reader of the old code will notice is that
 `PostRequest::finish` takes a fifth argument and every one of its seventeen
 call sites names it — fourteen `Verbatim`, three `Customer`. That verbosity is
 the point: a fourth customer route added next year has to say which it is.
+
+## The adversarial review of the same day, and the one thing it changed
+
+Everything above was written by the agent that made the change. This section is
+the review of it, on the same branch, and it is here rather than in a second
+file because a review that lands in its own page is a page nobody reads beside
+the claim it is about.
+
+### What was attacked and held
+
+Four mutations, each built and run against a real Postgres on this branch.
+
+| Mutation                                                                                | Result                                                                               |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Drop ` FOR SHARE` from `customers::erased_under_share_lock`, leaving a plain read       | `an_update_that_loses_the_race…` **FAILS**, with the payer's name in `response_body` |
+| The same, with the loop's rounds reversed so the hard-delete branch runs first          | **FAILS** on the hard-delete round too                                               |
+| Treat `ResponseSubject::Customer` exactly as `Verbatim` (the pre-fix behaviour)         | **FAILS**, byte-for-byte the failure recorded above                                  |
+| The same, rounds reversed                                                               | **FAILS** on the hard-delete round too                                               |
+| Redact the response the racing request is **answered** with, as well as the stored copy | **FAILS** at the live-response assertion, `customers.rs:2290`                        |
+
+The first of these is the one worth naming. The share lock is the half of the
+argument a reader is most likely to take on trust, and it is **not** taken on
+trust: the store's read races the erasure's `FOR UPDATE` for the row the
+update's own transaction has just released, and a plain read wins that race and
+answers "not erased". The lock is what loses it. The recorded mutation ("treat
+`Customer` as `Verbatim`") removes the lock and the redaction together; this
+one removes only the lock, and the case still goes red.
+
+Both rounds were checked separately because the case `panic!`s on the first
+round that fails, so a single mutated run can only ever demonstrate one of
+them — the claim "both rounds fail" above is true, and was not observable in
+the run that was quoted for it.
+
+Also checked, and found to be as described: every erasure path takes
+`FOR UPDATE` on the payer's row first and there are exactly two
+(`vpay_api::v1::customers::delete` through `lock_customer_for_update`, and the
+retention sweep's `Customers::erase_idle`); no `DELETE FROM customers` exists
+outside CrateStack's `hard_delete`, which runs inside the locked transaction;
+the pool sets no isolation level, so `FOR SHARE` behaves as the argument
+assumes under READ COMMITTED; three customer routes write a customer body and
+`/v1`'s other objects render a `cus_…` and no payer identifier; the
+interpolation audit really does still count **61** sites (66 `AssertSqlSafe(`
+occurrences in `vpay-db/src`, five of them inside `sql_audit.rs`'s own needles
+and messages) with `ALLOWED_NON_CONSTANTS` untouched at two entries; and
+nothing in the change implements any part of the merchant-copy decision — no
+`customer.redacted` type exists anywhere in the tree, and the diff adds no
+migration, column, endpoint, dashboard surface or window constant.
+
+`PostRequest::finish` at **81 lines** was left at 81. It is a linear sequence
+with no nesting and it grew by one parameter and a four-field struct literal;
+splitting it to get under an advisory threshold would move lines rather than
+remove them.
+
+### What did not hold: the store redacted more than the row it wrote
+
+Four places — the commit message, `idempotency`'s module comment,
+`flows/customers/privacy-and-erasure.md` and this page — say the store redacts
+**the body it just stored**. It did not. It ran the erasure's own statement,
+whose `WHERE` is `merchant_id` plus the body's `object`/`id`, so it rewrote
+every stored response naming that payer across the whole merchant.
+
+That is not a leak, and the race is closed either way. It is three other
+things:
+
+- **an unbounded cost on a path any caller can reach.** The customer arm runs
+  whenever the payer is gone, and "gone" includes _never existed_: a
+  `POST /v1/customers/{cus_that_is_not_real}` answers `404`, and a `404` is a
+  `4xx`, so it is stored. Each one scanned every key that merchant had used in
+  the last 24 hours, so the cost of one request grew with the number of
+  requests before it, and the caller chooses how many;
+- **a deadlock that did not exist before.** The statement takes a row lock on
+  every match. Two stores for the same erased payer each hold the row they
+  wrote and scan towards the other's, in whatever order the plan reads them.
+  Postgres would abort one; the transaction rolls back, so the payer stays
+  redacted and what is lost is the response, not the guarantee. Not staged —
+  the mechanism is the finding;
+- **a wider claim than four documents make.**
+
+`redact_stored_responses_in_tx` now takes `only_key: Option<&str>`, in the same
+statement (`AND ($5::TEXT IS NULL OR idempotency_key = $5)`, so the audit still
+counts 61 and the two sides of the race still cannot spell the redaction
+differently). The erasure passes `None` and means every copy. `store` passes
+`Some(key)` and fixes the row it wrote, which is the only row it can have put
+the payer back into: everything older was either swept by the erasure under its
+`FOR UPDATE`, or belongs to another `store` answering for itself under the same
+share lock.
+
+Both directions are pinned by a mutation:
+
+| Mutation                                                                 | Result                                                                                                                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `store` passes `None` — equivalently, the narrowing is reverted          | nothing fails; this is a cost and a lock-footprint change, not a behavioural one                                                                 |
+| The **erasure** passes `Some("arm-i111r-no-such-key")` instead of `None` | `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table` **FAILS**, naming five literals surviving in `idempotency_keys.response_body` |
+| ` FOR SHARE` dropped, on top of the narrowing                            | `an_update_that_loses_the_race…` still **FAILS**                                                                                                 |
+
+The first row is stated rather than hidden: **no test distinguishes the narrow
+scope from the wide one**, because the difference is which rows are locked and
+scanned and not which rows end up redacted. The argument for it is the one
+above, and the evidence that it did not break anything is the third row plus
+the suites below.
+
+### Also fixed: two references to a heading that no longer exists
+
+`flows/customers.md` named the erasure page's "Two windows the erasure does not
+close" twice — in the directory entry and in the sentence that tells a reader
+which section bounds every privacy claim on the page. The commit renamed that
+heading to "One window the erasure does not close, and one that used to be two"
+and left both references behind. `verify-links` checks a destination path and
+never a heading ([AGENTS.md](../../../AGENTS.md) says so), so this was not a
+gate failure and would not have become one.
+
+### Measured, after the review's changes
+
+| Command                                                            | Result                                |
+| ------------------------------------------------------------------ | ------------------------------------- |
+| `cargo fmt --all --check`                                          | exit 0                                |
+| `cargo clippy -p vpay-db -p vpay-api --all-targets -- -D warnings` | exit 0                                |
+| `cargo test -p vpay-db --lib`                                      | **77 passed, 0 ignored**              |
+| `cargo test -p vpay-api --lib`                                     | **362 passed, 0 ignored**             |
+| `cargo nextest run -p vpay-tests-integration --test customers`     | **24 passed, 0 skipped** (64.073 s)   |
+| `cargo nextest run -p vpay-db --test repositories`                 | **106 passed, 0 skipped** (232.151 s) |
+| `cargo nextest run -p vpay-tests-integration --test invoices`      | **16 passed, 0 skipped** (37.119 s)   |
+| `cargo xtask verify-links`                                         | ok — 1489 links in 316 files          |
+| `cargo xtask verify-status`                                        | ok — 1 unimplemented item, declared   |
+| `just fmt-check-web`                                               | ok — on node 22.23.2                  |
+
+`verify-links` counts 1 489 and not the 1 487 recorded further up: the
+difference is the two relative links this section adds, both to
+[AGENTS.md](../../../AGENTS.md).
+
+`just ci` was **not** run by the review either, for the reason the section
+above gives, and the same caveat applies: the gates here are the ones a change
+to these files can move, and that is a narrower claim than a green CI run. The
+`customers` suite was run with `--test-threads 2`, as the earlier run was; no
+`testcontainers` start-up timed out during the review's runs, so there is
+nothing of that kind to record here.

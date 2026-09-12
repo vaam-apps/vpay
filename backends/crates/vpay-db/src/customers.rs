@@ -1339,8 +1339,9 @@ async fn redact_stored_copies(
 
     // The stored `POST /v1/customers` responses. Its own function because
     // `crate::idempotency` runs the same statement on the other side of the
-    // race — see [`redact_stored_responses_in_tx`].
-    redact_stored_responses_in_tx(tx, customer_id, merchant_id).await?;
+    // race — see [`redact_stored_responses_in_tx`]. `None`: the erasure means
+    // every copy this merchant has, which is the half `store` does not.
+    redact_stored_responses_in_tx(tx, customer_id, merchant_id, None).await?;
 
     // `charges.payer_ref` is the payer's MSISDN as the rail was given it and
     // `payer_ref_masked` the display form of the same number. The marker
@@ -1410,8 +1411,8 @@ async fn redact_stored_copies(
     Ok(())
 }
 
-/// Rewrites every stored `POST /v1/customers` response that renders
-/// `customer_id` into the redacted object.
+/// Rewrites stored `POST /v1/customers` responses that render `customer_id`
+/// into the redacted object — every one of this merchant's, or exactly one.
 ///
 /// The response is kept for 24 hours so a retried request answers what the
 /// original did, which means the exact JSON that was answered — the payer
@@ -1440,6 +1441,30 @@ async fn redact_stored_copies(
 /// the two sides of that race end up disagreeing about which keys are a
 /// payer's.
 ///
+/// # `only_key`, and why the two callers do not want the same rows
+///
+/// The erasure passes `None` and means every copy: it is sweeping a table it
+/// has never looked at before, and the rows are whatever 24 hours of this
+/// merchant's traffic left behind.
+///
+/// `store` passes `Some(its own key)`, and that is the whole of what it has
+/// to fix. Every row that existed before it ran was either swept by the
+/// erasure — which holds `FOR UPDATE` on the payer's row while it does so —
+/// or belongs to another `store` that answers for itself under the same
+/// share lock. The only row this one can have re-introduced the payer into is
+/// the row it just wrote.
+///
+/// Passing `None` from `store` would be correct and three things worse. It
+/// would scan every key this merchant has used in 24 hours on **every**
+/// customer-route store where the payer is gone — which includes the `404`
+/// any caller can ask for by naming a `cus_…` that does not exist, so the
+/// cost of one request would grow with the number of requests before it. It
+/// would take a row lock on every match, so two stores for the same erased
+/// payer could each hold the row the other is scanning towards and deadlock.
+/// And it would be a wider claim than the one this function's callers make in
+/// their own doc comments, which say the store redacts *the body it just
+/// stored*.
+///
 /// # Errors
 ///
 /// [`DbError`] as [`classify_write`] maps it, for a statement that fails.
@@ -1447,13 +1472,23 @@ pub(crate) async fn redact_stored_responses_in_tx(
     tx: &mut sqlx::PgConnection,
     customer_id: &str,
     merchant_id: &str,
+    only_key: Option<&str>,
 ) -> Result<(), DbError> {
+    // `$5::TEXT IS NULL OR …` rather than two statements: a second spelling
+    // of this rewrite is a second place for the two sides of the race to
+    // disagree about which keys are a payer's, and `crate::sql_audit` counts
+    // the sites for that reason. A bound `$5` is a constant when the plan is
+    // built, so the disjunct folds away and the equality is an index qual on
+    // the primary key; a generic plan that cannot fold it still locks only
+    // the rows that match, which is the property the deadlock argument above
+    // needs.
     let sql = format!(
         "UPDATE idempotency_keys SET response_body = COALESCE( \
              (SELECT jsonb_object_agg(field.key, {REDACT_CUSTOMER_KEY}) \
               FROM jsonb_each(idempotency_keys.response_body) AS field(key, value)), \
              response_body) \
          WHERE merchant_id = $4 \
+           AND ($5::TEXT IS NULL OR idempotency_key = $5) \
            AND response_body->>'object' = 'customer' \
            AND response_body->>'id' = $1"
     );
@@ -1462,6 +1497,7 @@ pub(crate) async fn redact_stored_responses_in_tx(
         .bind(REDACTED)
         .bind(redacted_address_json())
         .bind(merchant_id)
+        .bind(only_key)
         .execute(&mut *tx)
         .await
         .map_err(classify_write)?;
