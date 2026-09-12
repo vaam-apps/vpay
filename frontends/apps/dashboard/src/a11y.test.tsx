@@ -1,25 +1,33 @@
 /**
  * This app's own structural accessibility gate.
  *
- * `@vpay/ui` has an axe suite of its own (`frontends/packages/ui/src/axe.test.tsx`)
- * and Lane D's notes argued that made a second one here redundant, since this
- * app is "composition only". That argument is wrong, and the review measured
- * why (`docs/plans/exp26-notes/lane-d-review.md`, finding 1): the scaffold at
+ * This app composed `@vpay/ui`, which had an axe suite of its own
+ * (`frontends/packages/ui/src/axe.test.tsx`), and Lane D's notes argued that
+ * made a second one here redundant, since this app was "composition only".
+ * That argument was wrong, and the review measured why
+ * (`docs/plans/exp26-notes/lane-d-review.md`, finding 1): the scaffold at
  * `08d9b8e` wrapped its page in `<main>`, the rewritten composition did not,
  * and axe-core's `region` rule went from **0 violations to 1** — "All page
  * content should be contained by landmarks". No component's own suite can see
  * that, because the landmark is a decision `app/layout.tsx` makes and no
- * component holds.
+ * component holds. That reasoning is unaffected by which package supplies the
+ * components — this app's own gate is what actually renders `app/layout.tsx`
+ * and checks the assembled page.
  *
  * Structural rules only. jsdom computes no real layout or paint, so
  * `color-contrast` here would be evidence of nothing (plan §7 row 6 — that
  * check is `cypress-axe` against a real browser, and is still built by
  * nobody).
  *
- * `DetailTimeline` and `EmptyState` had cases here until 2026-09-11. Both
- * are `@vpay/ui` primitives now (`Timeline`, `EmptyState`) and are rendered
- * by that package's own axe suite, under the same rule list; a second copy
- * here would check somebody else's markup.
+ * **Updated 2026-09-12:** `@vpay/ui` was deleted; the dashboard now composes
+ * `@vaam-apps/ui`, which ships no axe suite of its own that this repo builds
+ * — its structural coverage lives upstream, in that package's own Storybook
+ * a11y panel, and is not re-run here. `DetailTimeline` and `EmptyState` had
+ * cases here until 2026-09-11 for exactly the reason above (they were
+ * `@vpay/ui` primitives rendered by that package's own suite); the timeline
+ * is now this app's own plain `<ul>` and the empty state is
+ * `InlineEmptyState`, so both are covered again below, on this app's own
+ * markup, rather than left to a suite this repo does not build.
  *
  * Every screen is covered through the **component** it is made of rather than
  * through its `page.tsx`: every page in this app is an async server component
@@ -173,9 +181,12 @@ describe("every screen this app renders", () => {
   });
 
   it("the pager, on a middle page and on the first one", async () => {
-    // `Pagination` is `@vpay/ui`'s and has its own suite; what is checked
-    // here is this app's composition of it — a `<nav>` whose links are
-    // `next/link` elements. `link-name` and `region` both bite on a nav.
+    // The pager is entirely this app's own (`payments-pager.tsx`) — neither
+    // `@vpay/ui` (deleted 2026-09-12) nor `@vaam-apps/ui`'s callback-driven
+    // `Pagination` fits an href-based `next/link` pager, so there is no
+    // upstream suite to defer to here. What is checked is a `<nav>` whose
+    // links are `next/link` elements. `link-name` and `region` both bite on
+    // a nav.
     const middle = render(
       <PaymentsPager
         previousHref="/payments?ending_before=pi_2"

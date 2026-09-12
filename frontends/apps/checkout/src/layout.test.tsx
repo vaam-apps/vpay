@@ -99,7 +99,11 @@ describe("the root layout", () => {
 
   it("renders the theme this app is themed with, and the negotiated language", async () => {
     const html = await markup();
-    expect(html).toContain('data-theme="bumblebee"');
+    // `@vaam-apps/ui`'s theme registers under daisyUI's built-in name
+    // "dark" (2026-09-12 cutover) — it was "bumblebee" before that, which
+    // no longer compiles at all now that `app/globals.css` sets
+    // `themes: false`.
+    expect(html).toContain('data-theme="dark"');
     expect(html).toContain('lang="en"');
   });
 });

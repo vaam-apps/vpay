@@ -110,27 +110,72 @@
  * A check that only ever asserts `violations.length === 0` when every
  * result is `incomplete` is a check that cannot fail — the same failure
  * mode this file replaced `outcomes.axe.test.tsx` for. So `reportContrast()`
- * ALSO pins the number of elements axe reported `incomplete` (2 on every
- * one of these four checks: the outcome text and the forward button) and
- * fails if that count ever moves. This asserts a KNOWN UPSTREAM LIMITATION,
+ * ALSO pins the number of elements axe reported `incomplete` and fails if
+ * that count ever moves. It was **2** — the outcome text and the forward
+ * button — until 2026-09-12; it is **1** since, and the move is recorded
+ * below rather than absorbed, because absorbing it is the one thing this
+ * pin exists to prevent. This asserts a KNOWN UPSTREAM LIMITATION,
  * not a contrast guarantee — it does not and cannot prove WCAG AA — but it
  * turns a dead gate into a change detector: if axe-core relaxes its
  * `bgImage` handling, daisyUI changes its scroll-lock mechanism, or a
  * screen gains or loses a checked element, this number moves and a person
  * has to look, rather than the gate staying silently, permanently green.
  *
+ * ## 2026-09-12: the count moved 2 -> 1, and this is what a look found
+ *
+ * The `@vaam-apps/ui` cutover moved this page off `@vpay/ui` and off the
+ * `bumblebee` theme. This tripwire fired on all four checks — `expected 1 to
+ * equal 2` — which is exactly what it is for. `violations` stayed 0.
+ *
+ * **The element that stopped being unevaluable is the outcome text; the one
+ * still blocked is the forward button.** That is the opposite of what
+ * reading the compiled CSS predicted — `--btn-bg` resolves through
+ * `--color-base-200` to an opaque `#101216`, which looks like it should stop
+ * axe's ancestor walk at the button, while `--state-success-bg` is
+ * `transparent` and `--state-danger-bg` is `rgb(248 113 113 / 0.1)`, neither
+ * opaque, which looks like the text should still walk up to `:root` and hit
+ * the `background-image`. Measured, it is the other way round, and the
+ * inference was recorded here only so the next person does not spend the
+ * same hour re-deriving a wrong answer from the same stylesheet.
+ *
+ * What is established, and how:
+ *
+ * - The remaining node's selector is `button`, read from the assertion
+ *   message itself on a real `just test-e2e` run. `cy.task('dump', …)`
+ *   above could not answer this: it writes to the Cypress *plugin*
+ *   process's stdout, which neither the GitHub Actions job log nor a local
+ *   `just test-e2e > log 2>&1` captures — checked in both. That is why
+ *   `reportContrast()` now appends the unevaluated selectors to the failure
+ *   message; a tripwire that says "read why" has to hand over the evidence.
+ * - `violations.length` is 0 on all four checks, so the outcome text, now
+ *   that axe can reach a verdict on it, **passes**. This is a real gain: a
+ *   pair that could not be checked in a browser at all now can be.
+ * - The forward button is unchanged in substance (`<Button type="button">`
+ *   with the merchant line); it did not disappear, it is still examined,
+ *   and axe still declines to determine its background.
+ *
+ * So 1 is the honest number, and it still asserts a KNOWN UPSTREAM
+ * LIMITATION rather than a contrast guarantee. The button's contrast is
+ * covered — with real numbers, against the real compiled stylesheet — by
+ * `frontends/apps/checkout/src/components/outcome-contrast.test.ts`.
+ *
  * **The contrast half of issue #73 itself is answered by
  * `frontends/apps/checkout/src/components/outcome-contrast.test.ts`,
- * not this file.** It reuses `@vpay/ui`'s `theme-contrast.test.ts`
- * machinery — real Tailwind, real daisyUI, real PostCSS compile, no DOM,
- * no browser, nothing for a `background-image` to block — against the
- * EXACT pairs `OutcomePanel` renders (confirmed against daisyUI 5.7.28's
- * own `alert.css`/`button.css`: a plain `color` on `background-color`,
- * nothing that math doesn't already model), for all three outcome kinds,
- * including `canceled`, which no browser has ever rendered at all.
- * Measured: succeeded (success) 5.09:1, failed (error) 4.61:1, canceled
- * (warning) 5.24:1, the forward button (primary) 5.53:1 — every one clears
- * AA (4.5:1). See that file for the full account and the `docs/flows/
+ * not this file.** **Updated 2026-09-12, the `@vaam-apps/ui` cutover:**
+ * `@vpay/ui` and its `theme-contrast.test.ts` machinery that file used to
+ * reuse are deleted; `outcome-contrast.test.ts` was rewritten, not
+ * re-pointed, against the app's own compiled `globals.css` (real Tailwind,
+ * real daisyUI, real PostCSS compile, no DOM, no browser, nothing for a
+ * `background-image` to block) — against the EXACT pairs `OutcomePanel`
+ * renders, `InlineBanner`'s alpha-composited fill included, not the opaque
+ * pair the old `Alert` painted. For all three outcome kinds, including
+ * `canceled`, which no browser has ever rendered at all. Measured against
+ * the new dark theme: succeeded (success) 11.30:1, failed (danger) 9.32:1,
+ * canceled (warning) 10.24:1, the forward button (primary) 16.34:1 — every
+ * one clears AA (4.5:1), by a wider margin than the old `bumblebee` theme
+ * did (5.09:1 / 4.61:1 / 5.24:1 / 5.53:1), which is expected of light text
+ * on a near-black ground rather than dark text on daisyUI's default
+ * `bumblebee`. See that file for the full account and the `docs/flows/
  * hosted-checkout.md` Status section for the record of both halves.
  *
  * Not covered by either file: whether a rendered glyph actually sits on
@@ -205,8 +250,9 @@ interface ContrastCheck {
  * `expectedIncompleteNodeCount` turns that dead end into a tripwire instead
  * of leaving it inert: it pins the number of elements axe reported
  * `incomplete` (summed across `result.incomplete[].nodes`, currently one
- * rule result — "color-contrast" — covering the outcome text and the
- * forward button, so 2 on every one of this file's four checks). This
+ * rule result — "color-contrast" — covering the forward button alone, so 1
+ * on every one of this file's four checks; it was 2, the outcome text as
+ * well, until the 2026-09-12 cutover recorded in this file's header). This
  * asserts a KNOWN UPSTREAM LIMITATION, not a contrast guarantee — a pass
  * here says nothing about WCAG AA (see
  * `outcome-contrast.test.ts` for that). What it buys is that the count
@@ -237,12 +283,24 @@ function reportContrast(
     result.violations,
     `${label}: color-contrast violations axe-core actually detected`,
   ).to.have.length(0);
+  // The CSS selector of every element still in the count, in the assertion
+  // message itself. `cy.task('dump', …)` above writes to the plugin process's
+  // stdout, which neither CI's job log nor a local `just test-e2e > log`
+  // redirect captures — measured 2026-09-12, in both, while diagnosing the
+  // 2 -> 1 move below. A tripwire whose message says "read why" has to carry
+  // the evidence with it, or the reader is told to look at something they
+  // cannot see.
+  const incompleteTargets = result.incomplete
+    .flatMap((r) => r.nodes)
+    .map((n) => n.target.join(" "))
+    .join(", ");
   expect(
     incompleteNodeCount,
     `${label}: elements axe-core could not evaluate for contrast has changed ` +
       `from the pinned ${expectedIncompleteNodeCount} — read why before touching ` +
       `this number (this file's header comment; it pins a known upstream ` +
-      `limitation, not a contrast guarantee)`,
+      `limitation, not a contrast guarantee). Still unevaluated: ` +
+      `[${incompleteTargets}]`,
   ).to.equal(expectedIncompleteNodeCount);
 }
 
@@ -306,7 +364,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "CheckoutView succeeded outcome",
-        2,
+        1,
       );
     });
 
@@ -351,9 +409,13 @@ describe("the shop, paid on vpay's hosted page", () => {
       // No form: a redirect rail collects nothing here.
       cy.get('[data-screen="ready_redirect"]').should("be.visible");
       // `data-testid`, not `button.btn-primary`: exp26 (2026-09-07) made
-      // `Button` a `@vpay/ui` component whose primary look is a `cva`
-      // variant default rather than a class this spec should know the name
-      // of — see docs/plans/2026-09-07-ui-revamp.md §4.1.
+      // `Button` a component whose primary look is a variant default rather
+      // than a class this spec should know the name of — see
+      // docs/plans/2026-09-07-ui-revamp.md §4.1. Still true after `@vpay/ui`
+      // was deleted 2026-09-12: the checkout's `Button` is now
+      // `@vaam-apps/ui`'s own, whose `variant="primary"` default compiles
+      // to `btn btn-primary` through that package's internal `cn()`
+      // merge — a class name this spec still has no reason to know.
       cy.get('[data-testid="continue"]').click();
       // The confirm answers `next_action.redirect_to_url` and the page
       // navigates top-level to the rail. `cy.origin` for the rail follows.
@@ -409,7 +471,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "ReturnView succeeded outcome",
-        2,
+        1,
       );
     });
 
@@ -489,7 +551,7 @@ describe("the shop, paid on vpay's hosted page", () => {
         }),
       );
     }).then((results) => {
-      reportContrast(results as ContrastCheck, "ReturnView failed outcome", 2);
+      reportContrast(results as ContrastCheck, "ReturnView failed outcome", 1);
     });
 
     cy.origin(checkoutOrigin(), () => {
@@ -575,7 +637,7 @@ describe("the shop, paid on vpay's hosted page", () => {
       reportContrast(
         results as ContrastCheck,
         "CheckoutView failed outcome",
-        2,
+        1,
       );
     });
 

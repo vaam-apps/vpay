@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { PAYMENT_STATUS_SYSTEM } from "../payment-status";
 import { INTENT, OTHER_INTENT } from "../testing/fixtures";
 import { PaymentsTable } from "./payments-table";
 
@@ -19,22 +20,31 @@ describe("the payments table", () => {
     expect(screen.getByText("5,000 XAF")).toBeInTheDocument();
   });
 
-  it("takes the status pill tone from @vpay/tokens, never a local map", () => {
-    const { container } = render(
-      <PaymentsTable rows={[INTENT, OTHER_INTENT]} />,
+  it("takes the status pill presentation from one shared table, never a local map", () => {
+    // The mechanism changed with the cutover (`.badge-success`/`.badge-info`
+    // died with `StatusBadge`), but the guarantee did not: a status's
+    // presentation comes from `PAYMENT_STATUS_SYSTEM`, not from anything
+    // local to this file. Read the expected names OFF the table rather than
+    // typing them as literals, so a change to the table is caught here too
+    // and a hard-coded string in the component is caught as a mismatch.
+    // `INTENT` is "succeeded", `OTHER_INTENT` is "processing".
+    render(<PaymentsTable rows={[INTENT, OTHER_INTENT]} />);
+    const pills = screen.getAllByRole("img");
+    expect(pills).toHaveLength(2);
+    expect(pills[0]).toHaveAccessibleName(
+      `succeeded — ${PAYMENT_STATUS_SYSTEM.succeeded.label}`,
     );
-    // `badge-success` for succeeded, `badge-info` for processing — the same
-    // classes StatusBadge renders anywhere else in the product.
-    expect(container.querySelector(".badge-success")).not.toBeNull();
-    expect(container.querySelector(".badge-info")).not.toBeNull();
+    expect(pills[1]).toHaveAccessibleName(
+      `processing — ${PAYMENT_STATUS_SYSTEM.processing.label}`,
+    );
+    // Mutation note: point `processing`'s row at `succeeded`'s meta in
+    // `payment-status.ts` and this assertion must fail — it currently does.
   });
 
   it("renders a status this build cannot name as text, never as a coloured pill", () => {
-    const { container } = render(
-      <PaymentsTable rows={[{ ...INTENT, status: "disputed" }]} />,
-    );
+    render(<PaymentsTable rows={[{ ...INTENT, status: "disputed" }]} />);
     expect(screen.getByText("disputed")).toBeInTheDocument();
-    expect(container.querySelector(".badge")).toBeNull();
+    expect(screen.queryAllByRole("img")).toHaveLength(0);
   });
 
   it('heads the rail column "Methods", because that is what the list carries', () => {

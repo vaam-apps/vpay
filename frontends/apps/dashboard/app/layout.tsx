@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { PageShell } from "@vpay/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 
 import { PrimaryNav } from "../src/nav";
 
@@ -14,6 +14,14 @@ export const metadata: Metadata = {
 /**
  * The dashboard's persistent chrome: the brand, the nav, and the one-column
  * page frame every screen sits in.
+ *
+ * `@vpay/ui` was deleted on 2026-09-12; `ScreenStack` from `@vaam-apps/ui`
+ * takes over the page frame. It supplies only the vertical rhythm
+ * (`flex flex-col gap-6`) — no centring, no `max-w`, no padding — so this is
+ * the one place in the app that carries them, in a plain literal `className`
+ * the gate's check 7a-i and 7a-iii both permit: a centred column with a
+ * generous width for a payments table, not the checkout's narrow
+ * `max-w-md`, which this app never had a reason to inherit.
  *
  * The nav's links live in `src/nav.tsx` as an exported constant, and
  * `src/layout.test.tsx` resolves every one of them against `app/**\/page.tsx`
@@ -38,11 +46,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-theme="bumblebee">
+    <html lang="en" data-theme="dark">
       <body>
         <PrimaryNav />
         <main>
-          <PageShell>{children}</PageShell>
+          <ScreenStack className="mx-auto w-full max-w-5xl p-6">
+            {children}
+          </ScreenStack>
         </main>
       </body>
     </html>

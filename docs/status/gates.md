@@ -518,34 +518,130 @@ network, a database or a binary this workspace does not build.
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](../plans/exp10-notes/opus.md).
 
+---
+
+## `verify-ui` — added after this archive, documented here for the first time
+
+**A pre-existing gap, not a new one.** `verify-ui` (`justfile`, a frontend
+`just` recipe rather than an `xtask` gate — the only entry on this page that
+is) was added by the 2026-09-07 exp26 UI revamp, after this page's own
+2026-09-11 archival snapshot was frozen. It has carried a row in
+`docs/status.md`'s gate table since, but never a history entry here — this
+is that entry, written on 2026-09-12 because the gate itself just changed
+shape, not merely narrowed.
+
+**What it checked, 2026-09-07 to 2026-09-12.** Seven numbered checks (nine
+greps) over `frontends/apps` and `frontends/packages/ui/src`, refusing a raw
+palette colour, a hard-coded colour value, a daisyUI-4 class daisyUI 5
+removed, a stray `!important`, a `.js`-suffixed relative import inside the
+shared package, any file in that package over 200 lines, and — the
+centrepiece — any `className=` written directly in an app at all. That last
+rule's own remedy was "add the missing primitive to `@vpay/ui`," a package
+every app composed for its layout and typography as well as its daisyUI
+components.
+
+**2026-09-12: `frontends/packages/ui` (`@vpay/ui`) was deleted.** Both apps
+now compose the published `@vaam-apps/ui`, which ships components but no
+layout or typography primitives at all — no `PageShell`, `Stack`, `Heading`,
+`Text`, `List`, `Link`, `Section`, `VisuallyHidden` or `Logo`. The old rule's
+escape hatch stopped existing, so a blanket "no `className` in an app" would
+have refused the layout classes both apps must now write to render at all.
+Two of the seven checks became **vacuous** rather than merely wrong: the
+200-line ceiling's `git ls-files` and the `.js`-import guard's `git grep`
+were both path-scoped to the deleted package, and a `git grep`/`git
+ls-files` against a pathspec matching no tracked file exits non-zero (empty
+result) inside `if …; then`, which reads as "no offence found" — the check
+would have gone on reporting success having measured nothing. Both were
+**removed**, not left: a check that cannot fail reads as coverage it no
+longer provides, which is worse than no check at all. The 200-line ceiling's
+own directive (the maintainer's 2026-09-11 "very few lines per component,
+max 200") is recorded as ungated rather than silently dropped — whether it
+transfers from a shared primitive package to app screens is undecided, and
+three shipping files already exceed it while this same change is still
+rewriting them (measured: 718, 336 and 279 lines the day the package was
+deleted).
+
+The `.js`-import guard was **replaced**, not merely deleted: its slot became
+the permanent regression guard for the deletion itself — nothing may import
+`@vpay/ui` by any spelling (`from`, `require`, `resolve`, a bare `@import`
+in CSS, or a `"@vpay/ui": "…"` manifest entry) and nothing may reach into
+`frontends/packages/ui` by filesystem path either, which is the one that
+would have caught `frontends/packages/config/src/eslint.js`'s Tailwind
+entry-point constant — a path, not a package name, so no import-specifier
+grep would ever have found it.
+
+The blanket `className=` ban became **three narrower rules**, each banning
+one of the three things the old rule was actually written to stop, now that
+layout classes are legal: a _computed_ class string (`cn(...)`, a template
+literal, a ternary — the signature of a hand-rolled variant system, which a
+literal string is not); a raw `text-state-<hue>-fg`/`bg-state-<hue>-bg`/
+`text-destructive` status-colour token, which `@vaam-apps/ui`'s theme
+exposes and the old palette-colour check has never been able to see because
+it is a theme token, not a palette one; and a class attribute over 60
+characters, which is the class-budget half of the same 2026-09-11 directive
+the 200-line ceiling carried the component-size half of. The daisyUI-4 and
+daisyUI-component-class checks survived with their pathspecs narrowed to
+drop the deleted package, and gained one narrow, named, dated exemption
+(`frontends/apps/checkout/src/components/locale-switch.tsx`) for the one
+control in either app with no `@vaam-apps/ui` primitive it could legally
+compose into — a native `<select>`, forced by decision 8, that must remain
+themed in daisyUI's own classes or render completely unstyled.
+
+**Ordering, and why the deletion could not be gated by anyone but the group
+that ran it last.** `frontends/packages/ui`'s presence or absence changes
+what several of these greps refuse, so the checks that assume it is gone had
+to land in the same change as the deletion, verified against a tree with the
+package present (checks 1/1b/2/3/4/7a-ii/7a-iii unaffected either way) and a
+tree without it (checks 5/5b/6/7a-i's replacement all begin refusing, or
+stop being vacuous, only once the directory is actually gone). Both states
+were measured before this entry was written.
+
+**Every mutation named above was run by hand, its exit code recorded, and
+reverted**, per this recipe's own header discipline
+(`justfile`, immediately above `verify-ui`'s definition) — a rule nobody has
+mutated is a claim, not a check.
+
 <!-- Appended 2026-09-12, below the archived text rather than inside it: the
      note at the top of this page says its body is the original and unedited. -->
 
-## 2026-09-12 — a gate that is not one of the twelve
+## 2026-09-12 — a thirteenth gate that existed for one day
 
-`just test-storybook` renders every Storybook story in a real Chromium and
-fails on an axe violation. It is **not** part of `just verify` and **not**
-part of `just ci` — it needs a ~115 MB Playwright Chromium download the first
-time, and `just ci` is expected to pass offline, which is the same reason
-`helm-check` is excluded. CI's `web` job runs it, next to `build-storybook`,
-which is likewise absent from `just ci`. So the count in
-[../status.md](../status.md)'s gate table is unchanged at twelve, and
-correctly so.
+For a few hours on 2026-09-12 this repository had a gate that ran axe over
+every Storybook story in a real Chromium — `just test-storybook`, built on
+branch `claude/recursing-darwin-204853` ([PR #133](https://github.com/vaam-apps/vpay/pull/133)).
+**It is gone**, because the `@vaam-apps/ui` cutover that landed the same day
+deleted `@vpay/ui`, and that package was where Storybook, the stories' host
+and the gate all lived. It is recorded here rather than dropped, because what
+it measured is still true of this repository and the next attempt should not
+pay for it twice.
 
-That leaves three tiers of check in this repository, which is worth stating
-once: the twelve in `just verify`; `verify-citations`, a gate that needs the
-network and a GitHub token and is therefore opt-in; and now `build-storybook`
-and `test-storybook`, gates that run in CI but not in the local `just ci`.
+It was never one of the twelve: it needed a ~115 MB Playwright Chromium the
+first time and `just ci` must pass offline, the same reason `helm-check` is
+excluded, so it ran in CI's `web` job beside `build-storybook`. The count in
+[../status.md](../status.md)'s gate table was unchanged at twelve then and is
+unchanged now.
 
-**What keeps it a gate, given that `just ci` never runs it:**
-`frontends/packages/ui/src/testing/a11y-gate.test.ts`, a plain jsdom test in
-the suite `just test-web` — and therefore `just ci` — does run. It fails if
-`.storybook/preview.ts` stops saying `a11y: { test: "error" }`, if
-`.storybook/main.ts` stops loading `@storybook/addon-vitest` or
-`@storybook/addon-a11y`, or if the set of stories carrying the
-`a11y: { test: "todo" }` escape hatch is ever anything but the four declared,
-measured ones. Each of its assertions was run against the mutation it exists
-to catch; the numbers are in
-[verification/2026-09-12.md](verification/2026-09-12.md), together with the
-false green that the first version of the suite produced and how it was
-found. The rows are on [frontend.md](frontend.md).
+**What it found, in one run, none of it planted:** four WCAG AA contrast
+violations, one of them the checkout's MSISDN rejection message — the
+`role="alert"` line telling a payer their number was refused — at 2.92:1
+against AA's 4.5:1. Every other gate in this repository was green on that
+tree. They were fixed, and the fix is gone with the package; the two causes
+are general and are written down in `justfile`'s `build-storybook` slot for
+whoever rebuilds.
+
+**What it proved about gates generally**, which outlives it:
+
+- A CI-only gate needs a lock that runs inside `just ci`, or nothing anyone
+  runs locally notices it being switched off. That branch used a plain jsdom
+  test asserting the addon was still loaded, that a violation still **failed**
+  rather than warned, and that the set of stories opting out was exactly the
+  declared, measured ones.
+- **A story that throws while rendering still counts as a passing test.** The
+  suite reported "93 passed" with 24 unhandled errors and axe had run on none
+  of those 24. A green test count is not evidence that anything rendered.
+- That failure reproduced from a cold dependency cache only, so it passed
+  locally and failed on a fresh runner — CI caught it, this machine never
+  would have.
+
+The full record is
+[verification/2026-09-12-browser-a11y.md](verification/2026-09-12-browser-a11y.md).

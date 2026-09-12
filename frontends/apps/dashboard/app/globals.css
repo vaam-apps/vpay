@@ -1,3 +1,37 @@
-/* The dashboard's theme is chosen once, in @vpay/ui's own styles.css
- * (docs/plans/2026-09-07-ui-revamp.md §4.4) — nothing local to add here. */
-@import "@vpay/ui/styles.css";
+/* The dashboard's Tailwind entry.
+ *
+ * Not `@vpay/ui/styles.css` any more (2026-09-12): this app now composes
+ * `@vaam-apps/ui`, which ships its own theme. `frontends/apps/checkout`
+ * imports the same package's theme through its own `app/globals.css`; the
+ * two apps' PostCSS pipelines are separate processes over separate entry
+ * files and share nothing.
+ *
+ * Both lines below are load-bearing, not tidiness, and both fail SILENTLY
+ * if dropped — no error, no warning, just a page that looks broken:
+ *
+ * - `themes: false` — daisyUI's built-in `dark` theme emits at higher
+ *   specificity than a custom `@plugin "daisyui/theme"` block registered
+ *   under the same name, and `@vaam-apps/ui` registers its one theme as
+ *   `dark`. Leave the built-ins on and `--color-base-100` (and every other
+ *   base/content token) resolves to stock daisyUI's
+ *   `oklch(25.33% 0.016 252.42)` instead of this theme's `#0a0b0d`,
+ *   regardless of import order.
+ * - `@source "../node_modules/@vaam-apps/ui/dist"` — Tailwind v4 only
+ *   generates the utilities it can see used, and it does not look inside
+ *   `node_modules` on its own. Omit this and every `@vaam-apps/ui`
+ *   component renders completely unstyled.
+ *
+ * Measured, not assumed: compiling this file with and without the `@source`
+ * line produced 191 144 bytes of CSS with it and 12 381 without; dropping
+ * `themes: false` resolved `--color-base-100` to three different values
+ * instead of one. Follow the package README here, not its
+ * `dist/index.d.ts` doc-comment example — the two disagree (the `.d.ts`
+ * omits `themes: false`) and the `.d.ts` is wrong. No automated gate in
+ * this app re-checks either fact yet.
+ */
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: false;
+}
+@import "@vaam-apps/ui/styles/theme.css";
+@source "../node_modules/@vaam-apps/ui/dist";

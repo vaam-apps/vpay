@@ -18,8 +18,9 @@
  * to white if it is dark, to black if it is light, which is daisyUI's own
  * rule (`generateForegroundColorFrom`).
  *
- * `linearRgb`/`isDark` are kept from the old module: `linearRgb` is the
- * `#rrggbb` validator as much as it is a conversion step, and `isDark` is
+ * `hexToLinearRgb`/`isDark` are kept from the old module: `hexToLinearRgb`
+ * is the `#rrggbb` validator as much as it is a conversion step, and
+ * `isDark` is
  * daisyUI's own "which contrast is bigger" test, not something `color-mix`
  * can decide on its own. The sRGB→OKLCh *output formatting* — `toOklch`,
  * `foreground`, `cut`, `format`, the six-colour comparison against daisyUI's
@@ -29,6 +30,20 @@
  *
  * There is no `#rgb` short form and no named colour: `settings.ts` admits
  * `#rrggbb` and nothing else, so this module never has to guess.
+ *
+ * **Retargeted to `@vaam-apps/ui`'s theme (2026-09-12, decision 3).** The
+ * override used to be scoped to daisyUI's own `bumblebee`; that theme no
+ * longer compiles (`app/globals.css` now sets `themes: false`, per
+ * `dashui-measured-facts.md` §3), so `THEME` is now `"dark"` — the name
+ * `@vaam-apps/ui/styles/theme.css` registers its one custom theme under
+ * (`@plugin "daisyui/theme" { name: "dark"; … }`). The override string
+ * still targets `${THEME}` rather than a literal, so nothing else in this
+ * function changed. The AA-contrast maths below is unaffected either way —
+ * it is a pure function of the merchant's own hex, never of the page's
+ * background — but it clears a HARDER bar now regardless: it computes the
+ * contrast between a colour and a foreground mixed 20% toward white/black,
+ * not against this theme's own near-black `--color-base-100` (`#0a0b0d`),
+ * and `theme.test.ts` still asserts every case at AA (4.5:1), unweakened.
  */
 
 /** sRGB 0–1 → linear-light 0–1. The IEC 61966-2-1 transfer function. */
@@ -38,8 +53,17 @@ function linearize(channel: number): number {
     : Math.pow((channel + 0.055) / 1.055, 2.4);
 }
 
-/** `#rrggbb` → three linear-light channels, or `null` if it is not that. */
-function linearRgb(hex: string): [number, number, number] | null {
+/**
+ * `#rrggbb` → three linear-light channels, or `null` if it is not that.
+ *
+ * Exported (2026-09-12) so `src/testing/contrast.ts` — which measures the
+ * *compiled theme's* colours rather than an operator's — can reuse this
+ * exact transfer function instead of carrying a second copy of it.
+ * `theme.test.ts` deliberately does NOT import this: it re-implements the
+ * same maths independently, so it verifies the rule rather than the
+ * function that encodes it.
+ */
+export function hexToLinearRgb(hex: string): [number, number, number] | null {
   if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
     return null;
   }
@@ -64,14 +88,24 @@ function isDark([r, g, b]: [number, number, number]): boolean {
   return againstBlack < againstWhite;
 }
 
-/** The theme every page renders under. daisyUI's own `bumblebee`. */
-export const THEME = "bumblebee";
+/**
+ * The theme every page renders under.
+ *
+ * **`@vaam-apps/ui`'s one registered theme (2026-09-12), not daisyUI's
+ * `bumblebee`.** `app/globals.css` sets `themes: false`, which stops
+ * `bumblebee` from compiling at all — a `:root[data-theme="bumblebee"]`
+ * selector would then match nothing. `@vaam-apps/ui/styles/theme.css`
+ * registers its custom theme under daisyUI's own built-in name `"dark"`
+ * (`@plugin "daisyui/theme" { name: "dark"; … }`), confirmed by reading
+ * that file directly, so this is the selector that now actually applies.
+ */
+export const THEME = "dark";
 
 /**
  * The `<style>` body that applies an operator's colour, or `null`.
  *
- * Scoped to `:root[data-theme="bumblebee"]` — the same specificity daisyUI's
- * own theme block has, and later in the document, so it wins without an
+ * Scoped to `:root[data-theme="dark"]` — the same specificity daisyUI's own
+ * theme block has, and later in the document, so it wins without an
  * explicit override rule. Emitted by the server component that renders
  * `<head>`, which is what makes the colour arrive with the first byte
  * rather than after a flash of the default.
@@ -86,7 +120,7 @@ export function themeStyleSheet(primaryColor: string | null): string | null {
   if (primaryColor === null) {
     return null;
   }
-  const rgb = linearRgb(primaryColor);
+  const rgb = hexToLinearRgb(primaryColor);
   if (rgb === null) {
     return null;
   }

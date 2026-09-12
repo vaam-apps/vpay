@@ -450,6 +450,16 @@ theme's own tone palette is measured by `@vpay/ui`'s `theme-contrast.test.ts`,
 which compiles the stylesheet and verifies every rendered tone clears WCAG AA
 (4.5:1), including the error/info overrides at lines 887–899 above.
 
+**Updated 2026-09-12, and superseded by the entry after it on the same day.**
+The two paragraphs below record a browser-level accessibility gate that
+existed for a few hours and the four defects it found on this page. It was
+built on `@vpay/ui`, which the next entry deletes, so **the gate and the fix
+are both gone**; they are kept here because the defects were real, because
+one of them was on the screen a payer meets, and because a measurement is not
+made wrong by being overtaken. The full record, including two findings that
+transfer to whoever restores Storybook, is in
+[../status/verification/2026-09-12-browser-a11y.md](../status/verification/2026-09-12-browser-a11y.md).
+
 **Updated 2026-09-12: the real browser the entry above said was "still
 unbuilt" now exists — and it failed this page.** That entry ended by naming
 what was missing: "**The real verification is in a real browser** —
@@ -520,3 +530,38 @@ on anybody remembering to run a browser. It also fails if a component writes
 `text-error` again, and it asserts `--color-error` is **still** unreadable on
 white — so if a daisyUI bump ever fixes it upstream, the extra token gets
 deleted rather than carried out of habit.
+
+**Where that leaves this page, stated plainly.** The entry above it announced
+a real browser finally checking these screens; the entry below it deleted the
+package that ran the check. Both are true and they land the same day. **As of
+this commit the checkout has no visual-review surface and no browser-level
+accessibility check.** `screens.axe.test.tsx` does not replace one — it runs
+in jsdom, which computes no colour, so it can never answer `color-contrast`
+either way. That is a named, accepted gap with a filed task, not an
+oversight, and it is a step backwards from the paragraph above it.
+
+**Updated 2026-09-12: `@vpay/ui` — the package every entry above from
+2026-09-07 onward describes — is deleted.** Both this app and the dashboard
+now compose the published `@vaam-apps/ui` instead (the maintainer's scope for
+this cutover: "both apps, delete `@vpay/ui` in this PR", not the checkout
+alone as some entries above anticipated). What changed for this page,
+concretely: `outcomes.axe.test.tsx` (jsdom, zero-violations-because-no-CSS,
+named above as a documented limitation) is deleted along with the
+`axeContrastViolations` helper only it called — its jsdom limitation was
+real and is not missed. `theme-contrast.test.ts` is deleted with the
+package; `outcome-contrast.test.ts` (same real-Tailwind, no-DOM method,
+already the pattern this page's own b1e entry names) is rewritten against
+the app's own compiled `globals.css` and the theme is now `dark`, not
+`bumblebee` — `src/config/theme.ts`'s runtime brand-colour retargeting
+(decision 3, 2026-09-12) survives unchanged in method, computing contrast
+against the new, darker ground. `LiveRegion` (named above, 2026-09-11) has
+no `@vaam-apps/ui` counterpart; `checkout-view.tsx` and `return-view.tsx`
+each carry a plain `<div aria-live="polite" aria-atomic="true">` again,
+faithful to the same markup but without the test `LiveRegion` used to carry
+guaranteeing a hostile caller cannot weaken those two attributes.
+`LocaleSwitch` moved to a native `<select>` (decision 8): `@vaam-apps/ui`'s
+own `Select` cannot be named by a visible `<label>`, and the control's
+French accessible name is exactly what `checkout-view.test.tsx` pins. See
+`docs/status/verification/2026-09-12.md` for what was run and measured, and
+[hosted-checkout/state-machine-and-outcomes.md](hosted-checkout/state-machine-and-outcomes.md)'s
+own 2026-09-12 entry for the outcome-colour vocabulary's new name.

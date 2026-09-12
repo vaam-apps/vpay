@@ -209,25 +209,41 @@ not a lint warning. That is why `FormState` and `NO_ERROR` live in
 
 ## The rules this app is held to
 
-### Zero `className` strings
+### No computed `className`, no raw status colour
 
-Not one, under `app/` or `src/`, outside the tests. Every visual decision comes
-from `@vpay/ui` — `PageShell`, `Stack`, `Heading`, `Text`, `Table`, `Field`,
-`Input`, `Button`, `Alert`, `Select`, `List`, `StatusBadge`. `just verify-ui`
-is the gate for the parts of that a grep can see (`docs/plans/2026-09-07-ui-revamp.md`
-§3, §7); the rest is a reviewer's job.
+**Updated 2026-09-12: `@vpay/ui` was deleted (the `@vaam-apps/ui` cutover),
+and this section's title changed with it.** `@vaam-apps/ui` ships no layout
+or typography primitive at all — no `PageShell`, `Stack`, `Heading`, `Text`
+or `List` — so this app now writes layout classes directly, in `app/` and
+`src/`. What is still refused, by `just verify-ui`'s checks 7a-i/7a-ii/7a-iii
+(`docs/status/gates.md`'s `verify-ui` entry has the full derivation): a
+_computed_ class string (`cn(...)`, a template literal, a ternary — a
+hand-rolled variant system by another name), a raw status-colour token
+written directly instead of through a status system, and a class attribute
+over 60 characters. `Table`, `Field`→`FormField`, `Input`, `Button`,
+`InlineBanner` (replacing `Alert`), `Select`→a native `<select>`
+(`payments-filters.tsx` — `@vaam-apps/ui`'s `Select` cannot be named by a
+`<label>`), `InlineEmptyState` and `createStatusPill`/`defineStatusSystem`
+(replacing `StatusBadge`) still come from `@vaam-apps/ui`.
 
-`data-theme` is `bumblebee`, and `src/layout.test.tsx` pins it:
-`frontends/packages/ui/src/styles.css` compiles that theme and no other, so a
-`data-theme` that says anything else renders the page **completely unthemed**
-in a real browser with no error anywhere.
+`data-theme` is `dark`, and `src/layout.test.tsx` pins it: `@vaam-apps/ui`
+registers its one theme under daisyUI's built-in name `dark`, so a
+`data-theme` that says anything else renders the page **completely
+unthemed** in a real browser with no error anywhere — the same guarantee as
+before, under the new package's theme.
 
 ### Status colour comes from `@vpay/tokens`, always
 
-`StatusBadge` takes its tone from `statusTone`, never from a local map, so a
-status cannot read one colour in the list and another on the detail page. A
-status this build cannot name renders as **text**, not as a coloured pill — a
-green badge on an unfamiliar value is a claim.
+**Updated 2026-09-12:** `statusTone` is deleted (zero consumers after the
+cutover). `src/payment-status.ts`'s `PAYMENT_STATUS_SYSTEM` — a
+`defineStatusSystem` table — is now the one place a `PaymentIntent` status
+is drawn; its `label` field still reads from `@vpay/tokens`'s `statusLabel`,
+so the operator-facing copy has exactly one source. `PaymentStatusPill`
+(`createStatusPill(PAYMENT_STATUS_SYSTEM)`) takes its tone from that table,
+never from a local map, so a status cannot read one colour in the list and
+another on the detail page. A status this build cannot name renders as
+**text**, not as a coloured pill — a green badge on an unfamiliar value is a
+claim.
 
 ### The nav rule, as a gate rather than a comment
 

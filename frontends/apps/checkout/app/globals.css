@@ -1,12 +1,26 @@
-@import "@vpay/ui/styles.css";
+/* The checkout's Tailwind entry.
+ *
+ * Not `@vpay/ui/styles.css` any more (2026-09-12): this app now composes
+ * `@vaam-apps/ui`, the same package the dashboard uses. See
+ * `frontends/apps/dashboard/app/globals.css`'s comment for the two
+ * load-bearing traps here (`themes: false`, the `@source` line) and how
+ * they were measured — both apply here unchanged, and `src/config/theme.ts`
+ * carries this app's own brand-colour retargeting on top of this theme.
+ */
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: false;
+}
+@import "@vaam-apps/ui/styles/theme.css";
+@source "../node_modules/@vaam-apps/ui/dist";
 
 /*
  * The only hand-written CSS in this app.
  *
  * Everything else is a daisyUI component class or a Tailwind utility, all
- * of it reached through `@vpay/ui` — the maintainer's "minimal custom CSS"
- * requirement (2026-09-05), and the reason an operator can retint the whole
- * page by setting one custom property (`src/config/theme.ts`).
+ * of it reached through `@vaam-apps/ui` — the maintainer's "minimal custom
+ * CSS" requirement (2026-09-05), and the reason an operator can retint the
+ * whole page by setting one custom property (`src/config/theme.ts`).
  *
  * daisyUI's `loading` spinner and its button focus scale animate
  * unconditionally. A payer with vestibular sensitivity has asked their

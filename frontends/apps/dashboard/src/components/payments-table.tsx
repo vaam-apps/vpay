@@ -1,7 +1,16 @@
 import NextLink from "next/link";
 
-import { Code, Link, StatusBadge, Table, Text } from "@vpay/ui";
+import {
+  Code,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@vaam-apps/ui";
 
+import { PaymentStatusPill } from "../payment-status";
 import {
   ABSENT,
   asPaymentStatus,
@@ -19,10 +28,10 @@ export interface PaymentsTableProps {
 /**
  * The payments list.
  *
- * `Table` for structure, `StatusBadge` for the status column — the same badge
- * every other status in this product renders, so a status can never read a
- * different colour in the list than it does on the detail page. Both take
- * their tone from `@vpay/tokens` and never from a local map.
+ * `Table` for structure, `PaymentStatusPill` for the status column — the one
+ * place a `PaymentIntent` status is drawn (`../payment-status.ts`), so a
+ * status can never read a different presentation in the list than it does on
+ * the detail page.
  *
  * # The two columns this table does not have, and why absence is the honest
  * shape
@@ -49,46 +58,46 @@ export interface PaymentsTableProps {
  */
 export function PaymentsTable({ rows }: PaymentsTableProps) {
   return (
-    <Table zebra>
-      <thead>
-        <tr>
-          <th scope="col">Payment</th>
-          <th scope="col">Created (UTC)</th>
-          <th scope="col">Amount</th>
-          <th scope="col">Status</th>
-          <th scope="col">Methods</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead scope="col">Payment</TableHead>
+          <TableHead scope="col">Created (UTC)</TableHead>
+          <TableHead scope="col">Amount</TableHead>
+          <TableHead scope="col">Status</TableHead>
+          <TableHead scope="col">Methods</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {rows.map((row) => {
           const status = asPaymentStatus(row.status);
           return (
-            <tr key={row.id} data-payment-id={row.id}>
-              <td>
-                <Link render={<NextLink href={`/payments/${row.id}`} />}>
-                  <Code wrap="anywhere">{row.id}</Code>
-                </Link>
-              </td>
-              <td>{formatInstant(row.created)}</td>
-              <td>{formatAmount(row.amount, row.currency)}</td>
-              <td>
+            <TableRow key={row.id} data-payment-id={row.id}>
+              <TableCell>
+                <NextLink href={`/payments/${row.id}`}>
+                  <Code>{row.id}</Code>
+                </NextLink>
+              </TableCell>
+              <TableCell>{formatInstant(row.created)}</TableCell>
+              <TableCell>{formatAmount(row.amount, row.currency)}</TableCell>
+              <TableCell>
                 {/*
                   A status this build cannot name is rendered as the raw
                   string rather than coloured as something it is not: the
                   deployment holds a value newer than this bundle, and a
-                  green pill on an unknown status is a claim.
+                  glyph on an unknown status is a claim.
                 */}
                 {status === null ? (
-                  <Text as="span">{row.status}</Text>
+                  <span>{row.status}</span>
                 ) : (
-                  <StatusBadge status={status} />
+                  <PaymentStatusPill state={status} />
                 )}
-              </td>
-              <td>{formatMethods(row.payment_method_types)}</td>
-            </tr>
+              </TableCell>
+              <TableCell>{formatMethods(row.payment_method_types)}</TableCell>
+            </TableRow>
           );
         })}
-      </tbody>
+      </TableBody>
     </Table>
   );
 }

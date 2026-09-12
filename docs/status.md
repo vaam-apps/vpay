@@ -68,21 +68,21 @@ nothing.
 and what it printed on 2026-09-11 on `722e579`, this branch's last commit
 before this page was written:
 
-| Gate                  | What it refuses                                                            | Last printed                                 |
-| --------------------- | -------------------------------------------------------------------------- | -------------------------------------------- |
-| `verify-no-mocks`     | a test double reachable from a shipping binary                             | no test double reachable                     |
-| `verify-status`       | an undeclared — or a stale — `NotImplemented` token                        | 1 unimplemented item                         |
-| `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                 | 19 error types, 16 `#[from]` variants        |
-| `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability               | 463 proving tests, 33 dated gaps, 32 methods |
-| `verify-links`        | a repository link that resolves to no tracked path                         | 1 450 links in 309 files                     |
-| `verify-npm-scope`    | an unpublishable manifest, or a retired package name outside the record    | 2 publishable packages, 1 private            |
-| `check-schema`        | a `schemas/vpay.cstack` that does not type-check                           | 26 declarations; see the note below          |
-| `verify-serde`        | a serialisable type that does not spell the wire convention                | 90 types, 16 exemptions                      |
-| `verify-repositories` | a repository implementation named outside `vpay-db`, or an exported schema | 4 implementations, 83 source files outside   |
-| `verify-toolchain`    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`             | 1.98.0                                       |
-| `verify-ui`           | a UI primitive built outside `@vpay/ui`                                    | nothing: silent on success, exit 0 only      |
-| `verify-migrations`   | an applied migration whose bytes changed                                   | 42 files                                     |
-| `verify-docs`         | **nothing — it exits 0 whatever it finds**                                 | advisory report                              |
+| Gate                  | What it refuses                                                                                                                                                  | Last printed                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `verify-no-mocks`     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                     |
+| `verify-status`       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                         |
+| `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 19 error types, 16 `#[from]` variants        |
+| `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability                                                                                                     | 463 proving tests, 33 dated gaps, 32 methods |
+| `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | 1 450 links in 309 files                     |
+| `verify-npm-scope`    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private            |
+| `check-schema`        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 26 declarations; see the note below          |
+| `verify-serde`        | a serialisable type that does not spell the wire convention                                                                                                      | 90 types, 16 exemptions                      |
+| `verify-repositories` | a repository implementation named outside `vpay-db`, or an exported schema                                                                                       | 4 implementations, 83 source files outside   |
+| `verify-toolchain`    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                   | 1.98.0                                       |
+| `verify-ui`           | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12) | nothing: silent on success, exit 0 only      |
+| `verify-migrations`   | an applied migration whose bytes changed                                                                                                                         | 42 files                                     |
+| `verify-docs`         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report                              |
 
 **`check-schema` did not run under the version this repository pins**, and the
 recipe says so out loud rather than passing quietly: `justfile`'s

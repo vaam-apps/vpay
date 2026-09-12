@@ -1,16 +1,19 @@
 import {
-  Alert,
   Code,
-  DataList,
-  DataListRow,
-  Section,
-  Stack,
-  StatusBadge,
+  DetailList,
+  DetailRow,
+  InlineBanner,
+  InlineEmptyState,
+  ScreenStack,
   Table,
-  Text,
-  Timeline,
-} from "@vpay/ui";
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@vaam-apps/ui";
 
+import { PaymentStatusPill } from "../payment-status";
 import {
   ABSENT,
   asPaymentStatus,
@@ -32,11 +35,13 @@ export interface PaymentDetailViewProps {
  * and what state is it in, why did it fail if it did, which rail took it and
  * what did the rail say, and what happened in what order.
  *
- * Composition only — every element here is a `@vpay/ui` primitive. The
- * `<table><tbody><tr><th scope="row">` markup this file wrote by hand twice,
- * twenty rows between them, is `DataList`/`DataListRow` now; the bare
- * `<section>`s that were landmarks in name only are `Section`, which names
- * itself.
+ * Composition of `@vaam-apps/ui` primitives where one exists — `DetailList`/
+ * `DetailRow` for the `<table><tbody><tr><th scope="row">` markup this file
+ * wrote by hand twice, twenty rows between them — and plain semantic HTML
+ * where none does: the four `<section>` landmarks (`Section` has no
+ * `@vaam-apps/ui` counterpart) and the timeline's `<ul>`/`<li>` (there is no
+ * event history to map onto `StateTimeline`'s state-machine shape — see
+ * `payment-status.ts` and the timeline section below).
  *
  * # `Payer` is a dash, and that is a fact rather than a placeholder
  *
@@ -60,148 +65,163 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
   const error = intent.last_payment_error;
 
   return (
-    <Stack direction="column" align="stretch" gap="lg">
+    <ScreenStack>
       {/*
         "Summary" and not "Payment": the page around this view already heads
         itself "Payment", and two <h2>Payment</h2> on one screen was visible
         in the first committed screenshot of it. Sections here are named for
         what they contain, not for the object they are about.
       */}
-      <Section title="Summary">
-        <DataList>
-          <DataListRow label="Id">
-            <Code wrap="anywhere" data-testid="detail-id">
-              {intent.id}
-            </Code>
-          </DataListRow>
-          <DataListRow label="Status">
+      <section aria-label="Summary">
+        <h2>Summary</h2>
+        <DetailList variant="divided">
+          <DetailRow label="Id" variant="divided">
+            <span data-testid="detail-id">
+              <Code>{intent.id}</Code>
+            </span>
+          </DetailRow>
+          <DetailRow label="Status" variant="divided">
             {status === null ? (
-              <Text as="span">{intent.status}</Text>
+              <span>{intent.status}</span>
             ) : (
-              <StatusBadge status={status} />
+              <PaymentStatusPill state={status} showLiteral />
             )}
-          </DataListRow>
-          <DataListRow label="Amount">
+          </DetailRow>
+          <DetailRow label="Amount" variant="divided">
             {formatAmount(intent.amount, intent.currency)}
-          </DataListRow>
-          <DataListRow label="Created (UTC)">
+          </DetailRow>
+          <DetailRow label="Created (UTC)" variant="divided">
             {formatInstant(intent.created)}
-          </DataListRow>
-          <DataListRow label="Payment methods offered">
+          </DetailRow>
+          <DetailRow label="Payment methods offered" variant="divided">
             {formatMethods(intent.payment_method_types)}
-          </DataListRow>
-          <DataListRow label="Description">
+          </DetailRow>
+          <DetailRow label="Description" variant="divided">
             {intent.description ?? ABSENT}
-          </DataListRow>
-          <DataListRow label="Customer">
+          </DetailRow>
+          <DetailRow label="Customer" variant="divided">
             {intent.customer === null ? ABSENT : <Code>{intent.customer}</Code>}
-          </DataListRow>
-          <DataListRow label="Livemode">
+          </DetailRow>
+          <DetailRow label="Livemode" variant="divided">
             {intent.livemode ? "yes" : "no"}
-          </DataListRow>
-        </DataList>
-      </Section>
+          </DetailRow>
+        </DetailList>
+      </section>
 
       {error === null ? null : (
-        <Section title="Last error">
+        <section aria-label="Last error">
+          <h2>Last error</h2>
           {/*
             The failure code AND the sentence. The code is the closed
             vocabulary a runbook is written against; the message is what a
             person reads. Showing only one of them makes the other
             unreachable from this screen.
           */}
-          <Alert tone="error" role="status">
-            <Text as="span" data-testid="detail-failure-code">
-              <Code>{error.code ?? ABSENT}</Code>
-            </Text>
-            <Text as="span">{error.message ?? ABSENT}</Text>
-          </Alert>
-        </Section>
+          <div role="status">
+            <InlineBanner variant="danger">
+              <span data-testid="detail-failure-code">
+                <Code>{error.code ?? ABSENT}</Code>
+              </span>{" "}
+              <span>{error.message ?? ABSENT}</span>
+            </InlineBanner>
+          </div>
+        </section>
       )}
 
-      <Section title="Charge">
+      <section aria-label="Charge">
+        <h2>Charge</h2>
         {charge === null ? (
-          <Text tone="muted">
+          <p>
             No charge. Nobody has confirmed this payment intent — one charge per
             intent, forever, and this one has none.
-          </Text>
+          </p>
         ) : (
-          <DataList>
-            <DataListRow label="Id">
-              <Code wrap="anywhere">{charge.id}</Code>
-            </DataListRow>
-            <DataListRow label="Rail">
+          <DetailList variant="divided">
+            <DetailRow label="Id" variant="divided">
+              <Code>{charge.id}</Code>
+            </DetailRow>
+            <DetailRow label="Rail" variant="divided">
               <span data-testid="detail-rail">{charge.provider_code}</span>
-            </DataListRow>
-            <DataListRow label="State">{charge.state}</DataListRow>
-            <DataListRow label="Amount">
+            </DetailRow>
+            <DetailRow label="State" variant="divided">
+              {charge.state}
+            </DetailRow>
+            <DetailRow label="Amount" variant="divided">
               {formatAmount(charge.amount, charge.currency)}
-            </DataListRow>
-            <DataListRow label="Payer (masked)">
+            </DetailRow>
+            <DetailRow label="Payer (masked)" variant="divided">
               <span data-testid="detail-payer">
                 {charge.payer_ref_masked ?? ABSENT}
               </span>
-            </DataListRow>
-            <DataListRow label="vpay reference">
-              <Code wrap="anywhere">{charge.provider_reference_id}</Code>
-            </DataListRow>
-            <DataListRow label="Rail transaction">
+            </DetailRow>
+            <DetailRow label="vpay reference" variant="divided">
+              <Code>{charge.provider_reference_id}</Code>
+            </DetailRow>
+            <DetailRow label="Rail transaction" variant="divided">
               {charge.provider_txn_id === null ? (
                 ABSENT
               ) : (
-                <Code wrap="anywhere">{charge.provider_txn_id}</Code>
+                <Code>{charge.provider_txn_id}</Code>
               )}
-            </DataListRow>
-            <DataListRow label="Failure">
+            </DetailRow>
+            <DetailRow label="Failure" variant="divided">
               {charge.failure_code === null && charge.failure_raw === null
                 ? ABSENT
                 : `${charge.failure_code ?? ABSENT} — ${charge.failure_raw ?? ABSENT}`}
-            </DataListRow>
-            <DataListRow label="Updated (UTC)">
+            </DetailRow>
+            <DetailRow label="Updated (UTC)" variant="divided">
               {formatInstant(charge.updated)}
-            </DataListRow>
-          </DataList>
+            </DetailRow>
+          </DetailList>
         )}
-      </Section>
+      </section>
 
       {detail.refunds.length === 0 ? null : (
-        <Section title="Refunds">
-          <Table zebra>
-            <thead>
-              <tr>
-                <th scope="col">Refund</th>
-                <th scope="col">Amount</th>
-                <th scope="col">Status</th>
-                <th scope="col">Created (UTC)</th>
-              </tr>
-            </thead>
-            <tbody>
+        <section aria-label="Refunds">
+          <h2>Refunds</h2>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead scope="col">Refund</TableHead>
+                <TableHead scope="col">Amount</TableHead>
+                <TableHead scope="col">Status</TableHead>
+                <TableHead scope="col">Created (UTC)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {detail.refunds.map((refund) => (
-                <tr key={refund.id}>
-                  <td>
-                    <Code wrap="anywhere">{refund.id}</Code>
-                  </td>
-                  <td>{formatAmount(refund.amount, refund.currency)}</td>
-                  <td>{refund.status}</td>
-                  <td>{formatInstant(refund.created)}</td>
-                </tr>
+                <TableRow key={refund.id}>
+                  <TableCell>
+                    <Code>{refund.id}</Code>
+                  </TableCell>
+                  <TableCell>
+                    {formatAmount(refund.amount, refund.currency)}
+                  </TableCell>
+                  <TableCell>{refund.status}</TableCell>
+                  <TableCell>{formatInstant(refund.created)}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
+            </TableBody>
           </Table>
-        </Section>
+        </section>
       )}
 
-      <Section title="Timeline">
-        <Timeline
-          emptyMessage="No events yet."
-          items={detail.events.map((event) => ({
-            id: event.id,
-            label: event.type,
-            at: formatInstant(event.created),
-          }))}
-        />
+      <section aria-label="Timeline">
+        <h2>Timeline</h2>
+        {detail.events.length === 0 ? (
+          <InlineEmptyState message="No events yet." />
+        ) : (
+          <ul>
+            {detail.events.map((event) => (
+              <li key={event.id}>
+                <span>{event.type}</span>{" "}
+                <span>{formatInstant(event.created)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         <TimelineGap />
-      </Section>
-    </Stack>
+      </section>
+    </ScreenStack>
   );
 }

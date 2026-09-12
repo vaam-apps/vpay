@@ -38,10 +38,18 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   `<span role="checkbox" tabindex="0">` with a visually hidden input beside it.
   The test asserts the property rather than the tag: role, tab index,
   accessible name, `aria-checked`, and the label click and space key both
-  measured. **The bumblebee theme's contrast has been checked by nobody**:
+  measured. ~~**The bumblebee theme's contrast has been checked by nobody**:
   `@vpay/ui`'s Storybook runs axe's `color-contrast` rule against `corporate`
   and `business`, which this app does not use, and that Storybook is not part
-  of `just ci` either.
+  of `just ci` either.~~ **Updated 2026-09-12: the theme is `dark`, not
+  `bumblebee`** (the `@vaam-apps/ui` cutover — `@vpay/ui` and its Storybook
+  are both deleted), **and the gap changed shape rather than closing**: there
+  is no Storybook install anywhere in this app any more, under any theme, so
+  there is no axe-in-Storybook run to be wrong about. The contrast this page
+  actually renders is measured by `outcome-contrast.test.ts` (compiled
+  stylesheet, no browser, no Storybook) — see
+  `docs/flows/hosted-checkout.md`'s 2026-09-12 Status entry. A chip is filed
+  to restore Storybook inside this app; nothing has landed.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../../adr/0011-error-modelling.md) touching every
@@ -68,10 +76,16 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
 - **`@base-ui-components/react` is pinned at `1.0.0-rc.0`**, which is the
   latest release that package has: there is no 1.0.0. A release candidate on
   a payment page is a maintainer's call and is recorded as one.
-- **The Storybook stories are reviewed under the wrong theme.** The shared
+- ~~**The Storybook stories are reviewed under the wrong theme.** The shared
   Storybook (`frontends/packages/ui/.storybook`) configures `corporate` and
   `business`; this app ships `bumblebee` alone. The stories show layout and
-  copy honestly and colour only approximately.
+  copy honestly and colour only approximately.~~ **Updated 2026-09-12: there
+  are no Storybook stories to review under any theme.** `frontends/packages/ui`
+  (and the Storybook install it hosted, `checkout-screens.stories.tsx`'s 22
+  stories included) was deleted in the `@vaam-apps/ui` cutover. The checkout
+  has no visual-review surface and no browser-level a11y addon as of this
+  date; a chip is filed to restore Storybook inside `frontends/apps/checkout`
+  itself, and nothing has landed.
 
 ## What the horizon emits, and what it does not
 

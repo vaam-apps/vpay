@@ -377,16 +377,6 @@ jobs:
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
-      # Playwright's Chromium lives outside node_modules (~/.cache/ms-playwright)
-      # and setup-node's pnpm-store cache does not cover it — the same reason
-      # the `e2e` job caches ~/.cache/Cypress. ~115 MB per cold run, for the
-      # `test-storybook` step at the end of this job. Keyed on the lockfile, so
-      # a `playwright` bump fetches the matching build rather than reusing a
-      # stale one.
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
       # Immediately after install and before anything is built, so a
       # known-vulnerable dependency fails this job in seconds rather than
@@ -437,21 +427,14 @@ jobs:
       - name: lint-web (pnpm -r typecheck, then pnpm -r lint)
         run: just lint-web
       - run: pnpm -r test
-      - run: pnpm --filter @vpay/ui build-storybook
-      # The stories rendered in a real Chromium with axe over each one —
-      # `just test-storybook`, not a copy of its command, so the gate and
-      # what a contributor runs locally cannot drift. The recipe installs
-      # the browser first (chromium only, no `--with-deps`: this image
-      # already has the shared libraries).
-      #
-      # It is the only step in this repository that can return a
-      # colour-contrast VERDICT: the jsdom axe suites compute no colour, and
-      # issue #73's Cypress attempt only ever got `incomplete` out of the
-      # real page. Four stories carry `a11y: { test: "todo" }` and report
-      # instead of failing; `just ci` asserts that it is exactly those four
-      # (`frontends/packages/ui/src/testing/a11y-gate.test.ts`).
-      - name: test-storybook (axe over every story, real browser)
-        run: just test-storybook
+      # `pnpm --filter @vpay/ui build-storybook` used to be the last step
+      # here, compiling the checkout's 22 stories and the a11y addon that
+      # reviewed them. DELETED, not moved, 2026-09-12: `@vpay/ui` is deleted
+      # (both apps now compose the published `@vaam-apps/ui`), and nothing
+      # in this job replaces the review surface it built — the jsdom axe
+      # suite (`screens.axe.test.tsx`) never renders in a browser. A chip is
+      # filed to restore Storybook inside `frontends/apps/checkout`; until
+      # it lands, this job compiles no Storybook and reviews no story.
 
   e2e:
     name: e2e (compose)

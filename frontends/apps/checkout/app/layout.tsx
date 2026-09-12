@@ -33,11 +33,13 @@ export const metadata: Metadata = {
  * announced in the wrong one. The switch inside the page updates
  * `document.documentElement.lang` when a payer changes it.
  *
- * The theme is daisyUI's **bumblebee** (the maintainer's requirement,
- * 2026-09-05; it was `corporate` until then), and an operator's own primary
- * colour is applied from `branding.yaml` as a `<style>` React hoists into
- * `<head>`. That placement is the whole point of doing it at runtime: the
- * override arrives in the same response as the markup, so there is no frame
+ * The theme is `@vaam-apps/ui`'s one registered theme, daisyUI's built-in
+ * name `"dark"` (2026-09-12, the `@vaam-apps/ui` cutover — it was daisyUI's
+ * own `bumblebee` before that, and `corporate` before 2026-09-05), and an
+ * operator's own primary colour is applied from `branding.yaml` as a
+ * `<style>` React hoists into `<head>`. That placement is the whole point
+ * of doing it at runtime: the override arrives in the same response as the
+ * markup, so there is no frame
  * in which a payer sees the default colour and then watches it change.
  * `themeStyleSheet` emits digits and punctuation only, from a `#rrggbb` it
  * re-validated — no value from a mounted file reaches the document as markup.

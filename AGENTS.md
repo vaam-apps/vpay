@@ -49,17 +49,16 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
-Two further gates run in CI's `web` job and in neither `just verify` nor
-`just ci`, so a green local run does not predict them: `just build-storybook`,
-and — since 2026-09-12 — `just test-storybook`, which renders every Storybook
-story in a real Chromium and fails on an axe accessibility violation. Both are
-out of `just ci` because they need the network the first time (Playwright
-fetches a ~115 MB Chromium), the same reason `helm-check` is out. Run
-`just test-storybook` before opening a PR that touches a component, a story or
-the theme. It cannot be silently switched off:
-`frontends/packages/ui/src/testing/a11y-gate.test.ts` runs in `just test-web`
-— so in `just ci` — and fails if the addon, the `test: "error"` setting or the
-declared set of `test: "todo"` opt-outs changes.
+One further gate runs in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict it: `just audit-web`.
+`just build-storybook` was a second until 2026-09-12, when `@vpay/ui` and
+its Storybook install were deleted in the `@vaam-apps/ui` cutover — a named,
+accepted gap, not an oversight. **The checkout has no visual-review surface
+and no browser-level accessibility check today**, and the jsdom axe suite
+does not replace one: it renders in no browser, so it computes no colour and
+can never answer `color-contrast`. Restoring Storybook in
+`frontends/apps/checkout` is a filed task; `justfile`'s `build-storybook`
+slot carries what a rebuild already knows, measured rather than guessed.
 
 ### 1. No test doubles in shipping processes
 
@@ -208,9 +207,23 @@ status. The authenticated status query is the only thing that moves money.
   2026-09-07:** this line named Headless UI, framer-motion and vaul, none of
   which is a dependency of any `package.json` in this repository, and no
   motion or sheet library is. `just verify-ui` is the gate on the daisyUI
-  half.
+  half. **Corrected again, 2026-09-12:** `frontends/packages/ui` (`@vpay/ui`)
+  was deleted — both apps now compose the published `@vaam-apps/ui` instead.
+  `@base-ui/react` leaves the repository entirely with it; `@vaam-apps/ui`'s
+  behaviour comes from Headless UI (`@headlessui/react`) and Radix
+  (`@radix-ui/react-dialog`), and its one theme registers under daisyUI's
+  built-in name `dark`, not `bumblebee` — `frontends/apps/checkout` keeps a
+  runtime brand-colour retarget on top of it (`src/config/theme.ts`), the
+  dashboard does not. `class-variance-authority` remains a real dependency
+  (of `@vaam-apps/ui` itself) but neither app calls it directly any more.
 - Status colour and copy come from `@vpay/tokens`. Never inline a status colour
   in a component — a status must not be green in one view and grey in another.
+  **Extended 2026-09-12:** this is now machine-enforced for the first time —
+  `just verify-ui`'s check 7a-ii refuses any of `@vaam-apps/ui`'s
+  `text-state-<hue>-fg`/`bg-state-<hue>-bg`/`border-state-<hue>-border`/
+  `text-destructive` tokens written directly in an app; status presentation
+  goes through `defineStatusSystem` (`StatusPill`/`StateChip`) or an
+  `InlineBanner` variant, both of which carry the hue for the caller.
 - The dashboard never holds a merchant API key. It calls `/dash/v1` server-side
   under an OIDC session. ([ADR-0008](docs/adr/0008-dashboard-scope.md))
 

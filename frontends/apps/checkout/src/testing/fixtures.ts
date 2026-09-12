@@ -5,9 +5,13 @@
  * Test-only, like `browser-stub.ts` and `screen-states.ts` beside it:
  * nothing under `src/testing` is named by a file that ships — not `app/`,
  * not `middleware.ts`, not a component — so none of it can reach the built
- * page. `no-runtime-imports.test.ts` fails if that stops being true. A
- * `.stories.tsx` may name it, and one does: Storybook is built by
- * `pnpm --filter @vpay/ui build-storybook` and is not part of `next build`.
+ * page. `no-runtime-imports.test.ts` fails if that stops being true.
+ * **Updated 2026-09-12:** a `.stories.tsx` used to be the one exception —
+ * `checkout-screens.stories.tsx` named this file, built by Storybook
+ * (`pnpm --filter @vpay/ui build-storybook`), not by `next build`. Both the
+ * package hosting that Storybook install and the stories file itself were
+ * deleted in the `@vaam-apps/ui` cutover; a chip is filed to restore
+ * Storybook inside this app. Nothing names this file outside tests today.
  */
 import type { PaymentIntent } from "@vaam-apps/vpay-stripe-js";
 

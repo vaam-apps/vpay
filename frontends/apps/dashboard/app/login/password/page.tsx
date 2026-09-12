@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-import { Alert, Heading, Stack, Text } from "@vpay/ui";
+import { InlineBanner, ScreenStack } from "@vaam-apps/ui";
 
 import { dashboardConfig } from "../../../src/config/runtime";
 import { PasswordForm } from "../../../src/components/password-form";
@@ -50,10 +50,12 @@ export default async function PasswordPage() {
     // the form with their one-time password already spent.
     if (failure !== null && refusalFor(failure) === "outage") {
       return (
-        <Stack direction="column" gap="md">
-          <Heading level={2}>Choose a password</Heading>
+        <ScreenStack>
+          <h2 className="text-title-sm font-medium text-foreground">
+            Choose a password
+          </h2>
           <ReadFailure failure={failure} />
-        </Stack>
+        </ScreenStack>
       );
     }
     redirect(LOGIN_PATH);
@@ -63,16 +65,20 @@ export default async function PasswordPage() {
   }
 
   return (
-    <Stack direction="column" gap="md">
-      <Heading level={2}>Choose a password</Heading>
-      <Alert tone="warning" role="status">
-        You signed in with the one-time password an operator printed. Replace it
-        before going any further — nothing else is reachable until you do.
-      </Alert>
-      <Text tone="muted" size="sm">
+    <ScreenStack>
+      <h2 className="text-title-sm font-medium text-foreground">
+        Choose a password
+      </h2>
+      <div role="status">
+        <InlineBanner variant="warning">
+          You signed in with the one-time password an operator printed. Replace
+          it before going any further — nothing else is reachable until you do.
+        </InlineBanner>
+      </div>
+      <p className="text-body text-muted-foreground">
         Signed in as <strong>{session.email}</strong>.
-      </Text>
+      </p>
       <PasswordForm action={changePassword} />
-    </Stack>
+    </ScreenStack>
   );
 }

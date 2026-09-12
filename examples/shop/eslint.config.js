@@ -10,13 +10,16 @@ export default vpayEslintConfig({
   // universe from (`@vpay/config` aborts ESLint outright in a Tailwind 3
   // package).
   //
-  // It reads `@vpay/ui`'s `styles.css` as that entry point, and that does not
-  // reopen D1: D1 is about what the shop SHIPS — a merchant copying this
-  // example must be able to reproduce it from public npm packages, and
-  // nothing in `src/` imports `@vpay/ui` or `@vpay/tokens`. This is a
-  // dev-only lint preset in a file a merchant would replace with their own,
-  // in the same way `@vpay/config` already supplies this package's ESLint
-  // rules and has since before the revamp.
+  // It reads THIS package's own `src/app/globals.css` as that entry point
+  // (`resolveTailwindEntryPoint` in `@vpay/config/src/eslint.js` — updated
+  // 2026-09-12, when `@vpay/ui` was deleted and the entry point stopped
+  // being one fixed path shared by every `tailwind: true` package). That
+  // does not reopen D1: D1 is about what the shop SHIPS — a merchant
+  // copying this example must be able to reproduce it from public npm
+  // packages, and nothing in `src/` imports `@vpay/ui`, `@vaam-apps/ui` or
+  // `@vpay/tokens`. This is a dev-only lint preset in a file a merchant
+  // would replace with their own, in the same way `@vpay/config` already
+  // supplies this package's ESLint rules and has since before the revamp.
   tailwind: true,
   next: true,
   forbidTestingImports: true,

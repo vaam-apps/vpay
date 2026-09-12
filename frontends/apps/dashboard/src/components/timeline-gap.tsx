@@ -1,4 +1,4 @@
-import { Code, Text } from "@vpay/ui";
+import { Code, InlineBanner } from "@vaam-apps/ui";
 
 /**
  * THE TIMELINE IS NOT THE HISTORY, AND SAYING SO IS THE POINT.
@@ -24,16 +24,21 @@ import { Code, Text } from "@vpay/ui";
  * Its own component since 2026-09-11, for no reason but that this comment is
  * four times the length of what it explains and was burying the render tree
  * it sat inside.
+ *
+ * Wrapped in a plain `<div>` carrying `data-testid`: `InlineBanner` spreads
+ * no `...rest`, so the test id has nowhere else to live (§0.2).
  */
 export function TimelineGap() {
   return (
-    <Text tone="muted" size="xs" data-testid="timeline-gap">
-      Five of the eight documented event types are written by nothing —{" "}
-      <Code>payment_intent.created</Code>,{" "}
-      <Code>payment_intent.processing</Code>,{" "}
-      <Code>payment_intent.canceled</Code>, <Code>charge.refunded</Code> and{" "}
-      <Code>charge.refund.updated</Code> — so this is not the whole history of a
-      payment.
-    </Text>
+    <div data-testid="timeline-gap">
+      <InlineBanner variant="plain">
+        Five of the eight documented event types are written by nothing —{" "}
+        <Code>payment_intent.created</Code>,{" "}
+        <Code>payment_intent.processing</Code>,{" "}
+        <Code>payment_intent.canceled</Code>, <Code>charge.refunded</Code> and{" "}
+        <Code>charge.refund.updated</Code> — so this is not the whole history of
+        a payment.
+      </InlineBanner>
+    </div>
   );
 }

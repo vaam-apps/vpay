@@ -1,4 +1,4 @@
-import { Alert, Code, Text } from "@vpay/ui";
+import { Code, InlineBanner } from "@vaam-apps/ui";
 
 import type { ApiFailure } from "../server/api";
 
@@ -28,16 +28,24 @@ export interface ReadFailureProps {
  * `server/gate.ts`'s `refusalFor`, and it is a pure function with a unit test
  * precisely so that "a `503` signs everybody out" is a red test rather than a
  * thing somebody notices during an incident.
+ *
+ * The `role="alert"` lives on a plain wrapper `<div>` rather than on
+ * `InlineBanner` itself (2026-09-12, `@vaam-apps/ui` cutover): `InlineBanner`
+ * accepts no `role` and forwards no attribute it does not declare, so this is
+ * the only place left to put it, and both `dashboard.cy.ts`'s `[role="alert"]`
+ * assertions and the axe suite depend on it resolving.
  */
 export function ReadFailure({ failure }: ReadFailureProps) {
   return (
-    <Alert tone="error">
-      <Text as="span">{failure.message}</Text>
-      {failure.requestId === null ? null : (
-        <Text as="span" size="xs" tone="muted">
-          Request <Code>{failure.requestId}</Code>
-        </Text>
-      )}
-    </Alert>
+    <div role="alert">
+      <InlineBanner variant="danger">
+        <span>{failure.message}</span>
+        {failure.requestId === null ? null : (
+          <span className="block text-caption text-muted-foreground">
+            Request <Code>{failure.requestId}</Code>
+          </span>
+        )}
+      </InlineBanner>
+    </div>
   );
 }

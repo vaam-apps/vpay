@@ -1,4 +1,4 @@
-import { EmptyState, Heading, Stack } from "@vpay/ui";
+import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
 import { PaymentsPager } from "../../src/components/payments-pager";
 import { ReadFailure } from "../../src/components/read-failure";
@@ -58,10 +58,10 @@ export default async function PaymentsPage({
   const gate = await requireStaff();
   if (gate.kind === "outage") {
     return (
-      <Stack direction="column" gap="lg">
-        <Heading level={2}>Payments</Heading>
+      <ScreenStack>
+        <h2>Payments</h2>
         <ReadFailure failure={gate.failure} />
-      </Stack>
+      </ScreenStack>
     );
   }
   const staff = gate.staff;
@@ -74,14 +74,14 @@ export default async function PaymentsPage({
   });
 
   return (
-    <Stack direction="column" gap="lg">
+    <ScreenStack>
       <SignedInBar
         email={session.email}
         merchantId={session.merchant_id}
         signOut={signOut}
       />
 
-      <Heading level={2}>Payments</Heading>
+      <h2>Payments</h2>
 
       <PaymentsFilters
         values={{
@@ -94,14 +94,14 @@ export default async function PaymentsPage({
       {!result.ok ? (
         <ReadFailure failure={result.failure} />
       ) : result.value.data.length === 0 ? (
-        <EmptyState
-          title="No payments"
-          description={
+        <InlineEmptyState
+          variant="standalone"
+          message={
             query.status.length > 0 ||
             query.createdFrom.length > 0 ||
             query.createdTo.length > 0
-              ? "No payment matched these filters. Widen the range or clear the status."
-              : "This merchant has no payment intents yet."
+              ? "No payments. No payment matched these filters. Widen the range or clear the status."
+              : "No payments. This merchant has no payment intents yet."
           }
         />
       ) : (
@@ -112,6 +112,6 @@ export default async function PaymentsPage({
           />
         </>
       )}
-    </Stack>
+    </ScreenStack>
   );
 }

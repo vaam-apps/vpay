@@ -4,8 +4,12 @@
  * The return page has no form and no rail selector: the payer has already
  * been to the rail. What it can show is "still waiting for the rail's
  * answer", an outcome, an expired session, or a read it could not make.
+ *
+ * See `checkout-view.tsx`'s header comment for what changed here in the
+ * `@vaam-apps/ui` cutover (2026-09-12): `ScreenStack` for `PageShell`, a
+ * plain `<header>` for `Stack as="header"`, and a hand-written live region.
  */
-import { LiveRegion, PageShell, Stack } from "@vpay/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 
 import type { Branding } from "../config/settings";
 import type { Locale, Translate } from "../i18n/index";
@@ -45,11 +49,11 @@ export function ReturnView(props: ReturnViewProps) {
 
   return (
     <main>
-      <PageShell>
-        <Stack as="header" justify="between" gap="md">
+      <ScreenStack className="mx-auto w-full max-w-md p-6">
+        <header className="flex items-center justify-between gap-4">
           <BrandHeader t={t} branding={props.branding} />
           <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
-        </Stack>
+        </header>
 
         {context === null ? null : (
           <PaymentSummary
@@ -61,7 +65,7 @@ export function ReturnView(props: ReturnViewProps) {
           />
         )}
 
-        <LiveRegion data-testid="live-region">
+        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
           {(() => {
             switch (state.name) {
               case "loading":
@@ -140,10 +144,10 @@ export function ReturnView(props: ReturnViewProps) {
               }
             }
           })()}
-        </LiveRegion>
+        </div>
 
         <SupportLine t={t} branding={props.branding} />
-      </PageShell>
+      </ScreenStack>
     </main>
   );
 }
