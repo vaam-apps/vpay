@@ -645,3 +645,17 @@ whoever rebuilds.
 
 The full record is
 [verification/2026-09-12-browser-a11y.md](verification/2026-09-12-browser-a11y.md).
+
+**Restored later the same day**, in `frontends/apps/checkout` this time, where
+the stories live and no package deletion can take it away again. The rebuild
+inherited all four lessons above and immediately earned a fifth: a gate can
+run, pass, and be measuring the wrong thing entirely. Six consecutive runs
+passed all 22 checkout stories while every one of them rendered **unstyled**,
+because both apps' `globals.css` placed the theme `@import` after another
+at-rule and CSS drops it there. Tailwind's own parser is lenient, so every
+existing gate — including the styling gate the cutover added for exactly this
+failure — inlined the theme and passed. **A green accessibility run against
+the wrong background is worse than no run: it is a claim nobody re-checks.**
+The lock is now a position assertion on the `@import` plus a read of the built
+stylesheet, in
+[verification/2026-09-12-storybook-restored.md](verification/2026-09-12-storybook-restored.md).

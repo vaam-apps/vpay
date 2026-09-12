@@ -89,58 +89,56 @@ build-rust:
 build-web:
     pnpm -r build
 
-# `build-storybook` lived here, building `@vpay/ui`'s Storybook (also CI's
-# `web` job's last step). DELETED, not moved, 2026-09-12 — decided by the
-# maintainer as a real, accepted gap: `@vpay/ui` is deleted (both apps now
-# compose the published `@vaam-apps/ui`), and its 22 checkout-screen stories
-# and the a11y addon that reviewed them go with it. A chip is filed to
-# restore Storybook (in `frontends/apps/checkout`, importing its own
-# `app/globals.css`, since there is no shared package to host it in any
-# more) — until then, the checkout's only visual-review surface and its
-# browser-level a11y addon do not exist. The jsdom axe suite
-# (`screens.axe.test.tsx`) does NOT replace this: it never renders in a
-# browser. See `docs/status/frontend.md` rows 17, 24, 43, 104 (struck
-# through, not edited away) and `docs/status/verification/2026-09-12.md`.
+# Storybook, restored 2026-09-12 inside the app whose screens it renders.
+#
+# It lived in `@vpay/ui` until that package was deleted in the
+# `@vaam-apps/ui` cutover, which took this install, the 22 checkout-screen
+# stories and the a11y addon with it — a named, accepted gap with a filed
+# task, which this closes. There is no shared package to host it in any
+# more, so it lives in `frontends/apps/checkout`, which is where the
+# subjects were all along.
+build-storybook:
+    pnpm --filter @vpay/checkout build-storybook
 
-# WHAT A RESTORE ALREADY KNOWS, measured on branch
-# `claude/recursing-darwin-204853` (PR #133) before this deletion landed and
-# superseded it. That branch built exactly this gate against `@vpay/ui` and
-# ran it; the code is unmergeable now, but four findings cost real time and
-# transfer unchanged to a rebuild in `frontends/apps/checkout`:
+# Every checkout story, rendered in a real Chromium, with axe over each one.
 #
-#   1. `@storybook/test-runner` does NOT work with Storybook 10.6.0. Its
-#      Jest 30 runtime rejects `module.register()`, which Storybook 10's
-#      `serverRequire` calls unconditionally to load `.storybook/
-#      test-runner.*` — measured, 30 suites failed, 0 tests ran. The config
-#      file is what triggers it, so there is no variant that both loads
-#      hooks and runs. Use `@storybook/addon-vitest` + `@vitest/browser`
-#      instead: it reuses this workspace's own vitest and runs the a11y
-#      check through `addon-a11y`'s own `afterEach`, so there is no second
-#      axe configuration to keep in step.
-#   2. DECLARE EVERY DEP IN `optimizeDeps.include`. Vite discovers a
-#      library's subpath entries mid-run, re-bundles, and modules loaded
-#      before the re-bundle keep a `null` React. The suite then reports
-#      "93 passed" with 24 unhandled errors, because A STORY THAT THROWS
-#      WHILE RENDERING STILL COUNTS AS A PASSING TEST and axe never ran on
-#      it. It reproduces from a COLD dep cache only, so it passes locally
-#      and fails on a fresh runner. `resolve.dedupe` does not fix it and
-#      `optimizeDeps.exclude` makes it worse.
-#   3. Clear `node_modules/.cache/storybook` in the recipe. Ten seconds, so
-#      a local green means what CI's green means.
-#   4. A CI-only gate needs a lock inside `just ci`, or nothing anyone runs
-#      locally notices it being switched off. That branch used a plain jsdom
-#      test asserting the addon is still loaded, that a violation still
-#      FAILS rather than warns, and that the set of stories opting out is
-#      exactly the declared, measured ones.
+# NOT part of `just ci`, for the same reason `helm-check` is not: it needs a
+# network the first time, for a ~115 MB Playwright Chromium, and `just ci` is
+# expected to pass offline. CI's `web` job runs it.
 #
-# It also found four real WCAG AA violations on its first run, one of them
-# the checkout's MSISDN rejection message. Those numbers were bumblebee's
-# and do NOT carry over — `@vaam-apps/ui` ships a different theme — but the
-# two CAUSES are general and worth re-checking: daisyUI's `--color-<tone>`
-# is a FILL, and using it as text (`text-error`) is a pair nothing measures;
-# and opacity COMPOUNDS, so a dimmed element inside a dimmed ancestor lands
-# somewhere neither call site shows you. See
-# `docs/status/verification/2026-09-12-browser-a11y.md`.
+# WHAT IT PROVES THAT NOTHING ELSE DOES. `just ci` builds neither web app.
+# The two jsdom axe suites (`screens.axe.test.tsx`, `outcome-contrast.test.ts`)
+# run where there is no layout and no cascade, so they compute no colour and
+# answer `color-contrast` "incomplete" rather than pass or fail; issue #73's
+# Cypress attempt could not get a verdict out of the real page either. This
+# is the only thing in the repository that returns a colour-contrast VERDICT
+# for the screens a payer sees.
+#
+# THE CACHE IS CLEARED FIRST, AND THAT IS NOT TIDINESS. Vite's dep
+# pre-bundle cache can leave the suite reporting every story PASSING while
+# they throw during render and axe runs on none of them — a story that
+# throws still counts as a passing test, so only the unhandled-error count
+# and the exit code give it away, and it reproduces from a COLD cache only.
+# Ten seconds a run is the price of a local green meaning what CI's means.
+#
+# WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` runs
+# in the jsdom suite — so in `just test-web`, so in `just ci` — and asserts
+# the addon is still loaded, that a violation still FAILS rather than warns,
+# that `preview.ts` still paints the document shell the real page paints,
+# and that `app/globals.css` still imports the theme BEFORE any other
+# at-rule. That last one is not pedantry: CSS drops an `@import` that
+# follows another at-rule, Tailwind's own parser does not, and for six runs
+# this suite rendered every story completely unstyled on the browser's
+# default white while the shipped page is #0a0b0d — passing all 22 stories,
+# and passing a deliberately unreadable probe with them.
+test-storybook: playwright-browser
+    rm -rf node_modules/.cache/storybook
+    pnpm --filter @vpay/checkout test-storybook
+
+# Chromium only; `--with-deps` is deliberately not passed, because it needs
+# root and CI's ubuntu-latest image already carries the shared libraries.
+playwright-browser:
+    pnpm --filter @vpay/checkout exec playwright install chromium
 
 # musl static binaries, as shipped
 build-dist:

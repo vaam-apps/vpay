@@ -10,7 +10,10 @@
     "start": "next start -p 3001",
     "typecheck": "pnpm run deps && tsc --noEmit",
     "test": "pnpm run deps && vitest run",
-    "lint": "pnpm run deps && eslint . --max-warnings 0"
+    "lint": "pnpm run deps && eslint . --max-warnings 0",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build -o storybook-static",
+    "test-storybook": "vitest run --config vitest.storybook.config.ts"
   },
   "dependencies": {
     "@vaam-apps/ui": "^0.1.1",
@@ -22,18 +25,27 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
+    "@storybook/addon-a11y": "10.6.0",
+    "@storybook/addon-docs": "10.6.0",
+    "@storybook/addon-vitest": "10.6.0",
+    "@storybook/react-vite": "10.6.0",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitest/browser": "4.1.11",
+    "@vitest/browser-playwright": "4.1.11",
+    "@vitest/runner": "4.1.11",
     "@vpay/config": "workspace:*",
     "axe-core": "4.13.0",
     "daisyui": "5.7.28",
     "eslint": "9.39.5",
     "jsdom": "^25.0.1",
+    "playwright": "1.63.0",
     "postcss": "^8.5.28",
+    "storybook": "10.6.0",
     "tailwindcss": "4.3.3",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"

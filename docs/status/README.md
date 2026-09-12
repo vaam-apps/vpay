@@ -34,6 +34,9 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-storybook-restored.md](verification/2026-09-12-storybook-restored.md) —
+  Storybook restored in `frontends/apps/checkout`, and the dropped `@import`
+  that had both apps' stylesheets silently losing their entire theme
 - [verification/2026-09-12.md](verification/2026-09-12.md) —
   the `@vaam-apps/ui` cutover: both apps move off `@vpay/ui`, and it is
   deleted along with its Storybook
