@@ -34,6 +34,10 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12-worker-claim-latency.md](verification/2026-09-12-worker-claim-latency.md) —
+  what a single worker's claim latency actually is (issue #100): one
+  `IDLE_SLEEP` plus milliseconds, the same at two workers, the bound now
+  pinned, and the loop left alone
 - [verification/2026-09-12-issue-88.md](verification/2026-09-12-issue-88.md) —
   issue #88 item by item: the proactive re-mint, the outage-tolerant cookie,
   the paging test — which a same-day adversarial review found was green under

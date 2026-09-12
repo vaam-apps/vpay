@@ -16,6 +16,7 @@ crate holds _handlers_, and a handler no loop calls is not a running worker.
 
 - [Reading order](#reading-order)
 - [The job loop](#the-job-loop)
+  - [What the loop costs a job that is waiting for it](#what-the-loop-costs-a-job-that-is-waiting-for-it)
   - [Why the loop owns the row and the handler does not](#why-the-loop-owns-the-row-and-the-handler-does-not)
   - [Why `run_loop` and `run_once` are public](#why-run_loop-and-run_once-are-public)
   - [The drain](#the-drain)
@@ -61,6 +62,47 @@ There is no step between 2 and 3. A job whose handler committed a settlement
 and then failed to write to `jobs` is re-run, and every handler is a
 compare-and-swap for that reason — the second run matches no rows and answers
 `Outcome::Done`.
+
+### What the loop costs a job that is waiting for it
+
+`IDLE_SLEEP` (1 s), once, and nothing else. A task that finds the queue empty
+sleeps for it; a task that claimed something goes straight back to
+`Jobs::claim` with no sleep at all, so a backlog is walked as fast as its jobs
+run rather than one job per tick.
+
+**Measured 2026-09-12, on the shipping loop against a real Postgres, with the
+housekeeping singletons live** (`worker_claim_latency.rs`; issue #100 asked for
+the number rather than the argument). Eight jobs enqueued in one transaction,
+ten rounds, the claimable set sampled every 5 ms, the zero being the enqueue's
+commit:
+
+| Concurrency | last of eight claimed (min / median / max) | first claim → last claim |
+| ----------- | ------------------------------------------ | ------------------------ |
+| 1           | 11.7 ms / 1.015 s / 1.028 s                | 0 / 18.5 ms / 27.4 ms    |
+| 2           | 13.1 ms / 1.005 s / 1.017 s                | 0 / 12.9 ms / 19.5 ms    |
+
+The median second is the idle sleep being waited out; the millisecond figures
+are a backlog that arrived while the task was awake. The two rows are the same
+because the claim path is the same — the second concurrency is there because
+the exp38 review's fixture passed with two workers and failed with one, and
+somebody had to check whether the loop was the difference. It is not.
+
+That is also what the singletons cost, counted rather than estimated: 86 claims
+for 80 probe jobs, i.e. six housekeeping claims in about nine seconds, since in
+steady state only the outbox drain (`FAN_OUT_IDLE`, 5 s) recurs — the two scans
+are ten minutes apart and the two sweeps an hour.
+
+The suite pins **3 s** for the claim and **1 s** for the walk, as literals:
+a bound written in terms of `IDLE_SLEEP` would widen itself against the very
+change it exists to catch. Raising `IDLE_SLEEP` to 5 s fails it, and so does an
+`idle()` after every claimed job — that one with the starvation curve in the
+failure message, one second per job.
+
+**What this does not bound.** A worker at `concurrency = 1` runs one job at a
+time, so a handler that takes six seconds delays everything behind it by six
+seconds. That is the concurrency a deployment chooses (`--worker-concurrency`,
+and the `vpay_jobs_oldest_claimable_age_seconds` gauge is what says it is too
+low), not a property of the cadence.
 
 ### Why the loop owns the row and the handler does not
 
