@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { dashDataProvider, DashHttpError } from "./data-provider";
+import { PAGE_SIZE } from "../payments-query";
 
 const BASE = "/api/dash";
 
@@ -92,6 +93,38 @@ describe("the query contract, carried over rather than re-invented", () => {
       page.total,
       "data.length would describe the page, not the account",
     ).toBe(0);
+  });
+
+  it("sends the page size the BFF actually uses, never Refine's own default", async () => {
+    // `pagination.mode: "off"` (payments-screen.tsx) does not stop Refine
+    // filling `pagination.pageSize` with its own default of 10 — a number
+    // the BFF's `queryFrom` never reads and that contradicts the `PAGE_SIZE`
+    // every answer actually carries. Passing it here reproduces exactly what
+    // Refine hands this provider under that mode.
+    const calls = stubFetch(EMPTY_PAGE);
+    const provider = dashDataProvider(BASE);
+    await provider.getList({
+      resource: "payment_intents",
+      pagination: { mode: "off", currentPage: 1, pageSize: 10 },
+    });
+    // A second call with a page size nothing would ever ask for, because the
+    // property is INDEPENDENCE and not "it is not ten". Asserted as the
+    // parsed value rather than as a substring of the URL: `limit=25` and
+    // `limit=250` both "contain" `limit=25`, and a `.not.toContain("limit=10")`
+    // would start failing on its own if `PAGE_SIZE` ever became 100 —
+    // a test that breaks when the constant it reads from moves is a booby
+    // trap, not a guard.
+    await provider.getList({
+      resource: "payment_intents",
+      pagination: { mode: "server", currentPage: 3, pageSize: 77 },
+    });
+    const limits = calls.map((url) =>
+      new URLSearchParams(url.split("?")[1] ?? "").get("limit"),
+    );
+    expect(
+      limits,
+      "the wire must carry the page size the BFF actually asks vpay for, whatever Refine hands this provider",
+    ).toEqual([String(PAGE_SIZE), String(PAGE_SIZE)]);
   });
 
   it("passes the cursor through as the BFF resolved it, inversion included", async () => {

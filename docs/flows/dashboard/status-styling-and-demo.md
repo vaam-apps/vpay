@@ -168,3 +168,55 @@ theme is parsed at module scope.
 comes from the compiled stylesheet, and nobody has looked at the dashboard
 since it went dark — the `processing` pill's hue in particular is a judgement
 recorded in `src/payment-status.ts`, not an observation.
+
+## The `region` landmark broke a second time, 2026-09-12 — and this time it was on `master`
+
+The exp26 finding above is the same rule, the same page and the same class of
+cause, four days apart. #138 moved the app's one `<h1 class="sr-only">vpay
+dashboard</h1>` out of `src/nav.tsx`'s `<nav>` — a landmark — and into
+`AppShell` as a **bare child of the shell's flex row**, which is not one.
+axe-core's `region` rule ("all page content should be contained by
+landmarks") does not exempt content that is only visually hidden; `sr-only`
+keeps an element in the accessibility tree, which is the whole point of it.
+So every signed-in page `master` served carried one `region` violation.
+
+**Nothing could have caught it, which is why it was not caught.**
+`a11y.test.tsx`'s landmark case rendered `RootLayout` around **`LoginLayout`**
+— the signed-out shell — and `app-shell.test.tsx` asserts `AppShell`'s
+structure (one `<h1>`, a link per declared route, sign-out as a POST) without
+ever running it past axe. The composition an operator actually uses had never
+been through the rule.
+
+**Fixed by a `<header>`** — a bare one, so it carries the implicit `banner`
+role, which it only does because it is not nested inside
+`<article>`/`<aside>`/`<main>`/`<nav>`/`<section>`. A `<div>` would not have
+been a landmark and would have left the violation exactly where it was.
+
+Measured, not reasoned, on the rendered `<body>` of `RootLayout` + `AppShell`
+
+- `PaymentsTable` in jsdom:
+
+| markup                     | axe, every rule enabled                        |
+| -------------------------- | ---------------------------------------------- |
+| `<header>` (shipped)       | 0 violations; `color-contrast` incomplete only |
+| bare `<h1>` (the mutation) | 1 violation — `region`, on the `<h1>` itself   |
+
+Sweeping the **whole** rule set rather than `a11y.test.tsx`'s sixteen
+structural ones is deliberate: it is what rules out the fix having bought one
+violation with another, and in particular `landmark-banner-is-top-level`,
+`landmark-no-duplicate-banner` and `landmark-unique`, none of which fires.
+
+**The new case is not single-purpose either.** Emptying `SideNav`'s `topItem`
+label fails it on `link-name`, and no other case in that file catches it —
+`@vaam-apps/ui`'s rail reaches axe here and nowhere else in this repository.
+
+**What the `region` case cannot tell you, and what did:** jsdom computes no
+layout, so "the `<header>` is a zero-width flex item because its only child is
+`position: absolute`" is an argument and not a measurement — a new element in
+the shell's flex row could perfectly well have pushed `<main>` sideways and
+left every axe rule green. The browser answered it instead: `just test-e2e`
+on 2026-09-12 ran `dashboard.cy.ts` **18 passing, 0 failing**, and
+`03-payments.png` from that run — the screenshots are gitignored, so this
+sentence is the record of it and not a pointer to a file — shows the signed-in
+list at 1000×660 with the identity bar, the filter row and the table where
+they were: nothing indented, nothing clipped, no empty band down the left.
