@@ -1,4 +1,4 @@
-import { Alert, Code, Heading, Stack, Text } from "@vpay/ui";
+import { Code, InlineBanner, ScreenStack } from "@vaam-apps/ui";
 
 export interface EnrolmentPanelProps {
   /** The `otpauth://totp/…` URI vpay minted, as a PNG data URL. */
@@ -31,12 +31,14 @@ export interface EnrolmentPanelProps {
  */
 export function EnrolmentPanel({ qrDataUrl, secret }: EnrolmentPanelProps) {
   return (
-    <Stack direction="column" gap="md">
-      <Heading level={2}>Set up your authenticator</Heading>
-      <Text tone="muted" size="sm">
+    <ScreenStack>
+      <h2 className="text-title-sm font-medium text-foreground">
+        Set up your authenticator
+      </h2>
+      <p className="text-body text-muted-foreground">
         Scan this with your authenticator app, then enter the six-digit code it
         shows. You will need that app every time you sign in.
-      </Text>
+      </p>
 
       {/*
         eslint-disable-next-line @next/next/no-img-element --
@@ -54,20 +56,30 @@ export function EnrolmentPanel({ qrDataUrl, secret }: EnrolmentPanelProps) {
       />
 
       {secret === null ? null : (
-        <Stack direction="column" gap="xs">
-          <Text size="sm">Cannot scan? Enter this key instead:</Text>
-          <Text as="p" size="sm">
-            <Code wrap="anywhere" data-testid="totp-secret">
-              {secret}
-            </Code>
-          </Text>
-        </Stack>
+        <div className="flex flex-col gap-1">
+          <p className="text-body text-foreground">
+            Cannot scan? Enter this key instead:
+          </p>
+          <p className="text-body text-foreground">
+            {/* `Code` takes no `data-testid` (2026-09-12, `@vaam-apps/ui`
+                cutover — it spreads no `...rest`), so the wrapper carries it;
+                `dashboard.cy.ts` reads the wrapper's own `.invoke("text")`,
+                which is exactly the secret because `Code` adds no other
+                text. `Code` also drops `wrap="anywhere"` — no counterpart —
+                so a long secret may overflow its container. */}
+            <span data-testid="totp-secret">
+              <Code>{secret}</Code>
+            </span>
+          </p>
+        </div>
       )}
 
-      <Alert tone="warning" role="status">
-        This secret is shown once. It is not stored against your account until
-        you enter a code from it below.
-      </Alert>
-    </Stack>
+      <div role="status">
+        <InlineBanner variant="warning">
+          This secret is shown once. It is not stored against your account
+          until you enter a code from it below.
+        </InlineBanner>
+      </div>
+    </ScreenStack>
   );
 }

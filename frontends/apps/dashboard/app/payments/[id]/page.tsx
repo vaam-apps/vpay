@@ -1,7 +1,7 @@
 import NextLink from "next/link";
 import { notFound } from "next/navigation";
 
-import { Heading, Link, Stack } from "@vpay/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 
 import { PaymentDetailView } from "../../../src/components/payment-detail";
 import { ReadFailure } from "../../../src/components/read-failure";
@@ -31,10 +31,10 @@ export default async function PaymentDetailPage({
   if (gate.kind === "outage") {
     // A vpay this page cannot reach is not a sign-out — see `payments/page.tsx`.
     return (
-      <Stack direction="column" gap="lg">
-        <Heading level={2}>Payment</Heading>
+      <ScreenStack>
+        <h2>Payment</h2>
         <ReadFailure failure={gate.failure} />
-      </Stack>
+      </ScreenStack>
     );
   }
   const staff = gate.staff;
@@ -51,23 +51,23 @@ export default async function PaymentDetailPage({
   }
 
   return (
-    <Stack direction="column" gap="lg">
+    <ScreenStack>
       <SignedInBar
         email={session.email}
         merchantId={session.merchant_id}
         signOut={signOut}
       />
 
-      <Stack as="header" justify="between" align="center" gap="md" wrap>
-        <Heading level={2}>Payment</Heading>
-        <Link render={<NextLink href="/payments" />}>Back to payments</Link>
-      </Stack>
+      <header>
+        <h2>Payment</h2>
+        <NextLink href="/payments">Back to payments</NextLink>
+      </header>
 
       {!result.ok ? (
         <ReadFailure failure={result.failure} />
       ) : (
         <PaymentDetailView detail={result.value} />
       )}
-    </Stack>
+    </ScreenStack>
   );
 }

@@ -50,7 +50,12 @@ describe("the password form", () => {
     expect(alert).toHaveTextContent("req_01J8");
   });
 
-  it("marks both fields invalid through Field own validation state", async () => {
+  it("marks both fields invalid so a screen reader is told which controls were refused", async () => {
+    // There is no `Field` any more (2026-09-12, `@vaam-apps/ui` cutover):
+    // `FormField` derives no validation state of its own, so `sign-in-form.tsx`
+    // sets `aria-invalid` explicitly from `state.error`. The assertion below
+    // is the guarantee and is unchanged — deleting the `aria-invalid` prop
+    // from the component must fail here.
     render(<SignInForm action={refuses("Refused.")} />);
     fireEvent.submit(
       screen

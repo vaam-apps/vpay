@@ -2,14 +2,7 @@
 
 import { useActionState } from "react";
 
-import {
-  Button,
-  Field,
-  FieldDescription,
-  FieldLabel,
-  Input,
-  Stack,
-} from "@vpay/ui";
+import { Button, FormField, Input } from "@vaam-apps/ui";
 
 import { NO_ERROR, type FormAction } from "../form-state";
 import { FormAlert } from "./form-alert";
@@ -61,14 +54,16 @@ export interface PasswordFormProps {
  */
 export function PasswordForm({ action }: PasswordFormProps) {
   const [state, submit, pending] = useActionState(action, NO_ERROR);
+  const invalid = state.error !== null;
 
   return (
     <form action={submit}>
-      <Stack direction="column" gap="md">
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-current-password">
-            Current password
-          </FieldLabel>
+      <div className="flex flex-col gap-4">
+        <FormField
+          label="Current password"
+          htmlFor="dashboard-current-password"
+          hint="On your first sign-in this is the one-time password you were given."
+        >
           <Input
             id="dashboard-current-password"
             name="current_password"
@@ -77,14 +72,15 @@ export function PasswordForm({ action }: PasswordFormProps) {
             autoComplete="current-password"
             autoFocus
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-          <FieldDescription>
-            On your first sign-in this is the one-time password you were given.
-          </FieldDescription>
-        </Field>
+        </FormField>
 
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-new-password">New password</FieldLabel>
+        <FormField
+          label="New password"
+          htmlFor="dashboard-new-password"
+          hint={`At least ${MIN_PASSWORD_CHARS} characters. Length is the only rule.`}
+        >
           <Input
             id="dashboard-new-password"
             name="new_password"
@@ -93,16 +89,11 @@ export function PasswordForm({ action }: PasswordFormProps) {
             minLength={MIN_PASSWORD_CHARS}
             autoComplete="new-password"
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-          <FieldDescription>
-            At least {MIN_PASSWORD_CHARS} characters. Length is the only rule.
-          </FieldDescription>
-        </Field>
+        </FormField>
 
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-confirm-password">
-            Repeat it
-          </FieldLabel>
+        <FormField label="Repeat it" htmlFor="dashboard-confirm-password">
           <Input
             id="dashboard-confirm-password"
             name="confirm_password"
@@ -111,15 +102,16 @@ export function PasswordForm({ action }: PasswordFormProps) {
             minLength={MIN_PASSWORD_CHARS}
             autoComplete="new-password"
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-        </Field>
+        </FormField>
 
         <FormAlert error={state.error} requestId={state.requestId} />
 
-        <Button type="submit" block disabled={pending}>
+        <Button type="submit" className="w-full" disabled={pending}>
           {pending ? "Saving…" : "Set password"}
         </Button>
-      </Stack>
+      </div>
     </form>
   );
 }

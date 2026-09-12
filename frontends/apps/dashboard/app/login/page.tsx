@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-import { Alert, Code, Heading, List, Stack, Text } from "@vpay/ui";
+import { Code, InlineBanner, ScreenStack } from "@vaam-apps/ui";
 
 import { dashboardConfig } from "../../src/config/runtime";
 import { SignInForm } from "../../src/components/sign-in-form";
@@ -29,23 +29,27 @@ export default async function LoginPage() {
 
   if (config === null) {
     return (
-      <Stack direction="column" gap="md">
-        <Heading level={2}>No sign-in is configured</Heading>
-        <Alert tone="warning" role="status">
-          This container has no dashboard client registration, so it can sign
-          nobody in. Nothing is wrong with your account.
-        </Alert>
-        <Text tone="muted" size="sm">
+      <ScreenStack>
+        <h2 className="text-title-sm font-medium text-foreground">
+          No sign-in is configured
+        </h2>
+        <div role="status">
+          <InlineBanner variant="warning">
+            This container has no dashboard client registration, so it can
+            sign nobody in. Nothing is wrong with your account.
+          </InlineBanner>
+        </div>
+        <p className="text-body text-muted-foreground">
           The operator of this deployment has to set:
-        </Text>
-        <List>
+        </p>
+        <ul className="flex flex-col gap-1 list-disc pl-5 text-body text-foreground">
           {problems.map((problem) => (
             <li key={problem.variable}>
               <Code>{problem.variable}</Code> — {problem.detail}
             </li>
           ))}
-        </List>
-      </Stack>
+        </ul>
+      </ScreenStack>
     );
   }
 
@@ -54,13 +58,13 @@ export default async function LoginPage() {
   }
 
   return (
-    <Stack direction="column" gap="md">
-      <Heading level={2}>Sign in</Heading>
-      <Text tone="muted" size="sm">
+    <ScreenStack>
+      <h2 className="text-title-sm font-medium text-foreground">Sign in</h2>
+      <p className="text-body text-muted-foreground">
         Staff accounts are created with <Code>vpay-server staff add</Code>.
         There is no sign-up.
-      </Text>
+      </p>
       <SignInForm action={signIn} />
-    </Stack>
+    </ScreenStack>
   );
 }

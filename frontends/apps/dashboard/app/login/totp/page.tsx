@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import QRCode from "qrcode";
 
-import { Heading, Stack, Text } from "@vpay/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 
 import { dashboardConfig } from "../../../src/config/runtime";
 import { EnrolmentPanel } from "../../../src/components/enrolment-panel";
@@ -79,10 +79,12 @@ export default async function TotpPage() {
   }
   if (gate.kind === "outage") {
     return (
-      <Stack direction="column" gap="md">
-        <Heading level={2}>Enter your code</Heading>
+      <ScreenStack>
+        <h2 className="text-title-sm font-medium text-foreground">
+          Enter your code
+        </h2>
         <ReadFailure failure={gate.failure} />
-      </Stack>
+      </ScreenStack>
     );
   }
 
@@ -91,14 +93,16 @@ export default async function TotpPage() {
 
   if (pending === null) {
     return (
-      <Stack direction="column" gap="md">
-        <Heading level={2}>Enter your code</Heading>
-        <Text tone="muted" size="sm">
+      <ScreenStack>
+        <h2 className="text-title-sm font-medium text-foreground">
+          Enter your code
+        </h2>
+        <p className="text-body text-muted-foreground">
           Open your authenticator app and enter the six-digit code for this
           account.
-        </Text>
+        </p>
         <TotpForm action={submitTotp} />
-      </Stack>
+      </ScreenStack>
     );
   }
 
@@ -110,12 +114,15 @@ export default async function TotpPage() {
   });
 
   return (
-    <Stack direction="column" gap="lg">
+    // `ScreenStack` has one fixed gap (2026-09-12, `@vaam-apps/ui` cutover —
+    // no `gap="lg"` counterpart), so the enrolment branch loses the extra
+    // spacing the old `Stack gap="lg"` gave it. A small, stated change.
+    <ScreenStack>
       <EnrolmentPanel
         qrDataUrl={qrDataUrl}
         secret={secretFrom(pending.otpauth)}
       />
       <TotpForm action={submitTotp} enrolling />
-    </Stack>
+    </ScreenStack>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 
-import { Button, Field, FieldLabel, Input, Stack } from "@vpay/ui";
+import { Button, FormField, Input } from "@vaam-apps/ui";
 
 import { NO_ERROR, type FormAction } from "../form-state";
 import { FormAlert } from "./form-alert";
@@ -40,12 +40,12 @@ export interface TotpFormProps {
  */
 export function TotpForm({ action, enrolling = false }: TotpFormProps) {
   const [state, submit, pending] = useActionState(action, NO_ERROR);
+  const invalid = state.error !== null;
 
   return (
     <form action={submit}>
-      <Stack direction="column" gap="md">
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-totp-code">One-time code</FieldLabel>
+      <div className="flex flex-col gap-4">
+        <FormField label="One-time code" htmlFor="dashboard-totp-code">
           <Input
             id="dashboard-totp-code"
             name="code"
@@ -57,19 +57,20 @@ export function TotpForm({ action, enrolling = false }: TotpFormProps) {
             required
             autoFocus
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-        </Field>
+        </FormField>
 
         <FormAlert error={state.error} requestId={state.requestId} />
 
-        <Button type="submit" block disabled={pending}>
+        <Button type="submit" className="w-full" disabled={pending}>
           {pending
             ? "Checking…"
             : enrolling
               ? "Confirm and finish enrolment"
               : "Continue"}
         </Button>
-      </Stack>
+      </div>
     </form>
   );
 }
