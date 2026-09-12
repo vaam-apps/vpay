@@ -74,7 +74,24 @@ function story(name: keyof typeof CHECKOUT_SCREENS): Story {
 export const Loading: Story = story("loading");
 export const ChooseRail: Story = story("select_rail");
 export const MtnNumber: Story = story("collect_msisdn");
-export const MtnNumberRejected: Story = story("collect_msisdn_invalid");
+/**
+ * `test: "todo"` — axe reports, the run does not fail. **Measured
+ * 2026-09-12**, and this is the one of the four that a payer meets: the
+ * MSISDN rejection message (`data-testid="msisdn-problem"`, `role="alert"`)
+ * renders `text-error` at 12px, which is `#ff6266` on `#ffffff` —
+ * **2.92:1** against AA's 4.5:1. It is the text telling someone their phone
+ * number was not accepted, and it is the least readable text on the screen.
+ *
+ * The cause is `@vpay/ui`'s `text-error`, not this app: `field.stories.tsx`
+ * and `text.stories.tsx` fail on the identical pair. The fix is a theme
+ * token and a maintainer's decision — see the note on
+ * `frontends/packages/ui/src/components/field/field.stories.tsx`'s
+ * `Invalid`. Tracked in `docs/status/frontend.md`.
+ */
+export const MtnNumberRejected: Story = {
+  ...story("collect_msisdn_invalid"),
+  parameters: { a11y: { test: "todo" } },
+};
 export const OrangeReady: Story = story("ready_redirect");
 export const Confirming: Story = story("confirming");
 export const WaitingForThePayer: Story = story("waiting");

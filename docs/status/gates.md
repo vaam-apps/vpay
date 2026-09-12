@@ -517,3 +517,35 @@ network, a database or a binary this workspace does not build.
   the declaration scanner they share, 4 for the two report lines. Four of them
   are the mutations recorded in
   [`docs/plans/exp10-notes/opus.md`](../plans/exp10-notes/opus.md).
+
+<!-- Appended 2026-09-12, below the archived text rather than inside it: the
+     note at the top of this page says its body is the original and unedited. -->
+
+## 2026-09-12 — a gate that is not one of the twelve
+
+`just test-storybook` renders every Storybook story in a real Chromium and
+fails on an axe violation. It is **not** part of `just verify` and **not**
+part of `just ci` — it needs a ~115 MB Playwright Chromium download the first
+time, and `just ci` is expected to pass offline, which is the same reason
+`helm-check` is excluded. CI's `web` job runs it, next to `build-storybook`,
+which is likewise absent from `just ci`. So the count in
+[../status.md](../status.md)'s gate table is unchanged at twelve, and
+correctly so.
+
+That leaves three tiers of check in this repository, which is worth stating
+once: the twelve in `just verify`; `verify-citations`, a gate that needs the
+network and a GitHub token and is therefore opt-in; and now `build-storybook`
+and `test-storybook`, gates that run in CI but not in the local `just ci`.
+
+**What keeps it a gate, given that `just ci` never runs it:**
+`frontends/packages/ui/src/testing/a11y-gate.test.ts`, a plain jsdom test in
+the suite `just test-web` — and therefore `just ci` — does run. It fails if
+`.storybook/preview.ts` stops saying `a11y: { test: "error" }`, if
+`.storybook/main.ts` stops loading `@storybook/addon-vitest` or
+`@storybook/addon-a11y`, or if the set of stories carrying the
+`a11y: { test: "todo" }` escape hatch is ever anything but the four declared,
+measured ones. Each of its assertions was run against the mutation it exists
+to catch; the numbers are in
+[verification/2026-09-12.md](verification/2026-09-12.md), together with the
+false green that the first version of the suite produced and how it was
+found. The rows are on [frontend.md](frontend.md).

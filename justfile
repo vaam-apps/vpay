@@ -88,6 +88,44 @@ build-web:
 build-storybook:
     pnpm --filter @vpay/ui build-storybook
 
+# Every story, rendered in a real Chromium, with axe run over each one.
+#
+# NOT part of `just ci`, for the same reason `helm-check` is not: it needs a
+# network the first time. Playwright fetches a ~115 MB Chromium build, and
+# `just ci` is expected to pass on a machine with no network, so folding this
+# in would turn "offline" into "failing". CI's `web` job runs it next to
+# `build-storybook`, which is not in `just ci` either.
+#
+# WHAT IT PROVES THAT NOTHING ELSE DID. `@storybook/addon-a11y` has been
+# installed since 2026-09-04 and reported only in its own panel, which no CI
+# job opens; `build-storybook` compiles the stories and renders none of them.
+# The jsdom axe suites (`screens.axe.test.tsx`) do run axe, but jsdom
+# implements no layout and no cascade, so it computes no colour and answers
+# `color-contrast` "incomplete" rather than pass or fail — and issue #73's
+# Cypress attempt could not get a verdict out of the real page either,
+# because daisyUI 5's `:root` scroll-lock rule carries a `background-image`
+# and axe-core abandons the rule under one. This is the first thing in the
+# repository that gets a colour-contrast VERDICT out of a browser, and on
+# its first run it returned four (see `docs/status/frontend.md`).
+#
+# WHAT KEEPS IT A GATE. `src/testing/a11y-gate.test.ts` runs in the jsdom
+# suite — so in `just test-web`, so in `just ci` — and asserts that
+# `preview.ts` still says `test: "error"`, that `main.ts` still loads
+# `@storybook/addon-vitest`, and that the only stories carrying the
+# `test: "todo"` escape hatch are the four declared ones, each still stating
+# the ratio it was measured at. Without it, this suite could be switched off
+# in a one-line edit that the gate everyone runs locally would never see.
+#
+# Needs `just build-storybook` first? No — the vitest plugin builds the
+# stories itself through the same vite config. Run it on its own.
+test-storybook: playwright-browser
+    pnpm --filter @vpay/ui test-storybook
+
+# Chromium only; `--with-deps` is deliberately not passed, because it needs
+# root and CI's ubuntu-latest image already carries the shared libraries.
+playwright-browser:
+    pnpm --filter @vpay/ui exec playwright install chromium
+
 # musl static binaries, as shipped
 build-dist:
     cargo build --profile dist --target x86_64-unknown-linux-musl -p vpay-server

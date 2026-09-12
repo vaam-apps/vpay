@@ -49,6 +49,18 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
+Two further gates run in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict them: `just build-storybook`,
+and — since 2026-09-12 — `just test-storybook`, which renders every Storybook
+story in a real Chromium and fails on an axe accessibility violation. Both are
+out of `just ci` because they need the network the first time (Playwright
+fetches a ~115 MB Chromium), the same reason `helm-check` is out. Run
+`just test-storybook` before opening a PR that touches a component, a story or
+the theme. It cannot be silently switched off:
+`frontends/packages/ui/src/testing/a11y-gate.test.ts` runs in `just test-web`
+— so in `just ci` — and fails if the addon, the `test: "error"` setting or the
+declared set of `test: "todo"` opt-outs changes.
+
 ### 1. No test doubles in shipping processes
 
 No mock, fake, stub or dummy may be reachable from `vpay-server` — the one

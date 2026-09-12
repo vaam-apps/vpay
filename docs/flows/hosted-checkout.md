@@ -449,3 +449,43 @@ will catch violations when the real browser implementation is added. The
 theme's own tone palette is measured by `@vpay/ui`'s `theme-contrast.test.ts`,
 which compiles the stylesheet and verifies every rendered tone clears WCAG AA
 (4.5:1), including the error/info overrides at lines 887–899 above.
+
+**Updated 2026-09-12: the real browser the entry above said was "still
+unbuilt" now exists — and it failed this page.** That entry ended by naming
+what was missing: "**The real verification is in a real browser** —
+`cypress-axe` running against the `compose.e2e.yml` stack, plan §7 row 6
+(still unbuilt)." It is built, by a different route than the one named:
+`@storybook/addon-vitest` renders every Storybook story in a real Chromium and
+`@storybook/addon-a11y` runs axe-core 4.13.0 over each one, as `just
+test-storybook` and as a step in CI's `web` job. Storybook rather than Cypress
+for a measured reason — `shop-hosted.cy.ts` could never get a colour-contrast
+verdict out of this page at all, because daisyUI 5's `:root` scroll-lock rule
+carries an unconditional `background-image` and axe-core abandons the
+`color-contrast` rule under one, which three rounds of mutation in
+`outcome-contrast.test.ts`'s header record. A story renders inside
+`#storybook-root` with no such ancestor, and the rule returns a verdict.
+
+**The verdict on this page was a violation.** `Mtn Number Rejected` — the
+screen a payer sees when their MSISDN is refused — paints its
+`role="alert"` message in `text-error` at 12px: bumblebee's `--color-error`
+`#ff6266` on `#ffffff`, **2.92:1**, against WCAG AA's 4.5:1 for body text. It
+is the least readable text on a screen whose entire job is to tell someone
+what went wrong. Two `@vpay/ui` stories fail on the identical pair
+(`field.stories.tsx > Invalid`, `text.stories.tsx > Tones`), so the cause is
+the shared `text-error`, not this app.
+
+This is a **different pair** from the one the 2026-09-07 review fixed, and
+that is why nothing caught it earlier: that review corrected
+`--color-error-content`, the foreground `.alert-error` paints **on**
+`--color-error`, and both `theme-contrast.test.ts` and `outcome-contrast.test.ts`
+measure `--color-error` as a background. `--color-error` as a _foreground on
+base-100_ had never been measured by anything.
+
+**Not fixed here**, and the reason is the same one `@vpay/ui/src/styles.css`
+gives for recording its own `--color-error-content` change as the maintainer's
+delegate's decision of 2026-09-07: moving `--color-error` moves the
+payment-failure alert that two suites pin. The story carries
+`a11y: { test: "todo" }` — axe still runs and still reports it on every run,
+the run does not fail — with the measured ratio in a comment beside it, and
+`docs/status/frontend.md` carries the row. **A decision is owed; nothing about
+this screen has been quietly adjusted.**

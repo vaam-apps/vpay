@@ -34,6 +34,9 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-12.md](verification/2026-09-12.md) —
+  `claude/recursing-darwin-204853`, the Storybook a11y gate and the four
+  contrast violations its first run found
 - [verification/2026-09-11.md](verification/2026-09-11.md) —
   `claude/exp51-demo-tenant`, the header of `claude/exp45-worker-pool-bound`,
   and `claude/exp46-customer-address`
