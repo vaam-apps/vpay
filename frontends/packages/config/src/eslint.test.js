@@ -222,9 +222,19 @@ describe("the shared config still carries the rules the gate claims", () => {
   });
 
   it("react-hooks is on in the React packages", async () => {
+    // `frontends/packages/ui/src/components/status-badge.tsx` was the
+    // fourth entry here until 2026-09-12, when `@vpay/ui` was deleted (the
+    // @vaam-apps/ui cutover). Not replaced with another path in that
+    // package: the package itself is gone, `PACKAGE_DIRS` is read live from
+    // `git ls-files`, and `rulesFor` throws `TypeError: The "path" argument
+    // must be of type string` for a path under no remaining package
+    // directory — measured, not assumed: this exact mutation (leaving the
+    // deleted path in the array) was run and seen to throw. The three
+    // packages left below are every `react: true` package in the workspace
+    // today (`git grep -l 'react: true' -- '**/eslint.config.js'`); there is
+    // no fourth to add in its place.
     for (const file of [
       "frontends/apps/checkout/src/components/checkout-client.tsx",
-      "frontends/packages/ui/src/components/status-badge.tsx",
       "examples/shop/src/components/cart-table.tsx",
       "frontends/apps/dashboard/app/page.tsx",
     ]) {

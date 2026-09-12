@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 
-import { Button, Field, FieldLabel, Input, Stack } from "@vpay/ui";
+import { Button, FormField, Input } from "@vaam-apps/ui";
 
 import { NO_ERROR, type FormAction } from "../form-state";
 import { FormAlert } from "./form-alert";
@@ -22,21 +22,24 @@ export interface SignInFormProps {
  *
  * `pending` disables every control and is not decoration: without it a
  * double-click submits twice, and the second submission of a credential pair
- * is refused by the per-email rate limiter after enough of them. `Field`
- * carries the invalid state so the `aria-invalid` a screen reader reads comes
- * from the component's own validation rather than from a hand-rolled
- * `aria-*` prop.
+ * is refused by the per-email rate limiter after enough of them. `FormField`
+ * derives no validation state of its own (2026-09-12, `@vaam-apps/ui`
+ * cutover — it has no `invalid` prop), so `aria-invalid` is set explicitly
+ * on each control from `state.error` instead.
  *
- * The error is rendered in exactly one place — see {@link FormAlert}.
+ * The error is rendered in exactly one place — see {@link FormAlert}. Never
+ * pass `error` to `FormField` here: it renders its own `role="alert"`
+ * paragraph, which would print the refusal a second time and make two
+ * elements answer `findByRole("alert")`.
  */
 export function SignInForm({ action }: SignInFormProps) {
   const [state, submit, pending] = useActionState(action, NO_ERROR);
+  const invalid = state.error !== null;
 
   return (
     <form action={submit}>
-      <Stack direction="column" gap="md">
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-signin-email">Work email</FieldLabel>
+      <div className="flex flex-col gap-4">
+        <FormField label="Work email" htmlFor="dashboard-signin-email">
           <Input
             id="dashboard-signin-email"
             name="email"
@@ -44,11 +47,11 @@ export function SignInForm({ action }: SignInFormProps) {
             required
             autoComplete="username"
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-        </Field>
+        </FormField>
 
-        <Field invalid={state.error !== null}>
-          <FieldLabel htmlFor="dashboard-signin-password">Password</FieldLabel>
+        <FormField label="Password" htmlFor="dashboard-signin-password">
           <Input
             id="dashboard-signin-password"
             name="password"
@@ -56,15 +59,16 @@ export function SignInForm({ action }: SignInFormProps) {
             required
             autoComplete="current-password"
             disabled={pending}
+            aria-invalid={invalid ? "true" : undefined}
           />
-        </Field>
+        </FormField>
 
         <FormAlert error={state.error} requestId={state.requestId} />
 
-        <Button type="submit" block disabled={pending}>
+        <Button type="submit" className="w-full" disabled={pending}>
           {pending ? "Signing in…" : "Sign in"}
         </Button>
-      </Stack>
+      </div>
     </form>
   );
 }

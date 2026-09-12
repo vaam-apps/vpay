@@ -3,14 +3,13 @@ import {
   CHECKOUT_OUTCOME,
   PAYMENT_STATUS,
   checkoutOutcomeTone,
+  checkoutOutcomeVariant,
   statusLabel,
-  statusTone,
 } from "./index.js";
 
 describe("status tokens", () => {
-  it("covers every status with a tone and a label", () => {
+  it("covers every status with a label", () => {
     for (const s of PAYMENT_STATUS) {
-      expect(statusTone[s], `tone for ${s}`).toBeTruthy();
       expect(statusLabel[s], `label for ${s}`).toBeTruthy();
     }
   });
@@ -18,11 +17,6 @@ describe("status tokens", () => {
   it("never labels processing as nearly-done", () => {
     expect(statusLabel.processing.toLowerCase()).not.toContain("almost");
     expect(statusLabel.processing.toLowerCase()).not.toContain("complete");
-  });
-
-  it("reserves success tone for succeeded alone", () => {
-    const successes = PAYMENT_STATUS.filter((s) => statusTone[s] === "success");
-    expect(successes).toEqual(["succeeded"]);
   });
 });
 
@@ -39,17 +33,6 @@ describe("checkout outcome tones", () => {
     expect(checkoutOutcomeTone.failed).toBe("error");
   });
 
-  it("is not the operator’s status palette wearing another name", () => {
-    // `requires_payment_method` is the intent status a failed attempt leaves
-    // behind, and it is legitimately NEUTRAL on a dashboard: it means
-    // "awaiting a payment method", not "this failed". The two tables must be
-    // able to disagree, and here they do.
-    expect(statusTone.requires_payment_method).toBe("neutral");
-    expect(checkoutOutcomeTone.failed).not.toBe(
-      statusTone.requires_payment_method,
-    );
-  });
-
   it("keeps success for the one outcome that succeeded", () => {
     const successes = CHECKOUT_OUTCOME.filter(
       (o) => checkoutOutcomeTone[o] === "success",
@@ -62,5 +45,36 @@ describe("checkout outcome tones", () => {
     // not the other is the point, so this asserts both sides of it.
     expect(checkoutOutcomeTone.canceled).toBe("warning");
     expect(checkoutOutcomeTone.failed).toBe("error");
+  });
+});
+
+describe("checkout outcome variants (@vaam-apps/ui vocabulary)", () => {
+  it("covers every outcome", () => {
+    for (const outcome of CHECKOUT_OUTCOME) {
+      expect(
+        checkoutOutcomeVariant[outcome],
+        `variant for ${outcome}`,
+      ).toBeTruthy();
+    }
+  });
+
+  it("agrees with checkoutOutcomeTone on which outcome is a success", () => {
+    const toneSuccesses = CHECKOUT_OUTCOME.filter(
+      (o) => checkoutOutcomeTone[o] === "success",
+    );
+    const variantSuccesses = CHECKOUT_OUTCOME.filter(
+      (o) => checkoutOutcomeVariant[o] === "success",
+    );
+    expect(variantSuccesses).toEqual(toneSuccesses);
+  });
+
+  it("keeps failed the alarming tone in both vocabularies", () => {
+    expect(checkoutOutcomeTone.failed).toBe("error");
+    expect(checkoutOutcomeVariant.failed).toBe("danger");
+  });
+
+  it("keeps canceled a warning in both, not the alarming tone", () => {
+    expect(checkoutOutcomeTone.canceled).toBe("warning");
+    expect(checkoutOutcomeVariant.canceled).toBe("warning");
   });
 });

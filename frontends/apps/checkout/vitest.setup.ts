@@ -1,21 +1,28 @@
 import "@testing-library/jest-dom/vitest";
 
 /**
- * jsdom does not implement a handful of browser APIs Base UI's interactive
- * components rely on for pointer capture, positioning and click
+ * jsdom does not implement a handful of browser APIs Headless UI's
+ * interactive components rely on for pointer capture, positioning and click
  * simulation. Every one of these is a no-op or minimal polyfill, not a
  * behaviour stub — the components still make their own real decisions
  * (checked state, open state, selected value); only the browser plumbing
  * underneath them is faked in, the same way jsdom itself fakes in layout.
  *
- * Kept equivalent to `frontends/packages/ui/vitest.setup.ts`: this app now
- * renders `@vpay/ui`'s `Checkbox` and `Select`, both of which need the same
- * polyfills that package's own tests do. Unlike that package, this app's
- * default test environment is `node` (`vitest.config.ts` — most of its
- * suite talks to `node:http`, not the DOM), with individual files opting
- * into `jsdom` — so every browser global referenced here, including at
- * class-declaration time, is guarded: this file runs for the `node`-
- * environment tests too, where `MouseEvent` does not exist at all.
+ * **Updated 2026-09-12, the `@vaam-apps/ui` cutover:** `@vpay/ui` (and its
+ * own `vitest.setup.ts`, which this file used to be "kept equivalent to")
+ * is deleted. What forces which polyfill today, measured rather than
+ * assumed: `CheckboxField`/`Checkbox` are `@vaam-apps/ui`'s, built on
+ * Headless UI, and are the one thing here that still needs pointer-capture
+ * and click-simulation plumbing. `LocaleSwitch` is a **native** `<select>`
+ * now (decision 8) and needs none of it — a native control's own DOM
+ * implementation handles pointer/keyboard interaction, jsdom included. The
+ * suite this file serves has not needed a `matchMedia` polyfill; nothing
+ * queries it. Unlike the deleted package, this app's default test
+ * environment is `node` (`vitest.config.ts` — most of its suite talks to
+ * `node:http`, not the DOM), with individual files opting into `jsdom` — so
+ * every browser global referenced here, including at class-declaration
+ * time, is guarded: this file runs for the `node`-environment tests too,
+ * where `MouseEvent` does not exist at all.
  */
 
 if (typeof window !== "undefined" && !window.PointerEvent) {

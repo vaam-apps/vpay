@@ -20,17 +20,18 @@ import type { NextConfig } from "next";
  */
 const config: NextConfig = {
   reactStrictMode: true,
-  // `@vpay/ui` ships raw `.ts` source (no build step, `main: './src/index.ts'`)
-  // the same way `@vpay/tokens` does — added 2026-09-07 (exp26 UI revamp)
-  // when this app started importing it.
+  // `@vpay/tokens` ships raw `.ts` source (no build step,
+  // `main: './src/index.ts'`), so it needs to go through this app's own
+  // compiler like any other workspace package that ships source rather than
+  // a build.
   //
-  // Declared because it is TRUE of the package, not because a gate proves it:
-  // measured on 2026-09-07 in the Lane B review, `next build` also succeeds
-  // with `@vpay/ui` removed from this list, so no mutation of this line fails
-  // anything today. Keep it anyway — Next's own docs make transpiling a
-  // source-shipping workspace package the supported arrangement, and the
-  // alternative is relying on a resolution that happens to work.
-  transpilePackages: ["@vpay/tokens", "@vpay/ui"],
+  // `@vaam-apps/ui` (2026-09-12, replacing `@vpay/ui`) ships pre-built ESM
+  // (`"type": "module"`, `dist/index.js`) and is deliberately NOT listed
+  // here — it should not need transpiling. If a `next build` later fails on
+  // it, that failure is the evidence to add it back, not a reason to add it
+  // pre-emptively: doing so would make Next compile every file in the
+  // package for no measured reason.
+  transpilePackages: ["@vpay/tokens"],
   output: "standalone",
   /**
    * The monorepo root, so the standalone bundle is laid out relative to it.

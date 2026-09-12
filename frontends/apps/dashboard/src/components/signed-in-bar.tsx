@@ -1,4 +1,4 @@
-import { Button, Code, Stack, Text } from "@vpay/ui";
+import { Button, Code } from "@vaam-apps/ui";
 
 export interface SignedInBarProps {
   /** The address this session signed in with. */
@@ -30,16 +30,16 @@ export interface SignedInBarProps {
  */
 export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
   return (
-    <Stack justify="between" align="center" gap="md" wrap>
-      <Text as="span" size="sm" tone="muted">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <span className="text-body text-muted-foreground">
         Signed in as <strong>{email}</strong> · merchant{" "}
         <Code>{merchantId}</Code>
-      </Text>
+      </span>
       <form action={signOut}>
         <Button type="submit" variant="ghost" size="sm">
           Sign out
         </Button>
       </form>
-    </Stack>
+    </div>
   );
 }

@@ -4,11 +4,19 @@
  * `docs/plans/2026-09-07-ui-revamp.md` §5 Lane D names the theme regression
  * as a decisive mutation: "the layout's `data-theme` reverts to `corporate`"
  * must fail. Measured while writing it (`docs/plans/exp26-notes/lane-d.md`):
- * `frontends/packages/ui/src/styles.css` configures daisyUI with exactly one
- * theme (`bumblebee`), so a `data-theme` that does not say `bumblebee`
- * compiles no styling at all — the page renders completely unthemed in a real
- * browser. jsdom would not show that, which is why this pins the attribute on
- * the rendered markup rather than trusting a render to "look right".
+ * `frontends/packages/ui/src/styles.css` configured daisyUI with exactly one
+ * theme (`bumblebee`), so a `data-theme` that did not say `bumblebee`
+ * compiled no styling at all — the page rendered completely unthemed in a
+ * real browser. jsdom would not show that, which is why this pins the
+ * attribute on the rendered markup rather than trusting a render to "look
+ * right".
+ *
+ * **Updated 2026-09-12:** `@vpay/ui` was deleted; the dashboard now composes
+ * `@vaam-apps/ui`. That package's `theme.css` registers its one theme under
+ * daisyUI's built-in name `dark` (its own README and file header both say
+ * so — it is the only theme the package compiles), so the decisive mutation
+ * and the reasoning are unchanged in substance: a `data-theme` that does not
+ * say `dark` still compiles no styling at all. Only the theme's name moved.
  */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -28,10 +36,11 @@ function markup(): string {
 }
 
 describe("the root layout", () => {
-  it("sets the bumblebee theme — the only theme @vpay/ui actually compiles", () => {
+  it("sets the dark theme — the only theme @vaam-apps/ui actually compiles", () => {
     const html = markup();
-    expect(html).toContain('data-theme="bumblebee"');
+    expect(html).toContain('data-theme="dark"');
     expect(html).not.toContain('data-theme="corporate"');
+    expect(html).not.toContain('data-theme="bumblebee"');
   });
 
   it("renders the brand as the page's one <h1>, inside the <nav>", () => {

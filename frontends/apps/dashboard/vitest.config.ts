@@ -6,7 +6,7 @@ export default defineConfig({
   // `React.createElement` calls into the test bundle, where nothing imports
   // `React`. The runtime transform is stated here rather than by relaxing
   // the tsconfig Next relies on — the same fix `frontends/apps/checkout`
-  // and `frontends/packages/ui` already carry.
+  // already carries.
   esbuild: { jsx: "automatic", jsxImportSource: "react" },
   test: {
     environment: "jsdom",

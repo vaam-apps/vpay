@@ -1,7 +1,5 @@
 import NextLink from "next/link";
 
-import { Heading, Link, PageShell, Stack } from "@vpay/ui";
-
 /**
  * Every internal link the persistent chrome renders, in one array.
  *
@@ -33,26 +31,28 @@ export const NAV_LINKS: readonly {
  *
  * The brand is the app's only `<h1>` and is rendered here rather than
  * per-page, because every screen carries it.
+ *
+ * Plain elements only (2026-09-12, `@vaam-apps/ui` cutover): the package
+ * ships no counterpart for `@vpay/ui`'s layout/typography primitives
+ * (`PageShell`, `Stack`, `Heading`, `Link`), so this chrome is unstyled
+ * until a later pass gives it a shape. `layout.test.tsx:41` still requires
+ * the `<h1>` to sit inside the `<nav>`, so that nesting is preserved as-is.
  */
 export function PrimaryNav() {
   return (
     <nav>
-      <PageShell>
-        <Stack justify="between" align="center" gap="md" wrap>
-          <Heading level={1}>vpay dashboard</Heading>
-          <Stack gap="md" as="div">
+      <div>
+        <div>
+          <h1>vpay dashboard</h1>
+          <div>
             {NAV_LINKS.map((entry) => (
-              <Link
-                key={entry.href}
-                render={<NextLink href={entry.href} />}
-                tone="hover"
-              >
+              <NextLink key={entry.href} href={entry.href}>
                 {entry.label}
-              </Link>
+              </NextLink>
             ))}
-          </Stack>
-        </Stack>
-      </PageShell>
+          </div>
+        </div>
+      </div>
     </nav>
   );
 }

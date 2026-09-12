@@ -23,10 +23,15 @@
 #   * backends/Dockerfile's `FROM rust:<version>` names the compiler
 #     rust-toolchain.toml pins (`verify-toolchain`, 2026-09-05)
 #   * no palette colour, no daisyUI 4 class daisyUI 5 removed, no
-#     `!important` outside the one documented exception, no `cva` call
-#     outside `@vpay/ui`, no file in `@vpay/ui` over 200 lines, and no
-#     `className` written in an app at all (`verify-ui`, 2026-09-07 — exp26
-#     UI revamp; the line ceiling and the class rule 2026-09-11)
+#     `!important` outside the documented exceptions, no `cva` call in an
+#     app, no computed `className`, no status-colour theme token or
+#     over-60-character class string in an app, no daisyUI component class
+#     in an app, and nothing importing or path-reaching the `@vpay/ui`
+#     package deleted 2026-09-12 (`verify-ui`, 2026-09-07 — exp26 UI revamp;
+#     the line ceiling and the class rule 2026-09-11; the line ceiling
+#     deleted and the class rule rewritten as three narrower rules,
+#     2026-09-12, when `@vpay/ui` itself was deleted — see the recipe's own
+#     comment block for the reasoning)
 #   * every migration file's SHA256 matches its entry in the manifest; applied
 #     migrations are immutable (`verify-migrations`, 2026-09-07, issue #76)
 #
@@ -84,9 +89,18 @@ build-rust:
 build-web:
     pnpm -r build
 
-# CI's `web` job builds this too; not part of `pnpm -r build`.
-build-storybook:
-    pnpm --filter @vpay/ui build-storybook
+# `build-storybook` lived here, building `@vpay/ui`'s Storybook (also CI's
+# `web` job's last step). DELETED, not moved, 2026-09-12 — decided by the
+# maintainer as a real, accepted gap: `@vpay/ui` is deleted (both apps now
+# compose the published `@vaam-apps/ui`), and its 22 checkout-screen stories
+# and the a11y addon that reviewed them go with it. A chip is filed to
+# restore Storybook (in `frontends/apps/checkout`, importing its own
+# `app/globals.css`, since there is no shared package to host it in any
+# more) — until then, the checkout's only visual-review surface and its
+# browser-level a11y addon do not exist. The jsdom axe suite
+# (`screens.axe.test.tsx`) does NOT replace this: it never renders in a
+# browser. See `docs/status/frontend.md` rows 17, 24, 43, 104 (struck
+# through, not edited away) and `docs/status/verification/2026-09-12.md`.
 
 # musl static binaries, as shipped
 build-dist:
@@ -574,14 +588,20 @@ clippy:
 #
 # NOT linted, and each for a stated reason: build output (`dist/`, `.next/`,
 # `storybook-static/`) and the `next-env.d.ts` Next regenerates, because none
-# of it is authored here; and `frontends/packages/ui/.storybook/{main,preview}.ts`
-# is linted WITHOUT the type-aware rules, because `include: [".storybook"]` in
-# that package's tsconfig does not actually reach it — TypeScript's
-# include-glob expansion skips dot-directories, so `tsc --listFiles` lists
-# neither file and `pnpm -r typecheck` has never covered them either. That is
-# a gap in the typecheck, recorded rather than papered over: fixing it means
-# changing what `pnpm -r typecheck` covers, a different gate, so it is left
-# as a maintainer's call.
+# of it is authored here.
+#
+# `frontends/packages/ui/.storybook/{main,preview}.ts` used to be named here
+# too, linted WITHOUT the type-aware rules because `include: [".storybook"]`
+# in that package's tsconfig did not actually reach it — TypeScript's
+# include-glob expansion skips dot-directories, so `tsc --listFiles` listed
+# neither file and `pnpm -r typecheck` never covered them. **Moot, not fixed,
+# 2026-09-12**: `@vpay/ui` and its Storybook are deleted (Storybook is a
+# real, accepted gap — see `build-storybook`'s old slot above, and the
+# 2026-09-12 chip to restore it in `frontends/apps/checkout`); there is no
+# `.storybook` anywhere in this tree today for the gap to apply to. Whoever
+# lands the restoration should re-measure whether the new location's
+# tsconfig actually includes it, rather than assuming this paragraph's
+# reasoning still holds for a different directory.
 #
 # `no-console` is off in tests, Storybook stories, Cypress specs, `testing/`
 # helpers and the command-line examples (`examples/*/index.mjs`,
@@ -1058,12 +1078,12 @@ verify-repositories:
 verify-toolchain:
     cargo xtask verify-toolchain
 
-# Seven things ESLint cannot express cheaply — a `git grep` is the honest
-# tool here rather than a `cargo xtask verify-ui` matching this repo's other
-# gates, which is more ceremony than nine greps and a `wc -l` deserve (plan
+# Things ESLint cannot express cheaply — a `git grep` is the honest tool
+# here rather than a `cargo xtask verify-ui` matching this repo's other
+# gates, which is more ceremony than a dozen greps deserve (plan
 # docs/plans/2026-09-07-ui-revamp.md §7, "the class-string rules,
-# concretely"). Seven numbered checks over nine greps, because 1 and 7 each
-# take two: the recipe below is the list, and if this paragraph and the
+# concretely"). Eleven numbered checks over twelve greps, because 1 and 7b
+# each take two: the recipe below is the list, and if this paragraph and the
 # recipe disagree the recipe is right. Each has a decisive mutation: add the
 # offending line, confirm this exits non-zero, remove it.
 #
@@ -1077,6 +1097,37 @@ verify-toolchain:
 # exp53 review, each with the mutation that found it recorded beside the
 # check: 5 matched only single-quoted imports, which `.prettierrc` forbids,
 # and 7 matched only a double-quoted literal, which `cn(…)` is not.
+#
+# It said "seven" until 2026-09-12, when `frontends/packages/ui` was deleted
+# (both apps now compose the published `@vaam-apps/ui` instead) and this
+# recipe changed shape rather than just its pathspecs:
+#   - Check 6 (the 200-line ceiling) is GONE. Its input set — `git ls-files`
+#     over the package's src directory — is now a pathspec matching no
+#     tracked file, which exits 0 with empty output; the loop body never
+#     runs; `fail` stays 0. A check that cannot fail reads as coverage it no
+#     longer provides, so it is deleted rather than left vacuous. See the
+#     dated paragraph where it used to be.
+#   - Old check 7a (a single grep banning any `className=` in an app) is
+#     replaced by three narrower checks — 7a-i, 7a-ii, 7a-iii — because its
+#     own escape hatch ("add the missing primitive to `@vpay/ui`") no longer
+#     exists, and `@vaam-apps/ui` ships no layout or typography primitive at
+#     all. See 7a-i's comment for the full reasoning.
+#   - Old check 5 (the `.js`-suffixed relative import guard) is replaced by
+#     5 and 5b: a permanent ban on importing or path-reaching the deleted
+#     package, because its own pathspec (`frontends/packages/ui/src`) would
+#     otherwise rot the exact same way check 6 did.
+#   - Checks 1, 1b and 2 keep their shape but drop `frontends/packages/ui`
+#     from scope (and the file-specific exemptions that lived there) —
+#     colour and daisyUI-4-class hygiene inside a package on its way out is
+#     not worth tracking, and after the deletion the pathspec would rot too.
+#   - Check 7b keeps its shape but the daisyUI-component alternation drops
+#     `table`, `select`, `mask` and `collapse` (real Tailwind utilities once
+#     an app is allowed to write layout classes at all — `select-none`,
+#     `table-fixed`, Tailwind 4's `mask-*` family) and gains a second grep
+#     (7b-ii) that still catches `table`/`select`/`mask` when daisyUI-
+#     modifier-suffixed or bare. `collapse` is dropped outright: daisyUI's
+#     `.collapse` and Tailwind's `visibility: collapse` are the same token
+#     and a grep cannot tell them apart. See 7b-ii's comment.
 verify-ui:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1104,28 +1155,31 @@ verify-ui:
     #        `text-[#ff0000]` in an app passed, though plan §3 bans "a colour
     #        literal, a hex value" in as many words.
     #
-    #    `frontends/packages/ui/src` is in scope now too. Colour utilities are
-    #    meant to live inside `@vpay/ui` — but plan §3's exhaustive list of
-    #    what may be written there is layout, spacing, non-colour typography,
-    #    position, `sr-only` and opacity, and it ends "every colour utility
-    #    without exception is a bug report against this list". A daisyUI theme
-    #    token (`bg-base-100`, `text-error`) is not a palette colour and never
-    #    matches.
+    #    `frontends/packages/ui/src` was in scope too, and `cn.ts` there was
+    #    named-exempted (its doc comment used `bg-red-500 bg-blue-500` in
+    #    prose, as the example of a Tailwind conflict group). **Both dropped
+    #    2026-09-12**: `@vpay/ui` was deleted from the tree in this change
+    #    (both apps now compose the published `@vaam-apps/ui`), and colour
+    #    hygiene inside a package on its way out was never the point — left
+    #    in place, the pathspec would have rotted exactly the way check 6
+    #    did (a dead pathspec exits 1 silently, which is a pass, not a
+    #    check). Measured before dropping it: with the pathspec already
+    #    narrowed to `frontends/apps` and `examples/shop`, this check exits 1
+    #    (no match) against the current tree — the two apps' real classes are
+    #    all layout or theme tokens.
     #
-    #    frontends/packages/ui/src/cn.ts is exempted by path: its doc comment
-    #    uses `bg-red-500 bg-blue-500` in prose, as the example of a Tailwind
-    #    conflict group. Same false positive the other two checks already
-    #    carry named exemptions for; measured to be the only file in the tree
-    #    that matches without an actual offending class.
+    #    A daisyUI theme token (`bg-base-100`, `text-error`) is not a palette
+    #    colour and never matches.
     if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-((red|green|blue|amber|yellow|slate|gray|zinc|neutral|stone|emerald|teal|sky|indigo|violet|rose|orange|lime|cyan|fuchsia|pink)-[0-9]{2,3}|black|white)(/[0-9]+)?\b' \
-        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' \
-        ':!frontends/packages/ui/src/cn.ts' ; then
+        -- 'frontends/apps' 'examples/shop' ; then
       echo 'verify-ui: a palette colour outside a theme token — use a daisyUI theme token'; fail=1
     fi
     # 1b. No arbitrary colour value either — plan §3 bans "a colour literal, a
     #     hex value" in a component, and a `bg-[#ff0000]` is both.
+    #     `frontends/packages/ui/src` dropped from scope 2026-09-12, same
+    #     reasoning as check 1.
     if git grep -nE '\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-\[(#|rgb|hsl|oklch|color-mix)' \
-        -- 'frontends/apps' 'examples/shop' 'frontends/packages/ui/src' ; then
+        -- 'frontends/apps' 'examples/shop' ; then
       echo 'verify-ui: a hard-coded colour value — use a daisyUI theme token'; fail=1
     fi
     # 2. No daisyUI 4 class that daisyUI 5 removed. These do not error; they
@@ -1134,14 +1188,31 @@ verify-ui:
     #    plan measured this repository actually used — not the complete
     #    daisyUI 4→5 delta.
     #
-    #    frontends/packages/ui/src/components/field/field.tsx is exempted: its own
-    #    doc comment NAMES form-control/label-text, in prose, to explain
-    #    why @vpay/ui's Field replaces them — it does not use either class.
-    #    Measured, not assumed: it is the only file in the tree where this
-    #    matched and had no actual offending class in it.
-    if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
-        -- 'frontends' 'examples' ':!docs' \
-        ':!frontends/packages/ui/src/components/field/field.tsx' ; then
+    #    frontends/packages/ui/src/components/field/field.tsx used to be
+    #    exempted here: its own doc comment NAMED form-control/label-text, in
+    #    prose, to explain why @vpay/ui's Field replaced them — it did not
+    #    use either class. **The file-specific exemption is replaced by a
+    #    directory exclusion, 2026-09-12**: `@vpay/ui` was deleted from the
+    #    tree in this change, and excluding the one file it lived in would
+    #    have left the exemption pointing at nothing — the same silent rot
+    #    check 6 is deleted for. Measured before landing this: with
+    #    `frontends/packages/ui` excluded, this check exits 1 (no match)
+    #    against the current tree.
+    #
+    #    `input-bordered`, `select-bordered` and `textarea-bordered` ADDED
+    #    2026-09-12: this recipe's own list was never complete (§ above,
+    #    "not the complete daisyUI 4→5 delta"), and it stayed unnoticed only
+    #    because until 7a was relaxed no app wrote a daisyUI component class
+    #    at all. Found by dogfood, not inspection: `pnpm --filter @vpay/checkout
+    #    lint` reported `select-bordered` as an UNKNOWN class the moment
+    #    `eslint-plugin-better-tailwindcss` compiled the real
+    #    `@vaam-apps/ui` theme — confirmed by reading the installed
+    #    `daisyui@5.7.28` package directly: no `-bordered` class exists in
+    #    any of `select.css`, `input.css` or `textarea.css`; "bordered"
+    #    became each form control's default appearance. `tabs-bordered` was
+    #    already here; these three complete the same category.
+    if git grep -nE '\b(form-control|label-text|label-text-alt|btn-group|input-group|card-compact|input-bordered|select-bordered|textarea-bordered|tabs-bordered|tabs-lifted|tabs-boxed)\b' \
+        -- 'frontends' 'examples' ':!docs' ':!frontends/packages/ui' ; then
       echo 'verify-ui: a daisyUI 4 class removed in daisyUI 5'; fail=1
     fi
     # 3. No !important, with three exemptions — measured against this repo's
@@ -1164,132 +1235,299 @@ verify-ui:
         ':!examples/checkout-browser/index.html' ; then
       echo 'verify-ui: !important outside the documented exemptions'; fail=1
     fi
-    # 5. No `.js`-suffixed relative import inside @vpay/ui. This is a
-    #    REGRESSION GUARD, not a style rule, and it re-runs the original
-    #    failure rather than a proxy for it: `@vpay/ui` ships TypeScript
-    #    source (`main: ./src/index.ts`), and its tsconfig sets
-    #    `moduleResolution: "bundler"`, under which `tsc` and Vitest resolve
-    #    `'./cn.js'` back to `cn.ts` and pass — while Next's webpack resolver
-    #    takes the suffix literally and fails the consuming app's build with
-    #    `Module not found: Can't resolve './cn.js'`.
+    # 5. `@vpay/ui` was deleted on 2026-09-12 (both apps now compose the
+    #    published `@vaam-apps/ui`). Nothing may import it, by any spelling.
     #
-    #    So typecheck, lint and the whole vitest suite stay green while
-    #    `pnpm --filter @vpay/dashboard build` cannot build at all, and
-    #    neither `just lint-web` nor `just test-web` runs a `next build`.
-    #    This has now happened TWICE: fixed once before 2026-09-07 (recorded
-    #    by name in docs/status.md's "@vpay/ui production build" row) and
-    #    reintroduced across all 48 source files by the exp26 component set.
-    #    A gate, because a comment did not hold.
+    #    This REPLACES the `.js`-suffixed-relative-import guard that used to
+    #    be check 5, which was path-scoped to `frontends/packages/ui/src` and
+    #    went VACUOUS the moment that directory was deleted — measured rather
+    #    than assumed: `git grep` against a pathspec matching no tracked file
+    #    exits 1, which inside `if …; then` is indistinguishable from "no
+    #    offence found", so the old check would have gone on reporting
+    #    success having read nothing. Exactly the failure mode check 6 is
+    #    deleted for (§ below), so this slot is spent on a permanent
+    #    guarantee instead of a guard for a bug class that left with the
+    #    package it protected.
     #
-    #    **It matched only SINGLE-quoted imports until 2026-09-11, which is to
-    #    say it matched nothing this repository can produce**: `.prettierrc`
-    #    sets `singleQuote: false`, `just fmt` rewrites every import to double
-    #    quotes, and not one of `@vpay/ui`'s own imports is single-quoted. The
-    #    exp53 review re-ran the original failure and measured it: a
-    #    `from "../../cn.js"` in `components/code/code.tsx` passed this gate
-    #    with exit 0; the same line written `from '../../cn.js'` failed. So
-    #    the guard against a regression that "has now happened TWICE" could
-    #    not have caught either occurrence. Both quote characters now, and the
-    #    mutation to re-run is the double-quoted one.
-    if git grep -nE "from [\"'][.]{1,2}/[^\"']*[.]js[\"']" -- 'frontends/packages/ui/src' ; then
-      echo 'verify-ui: a .js-suffixed relative import in @vpay/ui — Next cannot resolve it'; fail=1
+    #    Four spellings, because the package exported `.`, `./testing`,
+    #    `./testing/contrast` and `./styles.css`, and the last was reached by
+    #    `@import` from an app stylesheet and by `createRequire(...).resolve`
+    #    from a test — neither of which is a `from "…"`. `frontends/packages/ui`
+    #    itself is excluded: its own prose necessarily still names the
+    #    package it used to be, while it is still on disk waiting for Group F
+    #    to `git rm` it, and that is not a violation.
+    #
+    #    The mutations, all four run: `import { Button } from "@vpay/ui";`,
+    #    the same line single-quoted, and `@import "@vpay/ui/styles.css";`
+    #    each exit non-zero; a clean file exits 0.
+    if git grep -nE '(from|import|require\(|resolve\()[[:space:]]*["'"'"']@vpay/ui|@import[[:space:]]+["'"'"']@vpay/ui|"@vpay/ui"[[:space:]]*:' \
+        -- 'frontends' 'examples' 'sdks' ':!*.md' ':!frontends/packages/ui' ; then
+      echo 'verify-ui: @vpay/ui was deleted on 2026-09-12 — nothing may import it'; fail=1
     fi
-    # 4. No cva outside the shared library — one variant map, not one per app.
+    # 5b. And nothing may reach into its directory by path — NOT redundant
+    #     with 5: `frontends/packages/config/src/eslint.js` resolved a
+    #     `new URL(…)` call whose first argument was the package's own
+    #     styles.css, two directories up by a relative path, as the
+    #     Tailwind class-universe entry point for three packages (checkout,
+    #     dashboard AND `examples/shop`, which never depended on `@vpay/ui`
+    #     at all), and no grep for the package NAME would ever have found it.
+    #     Fixed in this same change (see `tailwind` in that file); this check
+    #     is what stops it, or anything like it, from coming back.
+    #
+    #     Requires the path to sit right after a quote or apostrophe — a real
+    #     string literal, the shape a `new URL(...)`, a `require(...)` or a
+    #     bare pathspec string actually takes — rather than matching the bare
+    #     words anywhere. Measured before landing this: a naive
+    #     `frontends/packages/ui|\.\./ui/src` (no quote requirement, same
+    #     pathspec) matched ten lines of legitimate PROSE across nine files —
+    #     a doc comment reading `` `frontends/packages/ui/src/styles.css` ``
+    #     inside backticks, not a string literal — which would have made
+    #     this check impossible to ship.
+    #
+    #     `frontends/packages/config/src/eslint.test.js` is exempted by path:
+    #     line 227 names `frontends/packages/ui/src/components/status-badge.tsx`
+    #     as one of four representative files in a table asserting
+    #     react-hooks is on for "a React package" — a real double-quoted
+    #     string, not prose, so the quote-adjacency fix above does not save
+    #     it. Measured before exempting it: `calculateConfigForFile` (read in
+    #     `node_modules/eslint/lib/eslint/eslint.js`) resolves a flat config
+    #     by matching the given path STRING against each block's `files`
+    #     glob — it never reads the file from disk — so this assertion keeps
+    #     passing whether or not that path exists. Same shape as the cn.ts
+    #     and field.tsx exemptions above: a measured false positive, not a
+    #     weakened rule.
+    #
+    #     Mutation: re-add that `new URL(…)` call, and separately a bare
+    #     quoted string naming the package's src directory by its full
+    #     workspace-relative path — each exits non-zero; the same path named
+    #     in a doc comment, backtick-quoted rather than string-quoted, exits
+    #     0 (that is prose, and this check must not fire on prose).
+    if git grep -nE "[\"'][.]{1,2}/(\.\./)?ui/src|[\"']frontends/packages/ui" \
+        -- 'frontends' 'examples' 'sdks' 'justfile' '.github' ':!*.md' \
+        ':!frontends/packages/ui' \
+        ':!frontends/packages/config/src/eslint.test.js' ; then
+      echo 'verify-ui: a path into the deleted frontends/packages/ui'; fail=1
+    fi
+    # 4. No cva outside a component — one variant map, not one per app.
+    #    Until 2026-09-12 the "shared library" was `@vpay/ui`; now it is
+    #    `@vaam-apps/ui`, published from another repository, so an app
+    #    cannot add a variant map to it even if it wanted to — the realistic
+    #    violation is no longer a `cva(` call (still checked; it costs
+    #    nothing and `class-variance-authority` is one import away, being a
+    #    runtime dependency of `@vaam-apps/ui`) but a ternary or lookup
+    #    object producing the same class string. 7a-i is the check that
+    #    actually carries the rule now; this one is kept because a check
+    #    whose comment claims a guarantee it no longer fully provides is the
+    #    failure mode this recipe's own history is a list of.
     if git grep -n 'cva(' -- 'frontends/apps' 'examples' ; then
-      echo 'verify-ui: a cva variant map outside @vpay/ui'; fail=1
+      echo 'verify-ui: a cva variant map in an app'; fail=1
     fi
-    # 7. No class name written in an app, and no daisyUI COMPONENT class
-    #    anywhere under `frontends/apps`. Two checks, because they fail for
-    #    two different reasons and a reader should be told which.
+    # 7a. Three narrow rules, replacing the single blanket "no className in
+    #     an app" check that stood here until 2026-09-12.
     #
-    #    The directive this serves is the maintainer's, 2026-09-11: "a
-    #    @vpay/ui package with all UI primitives that we'll use both for
-    #    checkout but also for dashboard". An app that writes a class has
-    #    written a primitive of its own, which is the thing the package
-    #    exists to stop. `frontends/apps/dashboard/README.md` already states
-    #    the rule — "Zero `className` strings … not one, under `app/` or
-    #    `src/`, outside the tests" — and said `just verify-ui` was "the gate
-    #    for the parts of that a grep can see". This is now the whole of it.
+    #     The directive this serves is still the maintainer's, 2026-09-11: "a
+    #     @vpay/ui package with all UI primitives that we'll use both for
+    #     checkout but also for dashboard". An app that writes a class has
+    #     written a primitive of its own, which is the thing the package
+    #     existed to stop. **That premise is exactly what 2026-09-12 retires**:
+    #     `@vpay/ui` is deleted, both apps now compose the published
+    #     `@vaam-apps/ui`, and its own `dist/index.d.ts` ships no `PageShell`,
+    #     `Stack`, `Heading`, `Text`, `List`, `Link`, `Section`,
+    #     `VisuallyHidden` or `LiveRegion` — no layout or typography
+    #     primitive at all. `className` appears on 39 of its 56 declaration
+    #     files: the package's own API says "extend me with a class". Under
+    #     the old blanket rule both apps would ship structurally faithful,
+    #     visually unstyled screens. So the rule changes — not "delete the
+    #     check": a narrower rule that still bans what it was written to ban.
     #
-    #    7a is the decisive check, and it is the one a mutation cannot walk
-    #    around. Check 1 catches a palette COLOUR and check 4 a stray `cva`;
-    #    neither sees `className="btn btn-primary"`, which is how a second
-    #    Button gets written with every gate green.
+    #     Old check 7a banned three things, named in its own comment history:
+    #     a palette colour (check 1's job), a hand-rolled variant system
+    #     (check 4's job, and now 7a-i's), and a re-implemented primitive
+    #     (7b's job, and now also 7a-iii's budget). Layout was collateral,
+    #     acceptable only while a package existed to absorb it. It no longer
+    #     does, so layout is now permitted and these three are not:
     #
-    #    **7b alone was not enough, measured on 2026-09-11 by the exp53
-    #    review.** As first written it required a DOUBLE-QUOTED literal
-    #    immediately after `className=`, so four spellings of the same defect
-    #    passed with exit 0 in a `frontends/apps/dashboard` file:
+    #     | 7a was written to ban          | covered by            |
+    #     | ------------------------------ | ---------------------- |
+    #     | a raw palette colour           | checks 1 + 1b          |
+    #     | a status colour as a theme token| 7a-ii (new)            |
+    #     | a hand-rolled variant system    | check 4 (`cva`) + 7a-i |
+    #     | a re-implemented primitive      | 7b + 7a-iii (budget)   |
+    #     | a layout class                  | not banned, on purpose |
     #
-    #        className={cn("btn", "btn-primary")}        exit 0
-    #        className={`btn btn-primary ${extra}`}      exit 0
-    #        className={'btn btn-primary'}               exit 0
-    #        className={clsx("card", "bg-base-100")}     exit 0
+    #     **The residual hole, stated rather than hidden**: a re-implemented
+    #     primitive assembled from several short literal `className`
+    #     attributes across a file passes all three of 7a-i/ii/iii and 7b.
+    #     There is no grep for that. The mitigation is review and the budget
+    #     (7a-iii), not a claim that this is complete.
     #
-    #    and `cn` is exported from `@vpay/ui`'s own public index, so the
-    #    first of those is one import away from any app file. 7a fails on all
-    #    four because it does not care what is inside the attribute; 7b now
-    #    reads inside a `cn()`/`clsx()`/template literal too, so it still
-    #    names the daisyUI class in a test or a story, which 7a exempts.
+    #     The `frontends/apps/checkout/app/layout.tsx` exemption that used to
+    #     live here is deleted with the blanket rule: its
+    #     `<body className="min-h-screen bg-base-100">` (34 characters, a
+    #     plain literal, no status colour) is legal on its own merits under
+    #     all three rules below, so the exemption was a line that would have
+    #     misled the next reader.
     #
-    #    Exemptions, both measured against this tree rather than assumed:
-    #      - `frontends/apps/checkout/app/layout.tsx`'s
-    #        `<body className="min-h-screen bg-base-100">` — layout plus a
-    #        theme token on the document itself, which no component owns, and
-    #        the one `className=` in shipping app source.
-    #      - `*.test.ts(x)` and `*.stories.tsx` are outside 7a: a test reads
-    #        `element.className` and one of the checkout's quotes the old
-    #        markup in a comment. They stay inside 7b, where only a real
-    #        daisyUI component class matches.
+    # 7a-i. `className` in an app takes a plain double-quoted literal and
+    #       nothing else — no `cn()`, no `clsx()`, no template literal, no
+    #       ternary, no bare identifier. The signature of a hand-rolled
+    #       variant system is not a class string; it is a COMPUTED one.
+    #       `cn` is exported by `@vaam-apps/ui` too, so it is one import away
+    #       from any app file, exactly as it was from `@vpay/ui` — this is
+    #       what stops that import from mattering.
     #
-    #    Theme TOKENS are untouched by 7b — `bg-base-100`, `text-error`,
-    #    `border-base-300` are not components.
+    #       Known limit, stated rather than hidden: this permits
+    #       `className="flex items-center"` and forbids
+    #       `className={"flex items-center"}`, which are the same thing.
+    #       Acceptable — prettier normalises the second to the first.
     #
-    #    `examples/shop` is deliberately NOT in scope: it does not depend on
-    #    `@vpay/ui` at all (its `package.json` takes `@vpay/config` and
-    #    nothing else from this repo), because it is a MERCHANT's storefront
-    #    — a third party who has vpay's SDK and not vpay's design system.
-    #    Holding it to this rule would mean shipping the demo a look no real
-    #    merchant would have.
-    #
-    #    The mutations, all five run: add `className="btn btn-primary"`, or
-    #    any of the four spellings above, to a file under `frontends/apps`
-    #    and this exits non-zero; remove it and it exits 0.
-    if git grep -nE 'className[[:space:]]*=' -- 'frontends/apps' \
-        ':!*.test.ts' ':!*.test.tsx' ':!*.stories.tsx' \
-        ':!frontends/apps/checkout/app/layout.tsx' ; then
-      echo 'verify-ui: a className written in an app — compose a @vpay/ui primitive instead'; fail=1
+    #       The mutations, all four run:
+    #         className={cn("flex", loud && "text-state-danger-fg")}   -> non-zero
+    #         className={`flex ${extra}`}                              -> non-zero
+    #         className={busy ? "opacity-50" : "opacity-100"}          -> non-zero
+    #         className={STYLE.row}                                    -> non-zero
+    #       negative control: className="flex items-center gap-4"     -> exit 0
+    if git grep -nE 'className[[:space:]]*=[[:space:]]*[{]' -- 'frontends/apps' \
+        ':!*.test.ts' ':!*.test.tsx' ':!*.stories.tsx' ; then
+      echo 'verify-ui: a computed className in an app — a class string assembled at runtime is a variant map; put the variants in a component'; fail=1
     fi
-    daisy_component_class=$'className=[{]?[^}]*[\'"`][^\'"`]*\\b(btn|card|badge|alert|input|select|modal|menu|table|loading|link|fieldset|navbar|drawer|checkbox|radio|tabs|toast|skeleton|join|steps|stat|collapse|dropdown|tooltip|progress|range|toggle|kbd|avatar|chat|carousel|diff|swap|indicator|mask|divider|breadcrumbs|pagination|footer|hero|countdown|timeline|mockup)\\b'
+    # 7a-ii. No STATUS colour token in an app. Check 1 bans a palette colour
+    #        (`bg-red-500`) and deliberately permits a theme token
+    #        (`bg-base-100`, `text-error`) — but `@vaam-apps/ui`'s theme adds
+    #        a token family check 1 has never seen:
+    #        `text-state-<hue>-fg/bg/border`. Those ARE status colours, and
+    #        AGENTS.md's rule — "Never inline a status colour in a component
+    #        — a status must not be green in one view and grey in another" —
+    #        is exactly about them. Status presentation belongs in a
+    #        `defineStatusSystem` table or an `InlineBanner` variant, both of
+    #        which carry the hue for the caller.
+    #
+    #        Mutation: className="text-state-danger-fg" -> non-zero;
+    #        negative control: className="text-muted-foreground" -> exit 0
+    #        (a non-status text tier is exactly what an app should write).
+    if git grep -nE '\b(bg|text|border|ring|fill|stroke|divide|outline|shadow)-(state-[a-z]+-(fg|bg|border)|destructive(-foreground)?)\b' \
+        -- 'frontends/apps' ':!*.test.ts' ':!*.test.tsx' ':!*.stories.tsx' ; then
+      echo 'verify-ui: a status colour written in an app — use a status system or an InlineBanner variant'; fail=1
+    fi
+    # 7a-iii. A class attribute in an app is at most 60 characters — the
+    #         maintainer's standing directive is "the least class possible",
+    #         and the 200-line ceiling that carried its sibling half (the
+    #         old check 6) is deleted along with `@vpay/ui` (see below). 60
+    #         matches `enforce-consistent-line-wrapping`'s own printWidth
+    #         (100, minus `className=""`) in
+    #         `@vpay/config/src/eslint.js` — not a number chosen to keep
+    #         this check green.
+    #
+    #         Mutation: a class attribute over 60 characters -> non-zero.
+    #         Negative control (the decisive one — any budget fails on
+    #         something long enough; what proves 60 honest is that a real
+    #         primitive the apps replaced fits under it):
+    #         className="mx-auto flex max-w-md flex-col gap-6 p-6" (46
+    #         characters — @vpay/ui's own deleted PageShell) -> exit 0.
+    if git grep -nE 'className="[^"]{61,}"' -- 'frontends/apps' \
+        ':!*.test.ts' ':!*.test.tsx' ':!*.stories.tsx' ; then
+      echo 'verify-ui: a className over 60 characters in an app — compose a @vaam-apps/ui component instead of a longer string'; fail=1
+    fi
+    # 7b. No daisyUI COMPONENT class anywhere under `frontends/apps`. Two
+    #     greps, because the alternation used to contain four tokens that
+    #     are ALSO real Tailwind utilities, and the collision was invisible
+    #     while no app wrote a class — measured 2026-09-12, now that 7a
+    #     permits layout: `table` matches inside `table-fixed`/`table-auto`/
+    #     `table-cell`/`table-row`/`table-caption` (display utilities),
+    #     `select` matches inside `select-none`/`select-text`/`select-all`/
+    #     `select-auto` (user-select), `mask` matches Tailwind 4's `mask-*`
+    #     family, and `collapse` is the exact same token as daisyUI's
+    #     `.collapse` component AND Tailwind's `visibility: collapse` — an
+    #     UNDECIDABLE collision, not a modifier-suffix one.
+    #
+    #     `select-none` in particular is a class a real layout needs (a drag
+    #     handle, a badge, a table header) and would have been the first
+    #     false positive the moment either app wrote one.
+    #
+    #     `collapse` is dropped OUTRIGHT rather than special-cased: a grep
+    #     cannot tell `<div class="collapse">` (daisyUI's accordion) from
+    #     `<div class="collapse">` (`display:none`'s cousin, `visibility:
+    #     collapse`) because they are the identical string. Measured before
+    #     dropping it: daisyUI's collapse component is not used anywhere in
+    #     `frontends/packages/ui/src` today, and the rule is dropped for
+    #     undecidability, not for taste — record that here so nobody re-adds
+    #     it as a "simple" fix.
+    #
+    #     `examples/shop` is deliberately NOT in scope: it does not depend on
+    #     any vpay design system (its `package.json` takes `@vpay/config` and
+    #     nothing else from this repo), because it is a MERCHANT's
+    #     storefront — a third party who has vpay's SDK and not vpay's design
+    #     system. Holding it to this rule would mean shipping the demo a look
+    #     no real merchant would have.
+    #
+    #     The mutations, all five run against the main list: add
+    #     `className="btn btn-primary"`, `className={cn("btn",
+    #     "btn-primary")}`, `className={\`btn btn-primary ${extra}\`}`,
+    #     `className={'btn btn-primary'}`, or `className={clsx("card",
+    #     "bg-base-100")}` to a file under `frontends/apps` and this exits
+    #     non-zero; remove it and it exits 0.
+    daisy_component_class=$'className=[{]?[^}]*[\'"`][^\'"`]*\\b(btn|card|badge|alert|input|modal|menu|loading|link|fieldset|navbar|drawer|checkbox|radio|tabs|toast|skeleton|join|steps|stat|dropdown|tooltip|progress|range|toggle|kbd|avatar|chat|carousel|diff|swap|indicator|divider|breadcrumbs|pagination|footer|hero|countdown|timeline|mockup)\\b'
     if git grep -nE "$daisy_component_class" -- 'frontends/apps' ; then
-      echo 'verify-ui: a daisyUI component class in an app — compose @vpay/ui instead'; fail=1
+      echo 'verify-ui: a daisyUI component class in an app — compose a @vaam-apps/ui primitive instead'; fail=1
     fi
-    # 6. No file in @vpay/ui over 200 lines, imports and comments included.
+    # 7b-ii. table, select and mask still need catching when they ARE the
+    #        daisyUI component: bare, or suffixed with one of daisyUI's own
+    #        modifiers (which never overlap Tailwind's `-fixed`/`-auto`/
+    #        `-cell`/`-row`/`-none`/`-text`/`-all`). The four mutations, all
+    #        run: className="select-none" -> exit 0 (Tailwind utility, must
+    #        pass); className="select select-bordered" -> non-zero (daisyUI
+    #        component, must fail); className="table-fixed" -> exit 0;
+    #        className="table table-zebra" -> non-zero.
     #
-    #    The maintainer's directive, 2026-09-11, in as many words: "we MUST
-    #    have components folder with very few lines, max 200 LoC, including
-    #    imports and comments". It is a gate rather than a guideline because
-    #    the shape it forces is the point — a component whose `cva` map has
-    #    been split into its own file, whose test and story sit beside it in
-    #    its own folder, is a component someone else can compose from. The
-    #    file that made the rule was `components/layout.tsx`: 221 lines
-    #    holding FIVE primitives, which is how five things end up with one
-    #    test file and one story between them.
+    #        ONE exemption, added 2026-09-12: `locale-switch.tsx`. Decision 8
+    #        (`<SCRATCHPAD>/dashui-decisions.md`) forces a native `<select>`
+    #        there — `@vaam-apps/ui`'s own `Select` cannot be named by a
+    #        visible label (`SelectTrigger` destructures `{id, className,
+    #        children}` and spreads nothing else, so `aria-labelledby` never
+    #        reaches the rendered element) and `checkout-view.test.tsx`
+    #        asserts the control's accessible name comes from a visible
+    #        French label. With no `@vaam-apps/ui` primitive this can
+    #        legally compose into, daisyUI's own `select`/`select-sm` is the
+    #        only way left to theme it — a genuine library gap (the same
+    #        category `screens.tsx`'s own header names for `Input`'s missing
+    #        error variant), not a shortcut around one. Narrowed to this one
+    #        file, not to
+    #        `frontends/apps` generally: nothing else in either app has this
+    #        problem, and a wider exemption would swallow a real regression
+    #        the moment one appears.
+    daisy_modifier_class=$'className=[{]?[^}]*[\'"`][^\'"`]*\\b(table|select|mask)(-(zebra|pin-rows|pin-cols|xs|sm|md|lg|xl|bordered|ghost|primary|secondary|accent|info|success|warning|error|squircle|hexagon|star|circle|triangle|half-1|half-2))?([\'"`]|[[:space:]]|$)'
+    if git grep -nE "$daisy_modifier_class" -- 'frontends/apps' ':!frontends/apps/checkout/src/components/locale-switch.tsx' ; then
+      echo 'verify-ui: a daisyUI component class in an app — compose a @vaam-apps/ui primitive instead'; fail=1
+    fi
+    # Check 6 (the 200-line ceiling on every file in @vpay/ui) is DELETED,
+    # 2026-09-12, not narrowed. `@vpay/ui` — the maintainer's 2026-09-11
+    # directive, "we MUST have components folder with very few lines, max
+    # 200 LoC, including imports and comments", written against
+    # `components/layout.tsx` (221 lines holding five primitives) — was
+    # deleted from the tree in this change (both apps now compose the
+    # published `@vaam-apps/ui`). Its pathspec, `git ls-files -- (the
+    # package's src directory)`, now matches no tracked file: `git ls-files`
+    # on a dead pathspec exits 0 with EMPTY output, the loop body never
+    # runs, `fail` stays 0 — the check would have gone on printing "verify:
+    # ok" having measured zero files against a limit. That is worse than no
+    # gate, because it reads as coverage it no longer provides, so it is
+    # removed rather than left vacuous — the same reasoning check 5 was
+    # replaced for above.
     #
-    #    Tracked files only (`git ls-files`), so a scratch file in a working
-    #    tree cannot fail somebody else's build, and every extension under
-    #    `src` — a 300-line `.css` or a 300-line `.test.tsx` is the same
-    #    problem as a 300-line component.
-    #
-    #    The mutation: append filler lines to any file under
-    #    frontends/packages/ui/src until it passes 200, and this exits
-    #    non-zero naming that file and its length.
-    while read -r file; do
-      lines=$(wc -l < "$file")
-      if [ "$lines" -gt 200 ]; then
-        echo "verify-ui: $file is $lines lines, over the 200-line limit"; fail=1
-      fi
-    done < <(git ls-files -- 'frontends/packages/ui/src')
+    # Re-pointing it at app components instead of deleting it outright was
+    # considered and rejected FOR THIS CHANGE: three shipping files already
+    # exceed 200 lines while this same migration is still rewriting them —
+    # `frontends/apps/checkout/src/components/screens.tsx`,
+    # `.../checkout-client.tsx` and `.../checkout-view.tsx`
+    # (`wc -l` those three paths for the current count; they were 718, 336
+    # and 279 when this paragraph was first measured on 2026-09-12 and had
+    # already moved to 839, 336 and 292 by the time this sentence was
+    # re-checked the same day — the point is that they are all well over
+    # 200 and moving, not the exact figures). Re-pointing the check would
+    # not be a re-point; it would be an immediate failure on files this same
+    # migration is rewriting, and whether the 200-line directive transfers
+    # from a shared primitive package to app screens at all is the
+    # maintainer's decision to make, not this migration's to assume.
     exit $fail
 # Applied migrations are immutable: an applied migration file cannot be edited.
 # This gate verifies that every migration file's SHA256 matches the manifest.
@@ -3766,9 +4004,6 @@ sdk-live: gen-demo-keys
     echo "sdk-live: sdks/rust exit $rust, sdks/nodejs exit $node"
     echo "  tear down with: just demo_project={{demo_project}} demo-down"
     [ "$rust" -eq 0 ] && [ "$node" -eq 0 ]
-
-storybook:
-    pnpm --filter @vpay/ui storybook
 
 dev-dashboard:
     pnpm --filter @vpay/dashboard dev
