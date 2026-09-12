@@ -165,15 +165,15 @@ describe("themeStyleSheet", () => {
 
   it("is case-insensitive about the hex digits", () => {
     expect(themeStyleSheet("#F3C623")).toBe(
-      ':root[data-theme="bumblebee"]{--color-primary:#F3C623;' +
+      ':root[data-theme="dark"]{--color-primary:#F3C623;' +
         "--color-primary-content:color-mix(in oklch, #F3C623 20%, black);}",
     );
   });
 
   it("scopes the override to the theme the app actually renders under", () => {
-    expect(THEME).toBe("bumblebee");
+    expect(THEME).toBe("dark");
     expect(themeStyleSheet("#1d4ed8")).toContain(
-      ':root[data-theme="bumblebee"]{',
+      ':root[data-theme="dark"]{',
     );
   });
 
@@ -181,7 +181,7 @@ describe("themeStyleSheet", () => {
     it(`emits ${hex} as --color-primary, verbatim, and mixes toward ${isDark(hex) ? "white" : "black"}`, () => {
       const towards = isDark(hex) ? "white" : "black";
       expect(themeStyleSheet(hex)).toBe(
-        `:root[data-theme="bumblebee"]{--color-primary:${hex};` +
+        `:root[data-theme="dark"]{--color-primary:${hex};` +
           `--color-primary-content:color-mix(in oklch, ${hex} 20%, ${towards});}`,
       );
     });

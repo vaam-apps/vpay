@@ -7,8 +7,21 @@
  * the network (an expired session, a refused embed, a rail the page cannot
  * drive). A screenshot of a state nobody can produce is how a page ends up
  * with a branch that has never rendered.
+ *
+ * **`@vaam-apps/ui` cutover (2026-09-12).** `PageShell` and `Stack` have no
+ * counterpart in the new package (verified against `dist/index.d.ts`):
+ * `ScreenStack` (`@vaam-apps/ui`) replaces `PageShell` for the vertical
+ * rhythm only — no centring, no `max-w`, no padding, so the page is now
+ * full-bleed where it used to be a centred column. A plain `<header>`
+ * replaces `Stack as="header"`: `checkout-view.test.tsx`'s own "keeps the
+ * brand-and-language row a banner landmark" test is exactly the guard
+ * against losing that element a second time. `LiveRegion` has no
+ * counterpart either — `@vaam-apps/ui` exports no live region at all — so
+ * this is a plain `<div aria-live="polite" aria-atomic="true">`, faithful
+ * but without the test `@vpay/ui`'s own `LiveRegion` carried guaranteeing a
+ * hostile caller cannot weaken those two attributes.
  */
-import { LiveRegion, PageShell, Stack } from "@vpay/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 
 import type { Branding } from "../config/settings";
 import type { Locale, MessageKey, Translate } from "../i18n/index";
@@ -77,11 +90,11 @@ export function CheckoutView(props: CheckoutViewProps) {
 
   return (
     <main>
-      <PageShell>
-        <Stack as="header" justify="between" gap="md">
+      <ScreenStack>
+        <header className="flex items-center justify-between gap-4">
           <BrandHeader t={t} branding={props.branding} />
           <LocaleSwitch t={t} locale={locale} onChange={props.onLocaleChange} />
-        </Stack>
+        </header>
 
         {context === null ? null : (
           <PaymentSummary
@@ -98,12 +111,12 @@ export function CheckoutView(props: CheckoutViewProps) {
           into it is announced. A live region created together with its own
           text is not.
         */}
-        <LiveRegion data-testid="live-region">
+        <div aria-live="polite" aria-atomic="true" data-testid="live-region">
           {renderScreen(props, amount, merchant)}
-        </LiveRegion>
+        </div>
 
         <SupportLine t={t} branding={props.branding} />
-      </PageShell>
+      </ScreenStack>
     </main>
   );
 }

@@ -6,27 +6,90 @@
  * be a Storybook story, a vitest assertion in both locales, and the page
  * itself — rather than three descriptions of one design that drift.
  *
- * **Styling is `@vpay/ui`'s components — daisyUI's `bumblebee` theme and
- * Base UI's behaviour, composed through `cva` — and nothing else** (the
- * maintainer's requirement, 2026-09-05). This file writes **no** class name
- * of its own, which is what plan §3 asks for in as many words: raw
- * utilities live only inside `frontends/packages/ui/src/`. `Card`, `Alert`,
- * `Badge`, `Button`, `Field`, `Input`, `Checkbox`, `Spinner` and the layout
- * primitives `Stack`/`Text`/`Heading`/`List`/`PageShell`/`Logo`/
- * `VisuallyHidden`/`CheckboxLabel` own every daisyUI component class and
- * every layout utility between them
- * (`docs/plans/2026-09-07-ui-revamp.md` §3, §4.1).
+ * **Styling is `@vaam-apps/ui`'s components and daisyUI classes on top of
+ * its one dark theme (2026-09-12, replacing `@vpay/ui`'s `bumblebee` +
+ * `cva`).** `@vaam-apps/ui` has no counterpart for several of the layout
+ * primitives `@vpay/ui` provided purely to hold a class string — there is
+ * no `Stack`, `Text`, `Heading`, `List`, `PageShell`, `Logo` or
+ * `VisuallyHidden` in the new package (verified against
+ * `<SP>/vaam-ui/package/dist/index.d.ts`) — so this file now writes plain
+ * HTML for those, with Tailwind layout utilities and daisyUI's own
+ * component classes where needed (`w-full` on the payer-facing CTAs,
+ * `sr-only` for the visually-hidden labels, `font-mono`/`text-metric` for
+ * the amount). Every class here is a layout utility or a semantic theme
+ * token — daisyUI classes, `--state-*`/`--color-*`-driven utilities, or
+ * plain flex/gap/spacing — never a literal colour, a hex, or a raw
+ * Tailwind palette class, and `cva` is not used in this app.
  *
- * The five utilities this file did keep for one revision were functional
- * rather than decorative, and each is now a named variant or a component
- * instead: the payment amount is `<Text size="3xl" numeric>`, the session
- * reference `<Text wrap="anywhere">`, the operator's mark `<Logo>` (whose
- * `h-8 w-auto` overrides Tailwind's own `img{height:auto}` preflight
- * reset), the visually hidden labels `<VisuallyHidden>`, and the memory
- * opt-in's clickable sentence `<CheckboxLabel>`. Colour is never written
- * down — it comes from the theme's own variables, which
- * `src/config/theme.ts` lets an operator retint at runtime, and status tone
- * still comes from `@vpay/tokens` (AGENTS.md).
+ * What DOES have a component: `Card`/`CardBody`, `Button`, `Input`,
+ * `CheckboxField`, `FormField`, `InlineBanner` (replacing `Alert`), `Badge`,
+ * `Spinner`. Several of those changed shape, not just name — see each
+ * function's own comment for what moved and why:
+ *
+ * - `InlineBanner` renders no `role` at all (verified: `inline-banner.js` is
+ *   a plain `<div>`), where `@vpay/ui`'s `Alert` defaulted to `role="alert"`.
+ *   Every site that relied on that default now wraps `InlineBanner` in a
+ *   plain element carrying the role explicitly — `RedirectPrompt` and
+ *   `OutcomePanel` name it as an explicit prop already; `NoticePanel`
+ *   restores the default it used to get for free.
+ * - **`aria-labelledby`/`aria-describedby` cannot be passed to
+ *   `@vaam-apps/ui`'s `Checkbox`/`CheckboxField` at all — not a typing gap,
+ *   a RUNTIME one.** Headless UI's own `checkbox.d.ts` names them
+ *   (alongside `role`/`aria-checked`/`aria-disabled`) as
+ *   `CheckboxPropsWeControl` — attributes the component computes itself and
+ *   will not take from a caller, confirmed live: passing
+ *   `aria-describedby="x"` renders a `<button>` with no
+ *   `aria-describedby` attribute at all. `MemoryOptIn` below uses
+ *   `CheckboxField` instead, whose own `<Field>`/`<Label>` composition
+ *   (Headless UI's, not a manually-passed id string) computes
+ *   `aria-labelledby` correctly — measured live: it renders a real
+ *   `<label for="…">` and the checkbox's `aria-labelledby` resolves to it.
+ *   Both the sentence AND the warning are passed as `CheckboxField`'s
+ *   `label` (not split into a label + a separately-described warning): its
+ *   own `description` slot carries no ARIA wiring at all, so folding both
+ *   into one `<label>` is what actually gets the warning announced with the
+ *   control, at the cost of the warning being part of the accessible NAME
+ *   rather than a separate description. `CheckboxField`'s type is
+ *   similarly closed against `as`/`type`/`data-testid`, widened the same
+ *   way as `Checkbox` below for the same reason.
+ *   Also default to `as="span"` (Headless UI's own default tag), not a
+ *   `<button>` — passing `as="button"` restores the D2 guarantee this page
+ *   depends on: a labelable, keyboard-reachable control a wrapping `<label>`
+ *   can activate. Measured live: rendering it with `as="button"` produces
+ *   `<button type="button" role="checkbox" tabindex="0">`, and a click
+ *   anywhere in the real `<label for="…">` `CheckboxField` renders DOES
+ *   forward to it in jsdom.
+ * - `FormField` has no `invalid` prop, and its own `error`/`hint` slots
+ *   render no `data-testid`/`id` at all (its `FieldError` takes only
+ *   `{children, className}` and hard-codes `role="alert"`). The MSISDN
+ *   field therefore composes `FormField` as a label+layout wrapper only (no
+ *   `hint`/`error` props), and writes the hint paragraph and the error text
+ *   as explicit children with their own ids and `role="alert"` written by
+ *   hand — copying `FieldError`'s own class string rather than using the
+ *   component, because `checkout-view.test.tsx` queries the error by
+ *   `data-testid` and then reads its `role` off the SAME node, and
+ *   `FieldError` cannot carry a `data-testid`. `aria-describedby` on the
+ *   input is wired by hand too — the association `@vpay/ui`'s `Field` used
+ *   to do through context. This restores the exact order the old markup had
+ *   (label, control, hint, error) rather than accepting `FormField`'s own
+ *   `hint`-before-`children` placement. (`Input`'s own `aria-describedby` IS
+ *   respected — it is a plain forwarded HTML attribute, not one of Headless
+ *   UI's controlled ARIA props, and `Input` extends `InputHTMLAttributes`
+ *   directly rather than going through a Headless UI primitive.)
+ *
+ * What has no equivalent and is now a real, visible regression, named
+ * rather than absorbed silently: `Button`'s `size="xs"` (the "forget"
+ * button falls back to `"sm"`, slightly larger than before) and `block`
+ * (replaced with an explicit `w-full` — the three payer-facing CTAs still
+ * span full width, just via a class instead of a prop). `CheckboxLabel`
+ * has no counterpart either; `CheckboxField` (below) is the closest
+ * available primitive, not a port of it.
+ *
+ * Colour is never written down — it comes from the theme's own variables,
+ * which `src/config/theme.ts` lets an operator retint at runtime, and
+ * status tone still comes from `@vpay/tokens` (AGENTS.md) —
+ * `checkoutOutcomeVariant` now, `@vaam-apps/ui`'s variant vocabulary rather
+ * than daisyUI's semantic tone names; see that export's own doc comment.
  *
  * Accessibility is structural here, not decorative:
  *
@@ -36,50 +99,51 @@
  * - the status text sits in an `aria-live="polite"` region that is present
  *   from first render, because a live region added to the DOM at the same
  *   moment as its text is not announced;
- * - the MSISDN field is a Base UI `Field`, which is what now ties the label,
- *   the hint and the error to the control — the wiring that used to be three
- *   hand-maintained `aria-describedby` ids;
+ * - the MSISDN field's label, hint and error are tied to the input by hand
+ *   (`aria-describedby`, `aria-invalid`) — see `FormField`'s note above;
  * - every control has a real accessible name and is in the tab order.
- *
- * That last point used to read "every control is a **native** `button`,
- * `input` or `input[type=radio]`", and it is no longer exactly true — but
- * Base UI 1.8.0 gets it closer than the rc it replaces: decision D2
- * (2026-09-07) renders the checkbox as a real `<button role="checkbox">`
- * rather than the `<span role="checkbox">` `@vpay/ui`'s own rc-era default
- * would have produced, so a keyboard-only payer reaches it exactly as they
- * reach every other button on the page. It is still an ARIA role rather
- * than the native `input[type=checkbox]` the sentence originally promised,
- * so the test still asserts the role, the tab index, the accessible name
- * and `aria-checked` explicitly rather than assuming the platform.
  */
 import { useEffect } from "react";
 import {
-  Alert,
   Badge,
   Button,
   Card,
   CardBody,
-  Checkbox,
-  CheckboxLabel,
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldLabel,
-  Heading,
+  CheckboxField as VaamCheckboxField,
+  FormField,
+  InlineBanner,
   Input,
-  List,
-  Logo,
   Spinner,
-  Stack,
-  Text,
-  VisuallyHidden,
-} from "@vpay/ui";
-import { checkoutOutcomeTone } from "@vpay/tokens";
+  type CheckboxFieldProps,
+} from "@vaam-apps/ui";
+import { checkoutOutcomeVariant } from "@vpay/tokens";
 
 import type { MessageKey, Translate } from "../i18n/index";
 import type { Branding } from "../config/settings";
 import type { OutcomeKind } from "../lib/machine";
 import type { RailChoices, SupportedRail } from "../lib/rails";
+
+/**
+ * `@vaam-apps/ui`'s `CheckboxFieldProps` declares no `as`, `type` or
+ * `data-testid`, even though `checkbox.js` spreads every prop it doesn't
+ * name (`...props`, forwarded onto the inner `Checkbox`, itself spreading
+ * `...aria` onto Headless UI's own component) — measured live: rendering
+ * `<CheckboxField as="button" type="button" data-testid="y" checked={false}
+ * label="…">` produces a `<button type="button" role="checkbox"
+ * data-testid="y" aria-labelledby="…" tabindex="0">` wired to a real
+ * `<label for="…">`.
+ *
+ * This widens the TYPE to match what the component already does at
+ * runtime, in one place, rather than an `as unknown as` cast repeated at
+ * every call site below.
+ */
+const CheckboxField = VaamCheckboxField as unknown as (
+  props: CheckboxFieldProps & {
+    as?: "button";
+    type?: "button";
+    "data-testid"?: string;
+  },
+) => ReturnType<typeof VaamCheckboxField>;
 
 /**
  * The heading every screen starts with.
@@ -88,13 +152,14 @@ import type { RailChoices, SupportedRail } from "../lib/rails";
  * a payer whose viewport does not currently show the heading should be
  * scrolled to it.
  *
- * Focused via `document.querySelector('[data-screen]')` rather than a
- * `ref` on `Heading`: `Heading`'s own props type is
- * `React.ComponentPropsWithoutRef<'h1'>`, which — by design, the same way
- * every other `@vpay/ui` component works — does not accept a `ref`. Exactly
- * one screen is ever mounted at a time (`checkout-view.tsx`'s `switch`
- * renders one branch), so the query is unambiguous, and this is the same
- * property Cypress already relies on when it selects `[data-screen="…"]`.
+ * A plain `<h2>` rather than a component: `@vaam-apps/ui` has no `Heading`,
+ * and its `ScreenHeader` always renders an `<h1>` with no passthrough props
+ * at all (`{title, description}` only — verified `screen-layout.d.ts`), so
+ * it cannot carry `tabIndex`, `data-screen`, or the `<h2>` level this page
+ * needs. Focused via `document.querySelector('[data-screen]')` rather than
+ * a ref, for the same reason as before: exactly one screen is ever mounted
+ * at a time, so the query is unambiguous, and it is the same property
+ * Cypress already relies on when it selects `[data-screen="…"]`.
  */
 export function ScreenHeading({
   screen,
@@ -107,9 +172,9 @@ export function ScreenHeading({
     document.querySelector<HTMLElement>(`[data-screen="${screen}"]`)?.focus();
   }, [screen]);
   return (
-    <Heading level={2} tabIndex={-1} data-screen={screen}>
+    <h2 className="text-title font-semibold" tabIndex={-1} data-screen={screen}>
       {children}
-    </Heading>
+    </h2>
   );
 }
 
@@ -146,6 +211,11 @@ export function merchantLine(
  * The logo's `alt` is the operator's name where there is one, because the
  * image is then the only place that name appears; where there is none the
  * image is captioned by nothing else, so it still needs a word.
+ *
+ * `h-8 w-auto` on the `<img>` is a functional class, not a decorative one:
+ * without it Tailwind's own preflight (`img { height: auto }`) leaves the
+ * logo at its file's intrinsic size, which `@vpay/ui`'s `Logo` used to
+ * override. `@vaam-apps/ui` has no `Logo`.
  */
 export function BrandHeader({
   t,
@@ -155,18 +225,20 @@ export function BrandHeader({
   branding: Branding;
 }) {
   return (
-    <Stack gap="md">
+    <div className="flex flex-col gap-2">
       {branding.logoUrl === null ? null : (
-        <Logo
+        // eslint-disable-next-line @next/next/no-img-element -- the operator's own logo, not a local asset Next can optimise.
+        <img
           src={branding.logoUrl}
           alt={branding.displayName ?? t("page.operator_logo_alt")}
           data-testid="brand-logo"
+          className="h-8 w-auto"
         />
       )}
-      <Heading level={1} data-testid="brand-name">
+      <h1 className="text-title-sm font-semibold" data-testid="brand-name">
         {branding.displayName ?? t("page.title")}
-      </Heading>
-    </Stack>
+      </h1>
+    </div>
   );
 }
 
@@ -182,9 +254,9 @@ export function SupportLine({
     return null;
   }
   return (
-    <Text tone="muted" size="xs" data-testid="support-contact">
+    <p className="text-caption text-muted-foreground" data-testid="support-contact">
       {t("page.support", { contact: branding.supportContact })}
-    </Text>
+    </p>
   );
 }
 
@@ -218,20 +290,26 @@ export function PaymentSummary({
           out of the card. A badge is for a word.
         */}
         {!livemode ? (
-          <Text size="xs" weight="semibold" data-testid="testmode">
+          <p className="text-caption font-semibold" data-testid="testmode">
             {t("page.testmode")}
-          </Text>
+          </p>
         ) : null}
-        <Text size="sm" tone="muted" data-testid="pay-to">
+        <p className="text-caption text-muted-foreground" data-testid="pay-to">
           {merchantLine(t, merchant, "page.pay_to", "page.pay_to_unnamed")}
-        </Text>
-        <Text size="3xl" weight="semibold" numeric data-testid="amount">
-          <VisuallyHidden>{t("page.amount_label")}: </VisuallyHidden>
+        </p>
+        <p
+          className="text-metric font-semibold font-mono"
+          data-testid="amount"
+        >
+          <span className="sr-only">{t("page.amount_label")}: </span>
           {amount}
-        </Text>
-        <Text size="xs" tone="muted" wrap="anywhere" data-testid="reference">
+        </p>
+        <p
+          className="text-caption text-muted-foreground wrap-anywhere"
+          data-testid="reference"
+        >
           {t("page.reference_label")}: {reference}
-        </Text>
+        </p>
       </CardBody>
     </Card>
   );
@@ -249,11 +327,14 @@ export function UnsupportedRails({
     return null;
   }
   return (
-    <List data-testid="unsupported-rails">
+    <ul
+      className="flex flex-col gap-1 text-caption text-muted-foreground"
+      data-testid="unsupported-rails"
+    >
       {codes.map((code) => (
         <li key={code}>{t("rail.unsupported", { rail: code })}</li>
       ))}
-    </List>
+    </ul>
   );
 }
 
@@ -281,28 +362,28 @@ export function RailSelector({
 }) {
   return (
     <section>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen="select_rail">{t("rail.legend")}</ScreenHeading>
-        <Stack direction="column" align="stretch" gap="sm">
+        <div className="flex flex-col gap-2">
           {rails.supported.map((rail) => (
             <Button
               key={rail.code}
               type="button"
-              variant="outline"
+              variant="secondary"
               data-rail={rail.code}
               onClick={() => onChoose(rail)}
             >
               {t(rail.label)}
               {rail.code === lastRail ? (
-                <Badge tone="ghost" size="sm" data-testid="last-used">
+                <Badge variant="outline" data-testid="last-used">
                   {t("memory.last_used")}
                 </Badge>
               ) : null}
             </Button>
           ))}
-        </Stack>
+        </div>
         <UnsupportedRails t={t} codes={rails.unsupported} />
-      </Stack>
+      </div>
     </section>
   );
 }
@@ -341,60 +422,62 @@ export function MemoryOptIn({
   controls: MemoryControls;
   label: string;
 }) {
-  const labelId = "vpay-remember-label";
-  const warningId = "vpay-remember-warning";
   if (!controls.offered) {
     return null;
   }
   return (
-    <Stack direction="column" align="start" gap="sm">
+    <div className="flex flex-col items-start gap-2">
       {/*
-        `aria-labelledby`/`aria-describedby` rather than a wrapping `<label>`
-        alone. Decision D2's checkbox renders a native `<button
-        role="checkbox">` — measured against `@vpay/ui`'s own tests, not
-        assumed — and while a `<label>` names it as reliably as it names any
-        native control, the association is written down explicitly rather
-        than left to a browser to notice a single text child. The
-        `<label>` stays for the pointer behaviour: tapping the sentence
-        toggles the box, which on a phone-sized page is most of the target,
-        and a `<button>` is a labelable element so the browser's own
-        label-click forwarding still applies — measured, not assumed.
+        `CheckboxField`, not a hand-built `<label>` + `Checkbox` pair.
+        Headless UI's `Checkbox` treats `aria-labelledby`/`aria-describedby`
+        as attributes IT controls and silently drops a manually-passed
+        value for either — measured live: a `<Checkbox
+        aria-describedby="x">` renders no `aria-describedby` at all.
+        `CheckboxField` gets a correct `aria-labelledby` instead, because
+        its own `<Field>`/`<Label>` composition computes it internally
+        (verified live: a real `<label for="…">`, and the checkbox's
+        `aria-labelledby` resolves to it).
 
-        The two ids are constants rather than `useId` values because exactly
-        one entry screen is on the page at a time — `collect_msisdn` and
-        `ready_redirect` are different states of one machine. Two of these
-        rendered together would be two elements sharing an id.
+        Both the sentence and the warning are passed together as `label`,
+        not split into a label + a separately-described warning:
+        `CheckboxField`'s own `description` slot is a plain, unwired `<span>`
+        (verified `checkbox.js`), so folding both into the one real `<label>`
+        is what actually gets the warning announced together with the
+        control — the property this control has always been built around
+        ("the warning is on the control, not a tooltip"). The cost is that
+        the warning is now part of the accessible NAME rather than a
+        separate description; `screens.axe.test.tsx`'s `aria-*` rules do not
+        distinguish the two, and no test asserted a description role
+        specifically.
+
+        `as="button"` restores decision D2's guarantee: Headless UI's
+        `Checkbox` defaults to `<span role="checkbox">`, and a `<span>` is
+        not a labelable element, so the wrapping `<label>` would not forward
+        a click to it at all without this.
       */}
-      <CheckboxLabel>
-        <Stack align="start" gap="md">
-          <Checkbox
-            checked={controls.remember}
-            onCheckedChange={controls.onRememberChange}
-            aria-labelledby={labelId}
-            aria-describedby={warningId}
-            data-testid="remember"
-          />
-          <Stack direction="column" gap="xs">
-            <Text as="span" id={labelId}>
-              {label}
-            </Text>
-            <Text
-              as="span"
-              id={warningId}
-              tone="muted"
-              size="xs"
+      <CheckboxField
+        as="button"
+        type="button"
+        checked={controls.remember}
+        onCheckedChange={controls.onRememberChange}
+        data-testid="remember"
+        label={
+          <span className="flex flex-col gap-1">
+            <span>{label}</span>
+            <span
+              className="text-caption text-muted-foreground"
               data-testid="remember-warning"
             >
               {t("memory.warning")}
-            </Text>
-          </Stack>
-        </Stack>
-      </CheckboxLabel>
+            </span>
+          </span>
+        }
+      />
       {controls.hasRecord ? (
         <Button
           type="button"
           variant="ghost"
-          size="xs"
+          size="sm"
           data-testid="forget"
           onClick={controls.onForget}
         >
@@ -402,21 +485,27 @@ export function MemoryOptIn({
         </Button>
       ) : null}
       {controls.forgotten ? (
-        <Text size="xs" tone="muted" role="status" data-testid="forgotten">
+        <p
+          className="text-caption text-muted-foreground"
+          role="status"
+          data-testid="forgotten"
+        >
           {t("memory.forgotten")}
-        </Text>
+        </p>
       ) : null}
-    </Stack>
+    </div>
   );
 }
 
 /**
  * The MTN path: one labelled field, one submit, one error tied to the field.
  *
- * The label/hint/error wiring is Base UI's `Field` rather than three
- * hand-kept `aria-describedby` ids. The `id` is still written down, because
- * `#vpay-msisdn` is what the Cypress specs type into and what
- * `checkout-view.test.tsx` asserts on.
+ * `FormField` composes only the label and the layout here (no `hint`/`error`
+ * props): its own `error` slot exposes no `data-testid`, and its `hint`
+ * placement (before the control) would reorder the field from how it always
+ * read (label, input, hint, error). Writing the hint and the error as plain
+ * children keeps that order and lets `aria-describedby` name both by hand —
+ * the wiring `@vpay/ui`'s `Field` used to do through context.
  *
  * `defaultMsisdn` is what this device remembered. Uncontrolled on purpose —
  * a payer who edits a prefilled number must not have it put back — and the
@@ -446,9 +535,11 @@ export function MsisdnForm({
   onBack: () => void;
 }) {
   const inputId = "vpay-msisdn";
+  const hintId = "vpay-msisdn-hint";
+  const errorId = "vpay-msisdn-problem";
   return (
     <section>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen="collect_msisdn">{t(rail.label)}</ScreenHeading>
         <form
           onSubmit={(event) => {
@@ -462,9 +553,8 @@ export function MsisdnForm({
             onSubmit(typeof raw === "string" ? raw : "");
           }}
         >
-          <Stack direction="column" align="stretch" gap="sm">
-            <Field invalid={problem !== null}>
-              <FieldLabel htmlFor={inputId}>{t("msisdn.label")}</FieldLabel>
+          <div className="flex flex-col gap-3">
+            <FormField label={t("msisdn.label")} htmlFor={inputId}>
               <Input
                 id={inputId}
                 name="msisdn"
@@ -472,20 +562,42 @@ export function MsisdnForm({
                 inputMode="tel"
                 autoComplete="tel"
                 defaultValue={defaultMsisdn ?? ""}
+                aria-invalid={problem !== null}
+                aria-describedby={
+                  problem === null ? hintId : `${hintId} ${errorId}`
+                }
+                className={problem === null ? undefined : "input-error"}
               />
-              <FieldDescription>{t("msisdn.hint")}</FieldDescription>
+              <p
+                id={hintId}
+                className="text-caption text-muted-foreground"
+              >
+                {t("msisdn.hint")}
+              </p>
               {problem === null ? null : (
-                <FieldError match role="alert" data-testid="msisdn-problem">
+                // Not `<FieldError>`: its own `{children, className}` type
+                // has no `data-testid` and no `id`, and
+                // `checkout-view.test.tsx` queries this exact element by
+                // testid and then reads its `role` — they must be the same
+                // node, not a wrapper around one. `text-caption
+                // text-state-danger-fg` and `role="alert"` are copied
+                // verbatim from `form-field.js`'s own `FieldError`.
+                <p
+                  id={errorId}
+                  role="alert"
+                  className="text-caption text-state-danger-fg"
+                  data-testid="msisdn-problem"
+                >
                   {t(problem)}
-                </FieldError>
+                </p>
               )}
-            </Field>
+            </FormField>
             <MemoryOptIn
               t={t}
               controls={memory}
               label={t("memory.remember_number")}
             />
-            <Button type="submit" block>
+            <Button type="submit" className="w-full">
               {t("msisdn.submit", { amount })}
             </Button>
             {canGoBack ? (
@@ -493,9 +605,9 @@ export function MsisdnForm({
                 {t("msisdn.back")}
               </Button>
             ) : null}
-          </Stack>
+          </div>
         </form>
-      </Stack>
+      </div>
     </section>
   );
 }
@@ -522,20 +634,27 @@ export function RedirectPrompt({
 }) {
   return (
     <section>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
-        <Text tone="muted">{t("state.redirecting_body")}</Text>
+        <p className="text-muted-foreground">{t("state.redirecting_body")}</p>
         {problem === null ? null : (
-          <Alert tone="error" role="alert" data-testid="redirect-problem">
-            {t(problem)}
-          </Alert>
+          <div role="alert">
+            <InlineBanner variant="danger" data-testid="redirect-problem">
+              {t(problem)}
+            </InlineBanner>
+          </div>
         )}
         <MemoryOptIn
           t={t}
           controls={memory}
           label={t("memory.remember_method", { rail: t(rail.label) })}
         />
-        <Button type="button" block data-testid="continue" onClick={onContinue}>
+        <Button
+          type="button"
+          className="w-full"
+          data-testid="continue"
+          onClick={onContinue}
+        >
           {t("msisdn.submit", { amount })}
         </Button>
         {canGoBack ? (
@@ -543,7 +662,7 @@ export function RedirectPrompt({
             {t("msisdn.back")}
           </Button>
         ) : null}
-      </Stack>
+      </div>
     </section>
   );
 }
@@ -566,51 +685,47 @@ export function StatusPanel({
 }) {
   return (
     <section>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen={screen}>{title}</ScreenHeading>
-        {body === null ? null : <Text tone="muted">{body}</Text>}
+        {body === null ? null : <p className="text-muted-foreground">{body}</p>}
         <Spinner />
         {notice ? (
-          <Stack direction="column" align="start" gap="sm">
-            <Text weight="semibold" data-testid="poll-notice">
+          <div className="flex flex-col items-start gap-2">
+            <p className="font-semibold" data-testid="poll-notice">
               {t(notice)}
-            </Text>
+            </p>
             {onRetry === undefined ? null : (
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 onClick={onRetry}
               >
                 {t("error.retry")}
               </Button>
             )}
-          </Stack>
+          </div>
         ) : null}
-      </Stack>
+      </div>
     </section>
   );
 }
 
 /**
  * Outcome tone comes from `@vpay/tokens`, never from a colour written here
- * (AGENTS.md) — and from `checkoutOutcomeTone` rather than from `statusTone`.
+ * (AGENTS.md) — and from `checkoutOutcomeVariant` rather than from
+ * `statusTone` or (as of 2026-09-12) `checkoutOutcomeTone`.
  *
- * This read `statusTone[OUTCOME_STATUS[kind]]` until 2026-09-07, where
- * `OUTCOME_STATUS` mapped `failed` onto the intent status a failed attempt
- * leaves behind, `requires_payment_method`. That mapping is *accurate* and it
- * produced the wrong screen: `requires_payment_method` is `neutral`, because
- * on a dashboard it means "awaiting a payment method", so a payer whose
- * payment had failed read a GREY box while a payer who cancelled read a red
- * one. It is on the committed screenshot. The operator's status palette is
- * not the payer's outcome palette, and `@vpay/tokens` now says both.
- *
- * `checkoutOutcomeTone[kind]` is passed straight into `Alert`'s `tone` prop
- * — there is no intermediate class map in this file any more (there was,
- * `TONE_CLASS`, and a template literal building `` `alert mt-4 ${tone}` ``;
- * both are gone). `@vpay/tokens`' own type already lines up with `Alert`'s
- * `tone` variant, so there is nothing left here that could reintroduce the
- * defect the constant existed to fix.
+ * `checkoutOutcomeTone` mapped each outcome onto daisyUI's semantic tone
+ * vocabulary (`"error"|"warning"|"success"`), which `@vpay/ui`'s `Alert`
+ * consumed directly. `@vaam-apps/ui`'s `InlineBanner` speaks a DIFFERENT
+ * vocabulary (`"danger"|"warning"|"success"|…`) with no `"error"` at all,
+ * so `checkoutOutcomeVariant` — added alongside `checkoutOutcomeTone`,
+ * expressing the same D4 decision in `InlineBanner`'s own variant names,
+ * with a test asserting the two tables cannot drift — is what this file
+ * passes to it now. The underlying decision (a payer's own cancellation
+ * reads less alarming than a payment that failed for a reason outside
+ * their control) is unchanged; only the vocabulary moved.
  */
 export function OutcomePanel({
   t,
@@ -657,25 +772,28 @@ export function OutcomePanel({
         : t(failure ?? "failure.unknown");
   return (
     <section data-outcome={kind}>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen="outcome">{title}</ScreenHeading>
-        <Alert tone={checkoutOutcomeTone[kind]} role="status">
-          <span data-testid="outcome-body">{body}</span>
-        </Alert>
+        <div role="status">
+          <InlineBanner variant={checkoutOutcomeVariant[kind]}>
+            <span data-testid="outcome-body">{body}</span>
+          </InlineBanner>
+        </div>
         {reason === null ? null : (
-          <Text size="sm" tone="muted" data-testid="provider-reason">
-            <Text as="span" weight="semibold">
-              {t("outcome.provider_said")}:{" "}
-            </Text>
+          <p
+            className="text-caption text-muted-foreground"
+            data-testid="provider-reason"
+          >
+            <span className="font-semibold">{t("outcome.provider_said")}: </span>
             {reason}
-          </Text>
+          </p>
         )}
         {destination === null ? (
-          <Text tone="muted" data-testid="no-destination">
+          <p className="text-muted-foreground" data-testid="no-destination">
             {t("outcome.no_destination")}
-          </Text>
+          </p>
         ) : (
-          <Button type="button" block onClick={onBack}>
+          <Button type="button" className="w-full" onClick={onBack}>
             {merchantLine(
               t,
               merchant,
@@ -684,7 +802,7 @@ export function OutcomePanel({
             )}
           </Button>
         )}
-      </Stack>
+      </div>
     </section>
   );
 }
@@ -706,13 +824,21 @@ export function NoticePanel({
 }) {
   return (
     <section data-error-code={code}>
-      <Stack direction="column" align="stretch" gap="md">
+      <div className="flex flex-col gap-4">
         <ScreenHeading screen={screen}>{title}</ScreenHeading>
-        <Alert tone="warning">
-          <span data-testid="notice-body">{body}</span>
-        </Alert>
-        <VisuallyHidden>{t("error.title")}</VisuallyHidden>
-      </Stack>
+        {/*
+          `role="alert"` restores what `@vpay/ui`'s `Alert` used to default
+          to with no `role` prop written here at all. `InlineBanner` sets no
+          role of its own (verified `inline-banner.js` — a plain `<div>`),
+          so the default has to be written down explicitly now.
+        */}
+        <div role="alert">
+          <InlineBanner variant="warning">
+            <span data-testid="notice-body">{body}</span>
+          </InlineBanner>
+        </div>
+        <span className="sr-only">{t("error.title")}</span>
+      </div>
     </section>
   );
 }

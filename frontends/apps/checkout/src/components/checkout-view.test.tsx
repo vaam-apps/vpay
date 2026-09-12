@@ -513,15 +513,25 @@ describe("the controls do what the screen says", () => {
     // dashboard), so a payer whose payment FAILED read a grey box while a
     // payer who cancelled read a red one. Asserted on the rendered class,
     // because that is what a payer sees.
+    //
+    // **Selector and class strings changed (2026-09-12, `@vaam-apps/ui`
+    // cutover).** `InlineBanner` (replacing `Alert`) renders no `.alert`
+    // class at all — daisyUI's `alert`/`alert-error`/`alert-success`/
+    // `alert-warning` are gone from this app entirely (verified
+    // `inline-banner.js`: a plain `<div>` painted with
+    // `border-state-<hue>-border bg-state-<hue>-bg … text-state-<hue>-fg`).
+    // The outcome's `InlineBanner` is also now wrapped in a `[role="status"]`
+    // element (hard part 4), so that is what this test selects on instead of
+    // a class the library no longer emits.
     const failed = renderState(
       CHECKOUT_SCREENS["outcome_failed"] as CheckoutState,
       "en",
     );
-    const failedAlert = failed.container.querySelector(
-      '[data-outcome="failed"] .alert',
+    const failedBanner = failed.container.querySelector(
+      '[data-outcome="failed"] [role="status"] > div',
     );
-    expect(failedAlert?.className, "a failure must carry a tone").toContain(
-      "alert-error",
+    expect(failedBanner?.className, "a failure must carry a tone").toContain(
+      "state-danger",
     );
     failed.unmount();
 
@@ -530,24 +540,29 @@ describe("the controls do what the screen says", () => {
       "en",
     );
     expect(
-      succeeded.container.querySelector('[data-outcome="succeeded"] .alert')
-        ?.className,
-    ).toContain("alert-success");
+      succeeded.container.querySelector(
+        '[data-outcome="succeeded"] [role="status"] > div',
+      )?.className,
+    ).toContain("state-success");
     succeeded.unmount();
 
     // D4 (2026-09-07, docs/plans/2026-09-07-ui-revamp.md §9): a canceled
     // payment tones warning, not error — it is the payer's own action,
-    // unlike a failure. `@vpay/tokens`' checkoutOutcomeTone changed; this
-    // assertion moved with it rather than staying pinned to the tone D4
-    // deliberately replaced.
+    // unlike a failure. `@vpay/tokens`' `checkoutOutcomeTone` changed, and
+    // `checkoutOutcomeVariant` (added for the `@vaam-apps/ui` cutover,
+    // expressing the same D4 decision in `InlineBanner`'s own variant
+    // vocabulary) agrees with it — a test in `tokens/src/index.test.ts`
+    // asserts the two tables cannot drift apart. This assertion moved with
+    // it rather than staying pinned to the tone D4 deliberately replaced.
     const canceled = renderState(
       CHECKOUT_SCREENS["outcome_canceled"] as CheckoutState,
       "en",
     );
     expect(
-      canceled.container.querySelector('[data-outcome="canceled"] .alert')
-        ?.className,
-    ).toContain("alert-warning");
+      canceled.container.querySelector(
+        '[data-outcome="canceled"] [role="status"] > div',
+      )?.className,
+    ).toContain("state-warning");
     canceled.unmount();
   });
 
@@ -571,18 +586,15 @@ describe("the controls do what the screen says", () => {
         onLocaleChange,
       },
     );
-    // `@base-ui/react/select` is a button trigger plus a portalled popup
-    // listbox, not a native `<select>` — `fireEvent.change` has nothing to
-    // act on, so this opens the popup and picks the option the way a payer
-    // actually would. Base UI's `Select.Item` only commits a click preceded
-    // by a `pointerdown` on the same item, the same pattern `@vpay/ui`'s own
-    // `select.test.tsx` uses.
-    fireEvent.click(screen.getByLabelText(DICTIONARIES.fr["locale.label"]));
-    const option = screen.getByRole("option", {
-      name: DICTIONARIES.fr["locale.en"],
-    });
-    fireEvent.pointerDown(option, { pointerType: "mouse" });
-    fireEvent.click(option, { detail: 1 });
+    // A native `<select>` (decision 8, 2026-09-12 — forced by
+    // `@vaam-apps/ui`'s `Select` accepting no external label), not
+    // `@base-ui/react`'s button-trigger-plus-popup-listbox. A plain
+    // `fireEvent.change` is how a payer's choice reaches it now; there is no
+    // popup to open and no option to click-and-pointerdown any more.
+    const combobox = screen.getByLabelText(
+      DICTIONARIES.fr["locale.label"],
+    ) as HTMLSelectElement;
+    fireEvent.change(combobox, { target: { value: "en" } });
     expect(onLocaleChange).toHaveBeenCalledWith("en");
     // No anchor anywhere: a link to `?lang=en` would drop `location.hash`.
     expect(document.querySelectorAll("a[href]").length).toBe(0);
@@ -610,17 +622,31 @@ describe("the controls do what the screen says", () => {
   it("names the language switch on the screen, not only to a screen reader", () => {
     // `getByLabelText` above passes just as happily against an `aria-label`,
     // which is how the exp26 migration removed the visible word without
-    // failing a test. This asserts the name is RENDERED TEXT: an element
-    // carrying the dictionary's `locale.label`, not visually hidden, and
-    // referenced by the combobox's `aria-labelledby`.
+    // failing a test. This asserts the name is RENDERED TEXT: a real
+    // `<label for>` element carrying the dictionary's `locale.label`, not
+    // visually hidden.
+    //
+    // **`<label for>`, not `aria-labelledby` (decision 8, 2026-09-12).**
+    // `@vaam-apps/ui`'s `SelectTrigger` accepts no `aria-labelledby` at all
+    // (`select.js` destructures only `{id, className, children}`, spreading
+    // nothing else) and its `Select` has no `name`/`id`/hidden input either
+    // — it cannot be named from outside itself. The native `<select>` this
+    // control is now uses `<label htmlFor>` instead, which is the STRONGER
+    // mechanism: it needs no `aria-labelledby` to work at all, so this test
+    // asserts the association a different way — by finding the `<label>`
+    // whose `for` names this exact control — rather than by reading an
+    // `aria-labelledby` that a native, correctly-labelled `<select>` has no
+    // reason to carry.
     const { container, unmount } = renderState(
       CHECKOUT_SCREENS["collect_msisdn"] as CheckoutState,
       "fr",
     );
-    const combobox = screen.getByRole("combobox");
-    const labelId = combobox.getAttribute("aria-labelledby");
-    expect(labelId, "the combobox is named by a visible element").toBeTruthy();
-    const label = container.querySelector(`#${labelId as string}`);
+    const combobox = screen.getByRole("combobox") as HTMLSelectElement;
+    const label = container.querySelector(`label[for="${combobox.id}"]`);
+    expect(
+      label,
+      "the combobox is named by a visible <label for>",
+    ).not.toBeNull();
     expect(label?.textContent).toBe(DICTIONARIES.fr["locale.label"]);
     expect(label?.className ?? "").not.toContain("sr-only");
     expect(combobox.getAttribute("aria-label")).toBeNull();
@@ -806,19 +832,31 @@ describe("page memory, on the entry screens", () => {
 
   it("offers the opt-in with the box clear and the cost stated on the control", () => {
     const { container, unmount } = renderState(mtnState(), "en");
-    // `getByRole`, not `getByTestId`: Base UI forwards every prop to both the
-    // `role="checkbox"` button and the `aria-hidden` input beside it, and the
-    // one this assertion is about is the one in the accessibility tree.
+    // `getByRole`, not `getByTestId`: `data-testid="remember"` is on the
+    // exact `role="checkbox"` element `@vaam-apps/ui`'s `CheckboxField`
+    // renders, so both queries agree here — `getByRole` is kept as the one
+    // this assertion is really about, the element in the accessibility tree.
     const box = screen.getByRole("checkbox");
     expect(container.querySelectorAll('[data-testid="remember"]').length).toBe(
       1,
     );
     expect(box.getAttribute("aria-checked")).toBe("false");
-    // The warning is the checkbox's own description, not a tooltip.
-    const describedBy = box.getAttribute("aria-describedby") ?? "";
-    expect(document.getElementById(describedBy)?.textContent).toBe(
-      DICTIONARIES.en["memory.warning"],
-    );
+    // The warning is on the control, not a tooltip — but no longer as an
+    // `aria-describedby` reaching a SEPARATE description (2026-09-12,
+    // `@vaam-apps/ui` cutover). Headless UI's `Checkbox` computes
+    // `aria-describedby` itself from its own `<Description>` component,
+    // which `CheckboxField` does not render at all — verified live: a
+    // manually-passed `aria-describedby` is silently dropped. Folding the
+    // warning into the checkbox's `aria-labelledby` (its accessible NAME)
+    // is what actually gets it announced with the control now; assert that
+    // instead of a description that no longer exists.
+    const labelledBy = box.getAttribute("aria-labelledby") ?? "";
+    const accessibleName = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(accessibleName).toContain(DICTIONARIES.en["memory.warning"]);
     unmount();
   });
 
@@ -843,23 +881,31 @@ describe("page memory, on the entry screens", () => {
       memory: makeMemoryControls({ onRememberChange }),
     });
     fireEvent.click(screen.getByRole("checkbox"));
-    expect(onRememberChange).toHaveBeenCalledWith(true, expect.anything());
+    // Headless UI's `Checkbox.onChange` is `(checked: boolean) => void` —
+    // one argument, not two (`checkbox.d.ts`, `@headlessui/react`).
+    // `@vpay/ui`'s Base UI checkbox passed a second (event) argument; this
+    // assertion moved with the library, not with a guess.
+    expect(onRememberChange).toHaveBeenCalledWith(true);
     unmount();
   });
 
   it("toggles from the sentence and reaches the keyboard, not only the box", () => {
     // The box is a 16-pixel target on a phone. The label association is
     // measured rather than assumed: a `<button>` is a labelable element
-    // (decision D2 — `@vpay/ui`'s `Checkbox` renders one, not the
-    // `<span role="checkbox">` an earlier Base UI release would have), so a
-    // click anywhere in the wrapping `<label>` forwards to it, the same as
-    // it would for any other button on this page.
+    // (decision D2 — `@vaam-apps/ui`'s `CheckboxField` renders one, passed
+    // `as="button"`, not the `<span role="checkbox">` it defaults to), so a
+    // click anywhere in the real `<label for>` it renders forwards to it,
+    // the same as it would for any other button on this page. There is no
+    // `#vpay-remember-label` constant id any more (2026-09-12): the whole
+    // sentence, including the warning, is `CheckboxField`'s own `label`
+    // node now, wrapped in ONE `<label for>` Headless UI renders — so this
+    // clicks the visible sentence by its text instead of a fixed id.
     const onRememberChange = vi.fn();
-    const { container, unmount } = renderState(mtnState(), "en", {
+    const { unmount } = renderState(mtnState(), "en", {
       memory: makeMemoryControls({ onRememberChange }),
     });
     fireEvent.click(
-      container.querySelector("#vpay-remember-label") as HTMLElement,
+      screen.getByText(DICTIONARIES.en["memory.remember_number"]),
     );
     expect(onRememberChange).toHaveBeenCalledTimes(1);
     const box = screen.getByRole("checkbox");
@@ -926,7 +972,11 @@ describe("page memory, on the entry screens", () => {
     const labelId = box.getAttribute("aria-labelledby") ?? "";
     // "Remember Orange Money on this device" — the rail, because a redirect
     // rail collects the number on its own page and this one never sees it.
-    expect(document.getElementById(labelId)?.textContent).toBe(
+    // `toContain`, not `toBe` (2026-09-12): the accessible name is now the
+    // label sentence AND the warning folded together (see the "offers the
+    // opt-in…" test above for why), so it is a superset of this sentence
+    // rather than exactly equal to it.
+    expect(document.getElementById(labelId)?.textContent).toContain(
       format(DICTIONARIES.en["memory.remember_method"], {
         rail: DICTIONARIES.en["rail.orange_money"],
       }),
