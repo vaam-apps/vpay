@@ -565,3 +565,40 @@ French accessible name is exactly what `checkout-view.test.tsx` pins. See
 `docs/status/verification/2026-09-12.md` for what was run and measured, and
 [hosted-checkout/state-machine-and-outcomes.md](hosted-checkout/state-machine-and-outcomes.md)'s
 own 2026-09-12 entry for the outcome-colour vocabulary's new name.
+
+**Updated 2026-09-12: Storybook is back, and building it found that this page
+had been rendering without its theme.** The entry above closes by saying the
+checkout has no visual-review surface and no browser-level accessibility
+check. It has both again — in `frontends/apps/checkout/.storybook/`, hosting
+the same 22 stories the cutover deleted, verbatim but for their doc comment,
+because `CheckoutView`'s and `ReturnView`'s props did not change. `just
+test-storybook` renders each in a real Chromium and runs axe over it; CI's
+`web` job runs the recipe.
+
+**The defect it found is more important than the gate.** CSS drops an
+`@import` that follows another at-rule, and `app/globals.css` placed
+`@import "@vaam-apps/ui/styles/theme.css"` **after** `@plugin "daisyui"`.
+Tailwind's own parser is lenient about that, so `next build` and
+`src/styling-gate.test.ts` — which compiles this very file through
+`@tailwindcss/postcss` — both inlined the theme and both passed. A
+spec-compliant pipeline did not: Storybook's vite build emitted a stylesheet
+with every `var(--color-base-100)` in it and `--color-base-100` defined
+nowhere, so the payer's screens rendered on the browser's default white while
+the shipped page is `#0a0b0d`. Moving one line took the stylesheet from
+136 360 to 145 903 bytes. `frontends/apps/dashboard/app/globals.css` had the
+identical ordering and is fixed in the same commit.
+
+**This page's own answer, measured at last.** All 22 checkout screens clear
+WCAG AA on `@vaam-apps/ui`'s theme, colour-contrast included, in a real
+browser — the question left open when the cutover replaced bumblebee and
+nothing could measure the result. The gate is proved live rather than
+trusted: a `#3a3a3a` probe fails at **1.73:1 against `#0a0b0d`**, naming the
+real background, and that same probe PASSED for six runs while the theme was
+missing.
+
+**What it still does not cover.** It renders stories, not the served page, so
+nothing here retires `outcome-contrast.test.ts`'s note that axe cannot walk
+the real page's DOM for a background. The 22 states are the ones
+`checkout-view.test.tsx` asserts against; Lane 3b's unnamed-merchant screens
+remain covered by vitest and not by a story. And the dashboard's screens have
+no equivalent gate.

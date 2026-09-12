@@ -377,6 +377,14 @@ jobs:
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
+      # Playwright's Chromium lives outside node_modules (~/.cache/ms-playwright)
+      # and setup-node's pnpm-store cache does not cover it — the same reason
+      # the `e2e` job caches ~/.cache/Cypress. ~115 MB per cold run, for the
+      # `test-storybook` step at the end of this job.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
       # Immediately after install and before anything is built, so a
       # known-vulnerable dependency fails this job in seconds rather than
@@ -427,14 +435,27 @@ jobs:
       - name: lint-web (pnpm -r typecheck, then pnpm -r lint)
         run: just lint-web
       - run: pnpm -r test
-      # `pnpm --filter @vpay/ui build-storybook` used to be the last step
-      # here, compiling the checkout's 22 stories and the a11y addon that
-      # reviewed them. DELETED, not moved, 2026-09-12: `@vpay/ui` is deleted
-      # (both apps now compose the published `@vaam-apps/ui`), and nothing
-      # in this job replaces the review surface it built — the jsdom axe
-      # suite (`screens.axe.test.tsx`) never renders in a browser. A chip is
-      # filed to restore Storybook inside `frontends/apps/checkout`; until
-      # it lands, this job compiles no Storybook and reviews no story.
+      # Storybook, restored 2026-09-12 in `frontends/apps/checkout` after the
+      # `@vaam-apps/ui` cutover deleted `@vpay/ui` and its install with it.
+      - run: just build-storybook
+      # Every checkout story rendered in a real Chromium with axe over each —
+      # `just test-storybook`, not a copy of its command, so the gate and what
+      # a contributor runs locally cannot drift. The recipe installs the
+      # browser first (chromium only, no `--with-deps`: this image already has
+      # the shared libraries) and clears vite's dep cache, which has produced
+      # a false green before.
+      #
+      # It is the only step in this repository that can return a
+      # colour-contrast VERDICT for the payer's screens: the jsdom axe suites
+      # compute no colour, and issue #73's Cypress attempt only ever got
+      # `incomplete` out of the real page.
+      - name: test-storybook (axe over every checkout story, real browser)
+        run: just test-storybook
+      # `pnpm --filter @vpay/ui build-storybook` was the last step here until
+      # the `@vaam-apps/ui` cutover deleted that package on 2026-09-12, taking
+      # the checkout's 22 stories and the a11y addon with it. The two steps
+      # above are the restoration: same stories, now hosted by the app that
+      # owns them, and the a11y addon is a gate rather than a panel.
 
   e2e:
     name: e2e (compose)

@@ -29,9 +29,21 @@
  * omits `themes: false`) and the `.d.ts` is wrong. No automated gate in
  * this app re-checks either fact yet.
  */
+/* `@import` BEFORE `@plugin`, and the order is load-bearing rather than
+ * tidy. CSS drops an `@import` that follows another at-rule, and this one
+ * followed `@plugin "daisyui"` until 2026-09-12. Tailwind's own parser is
+ * lenient about it, so `next build` and `src/styling-gate.test.ts` — which
+ * compiles this file through `@tailwindcss/postcss` directly — both inlined
+ * the theme and both passed. Any pipeline with a spec-compliant CSS parser
+ * did not: Storybook's vite build emitted a stylesheet with every
+ * `var(--color-base-100)` present and `--color-base-100` defined NOWHERE,
+ * so every component rendered unstyled on the browser's default white, with
+ * no error and no warning. Measured: 136 360 bytes without the theme,
+ * 145 903 with it, from this reordering alone.
+ */
 @import "tailwindcss";
+@import "@vaam-apps/ui/styles/theme.css";
 @plugin "daisyui" {
   themes: false;
 }
-@import "@vaam-apps/ui/styles/theme.css";
 @source "../node_modules/@vaam-apps/ui/dist";

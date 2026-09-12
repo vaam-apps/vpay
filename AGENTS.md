@@ -49,16 +49,25 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
-One further gate runs in CI's `web` job and in neither `just verify` nor
-`just ci`, so a green local run does not predict it: `just audit-web`.
-`just build-storybook` was a second until 2026-09-12, when `@vpay/ui` and
-its Storybook install were deleted in the `@vaam-apps/ui` cutover — a named,
-accepted gap, not an oversight. **The checkout has no visual-review surface
-and no browser-level accessibility check today**, and the jsdom axe suite
-does not replace one: it renders in no browser, so it computes no colour and
-can never answer `color-contrast`. Restoring Storybook in
-`frontends/apps/checkout` is a filed task; `justfile`'s `build-storybook`
-slot carries what a rebuild already knows, measured rather than guessed.
+Two further gates run in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict them: `just audit-web`, and
+`just test-storybook`, which renders every checkout story in a real Chromium
+and fails on an axe accessibility violation. The second is out of `just ci`
+because it needs the network the first time (Playwright fetches a ~115 MB
+Chromium), the same reason `helm-check` is out. Run it before opening a PR
+that touches a checkout screen, a story or the theme.
+
+It is the only thing in this repository that returns a colour-contrast
+**verdict** for the screens a payer sees: the jsdom axe suites compute no
+colour, and issue #73's Cypress attempt only ever got `incomplete` out of the
+real page. It cannot be silently switched off — and, more to the point, it
+cannot silently measure the wrong thing:
+`frontends/apps/checkout/src/a11y-gate.test.ts` runs in `just test-web`, so in
+`just ci`, and fails if the addon goes, if a violation stops failing, if the
+preview stops painting the document shell the real page paints, or if
+`app/globals.css` stops importing the theme before its other at-rules. That
+last one is the defect that made this suite render every story unstyled for
+six runs while passing all of them.
 
 ### 1. No test doubles in shipping processes
 
