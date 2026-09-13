@@ -296,7 +296,15 @@ build-storybook` itself — see below.
   affects — with the suppression itself pinned by a gate.
 - It does not claim `light` theme coverage is complete. Four of 25 stories
   carry it; the rest are `dark`-only in the automated gate, stated above.
-- It does not claim the `landmark-unique` defect has been reported upstream.
+- ~~It does not claim the `landmark-unique` defect has been reported
+  upstream.~~ **Filed 2026-09-13 as vaam-apps/ui#16.** Re-measured across
+  the full width range for the report, in a real Chromium, one fresh
+  context per width: two visible `nav[aria-label="Primary"]` at 640,
+  1023, 1200 and 1279; one at 1280 and 1440. **The defect is wider than
+  this page first recorded** — it is every width below `xl`, not the
+  1200-1279 band, and the sidebar paints as a visible 16-40px sliver
+  rather than being merely present in the accessibility tree. The
+  suppression here is unchanged in scope (one rule id, two stories).
   It has not; that is a maintainer action, not one taken here.
 - It does not claim the checkout's own theme.css alias is now unnecessary in
   general — only that, measured today, removing it did not reproduce PR

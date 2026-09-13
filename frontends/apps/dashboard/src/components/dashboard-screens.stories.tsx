@@ -316,6 +316,15 @@ export const MoreMenuOpen: Story = {
  * width below 1280px, not a Storybook artefact — filing it upstream is the
  * fix; hiding it is not.
  *
+ * **Filed 2026-09-13: vaam-apps/ui#16**, with the measurement below and a
+ * suggested one-word fix (an unprefixed `hidden` beside the `xl:`
+ * utilities). Re-measured across the full range when filing, and the gap
+ * is WIDER than first recorded: two visible `nav[aria-label="Primary"]`
+ * at **640, 1023, 1200 and 1279**, one at 1280 and 1440 — every width
+ * below `xl`, not just the 1200-1279 band. Drop this suppression when a
+ * release carrying the fix is picked up; `a11y-gate.test.ts` pins the
+ * rule id, so removing it here without removing it there fails the gate.
+ *
  * **What changed on review (2026-09-13):** these two stories carried
  * `a11y: { test: "todo" }`, which switches the addon off ENTIRELY for the
  * story. Measured: a `#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell`
