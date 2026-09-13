@@ -78,8 +78,8 @@ use vpay_db::{ActivationOutcome, DbError, SigningKeys};
 /// rotated out.
 ///
 /// **This is a default chosen here, not a decision recorded elsewhere.**
-/// `docs/roadmap.md` lists "signing-key rotation overlap window" as an open
-/// question — no ADR, flow doc or config value states a length, and this
+/// `docs/open-decisions.md` lists "signing-key rotation overlap window" as an
+/// open question — no ADR, flow doc or config value states a length, and this
 /// constant does not close that question. It is the value this code uses
 /// until a maintainer settles it.
 ///

@@ -262,8 +262,8 @@ pub trait SigningKeys: Send + Sync {
     /// and writes nothing. It does **not** re-activate the old row: that needs a
     /// policy decision about `expires_at` and about whether publishing a key
     /// that was deliberately retired is ever right, and the rotation policy as a
-    /// whole is still an open maintainer question (`docs/roadmap.md`, "Open —
-    /// signing-key rotation overlap window"). Failing loudly at boot is the
+    /// whole is still an open maintainer question (`docs/open-decisions.md`).
+    /// Failing loudly at boot is the
     /// honest behaviour until that is decided; an operator's way out is to roll
     /// forward to a new key, or to restore the Secret holding the current one.
     ///

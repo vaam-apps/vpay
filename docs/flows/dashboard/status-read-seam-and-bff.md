@@ -288,8 +288,6 @@ exists for.
 which answers `false` for an outage as well and would have signed every staff
 member out of a rolling deploy. That is issue #88 item 2, and widening
 `onError` to `>= 400` fails **9 of 15** cases in `auth-provider.test.ts`.
-Seven mutations in total, each run and reverted; the table is in
-[../../status/verification/2026-09-12-dashboard-refine.md](../../status/verification/2026-09-12-dashboard-refine.md).
 
 **Lane 4: one array.** `src/dash/resources.ts` replaces `src/nav.tsx`'s
 `NAV_LINKS`, which is deleted. Refine routes from it and the rail renders
@@ -438,8 +436,7 @@ and passes against `compose.e2e.yml`, where on 2026-09-11 it had never run at
 all.
 
 **The second half is still open, and running the mutation one layer down is
-not the same claim.** Verified 2026-09-12
-(`docs/status/verification/2026-09-12-issue-88.md`): swapping
+not the same claim.** Swapping
 `hasNewer`/`hasOlder` in `pageCursors` turns 2 of `payments-query.test.ts`'s
 14 unit cases red — exactly the block written for this bug — and reverting
 restores 14/14. That shows the function the Cypress test depends on is

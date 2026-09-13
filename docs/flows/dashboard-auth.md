@@ -278,5 +278,4 @@ pins. `sha2` gained its first consumer on 2026-09-02; **`hmac`, `subtle` and
 `aes-gcm` gained theirs on 2026-09-07** — the TOTP HMAC, the constant-time
 code comparison, and the sealed TOTP secret respectively. None is unused now.
 
-This flow is tracked as **Phase 2b** in [`docs/roadmap.md`](../roadmap.md).
 See [../status.md](../status.md) for the full, row-by-row picture.

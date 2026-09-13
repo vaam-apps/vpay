@@ -382,8 +382,7 @@ async fn measure_backlog_latency(concurrency: usize) -> anyhow::Result<()> {
     // Printed and not only asserted: issue #100 asks for numbers, and a bound
     // that passes says only "under three seconds". `cargo nextest run
     // --no-capture` (or `--success-output immediate`) prints them, and the
-    // dated page under `docs/status/verification/` is where a run of them
-    // was written down.
+    // output is retained so a focused run can report the observed curve.
     eprintln!(
         "concurrency {concurrency}, {BACKLOG} jobs per round, {ROUNDS} rounds, sampled every \
          {SAMPLE:?}"

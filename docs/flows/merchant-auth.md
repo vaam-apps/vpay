@@ -11,7 +11,8 @@ A merchant's backend is an OAuth2 client registered in vpay's YAML with its
 using `private_key_jwt` client authentication (RFC 7523). This document is
 the wire contract the two merchant SDKs — [`sdks/rust`](../../sdks/rust) and
 [`sdks/nodejs`](../../sdks/nodejs) — implement, and the contract the server
-side (Phase 2/3 of the [roadmap](../roadmap.md)) must serve. Where the two
+side specified by [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) must
+serve. Where the two
 disagree, the SDK is wrong _or_ the server is wrong; neither may quietly
 adapt to the other.
 
@@ -388,7 +389,7 @@ the page to check.
 decisions anyone recorded:** the access token's 900 s lifetime
 (`vpay_api::op::ACCESS_TOKEN_TTL_SECS`) and the 24 h window a retired
 signing key stays publishable (`vpay_api::op::keys::ROTATION_OVERLAP`).
-[`docs/roadmap.md`](../roadmap.md) lists both as open questions and this
+[`docs/open-decisions.md`](../open-decisions.md) lists both as open questions and this
 work does not close them.
 
 **Not done, and not hidden by any of the above:**

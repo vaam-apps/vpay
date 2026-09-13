@@ -3263,8 +3263,8 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         changes, EXPECTED_DRIFT_CHANGES,
         "the drift between schemas/vpay.cstack and backends/migrations changed: the report \
          counts {changes} pending change(s), this test pins {EXPECTED_DRIFT_CHANGES}. If the \
-         schema grew, move the constant and docs/status.md's CrateStack section in the same \
-         commit and say what closed. If it shrank without an edit to the schema, find out what \
+         schema grew, move the constant and document any changed invariant in the same \
+         commit. If it shrank without an edit to the schema, find out what \
          the report stopped seeing before moving anything"
     );
     assert_eq!(

@@ -6007,8 +6007,8 @@ struct Citation {
 ///
 /// The cost of the cue rule, stated rather than hidden: an id cited *only*
 /// without a cue is not checked. On 2026-09-05 that set is empty — every
-/// bold `**#17**` in `docs/roadmap.md`'s third addendum is also written
-/// `PR #17` elsewhere in the same file, so every one is resolved.
+/// bold `**#17**` in a historical record is also written `PR #17` elsewhere
+/// in the same file, so every one is resolved.
 fn verify_citations(root: &Path) -> Result<(), String> {
     verify_citations_via(root, GH)
 }
@@ -10336,7 +10336,7 @@ mod citation_tests {
             // Runbook example payloads.
             "        description: \"Order #42 (rush)\"",
             "  -d \"description=Order #1234\"",
-            // Commit ordinals in docs/roadmap.md, not pull requests.
+            // Commit ordinals, not pull requests.
             "`237c716` (#1, CLI/env config) → `9e92d02` (#2, kebab-case rename)",
             "**Status.** In progress. Commit `#7`",
             // A numbered question in ADR-0009.

@@ -23,8 +23,8 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > **What has never happened.** No HTTP call to MTN's or Orange's own
 > endpoints — not production, not even their sandboxes. No payer has been
 > prompted on a handset and no money has moved. No cluster has ever run vpay.
-> And there is no dashboard a person can use: `/dash/v1`'s two read routes and
-> staff sign-in answer over HTTP, but the app has no pages.
+> The dashboard supports staff sign-in and payment reads against the local test
+> stack; it has not run in a production deployment.
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask
@@ -450,27 +450,11 @@ deploy`. `just demo-down` removes volumes, which is the fix.
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) is the index of the whole tree and says
-which page answers which question. Start with
-[`docs/status.md`](docs/status.md), then:
-
-- [Roadmap](docs/roadmap.md) — the phases from scaffold to a deployable
-  gateway, and where the project stands in that sequence
-- [Flows](docs/flows/) — one document per process, with invariants, each
-  ending in a **Status** section stating what is actually built
-- [ADRs](docs/adr/) — decisions and what they cost
-- [RFCs](docs/rfc/) — proposals not yet decided
-- [Reference](docs/reference/) — why the code that implements a flow is shaped
-  the way it is
-- [SDK parity](docs/sdks/parity.md) — the cross-SDK capability matrix, and
-  every dated gap
-- [Runbooks](docs/runbooks/) — what to do when an alert fires, including
-  [demo.md](docs/runbooks/demo.md) and
-  [checkout.md](docs/runbooks/checkout.md), the two procedures whose output is
-  a real run rather than a design
-
-Contributors: [AGENTS.md](AGENTS.md) is the source of truth for how to work
-here.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), then read the code and tests for
+the change you are making. [docs/status.md](docs/status.md) states the current
+limits. [docs/README.md](docs/README.md) indexes optional API, flow, runbook,
+and decision references. [AGENTS.md](AGENTS.md) contains the full policy for
+high-risk changes.
 
 ## Licence
 

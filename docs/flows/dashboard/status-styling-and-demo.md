@@ -105,10 +105,9 @@ all — no `PageShell`, `Stack`, `Heading`, `Text` or `List` — so unlike the
 2026-09-07 restyle above, this one does not drive `styling_files` or
 `class_tokens_distinct` to zero: both apps now write layout classes
 directly, and `just verify-ui`'s old blanket "no `className` in an app" rule
-was replaced by three narrower ones for exactly that reason (a plain
-literal only, no raw status-colour token, a 60-character budget — see
-[../../status/gates.md](../../status/gates.md)'s `verify-ui` entry for the
-full derivation). `data-theme` moved `bumblebee` → `dark`: `@vaam-apps/ui`
+was replaced by three narrower ones for exactly that reason: a plain literal
+only, no raw status-colour token, and a 60-character budget. `data-theme` moved
+`bumblebee` → `dark`: `@vaam-apps/ui`
 compiles one theme, registered under daisyUI's built-in name, and
 `src/layout.test.tsx` still pins the attribute directly for the same reason
 as before — a wrong value renders the page completely unthemed, silently.
@@ -124,8 +123,7 @@ disk.
 `@vpay/tokens`. The dashboard's payment-status colour and glyph now come
 from `src/payment-status.ts`'s `defineStatusSystem` table, whose `label`
 field still reads `@vpay/tokens`'s `statusLabel`, so the operator-facing copy
-keeps one source. See `docs/status/verification/2026-09-12.md` for what was
-run and measured.
+keeps one source.
 
 ## Contrast under the dark theme, measured 2026-09-12
 

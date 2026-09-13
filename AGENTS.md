@@ -1,7 +1,9 @@
 # AGENTS.md
 
-Instructions for any agent or human contributing to vpay. Read this before
-writing code.
+Detailed policy for high-risk vpay changes. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md); read this file before changing money,
+persistence, rails, authentication, public API or wire types, the UI system, or
+dependencies.
 
 ---
 
@@ -94,14 +96,8 @@ structurally possible.
   fails the build otherwise — and it fails in both directions.
 - Tests for unbuilt behaviour are `#[ignore = "not implemented: … — see
 docs/status.md"]`, so a green run never overstates coverage.
-- When you finish something, update the status pages in the same commit. A
-  status page that lags is worse than none, because people trust it. **Since
-  2026-09-11 that is more than one file:** `docs/status.md` is the current-state
-  page and carries the declaration this gate reads; the row your change belongs
-  to lives on a page under `docs/status/`, and your `just ci` evidence goes on a
-  dated page under `docs/status/verification/`. `docs/status.md` § "Where a new
-  row goes" says which is which, and
-  [docs/status/README.md](docs/status/README.md) is the index.
+- Update `docs/status.md` only when a current-state claim or its machine-checked
+  declaration changes. Ordinary implementation work belongs in code and tests.
 
 If you are unsure whether something counts as done: would a test fail if it
 broke? If no, it is not done.
@@ -269,21 +265,12 @@ exist (`cargo xtask verify-citations`, opt-in because it needs the network).
 A citation that does not resolve is a false claim: strike it through with a
 dated correction. Do not replace it with an id you have not checked.
 
-**`verify-links` checks a destination path and never a `#anchor`.** A link to a
-heading that has been renamed, or that moved to another page, still passes the
-build. So re-read the anchors pointing into a document whose heading you rename.
-A sweep on 2026-09-11 found **four** stale ones across the tree — three left
-behind by heading renames on 2026-09-06 and 2026-09-07, and one naming a section
-that does not exist. Three are fixed; the fourth is named in
-[docs/README.md](docs/README.md) rather than quietly left.
+**`verify-links` checks a destination path and never a `#anchor`.** Re-read
+anchors when changing a document heading.
 
-**A document that has outgrown one sitting becomes an overview and a
-directory**, not a shorter document. Eleven did on 2026-09-11: the page keeps
-its own path and its own **Status** section, and indexes pages carrying what was
-moved there **verbatim** — no dated measurement, struck-through claim or "this
-said X until date Y and was wrong" may be dropped or paraphrased in the move,
-because those are what make the page worth trusting.
-[docs/README.md](docs/README.md) lists which pages, and what they were.
+Keep documents short and audience-specific. Historical measurements, agent
+transcripts, and superseded explanations do not belong in contributor-facing
+documentation.
 
 - A decision that has been made → an ADR (immutable; supersede, never edit).
 - A process → a flow doc, as above.
@@ -294,10 +281,9 @@ because those are what make the page worth trusting.
 ## Commits and PRs
 
 - Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
-- A PR that changes behaviour updates the status pages and the relevant flow doc
-  in the same PR. `docs/status.md` § "Where a new row goes" names the page for
-  each kind of change; [docs/README.md](docs/README.md) is the index of the
-  whole documentation tree.
+- Update documentation when a public contract, operator procedure, or
+  cross-component invariant changes. Do not add narrative status records for
+  refactors, tests, or implementation details.
 - `just ci` must pass locally before review.
 
 ## Before you open a PR

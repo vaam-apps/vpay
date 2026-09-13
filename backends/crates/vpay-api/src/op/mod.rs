@@ -43,7 +43,7 @@ pub mod token;
 /// The access-token lifetime `/v1` mints, in seconds.
 ///
 /// **15 minutes is the plan's default, not a decision that has been made.**
-/// `docs/roadmap.md` lists the merchant access-token TTL as an open
+/// `docs/open-decisions.md` lists the merchant access-token TTL as an open
 /// question; no ADR or flow doc fixes a number, and this constant does not
 /// close that question — it is the value this code uses until a maintainer
 /// settles it.
