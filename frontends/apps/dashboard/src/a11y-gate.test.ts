@@ -93,7 +93,61 @@ describe("the browser a11y suite is still a gate", () => {
     ).toBeLessThan(plugin);
   });
 
-  it("the BUILT storybook stylesheet actually defines the theme", () => {
+  /**
+   * **A story file can switch the addon off, and until 2026-09-13 nothing
+   * in either app noticed.** The first case above greps `preview.ts`, which
+   * is the DEFAULT; `parameters.a11y` on an individual story overrides it
+   * and is what the reviewer of this Storybook found already in use —
+   * `Shell` and `ShellLight` carried `a11y: { test: "todo" }`, which turns
+   * axe off for the whole story. Measured then: a `#3a3a3a`-on-`#0a0b0d`
+   * probe inside `Shell` PASSED, so the chrome wrapped around every screen
+   * in the app had no colour-contrast verdict at all.
+   *
+   * Those two stories now disable exactly one axe rule
+   * (`landmark-unique`, an upstream `@vaam-apps/ui@0.1.2` `SideNav` defect —
+   * see the stories file for the four-viewport reproduction) and keep
+   * `test: "error"` in force for everything else. This case pins that:
+   * which stories are allowed a suppression, and which rule. A third one
+   * cannot be added, and neither of these two can be widened back to
+   * `test: "todo"`, without this failing in `just ci`.
+   */
+  it("no story switches the a11y addon off, and the rule suppressions are the pinned set", () => {
+    const dir = join(APP, "src/components");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".stories.tsx"));
+    expect(files.length, "there are story files to check").toBeGreaterThan(0);
+
+    const SUPPRESSED_STORIES = ["Shell", "ShellLight"];
+    const SUPPRESSED_RULES = ["landmark-unique"];
+
+    for (const file of files) {
+      const src = code(readFileSync(join(dir, file), "utf8"));
+      expect(
+        src,
+        `${file}: a story-level test:"off"/"todo" turns axe off for that story entirely`,
+      ).not.toMatch(/test:\s*"(off|todo)"/);
+
+      const rules = [
+        ...src.matchAll(/id:\s*"([^"]+)"\s*,\s*enabled:\s*false/g),
+      ].map((m) => m[1]);
+      expect(
+        rules.sort(),
+        `${file}: the set of axe rules any story disables`,
+      ).toEqual([...SUPPRESSED_RULES].sort());
+
+      // Which stories carry a `parameters` override at all, by export name.
+      const withParams = [
+        ...src.matchAll(/export const (\w+): Story = \{([\s\S]*?)\n\};/g),
+      ]
+        .filter(([, , body]) => /parameters:/.test(body ?? ""))
+        .map(([, name]) => name ?? "");
+      expect(
+        withParams.sort(),
+        `${file}: exactly these stories may override the a11y defaults`,
+      ).toEqual([...SUPPRESSED_STORIES].sort());
+    }
+  });
+
+  it("the BUILT storybook stylesheet actually defines the theme", (ctx) => {
     // The one check that would have caught the checkout's six passing-but
     // -unstyled runs, reproduced here even though THIS app's build does not
     // currently need a hand-written alias to pass it (see this file's own
@@ -103,6 +157,17 @@ describe("the browser a11y suite is still a gate", () => {
     // the standard gate depend on a step that is deliberately not in it.
     const dir = join(APP, "storybook-static/assets");
     if (!existsSync(dir)) {
+      // `ctx.skip()`, NOT `return`. A bare `return` here reported this case
+      // as PASSED with nothing measured, and CI is exactly where that
+      // happens: the `web` job runs `pnpm -r test` BEFORE
+      // `just build-storybook`, so `storybook-static/` never exists when
+      // this file runs there. The one gate standing behind the removed
+      // `@vaam-apps/ui/styles/theme.css` alias was therefore green-and-blind
+      // on every CI run — this repository's named failure mode, in the test
+      // written to prevent it. Skipping says so in the count; `just
+      // build-storybook` now carries the assertion that actually runs
+      // against a real artefact (see the recipe's own comment).
+      ctx.skip();
       return;
     }
     const sheets = readdirSync(dir).filter((f) => f.endsWith(".css"));

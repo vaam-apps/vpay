@@ -84,6 +84,51 @@ const preview: Preview = {
   decorators: [
     (Story, context) => {
       const theme = context.globals.theme === "light" ? "light" : "dark";
+      /*
+        **Writing `data-theme` is not enough on its own, and believing it was
+        cost this suite three stories' worth of coverage.**
+
+        `@vaam-apps/ui`'s `ThemeSwitcher` (`dist/components/primitives/
+        theme-switcher.js`) owns `data-theme` at runtime: a module-level
+        store reads `localStorage["vaam-ui:theme"]`, falls back to
+        `"system"`, resolves that through `matchMedia("(prefers-color-
+        scheme: dark)")`, and then OVERWRITES `document.documentElement`'s
+        `data-theme` on mount. `AppShell` mounts one in `accountSlot`, and
+        `MoreMenu`'s open drawer mounts a second.
+
+        Measured on the BUILT storybook, one fresh browser context per
+        story, viewport 1200x900: with only the `setAttribute` below,
+        `Shell`, `ShellLight` and `MoreMenuOpen` all rendered with
+        `data-theme="light"` and `body` background `#fcfcfd` under a
+        browser whose `prefers-color-scheme` is `light` (headless
+        Chromium's default, and therefore this suite's), and all three
+        rendered `dark` under `colorScheme: "dark"`. So those three stories'
+        theme was decided by the RUNNER's colour-scheme rather than by the
+        toolbar global — `ShellLight` was not a `light` data point, `Shell`
+        was never checked against the shipped dark ground at all, and a
+        `#3a3a3a` probe placed inside `Shell` was scored 11.09 against white
+        instead of 1.73 against `#0a0b0d`.
+
+        Setting the package's own storage key first makes the switcher
+        resolve to the theme this decorator asked for. The `StorageEvent` is
+        not belt-and-braces: the store latches `loaded` after its first read
+        and refreshes only on a `storage` event, which the DOM never fires in
+        the tab that made the write — and `@storybook/addon-vitest` runs all
+        25 stories in ONE page, so without this the second story onward would
+        keep the first one's resolved theme.
+      */
+      try {
+        window.localStorage.setItem("vaam-ui:theme", theme);
+      } catch {
+        // Storage blocked: the `setAttribute` below still holds for every
+        // story that mounts no `ThemeSwitcher`, which is 22 of the 25.
+      }
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "vaam-ui:theme",
+          newValue: theme,
+        }),
+      );
       document.documentElement.setAttribute("data-theme", theme);
       document.body.classList.add("min-h-screen", "bg-base-100");
       return Story();

@@ -3,6 +3,14 @@
 Last verified: 2026-09-13, on `d5e323d3`, Node `22.23.2` (the `.nvmrc` pin,
 not the host's 24), pnpm `9.15.0`.
 
+> **Reviewed 2026-09-13, adversarially, after the first draft of this page.**
+> Three of this page's own claims were wrong and are corrected in place, each
+> marked `[corrected on review]`; the review's own findings, fixes and
+> mutations are in [What the review changed](#what-the-review-changed) at the
+> end. The headline one: `dark` was **not** checked on all 25 stories. Three
+> stories that mount `@vaam-apps/ui`'s `ThemeSwitcher` rendered in whatever
+> theme the RUNNER's `prefers-color-scheme` said, overriding the decorator.
+
 ## Why this note exists
 
 `frontends/apps/checkout` gained its own Storybook on 2026-09-12 (PR #135,
@@ -17,13 +25,13 @@ Storybook coverage). This closes that gap: `frontends/apps/dashboard/
 
 ## The decisive tests, with real numbers
 
-| #   | Test                                                                        | Result                                                                                                                                                                                    |
-| --- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `just build-storybook` exit code; `storybook-static/index.json` story count | exit **0**; **25** entries of type `story` (0 of type `docs` — this config has no `.mdx` pages)                                                                                           |
-| 2   | Theme lands in the built stylesheet                                         | `assets/iframe-*.css`: `var(--color-base-100)` referenced **22×**, `--color-base-100:` defined **3×**                                                                                     |
-| 3   | `just test-storybook` exit code, story/skip/error counts                    | exit **0** — **25 passed**, 0 skipped, 0 unhandled errors, from a cold cache                                                                                                              |
-| 4   | Negative control: `color: #3a3a3a` on this theme's ground                   | axe **FAILS** it — "insufficient color contrast of **1.73** (foreground color: **#3a3a3a**, background color: **#0a0b0d**... Expected contrast ratio of 4.5:1)"; removed after confirming |
-| 5   | The five `a11y-gate.test.ts` cases                                          | all pass; see the mutation table below                                                                                                                                                    |
+| #   | Test                                                                        | Result                                                                                                                                                                                                                        |
+| --- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `just build-storybook` exit code; `storybook-static/index.json` story count | exit **0**; **25** entries of type `story`, plus **1** of type `docs` — `[corrected on review]`, this page first said 0: the stories file carries `tags: ["autodocs"]`, so `addon-docs` generates one docs entry for the meta |
+| 2   | Theme lands in the built stylesheet                                         | `assets/iframe-*.css`: `var(--color-base-100)` referenced **22×**, `--color-base-100:` defined **3×**                                                                                                                         |
+| 3   | `just test-storybook` exit code, story/skip/error counts                    | exit **0** — **25 passed**, 0 skipped, 0 unhandled errors, from a cold cache                                                                                                                                                  |
+| 4   | Negative control: `color: #3a3a3a` on this theme's ground                   | axe **FAILS** it — "insufficient color contrast of **1.73** (foreground color: **#3a3a3a**, background color: **#0a0b0d**... Expected contrast ratio of 4.5:1)"; removed after confirming                                     |
+| 5   | The `a11y-gate.test.ts` cases                                               | **six** after review (a fifth-and-sixth, see below); all pass, each under its own mutation — see the mutation table below                                                                                                     |
 
 Exit codes were read from files the commands wrote themselves
 (`; echo $? > file`), not from a harness banner.
@@ -36,14 +44,15 @@ predecessor failed silently on the checkout.
 
 ## Gate table
 
-| Command                              | Result                                                                                                                                                                        |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just verify`                        | exit **0**, twelve gates, after this page existed to satisfy `verify-links` (see below)                                                                                       |
-| `just fmt-check-web`                 | exit **0** after `prettier --write` on two files this change touched (`docs/status/frontend.md`, the stories file) — both had been hand-edited without running prettier first |
-| `pnpm --filter @vpay/dashboard test` | exit **0** — **31 files, 316 tests, 316 passed, 0 skipped**                                                                                                                   |
-| `pnpm --filter @vpay/dashboard lint` | exit **0**                                                                                                                                                                    |
-| `just build-storybook`               | exit **0** (builds both apps; dashboard's own numbers are row 1 above)                                                                                                        |
-| `just test-storybook`                | exit **0** (both apps; dashboard's own numbers are row 3 above; checkout unaffected, still 22 passed)                                                                         |
+| Command                              | Result                                                                                                                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just verify`                        | exit **0**, twelve gates, after this page existed to satisfy `verify-links` (see below)                                                                                                                                                                 |
+| `just fmt-check-web`                 | exit **0** after `prettier --write` on two files this change touched (`docs/status/frontend.md`, the stories file) — both had been hand-edited without running prettier first                                                                           |
+| `pnpm --filter @vpay/dashboard test` | exit **0** — **31 files, 317 tests**. With a Storybook built: **317 passed, 0 skipped**. With none (CI's state, and `just ci`'s): **316 passed, 1 skipped** — the built-stylesheet case, which now says so instead of reporting a pass                  |
+| `pnpm --filter @vpay/dashboard lint` | exit **0**                                                                                                                                                                                                                                              |
+| `just build-storybook`               | exit **0**, from a cold cache (`storybook-static`, both apps' `node_modules/.vite*` and `node_modules/.cache` removed first); prints `checkout --color-base-100 defined 3x, referenced 22x` and `dashboard --color-base-100 defined 3x, referenced 22x` |
+| `just test-storybook`                | exit **0** from a cold cache — checkout **22 passed**, dashboard **25 passed**, 0 skipped, 0 unhandled errors in either                                                                                                                                 |
+| `just lint-web` (typecheck + eslint) | exit **0** — run on review because `pnpm --filter @vpay/dashboard lint` is eslint only and does not typecheck; the review's own first draft of `a11y-gate.test.ts` failed `tsc --noEmit` and eslint did not notice                                      |
 
 `just verify`'s own first run in this task failed exactly once, on
 `verify-links`, because this very file did not exist yet when
@@ -61,9 +70,14 @@ task asked for the seven gates above instead.
    was mutated (swap the order) to confirm it fails.
 2. **`css: true` in the vitest browser config.** Present from the first
    draft — copied from the checkout's config with the same reasoning.
-   Removing it was not separately re-tested here because the theme
-   measurement (row 2 above) already depends on it end-to-end: a stub CSS
-   import cannot produce a stylesheet with the variable defined at all.
+   `[corrected on review]` — the reasoning given here first ("the theme
+   measurement already depends on it end-to-end") was wrong, and row 2
+   measures the **build**, which this setting does not touch at all. Actually
+   deleting the line and re-running the suite with the `#3a3a3a` probe in a
+   story: the probe still **FAILED at 1.73 against #0a0b0d**. On vitest
+   4.1.11 browser mode the stylesheet is applied whatever `css` says. The
+   line is kept for intent, and `vitest.storybook.config.ts`'s own comment
+   now says it is not what guards the unstyled-but-green failure.
 3. **`esbuild.jsx: "automatic"` in `main.ts`'s `viteFinal`, not in the
    vitest config.** Placed correctly the first time; without it, every
    story would die with `React is not defined`, and the two-pipeline
@@ -164,11 +178,23 @@ not absent) at the same moment the 1024–1279px floating vertical rail
 (`hidden sm:flex xl:hidden`) is also `display: flex`.
 
 This is a defect in a published dependency this repository does not own the
-source of, not a gap in this app's own markup. It is not silently
-suppressed: `Shell`/`Shell Light` carry a documented `parameters.a11y = {
-test: "todo" }` — the same escape hatch the checkout's `preview.ts` names —
-with the measurement above in the story file's own comment, and every OTHER
-story in the suite still fails on a real violation with no such override.
+source of, not a gap in this app's own markup: the className comes from
+`@vaam-apps/ui@0.1.2`'s `dist/components/primitives/side-nav.js:456`
+(`collapsed ? "hidden" : "xl:flex xl:h-full … xl:py-4"`, no unprefixed
+`hidden`), and `app-shell.tsx` passes `smallScreen`'s default and writes
+none of those classes. It is a real defect the shipped app has at every width
+below 1280px, not a Storybook artefact.
+
+`[corrected on review]` — the first draft suppressed it with
+`parameters.a11y = { test: "todo" }`, which turns the addon off for the whole
+story. Measured on review: a `#3a3a3a`-on-`#0a0b0d` probe placed inside
+`Shell` **PASSED** under that setting, so `AppShell` — the chrome around
+every screen in the app — had no colour-contrast verdict at all. The two
+stories now disable the single rule `landmark-unique` and keep
+`test: "error"` in force; the same probe then **FAILS at 1.73 against
+#0a0b0d**. `src/a11y-gate.test.ts` case 5 pins which stories may carry a
+suppression and which rule id, so a third cannot be added silently and
+neither of these two can be widened back to `test: "todo"`.
 
 ## Both themes: `dark` is genuinely axe-checked; `light` only partially
 
@@ -178,13 +204,42 @@ toolbar **globalType** (`theme`) defaulting to `dark`, with a decorator
 writing `data-theme` from it — a human can flip it in the Storybook UI.
 
 `just test-storybook` runs each story exactly once, under whatever
-`globals.theme` resolves to at load. **So `dark` is checked by every one of
-the 25 stories; `light` is checked only by the seven stories that
-explicitly set `globals: { theme: "light" }`** (`FiltersLight`,
-`SignedInLight`, `DetailWithChargeLight`, `ShellLight` — one per screen
-family that has an obvious light-readable variant, not every story). Stated
-plainly rather than implied: most of this app's `light` theme surface is
-reviewable by a human flipping the toolbar control, not covered by the
+`globals.theme` resolves to at load. **So `dark` is checked by 21 of the 25
+stories; `light` is checked by the four that explicitly set
+`globals: { theme: "light" }`** — `FiltersLight`, `SignedInLight`,
+`DetailWithChargeLight`, `ShellLight`, one per screen family that has an
+obvious light-readable variant, not every story. `[corrected on review]`:
+this page first said "seven", which contradicted its own list of four and its
+own closing section.
+
+**And until the review, none of that was reliably true.**
+`@vaam-apps/ui`'s `ThemeSwitcher` owns `data-theme` at runtime — a
+module-level store reads `localStorage["vaam-ui:theme"]`, defaults to
+`"system"`, resolves that through `matchMedia("(prefers-color-scheme:
+dark)")`, and OVERWRITES `document.documentElement`'s `data-theme` on mount.
+`AppShell` mounts one in `accountSlot`; `MoreMenu`'s open drawer mounts a
+second. Measured on the built Storybook, one fresh browser context per story
+at 1200×900:
+
+| story          | before the fix (`prefers-color-scheme: light`) | before the fix (`: dark`) | after the fix, either |
+| -------------- | ---------------------------------------------- | ------------------------- | --------------------- |
+| `Shell`        | `light`, body `#fcfcfd`                        | `dark`                    | `dark`, `#0a0b0d`     |
+| `ShellLight`   | `light`                                        | **`dark`**                | `light`, `#fcfcfd`    |
+| `MoreMenuOpen` | `light`                                        | `dark`                    | `dark`, `#0a0b0d`     |
+| the other 22   | as declared                                    | as declared               | as declared           |
+
+So three stories' theme was decided by the runner's colour scheme rather than
+by the story: `Shell` and `MoreMenuOpen` were never checked against the
+shipped dark ground on this suite's own browser, and `ShellLight` was not a
+`light` data point. `preview.ts`'s decorator now writes the package's own
+storage key and dispatches a `StorageEvent` before setting the attribute (the
+store latches after its first read and refreshes only on that event, which
+the DOM never fires in the tab that wrote it — and all 25 stories run in ONE
+page). Re-measured after the fix: all 25 stories render the theme they
+declare under both `prefers-color-scheme` values.
+
+Stated plainly rather than implied: most of this app's `light` theme surface
+is reviewable by a human flipping the toolbar control, not covered by the
 automated gate.
 
 ## CI wiring: the path filter already covers the dashboard, no fix needed
@@ -201,24 +256,48 @@ No workflow edit was needed or made.
 Each case was broken, observed to fail, then restored — not asserted from
 reading the assertion.
 
-| Case                                               | Mutation                                                                        | Result before restore |
-| -------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------- |
-| 1. `preview.ts` still fails on a violation         | `test: "error"` → `test: "todo"`                                                | 1 failed \| 4 passed  |
-| 2. `preview.ts` paints the real document shell     | dropped `"bg-base-100"` from the decorator's `classList.add` call               | 1 failed \| 4 passed  |
-| 3. `main.ts` loads the addons and the router alias | removed `"@storybook/addon-a11y"` from the addons array                         | 1 failed \| 4 passed  |
-| 3b. (same case, other half)                        | removed the `next/navigation` alias entry                                       | 1 failed \| 4 passed  |
-| 4. `globals.css` imports the theme first           | swapped `@import "@vaam-apps/ui/styles/theme.css"` to after `@plugin "daisyui"` | 1 failed \| 4 passed  |
-| 5. Built stylesheet defines the theme              | wrote a fake `storybook-static/assets/*.css` with no `--color-base-100`         | 1 failed \| 4 passed  |
+Every row below was re-run independently during the review, against the
+committed files, with the exit code read from the run — not carried over.
 
-All five passed after each restore, `5 passed (5)` overall.
+| Case                                                                  | Mutation                                                                        | Result before restore |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------- |
+| 1. `preview.ts` still fails on a violation                            | `test: "error"` → `test: "todo"`                                                | FAILS (exit 1)        |
+| 2. `preview.ts` paints the real document shell                        | dropped `"bg-base-100"` from the decorator's `classList.add` call               | FAILS (exit 1)        |
+| 2b. (same case, other half)                                           | dropped `import "../app/globals.css"`                                           | FAILS (exit 1)        |
+| 3. `main.ts` loads the addons and the router alias                    | removed `"@storybook/addon-a11y"` from the addons array                         | FAILS (exit 1)        |
+| 3b. (same case)                                                       | removed `"@storybook/addon-vitest"`                                             | FAILS (exit 1)        |
+| 3c. (same case, other half)                                           | removed the `next/navigation` alias entry                                       | FAILS (exit 1)        |
+| 4. `globals.css` imports the theme first                              | swapped `@import "@vaam-apps/ui/styles/theme.css"` to after `@plugin "daisyui"` | FAILS (exit 1)        |
+| 5. Story-level a11y suppressions are the pinned set (added on review) | gave a third story a `parameters` a11y override                                 | FAILS (exit 1)        |
+| 5b. (same case)                                                       | widened the two `AppShell` stories back to `test: "todo"`                       | FAILS (exit 1)        |
+| 5c. (same case)                                                       | changed the suppressed rule id to `color-contrast`                              | FAILS (exit 1)        |
+| 6. Built stylesheet defines the theme                                 | rewrote the built `--color-base-100:` declarations out of the stylesheet        | FAILS (exit 1)        |
+
+**Two mutations that did NOT fail, and what was done about each:**
+
+- **Removing `"@storybook/addon-docs"` from the addons array** leaves the
+  gate green (`6 passed`). Left as is: `addon-docs` generates the docs page,
+  not the a11y verdict, and case 3 deliberately pins only the two addons that
+  make the suite a gate. Named here so it is a choice on the record rather
+  than an oversight.
+- **Case 6 with no `storybook-static/` present** reported **`passed`** in the
+  first draft, because the body did a bare `return`. CI's `web` job runs
+  `pnpm -r test` BEFORE `just build-storybook`, so that is CI's every run:
+  the one gate standing behind the removed theme alias was green-and-blind
+  there. It now calls `ctx.skip()` (measured: `5 passed | 1 skipped (6)`), and
+  the assertion that actually runs against a real artefact moved into `just
+build-storybook` itself — see below.
 
 ## What this note does not claim
 
 - It does not claim `@vaam-apps/ui`'s `SideNav` landmark defect is fixed. It
-  is not; it is named, reproduced with a decisive measurement, and left as a
-  documented `test: "todo"` on exactly the two stories it affects.
+  is not; it is named, reproduced at four viewports, traced to the exact
+  upstream line, and suppressed by rule id on exactly the two stories it
+  affects — with the suppression itself pinned by a gate.
 - It does not claim `light` theme coverage is complete. Four of 25 stories
   carry it; the rest are `dark`-only in the automated gate, stated above.
+- It does not claim the `landmark-unique` defect has been reported upstream.
+  It has not; that is a maintainer action, not one taken here.
 - It does not claim the checkout's own theme.css alias is now unnecessary in
   general — only that, measured today, removing it did not reproduce PR
   #135's failure on either app's current dependency tree. Whether that is a
@@ -241,7 +320,73 @@ All five passed after each restore, `5 passed (5)` overall.
 - `frontends/apps/dashboard/package.json` (storybook devDeps + scripts, versions matching the checkout's exactly)
 - `frontends/apps/dashboard/eslint.config.js` (`outsideTsconfig` gains `.storybook/**`, measured the same dot-directory gap the checkout's carries)
 - `pnpm-lock.yaml`
-- `justfile` (`build-storybook`/`test-storybook` extended to both apps; the `lint-web` comment block gains a dated paragraph)
+- `justfile` (`build-storybook`/`test-storybook` extended to both apps; `build-storybook` also asserts each app's built stylesheet DEFINES `--color-base-100`; `test-storybook`'s cache clear corrected; the `lint-web` comment block gains a dated paragraph)
 - `docs/status/frontend.md` (two struck-through, dated corrections)
 - `docs/status/README.md` (this page listed at the top of the verification log)
 - `docs/flows/dashboard/status-built-and-not-built.md` (a new dated block; `docs/flows/dashboard.md`'s own Status section is a summary and was left untouched, per that page's own convention)
+
+## What the review changed
+
+An adversarial review ran on 2026-09-13 against commit `17d15a0e` with one
+question: can this gate go RED for the right reason, or does it pass while
+measuring nothing? Everything above was re-measured rather than read. Four
+things were wrong enough to fix.
+
+1. **Three stories rendered in the wrong theme** — `@vaam-apps/ui`'s
+   `ThemeSwitcher` overrode the decorator from `prefers-color-scheme`. Fixed
+   in `.storybook/preview.ts`; measured before and after, both colour
+   schemes, all 25 stories. See the themes section above.
+2. **`AppShell` had no axe coverage at all** — `test: "todo"` switches the
+   addon off entirely, not just the one failing rule. Narrowed to
+   `landmark-unique`; the `#3a3a3a` probe inside `Shell` now fails at 1.73
+   against `#0a0b0d` where it used to pass at 11.09 against white.
+3. **Nothing gated a story-level suppression**, in either app. Added as
+   `a11y-gate.test.ts` case 5, pinning both the set of stories and the set of
+   rule ids, verified under three separate mutations.
+4. **The built-stylesheet gate never ran in CI** — a bare `return` reported a
+   pass when there was no build, and CI's ordering guarantees there is none.
+   Now an explicit skip, with the real assertion moved into `just
+build-storybook`, where the artefact exists. Verified by mutation: with
+   `app/globals.css`'s `@import` moved below `@plugin`, the recipe exits 1
+   and prints `dashboard --color-base-100 defined 0x, referenced 22x` — PR
+   #135's exact numbers.
+
+Two claims in the first draft's own comments were also corrected rather than
+left standing: `css: true` is not what makes the stories styled on this stack
+(trap 2 above), and `just test-storybook`'s `rm -rf
+node_modules/.cache/storybook` cleared nothing — that path does not exist in
+this workspace; the per-app vite dep caches at
+`frontends/apps/<app>/node_modules/.vite` are now named explicitly.
+
+Independently confirmed, not changed:
+
+- The negative control fails at **1.73** against **#0a0b0d**, the real ground.
+- The theme lands in **both** apps' built stylesheets with **no** theme.css
+  resolve alias, from a genuinely cold cache (`storybook-static`,
+  `node_modules/.vite` and `node_modules/.cache` all removed first): defined
+  **3×**, referenced **22×**, dashboard and checkout alike. The implementer's
+  cross-check against the checkout's own tree reproduces.
+- `optimizeDeps.include`'s narrowing is sound: `just test-storybook` from a
+  cold dep cache reports **25 passed, 0 skipped, 0 unhandled errors**, and
+  the checkout's 22 are unaffected.
+- Removing `esbuild.jsx` from `viteFinal` leaves `build-storybook` at **exit
+  0** while the built artefact renders "No Preview" with `ReferenceError:
+React is not defined` on every story — confirmed by serving
+  `storybook-static` and loading `iframe.html` in Playwright, not by reading
+  the build log. The vitest suite does catch it: **25 failed**.
+- `landmark-unique` on `AppShell` is genuinely upstream, and genuinely
+  absent at and above 1280px.
+- The CI `web` path filter covers `frontends/**`; no workflow edit needed.
+
+Not proven, and stated as such:
+
+- **Nothing pins the story count.** Deleting a story export leaves every gate
+  green. The checkout has the same gap. Not added here: an exact count is
+  churn on every legitimate story, and case 5's story-name pin already covers
+  the specific case that matters (a story being quietly exempted rather than
+  quietly deleted). A maintainer who wants deletion caught should say so.
+- **The suite measures 1200×900 only**, below the `xl` breakpoint. Raising it
+  above 1280 would make `landmark-unique` disappear — which is why it was NOT
+  raised: 1200 is a width the app really ships at, and the defect there is
+  real. A second viewport project would be the honest way to cover both
+  bands; that is a scope decision left to the maintainer.

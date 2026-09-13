@@ -55,11 +55,27 @@ export default defineConfig({
   test: {
     name: "storybook",
     /**
-     * **`css: true` is the difference between measuring the product and
-     * measuring nothing.** Vitest stubs a CSS import by default, so without
+     * **Kept, but NOT load-bearing on this stack — measured, and the
+     * checkout's version of this comment overstates it.**
+     *
+     * The claim inherited from `frontends/apps/checkout/vitest.storybook.
+     * config.ts` is that vitest stubs a CSS import by default, so without
      * this `preview.ts`'s `import "../app/globals.css"` is a no-op and every
-     * story renders unstyled — see `.storybook/main.ts`'s doc comment for
-     * the measured counts on this app's own build.
+     * story renders unstyled. Reviewed 2026-09-13 by deleting this line and
+     * re-running the suite with a `#3a3a3a` probe in a story: the probe
+     * still FAILED at **1.73 against #0a0b0d**, i.e. the stylesheet was
+     * still applied and the ground was still the shipped dark one. On
+     * vitest 4.1.11 browser mode, `@storybook/addon-vitest` resolves the
+     * story graph through vite, which processes CSS whatever this setting
+     * says; `css` governs the node-side transform that browser mode does not
+     * take.
+     *
+     * The line stays because it states the intent explicitly and costs
+     * nothing, and because that is only today's behaviour on today's
+     * versions. What actually guards the "unstyled but green" failure is the
+     * negative control and `just build-storybook`'s own
+     * `--color-base-100 defined 0x` assertion — not this setting, and this
+     * comment says so rather than crediting it with a job it is not doing.
      */
     css: true,
     browser: {

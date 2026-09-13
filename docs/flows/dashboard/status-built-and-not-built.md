@@ -162,9 +162,14 @@ to the same fixtures (`src/testing/fixtures.ts`) `a11y.test.tsx` renders, so a
 screen cannot gain a story without a test already covering it. `just
 build-storybook` exit 0; the built stylesheet defines `--color-base-100`
 (referenced 22×, defined 3×); `just test-storybook` exit 0, **25 passed, 0
-skipped, 0 unhandled errors**, both `@vaam-apps/ui` themes covered (`dark` by
-default, a `light` variant per screen family — `.storybook/preview.ts` names
-which stories carry it and why only those are automated).
+skipped, 0 unhandled errors**, both `@vaam-apps/ui` themes covered (21
+stories `dark`, 4 `light` — `.storybook/preview.ts` names which stories carry
+`light` and why only those are automated). _(Corrected on adversarial review:
+three stories — `Shell`, `ShellLight`, `MoreMenuOpen` — rendered in whatever
+theme the RUNNER's `prefers-color-scheme` said, because `@vaam-apps/ui`'s
+`ThemeSwitcher` overwrites `data-theme` on mount from its own store. The
+decorator now writes the package's storage key too; re-measured, all 25
+stories render the theme they declare under both colour schemes.)_
 
 **One real, third-party finding, not papered over.** At this suite's actual
 browser viewport (1200×900 — below the `xl` breakpoint), `AppShell`'s `Shell`
@@ -174,11 +179,20 @@ renders its in-flow sidebar `<nav aria-label="Primary">` with only
 back to a `<nav>`'s default `display: block` at the same time the
 1024–1279px floating rail is also visible — two landmarks answering the same
 name at once. Reproduced directly with `axe-core` at both viewports (zero
-violations at 1280×800, one at 1200×900), not inferred from the error
-message. `Shell`/`Shell Light` carry a documented `parameters.a11y = { test:
-"todo" }` for this one reason; every other story in the suite still fails on
-a real violation. This is a defect in the published package, not in this
-app's markup, and is not this task's to fix.
+violations at 1280×800 and 1440×900, one at 1200×900 and at 1279×900), not
+inferred from the error message, and traced to the exact upstream line
+(`@vaam-apps/ui@0.1.2` `dist/components/primitives/side-nav.js:456`).
+`Shell`/`Shell Light` disable **that one axe rule by id** and keep
+`test: "error"` in force for everything else. _(Corrected on adversarial
+review the same day: they first carried `parameters.a11y = { test: "todo" }`,
+which switches the addon off for the whole story — measured, a
+`#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell` PASSED under it, so the
+chrome around every screen in the app had no colour-contrast verdict at all.
+With the narrowed suppression the same probe fails at 1.73 against `#0a0b0d`.
+`src/a11y-gate.test.ts` now pins which stories may carry a suppression and
+which rule id, verified under three mutations.)_ This is a defect in the
+published package, not in this app's markup, and is not this task's to fix;
+it has not been reported upstream.
 
 **Two router hooks needed a stub, and `next/link` needed a `vite` `define`.**
 `PaymentsFilters` (`useRouter`) and `AppShell` (`usePathname`) throw outside a
@@ -197,8 +211,13 @@ one (PR #135's finding). Removing the equivalent entry from a copy of this
 app's config and rebuilding from a cold cache left `--color-base-100` defined
 exactly as often (3×) as with it present — this app's build does not
 reproduce that failure today. `src/a11y-gate.test.ts`'s stylesheet case
-guards the OUTCOME either way.
+guards the OUTCOME either way — but only where a build exists, which in CI it
+never does (`pnpm -r test` runs before `just build-storybook`), so on review
+that case became an explicit skip and `just build-storybook` itself gained the
+assertion. Verified by mutation: with `app/globals.css`'s `@import` moved
+below `@plugin`, the recipe exits 1 printing
+`dashboard --color-base-100 defined 0x, referenced 22x`.
 
-Full detail, every gate's real numbers, and the five-case mutation table are
-in
+Full detail, every gate's real numbers, the six-case mutation table and the
+adversarial review's own findings are in
 [../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).

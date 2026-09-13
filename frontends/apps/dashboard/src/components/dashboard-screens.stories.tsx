@@ -286,36 +286,58 @@ export const MoreMenuOpen: Story = {
 // ------------------------------------------------------------------ AppShell
 
 /**
- * **`test: "todo"` here is a measured upstream defect, not a hidden gap** —
- * the same escape hatch `frontends/apps/checkout/.storybook/preview.ts`
- * documents ("A single story may override it... where a reviewer sees it").
+ * **`landmark-unique` alone is turned off here, and nothing else** — a
+ * measured defect in a published dependency, narrowed to the single rule it
+ * affects so the rest of axe still gates this app's whole chrome.
  *
- * At this suite's own browser viewport (`@vitest/browser-playwright`'s
- * default, measured at 1200×900 by a temporary `console.log` in this play
- * function, since neither vitest nor this config states one), axe fails
- * `AppShell` with `landmark-unique`: **two** elements answer
- * `nav[aria-label="Primary"]` at once. `@vaam-apps/ui@0.1.2`'s own
- * `side-nav.js` doc comment asserts "Exactly one `<nav aria-label="Primary">`
- * exists at any width" and reasons through why — but the in-flow sidebar's
- * own className is `xl:flex xl:h-full … xl:w-64` with no UNPREFIXED `hidden`
- * alongside it, so below the `xl` breakpoint (1280px) none of those
- * `xl:`-prefixed utilities apply and the element falls back to a `<nav>`'s
- * browser-default `display: block` — visible, not absent — at the same time
- * the 1024–1279px floating vertical rail (`hidden sm:flex xl:hidden`) is
- * ALSO visible in that same band. Reproduced directly, not inferred from the
- * failure message: `axe.run(document, { runOnly: ["landmark-unique"] })`
- * against this exact built story at 1280×800 (above `xl`) returns zero
- * violations; at 1200×900 (below it) it returns this one, with both
- * `nav[aria-label="Primary"]` elements present in the accessibility tree.
+ * At this suite's own browser viewport — `@vitest/browser-playwright`'s
+ * default, measured at **1200x900** (a temporary `play` function asserting
+ * `window.innerWidth`/`innerHeight`, since neither vitest nor this config
+ * states one) — axe fails `AppShell` with `landmark-unique`: **two** visible
+ * elements answer `nav[aria-label="Primary"]` at once.
  *
- * This is a defect in `@vaam-apps/ui`, a published dependency this repo does
- * not own the source of — not a gap in this app's markup, and not something
- * a Storybook config setting can honestly paper over. `parameters.a11y` is
- * scoped to just these two stories, not `preview.ts`'s default, so every
- * OTHER screen in this file still fails on a real violation.
+ * Reproduced directly against the BUILT story with
+ * `axe.run(document, { runOnly: ["landmark-unique"] })` at four widths:
+ * 1200 and 1279 return this one violation, 1280 and 1440 return none. At
+ * 1200 the in-flow sidebar computes `display: block` and the floating
+ * vertical rail computes `display: flex` — both visible, both
+ * `nav[aria-label="Primary"]`. At 1280 the sidebar is `flex` and the rail is
+ * `none`.
+ *
+ * The markup is upstream, not this app's composition:
+ * `@vaam-apps/ui@0.1.2`'s
+ * `dist/components/primitives/side-nav.js:456` emits the in-flow sidebar's
+ * className as `collapsed ? "hidden" : "xl:flex xl:h-full ... xl:py-4"` —
+ * every utility `xl:`-prefixed and no UNPREFIXED `hidden` beside them, so
+ * below 1280px the element keeps a `<nav>`'s default `display: block` while
+ * the `hidden sm:flex xl:hidden` floating rail is also on. `app-shell.tsx`
+ * passes `smallScreen`'s default (`"floating"`) and writes none of those
+ * classes itself. It is a real defect that the shipped app has at every
+ * width below 1280px, not a Storybook artefact — filing it upstream is the
+ * fix; hiding it is not.
+ *
+ * **What changed on review (2026-09-13):** these two stories carried
+ * `a11y: { test: "todo" }`, which switches the addon off ENTIRELY for the
+ * story. Measured: a `#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell`
+ * PASSED under `test: "todo"` — so `AppShell`, the chrome wrapped around
+ * every screen in the app, was the one composition in this file with no
+ * colour-contrast verdict at all. Disabling the single upstream rule keeps
+ * `test: "error"` in force: the same probe FAILS at 1.73 against #0a0b0d
+ * with the config below. `src/a11y-gate.test.ts` pins this exact set of two
+ * stories and this exact rule id, so a third suppression cannot be added
+ * without the gate failing.
  */
-const SHELL_A11Y_TODO = {
-  a11y: { test: "todo" as const },
+const SHELL_A11Y_UPSTREAM_LANDMARK = {
+  a11y: {
+    config: {
+      rules: [
+        // Re-stated because a story-level `rules` array REPLACES the meta's
+        // rather than merging into it.
+        { id: "color-contrast", enabled: true },
+        { id: "landmark-unique", enabled: false },
+      ],
+    },
+  },
 };
 
 export const Shell: Story = {
@@ -328,7 +350,7 @@ export const Shell: Story = {
       <PaymentsTable rows={[INTENT]} />
     </AppShell>
   ),
-  parameters: SHELL_A11Y_TODO,
+  parameters: SHELL_A11Y_UPSTREAM_LANDMARK,
 };
 
 export const ShellLight: Story = {
@@ -342,7 +364,7 @@ export const ShellLight: Story = {
     </AppShell>
   ),
   globals: { theme: "light" },
-  parameters: SHELL_A11Y_TODO,
+  parameters: SHELL_A11Y_UPSTREAM_LANDMARK,
 };
 
 // ------------------------------------------------------------------ FormAlert

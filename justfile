@@ -105,9 +105,49 @@ build-web:
 # apps, and a caller who wants just one still has `pnpm --filter <app>
 # build-storybook` / `test-storybook` directly — the justfile recipe is the
 # CI-facing gate, not the only way to reach either app's own script.
+#
+# THE BUILD IS ALSO WHERE THE THEME CHECK BELONGS, ADDED 2026-09-13 ON
+# REVIEW. Both apps' `src/a11y-gate.test.ts` carry a case asserting the BUILT
+# stylesheet defines `--color-base-100` — PR #135's exact failure was a build
+# that referenced it 22 times and defined it 0. That case runs in the jsdom
+# suite, and CI's `web` job runs `pnpm -r test` BEFORE this recipe, so
+# `storybook-static/` never exists when it runs there: it skipped, every
+# time, and a skipped test is not a passing test. It still skips (it is the
+# regression net for anyone who HAS built locally), and the assertion that
+# actually runs in CI is here, against the artefact this recipe just
+# produced. It matters most for the dashboard, whose `.storybook/main.ts`
+# deliberately carries no `@vaam-apps/ui/styles/theme.css` resolve alias —
+# measured unnecessary on today's dependency tree, and this is what would
+# catch a dependency bump making it necessary again.
 build-storybook:
+    #!/usr/bin/env bash
+    set -euo pipefail
     pnpm --filter @vpay/checkout build-storybook
     pnpm --filter @vpay/dashboard build-storybook
+    for app in checkout dashboard; do
+      sheets=(frontends/apps/"$app"/storybook-static/assets/*.css)
+      if [ ! -e "${sheets[0]}" ]; then
+        echo "build-storybook: $app emitted no stylesheet at all" >&2
+        exit 1
+      fi
+      # `grep -o | wc -l` counts OCCURRENCES; `grep -c` counts matching
+      # LINES, and a minified stylesheet is one line, so it would answer 1
+      # whether the theme defined the variable once or thirty times.
+      # `|| true` on both: under `set -euo pipefail` a `grep` that matches
+      # nothing exits 1, which is precisely the case this check exists to
+      # REPORT — without it the recipe died at the assignment and printed no
+      # diagnostic at all (measured, on the `@import`-after-`@plugin`
+      # mutation).
+      defined=$( { cat "${sheets[@]}" | grep -o -- '--color-base-100:' || true; } | wc -l)
+      referenced=$( { cat "${sheets[@]}" | grep -o 'var(--color-base-100' || true; } | wc -l)
+      echo "build-storybook: $app --color-base-100 defined ${defined}x, referenced ${referenced}x"
+      if [ "$defined" -eq 0 ]; then
+        echo "build-storybook: $app built a stylesheet that REFERENCES --color-base-100 ${referenced} times and DEFINES it 0 times." >&2
+        echo "  The @vaam-apps/ui theme was dropped from the build. Every story now renders on the browser's default white," >&2
+        echo "  so every colour-contrast verdict test-storybook returns is about a ground no user ever sees (PR #135)." >&2
+        exit 1
+      fi
+    done
 
 # Every checkout AND dashboard story, rendered in a real Chromium, with axe
 # over each one.
@@ -132,10 +172,16 @@ build-storybook:
 # throws still counts as a passing test, so only the unhandled-error count
 # and the exit code give it away, and it reproduces from a COLD cache only.
 # Ten seconds a run is the price of a local green meaning what CI's means.
-# `rm -rf` here is a repo-relative path, so one clear covers both `pnpm
-# --filter` invocations below — each still gets a cold dependency
-# pre-bundle, because that cache is keyed by each app's own lockfile hash
-# and `node_modules` layout, not shared between them.
+# CORRECTED 2026-09-13 ON REVIEW: `node_modules/.cache/storybook` at the
+# repository root does not exist in this workspace and never has — measured,
+# `ls node_modules/.cache` is "No such file or directory" after a full
+# install and a full run of both apps' suites. The clear was a no-op. Vite's
+# dep pre-bundle for a browser-mode vitest run lives at
+# `frontends/apps/<app>/node_modules/.vite` (renamed to `.vite-temp` on the
+# way out), one per app, so both are named below. The root path is kept
+# because the Storybook BUILDER cache does land there in other layouts and
+# removing a directory that is absent costs nothing; what was wrong was the
+# claim that it covered the apps.
 #
 # WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` and
 # `frontends/apps/dashboard/src/a11y-gate.test.ts` both run in the jsdom
@@ -153,6 +199,8 @@ build-storybook:
 # them render a component that calls a Next router hook.
 test-storybook: playwright-browser
     rm -rf node_modules/.cache/storybook
+    rm -rf frontends/apps/checkout/node_modules/.vite frontends/apps/checkout/node_modules/.vite-temp
+    rm -rf frontends/apps/dashboard/node_modules/.vite frontends/apps/dashboard/node_modules/.vite-temp
     pnpm --filter @vpay/checkout test-storybook
     pnpm --filter @vpay/dashboard test-storybook
 
