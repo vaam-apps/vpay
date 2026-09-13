@@ -6,9 +6,10 @@ is recorded as an ADR and the RFC is marked resolved.
 - ADR = a decision that has been made (immutable).
 - RFC = a proposal under discussion (mutable, then closed).
 
-| RFC                                    | Title                  | Status |
-| -------------------------------------- | ---------------------- | ------ |
-| [0001](0001-settlement-and-payouts.md) | Settlement and payouts | Draft  |
+| RFC                                                | Title                              | Status       |
+| -------------------------------------------------- | ---------------------------------- | ------------ |
+| [0001](0001-settlement-and-payouts.md)             | Settlement and payouts             | Draft        |
+| [0002](0002-gdpr-policy-and-operator-decisions.md) | GDPR policy and operator decisions | Under review |
 
 ## Template
 
