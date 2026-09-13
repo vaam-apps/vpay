@@ -72,6 +72,7 @@ search_payment_intents` is deleted.
 
    The mutation was reverted immediately after; the test is green again
    (confirmed by a second run).
+
 4. **No write is reachable.** `schema::tests::no_generated_model_route_is_mounted_only_the_one_procedure_is`
    walks every one of the eighteen models' generated `list`/`create` path
    (`/{plural}`) and `get`/`update`/`delete` path (`/{plural}/{id}`), across
@@ -98,6 +99,7 @@ search_payment_intents` is deleted.
    pool this test uses fails the statement `list_currencies` would run once a
    route admits the request — the point is that it is not `404`.) Reverted
    immediately after; confirmed green again.
+
 5. **`schema.rs`'s `#[cfg_attr(not(test), allow(dead_code))]` on `Payments`
    is deleted.** Done in the same commit as the transport; `docs/status.md`'s
    own machine-checked area (`just verify-docs`) is unaffected (advisory,
