@@ -48,13 +48,13 @@ Nav slices: refunds, events / webhook deliveries, customers, settings
 
 ## The lanes
 
-| PR  | Lane                                     | Depends on | Surface        |
-| --- | ---------------------------------------- | ---------- | -------------- |
-| A   | Shell: drawer, theme, account, rail      | —          | frontend only  |
-| B   | ADR + cross-tenant admin role            | —          | backend, auth  |
-| C   | CrateStack transport + tenant context    | B          | backend        |
-| D   | Slices: refunds, events, customers, settings | C      | backend + BFF  |
-| E   | Nav IA, screens, screenshots             | A, D       | frontend       |
+| PR  | Lane                                         | Depends on | Surface       |
+| --- | -------------------------------------------- | ---------- | ------------- |
+| A   | Shell: drawer, theme, account, rail          | —          | frontend only |
+| B   | ADR + cross-tenant admin role                | —          | backend, auth |
+| C   | CrateStack transport + tenant context        | B          | backend       |
+| D   | Slices: refunds, events, customers, settings | C          | backend + BFF |
+| E   | Nav IA, screens, screenshots                 | A, D       | frontend      |
 
 Lane A and lane B are independent and start together. Nothing in lane A
 depends on a route existing; it is the chrome around whatever the rail
