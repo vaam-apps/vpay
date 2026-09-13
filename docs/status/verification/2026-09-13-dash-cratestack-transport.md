@@ -290,3 +290,57 @@ discharged — on `docs/status/cratestack.md` and the dated page it indexes,
 which is where `docs/status.md` § "Where a new row goes" now sends this kind
 of change — so only the sentences naming the page were wrong. Both are struck
 through with the correction rather than deleted.
+
+## The gate, run for the first time on this work
+
+`just ci` had never been run on `claude/dash-cratestack-transport`. Run on the
+review branch it **exited 1**, and the failure was not in anything this review
+had touched:
+
+```
+verify-ignored: 0 ignored (expected 0), 48 test binaries (expected 47), 1772 total (minimum 1080)
+verify-ignored: FAIL — 48 test binaries listed, expected 47; a test binary was added or dropped out of the workspace
+error: Recipe `verify-ignored` failed with exit code 1
+```
+
+`backends/tests/integration/tests/dashboard_procedure_transport.rs` is a **new
+test binary**, added by the commit that mounted the transport (`9d384d13`),
+and `justfile`'s `expected_suites` was not moved with it. `verify-ignored` is
+a step of `just ci` and **not** of `just verify`, which is why the
+implementer's "`just verify` exit code: 0" was accurate and the branch was
+still red: the one gate that catches a new test binary is in the recipe that
+was never run.
+
+Fixed by bumping `expected_suites` 47 → 48 with the same kind of dated entry
+every previous bump carries (what the binary is, and why it is its own file
+rather than cases in a sibling suite).
+
+**The harness banner reported this run as "exit code 0" while the exit file
+held `1`.** The number above is the one read from
+`lane-c-rev-ci-exit.txt`, per the project's own standing rule.
+
+### Counts, separately
+
+- `test-rust` (`cargo nextest run --workspace`): **1772 tests run, 1772
+  passed, 0 skipped, 0 ignored**, across **48** test binaries, in 1322 s.
+  Container suites ran for real under
+  `DOCKER_HOST=unix:///run/user/1000/docker.sock` — the `dashboard_*`,
+  `worker_*`, `postgres_smoke` and conformance suites all start Postgres.
+- `test-doc` (`cargo test --doc --workspace`, a separate runner nextest does
+  not cover): **113 passed, 1 ignored**. The single ignored doctest is in
+  `vpay_sdk` and pre-dates this work.
+- `just verify`: **exit 0**, twelve gates. The `verify-docs` advisory count of
+  `#[allow]`/`#[expect]` sites in production code is **6**, down from 7 —
+  confirming the implementer's claim, the deleted `cfg_attr` being the one
+  that went.
+- `fmt-check` (`cargo fmt --all -- --check` and `pnpm exec prettier --check .`)
+  and `clippy --workspace --all-targets -- -D warnings`: clean, zero warnings.
+- `lint-web`, `test-web`, `audit-web`: exit 0, each run under Node **22.23.2**
+  (`.nvmrc`), not the host's 24.20.0.
+
+### One environment note, not caused by this work
+
+`check-schema` prints `WARNING — cratestack 0.11.1 on PATH, this repository
+pins 0.12.0` and type-checks `schemas/vpay.cstack` under 0.11.1 anyway. The
+library the workspace compiles against is 0.12.0 (`Cargo.lock`). This is a
+property of the host's installed CLI, present before this branch.

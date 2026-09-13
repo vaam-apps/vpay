@@ -2046,7 +2046,26 @@ expected_ignored := "0"
 # would be measuring whatever that one left running. Two tests, one container
 # each, about 23 s together. Measured after adding it: `cargo nextest list
 # --workspace` gives **47** binaries, **1753** total, **0** ignored.
-expected_suites := "47"
+#
+# **47 -> 48 on 2026-09-13 (nav plan Lane C)**: one new binary,
+# `backends/tests/integration/tests/dashboard_procedure_transport.rs`, the end
+# of CrateStack's read-only procedure transport over HTTP. Its own file rather
+# than cases in `dashboard_read_surface.rs` because that suite is about
+# `/dash/v1`'s hand-written `GET` routes behind `require_dashboard_token`, and
+# this one is about the transport mounted beside them — a different middleware
+# (`require_dashboard_procedure_token`), a `POST` carrying a JSON body, and a
+# router assembled a different way.
+#
+# **This bump is the whole reason to run the gate rather than reason about
+# it.** The binary was added by the commit that mounted the transport
+# (`9d384d13`) and this number was not moved with it, so `just ci` on that
+# branch exits 1 at `verify-ignored` — which nothing noticed, because that
+# branch's `just ci` was never run. It is not a count anyone can bump
+# reflexively for the same reason: the recipe prints the listing when it
+# fails, so a binary that vanished and a binary that was added are told apart
+# by reading it. Measured after adding it: `cargo nextest list --workspace`
+# gives **48** binaries, **1772** total, **0** ignored.
+expected_suites := "48"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
