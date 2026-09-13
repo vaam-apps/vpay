@@ -92,3 +92,36 @@ if (typeof window !== "undefined" && !window.ResizeObserver) {
   }
   window.ResizeObserver = ResizeObserverPolyfill;
 }
+
+/**
+ * `window.matchMedia`, for `vaul` — the drawer engine under `@vaam-apps/ui`'s
+ * `Drawer` / `QuickDetailDrawer` / `MoreDetailDrawer`.
+ *
+ * Measured, not assumed: without this, mounting an OPEN drawer throws
+ * `TypeError: window.matchMedia is not a function` out of
+ * `vaul/dist/index.mjs:855` — `window.matchMedia('(display-mode: standalone)')`,
+ * in the effect that suppresses vaul's Safari-toolbar position-fixed hack for
+ * a PWA. It throws from a passive effect, so vitest reports it as an
+ * *unhandled error* beside a **passing** test rather than as a failure: the
+ * drawer silently never opens and every assertion about its contents
+ * vacuously holds. That is precisely the "test that asserts nothing" shape,
+ * which is why this lives here rather than being stubbed per test file.
+ *
+ * `matches: false` for every query, matching the rest of this block's rule:
+ * minimal plumbing, no behaviour stubbed. jsdom computes no layout, so no
+ * media query it could be asked has a true answer here; vaul reads exactly
+ * one and treats `false` as "not a PWA", its normal browser path.
+ */
+if (typeof window !== "undefined" && !window.matchMedia) {
+  window.matchMedia = (query: string): MediaQueryList =>
+    ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as MediaQueryList;
+}

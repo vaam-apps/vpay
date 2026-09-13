@@ -2,18 +2,15 @@
 
 import {
   Button,
-  Drawer,
   DrawerClose,
-  DrawerContent,
-  DrawerDescription,
-  DrawerTitle,
-  DrawerTrigger,
+  MoreDetailDrawer,
   ThemeSwitcher,
 } from "@vaam-apps/ui";
 import { Menu } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 
-import { NAV_ENTRIES } from "../dash/resources";
+import { NAV_ENTRIES, isNavActive } from "../dash/resources";
 import { SignedInBar } from "./signed-in-bar";
 
 export interface MoreMenuProps {
@@ -40,39 +37,82 @@ export interface MoreMenuProps {
  * holding the three things that don't fit in the rail: the nav tree, the
  * theme switcher, and the account block.
  *
+ * # A bottom sheet on a phone, a right-hand panel from `md` up
+ *
+ * That split is what the maintainer asked for, and `MoreDetailDrawer`
+ * already **is** it — `drawer.js`'s `DetailDrawerContent` opens
+ * `direction="bottom"` and carries `inset-x-0 bottom-0 rounded-t-box
+ * border-t` for the phone, then resets every one of those explicitly at
+ * `md:` (`md:inset-y-0 md:right-0 md:h-full md:rounded-l-box
+ * md:border-l`). None of that is written here; the component owns it.
+ *
+ * An earlier revision of this file used the generic `Drawer` /
+ * `DrawerContent` composition instead, pinned to `direction="right"`, and
+ * its comment said a bottom sheet was unreachable because `verify-ui`
+ * caps an app's `className` at 60 characters (justfile check 7a-iii) and
+ * the responsive rules do not fit. **That reasoning had the right
+ * constraint and the wrong conclusion.** The cap is real — and so is
+ * check 7a-i, which is stricter still and forbids a computed `className`
+ * in an app at all, so `cn()` is not a way round it either. But neither
+ * bites here, because reaching the split never required writing those
+ * classes at the call site: it required calling the component that
+ * already ships them. The longest `className` in this file is 47
+ * characters, and the drawer's placement is in none of them.
+ *
+ * The cost of that swap, stated: `MoreDetailDrawer` is controlled, so the
+ * open state is `useState` here and the trigger is our own `<Button>`
+ * rather than a `DrawerTrigger`. Its `max-w-[680px]` at `md`+ is wider
+ * than the generic panel's `560px`.
+ *
+ * # The current entry is marked for a screen reader and not for an eye
+ *
+ * `aria-current="page"` is the whole signal; there is no visual active
+ * style on the drawer's rows, and that IS a gap rather than a preference.
+ * Ternary-in-a-class-attribute is the shape check 7a-i bans by name, so
+ * that route is closed. The static form that would survive it — a Tailwind
+ * `aria-[current=page]:` variant — does not fit check 7a-iii's 60-
+ * character budget beside the row's layout: measured, `flex items-center
+ * gap-2 rounded-field px-3 py-2 aria-[current=page]:font-medium` is 79
+ * characters, and 65 even with `rounded-field` dropped. The rail carries
+ * the visible current-page state at every width this drawer opens at, so
+ * what is missing here is a second rendering of it, not the only one.
+ *
+ * (That comment itself tripped check 7a-i on its first draft: the grep is
+ * over the file's TEXT, prose included, so quoting the banned shape
+ * literally fails the gate. Left as a note for the next person to describe
+ * it in words rather than in code.)
+ *
  * # The nav tree is `NAV_ENTRIES`, not a second list
  *
  * Rendered from the exact same array `AppShell` passes to `SideNav`'s
  * `groups` — `resources.ts`'s whole point is that there is one place a nav
  * destination is declared. Growing the rail later (another lane) is a data
- * change to that file and nothing here.
+ * change to that file and nothing here. `aria-current` is decided by
+ * `isNavActive`, that file's one copy of `SideNav`'s own rule, so the rail
+ * and this drawer cannot disagree about which entry is current — they did,
+ * on every detail route, until that function existed.
  *
- * # The account block is a SECOND `SignedInBar`, deliberately
+ * # The account block is a SECOND `SignedInBar`, and it is safe
  *
- * `dashboard.cy.ts`'s `cy.contains(staffEmail()).should("be.visible")` runs
- * at Cypress's default 1000×660 viewport, with eight tests chained after it
- * in a `testIsolation: false` sequence — so the identity cannot live only
- * behind this drawer's trigger. `AppShell` keeps its own always-visible
- * `SignedInBar` in `<main>` for that reason and this is a second mount of
- * the same component, not a competing account UI: one source of what the
- * block looks like, rendered in the one place that must never require a
- * click to reach and again in here for anyone who opened the drawer for
- * the nav tree or the theme switcher and wants sign-out right there too.
+ * `dashboard.cy.ts`'s `cy.contains(staffEmail()).should("be.visible")`
+ * runs at Cypress's default 1000×660 viewport, with eight tests chained
+ * after it in a `testIsolation: false` sequence — so the identity cannot
+ * live only behind this drawer's trigger. `AppShell` keeps its own
+ * always-visible `SignedInBar` in `<main>` for that reason, and this is a
+ * second mount of the same component.
  *
- * # A right-hand panel, not a bottom sheet
- *
- * The generic `Drawer` composition's `DrawerContent` is CSS-positioned at
- * the right edge by default (`inset-y-0 right-0`), and `direction="right"`
- * is what the skill's own reference names as the correct pairing for that
- * placement — leaving it unset drags on the wrong axis. Reproducing the
- * bottom-sheet-on-phone/right-panel-on-desktop split `MoreDetailDrawer`
- * uses internally would need overriding most of its layout classes at the
- * call site, and `just lint-web`'s `verify-ui` caps a `className` in this
- * app at 60 characters — there is no literal string of the needed rules
- * that fits. The default panel is already full-width below its `max-w`
- * breakpoint (`w-full max-w-[560px]`), so on a phone it covers the screen
- * edge-to-edge exactly as a sheet would; it only differs in which edge it
- * slides from.
+ * Two mounts of a sign-out form sounds like a duplication bug. Measured on
+ * a real render rather than argued: **only one is ever in the
+ * accessibility tree.** `MoreDetailDrawer` is the dimmed, modal variant
+ * (`dimmed: true` → vaul's `modal`), and Radix marks the rest of the
+ * document `aria-hidden` while it is open — so
+ * `getAllByRole("button", { name: /sign out/i })` returns exactly **one**
+ * element with the drawer shut and exactly **one** with it open, the
+ * `<main>` copy having left the tree as the drawer's copy entered it.
+ * `more-menu.test.tsx` pins that count in both states. axe over the open
+ * drawer reports no `duplicate-id`, `duplicate-id-aria` or `region`
+ * violation either (`a11y.test.tsx`'s open-drawer case), and neither
+ * `SignedInBar` renders an `id` at all.
  */
 export function MoreMenu({
   email,
@@ -80,49 +120,59 @@ export function MoreMenu({
   signOut,
   currentPath,
 }: MoreMenuProps) {
+  const [open, setOpen] = useState(false);
+
   return (
-    <Drawer direction="right">
-      <DrawerTrigger asChild>
-        <Button type="button" variant="secondary" size="sm">
-          <Menu size={16} aria-hidden="true" />
-          More
-        </Button>
-      </DrawerTrigger>
-      <DrawerContent className="flex flex-col gap-6 p-5">
-        <div>
-          <DrawerTitle>More</DrawerTitle>
-          <DrawerDescription>
-            Navigation, theme, and your account.
-          </DrawerDescription>
+    <>
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        onClick={() => setOpen(true)}
+      >
+        <Menu size={16} aria-hidden="true" />
+        More
+      </Button>
+      <MoreDetailDrawer
+        open={open}
+        onOpenChange={setOpen}
+        title="More"
+        description="Navigation, theme, and your account."
+      >
+        <div className="flex flex-col gap-6">
+          <nav aria-label="More destinations">
+            <ul className="flex flex-col gap-1">
+              {NAV_ENTRIES.map((entry) => {
+                const Icon = entry.icon;
+                const active = isNavActive(entry.href, currentPath);
+                return (
+                  <li key={entry.href}>
+                    <DrawerClose asChild>
+                      <Link
+                        href={entry.href}
+                        aria-current={active ? "page" : undefined}
+                        className="flex items-center gap-2 rounded-field px-3 py-2"
+                      >
+                        <Icon size={16} aria-hidden="true" />
+                        {entry.label}
+                      </Link>
+                    </DrawerClose>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+          <div className="flex flex-col gap-2">
+            <span className="text-caption text-muted-foreground">Theme</span>
+            <ThemeSwitcher />
+          </div>
+          <SignedInBar
+            email={email}
+            merchantId={merchantId}
+            signOut={signOut}
+          />
         </div>
-        <nav aria-label="More destinations">
-          <ul className="flex flex-col gap-1">
-            {NAV_ENTRIES.map((entry) => {
-              const Icon = entry.icon;
-              const active = entry.href === currentPath;
-              return (
-                <li key={entry.href}>
-                  <DrawerClose asChild>
-                    <Link
-                      href={entry.href}
-                      aria-current={active ? "page" : undefined}
-                      className="flex items-center gap-2 rounded-field px-3 py-2"
-                    >
-                      <Icon size={16} aria-hidden="true" />
-                      {entry.label}
-                    </Link>
-                  </DrawerClose>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-        <div className="flex flex-col gap-2">
-          <span className="text-caption text-muted-foreground">Theme</span>
-          <ThemeSwitcher />
-        </div>
-        <SignedInBar email={email} merchantId={merchantId} signOut={signOut} />
-      </DrawerContent>
-    </Drawer>
+      </MoreDetailDrawer>
+    </>
   );
 }

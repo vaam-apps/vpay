@@ -108,10 +108,16 @@ browser evidence stand on their own** — they are about a surface that exists
 either way.
 
 **Built and proven, 2026-09-13 (nav plan Lane A): the "More" drawer.**
-`AppShell` gained a drawer (`src/components/more-menu.tsx`, `@vaam-apps/ui`'s
-generic `Drawer` composition) holding the nav tree rendered from the same
-`NAV_ENTRIES` array `SideNav` reads, `ThemeSwitcher`, and a second
-`SignedInBar`. It closes a real gap: `SideNav` only ever renders its
+`AppShell` gained a drawer (`src/components/more-menu.tsx`,
+`@vaam-apps/ui`'s `MoreDetailDrawer`) holding the nav tree rendered from the
+same `NAV_ENTRIES` array `SideNav` reads, `ThemeSwitcher`, and a second
+`SignedInBar`. It is a **bottom sheet below `md` and a right-hand panel
+above** — the component ships that split itself, so the call site writes no
+placement class at all. (The first implementation shipped a right-hand panel
+at every width, on the reasoning that `verify-ui`'s 60-character `className`
+cap left no way to a bottom sheet; the review tested that claim and it did
+not hold — the route was to call the component that already had the split.
+`just verify-ui` is silent/exit 0 on the corrected file.) It closes a real gap: `SideNav` only ever renders its
 `accountSlot` in the ≥1280px in-flow sidebar, so below that width there was no
 theme control reachable at all before this. The signed-in identity did
 **not** move into the drawer — `dashboard.cy.ts`'s
@@ -126,10 +132,23 @@ page like everything else `SideNav`'s rails do, and reserves no space of its
 own.
 
 `pnpm --filter @vpay/dashboard typecheck`, `just lint-web` (`verify-ui`
-included) and `just test-web` all pass — the dashboard suite is **303 vitest
-cases in 29 files, 0 skipped** — with no test edited and no assertion
-weakened. **Not proven in a real browser:** no Cypress case opens the
-drawer, so its contents and behaviour at a real viewport are checked by
-jsdom and `tsc` only. Full detail, including why the drawer is a right-hand
-panel rather than the bottom sheet the plan first described, is in
+included) and `just test-web` all pass — the dashboard suite is **311 vitest
+cases in 30 files, 0 skipped** (303 in 29 as first delivered; the review
+added seven `more-menu.test.tsx` cases and one open-drawer `a11y.test.tsx`
+case, the component having shipped with none) — with no test edited to pass
+and no assertion weakened. Every added case was made to fail first by
+breaking the thing it checks; the mutations and their output are on the
+verification page.
+
+**Not proven in a real browser, and this is the gap to read this row
+against:** no Cypress case opens the drawer, and no screenshot was taken at
+any width. jsdom applies no CSS, so the bottom-sheet claim is evidenced by
+the class attribute on the rendered panel and by `MoreDetailDrawer`'s
+source — not by anything that looked at a phone. A **pre-existing** React
+duplicate-key warning (`SideNav`'s sub-640px rail keys `topItem` and the one
+nav entry both `/payments`) is reported and left: it was reproduced on the
+base commit with this drawer deleted, so it is not this change's, and fixing
+it is nav IA (Lane E) or upstream.
+
+Full detail is in
 [../../status/verification/2026-09-13-dash-shell-drawer.md](../../status/verification/2026-09-13-dash-shell-drawer.md).

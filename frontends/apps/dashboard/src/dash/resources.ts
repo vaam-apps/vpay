@@ -75,3 +75,32 @@ export const NAV_ENTRIES: readonly {
   label: entry.label,
   icon: entry.icon,
 }));
+
+/**
+ * Is `href` the destination the reader is currently inside?
+ *
+ * **One rule, in one place, because there are two renderers.** `SideNav`
+ * draws the rail and `MoreMenu` draws the drawer's copy of the same tree,
+ * and each has to decide `aria-current` for the same entry at the same
+ * moment. Two expressions is two answers: `more-menu.tsx` shipped with
+ * `entry.href === currentPath` and the rail disagreed with it on every
+ * detail route — measured on a real render at `/payments/pi_3Nk`, the rail
+ * marked `/payments` current on all eight of its links and the drawer
+ * marked nothing.
+ *
+ * The rule is `SideNav`'s, deliberately: a prefix match ending at a
+ * SEGMENT boundary. `@vaam-apps/ui` keeps its own `isActive` private
+ * (`side-nav.js`, not exported), so this cannot import it and is a
+ * transcription of it instead — which is why `more-menu.test.tsx` does not
+ * assert this expression's shape but asserts the drawer and the rail AGREE
+ * on the same render. If the package ever changes its rule, that test is
+ * what notices; re-reading this comment is not.
+ *
+ * The `/` special case is `SideNav`'s too, and it is load-bearing rather
+ * than decorative: without it `startsWith("/")` is true of every path in
+ * the app, so a root entry would be permanently current.
+ */
+export function isNavActive(href: string, currentPath: string): boolean {
+  if (href === "/") return currentPath === "/";
+  return currentPath === href || currentPath.startsWith(`${href}/`);
+}
