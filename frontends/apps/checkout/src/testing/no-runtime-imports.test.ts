@@ -28,6 +28,19 @@
  * kept rather than removed: it costs nothing while unused, and the day
  * Storybook returns, a story file is covered by this rule again without
  * anyone having to remember to re-add it.
+ *
+ * **Corrected 2026-09-13: that day came, and the bet paid.** Storybook was
+ * restored later on 2026-09-12 in `frontends/apps/checkout/.storybook/`
+ * (`docs/status/verification/2026-09-12-storybook-restored.md`), so
+ * `src/components/checkout-screens.stories.tsx` exists again and the
+ * `*.stories.tsx` exclusion is load-bearing rather than dormant — it is now
+ * the only reason that file, which imports `../testing/fixtures` and
+ * `../testing/screen-states`, does not fail this test. Re-measured on
+ * 2026-09-13: the suite is 3 cases, all passing, and narrowing the suffix
+ * pattern below from `/\.(?:test|stories)\.tsx?$/` to
+ * `/\.(?:test)\.tsx?$/` makes it fail on
+ * `src/components/checkout-screens.stories.tsx` — which is the mutation
+ * that proves the exclusion is doing work, not decorating.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";

@@ -46,6 +46,10 @@ the order they were measured.
   `<main>` rather than moved behind it, the bottom-sheet-below-`md` /
   right-panel-above split, and the review that reversed the first
   implementation's "a bottom sheet cannot pass `verify-ui`" finding
+- [verification/2026-09-13-storybook-reverified.md](verification/2026-09-13-storybook-reverified.md) —
+  the 2026-09-12 Storybook restoration re-run on `origin/master`, the six
+  places that still said the gap was open, and the measured answer to the
+  question `justfile` left about the new `.storybook`'s tsconfig
 - [verification/2026-09-12-erasure-idempotency-window.md](verification/2026-09-12-erasure-idempotency-window.md) —
   issue #111: the 24-hour window in which an update that lost a race to a
   `DELETE` put the payer back into `idempotency_keys.response_body` —
