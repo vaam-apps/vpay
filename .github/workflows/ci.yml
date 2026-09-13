@@ -580,8 +580,7 @@ jobs:
       # Runs the container-backed suites too (vpay-db, vpay-tests-integration,
       # both binaries' tests/cli.rs) — ubuntu-latest has a working Docker
       # daemon and testcontainers fails hard without one, so these cannot
-      # silently skip. This job is the evidence for those suites; see
-      # docs/status.md, "Last verified".
+      # silently skip. This job is the evidence for those suites.
       - run: cargo nextest run --workspace
       # nextest runs NO doctests, so until 2026-09-03 (Step 7) the step above
       # was the whole of this job's Rust testing and the workspace's doctests

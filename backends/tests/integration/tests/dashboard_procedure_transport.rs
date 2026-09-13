@@ -1,6 +1,6 @@
 //! `POST /dash/v1/$procs/searchPaymentIntents`, end to end: the real
 //! `vpay_api::router` on a real socket, over a real Postgres — Lane C
-//! (`docs/plans/2026-09-13-dashboard-nav-notes/transport.md`).
+//! (`docs/plans/2026-09-13-dashboard-nav-notes/plan.md`).
 //!
 //! Sibling of `dashboard_read_surface.rs` rather than an addition to it:
 //! that suite is about `/dash/v1`'s hand-written `GET` routes, and this one

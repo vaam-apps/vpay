@@ -828,8 +828,7 @@ integration reach staff-only state. See
 `sql-postgres` feature, so none is compiled in. The signing keys and the
 JWKS endpoint that landed on 2026-09-02 serve `/v1` and are not a step
 toward this surface being reachable; there is also an unresolved audience
-problem in the authorization-code grant that must be settled first. Tracked
-as Phase 2b in [../roadmap.md](../roadmap.md); see
+problem in the authorization-code grant that must be settled first. See
 [../flows/dashboard-auth.md](../flows/dashboard-auth.md).
 
 ## `/provider/{code}/callback` — rail callbacks

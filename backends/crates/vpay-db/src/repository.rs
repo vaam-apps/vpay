@@ -879,7 +879,7 @@ pub trait Repositories:
     /// `auth` is a [`crate::DashboardAuthFn`] rather than a generic
     /// `cratestack::AuthProvider` type parameter: this trait is used as
     /// `Arc<dyn Repositories>`, and a `dyn`-safe method cannot be generic.
-    /// See `docs/plans/2026-09-13-dashboard-nav-notes/transport.md` for why
+    /// See `docs/plans/2026-09-13-dashboard-nav-notes/plan.md` for why
     /// a closure is the whole of what this seam costs.
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
 }

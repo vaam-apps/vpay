@@ -18,19 +18,15 @@
 //! `vpay-api`'s `require_dashboard_procedure_token`, over a context built by
 //! `crate::dashboard_transport::ExtensionAuthProvider` from the tenant that
 //! middleware already resolved
-//! (`docs/plans/2026-09-13-dashboard-nav-notes/transport.md`). That context
+//! (`docs/plans/2026-09-13-dashboard-nav-notes/plan.md`). That context
 //! is never `vpay_db::persistence::system_context()` — the only context in
 //! this crate for which `is_system()` is true, and a system context carries
 //! no tenant, so [`tenant_of`] would refuse it exactly as it refuses any
 //! other tenantless caller. `Payments` is no longer `allow(dead_code)`
 //! outside tests, because this transport constructs one in every build —
-//! see `crate::schema`'s note on the `mod` declaration. ~~`docs/status.md`
-//! says the same thing in the same words.~~ **Struck by the Lane C review,
-//! 2026-09-13: it does not — `docs/status.md` was not touched by that
-//! commit.** The page that carries this is `docs/status/cratestack.md`,
-//! which indexes
-//! `docs/status/cratestack/2026-09-13-dashboard-procedure-transport.md`;
-//! `crate::schema`'s note says why the page moved.
+//! see `crate::schema`'s note on the `mod` declaration. The transport's
+//! container-backed contract is pinned in
+//! `backends/tests/integration/tests/dashboard_procedure_transport.rs`.
 //!
 //! # What offset paging cannot promise, and what `seq` does not fix
 //!

@@ -61,8 +61,8 @@ pub enum DbError {
     /// Re-activating the retired row instead is deliberately **not** what
     /// this crate does — that needs a policy decision about `expires_at` and
     /// about whether a key retired on purpose may publish again, and the
-    /// rotation policy is an open maintainer question (`docs/roadmap.md`,
-    /// "Open — signing-key rotation overlap window"). Refusing loudly is the
+    /// rotation policy is an open maintainer question
+    /// (`docs/open-decisions.md`). Refusing loudly is the
     /// honest behaviour until it is settled; this variant only makes the
     /// refusal legible.
     #[error(

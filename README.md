@@ -23,8 +23,8 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > **What has never happened.** No HTTP call to MTN's or Orange's own
 > endpoints — not production, not even their sandboxes. No payer has been
 > prompted on a handset and no money has moved. No cluster has ever run vpay.
-> And there is no dashboard a person can use: `/dash/v1`'s two read routes and
-> staff sign-in answer over HTTP, but the app has no pages.
+> The dashboard supports staff sign-in and payment reads against the local test
+> stack; it has not run in a production deployment.
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask
@@ -185,19 +185,18 @@ deploy/         helm/vpay   (rendered and schema-validated; never applied to a c
 
 `schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
 (`include_server_schema!`) and `just check-schema` runs `cratestack check`
-against the pinned CLI inside `just verify`. **Twelve of the file's
-seventeen models carry statements `vpay-server` actually runs — thirty-two
-statements over twelve tables** — `currencies`, `providers`,
+against the pinned CLI inside `just verify`. **Thirteen of the file's
+nineteen models carry statements `vpay-server` actually runs** — `currencies`, `providers`,
 `disabled_clients`, `customers`, `events`, `webhook_deliveries`,
 `checkout_sessions`, `invoices`, `invoice_items`, `staff_members`,
-`staff_sessions` and `oauth_authorization_codes`; the five that do not are
+`staff_sessions`, `oauth_authorization_codes` and `credentials`; the six that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
-`ledger_entries`, which stay a design sketch a compiler now type-checks.
-_(Measured 2026-09-10; this said "nine of thirteen" and had been stale since
+`ledger_entries`, plus `rate_limit_windows`, whose SQL remains hand-written.
+_(Measured 2026-09-13; this said "nine of thirteen" and had been stale since
 S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
-authoritative schema, and this file has diverged from it on two `CHECK`
-constraints CrateStack's grammar cannot express. See `docs/status.md`
-§ CrateStack.
+authoritative schema, and this file has diverged from it on constraints
+CrateStack's grammar cannot express. See
+[`docs/reference/vpay-db.md`](docs/reference/vpay-db.md#cratestack).
 
 ## Stack
 
@@ -466,27 +465,11 @@ deploy`. `just demo-down` removes volumes, which is the fix.
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) is the index of the whole tree and says
-which page answers which question. Start with
-[`docs/status.md`](docs/status.md), then:
-
-- [Roadmap](docs/roadmap.md) — the phases from scaffold to a deployable
-  gateway, and where the project stands in that sequence
-- [Flows](docs/flows/) — one document per process, with invariants, each
-  ending in a **Status** section stating what is actually built
-- [ADRs](docs/adr/) — decisions and what they cost
-- [RFCs](docs/rfc/) — proposals not yet decided
-- [Reference](docs/reference/) — why the code that implements a flow is shaped
-  the way it is
-- [SDK parity](docs/sdks/parity.md) — the cross-SDK capability matrix, and
-  every dated gap
-- [Runbooks](docs/runbooks/) — what to do when an alert fires, including
-  [demo.md](docs/runbooks/demo.md) and
-  [checkout.md](docs/runbooks/checkout.md), the two procedures whose output is
-  a real run rather than a design
-
-Contributors: [AGENTS.md](AGENTS.md) is the source of truth for how to work
-here.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), then read the code and tests for
+the change you are making. [docs/status.md](docs/status.md) states the current
+limits. [docs/README.md](docs/README.md) indexes optional API, flow, runbook,
+and decision references. [AGENTS.md](AGENTS.md) contains the full policy for
+high-risk changes.
 
 ## Licence
 

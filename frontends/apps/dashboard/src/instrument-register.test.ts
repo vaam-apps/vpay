@@ -20,11 +20,9 @@
  * a later edit that reaches for the quieter tier on this surface fails
  * rather than shipping 4.4:1 to an operator.
  *
- * The dashboard has no browser-level a11y gate at all — `just
- * test-storybook` covers the checkout's 22 screens and nothing here — so
- * this file and the jsdom axe suite are the whole of what guards these
- * surfaces. That gap is stated in `docs/status/frontend.md` rather than
- * implied.
+ * The browser-level Storybook gate complements this source-level check: the
+ * browser measures rendered contrast, while this file prevents call sites
+ * from choosing the known-wrong token before rendering.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";

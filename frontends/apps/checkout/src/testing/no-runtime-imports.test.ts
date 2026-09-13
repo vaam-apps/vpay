@@ -30,8 +30,7 @@
  * anyone having to remember to re-add it.
  *
  * **Corrected 2026-09-13: that day came, and the bet paid.** Storybook was
- * restored later on 2026-09-12 in `frontends/apps/checkout/.storybook/`
- * (`docs/status/verification/2026-09-12-storybook-restored.md`), so
+ * restored later on 2026-09-12 in `frontends/apps/checkout/.storybook/`, so
  * `src/components/checkout-screens.stories.tsx` exists again and the
  * `*.stories.tsx` exclusion is load-bearing rather than dormant — it is now
  * the only reason that file, which imports `../testing/fixtures` and

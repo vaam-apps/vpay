@@ -28,7 +28,7 @@
 // which is private here and stays that way (ADR-0016 standard 5).
 //
 // **No longer `#[cfg_attr(not(test), allow(dead_code))]`, as of Lane C
-// (docs/plans/2026-09-13-dashboard-nav-notes/transport.md).** That attribute
+// (docs/plans/2026-09-13-dashboard-nav-notes/plan.md).** That attribute
 // said, in so many words, "nothing in any shipping binary calls this
 // procedure" — and said to delete it "the day something serves the
 // procedure". `dashboard_procedure_router` below is that caller:
@@ -36,25 +36,11 @@
 // (`cratestack_schema::axum::procedure_router(..., Payments, ...)`) in every
 // build, not only under `cfg(test)`, so the struct is no longer dead outside
 // tests and the lint has nothing to silence.
-//
-// ~~`docs/status.md` § "The first `procedure`" says the same thing in the
-// same words, updated in this commit.~~ **Struck by the Lane C review,
-// 2026-09-13: both halves of that sentence were false.** `docs/status.md`
-// was not touched by the commit that deleted the attribute, and it has had
-// no § "The first `procedure`" since it was cut from 6 151 lines to 259 on
-// 2026-09-11. The attribute's own instruction — "update `docs/status.md` in
-// the same commit" — was written before that split; `docs/status.md`
-// § "Where a new row goes" now sends a change of this kind to the area page
-// instead, which is `docs/status/cratestack.md`. That page, and the dated
-// `docs/status/cratestack/2026-09-13-dashboard-procedure-transport.md` it
-// indexes, *were* updated in that commit — so the documentation duty was
-// discharged, on the pages that now own it, and only this sentence naming
-// the wrong page was wrong.
 mod search_payment_intents;
 
 /// Mounts `searchPaymentIntents` over HTTP — the read-only CrateStack
 /// transport this schema has never had a caller for before Lane C
-/// (docs/plans/2026-09-13-dashboard-nav-notes/transport.md).
+/// (docs/plans/2026-09-13-dashboard-nav-notes/plan.md).
 ///
 /// **`procedure_router`, never `router()`.** The generated `router()`
 /// merges `model_router(...)` — the CRUD CrateStack generates for every one

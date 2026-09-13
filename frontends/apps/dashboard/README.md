@@ -215,8 +215,7 @@ not a lint warning. That is why `FormState` and `NO_ERROR` live in
 and this section's title changed with it.** `@vaam-apps/ui` ships no layout
 or typography primitive at all — no `PageShell`, `Stack`, `Heading`, `Text`
 or `List` — so this app now writes layout classes directly, in `app/` and
-`src/`. What is still refused, by `just verify-ui`'s checks 7a-i/7a-ii/7a-iii
-(`docs/status/gates.md`'s `verify-ui` entry has the full derivation): a
+`src/`. What is still refused by `just verify-ui`'s checks 7a-i/7a-ii/7a-iii: a
 _computed_ class string (`cn(...)`, a template literal, a ternary — a
 hand-rolled variant system by another name), a raw status-colour token
 written directly instead of through a status system, and a class attribute

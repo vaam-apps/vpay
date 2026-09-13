@@ -1056,7 +1056,7 @@ where
 /// resolve ADR-0018's tenancy.
 ///
 /// Extracted so [`require_dashboard_procedure_token`] (Lane C,
-/// `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) can share it.
+/// `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) can share it.
 /// The two middlewares differ in exactly one thing — which HTTP method(s)
 /// their surface serves, and therefore what `required_scope` a caller has to
 /// present — never in how a validated token becomes a tenant; duplicating
@@ -1251,7 +1251,7 @@ where
 }
 
 /// The dashboard's CrateStack procedure transport boundary (Lane C,
-/// `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) — the same
+/// `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) — the same
 /// tenancy resolution [`require_dashboard_token`] applies to `/dash/v1`'s
 /// generated-free routes, mounted in front of `POST /$procs/searchPaymentIntents`
 /// instead.
@@ -1561,7 +1561,7 @@ pub fn router(deps: RouterDeps) -> Router {
     });
 
     // The read-only CrateStack procedure transport (Lane C,
-    // `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) —
+    // `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) —
     // `searchPaymentIntents` answering over HTTP for the first time. A
     // *second*, separately-mounted router rather than something merged into
     // `dash` above, for a reason that is not stylistic: CrateStack's

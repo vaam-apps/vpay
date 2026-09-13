@@ -49,7 +49,8 @@ just-retired key keeps verifying tokens it already signed. Access tokens live
 token that could still be in flight — the only property under test
 (`the_rotation_overlap_dwarfs_the_access_token_ttl_it_has_to_cover`). Neither
 number is configurable and neither is recorded in an ADR; whether 24 h is
-_right_ is an open maintainer question in [../roadmap.md](../roadmap.md).
+_right_ is an open maintainer question in
+[../open-decisions.md](../open-decisions.md).
 
 ## 2. Rotating
 
@@ -134,9 +135,9 @@ already passed, and tokens signed with it stop verifying.
 
 `vpay_db::ensure_active_signing_key` refuses to re-activate a retired row.
 It does not silently resurrect the old key, because re-publishing a key that
-was deliberately retired is a policy decision nobody has made
-([../roadmap.md](../roadmap.md), "Open — signing-key rotation overlap
-window"). It returns `DbError::SigningKeyRetired { kid, retired_at }`, which
+was deliberately retired is a policy decision nobody has made; see
+[../open-decisions.md](../open-decisions.md). It returns
+`DbError::SigningKeyRetired { kid, retired_at }`, which
 classifies as `Category::Configuration`, which is exit **78**.
 
 The number is the point. 78 (`EX_CONFIG`) tells a supervisor _fix the

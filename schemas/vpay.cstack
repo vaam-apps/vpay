@@ -1645,15 +1645,10 @@ model StaffMember {
   //   create -> LOUD. `upsert`/`create` evaluate `create_allow_policies` in
   //             Rust before any SQL, so `staff add` fails with a `Forbidden`
   //             naming the model.
-  //   update -> SILENT, and this is the dangerous one in the DANGEROUS
-  //             direction. `update_many`'s policy is part of the statement's
-  //             `WHERE`, so a missing arm makes `record_totp_step` match zero
-  //             rows and return `ok: 0` — and `record_totp_step` is the
-  //             REPLAY GUARD. A TOTP code would become reusable for its whole
-  //             +/-1-step window with every log line saying the sign-in
-  //             succeeded normally. `every_action_this_module_calls_has_an_allow_arm`
-  //             in `vpay-db/src/staff.rs` is what makes that red in
-  //             milliseconds with no container.
+  //   update -> SILENT. `update_many`'s policy is part of the statement's
+  //             `WHERE`, so a missing arm makes `record_sign_in` match zero
+  //             rows and leave `last_sign_in_at` stale. The TOTP replay guard
+  //             moved to `Credential` with the credential columns.
   //   delete -> SILENT. Nothing in vpay deletes a staff row today; the arm is
   //             here because `staff_sessions`' and
   //             `oauth_authorization_codes`' cascades name this table, and an
@@ -1861,8 +1856,8 @@ model Credential {
   // any reviewer has to notice.
   //
   // Nothing sweeps this table — there is nothing to sweep, because nothing
-  // writes this column. When something does, it needs a sweep, and
-  // `docs/status.md` says so rather than leaving it to be discovered.
+  // writes this column. When something does, it needs a sweep; ADR-0019
+  // records that requirement.
   expires_at DateTime?
 
   // NO `@default(now())`, `StaffMember`'s rule: `cratestack-macros` drops

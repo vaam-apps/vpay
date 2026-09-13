@@ -137,8 +137,7 @@ cases in 30 files, 0 skipped** (303 in 29 as first delivered; the review
 added seven `more-menu.test.tsx` cases and one open-drawer `a11y.test.tsx`
 case, the component having shipped with none) — with no test edited to pass
 and no assertion weakened. Every added case was made to fail first by
-breaking the thing it checks; the mutations and their output are on the
-verification page.
+breaking the thing it checks; the surviving tests pin those regressions.
 
 **Not proven in a real browser, and this is the gap to read this row
 against:** no Cypress case opens the drawer, and no screenshot was taken at
@@ -150,13 +149,9 @@ nav entry both `/payments`) is reported and left: it was reproduced on the
 base commit with this drawer deleted, so it is not this change's, and fixing
 it is nav IA (Lane E) or upstream.
 
-Full detail is in
-[../../status/verification/2026-09-13-dash-shell-drawer.md](../../status/verification/2026-09-13-dash-shell-drawer.md).
-
 **Built and proven, 2026-09-13: a Storybook, mirroring the checkout's.** This
 app had no visual-review surface and no browser-level accessibility check —
-`docs/status/frontend.md` said so in two places, both struck through and
-corrected in this same commit. `frontends/apps/dashboard/.storybook/` now
+`frontends/apps/dashboard/.storybook/` now
 exists: 25 stories in `src/components/dashboard-screens.stories.tsx`, bound
 to the same fixtures (`src/testing/fixtures.ts`) `a11y.test.tsx` renders, so a
 screen cannot gain a story without a test already covering it. `just
@@ -192,7 +187,8 @@ With the narrowed suppression the same probe fails at 1.73 against `#0a0b0d`.
 `src/a11y-gate.test.ts` now pins which stories may carry a suppression and
 which rule id, verified under three mutations.)_ This is a defect in the
 published package, not in this app's markup, and is not this task's to fix;
-it has not been reported upstream.
+it is reported upstream as
+[`vaam-apps/ui#16`](https://github.com/vaam-apps/ui/issues/16).
 
 **Two router hooks needed a stub, and `next/link` needed a `vite` `define`.**
 `PaymentsFilters` (`useRouter`) and `AppShell` (`usePathname`) throw outside a
@@ -217,7 +213,3 @@ that case became an explicit skip and `just build-storybook` itself gained the
 assertion. Verified by mutation: with `app/globals.css`'s `@import` moved
 below `@plugin`, the recipe exits 1 printing
 `dashboard --color-base-100 defined 0x, referenced 22x`.
-
-Full detail, every gate's real numbers, the six-case mutation table and the
-adversarial review's own findings are in
-[../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).

@@ -95,10 +95,8 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   measure the same. `worker_claim_latency.rs` pins **3 s** for the claim and
   **1 s** for the walk, and goes red both for a slower `IDLE_SLEEP` and for a
   loop that sleeps per claimed job. The loop was not changed; the numbers, the
-  mutations and the one thing this leaves open (a single task runs one job at a
-  time, so a slow handler ahead of an arrival delays it by its whole duration)
-  are in
-  [../status/verification/2026-09-12-worker-claim-latency.md](../status/verification/2026-09-12-worker-claim-latency.md).
+  mutations and the one thing this leaves open: a single task runs one job at a
+  time, so a slow handler ahead of an arrival delays it by its whole duration.
 - **The callback endpoint exists.** `POST /provider/{code}/callback`
   (`vpay_api::provider_callback`) is the route the section above describes,
   built 2026-09-04. It never changes state: it enqueues the charge's

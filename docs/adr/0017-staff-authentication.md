@@ -36,9 +36,8 @@ a default a slice may pick in passing:
 3. **The audience problem.** `default_handle_authorization_code` mints with
    `aud = <client_id>` and has no requested-audience path, so a token from
    that grant would never carry `vpay:dash/v1` — the value
-   `Surface::Dashboard`'s validator demanded. ADR-0009's own flow doc and
-   `docs/roadmap.md` both reserved this as "a maintainer decision, not a
-   default to pick in passing".
+   `Surface::Dashboard`'s validator demanded. This ADR reserves it as a
+   maintainer decision rather than a default to pick in passing.
 
 ## Decision
 

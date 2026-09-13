@@ -382,8 +382,7 @@ async fn measure_backlog_latency(concurrency: usize) -> anyhow::Result<()> {
     // Printed and not only asserted: issue #100 asks for numbers, and a bound
     // that passes says only "under three seconds". `cargo nextest run
     // --no-capture` (or `--success-output immediate`) prints them, and the
-    // dated page under `docs/status/verification/` is where a run of them
-    // was written down.
+    // output is retained so a focused run can report the observed curve.
     eprintln!(
         "concurrency {concurrency}, {BACKLOG} jobs per round, {ROUNDS} rounds, sampled every \
          {SAMPLE:?}"
@@ -468,7 +467,7 @@ async fn one_worker_claims_a_small_backlog_within_the_bound() -> anyhow::Result<
 /// were the difference, the same backlog would be claimed *faster* here by
 /// something outside the bound the case above holds. It is not — both sit on
 /// [`IDLE_SLEEP`] — so whatever separated those two stagings is not the loop's
-/// cadence, and the numbers are on the dated verification page.
+/// cadence; the two cases retain that comparison in the suite.
 ///
 /// It is a second container and about fifteen seconds of gate. That is the
 /// price of the comparison being in the suite instead of in a comment.

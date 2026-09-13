@@ -456,9 +456,7 @@ existed for a few hours and the four defects it found on this page. It was
 built on `@vpay/ui`, which the next entry deletes, so **the gate and the fix
 are both gone**; they are kept here because the defects were real, because
 one of them was on the screen a payer meets, and because a measurement is not
-made wrong by being overtaken. The full record, including two findings that
-transfer to whoever restores Storybook, is in
-[../status/verification/2026-09-12-browser-a11y.md](../status/verification/2026-09-12-browser-a11y.md).
+made wrong by being overtaken.
 
 **Updated 2026-09-12: the real browser the entry above said was "still
 unbuilt" now exists — and it failed this page.** That entry ended by naming
@@ -496,9 +494,8 @@ gives for recording its own `--color-error-content` change as the maintainer's
 delegate's decision of 2026-09-07: moving `--color-error` moves the
 payment-failure alert that two suites pin. The story carries
 `a11y: { test: "todo" }` — axe still runs and still reports it on every run,
-the run does not fail — with the measured ratio in a comment beside it, and
-`docs/status/frontend.md` carries the row. **A decision is owed; nothing about
-this screen has been quietly adjusted.**
+the run does not fail — with the measured ratio in a comment beside it.
+**A decision is owed; nothing about this screen has been quietly adjusted.**
 
 **Updated 2026-09-12: the rejection message is readable, and the fix is a
 theme token.** The entry above ends by saying a decision was owed on the
@@ -562,7 +559,6 @@ guaranteeing a hostile caller cannot weaken those two attributes.
 `LocaleSwitch` moved to a native `<select>` (decision 8): `@vaam-apps/ui`'s
 own `Select` cannot be named by a visible `<label>`, and the control's
 French accessible name is exactly what `checkout-view.test.tsx` pins. See
-`docs/status/verification/2026-09-12.md` for what was run and measured, and
 [hosted-checkout/state-machine-and-outcomes.md](hosted-checkout/state-machine-and-outcomes.md)'s
 own 2026-09-12 entry for the outcome-colour vocabulary's new name.
 

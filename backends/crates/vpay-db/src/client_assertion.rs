@@ -144,10 +144,8 @@ pub trait ClientAssertions: Send + Sync {
     /// many rows went.
     ///
     /// **This is a boot-time stopgap, not the cleanup job this table needs.**
-    /// Migration `0011`'s own header records the gap ("there is no cleanup job
-    /// for expired rows"), and `docs/status.md`'s "Client-assertion replay
-    /// protection" row says the same: vpay's worker job loop does not exist yet,
-    /// so nothing in this repository runs scheduled work. Calling this once per
+    /// Migration `0011`'s own header records the gap: the worker loop does not
+    /// schedule this cleanup. Calling it once per
     /// process start bounds the table at roughly "assertions since the last
     /// restart" instead of "assertions forever" — which is strictly better than
     /// unbounded growth and strictly worse than a periodic sweep. When the job

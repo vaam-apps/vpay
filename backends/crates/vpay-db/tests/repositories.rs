@@ -1037,8 +1037,8 @@ async fn concurrent_ensure_active_signing_key_calls_with_the_same_kid_rotate_exa
 /// This test asserts today's behaviour rather than the behaviour someone
 /// might want, so that whoever implements re-activation has to change it
 /// deliberately — and so nobody reads the function's doc comment as
-/// speculative. See `docs/roadmap.md`, "Open — signing-key rotation overlap
-/// window", for why the policy this needs is not settled.
+/// speculative. See `docs/open-decisions.md` for why the policy this needs is
+/// not settled.
 ///
 /// The **variant** is asserted, not merely `is_err()`. A rollback used to
 /// come back as `DbError::Query(sqlx::Error::Database(..))` — a duplicate

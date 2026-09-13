@@ -537,9 +537,8 @@ container-free test naming the four slots.
 
 **Nothing sweeps `credentials`.** There is no periodic delete of expired
 transient credentials, because there are no transient credentials: nothing
-writes `expires_at`. When something does, it needs a sweep, and the absence is
-recorded in `docs/status.md` rather than left to be discovered — exactly as
-ADR-0017 records that nothing sweeps `staff_sessions`.
+writes `expires_at`. When something does, it needs a sweep; this ADR records
+that requirement rather than implying the cleanup already exists.
 
 **Six of the eight kinds have no implementation, and the schema does not
 pretend otherwise.** They are reachable by no code path in this deployment.
