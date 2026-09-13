@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "tamasfe.even-better-toml",
+        "cratestack.cratestack-vscode-plugin",
+        "fill-labs.dependi"
+    ]
+}
