@@ -11,19 +11,19 @@ months ago, a message that expired while they were looking at a payload.
 
 ## Choosing one
 
-| The operator is… | Use | Not |
-|---|---|---|
-| deciding something irreversible, and must stop | `ConfirmDialog` | a toast |
-| confirming a row-level action | `InlineConfirm` | `ConfirmDialog` |
-| confirming something **inside an open drawer** | `InlineConfirm` | a nested `Dialog` — it does not work, see below |
-| reading one record's headline without leaving the list | `QuickDetailDrawer` | `Dialog` |
-| working through a whole record — every field, an edit form, destructive actions | `MoreDetailDrawer` | `Dialog` |
-| taking one focused action with a form in it | `Dialog` | a drawer |
-| picking from a short list of actions on a row | `DropdownMenu` | `Popover` |
-| reading a little extra anchored content, possibly interactive | `Popover` | `Tooltip` |
-| reading a one-line gloss on a label | `Tooltip` | `Popover` |
-| jumping somewhere by typing | `CommandMenu` | `DropdownMenu` |
-| being told something already finished | `toast` | anything modal |
+| The operator is…                                                                | Use                 | Not                                             |
+| ------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------- |
+| deciding something irreversible, and must stop                                  | `ConfirmDialog`     | a toast                                         |
+| confirming a row-level action                                                   | `InlineConfirm`     | `ConfirmDialog`                                 |
+| confirming something **inside an open drawer**                                  | `InlineConfirm`     | a nested `Dialog` — it does not work, see below |
+| reading one record's headline without leaving the list                          | `QuickDetailDrawer` | `Dialog`                                        |
+| working through a whole record — every field, an edit form, destructive actions | `MoreDetailDrawer`  | `Dialog`                                        |
+| taking one focused action with a form in it                                     | `Dialog`            | a drawer                                        |
+| picking from a short list of actions on a row                                   | `DropdownMenu`      | `Popover`                                       |
+| reading a little extra anchored content, possibly interactive                   | `Popover`           | `Tooltip`                                       |
+| reading a one-line gloss on a label                                             | `Tooltip`           | `Popover`                                       |
+| jumping somewhere by typing                                                     | `CommandMenu`       | `DropdownMenu`                                  |
+| being told something already finished                                           | `toast`             | anything modal                                  |
 
 Two rules that cut most of the wrong answers:
 
@@ -252,7 +252,7 @@ mounts a trapped, document-level focus scope regardless of `modal`, and
 Headless UI's dialog always portals to its own sibling root — so the trap
 pulls focus straight back out of the portal and the confirmation never
 becomes visible. That failure is exactly why `InlineConfirm` exists.
-Render it *instead of* the drawer's body (and drop the drawer's `footer`,
+Render it _instead of_ the drawer's body (and drop the drawer's `footer`,
 since `InlineConfirm` brings its own action row).
 
 ### The generic composition
@@ -343,7 +343,7 @@ Parts: `DropdownMenu`, `DropdownMenuTrigger`, `DropdownMenuContent`,
 
 **`DropdownMenuItem` is a `<button>`; `DropdownMenuLinkItem` is an `<a>`.**
 They render identically on purpose — the difference is only in what the
-browser will let them do. A menu of *destinations* built from buttons
+browser will let them do. A menu of _destinations_ built from buttons
 silently loses middle-click, ⌘-click, "open in new tab" and "copy link
 address": four things people do with navigation without thinking, none of
 which an `onClick` can be made to do, and none of which anyone files a bug

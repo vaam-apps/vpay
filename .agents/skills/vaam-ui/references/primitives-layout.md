@@ -15,13 +15,13 @@ The diagnostic surface: a hairline border on a `--surface-3` step, no
 shadow. This is the default container for a section of a screen — a
 provider's configuration, a delivery's detail, a group of related fields.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `Card` `glow` | `boolean` | Aurora glow. The instrument register only. Default `false`. |
-| `CardHeader` `title` | `React.ReactNode` | Rendered as a heading, truncated to one line. |
-| `CardHeader` `headingLevel` | `2 \| 3 \| 4 \| 5 \| 6` | Default `3`. |
-| `CardHeader` `meta` | `React.ReactNode` | A mono line under the title — ids, priorities, counts. |
-| `CardHeader` `action` | `React.ReactNode` | Right-aligned slot, usually buttons. |
+| Prop                        | Type                    | Notes                                                       |
+| --------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `Card` `glow`               | `boolean`               | Aurora glow. The instrument register only. Default `false`. |
+| `CardHeader` `title`        | `React.ReactNode`       | Rendered as a heading, truncated to one line.               |
+| `CardHeader` `headingLevel` | `2 \| 3 \| 4 \| 5 \| 6` | Default `3`.                                                |
+| `CardHeader` `meta`         | `React.ReactNode`       | A mono line under the title — ids, priorities, counts.      |
+| `CardHeader` `action`       | `React.ReactNode`       | Right-aligned slot, usually buttons.                        |
 
 `headingLevel` is a prop rather than a constant because a heading level
 belongs to the page's outline, not to the card. A card placed directly
@@ -59,13 +59,13 @@ The list a person scans for the one row that is wrong. No zebra striping —
 the status tints are the signal, and stripes plus tints are noise. Row
 dividers are a hairline; hover is a surface step.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `Table` `maxHeight` | `string \| undefined` | e.g. `"24rem"`. **Required for a sticky header.** |
-| `Table` `label` | `string \| undefined` | Names the scroll wrapper, used only while it is really scrollable. |
-| `TableRow` `selected` | `boolean` | Surface step plus a 2px inset marker on the leading edge. |
-| `TableHead` / `TableCell` `align` | `"start" \| "end"` | `"end"` for money and counts. |
-| `TableCell` `mono` | `boolean` | Mono, `tabular-nums` — ids, amounts, anything compared column-wise. |
+| Prop                                  | Type                                          | Notes                                                                                                  |
+| ------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Table` `maxHeight`                   | `string \| undefined`                         | e.g. `"24rem"`. **Required for a sticky header.**                                                      |
+| `Table` `label`                       | `string \| undefined`                         | Names the scroll wrapper, used only while it is really scrollable.                                     |
+| `TableRow` `selected`                 | `boolean`                                     | Surface step plus a 2px inset marker on the leading edge.                                              |
+| `TableHead` / `TableCell` `align`     | `"start" \| "end"`                            | `"end"` for money and counts.                                                                          |
+| `TableCell` `mono`                    | `boolean`                                     | Mono, `tabular-nums` — ids, amounts, anything compared column-wise.                                    |
 | `TableHead` / `TableCell` `hideBelow` | `Breakpoint` (`"sm" \| "md" \| "lg" \| "xl"`) | Drops the column below that width. Put it on the `TableHead` **and** every `TableCell` in that column. |
 
 ### The sticky header needs `maxHeight`
@@ -129,15 +129,15 @@ Underline tabs, addressed **by value rather than by index** — the panel a
 tab shows does not change when someone reorders the list. There is no pill
 or segmented variant; segmented controls are consumer furniture.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `ValueTabs` `value` | `string \| undefined` | Controlled. |
-| `ValueTabs` `defaultValue` | `string \| undefined` | Uncontrolled; falls back to the first trigger. |
-| `ValueTabs` `onValueChange` | `((value: string) => void) \| undefined` | |
-| `ValueTabsList` `className` | `string` | Lands on the tablist row — `gap-*`, `justify-*`, `border-b-*` belong here. |
-| `ValueTabsList` `wrapperClassName` | `string` | Lands on the horizontal scroller around the row. |
-| `ValueTabsTrigger` `value` | `string` | Read from the element tree, not inside the trigger. |
-| `ValueTabsContent` `value` | `string` | Kept for parity. **The real pairing is positional** — panels must be declared in trigger order. |
+| Prop                               | Type                                     | Notes                                                                                           |
+| ---------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `ValueTabs` `value`                | `string \| undefined`                    | Controlled.                                                                                     |
+| `ValueTabs` `defaultValue`         | `string \| undefined`                    | Uncontrolled; falls back to the first trigger.                                                  |
+| `ValueTabs` `onValueChange`        | `((value: string) => void) \| undefined` |                                                                                                 |
+| `ValueTabsList` `className`        | `string`                                 | Lands on the tablist row — `gap-*`, `justify-*`, `border-b-*` belong here.                      |
+| `ValueTabsList` `wrapperClassName` | `string`                                 | Lands on the horizontal scroller around the row.                                                |
+| `ValueTabsTrigger` `value`         | `string`                                 | Read from the element tree, not inside the trigger.                                             |
+| `ValueTabsContent` `value`         | `string`                                 | Kept for parity. **The real pairing is positional** — panels must be declared in trigger order. |
 
 Note the explicit `| undefined` on the optional props. This package
 compiles under `exactOptionalPropertyTypes`, where `value?: string` means
@@ -166,12 +166,12 @@ import {
 
 Previous/next paging with a position readout that does not lie.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `onPrevious` / `onNext` | `(() => void) \| undefined` | Required keys, nullable values: `undefined` disables that direction. |
-| `position` | `PaginationPosition` | `{ kind: "offset", offset, pageSize, total }` or `{ kind: "cursor", count }`. |
-| `children` | `React.ReactNode` | Between the readout and the buttons — a page-size select, a "Newest first" note. |
-| `label` | `string \| undefined` | Default `"Pagination"`. |
+| Prop                    | Type                        | Notes                                                                            |
+| ----------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `onPrevious` / `onNext` | `(() => void) \| undefined` | Required keys, nullable values: `undefined` disables that direction.             |
+| `position`              | `PaginationPosition`        | `{ kind: "offset", offset, pageSize, total }` or `{ kind: "cursor", count }`.    |
+| `children`              | `React.ReactNode`           | Between the readout and the buttons — a page-size select, a "Newest first" note. |
+| `label`                 | `string \| undefined`       | Default `"Pagination"`.                                                          |
 
 The two `position` shapes are the point. `offset` renders `1–25 of 340`
 and is only honest when the API really returns a total; `cursor` renders
@@ -208,7 +208,7 @@ A rule between two groups of content. `orientation` is `"horizontal"`
 purely visual rule that assistive tech ignores, which is right when the
 groups either side are already distinct (a card, a heading). `false`
 renders a real `<hr>` with `aria-orientation`, for the case where the rule
-is the *only* thing saying the content changed. It is an `<hr>` rather
+is the _only_ thing saying the content changed. It is an `<hr>` rather
 than `role="separator"` on a `<div>` because the ARIA role is the
 interactive, resizable-divider variant and wants `tabIndex` and
 `aria-valuenow`; `<hr>` carries the static semantics natively.
@@ -223,15 +223,15 @@ interface NavItem { label: string; href: string; icon: ComponentType<{ size?: nu
 interface NavGroup { label: string; items: NavItem[] }
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `topItem` | `NavItem` | Flat, ungrouped, always first — the dashboard row. |
-| `groups` | `NavGroup[]` | Section header plus rows. Headers show only in the sidebar. |
-| `footerItems` | `NavItem[]` | De-emphasised utility rows. Administrivia, not content. |
-| `currentPath` | `string` | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`. |
-| `accountSlot` | `React.ReactNode` | Rendered as-is; never built here. Shown only where there is room for it (the sidebar, and the off-canvas tree). |
-| `smallScreen` | `"floating" \| "off-canvas" \| undefined` | Default `"floating"`. |
-| `collapsed` | `boolean \| undefined` | Turns the sidebar back into the rail. |
+| Prop          | Type                                      | Notes                                                                                                           |
+| ------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `topItem`     | `NavItem`                                 | Flat, ungrouped, always first — the dashboard row.                                                              |
+| `groups`      | `NavGroup[]`                              | Section header plus rows. Headers show only in the sidebar.                                                     |
+| `footerItems` | `NavItem[]`                               | De-emphasised utility rows. Administrivia, not content.                                                         |
+| `currentPath` | `string`                                  | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`.   |
+| `accountSlot` | `React.ReactNode`                         | Rendered as-is; never built here. Shown only where there is room for it (the sidebar, and the off-canvas tree). |
+| `smallScreen` | `"floating" \| "off-canvas" \| undefined` | Default `"floating"`.                                                                                           |
+| `collapsed`   | `boolean \| undefined`                    | Turns the sidebar back into the rail.                                                                           |
 
 ### The three shapes
 
@@ -373,13 +373,13 @@ Two different honesty claims about a wait.
 `Progress` is a determinate bar for a **bounded, countable** quantity —
 attempts against a retry budget, rows processed, quota consumed.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `number` | Clamped into `[0, max]`. |
-| `max` | `number` | Default `100`, so a percentage needs no ceremony. |
-| `label` | `string` | Required. The accessible name, e.g. `"Retry budget used"`. |
-| `tone` | `StatusHue` | Default `"neutral"`. Leave it unless the number's colour carries meaning. |
-| `showValue` | `boolean` | Renders `3 / 5` beside the bar. |
+| Prop        | Type        | Notes                                                                     |
+| ----------- | ----------- | ------------------------------------------------------------------------- |
+| `value`     | `number`    | Clamped into `[0, max]`.                                                  |
+| `max`       | `number`    | Default `100`, so a percentage needs no ceremony.                         |
+| `label`     | `string`    | Required. The accessible name, e.g. `"Retry budget used"`.                |
+| `tone`      | `StatusHue` | Default `"neutral"`. Leave it unless the number's colour carries meaning. |
+| `showValue` | `boolean`   | Renders `3 / 5` beside the bar.                                           |
 
 A bar creeping toward a value it cannot reach is a lie, which is why
 `Spinner` exists for the unbounded case: a button mid-submit, a poll with
@@ -402,11 +402,11 @@ A placeholder for content whose shape is known but whose value has not
 arrived. Match the real element's height exactly, so nothing shifts when
 it lands.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `animated` | `boolean` | Default `true`. `false` is the flat block, for a placeholder inside something already moving. |
-| `SkeletonText` `lines` | `number` | Default `3`. |
-| `SkeletonText` `lineClassName` | `string` | Match the real text's line-height. |
+| Prop                           | Type      | Notes                                                                                         |
+| ------------------------------ | --------- | --------------------------------------------------------------------------------------------- |
+| `animated`                     | `boolean` | Default `true`. `false` is the flat block, for a placeholder inside something already moving. |
+| `SkeletonText` `lines`         | `number`  | Default `3`.                                                                                  |
+| `SkeletonText` `lineClassName` | `string`  | Match the real text's line-height.                                                            |
 
 **It animates itself — do not add a pulse.** What runs is not a shimmer:
 a shimmer is a highlight sweeping on a fixed period, which reads as a
@@ -424,7 +424,7 @@ rather than random, because a random width differs between server and
 client and that is a hydration mismatch.
 
 Skeletons are `aria-hidden` — a picture of absent content, and reading out
-a dozen empty boxes is worse than silence. The *wait* still has to be
+a dozen empty boxes is worse than silence. The _wait_ still has to be
 announced: `RouteSkeleton` carries the `role="status"` live region for the
 screen-level case, and any other caller standing a skeleton in for real
 content should do the same one level up.
@@ -469,7 +469,7 @@ the moment a consumer wires one up.
   throwing out of a click handler is not.
 
 Changes made in another tab arrive here: the store listens for `storage`
-(which fires on every *other* tab sharing the origin, never the one that
+(which fires on every _other_ tab sharing the origin, never the one that
 made the write) and for the OS colour-scheme query.
 
 ### `themeInitScript` — the flash, and how to render it

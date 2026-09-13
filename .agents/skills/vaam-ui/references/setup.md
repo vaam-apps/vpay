@@ -39,7 +39,7 @@ custom theme block:
 
 The built-in wins on every token it also defines — `base-100`,
 `base-200`, `base-300`, `base-content` — regardless of import order. The
-symptom is a page that looks *almost* right: stock daisyUI greys instead
+symptom is a page that looks _almost_ right: stock daisyUI greys instead
 of this theme's near-blacks. Measured once on a real page:
 `--color-base-100` resolved to `oklch(25.33% .016 252.42)` where the
 theme declares `#0a0b0d`.
@@ -103,5 +103,5 @@ serif, and the four-voice distinction goes with them.
 
 Render one `Button` and one `StatusPill` and check in a browser that the
 page background is near-black and the pill has a coloured glyph. Both
-setup failures above produce a page that *renders* — they just render
+setup failures above produce a page that _renders_ — they just render
 wrong, and they are far cheaper to find now than inside a finished screen.

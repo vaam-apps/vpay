@@ -10,7 +10,7 @@ You are missing `@source "../node_modules/@vaam-apps/ui/dist"`. Tailwind
 v4 generates only what it can see and does not scan `node_modules`. No
 error, no warning.
 
-## The colours are *almost* right
+## The colours are _almost_ right
 
 You left daisyUI's built-in themes on. Use `@plugin "daisyui" { themes:
 false; }` — the built-ins outrank any custom theme block on `base-100`,
@@ -36,7 +36,7 @@ Two causes, both real:
 1. **Use `cn()`.** Plain concatenation puts your class in a string
    `tailwind-merge` then resolves — and it once deleted `btn-circle`
    because it conflated shape with size.
-2. **daisyUI emits into nested cascade layers**, and an *unlayered*
+2. **daisyUI emits into nested cascade layers**, and an _unlayered_
    Tailwind utility outranks a nested sublayer. If a daisyUI component
    class (`.btn-circle`, and similar) appears not to apply, this is why.
 

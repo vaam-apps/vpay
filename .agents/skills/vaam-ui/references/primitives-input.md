@@ -19,10 +19,10 @@ success or warning button** — those hues belong to the status system, and
 a button that borrows one erodes the state language on every screen where
 both appear.
 
-| Prop | Type | Default |
-|---|---|---|
+| Prop      | Type                                                   | Default     |
+| --------- | ------------------------------------------------------ | ----------- |
 | `variant` | `"primary" \| "secondary" \| "ghost" \| "destructive"` | `"primary"` |
-| `size` | `"sm" \| "md" \| "icon"` | `"md"` |
+| `size`    | `"sm" \| "md" \| "icon"`                               | `"md"`      |
 
 Everything else is `<button>`'s own attributes, and the ref lands on the
 element. `ButtonVariant` and `ButtonSize` are exported if you need to
@@ -142,7 +142,7 @@ required turns that into a compile error instead.
 
 **`control="group"`** is for `RadioGroup` and `ChipSelect`. HTML's `for`
 only associates with labelable elements, so pointing it at a `<div>` or a
-`<fieldset>` is invalid *and* dangling — which is what one migration
+`<fieldset>` is invalid _and_ dangling — which is what one migration
 shipped, four labels pointing at ids no element carried. In group mode no
 `for` is emitted; the label gets a derived id and the group points back at
 it with `aria-labelledby`. See the `RadioGroup`/`ChipSelect` example
@@ -199,7 +199,7 @@ The composition is the Radix shape kept deliberately intact:
   `aria-label` / `aria-labelledby` for a select used outside a
   `FormField` — the trigger only ever renders the selected value, so
   nothing else can name it.
-- **`SelectValue`** renders the selected item's *children* (the label),
+- **`SelectValue`** renders the selected item's _children_ (the label),
   not the raw value, falling back to the value if no item matches. Its
   `placeholder` shows while nothing is selected.
 - **`SelectContent`** is the dropdown. It renders **inline, not
@@ -238,7 +238,7 @@ const [provider, setProvider] = useState<string>();
 ## Checkbox / CheckboxField, Switch / SwitchField
 
 **Which control.** A checkbox is a value a Save button will commit; a
-switch promises the change *has already happened*. Pairing a switch with a
+switch promises the change _has already happened_. Pairing a switch with a
 Save button tells the operator two contradictory things and leaves them
 unsure whether the toggle landed. Use a switch only where the write fires
 on change and the UI can report the result.
@@ -248,7 +248,7 @@ carries the meaning — a select-all box in a table header, a toggle in a
 column. It then needs `aria-label` or `aria-labelledby`, because nothing
 visible names it. The `*Field` version renders a clickable label (and an
 optional one-line `description`) beside the control, which is the settings
-row. These are separate from `FormField`, which stacks a label *above* a
+row. These are separate from `FormField`, which stacks a label _above_ a
 control: a checkbox's label belongs on the same line and must itself be a
 click target.
 
@@ -308,7 +308,7 @@ Two controls over a **small, fixed vocabulary**, shown in full rather than
 hidden behind a trigger. `RadioGroup` picks one; `ChipSelect` picks any
 number. Both render inline with no portal and no transition, so neither
 can hit the focus-trap failure that made `Select` unusable inside a
-drawer — for a bounded vocabulary in a drawer, these are the *safer*
+drawer — for a bounded vocabulary in a drawer, these are the _safer_
 control, not merely the friendlier one.
 
 ```ts
@@ -349,11 +349,11 @@ Selection is spelled achromatically — a filled `primary` glyph on a
 system decide"; these answer "what did you pick". An earlier version used
 the success tokens, and since `success` is a quiet hue whose background
 and border are declared `transparent`, the chosen option rendered with no
-fill and no outline, reading as *less* present than the ones nobody had
+fill and no outline, reading as _less_ present than the ones nobody had
 picked. The keyboard focus ring was invisible for the same reason.
 
 `ChipSelect` renders its labels in the mono face — the motivating case is
-OAuth scopes, where the label *is* the literal token the API expects.
+OAuth scopes, where the label _is_ the literal token the API expects.
 
 ```tsx
 import { ChipSelect, FormField, RadioGroup, groupLabelId } from "@vaam-apps/ui";
@@ -398,7 +398,7 @@ import { ChipSelect, FormField, RadioGroup, groupLabelId } from "@vaam-apps/ui";
 The pickers exchange **`YYYY-MM-DD` strings**, never date objects. The
 type is `IsoDate` (an alias for `string`), and a range is `IsoDateRange`
 (`{ from?: IsoDate; to?: IsoDate }`, inclusive at both ends, either end
-`undefined` meaning open). A timestamp is an *instant*, and an instant
+`undefined` meaning open). A timestamp is an _instant_, and an instant
 rendered in another zone is a different calendar day — which is how a
 filter for "today" quietly returns yesterday's rows for anyone west of the
 server. Date objects are confined to the picker internals.
