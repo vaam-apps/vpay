@@ -97,22 +97,34 @@ build-web:
 # task, which this closes. There is no shared package to host it in any
 # more, so it lives in `frontends/apps/checkout`, which is where the
 # subjects were all along.
+#
+# EXTENDED 2026-09-13 rather than given a second one-app pair: the dashboard
+# never had a Storybook at all (a separate gap from the checkout's, closed in
+# the same shape). Both recipes still read as "build every app's Storybook"
+# and "check every app's stories", which is true either way you count the
+# apps, and a caller who wants just one still has `pnpm --filter <app>
+# build-storybook` / `test-storybook` directly — the justfile recipe is the
+# CI-facing gate, not the only way to reach either app's own script.
 build-storybook:
     pnpm --filter @vpay/checkout build-storybook
+    pnpm --filter @vpay/dashboard build-storybook
 
-# Every checkout story, rendered in a real Chromium, with axe over each one.
+# Every checkout AND dashboard story, rendered in a real Chromium, with axe
+# over each one.
 #
 # NOT part of `just ci`, for the same reason `helm-check` is not: it needs a
 # network the first time, for a ~115 MB Playwright Chromium, and `just ci` is
 # expected to pass offline. CI's `web` job runs it.
 #
 # WHAT IT PROVES THAT NOTHING ELSE DOES. `just ci` builds neither web app.
-# The two jsdom axe suites (`screens.axe.test.tsx`, `outcome-contrast.test.ts`)
-# run where there is no layout and no cascade, so they compute no colour and
-# answer `color-contrast` "incomplete" rather than pass or fail; issue #73's
-# Cypress attempt could not get a verdict out of the real page either. This
-# is the only thing in the repository that returns a colour-contrast VERDICT
-# for the screens a payer sees.
+# The jsdom axe suites next to each app's components
+# (`screens.axe.test.tsx`/`outcome-contrast.test.ts` in the checkout,
+# `a11y.test.tsx` in the dashboard) run where there is no layout and no
+# cascade, so they compute no colour and answer `color-contrast`
+# "incomplete" rather than pass or fail; issue #73's Cypress attempt could
+# not get a verdict out of the real page either. This is the only thing in
+# the repository that returns a colour-contrast VERDICT for either app's
+# screens.
 #
 # THE CACHE IS CLEARED FIRST, AND THAT IS NOT TIDINESS. Vite's dep
 # pre-bundle cache can leave the suite reporting every story PASSING while
@@ -120,20 +132,29 @@ build-storybook:
 # throws still counts as a passing test, so only the unhandled-error count
 # and the exit code give it away, and it reproduces from a COLD cache only.
 # Ten seconds a run is the price of a local green meaning what CI's means.
+# `rm -rf` here is a repo-relative path, so one clear covers both `pnpm
+# --filter` invocations below — each still gets a cold dependency
+# pre-bundle, because that cache is keyed by each app's own lockfile hash
+# and `node_modules` layout, not shared between them.
 #
-# WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` runs
-# in the jsdom suite — so in `just test-web`, so in `just ci` — and asserts
-# the addon is still loaded, that a violation still FAILS rather than warns,
-# that `preview.ts` still paints the document shell the real page paints,
-# and that `app/globals.css` still imports the theme BEFORE any other
-# at-rule. That last one is not pedantry: CSS drops an `@import` that
+# WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` and
+# `frontends/apps/dashboard/src/a11y-gate.test.ts` both run in the jsdom
+# suite — so in `just test-web`, so in `just ci` — and each asserts its own
+# app's addon is still loaded, that a violation still FAILS rather than
+# warns, that `preview.ts` still paints the document shell the real page
+# paints, and that `app/globals.css` still imports the theme BEFORE any
+# other at-rule. That last one is not pedantry: CSS drops an `@import` that
 # follows another at-rule, Tailwind's own parser does not, and for six runs
-# this suite rendered every story completely unstyled on the browser's
-# default white while the shipped page is #0a0b0d — passing all 22 stories,
-# and passing a deliberately unreadable probe with them.
+# the checkout's suite rendered every story completely unstyled on the
+# browser's default white while the shipped page is #0a0b0d — passing all
+# 22 stories, and passing a deliberately unreadable probe with them. The
+# dashboard's own gate additionally asserts its `next/navigation` alias
+# stays wired — a trap the checkout's stories never hit, because none of
+# them render a component that calls a Next router hook.
 test-storybook: playwright-browser
     rm -rf node_modules/.cache/storybook
     pnpm --filter @vpay/checkout test-storybook
+    pnpm --filter @vpay/dashboard test-storybook
 
 # Chromium only; `--with-deps` is deliberately not passed, because it needs
 # root and CI's ubuntu-latest image already carries the shared libraries.
@@ -667,6 +688,25 @@ clippy:
 # warning, the document shell painted, the theme `@import` ordered first —
 # which is the property worth locking, since a config that type-checks and
 # configures the wrong thing is the failure this repository actually met.
+#
+# **`frontends/apps/dashboard/.storybook/` closed 2026-09-13, measured
+# rather than assumed to carry the same gap.** Its tsconfig `include` is the
+# same shape (`**/*.ts`, plus named paths) and dot-directory expansion skips
+# it the same way: `tsc -p tsconfig.json --listFiles` there lists **1713**
+# files and **0** of them under `/.storybook/`. Its `eslint.config.js` now
+# names `.storybook/**` in `outsideTsconfig` too, same reasoning. The
+# dashboard's own config differs from the checkout's in one respect worth
+# naming here rather than only in the config file itself: it carries no
+# hand-written `@vaam-apps/ui/styles/theme.css` alias, because — also
+# measured, not carried over on the checkout's word — this app's build
+# defines the theme variable in its stylesheet whether or not that alias is
+# present. It carries a `next/navigation` alias instead, which the checkout
+# has never needed: `PaymentsTable`/`PaymentsPager` are the first stories in
+# either app's Storybook to render `next/link`, and `next/dist/client/
+# has-base-path.js` throws `ReferenceError: process is not defined` in a
+# real browser without a `define` for the two `process.env.__NEXT_*` flags
+# it reads — caught by `test-storybook`, not by `build-storybook`, which
+# bundles the reference without executing it.
 #
 # `no-console` is off in tests, Storybook stories, Cypress specs, `testing/`
 # helpers and the command-line examples (`examples/*/index.mjs`,
