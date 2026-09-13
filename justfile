@@ -97,22 +97,74 @@ build-web:
 # task, which this closes. There is no shared package to host it in any
 # more, so it lives in `frontends/apps/checkout`, which is where the
 # subjects were all along.
+#
+# EXTENDED 2026-09-13 rather than given a second one-app pair: the dashboard
+# never had a Storybook at all (a separate gap from the checkout's, closed in
+# the same shape). Both recipes still read as "build every app's Storybook"
+# and "check every app's stories", which is true either way you count the
+# apps, and a caller who wants just one still has `pnpm --filter <app>
+# build-storybook` / `test-storybook` directly — the justfile recipe is the
+# CI-facing gate, not the only way to reach either app's own script.
+#
+# THE BUILD IS ALSO WHERE THE THEME CHECK BELONGS, ADDED 2026-09-13 ON
+# REVIEW. Both apps' `src/a11y-gate.test.ts` carry a case asserting the BUILT
+# stylesheet defines `--color-base-100` — PR #135's exact failure was a build
+# that referenced it 22 times and defined it 0. That case runs in the jsdom
+# suite, and CI's `web` job runs `pnpm -r test` BEFORE this recipe, so
+# `storybook-static/` never exists when it runs there: it skipped, every
+# time, and a skipped test is not a passing test. It still skips (it is the
+# regression net for anyone who HAS built locally), and the assertion that
+# actually runs in CI is here, against the artefact this recipe just
+# produced. It matters most for the dashboard, whose `.storybook/main.ts`
+# deliberately carries no `@vaam-apps/ui/styles/theme.css` resolve alias —
+# measured unnecessary on today's dependency tree, and this is what would
+# catch a dependency bump making it necessary again.
 build-storybook:
+    #!/usr/bin/env bash
+    set -euo pipefail
     pnpm --filter @vpay/checkout build-storybook
+    pnpm --filter @vpay/dashboard build-storybook
+    for app in checkout dashboard; do
+      sheets=(frontends/apps/"$app"/storybook-static/assets/*.css)
+      if [ ! -e "${sheets[0]}" ]; then
+        echo "build-storybook: $app emitted no stylesheet at all" >&2
+        exit 1
+      fi
+      # `grep -o | wc -l` counts OCCURRENCES; `grep -c` counts matching
+      # LINES, and a minified stylesheet is one line, so it would answer 1
+      # whether the theme defined the variable once or thirty times.
+      # `|| true` on both: under `set -euo pipefail` a `grep` that matches
+      # nothing exits 1, which is precisely the case this check exists to
+      # REPORT — without it the recipe died at the assignment and printed no
+      # diagnostic at all (measured, on the `@import`-after-`@plugin`
+      # mutation).
+      defined=$( { cat "${sheets[@]}" | grep -o -- '--color-base-100:' || true; } | wc -l)
+      referenced=$( { cat "${sheets[@]}" | grep -o 'var(--color-base-100' || true; } | wc -l)
+      echo "build-storybook: $app --color-base-100 defined ${defined}x, referenced ${referenced}x"
+      if [ "$defined" -eq 0 ]; then
+        echo "build-storybook: $app built a stylesheet that REFERENCES --color-base-100 ${referenced} times and DEFINES it 0 times." >&2
+        echo "  The @vaam-apps/ui theme was dropped from the build. Every story now renders on the browser's default white," >&2
+        echo "  so every colour-contrast verdict test-storybook returns is about a ground no user ever sees (PR #135)." >&2
+        exit 1
+      fi
+    done
 
-# Every checkout story, rendered in a real Chromium, with axe over each one.
+# Every checkout AND dashboard story, rendered in a real Chromium, with axe
+# over each one.
 #
 # NOT part of `just ci`, for the same reason `helm-check` is not: it needs a
 # network the first time, for a ~115 MB Playwright Chromium, and `just ci` is
 # expected to pass offline. CI's `web` job runs it.
 #
 # WHAT IT PROVES THAT NOTHING ELSE DOES. `just ci` builds neither web app.
-# The two jsdom axe suites (`screens.axe.test.tsx`, `outcome-contrast.test.ts`)
-# run where there is no layout and no cascade, so they compute no colour and
-# answer `color-contrast` "incomplete" rather than pass or fail; issue #73's
-# Cypress attempt could not get a verdict out of the real page either. This
-# is the only thing in the repository that returns a colour-contrast VERDICT
-# for the screens a payer sees.
+# The jsdom axe suites next to each app's components
+# (`screens.axe.test.tsx`/`outcome-contrast.test.ts` in the checkout,
+# `a11y.test.tsx` in the dashboard) run where there is no layout and no
+# cascade, so they compute no colour and answer `color-contrast`
+# "incomplete" rather than pass or fail; issue #73's Cypress attempt could
+# not get a verdict out of the real page either. This is the only thing in
+# the repository that returns a colour-contrast VERDICT for either app's
+# screens.
 #
 # THE CACHE IS CLEARED FIRST, AND THAT IS NOT TIDINESS. Vite's dep
 # pre-bundle cache can leave the suite reporting every story PASSING while
@@ -120,20 +172,37 @@ build-storybook:
 # throws still counts as a passing test, so only the unhandled-error count
 # and the exit code give it away, and it reproduces from a COLD cache only.
 # Ten seconds a run is the price of a local green meaning what CI's means.
+# CORRECTED 2026-09-13 ON REVIEW: `node_modules/.cache/storybook` at the
+# repository root does not exist in this workspace and never has — measured,
+# `ls node_modules/.cache` is "No such file or directory" after a full
+# install and a full run of both apps' suites. The clear was a no-op. Vite's
+# dep pre-bundle for a browser-mode vitest run lives at
+# `frontends/apps/<app>/node_modules/.vite` (renamed to `.vite-temp` on the
+# way out), one per app, so both are named below. The root path is kept
+# because the Storybook BUILDER cache does land there in other layouts and
+# removing a directory that is absent costs nothing; what was wrong was the
+# claim that it covered the apps.
 #
-# WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` runs
-# in the jsdom suite — so in `just test-web`, so in `just ci` — and asserts
-# the addon is still loaded, that a violation still FAILS rather than warns,
-# that `preview.ts` still paints the document shell the real page paints,
-# and that `app/globals.css` still imports the theme BEFORE any other
-# at-rule. That last one is not pedantry: CSS drops an `@import` that
+# WHAT KEEPS IT HONEST. `frontends/apps/checkout/src/a11y-gate.test.ts` and
+# `frontends/apps/dashboard/src/a11y-gate.test.ts` both run in the jsdom
+# suite — so in `just test-web`, so in `just ci` — and each asserts its own
+# app's addon is still loaded, that a violation still FAILS rather than
+# warns, that `preview.ts` still paints the document shell the real page
+# paints, and that `app/globals.css` still imports the theme BEFORE any
+# other at-rule. That last one is not pedantry: CSS drops an `@import` that
 # follows another at-rule, Tailwind's own parser does not, and for six runs
-# this suite rendered every story completely unstyled on the browser's
-# default white while the shipped page is #0a0b0d — passing all 22 stories,
-# and passing a deliberately unreadable probe with them.
+# the checkout's suite rendered every story completely unstyled on the
+# browser's default white while the shipped page is #0a0b0d — passing all
+# 22 stories, and passing a deliberately unreadable probe with them. The
+# dashboard's own gate additionally asserts its `next/navigation` alias
+# stays wired — a trap the checkout's stories never hit, because none of
+# them render a component that calls a Next router hook.
 test-storybook: playwright-browser
     rm -rf node_modules/.cache/storybook
+    rm -rf frontends/apps/checkout/node_modules/.vite frontends/apps/checkout/node_modules/.vite-temp
+    rm -rf frontends/apps/dashboard/node_modules/.vite frontends/apps/dashboard/node_modules/.vite-temp
     pnpm --filter @vpay/checkout test-storybook
+    pnpm --filter @vpay/dashboard test-storybook
 
 # Chromium only; `--with-deps` is deliberately not passed, because it needs
 # root and CI's ubuntu-latest image already carries the shared libraries.
@@ -641,6 +710,52 @@ clippy:
 # tsconfig actually includes it, rather than assuming this paragraph's
 # reasoning still holds for a different directory.
 #
+# **Re-measured 2026-09-13, as that paragraph asked — the gap carries over
+# unchanged, and it is now `frontends/apps/checkout/.storybook/`.** The
+# restoration landed on 2026-09-12 and this is the answer to the question
+# left open above, measured rather than assumed.
+#
+# The app's tsconfig `include` is `**/*.ts`, which is broader than
+# `@vpay/ui`'s `[".storybook"]` was and still does not reach a
+# dot-directory: `tsc -p tsconfig.json --listFiles` lists **76** files under
+# `frontends/apps/checkout/` and **0** of them under `.storybook/`. The
+# decisive test, not a reading of the glob rules: append
+# `const x: number = "s";` to `.storybook/main.ts` and BOTH `tsc --noEmit`
+# and `eslint .storybook --max-warnings 0` exit **0**. `eslint.config.js`
+# already names `".storybook/**"` in `outsideTsconfig` with this reasoning
+# written out, so the two files are linted for syntax and style but have no
+# program behind them and the type-aware rules are absent by design, not by
+# accident.
+#
+# What this costs, stated rather than implied: nothing in `just ci` type-checks
+# the Storybook config. `just build-storybook` and `just test-storybook` are
+# what fail when it breaks, and neither is in `just ci` (the second needs a
+# ~115 MB Chromium). CI's `web` job runs both. `src/a11y-gate.test.ts` is the
+# piece that does run inside `just ci`, and it asserts the config's
+# load-bearing SETTINGS — the addon loaded, a violation failing rather than
+# warning, the document shell painted, the theme `@import` ordered first —
+# which is the property worth locking, since a config that type-checks and
+# configures the wrong thing is the failure this repository actually met.
+#
+# **`frontends/apps/dashboard/.storybook/` closed 2026-09-13, measured
+# rather than assumed to carry the same gap.** Its tsconfig `include` is the
+# same shape (`**/*.ts`, plus named paths) and dot-directory expansion skips
+# it the same way: `tsc -p tsconfig.json --listFiles` there lists **1713**
+# files and **0** of them under `/.storybook/`. Its `eslint.config.js` now
+# names `.storybook/**` in `outsideTsconfig` too, same reasoning. The
+# dashboard's own config differs from the checkout's in one respect worth
+# naming here rather than only in the config file itself: it carries no
+# hand-written `@vaam-apps/ui/styles/theme.css` alias, because — also
+# measured, not carried over on the checkout's word — this app's build
+# defines the theme variable in its stylesheet whether or not that alias is
+# present. It carries a `next/navigation` alias instead, which the checkout
+# has never needed: `PaymentsTable`/`PaymentsPager` are the first stories in
+# either app's Storybook to render `next/link`, and `next/dist/client/
+# has-base-path.js` throws `ReferenceError: process is not defined` in a
+# real browser without a `define` for the two `process.env.__NEXT_*` flags
+# it reads — caught by `test-storybook`, not by `build-storybook`, which
+# bundles the reference without executing it.
+#
 # `no-console` is off in tests, Storybook stories, Cypress specs, `testing/`
 # helpers and the command-line examples (`examples/*/index.mjs`,
 # `checkout-browser`'s `mint.mjs`/`serve.mjs`, `sdks/nodejs/scripts/`) —
@@ -868,17 +983,8 @@ verify-links:
 # declares `publishConfig.access: "public"`, names this repository, carries a
 # license, and ships a `files` allowlist with an entry point under `dist/`;
 # every private one declares no `publishConfig` at all; and no retired
-# `@vpay/*` package name survives outside `docs/plans`, `docs/adr`,
-# `docs/status.md` and `docs/status/`.
-#
-# `docs/status/` joined that list on 2026-09-11 and is the same exemption,
-# not a new one: the dated entry that records the `@vpay/*` -> `@vaam-apps/*`
-# rename was on `docs/status.md` when the gate was written, and the split
-# that turned that page into an archive moved it to `docs/status/gates.md`.
-# The allowlist is prefix-matched, so `docs/status.md` did not cover it and
-# the gate failed on seven occurrences. `the_same_retired_name_under_the_docs_status_archive_passes`
-# and `a_retired_name_in_a_path_that_only_looks_like_the_status_archive_fails`
-# in `xtask` pin both halves.
+# `@vpay/*` package name survives outside `docs/plans`, `docs/adr` and
+# `docs/status.md`.
 #
 # The `files`/`main` half is not tidiness. `sdks/stripe-compat` has no build,
 # no `main` and no `files`, so `pnpm pack` on it produces a tarball of five
@@ -2046,7 +2152,26 @@ expected_ignored := "0"
 # would be measuring whatever that one left running. Two tests, one container
 # each, about 23 s together. Measured after adding it: `cargo nextest list
 # --workspace` gives **47** binaries, **1753** total, **0** ignored.
-expected_suites := "47"
+#
+# **47 -> 48 on 2026-09-13 (nav plan Lane C)**: one new binary,
+# `backends/tests/integration/tests/dashboard_procedure_transport.rs`, the end
+# of CrateStack's read-only procedure transport over HTTP. Its own file rather
+# than cases in `dashboard_read_surface.rs` because that suite is about
+# `/dash/v1`'s hand-written `GET` routes behind `require_dashboard_token`, and
+# this one is about the transport mounted beside them — a different middleware
+# (`require_dashboard_procedure_token`), a `POST` carrying a JSON body, and a
+# router assembled a different way.
+#
+# **This bump is the whole reason to run the gate rather than reason about
+# it.** The binary was added by the commit that mounted the transport
+# (`9d384d13`) and this number was not moved with it, so `just ci` on that
+# branch exits 1 at `verify-ignored` — which nothing noticed, because that
+# branch's `just ci` was never run. It is not a count anyone can bump
+# reflexively for the same reason: the recipe prints the listing when it
+# fails, so a binary that vanished and a binary that was added are told apart
+# by reading it. Measured after adding it: `cargo nextest list --workspace`
+# gives **48** binaries, **1772** total, **0** ignored.
+expected_suites := "48"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

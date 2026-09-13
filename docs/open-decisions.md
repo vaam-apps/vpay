@@ -17,9 +17,10 @@ decision belongs in an ADR once it is taken.
 - **Account-holder lookup controls:** decide the rate-limit shape, audit-log
   policy, and dedicated scope for the lookup endpoint. See
   [account-holder lookup](flows/account-holder-lookup.md).
-- **Dashboard implementation:** decide whether to use CrateStack's refine
-  integration for the dashboard. This affects the dashboard boundary in
-  [ADR-0008](adr/0008-dashboard-scope.md).
+- **Dashboard procedure adoption:** decide whether the dashboard frontend
+  should replace its cursor-paged `GET /dash/v1/payment_intents` read with the
+  offset-paged CrateStack procedure. See
+  [dashboard status](flows/dashboard/status-styling-and-demo.md).
 - **Provider references:** decide whether `charges.provider_reference_id` must
   be unique.
 - **SSRF address policy:** decide whether the egress guard must reject all of
@@ -34,6 +35,12 @@ decision belongs in an ADR once it is taken.
 - **Staff sign-in limit:** deployments may set the sign-in rate-limit budget;
   the default is not a policy decision. See
   [ADR-0017](adr/0017-staff-authentication.md).
+- **Additional staff credentials:** decide whether a live payment deployment
+  may accept any single-factor credential beyond the implemented password and
+  TOTP pair. See [ADR-0019](adr/0019-credential-model.md).
+- **Federated staff provisioning:** decide whether IdP claims may grant admin,
+  whether issuer allow-lists are deployment- or merchant-scoped, and how SSO
+  members are provisioned. See [ADR-0019](adr/0019-credential-model.md).
 - **Privacy and operator policy:** all decisions D1-D13 remain open in
   [RFC-0002](rfc/0002-gdpr-policy-and-operator-decisions.md). Do not implement
   an answer without its named owner.

@@ -14,15 +14,21 @@ What exists today:
   account-holder lookup are implemented and tested against local infrastructure.
 - MTN MoMo and Orange Money adapters, worker settlement, and signed webhooks
   are tested against WireMock.
-- Hosted and embedded checkout, dashboard sign-in and payment reads, and the
-  merchant SDKs are implemented. SDK parity is checked by `just verify`.
+- Hosted and embedded checkout, dashboard sign-in, tenant-bound and admin
+  payment reads, and the merchant SDKs are implemented. A CrateStack procedure
+  transport exists alongside the dashboard's current `GET` reads; SDK parity is
+  checked by `just verify`.
+- Password and TOTP credentials use the generic credential model. Six other
+  credential kinds are modeled but not implemented.
+- Checkout and dashboard Storybooks run axe in a real browser.
 - Images, Compose, Helm, migrations, and monitoring configuration are tested,
   but no deployment or monitoring system has operated vpay.
 
 The work still required before a production claim includes real-rail validation,
 external merchant webhook delivery, deployment validation, browser enforcement
 of checkout framing controls, ingress protection for unauthenticated surfaces,
-and refund support for MTN.
+and refund support for MTN. Modeled credential kinds beyond password and TOTP
+also remain unimplemented.
 
 ## Verification
 

@@ -467,7 +467,7 @@ async fn one_worker_claims_a_small_backlog_within_the_bound() -> anyhow::Result<
 /// were the difference, the same backlog would be claimed *faster* here by
 /// something outside the bound the case above holds. It is not — both sit on
 /// [`IDLE_SLEEP`] — so whatever separated those two stagings is not the loop's
-/// cadence, and the numbers are on the dated verification page.
+/// cadence; the two cases retain that comparison in the suite.
 ///
 /// It is a second container and about fifteen seconds of gate. That is the
 /// price of the comparison being in the suite instead of in a comment.

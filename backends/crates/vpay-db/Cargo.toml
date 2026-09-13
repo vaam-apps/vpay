@@ -29,6 +29,17 @@ sqlx.workspace = true
 # `docs/reference/vpay-db.md` § CrateStack says what runs through it and what
 # deliberately does not.
 cratestack.workspace = true
+# The generated procedure transport's JSON codec. Not a new package: it is
+# already an unconditional, unfeature-gated dependency of `cratestack-axum`
+# (itself unconditional in `cratestack-pg`), so this only adds a direct edge
+# in `Cargo.lock`, not a new crate — `docs/reference/vpay-db/cratestack.md`'s
+# "What this added to the dependency graph" is unchanged by this line.
+# `=0.12.0` and `default-features = false` in lockstep with `cratestack`
+# itself: the version has to move with the rest of the `cratestack-*` family
+# (they are one release), and the default `decimal-rust-decimal` feature is
+# dropped for the same reason the root `Cargo.toml` drops it on `cratestack`
+# — this schema declares no `Decimal` field.
+cratestack-codec-json = { version = "=0.12.0", default-features = false }
 thiserror.workspace = true
 tracing.workspace = true
 # The OP's own trait for private_key_jwt replay protection (feature OP-2 /
@@ -116,3 +127,11 @@ anyhow.workspace = true
 # checks; vpay-testkit itself depends only on vpay-core/vpay-provider, so this
 # adds no cycle back into vpay-db.
 vpay-testkit.workspace = true
+# `tower::ServiceExt::oneshot`, for
+# `schema::tests::no_generated_model_route_is_mounted_only_the_one_procedure_is`
+# — the container-free proof that `dashboard_procedure_router` mounts
+# nothing but the one procedure it names. Test-only: this crate's own
+# `axum::Router` never runs a live server, it only answers one request at a
+# time inside the test. Already resolved workspace-wide (`vpay-api` depends
+# on it directly), so this adds no new package.
+tower.workspace = true

@@ -51,9 +51,8 @@ here in those words.
 `cratestack-core`'s `src/` is byte-identical between the two releases
 (`value.rs:95-106`), so the hand-written `insert_in_tx` stays for the reason
 it already had. `webhook_deliveries`' `upsert(..).do_nothing()` and the
-`fanout_state` compare-and-swap both still run through CrateStack, unchanged,
-and the whole suite is green at 0.12.0 (`../status.md` § CrateStack 0.11.1 →
-0.12.0).
+`fanout_state` compare-and-swap both still run through CrateStack, unchanged;
+their current contract is covered by the worker and webhook integration tests.
 
 **Updated 2026-09-04: the housekeeping sweep is a third writer.** A checkout
 session passing its 24-hour horizon with nothing driving it now produces one

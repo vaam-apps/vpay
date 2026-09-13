@@ -199,3 +199,171 @@ pub(crate) fn nested(path: &str) -> String {
 /// trait object `/v1` uses, so a dashboard read and a merchant read of the
 /// same row cannot diverge.
 pub(crate) type Repos = Arc<dyn vpay_db::Repositories>;
+
+/// Which merchant one validated `/dash/v1` request may read, and whether
+/// that is the registration's own tenant or one an admin named instead
+/// ([ADR-0018](../../../../../docs/adr/0018-cross-tenant-admin-reads.md)).
+///
+/// **This is the seam.** [`crate::require_dashboard_token`] is the only
+/// place that constructs one — from [`vpay_db::StaffRow::is_admin`] and, for
+/// an admin only, a `?merchant_id=` on the request — and a future CrateStack
+/// transport (the plan's Lane C) mints its `auth()` context from exactly
+/// this rather than from a second, parallel decision about tenancy. Two
+/// things follow from a request having exactly one of these rather than an
+/// `Option<String>` plus a stray `bool`:
+///
+/// * a handler that wants "which merchant" and a handler that wants "was
+///   this chosen by an admin" read the same value, so the two can never
+///   disagree about a request neither of them decided;
+/// * an admin session that named its own tenant is [`Self::Bound`], not
+///   [`Self::ChosenByAdmin`] — naming the merchant you already read is not a
+///   cross-tenant read, and [`Self::is_cross_tenant`] is exactly the
+///   predicate an audit line or a future metric wants, so it must answer
+///   `false` for that case rather than `true` for every admin request.
+///
+/// # What an admin naming no tenant answers, and why
+///
+/// [`crate::require_dashboard_token`] resolves an admin request with no
+/// `?merchant_id=` to [`Self::Bound`] — the registration's own tenant,
+/// exactly like a non-admin. ADR-0018 § "What a cross-tenant read answers
+/// when no tenant is named" has the argument in full; the short version is
+/// that every repository method this surface calls
+/// (`PaymentIntents::list_page_filtered`, `get_for_merchant`, …) takes
+/// exactly one `merchant_id` and orders its cursor within that one tenant,
+/// so a merged, all-merchants page has no repository behind it to answer
+/// from — building one is a pagination design this ADR does not take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DashboardTenancy {
+    /// The registration's own tenant. Every non-admin session resolves
+    /// here unconditionally — nothing on the wire can move it — and so
+    /// does an admin session that named no tenant, or named its own.
+    Bound(String),
+    /// An admin session that named a tenant **other than** the
+    /// registration's own, via `?merchant_id=`.
+    ChosenByAdmin(String),
+}
+
+impl DashboardTenancy {
+    /// The tenant every repository read behind this request must filter by.
+    #[must_use]
+    pub fn merchant_id(&self) -> &str {
+        match self {
+            Self::Bound(merchant_id) | Self::ChosenByAdmin(merchant_id) => merchant_id,
+        }
+    }
+
+    /// Whether this request is reading a merchant other than the one its
+    /// dashboard registration is bound to — the fact ADR-0018's "blast
+    /// radius" section asks to be logged on every occurrence, since it is
+    /// the one thing a mis-set [`vpay_db::StaffRow::is_admin`] can do that a
+    /// non-admin session never could.
+    #[must_use]
+    pub fn is_cross_tenant(&self) -> bool {
+        matches!(self, Self::ChosenByAdmin(_))
+    }
+}
+
+impl<S> axum::extract::FromRequestParts<S> for DashboardTenancy
+where
+    S: Send + Sync,
+{
+    type Rejection = crate::ApiError;
+
+    /// Fails closed with `ApiError::Internal` (500, paged), for
+    /// [`crate::v1::MerchantScope`]'s `FromRequestParts` impl's reason:
+    /// reaching a `/dash/v1` handler with no tenancy on the request means
+    /// [`crate::require_dashboard_token`] is not mounted in front of it.
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Self>().cloned().ok_or_else(|| {
+            crate::ApiError::Internal(
+                "a /dash/v1 handler ran with no DashboardTenancy on the request: the dashboard \
+                 authentication middleware is not mounted in front of this route"
+                    .to_owned(),
+            )
+        })
+    }
+}
+
+/// The one query parameter [`crate::require_dashboard_token`] reads before a
+/// handler ever sees the request, and it reads it **only** when the staff
+/// row it just re-read carries `is_admin: true` — see
+/// [`DashboardTenancy`]'s doc for why a non-admin's copy of this parameter,
+/// however spelled, must never even be parsed.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct AdminMerchantOverride {
+    pub(crate) merchant_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tenancy_tests {
+    use super::DashboardTenancy;
+
+    #[test]
+    fn bound_and_chosen_by_admin_both_answer_their_own_merchant_id() {
+        assert_eq!(
+            DashboardTenancy::Bound("acme".to_owned()).merchant_id(),
+            "acme"
+        );
+        assert_eq!(
+            DashboardTenancy::ChosenByAdmin("beta".to_owned()).merchant_id(),
+            "beta"
+        );
+    }
+
+    #[test]
+    fn only_chosen_by_admin_is_cross_tenant() {
+        assert!(!DashboardTenancy::Bound("acme".to_owned()).is_cross_tenant());
+        assert!(DashboardTenancy::ChosenByAdmin("beta".to_owned()).is_cross_tenant());
+    }
+
+    /// The seam is **extractable**, and it fails closed when it is not there.
+    ///
+    /// Added by the ADR-0018 review, because until it existed the
+    /// `FromRequestParts` impl above had no caller anywhere: nothing in
+    /// `/dash/v1` reads a `DashboardTenancy` yet — the plan's Lane C is what
+    /// will — so the whole extractor, including its fail-closed arm, was
+    /// code the test suite never ran. An impl the first consumer discovers
+    /// is broken is not a seam; this is the cheapest thing that makes it
+    /// one.
+    ///
+    /// The absent arm is the half that matters. It must be a **500**, not a
+    /// default tenant: reaching a handler with no tenancy on the request
+    /// means `require_dashboard_token` is not mounted in front of it, and
+    /// the one thing an extractor must never do there is invent a merchant
+    /// id for an unauthenticated request to read.
+    #[tokio::test]
+    async fn the_seam_is_extractable_and_fails_closed_when_it_is_absent() {
+        use axum::extract::FromRequestParts;
+
+        let (mut parts, _) = axum::http::Request::builder()
+            .uri("/dash/v1/payment_intents")
+            .body(())
+            .expect("building a request")
+            .into_parts();
+
+        let rejection = DashboardTenancy::from_request_parts(&mut parts, &())
+            .await
+            .expect_err("no middleware ran, so there is no tenancy to extract");
+        assert!(
+            matches!(rejection, crate::ApiError::Internal(_)),
+            "an absent tenancy must fail closed, never resolve to a tenant: {rejection:?}"
+        );
+
+        parts
+            .extensions
+            .insert(DashboardTenancy::ChosenByAdmin("beta".to_owned()));
+        let extracted = DashboardTenancy::from_request_parts(&mut parts, &())
+            .await
+            .expect("the tenancy the middleware inserted is readable by a handler");
+        assert_eq!(
+            extracted,
+            DashboardTenancy::ChosenByAdmin("beta".to_owned())
+        );
+        assert_eq!(extracted.merchant_id(), "beta");
+        assert!(extracted.is_cross_tenant());
+    }
+}

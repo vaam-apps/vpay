@@ -14,6 +14,26 @@
 //! give us `postgres:11-alpine`, which `compose.yml` does not run) and the
 //! retry on a host-port collision are explained.
 //!
+//! # This file is a writer of `staff_members`, and nothing in Rust says so
+//!
+//! Five tests below seed `staff_members` with a **hand-written `INSERT`**
+//! rather than through `vpay_db::Staff::create`, because their subject is a
+//! database constraint and a repository call that refuses the row first
+//! would prove nothing about it. That makes this file a second writer of
+//! that table, invisible to the compiler: every column on `staff_members` is
+//! `NOT NULL` with **no `DEFAULT`** (migration `0035`'s rule, because
+//! `cratestack-macros` drops a `@default(...)` field from
+//! `Create{Model}Input`), so a migration that adds a column here breaks all
+//! five at run time and nothing type-checks the breakage first.
+//!
+//! That is not hypothetical: migration `0043` (`is_admin`, ADR-0018) did
+//! exactly this, and all five failed with `null value in column "is_admin"
+//! … violates not-null constraint` — one of them while *expecting* a
+//! different rejection, so it reported a CHECK constraint as missing when
+//! the CHECK was fine. **A migration adding a column to `staff_members`
+//! should `grep "INTO staff_members"` before assuming `Staff::create` is the
+//! only writer.**
+//!
 //! Helper functions here return `anyhow::Result` and propagate with `?`
 //! rather than `.expect`/`.unwrap`, matching the workspace lint policy:
 //! `expect_used`/`unwrap_used`/`panic` are only exempted *inside* a
@@ -169,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 42,
-        "all forty-two migration files under backends/migrations should be recorded as applied \
+        applied, 44,
+        "all forty-four migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -272,7 +292,25 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          anonymized_customers_carry_the_marker refuses to let the row lie \
          about. The numbering is dense again: 0041 was taken by this branch \
          while 0040 and 0042 were in flight, and all three are in this tree \
-         now, so files and numbers agree at forty-two.)"
+         now, so files and numbers agree at forty-two, and ADR-0018's 0043 \
+         staff_members.is_admin, the cross-tenant read grant -- a BOOLEAN \
+         NOT NULL backfilled to false for every row that predates the \
+         concept of an admin, with the DEFAULT dropped in the very next \
+         statement so that every writer names it, which is 0035's rule for \
+         this table and the reason five hand-written INSERTs in this file \
+         had to grow the column too, and ADR-0019's 0044, which creates \
+         `credentials` and takes five columns off staff_members: \
+         password_hash, password_change_required, totp_secret, \
+         totp_enrolled_at and last_totp_step were credentials whose NAMES \
+         hardcoded exactly two authentication methods, and they are rows \
+         now, generic over kind today and over subject tomorrow. One file \
+         and therefore ONE TRANSACTION, so the create, the byte-for-byte \
+         backfill of every live row's material, and the drop happen with \
+         no instant at which anybody cannot sign in. Eight kinds are \
+         declared and two are implemented; `material` is nullable because \
+         a federated identity is NOT a secret -- an oidc row holds (iss, \
+         sub), which is public -- and a per-kind CHECK is what keeps that \
+         nullability from being a hole.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -439,69 +477,269 @@ async fn partial_refunds_without_refunds_is_rejected_by_the_database() -> anyhow
 
 // --- migration 0035 (staff sign-in, ADR-0017) -------------------------------
 
-/// `staff_members_totp_is_paired` fires against a real Postgres.
+/// **`staff_members_totp_is_paired` is gone, and what replaced it is
+/// stronger.** The multi-column CHECKs on `credentials` fire against a real
+/// Postgres.
 ///
-/// **This is the only thing that can check it**, for
+/// # What dissolved, and why that is not a loss
+///
+/// Until migration 0044 this test pinned `staff_members_totp_is_paired` —
+/// `(totp_secret IS NULL) = (totp_enrolled_at IS NULL)` — because "enrolled"
+/// was **one fact spread over two columns** and a writer could leave a sealed
+/// secret with no enrolment date, or claim an enrolment with no secret.
+///
+/// Under ADR-0019 enrolment is **the existence of a `totp` row**, and
+/// `credentials.created_at` is when it happened. There is no second column for
+/// the first to disagree with, so the CHECK has nothing left to be untrue
+/// about. That is a constraint removed by making the state unrepresentable
+/// rather than by deciding it did not matter, which is the only good reason to
+/// remove one.
+///
+/// # What is pinned here instead
+///
+/// The three CHECKs migration 0044 declares that are **multi-column**, and
+/// therefore invisible to `cratestack migrate baseline` in both directions.
 /// `a_customer_with_no_name_email_or_phone_is_refused_by_the_database`'s
-/// reason: the constraint is multi-column, and `cratestack migrate baseline`
-/// skips every multi-column CHECK in both directions, so
-/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` would
-/// not move by one if it were deleted.
+/// reason applies verbatim: **this is the only thing that can check them**,
+/// because `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
+/// would not move by one if any of the three were deleted. That is measured,
+/// not assumed — `EXPECTED_DRIFT_CHANGES`' own note records that `credentials`
+/// contributes eight CHECK lines to the report and the migration declares
+/// eleven.
 ///
-/// What it says is that "enrolled" is one fact with two columns. Without it a
-/// writer could leave a sealed TOTP secret behind with no enrolment date, or
-/// claim an enrolment with no secret — and the second is the dangerous
-/// direction, because `StaffRow::is_totp_enrolled` reads the *secret* while
-/// `Staff::enrol_totp`'s compare-and-swap guards on the *date*.
-///
-/// Both halves are load-bearing: the refusals, and that a row with **neither**
-/// is legal — which is what every staff member looks like between
-/// `vpay-server staff add` and their first sign-in.
+/// The dangerous direction is the same one it always was, moved: a `password`
+/// row with no `material` is a credential that **verifies against nothing**,
+/// and a nullable `material` column is what would otherwise admit it. The
+/// column has to be nullable, because a federated identity is not a secret and
+/// an `oidc` row has no material at all — so the nullability is per-kind, and
+/// this CHECK is the whole of "per-kind".
 #[tokio::test]
-async fn a_half_enrolled_staff_member_is_refused_by_the_database() -> anyhow::Result<()> {
+async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
 
-    let insert = |suffix: &str, columns: &str, values: &str| {
+    sqlx::query(
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, status, is_admin,
+             created_at, updated_at)
+         VALUES ('stf_shapes', 'merchant_a', 'shapes@example.test', 'Ada', 'active', false,
+             now(), now())",
+    )
+    .execute(&pool)
+    .await
+    .context(
+        "a staff member with NO CREDENTIAL AT ALL is a legal row, and must stay one: \
+              just-in-time SSO provisioning makes one, and an invariant that every member has \
+              a credential is exactly what ADR-0019 decision 7 forbids",
+    )?;
+
+    let insert = |id: &str,
+                  kind: &str,
+                  material: &str,
+                  issuer: &str,
+                  subject: &str,
+                  counter: &str,
+                  must_change: &str,
+                  expires: &str| {
         let sql = format!(
-            "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-             password_change_required, last_totp_step, status, created_at, updated_at{columns}) \
-             VALUES ('stf_{suffix}', 'merchant_a', '{suffix}@example.test', 'Ada', 'hash', \
-             true, 0, 'active', now(), now(){values})"
+            "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, \
+             counter, must_change, expires_at, created_at, updated_at) \
+             VALUES ('cred_{id}', 'stf_shapes', '{kind}', {material}, {issuer}, {subject}, \
+             {counter}, {must_change}, {expires}, now(), now())"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
     };
 
-    for (suffix, columns, values) in [
-        ("secretonly", ", totp_secret", ", 'sealed'"),
-        ("dateonly", ", totp_enrolled_at", ", now()"),
+    for (id, kind, material, issuer, subject, counter, must_change, expires, constraint) in [
+        // A secret-bearing kind with no secret: verifies against nothing.
+        (
+            "hollow",
+            "password",
+            "NULL",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_federated_carries_identity_and_no_material",
+        ),
+        // A federated credential carrying a secret: the confusion the whole
+        // split exists to prevent.
+        (
+            "confused",
+            "oidc",
+            "'a-secret'",
+            "'https://idp.example.test'",
+            "'sub-1'",
+            "0",
+            "false",
+            "NULL",
+            "credentials_federated_carries_identity_and_no_material",
+        ),
+        // A federated credential naming nobody at no issuer.
+        (
+            "anonymous",
+            "oidc",
+            "NULL",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_federated_carries_identity_and_no_material",
+        ),
+        // A secret-bearing kind carrying an issuer: an issuer crammed into a
+        // row that already has a hash is the "somebody puts the IdP in the
+        // password_hash column" failure, one column over.
+        (
+            "smuggled",
+            "password",
+            "'a-hash'",
+            "'https://idp.example.test'",
+            "'sub-1'",
+            "0",
+            "false",
+            "NULL",
+            "credentials_federated_carries_identity_and_no_material",
+        ),
+        // A transient credential that never expires: a permanent bearer
+        // credential sitting in an inbox.
+        (
+            "forever",
+            "magic_link",
+            "'a-link-digest'",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_transient_kinds_expire",
+        ),
+        // `must_change` on something that is not a password.
+        (
+            "mustchange",
+            "webauthn",
+            "'a-public-key'",
+            "NULL",
+            "NULL",
+            "0",
+            "true",
+            "NULL",
+            "credentials_only_a_password_may_require_change",
+        ),
+        // Two subject columns' worth of nothing. Single-column today and
+        // multi-column the day `customer_id` lands; pinned here either way.
+        (
+            "subjectless",
+            "password",
+            "'a-hash'",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_has_exactly_one_subject",
+        ),
+        // A counter below the seed.
+        (
+            "negative",
+            "totp",
+            "'sealed'",
+            "NULL",
+            "NULL",
+            "-1",
+            "false",
+            "NULL",
+            "credentials_counter_is_not_negative",
+        ),
+        // A kind nobody declared.
+        (
+            "unknown",
+            "saml",
+            "'assertion'",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_kind_is_known",
+        ),
     ] {
-        let err = insert(suffix, columns, values)
+        // The subjectless case is the one that must NOT name a subject.
+        let sql_id = id;
+        let result = if id == "subjectless" {
+            let sql = format!(
+                "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, \
+                 subject, counter, must_change, expires_at, created_at, updated_at) \
+                 VALUES ('cred_{sql_id}', NULL, '{kind}', {material}, NULL, NULL, {counter}, \
+                 {must_change}, {expires}, now(), now())"
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool).await
+        } else {
+            insert(
+                id,
+                kind,
+                material,
+                issuer,
+                subject,
+                counter,
+                must_change,
+                expires,
+            )
             .await
-            .expect_err("half an enrolment is not an enrolment");
+        };
+
+        let err = result.expect_err(
+            "this shape must be refused; a row the database accepts is a row some code path \
+             will eventually read",
+        );
         let db_err = err.as_database_error().expect("a database-level error");
         eprintln!("observed rejection: {db_err}");
         assert_eq!(
             db_err.constraint(),
-            Some("staff_members_totp_is_paired"),
-            "the rejection must come from the pair CHECK specifically"
+            Some(constraint),
+            "cred_{id} was refused, but by the wrong constraint — a case that passes for the \
+             wrong reason is worse than one that fails"
         );
     }
 
-    // Neither: the shape every staff member has between `staff add` and their
-    // first sign-in. Legal, and the assertion that stops the CHECK above from
-    // being read as "a secret is required".
-    insert("unenrolled", "", "")
-        .await
-        .context("an unenrolled staff member is a legal row")?;
-
-    // Both: the shape after enrolment.
+    // --- and the shapes that ARE legal --------------------------------------
+    //
+    // Without these the CHECKs above could all be `FALSE` and this test would
+    // still pass, which is the failure mode the old version of this test
+    // guarded against with its "neither" case.
     insert(
-        "enrolled",
-        ", totp_secret, totp_enrolled_at",
-        ", 'sealed', now()",
+        "ok_pw", "password", "'a-hash'", "NULL", "NULL", "0", "true", "NULL",
     )
     .await
-    .context("an enrolled staff member is a legal row")?;
+    .context("an operator-issued password is a legal row")?;
+    insert(
+        "ok_totp", "totp", "'sealed'", "NULL", "NULL", "0", "false", "NULL",
+    )
+    .await
+    .context("an enrolled second factor is a legal row")?;
+    insert(
+        "ok_oidc",
+        "oidc",
+        "NULL",
+        "'https://accounts.google.com'",
+        "'110169484474386276334'",
+        "0",
+        "false",
+        "NULL",
+    )
+    .await
+    .context("a federated link carries an identity and no secret, and is a legal row")?;
+    insert(
+        "ok_link",
+        "magic_link",
+        "'a-link-digest'",
+        "NULL",
+        "NULL",
+        "0",
+        "false",
+        "now() + interval '10 minutes'",
+    )
+    .await
+    .context("a transient credential WITH an expiry is a legal row")?;
 
     Ok(())
 }
@@ -533,10 +771,11 @@ async fn a_mixed_case_address_and_an_unknown_status_are_refused_by_the_database(
 
     let insert = |suffix: &str, email: &str, status: &str| {
         let sql = format!(
-            "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-             password_change_required, last_totp_step, status, created_at, updated_at) \
-             VALUES ('stf_{suffix}', 'merchant_a', '{email}', 'Ada', 'hash', true, 0, \
-             '{status}', now(), now())"
+            "INSERT INTO staff_members (id, merchant_id, email, display_name, \
+             status, is_admin, created_at, \
+             updated_at) \
+             VALUES ('stf_{suffix}', 'merchant_a', '{email}', 'Ada', \
+             '{status}', false, now(), now())"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
     };
@@ -591,10 +830,10 @@ async fn signing_out_cascades_onto_a_code_in_flight() -> anyhow::Result<()> {
     let (_container, pool) = migrated_postgres().await?;
 
     sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
-         VALUES ('stf_cascade', 'merchant_a', 'cascade@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
+         status, is_admin, created_at, updated_at) \
+         VALUES ('stf_cascade', 'merchant_a', 'cascade@example.test', 'Ada', \
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await
@@ -671,10 +910,10 @@ async fn a_session_token_without_its_expiry_is_refused_by_the_database() -> anyh
     let (_container, pool) = migrated_postgres().await?;
 
     sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
-         VALUES ('stf_expiry', 'merchant_a', 'expiry@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
+         status, is_admin, created_at, updated_at) \
+         VALUES ('stf_expiry', 'merchant_a', 'expiry@example.test', 'Ada', \
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await
@@ -739,10 +978,10 @@ async fn an_authorization_code_with_a_plain_pkce_method_is_refused_by_the_databa
     let (_container, pool) = migrated_postgres().await?;
 
     sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
-         VALUES ('stf_plain', 'merchant_a', 'plain@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
+         status, is_admin, created_at, updated_at) \
+         VALUES ('stf_plain', 'merchant_a', 'plain@example.test', 'Ada', \
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await?;
@@ -2688,7 +2927,7 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// single-column-but-not-declared — declaring one adds a `[blocking]` line
 /// beside the `[safe]` one rather than closing it).
 ///
-/// `staff_members_totp_is_paired` and the multi-column CHECKs beside it
+/// The multi-column CHECKs `backends/migrations` builds
 /// contribute **nothing in either direction**, like the eleven before them,
 /// which is why `postgres_smoke` asserts them against a real database
 /// directly.
@@ -2900,9 +3139,64 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// three constraints for two drift lines is the shape this file predicts, and
 /// this measurement is what tested the prediction rather than restating it.
 ///
+/// **Still 179 after migration 0043 (2026-09-13, ADR-0018)**, and this line
+/// is the measurement `0043_staff-members-is-admin.sql`'s own DRIFT note
+/// points a reader at. It had to be *taken*, not predicted: the migration
+/// argues from shape that `staff_members.is_admin` would cost zero — a
+/// `BOOLEAN` with no hand-named CHECK, no index and no `@default`, which is
+/// `password_change_required`'s shape on this same table — and an argument
+/// from shape is exactly the kind of claim this constant exists to refuse.
+/// Measured against a freshly migrated Postgres on 2026-09-13 the report
+/// read `drift detected in 24 table(s)/view(s) (179 change(s) total)` and
+/// `19 column(s) have a Postgres type cratestack could not confidently map`,
+/// so all three constants held and the prediction was right. A `BOOLEAN`
+/// maps outright, so the column costs neither a "type differs" line here nor
+/// an entry in `EXPECTED_UNMAPPABLE_COLUMNS`.
+///
 /// The number is read off a freshly migrated database, never derived by
 /// adding two branches' deltas.
-const EXPECTED_DRIFT_CHANGES: u32 = 179;
+/// **179 -> 190 on 2026-09-13 (migration 0044, ADR-0019), and the +11 is
+/// fully accounted for rather than merely observed.**
+///
+/// `credentials` contributes **twelve** lines and `staff_members` loses
+/// **one**. Every one of the twelve is a hand-named CHECK or an undeclared
+/// index — the two kinds `cratestack` structurally cannot close:
+///
+/// * **eight CHECKs**: `credentials_counter_is_not_negative`,
+///   `credentials_has_exactly_one_subject`, `credentials_id_length`,
+///   `credentials_issuer_length`, `credentials_kind_is_known`,
+///   `credentials_kind_length`, `credentials_staff_member_id_length`,
+///   `credentials_subject_length`;
+/// * **four indexes**: `credentials_federated_identity_key`,
+///   `credentials_one_federated_link_per_issuer`,
+///   `credentials_one_singleton_kind_per_staff_member`,
+///   `credentials_staff_member_idx`.
+///
+/// Migration 0044 declares **eleven** CHECKs, not eight, and the three that do
+/// not appear are the three that are **multi-column** —
+/// `credentials_federated_carries_identity_and_no_material`,
+/// `credentials_transient_kinds_expire` and
+/// `credentials_only_a_password_may_require_change`. Introspection filters
+/// `array_length(c.conkey, 1) = 1`, so it cannot see them in either
+/// direction, which is exactly why `a_kind_spelled_here_is_a_kind_the_database_admits`
+/// asserts all three against a real Postgres: **the drift report is not the
+/// guard for those three and never can be.**
+///
+/// The minus one is `staff_members_totp_step_is_not_negative`, which went with
+/// the column it constrained. `staff_members_totp_is_paired` went too and cost
+/// nothing, because it was multi-column and was never in this count.
+///
+/// **Not one `column ... type differs`, not one
+/// `column ... default value differs`, not one
+/// `column ... is declared in the schema but does not exist`** — which is what
+/// ADR-0019's "migration 0035's shape, to the letter" claims and this line is
+/// the evidence for. `EXPECTED_UNMAPPABLE_COLUMNS` does not move either; see
+/// its own note.
+///
+/// The number is read off a freshly migrated database, never derived by adding
+/// two branches' deltas — and the twelve-line breakdown above was read off the
+/// report, not predicted from the DDL.
+const EXPECTED_DRIFT_CHANGES: u32 = 190;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -2966,7 +3260,18 @@ const EXPECTED_DRIFT_CHANGES: u32 = 179;
 /// exactly one entry on this list. That is what this constant is for — a +4
 /// in the change count with this number unmoved means lines moved within a
 /// table already here, not that a relation entered or left.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
+/// **Still 24 after migration 0043 (2026-09-13, ADR-0018):**
+/// `staff_members` was already on this list as a declared-and-differing
+/// table and stays exactly one entry on it. With `EXPECTED_DRIFT_CHANGES`
+/// unmoved too, the pair says the stronger thing either alone could not: no
+/// line arrived *and* no relation did.
+/// **24 -> 25 on 2026-09-13 (migration 0044, ADR-0019):** `credentials` is a
+/// new relation, declared-and-differing, in the shape `rate_limit_windows`
+/// joined this list in. `staff_members` stays exactly one entry on it — it
+/// lost a line, not its place — so the pair says what neither constant could
+/// alone: one relation arrived, and every line that arrived with it landed on
+/// that relation.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -3031,6 +3336,23 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 /// reason, so it is *compared* rather than excluded — which is what lets
 /// `EXPECTED_DRIFT_CHANGES` say the column itself drifted by zero instead of
 /// saying nothing about it at all.
+/// **Still 19 after migration 0043 (2026-09-13, ADR-0018):**
+/// `staff_members.is_admin` is `BOOLEAN`, which 0.11.1's `map_scalar` maps
+/// outright, so it is *compared* rather than excluded — which is what lets
+/// `EXPECTED_DRIFT_CHANGES` say the column drifted by zero rather than say
+/// nothing about it at all.
+/// **Still 19 after migration 0044 (2026-09-13, ADR-0019), measured, and this
+/// is the assertion that makes that migration's "no `bytea`, no `jsonb`"
+/// claim mean something.**
+///
+/// `credentials` adds eleven columns and not one of them lands here. That is a
+/// design decision rather than luck: per-kind material in a `jsonb` blob is
+/// the obvious shape for a table with eight kinds, a WebAuthn public key is
+/// the obvious `bytea`, and both would have been **excluded from the
+/// comparison outright** — drift on them unmeasured, with
+/// `EXPECTED_DRIFT_CHANGES` saying nothing at all about it. `material`,
+/// `issuer` and `subject` are `TEXT`; `counter` is `BIGINT` and not `INT`,
+/// because `int4` is one of the six `map_scalar` does not map.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -3399,6 +3721,20 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         observed,
         [
             ("checkout_sessions", "urls_match_ui_mode"),
+            // ADR-0019, migration 0044. All three are multi-column and
+            // therefore contribute NOTHING to `EXPECTED_DRIFT_CHANGES` —
+            // the migration declares eleven CHECKs and the report sees
+            // eight. This list is the only thing that would notice one of
+            // the three being deleted.
+            (
+                "credentials",
+                "credentials_federated_carries_identity_and_no_material",
+            ),
+            (
+                "credentials",
+                "credentials_only_a_password_may_require_change"
+            ),
+            ("credentials", "credentials_transient_kinds_expire"),
             // Migration 0041's pair rule (2026-09-11): a customer has both
             // coordinates or neither, because half a coordinate is a line
             // right round the planet. `(a IS NULL) = (b IS NULL)`, so
@@ -3494,7 +3830,15 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // date, or claim an enrolment with no secret. Multi-column, so
             // the drift report is blind to it in both directions — which is
             // exactly why this list is read from the live database.
-            ("staff_members", "staff_members_totp_is_paired"),
+            // `staff_members_totp_is_paired` was here until migration
+            // 0044. It is not missing: it DISSOLVED. "Enrolled" was one
+            // fact spread over `totp_secret` and `totp_enrolled_at`, and
+            // under ADR-0019 enrolment is the EXISTENCE of a `totp`
+            // credential row — so there is no second column for the first
+            // to disagree with. A constraint removed by making the state
+            // unrepresentable, which is the only good reason to remove
+            // one. `a_malformed_credential_is_refused_by_the_database`
+            // pins the three that replaced it.
             // Migration 0040, issue #88 item 1. A `/dash/v1` token and the
             // instant it dies are one fact: a token with no expiry is one the
             // dashboard cannot decide about and re-mints on every render,

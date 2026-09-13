@@ -1705,6 +1705,110 @@ fn staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout() {
     });
 }
 
+/// **The admin flag defaults to non-admin, and `--admin` is the only way to
+/// set it** ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)).
+///
+/// Two `staff add` runs against the same database — one with `--admin`, one
+/// without — read back through `vpay_db::Staff::find_by_email` rather than
+/// asserted from the CLI's own exit code, because `is_admin` is not on
+/// stdout anywhere and must not be: this is a row in the database, not a
+/// value this subcommand echoes.
+#[test]
+fn staff_add_admin_flag_defaults_to_false_and_admin_sets_it() {
+    with_live_postgres(|database_url| {
+        let add = |email: &str, admin: bool| {
+            let mut args = vec![
+                "staff",
+                "add",
+                "--merchant",
+                "acme-cameroon-tenant",
+                "--email",
+                email,
+                "--name",
+                "Ada Lovelace",
+            ];
+            if admin {
+                args.push("--admin");
+            }
+            let output = bin()
+                .args(args)
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff add`");
+            assert!(
+                output.status.success(),
+                "staff add {email} admin={admin} exited {:?}\nstderr: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        };
+
+        let plain_stderr = add("plain-staffer@example.test", false);
+        assert!(
+            plain_stderr.contains("\"is_admin\":false"),
+            "the creation log must name is_admin explicitly, so an operator does not have to \
+             query the database to see what a `staff add` invocation just granted: \
+             {plain_stderr}"
+        );
+
+        let admin_stderr = add("cross-tenant-staffer@example.test", true);
+        assert!(admin_stderr.contains("\"is_admin\":true"), "{admin_stderr}");
+
+        // Read the two rows back through the repository — not the CLI's own
+        // exit code, and not a raw `SELECT`, so this is proven through the
+        // same trait `require_dashboard_token` reads at request time.
+        let database_url = database_url.clone();
+        let (plain_is_admin, admin_is_admin) = std::thread::spawn(move || {
+            // A fresh runtime on a fresh thread, deliberately: this closure
+            // runs synchronously *inside* `with_live_postgres`'s own
+            // `block_on`, and nesting a second `block_on` on that same
+            // thread panics ("Cannot start a runtime from within a
+            // runtime"). A new thread has no runtime of its own yet.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a tokio runtime on the reader thread");
+            rt.block_on(async move {
+                let repositories = vpay_db::connect(&database_url)
+                    .await
+                    .expect("connecting to read the rows back");
+                let plain = vpay_db::Staff::find_by_email(
+                    repositories.as_ref(),
+                    "plain-staffer@example.test",
+                )
+                .await
+                .expect("reading the plain row")
+                .expect("staff add wrote it")
+                .is_admin;
+                let admin = vpay_db::Staff::find_by_email(
+                    repositories.as_ref(),
+                    "cross-tenant-staffer@example.test",
+                )
+                .await
+                .expect("reading the admin row")
+                .expect("staff add wrote it")
+                .is_admin;
+                (plain, admin)
+            })
+        })
+        .join()
+        .expect("the reader thread panicked");
+
+        assert!(
+            !plain_is_admin,
+            "staff add with no --admin must write is_admin = false"
+        );
+        assert!(
+            admin_is_admin,
+            "staff add --admin must write is_admin = true"
+        );
+    });
+}
+
 /// The same address twice is refused, and the second run does **not** print a
 /// password.
 ///

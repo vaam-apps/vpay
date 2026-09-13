@@ -53,6 +53,7 @@ import { PaymentsTable } from "./components/payments-table";
 import { SignInForm } from "./components/sign-in-form";
 import { SignedInBar } from "./components/signed-in-bar";
 import { TotpForm } from "./components/totp-form";
+import { NAV_ENTRIES } from "./dash/resources";
 import { DETAIL, INTENT } from "./testing/fixtures";
 
 // `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
@@ -164,6 +165,52 @@ describe("the rendered app", () => {
       .replace(/^[\s\S]*?<body[^>]*>/, "")
       .replace(/<\/body>[\s\S]*$/, "");
     document.body.innerHTML = body;
+
+    expect(await violations(document.body)).toEqual([]);
+  });
+
+  it("covers the More drawer's markup with the drawer actually OPEN", async () => {
+    // The two cases above use `renderToStaticMarkup`, and a closed vaul
+    // drawer renders NONE of its children — not hidden, absent. So every
+    // structural rule in this file was passing over markup that was not
+    // there: the drawer's nav list, its theme radiogroup and its second
+    // `SignedInBar` had no a11y coverage at all, which is the "test that
+    // asserts nothing" CLAUDE.md names. This case is a real client render
+    // that clicks the trigger and runs axe over the resulting document.
+    //
+    // `document.body`, not the render container: `MoreDetailDrawer` portals
+    // to the body, so scoping to the container would exclude the very
+    // markup this case exists to see — and `region` is a document-level rule
+    // that a fragment passes vacuously.
+    //
+    // Clearing the body first is load-bearing, not tidiness. The two cases
+    // above ASSIGN `document.body.innerHTML`, and Testing Library's
+    // `cleanup` only unmounts roots and removes containers it created
+    // itself — it does not undo that assignment. Left in place, the static
+    // shell from the previous case is still in the document here, so this
+    // one would find its "More" button too (`getByRole` throws "found
+    // multiple elements" — measured) and axe would be scanning a stale
+    // second copy of the shell rather than this render.
+    document.body.innerHTML = "";
+
+    const { getByRole, findByRole } = render(
+      <AppShell
+        email="ops@example.test"
+        merchantId="acct_test"
+        signOut={() => Promise.resolve()}
+      >
+        <PaymentsTable rows={[INTENT]} />
+      </AppShell>,
+    );
+    getByRole("button", { name: /more/i }).click();
+    // Fails loudly if the drawer never opened, rather than running axe over
+    // a document that still has no drawer in it and reporting green.
+    const panel = await findByRole("dialog");
+    expect(panel).toHaveAccessibleName("More");
+    expect(
+      panel.querySelectorAll("a").length,
+      "the open drawer really contains the nav tree",
+    ).toBe(NAV_ENTRIES.length);
 
     expect(await violations(document.body)).toEqual([]);
   });

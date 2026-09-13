@@ -319,12 +319,19 @@ impl Harness {
     /// `open_secret` the server does, so a change to the sealing format
     /// breaks it here rather than silently somewhere else.
     async fn enrolled_totp(&self) -> anyhow::Result<totp::Totp> {
-        let sealed: String = sqlx::query("SELECT totp_secret FROM staff_members WHERE email = $1")
-            .bind(STAFF_EMAIL)
-            .fetch_one(&self.repositories.op_store_pool())
-            .await
-            .context("reading the stored TOTP secret")?
-            .get("totp_secret");
+        // From `credentials` since ADR-0019, joined through the staff row
+        // rather than read off it: the secret is a `totp` credential's
+        // `material` now, and "enrolled" is the EXISTENCE of that row.
+        let sealed: String = sqlx::query(
+            "SELECT c.material FROM credentials c
+             JOIN staff_members s ON s.id = c.staff_member_id
+             WHERE s.email = $1 AND c.kind = 'totp'",
+        )
+        .bind(STAFF_EMAIL)
+        .fetch_one(&self.repositories.op_store_pool())
+        .await
+        .context("reading the stored TOTP secret")?
+        .get("material");
         Ok(totp::Totp::new(self.credentials.open_secret(&sealed)?))
     }
 
@@ -332,7 +339,7 @@ impl Harness {
     /// TOTP step `step`: the session token.
     ///
     /// `step` is a parameter and not `now`, and that is the whole reason this
-    /// helper exists. `Staff::record_totp_step` is a compare-and-swap that
+    /// helper exists. `Credentials::advance_counter` is a compare-and-swap that
     /// admits only a *strictly greater* step, so two sign-ins inside one
     /// 30-second window are a replay and the second is refused — correctly.
     /// A case that needs two live sessions therefore authenticates the second
@@ -596,14 +603,35 @@ async fn add_staff(
             merchant_id: merchant_id.to_owned(),
             email: STAFF_EMAIL.to_owned(),
             display_name: STAFF_NAME.to_owned(),
-            password_hash: credentials
-                .hash_password(ONE_TIME_PASSWORD)
-                .expect("hashing the one-time password"),
+            is_admin: false,
             now: OffsetDateTime::now_utc(),
         },
     )
     .await
     .context("creating the suite's staff member")?;
+    // The one-time password is a `credentials` row since ADR-0019, exactly as
+    // `vpay-server staff add` writes it — `must_change: true` included, which
+    // is what several cases in this file then assert the API reports.
+    vpay_db::Credentials::create(
+        repositories,
+        vpay_db::NewCredential {
+            id: vpay_core::ids::credential_id(),
+            staff_member_id: Some(id.clone()),
+            kind: vpay_db::CredentialKind::Password,
+            material: Some(
+                credentials
+                    .hash_password(ONE_TIME_PASSWORD)
+                    .expect("hashing the one-time password"),
+            ),
+            issuer: None,
+            subject: None,
+            must_change: true,
+            expires_at: None,
+            now: OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .context("creating the suite's password credential")?;
     Ok(id)
 }
 
@@ -841,13 +869,15 @@ async fn disabling_a_staff_member_refuses_their_live_session() -> anyhow::Result
 /// step, presented twice.
 ///
 /// The second presentation is refused because
-/// `Staff::record_totp_step`'s compare-and-swap admits only a step strictly
+/// `Credentials::advance_counter`'s compare-and-swap admits only a step strictly
 /// greater than the last accepted one. Without it the +/-1 skew window — the
 /// thing that makes TOTP usable across a clock drift — would be a 90-second
 /// replay window.
 ///
-/// The decisive mutation: drop `.where_(last_totp_step().lt(step))` from
-/// `record_totp_step` and the second sign-in below succeeds.
+/// The decisive mutation: drop `.where_(credential::counter().lt(counter))`
+/// from `Credentials::advance_counter` and the second sign-in below succeeds.
+/// (It was `Staff::record_totp_step` until ADR-0019 moved the guard, with its
+/// reasoning intact, onto the credential row it actually guards.)
 #[tokio::test]
 async fn a_replayed_totp_code_is_refused() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -1024,14 +1054,31 @@ async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token() ->
     vpay_db::Staff::create(
         harness.repositories.as_ref(),
         NewStaff {
-            id,
+            id: id.clone(),
             merchant_id: MERCHANT_B.to_owned(),
             email: other_email.to_owned(),
             display_name: "Grace Hopper".to_owned(),
-            password_hash: harness
-                .credentials
-                .hash_password(ONE_TIME_PASSWORD)
-                .expect("hashing"),
+            is_admin: false,
+            now: OffsetDateTime::now_utc(),
+        },
+    )
+    .await?;
+    vpay_db::Credentials::create(
+        harness.repositories.as_ref(),
+        vpay_db::NewCredential {
+            id: vpay_core::ids::credential_id(),
+            staff_member_id: Some(id),
+            kind: vpay_db::CredentialKind::Password,
+            material: Some(
+                harness
+                    .credentials
+                    .hash_password(ONE_TIME_PASSWORD)
+                    .expect("hashing"),
+            ),
+            issuer: None,
+            subject: None,
+            must_change: true,
+            expires_at: None,
             now: OffsetDateTime::now_utc(),
         },
     )
@@ -1250,8 +1297,12 @@ async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize() -> 
 /// Two logins are started against an *unenrolled* account, so each is handed
 /// its own freshly minted secret. The first completes enrolment; the second
 /// then presents a valid code **from its own secret**, and is refused —
-/// because `Staff::enrol_totp`'s compare-and-swap guards on
-/// `totp_enrolled_at IS NULL` and the first login won it.
+/// because a `totp` credential row can only be created once and the first
+/// login created it. ADR-0019 replaced `Staff::enrol_totp`'s
+/// `totp_enrolled_at IS NULL` guard with the partial unique index
+/// `credentials_one_singleton_kind_per_staff_member`, which is a
+/// strengthening rather than a rename: a `WHERE` clause can be dropped by an
+/// edit, and an index cannot be dropped by one.
 ///
 /// Without that guard the second login would *succeed* and overwrite the
 /// stored secret with its own: a second-factor reset performed by whoever
@@ -1259,8 +1310,22 @@ async fn a_session_that_has_not_presented_a_second_factor_cannot_authorize() -> 
 /// front of it. The step used is deliberately one **ahead** of the first's,
 /// so the TOTP replay guard is not what refuses it.
 ///
-/// The decisive mutation: delete
-/// `.where_(staff_member::totp_enrolled_at().is_null())` from `enrol_totp`.
+/// **What actually refuses it here is measured, not assumed, and it is not the
+/// index.** Making `credentials_one_singleton_kind_per_staff_member` an
+/// ordinary index leaves this test GREEN — run on 2026-09-13. The reason is
+/// the one `vpay-db`'s own version of this case has always given: by the time
+/// the second request runs, a `totp` credential exists, so the handler reads
+/// it and takes the **stored-secret** path. The second login's code is
+/// generated from its own secret, which is not the stored one, so it fails
+/// verification. The create path is never reached and the index is never
+/// consulted.
+///
+/// That is a real refusal and this test is worth having for it. But the
+/// *guard* is pinned where a mutation can reach it:
+/// `the_credential_guards_are_compare_and_swaps_and_only_one_caller_wins` in
+/// `vpay-db/tests/repositories.rs`, where dropping the index's uniqueness
+/// **is** caught. This paragraph exists because the sentence it replaced
+/// claimed a decisive mutation this test does not catch.
 #[tokio::test]
 async fn a_second_enrolment_cannot_replace_an_enrolled_second_factor() -> anyhow::Result<()> {
     let harness = harness().await?;

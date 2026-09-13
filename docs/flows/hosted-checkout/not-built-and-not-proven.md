@@ -50,6 +50,17 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   stylesheet, no browser, no Storybook) — see
   `docs/flows/hosted-checkout.md`'s 2026-09-12 Status entry. A chip is filed
   to restore Storybook inside this app; nothing has landed.
+  **Corrected 2026-09-13: it landed, later on 2026-09-12.**
+  `frontends/apps/checkout/.storybook/` exists, it configures `addon-a11y`
+  with `test: "error"`, and `just test-storybook` renders all 22 stories in
+  a real Chromium and runs axe over each — so there is an axe-in-Storybook
+  run again, and it is under the theme this app actually ships, because
+  `preview.ts` imports `app/globals.css` itself rather than restating it.
+  All 22 clear WCAG AA; a deliberately unreadable `#3a3a3a` probe fails at
+  1.73:1 against the real `#0a0b0d` ground, which is what proves the run can
+  return a negative verdict at all. This is checkout's browser-level contrast
+  verdict; the dashboard has its own Storybook gate. `outcome-contrast.test.ts`
+  remains the no-browser measurement and is not retired by it.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../../adr/0011-error-modelling.md) touching every
@@ -85,7 +96,21 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   stories included) was deleted in the `@vaam-apps/ui` cutover. The checkout
   has no visual-review surface and no browser-level a11y addon as of this
   date; a chip is filed to restore Storybook inside `frontends/apps/checkout`
-  itself, and nothing has landed.
+  itself, and nothing has landed. **Corrected 2026-09-13: it landed later the
+  same day, and this bullet no longer belongs on a "not built" page —
+  it is kept struck rather than deleted because the page's history is the
+  point.** The same 22 stories are back in
+  `frontends/apps/checkout/.storybook/`, verbatim but for their doc comment
+  (`CheckoutView`'s and `ReturnView`'s props did not change across the
+  cutover). The original defect this bullet described — stories reviewed
+  under a theme the app does not ship — is structurally gone rather than
+  merely fixed: `preview.ts` imports `../app/globals.css`, the exact file
+  `app/layout.tsx` imports, so there is no second stylesheet to drift.
+  Re-verified 2026-09-13 on `7730284c`: `just build-storybook` exit 0, 22
+  story entries plus 1 autodocs entry in `storybook-static/index.json`, the
+  theme present in the built stylesheet (`--color-base-100` defined 3×,
+  referenced 22×); `just test-storybook` exit 0, 22 passed, 0 skipped, from
+  a cold cache.
 
 ## What the horizon emits, and what it does not
 

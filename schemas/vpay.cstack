@@ -1578,36 +1578,47 @@ model StaffMember {
   merchant_id String @length(min: 1, max: 128)
   email String @length(min: 3, max: 512)
   display_name String @length(min: 1, max: 256)
-  // `@sensitive` is what `cratestack-macros`' `is_sensitive_field` reads to
-  // redact a value from the audit log. Nothing in vpay audits today (`@@audit`
-  // is not declared, so `ensure_audit_table` is never reached) — `model
-  // Customer`'s three identifiers carry it for the same forward-looking
-  // reason. These two are stronger cases than those: an argon2id digest is an
-  // offline cracking target and the sealed TOTP secret is a second factor.
-  password_hash String @sensitive
-  password_change_required Boolean
-  // The AES-256-GCM sealed RFC 6238 secret, base64url, nonce-prefixed.
+  // NO CREDENTIAL COLUMNS. `password_hash`, `password_change_required`,
+  // `totp_secret`, `totp_enrolled_at` and `last_totp_step` moved to
+  // `model Credential` in migration 0044
+  // ([ADR-0019](../docs/adr/0019-credential-model.md)), because their NAMES
+  // hardcoded exactly two authentication methods on a table that is not about
+  // credentials — and every one of them would be NULL for every member who
+  // uses a third.
   //
-  // `String?` AND NOT `Bytes`, and the reason is the data layer rather than a
-  // preference. `cratestack-migrate`'s `map_scalar` does not map `bytea`
-  // (docs/reference/vpay-db.md, "Six Postgres types are mapped, and vpay uses
-  // more than six"), so a `BYTEA` column would be excluded from the drift
-  // comparison outright and — the half that decides it — could not be named
-  // in `CreateStaffInput` at all, which would put enrolment back on raw sqlx
-  // and defeat the point of shaping 0035 the way it is shaped.
-  totp_secret String? @sensitive
-  totp_enrolled_at DateTime?
-  // The RFC 6238 time step of the last accepted code. `Int` is `int8`, which
-  // is why migration 0035 declares `BIGINT` and not `INT`: `int4` is one of
-  // the six unmapped types and `currencies.exponent` had to be widened by
-  // migration 0032 for exactly this reason. A table born with a model does
-  // not repeat that.
+  // `totp_enrolled_at` did not move so much as DISSOLVE: under the split,
+  // enrolment is the existence of a `totp` row and `Credential.created_at` is
+  // when it happened, so `staff_members_totp_is_paired` — which existed to
+  // stop a secret living without a date — has nothing left to be untrue
+  // about, and the re-enrolment guard is a partial unique index refusing the
+  // second INSERT rather than a `WHERE` clause a future edit could drop.
   //
-  // NOT `Int?`. `NULL < step` is NULL in SQL, so a nullable column would make
-  // the compare-and-swap refuse every staff member's FIRST code forever —
-  // migration 0035 seeds it to 0 and declares it `NOT NULL` for that reason.
-  last_totp_step Int
+  // `last_sign_in_at` STAYED, against the brief's own column table, and for
+  // `is_admin`'s reason: it is when this PERSON last completed a full
+  // sign-in, across every credential they hold and across the two factors one
+  // sign-in presents. Moving it would mean duplicating it per credential or
+  // electing one kind's row to be canonical, and both are worse than leaving
+  // a column about a person on the table about people.
   status String
+  // A cross-tenant read grant (ADR-0018), not a scope and not a column on
+  // `DashboardClient`'s registration. `false` for every row `staff add`
+  // writes unless an operator passes `--admin`, which is what "the flag
+  // defaults to non-admin" means at the data layer: there is no `@default`
+  // on this column (the reason is `created_at`'s, two lines below — a
+  // defaulted field is one `CreateStaffMemberInput` could not set), so a
+  // writer that forgot it fails the insert rather than silently minting an
+  // admin or silently minting a non-admin. `require_dashboard_token` reads
+  // this off the same re-read `status` and `merchant_id` already need, so a
+  // `staff add --admin` mistake is contained by the same break-glass switch
+  // (`status = 'disabled'`) that already closes every other one.
+  //
+  // NOT a scope on the minted token and NOT a property of `DashboardClient`
+  // — ADR-0018 § "What an admin is" argues why: this deployment mints one
+  // token shape for every staff member regardless of role, and a token
+  // carrying "I am an admin" would still be true an hour after the flag was
+  // revoked, for the rest of that token's TTL. Reading the row keeps
+  // disabling an admin exactly as immediate as disabling anyone else.
+  is_admin Boolean
   // NO `@default(now())`, unlike `Customer.created_at`, and this is the one
   // difference between these models and 0034's that a reader should notice.
   // `cratestack-macros` drops every `@default(...)` field from
@@ -1634,15 +1645,10 @@ model StaffMember {
   //   create -> LOUD. `upsert`/`create` evaluate `create_allow_policies` in
   //             Rust before any SQL, so `staff add` fails with a `Forbidden`
   //             naming the model.
-  //   update -> SILENT, and this is the dangerous one in the DANGEROUS
-  //             direction. `update_many`'s policy is part of the statement's
-  //             `WHERE`, so a missing arm makes `record_totp_step` match zero
-  //             rows and return `ok: 0` — and `record_totp_step` is the
-  //             REPLAY GUARD. A TOTP code would become reusable for its whole
-  //             +/-1-step window with every log line saying the sign-in
-  //             succeeded normally. `every_action_this_module_calls_has_an_allow_arm`
-  //             in `vpay-db/src/staff.rs` is what makes that red in
-  //             milliseconds with no container.
+  //   update -> SILENT. `update_many`'s policy is part of the statement's
+  //             `WHERE`, so a missing arm makes `record_sign_in` match zero
+  //             rows and leave `last_sign_in_at` stale. The TOTP replay guard
+  //             moved to `Credential` with the credential columns.
   //   delete -> SILENT. Nothing in vpay deletes a staff row today; the arm is
   //             here because `staff_sessions`' and
   //             `oauth_authorization_codes`' cascades name this table, and an
@@ -1719,6 +1725,189 @@ model OauthAuthorizationCode {
   // mismatch, and is how this was found.
   consumed_at DateTime?
 
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
+// --- credentials (ADR-0019) -----------------------------------------------
+
+// HOW A SUBJECT PROVED WHO THEY ARE, as its own object
+// (migration 0044, [ADR-0019](../docs/adr/0019-credential-model.md)).
+//
+// Five of `StaffMember`'s columns were credentials whose NAMES hardcoded
+// exactly two authentication methods. They are here now, one row per
+// credential, and the model is generic over `kind` today and over SUBJECT
+// tomorrow: `staff_member_id` is nullable with a CHECK that exactly one
+// subject column is set, so `customer_id` is one column and one replaced
+// CHECK away rather than a new table.
+//
+// DECLARING A KIND IS NOT IMPLEMENTING IT. The vocabulary is eight
+// (`credentials_kind_is_known` in migration 0044) and exactly TWO —
+// `password` and `totp` — are reachable by any code path in this deployment.
+// The other six are shapes the schema can hold; nothing mints them and
+// `vpay_api::staff_auth` has a verifier for two. A reader who finds
+// `'webauthn'` in a CHECK constraint must not conclude vpay supports
+// WebAuthn; `docs/status.md` carries the gap.
+model Credential {
+  // `cred_…`, minted by `vpay_core::ids::credential_id`. Migration 0044's
+  // backfilled rows derive theirs from the staff id with `md5` — whose hex
+  // alphabet is a SUBSET of the base32 one `vpay_core::ids` uses — so
+  // `is_well_formed` accepts a migrated row exactly as it accepts a minted
+  // one.
+  id String @id @length(min: 1, max: 64)
+
+  // WHICH SUBJECT. `String?` and not `String`, although migration 0044's
+  // `credentials_has_exactly_one_subject` makes it effectively NOT NULL
+  // today: the CHECK is written `num_nonnulls(staff_member_id) = 1` so that
+  // adding customers is `num_nonnulls(staff_member_id, customer_id) = 1` and
+  // nothing else about this column list changes. ADR-0019 decision 2 argues
+  // the fork — a real FK with `ON DELETE CASCADE`, not `subject_kind` +
+  // `subject_id` — and states what the loser costs.
+  staff_member_id String? @length(min: 1, max: 64)
+
+  // One of eight. `String` + a hand-named CHECK, NEVER a native enum, for
+  // `StaffMember.status`' reason: CrateStack decodes every enum column with
+  // `try_get::<String>()`, so a native enum fails to decode on every read
+  // (upstream #228, the defect migration 0032 had to convert
+  // `providers.flow` out of). Mirrored by `vpay_db::credentials::CredentialKind`.
+  kind String @length(min: 1, max: 32)
+
+  // THE SECRET, OPAQUE. An argon2id PHC string for `password`; the
+  // AES-256-GCM sealed RFC 6238 secret, base64url and nonce-prefixed, for
+  // `totp`; a base64url COSE public key for `webauthn` when that exists.
+  // `vpay_db` never hashes, never verifies and never decrypts it — the
+  // property `staff.rs` stated for `password_hash` and `totp_secret`, carried
+  // over whole.
+  //
+  // `String?` AND NOT `String`, and this nullability is the FEDERATION
+  // requirement's whole footprint on the column list. A federated identity is
+  // NOT A SECRET: an `oidc` row holds `(iss, sub)`, which is public, and its
+  // verification material is the issuer's JWKS, which is fetched and not
+  // stored. A `NOT NULL` here would force a non-secret into a secret-shaped
+  // hole, which is how an issuer ends up in a `password_hash` column.
+  // `credentials_federated_carries_identity_and_no_material` in migration
+  // 0044 is what makes the nullability per-kind rather than free.
+  //
+  // NOT `Bytes`. `cratestack-migrate`'s `map_scalar` does not map `bytea`, so
+  // a `BYTEA` column is excluded from the drift comparison outright AND could
+  // not be named in `CreateCredentialInput` — `StaffMember.totp_secret`'s
+  // argument, unchanged. NOT `Json` either, for the same exclusion plus the
+  // one that decides it: per-kind material in a `jsonb` blob is the obvious
+  // design and it silently leaves the drift comparison.
+  material String? @sensitive
+
+  // THE FEDERATED IDENTITY, and it is deliberately NOT `@sensitive`.
+  //
+  // An Issuer Identifier is an `https` URL and a `sub` is a public,
+  // locally-unique, never-reassigned identifier. Redacting them would hide
+  // the two fields an operator debugging a broken SSO link actually needs,
+  // and that debugging session ends with somebody printing the whole row by
+  // hand — which is worse. `material` above carries the redaction; see
+  // `CredentialRow`'s hand-written `Debug`, which is per FIELD and not per
+  // kind.
+  //
+  // 512 matches `StaffMember.email`: the specification sets no length for an
+  // issuer and the longest real shapes
+  // (`https://login.microsoftonline.com/<tenant-guid>/v2.0`) are under a
+  // hundred.
+  issuer String? @length(min: 1, max: 512)
+
+  // 255 is OpenID Connect Core 1.0 §2's own ceiling — a `sub` "MUST NOT
+  // exceed 255 ASCII characters in length" — and not an estimate from a
+  // sample of issuers. Real values are far below it: Google 21 digits, Entra
+  // ID ~43 base64url characters, Okta `00u` + 17, Keycloak a 36-character
+  // UUID.
+  //
+  // MATCHED ON, and the email in a token never is. An email is mutable, may
+  // arrive unverified, and inside a tenant is reassignable — a departing
+  // employee's address handed to their replacement is normal IT hygiene and
+  // would be an account takeover if it were the join key. ADR-0019 decision 5.
+  subject String? @length(min: 1, max: 255)
+
+  // `StaffMember.last_totp_step`, renamed and generalised: the RFC 6238 time
+  // step of the last accepted code for `totp`, the RFC 4226 counter for
+  // `hotp`, `0` for every other kind.
+  //
+  // NOT `Int?`, and the argument is inherited VERBATIM rather than restated
+  // from taste. `NULL < step` is NULL in SQL — not false — so a nullable
+  // counter makes the compare-and-swap match zero rows and refuse every
+  // subject's FIRST code forever. Migration 0044 seeds it to 0 and declares
+  // it `NOT NULL` for that reason and no other.
+  //
+  // `Int` is `int8`, which is why migration 0044 declares `BIGINT`: `int4` is
+  // one of the six unmapped types and `currencies.exponent` had to be widened
+  // by migration 0032 for exactly this reason.
+  counter Int
+
+  // `StaffMember.password_change_required`, moved, because it is a property
+  // of the CREDENTIAL — "this material was printed by an operator and must be
+  // replaced by material the person chose" — and not of the person.
+  // `credentials_only_a_password_may_require_change` keeps it meaningful on a
+  // table with eight kinds.
+  must_change Boolean
+
+  // When a transient credential stops being presentable. NO WRITER TODAY, and
+  // it is a column rather than a future migration because
+  // `credentials_transient_kinds_expire` makes it LOAD-BEARING the moment a
+  // transient kind is implemented: a magic link with no expiry is a permanent
+  // bearer credential sitting in an inbox, and the CHECK refuses one before
+  // any reviewer has to notice.
+  //
+  // Nothing sweeps this table — there is nothing to sweep, because nothing
+  // writes this column. When something does, it needs a sweep; ADR-0019
+  // records that requirement.
+  expires_at DateTime?
+
+  // NO `@default(now())`, `StaffMember`'s rule: `cratestack-macros` drops
+  // every `@default(...)` field from `Create{Model}Input`, so a defaulted
+  // stamp is a column the writer could not set.
+  //
+  // For a `totp` row this IS the enrolment date, which is why
+  // `StaffMember.totp_enrolled_at` did not move and does not exist here:
+  // under the split, ENROLMENT IS THE EXISTENCE OF THE ROW. Migration 0035
+  // needed `staff_members_totp_is_paired` to stop a secret existing without a
+  // date; there is nothing left for that CHECK to be untrue about.
+  created_at DateTime
+  updated_at DateTime
+
+  // NO `last_used_at`. It would have no writer, no constraint depends on it,
+  // and `staff_members.last_sign_in_at` already answers "when did this person
+  // last complete a sign-in" — a fact about the PERSON, across every
+  // credential they hold and across the two factors one sign-in presents.
+
+  // NO `@relation` to `StaffMember`, although `credentials.staff_member_id`
+  // is a real foreign key — `StaffSession`'s reason exactly: 0.11.1's
+  // `@relation` needs both ends declared and side-loads rows this crate never
+  // wants side-loaded. Every read here is by subject and kind, and the staff
+  // row is fetched separately and deliberately, so that a disabled account is
+  // re-checked rather than trusted from a join taken earlier.
+
+  // Four arms, one per action `vpay_db::credentials` calls, each separately
+  // droppable. The runtime asymmetry is `StaffMember`'s and the dangerous
+  // slot MOVED HERE with the replay guard:
+  //
+  //   read   -> SILENT, in the SAFE direction: the policy compiles into
+  //             `find_many`'s `WHERE`, so a missing arm makes every sign-in
+  //             answer "no such credential". Loud in practice, harmless.
+  //   create -> LOUD. `create` evaluates `create_allow_policies` in Rust
+  //             before any SQL, so `staff add` fails with a `Forbidden`
+  //             naming the model.
+  //   update -> SILENT, in the DANGEROUS direction, and this is now the most
+  //             dangerous edit in the crate. `update_many`'s policy is part
+  //             of the statement's `WHERE`, so a missing arm makes
+  //             `Credentials::advance_counter` match zero rows and return
+  //             `ok: 0` — and `advance_counter` IS THE TOTP REPLAY GUARD.
+  //             `every_action_this_module_calls_has_an_allow_arm` in
+  //             `vpay-db/src/credentials.rs` names the slot rather than the
+  //             symptom, and runs without a container.
+  //   delete -> SILENT. Nothing in vpay deletes a credential today; the arm
+  //             is here because customer erasure will (ADR-0019 decision 2:
+  //             an anonymised customer's row STAYS, so no cascade fires and
+  //             the delete must be explicit), and an operator told the
+  //             erasure worked while the credential stayed would be the worst
+  //             kind of silent failure this table can have.
   @@allow("read", auth().isSystem())
   @@allow("create", auth().isSystem())
   @@allow("update", auth().isSystem())
@@ -2098,7 +2287,7 @@ type PaymentIntentListFilter {
 // `validate/procedure_handler_collisions.rs`.) Every model in this file
 // generates `handle_{list,create}_<plural>` and `handle_{get,update,
 // delete}_<singular>` whether or not anything routes them, so those five
-// stems are taken for all eighteen models — `getPaymentIntent`,
+// stems are taken for all nineteen models — `getPaymentIntent`,
 // `createCharge` and `deleteCustomer` are unavailable for the same reason.
 procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
   @allow(auth() != null)

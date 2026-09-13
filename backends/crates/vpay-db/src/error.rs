@@ -270,6 +270,32 @@ pub enum DbError {
         status: String,
     },
 
+    /// A `credentials` row's `kind` is outside the vocabulary
+    /// `credentials_kind_is_known` closes
+    /// ([ADR-0019](../../../../docs/adr/0019-credential-model.md)).
+    ///
+    /// [`Self::StaffStatusUnknown`]'s reasoning, and the consequence of a
+    /// default here would be **worse** than it is there. A default status is
+    /// a wrong answer about whether somebody may sign in; a default *kind* is
+    /// a wrong answer about **how to verify their material** — it would mean
+    /// handing an argon2id digest to the TOTP verifier, or a sealed secret to
+    /// argon2. So `CredentialKind::parse` has no fallback and this variant is
+    /// what a row outside the vocabulary becomes.
+    ///
+    /// `Category::Internal`, for [`Self::StaffStatusUnknown`]'s reason: only
+    /// reachable if that CHECK were dropped, nobody deploys it, and it must
+    /// never reach a caller as a `401` they could read as "wrong password".
+    #[error("credential {id} has kind {kind}, which is outside the known vocabulary")]
+    CredentialKindUnknown {
+        /// The `cred_…` whose row will not decode. Not personal data and not
+        /// a secret: an opaque internal handle.
+        id: String,
+        /// The stored value, quoted back. Never a secret — it is one of eight
+        /// words or a corruption. **Not** the material, which this error
+        /// never carries.
+        kind: String,
+    },
+
     /// A `staff_sessions` row's `state` is outside the vocabulary
     /// `staff_sessions_state_is_known` closes (ADR-0017).
     ///
@@ -404,6 +430,7 @@ impl vpay_core::Classify for DbError {
             // closes a vocabulary has gone.
             Self::WriteMatchedNoRow { .. }
             | Self::StaffStatusUnknown { .. }
+            | Self::CredentialKindUnknown { .. }
             | Self::SessionStateUnknown { .. } => Category::Internal,
             // Delegated, never re-decided. Named explicitly rather than
             // caught by a wildcard, which is both ADR-0011's rule and what
@@ -428,6 +455,7 @@ impl vpay_core::Classify for DbError {
             Self::CurrencyExponentConflict { .. } => "currency_exponent_conflict",
             Self::ProviderFlowUnknown { .. } => "provider_flow_unknown",
             Self::StaffStatusUnknown { .. } => "staff_status_unknown",
+            Self::CredentialKindUnknown { .. } => "credential_kind_unknown",
             Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
             Self::Persistence(error) => error.code(),

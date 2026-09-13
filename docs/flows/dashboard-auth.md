@@ -118,7 +118,7 @@ ADR-0017; the second half is exp28's, and until it was true everything below
 was reachable over HTTP and by nothing a person could click.
 
 ~~**No login has ever been performed.**~~ Corrected 2026-09-07
-([ADR-0017](../adr/0017-staff-authentication.md)). Thirteen cases in
+([ADR-0017](../adr/0017-staff-authentication.md)). The cases in
 `backends/tests/integration/tests/staff_sign_in.rs` drive the real
 `vpay_api::router` on a real socket over a real Postgres, and **that suite
 mints no token at all**: every token it presents came out of
@@ -126,13 +126,47 @@ mints no token at all**: every token it presents came out of
 and the server verified it through its own published JWKS over the same
 socket.
 
+**The credentials moved out of `staff_members` on 2026-09-13
+([ADR-0019](../adr/0019-credential-model.md), migration `0044`), and nothing
+on this surface changed.** `password_hash`, `password_change_required`,
+`totp_secret`, `totp_enrolled_at` and `last_totp_step` are rows in
+`credentials` now — one per credential, generic over kind today and over
+subject tomorrow — because their _names_ hardcoded exactly two authentication
+methods on a table that is not about credentials.
+
+That the flow below is unchanged is the **acceptance criterion** and not an
+accident: the suite named in the paragraph above passes with every
+assertion exactly as it was written against the pre-split behaviour. Three
+fixtures and four doc comments moved; not one assertion did. The migration is
+one file and therefore one transaction, and it copies every live row's material
+**byte for byte** — the argon2id PHC string verifies under the same unchanged
+pepper and the sealed secret opens under the same unchanged key — so there is
+no instant at which anybody cannot sign in.
+
+Two things a reader of this page should carry away from it. **The replay guard
+is `Credentials::advance_counter` now**, a compare-and-swap on the credential
+row rather than on the person, with its `NOT NULL` counter argument intact
+(`NULL < step` is `NULL` in SQL, so a nullable counter refuses every subject's
+first code forever). And **enrolment is the existence of a `totp` row**, so
+`staff_members_totp_is_paired` and `Staff::enrol_totp`'s
+`totp_enrolled_at IS NULL` guard are both gone — replaced by a partial unique
+index, which an edit cannot drop by accident the way a `WHERE` clause can.
+
+**Eight kinds are declared and two are implemented.** `hotp`, `magic_link`,
+`email_otp`, `phone_otp`, `webauthn` and `oidc` are reachable by no code path
+here; federated identity has columns, constraints and indexes and **no
+writer**. Whether a live payment deployment may ever accept a single-factor
+credential is a **reserved maintainer decision** — ADR-0019 § R1 — and it is
+not live, because no third kind has a verifier.
+
 What is built, in the order a request meets it:
 
 - `staff_members`, `staff_sessions` and `oauth_authorization_codes`
-  (migration `0035`), all three born with a `schemas/vpay.cstack` model and
-  shaped so that **every** repository method runs through CrateStack — no
-  `jsonb`, no `bytea`, no native enum, no `DEFAULT` on any column a writer
-  names. `docs/reference/vpay-db.md` § CrateStack has the account.
+  (migration `0035`) and `credentials` (migration `0044`), all four born with a
+  `schemas/vpay.cstack` model and shaped so that **every** repository method
+  runs through CrateStack — no `jsonb`, no `bytea`, no native enum, no
+  `DEFAULT` on any column a writer names. `docs/reference/vpay-db.md` §
+  CrateStack has the account.
 - `vpay-server staff add --merchant … --email … --name …`, the **only** way a
   staff member is created. No HTTP endpoint creates one and there is no
   self-service sign-up. It prints a one-time password on stdout alone —
@@ -165,6 +199,44 @@ What is built, in the order a request meets it:
   carries no merchant claim and nothing but this grant stamps one, so the
   refusal is a property of the mint. It is a tightening over what stood
   before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it.
+
+**Added 2026-09-13 ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)): a
+cross-tenant admin role.** `staff_members.is_admin` (migration `0043`, no
+`@default` — migration `0035`'s rule for every column on this table), read on
+the same `require_dashboard_token` re-read that already answers `status` and
+`merchant_id`, so revoking it takes effect on the next request exactly like
+disabling an account does. A non-admin's boundary is byte-for-byte what it
+was before this ADR: `?merchant_id=` is not even parsed unless the row says
+`is_admin`. An admin's `?merchant_id=` scopes the read to any merchant
+`config.merchant_clients` registers — one at a time, through the same
+single-tenant repository calls every other request already uses — defaulting
+to the bound tenant when none is named, and answering `400` for a merchant
+this deployment does not serve. No write path: ADR-0008's boundary is
+checked before the staff row and therefore before `is_admin` is even read.
+`vpay_api::dash::DashboardTenancy` (`Bound`/`ChosenByAdmin`) is the seam a
+CrateStack procedure transport mints its tenant context from.
+`backends/tests/integration/tests/dashboard_read_surface.rs` grew from 16 to
+21 cases: an admin reads a merchant other than its own, a non-admin's
+identical override parameter is silently ignored and the uniform-404
+property holds under it, an admin still cannot write (403 on every
+non-`GET`, override included), the flag defaults to non-admin, and an
+unknown merchant is a `400` naming the parameter. `vpay-server staff add`
+grew `--admin` (defaulting to `false`), proven by
+`staff_add_admin_flag_defaults_to_false_and_admin_sets_it` in
+`backends/apps/vpay-server/tests/cli.rs`.
+
+_Reviewed 2026-09-13._ All 21 cases ran against real Postgres — 21 passed, 0
+ignored, 0 skipped — and the three properties above were **mutation-tested
+rather than asserted**: deleting the `is_admin` check reddens the two
+non-admin cases (the failure body shows the other tenant's row in a
+non-admin's list), deleting `required_scope`'s write refusal reddens
+`an_admin_still_cannot_write` with a `405` where a `403` belongs, and making
+"not yours" distinguishable from "does not exist" reddens the uniform-404
+cases for admin and non-admin alike. The review also found that migration
+`0043`'s dropped `DEFAULT` broke five hand-written `INSERT`s in
+`postgres_smoke.rs` — `staff_members` has a second writer the compiler
+cannot see — and repaired them by naming the column rather than by restoring
+a default.
 
 **Added 2026-09-10 (issue #79 items 1-3):**
 
@@ -244,7 +316,6 @@ What is built, in the order a request meets it:
 5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
    untouched. `TokenManager` holds one key for the life of the process,
    rotation is restart-based, and nothing re-reads the key file.
-6. **The rate limit is per replica** — see "Every refusal is one answer".
 
 **What the two blockers this document recorded turned out to be:**
 
@@ -267,9 +338,9 @@ Solved by changing the _validator_ rather than the grant — ADR-0017 decision
 4. **Key rotation** — see item 5 of what is not built. Unchanged.
 
 What is proven about the dashboard **validator** is now proven about the whole
-path: `backends/tests/integration/tests/dashboard_read_surface.rs` (15 cases)
-covers which rows a validly-minted token may read and which credentials are
-refused, and `staff_sign_in.rs` (13 cases) covers how one is obtained. The
+path: `backends/tests/integration/tests/dashboard_read_surface.rs` covers which
+rows a validly-minted token may read and which credentials are refused, and
+`staff_sign_in.rs` covers how one is obtained. The
 first file's own header still opens by saying it proves nothing about signing
 in, and that remains true _of that file_.
 

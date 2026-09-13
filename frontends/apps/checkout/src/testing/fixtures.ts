@@ -12,6 +12,13 @@
  * package hosting that Storybook install and the stories file itself were
  * deleted in the `@vaam-apps/ui` cutover; a chip is filed to restore
  * Storybook inside this app. Nothing names this file outside tests today.
+ * **Corrected 2026-09-13:** Storybook came back later on 2026-09-12, in
+ * `frontends/apps/checkout/.storybook/`, and
+ * `checkout-screens.stories.tsx` names this file again. So the exception is
+ * live once more, and it is still not a hole in the rule:
+ * `no-runtime-imports.test.ts` excludes `*.stories.tsx` by suffix because
+ * `next build` never reads one, and `just build-storybook` — not `next
+ * build` — is what compiles it.
  */
 import type { PaymentIntent } from "@vaam-apps/vpay-stripe-js";
 

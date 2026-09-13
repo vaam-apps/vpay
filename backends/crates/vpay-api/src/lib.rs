@@ -59,7 +59,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{FromRef, MatchedPath, State};
+use axum::extract::{FromRef, FromRequestParts, MatchedPath, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, Method, Request, Uri};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
@@ -1027,15 +1027,67 @@ where
         return ApiError::Forbidden.into_response();
     };
 
+    let (tenancy, claims) = match resolve_dashboard_tenancy(
+        &mut parts,
+        &state,
+        &validator,
+        binding,
+        &resource_config,
+        required_scope,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+
+    parts.extensions.insert(MerchantScope::for_dashboard(
+        tenancy.merchant_id().to_owned(),
+    ));
+    parts.extensions.insert(tenancy);
+    parts.extensions.insert(claims);
+
+    next.run(Request::from_parts(parts, body)).await
+}
+
+/// Everything [`require_dashboard_token`] does *after* deciding which HTTP
+/// methods this request's surface serves at all: validate the bearer token,
+/// check the merchant claim and the scope, re-read the staff row, and
+/// resolve ADR-0018's tenancy.
+///
+/// Extracted so [`require_dashboard_procedure_token`] (Lane C,
+/// `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) can share it.
+/// The two middlewares differ in exactly one thing — which HTTP method(s)
+/// their surface serves, and therefore what `required_scope` a caller has to
+/// present — never in how a validated token becomes a tenant; duplicating
+/// this block for a second surface would be a second, independent chance
+/// for the two to quietly disagree about what "this staff member may read"
+/// means.
+///
+/// Returns the resolved [`dash::DashboardTenancy`] and the validated
+/// [`resource_auth::ResourceClaims`] on success, or the exact [`Response`]
+/// the caller should return unchanged otherwise — every refusal path below
+/// is byte-for-byte what this block produced before the extraction.
+async fn resolve_dashboard_tenancy<S>(
+    parts: &mut axum::http::request::Parts,
+    state: &S,
+    validator: &DashboardJwtValidator,
+    binding: &DashboardBinding,
+    resource_config: &ResourceConfig,
+    required_scope: &str,
+) -> Result<(dash::DashboardTenancy, resource_auth::ResourceClaims), Box<Response>>
+where
+    S: Send + Sync + Clone + 'static,
+    Arc<dyn Repositories>: FromRef<S>,
+{
     let claims = {
-        let token = match extract_bearer_token(&parts) {
-            Ok(token) => token,
-            Err(rejection) => return ApiError::from(rejection).into_response(),
-        };
-        match validator.0.validate(token).await {
-            Ok(claims) => claims,
-            Err(rejection) => return ApiError::from(rejection).into_response(),
-        }
+        let token = extract_bearer_token(parts)
+            .map_err(|rejection| Box::new(ApiError::from(rejection).into_response()))?;
+        validator
+            .0
+            .validate(token)
+            .await
+            .map_err(|rejection| Box::new(ApiError::from(rejection).into_response()))?
     };
 
     // The tenant claim, which is what tells a staff token from every other
@@ -1049,7 +1101,7 @@ where
             "a validly signed dashboard-audience token does not carry this deployment's \
              merchant claim; refusing rather than serving a tenant nothing vouched for"
         );
-        return ApiError::Forbidden.into_response();
+        return Err(Box::new(ApiError::Forbidden.into_response()));
     }
 
     if !claims.has_scope(required_scope) {
@@ -1059,7 +1111,7 @@ where
             required = required_scope,
             "a /dash/v1 token does not carry the dashboard registration's scope; refusing"
         );
-        return ApiError::Forbidden.into_response();
+        return Err(Box::new(ApiError::Forbidden.into_response()));
     }
 
     // THE STAFF ROW IS RE-READ HERE, and this is a bearer token rather than a
@@ -1102,9 +1154,9 @@ where
     // issue precisely so an edit cannot move a token to a *new* tenant; this
     // is the other half, and without it the copy only protects the tenant
     // being moved to.
-    let repositories = Arc::<dyn Repositories>::from_ref(&state);
-    match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
-        Ok(Some(staff)) if staff.is_active() && staff.merchant_id == binding.merchant_id => {}
+    let repositories = Arc::<dyn Repositories>::from_ref(state);
+    let staff = match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
+        Ok(Some(staff)) if staff.is_active() && staff.merchant_id == binding.merchant_id => staff,
         Ok(_) => {
             // One answer for "disabled", "gone" and "no longer this tenant's":
             // telling them apart would say which `stf_…` values name a row,
@@ -1115,23 +1167,178 @@ where
                  longer belongs to this deployment's merchant; refusing rather than serving rows \
                  to a revoked account for the rest of the token's TTL"
             );
-            return ApiError::Forbidden.into_response();
+            return Err(Box::new(ApiError::Forbidden.into_response()));
         }
         Err(error) => {
             // Fail closed. A database that cannot answer "is this person
             // still allowed in" must not be read as "yes".
             tracing::error!(%error, "reading the staff row behind a /dash/v1 token");
-            return ApiError::from(error).into_response();
+            return Err(Box::new(ApiError::from(error).into_response()));
         }
-    }
+    };
 
-    // The tenant this surface reads is the *bound* one, never anything the
-    // token said. That is the difference from `/v1` that matters most: there
-    // is no claim a caller could put in a token that changes which merchant
-    // a `/dash/v1` query filters by.
-    parts
-        .extensions
-        .insert(MerchantScope::for_dashboard(binding.merchant_id.clone()));
+    // Which tenant this request may read (ADR-0018). A non-admin resolves to
+    // the *bound* one unconditionally, and never anything the token or the
+    // query string said — that is the difference from `/v1` that matters
+    // most, and it is exactly as true after this ADR as before it: the
+    // `?merchant_id=` parameter below is not even PARSED unless
+    // `staff.is_admin` is true, so nothing a non-admin caller writes can
+    // move it — `a_non_admin_cannot_move_the_tenant_with_the_query_parameter`
+    // is the end-to-end guard.
+    //
+    // `dash::AdminMerchantOverride` is read through `VpayQuery` — the same
+    // decoder every `/dash/v1` and `/v1` query parameter goes through —
+    // rather than a bespoke split on `&`/`=`, so a malformed value here fails
+    // the same way a malformed `limit` does, and not in a boundary-specific
+    // way nothing else in this crate produces.
+    let tenancy = if staff.is_admin {
+        let requested =
+            match crate::form::VpayQuery::<dash::AdminMerchantOverride>::from_request_parts(
+                parts, state,
+            )
+            .await
+            {
+                Ok(crate::form::VpayQuery(over)) => {
+                    over.merchant_id.filter(|value| !value.is_empty())
+                }
+                Err(rejection) => return Err(Box::new(rejection.into_response())),
+            };
+
+        match requested {
+            // No override, or the admin named its own tenant: this is not a
+            // cross-tenant read, and `DashboardTenancy::is_cross_tenant`
+            // must answer `false` for it — see that type's doc.
+            None => dash::DashboardTenancy::Bound(binding.merchant_id.clone()),
+            Some(merchant_id) if merchant_id == binding.merchant_id => {
+                dash::DashboardTenancy::Bound(merchant_id)
+            }
+            Some(merchant_id) => {
+                if !resource_config.is_known_merchant(&merchant_id) {
+                    tracing::warn!(
+                        subject = %claims.subject,
+                        %merchant_id,
+                        "an admin /dash/v1 request named a merchant this deployment does not \
+                         serve; refusing rather than answering an empty page for a typo"
+                    );
+                    return Err(Box::new(
+                        ApiError::invalid_param(
+                            "merchant_id",
+                            "Unknown merchant. An admin may read any merchant this deployment \
+                             serves; this is not one of them.",
+                        )
+                        .into_response(),
+                    ));
+                }
+                // The one line ADR-0018's "blast radius" section asks for:
+                // every cross-tenant read is logged with both merchants, so
+                // a mis-set `is_admin` is visible in the same place every
+                // other refusal and grant on this surface already is.
+                tracing::info!(
+                    subject = %claims.subject,
+                    home_merchant_id = %binding.merchant_id,
+                    %merchant_id,
+                    "an admin /dash/v1 session named a merchant other than its own; serving a \
+                     cross-tenant read (ADR-0018)"
+                );
+                dash::DashboardTenancy::ChosenByAdmin(merchant_id)
+            }
+        }
+    } else {
+        dash::DashboardTenancy::Bound(binding.merchant_id.clone())
+    };
+
+    Ok((tenancy, claims))
+}
+
+/// The dashboard's CrateStack procedure transport boundary (Lane C,
+/// `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) — the same
+/// tenancy resolution [`require_dashboard_token`] applies to `/dash/v1`'s
+/// generated-free routes, mounted in front of `POST /$procs/searchPaymentIntents`
+/// instead.
+///
+/// # Why this is a second function rather than a second case in
+/// [`dash::required_scope`]
+///
+/// That function is the whole of `/dash/v1`'s "reads only" boundary: it maps
+/// every method but `GET`/`HEAD` to `None`, and [`require_dashboard_token`]
+/// turns `None` into an unconditional `403` — the single place ADR-0008's
+/// "no write reaches a handler" property lives. CrateStack's generated
+/// procedure transport is `POST` unconditionally
+/// (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), which is
+/// a fact about the wire shape a *read* procedure call takes, not a
+/// loosening of that boundary — the procedure it calls has no write policy
+/// arm and the schema it runs against declares none of writes lane C is
+/// forbidden from mounting model CRUD for. Changing `dash::required_scope`
+/// to admit `POST` would widen what *every* `/dash/v1` route may accept;
+/// this function instead gives the procedure transport its own, narrower
+/// boundary — `POST` and nothing else — so `/dash/v1`'s own boundary is
+/// untouched, in code and in its own tests.
+///
+/// # Where the tenant this middleware resolves goes
+///
+/// Into the request's extensions, exactly like [`require_dashboard_token`]
+/// — [`dash::DashboardTenancy`], [`MerchantScope`] and the validated
+/// [`resource_auth::ResourceClaims`]. `vpay_db::DashboardAuthFn` (the
+/// closure `router` builds below) reads `DashboardTenancy` back out of
+/// there; see `vpay_db`'s `dashboard_transport` module for why it is a
+/// closure over a tenant id rather than this crate constructing a
+/// `cratestack::CratestackContext` itself.
+pub(crate) async fn require_dashboard_procedure_token<S>(
+    State(state): State<S>,
+    request: Request<Body>,
+    next: Next,
+) -> Response
+where
+    S: Send + Sync + Clone + 'static,
+    Option<DashboardJwtValidator>: FromRef<S>,
+    Arc<ResourceConfig>: FromRef<S>,
+    Arc<dyn Repositories>: FromRef<S>,
+{
+    let (mut parts, body) = request.into_parts();
+
+    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
+    let (Some(validator), Some(binding)) = (
+        Option::<DashboardJwtValidator>::from_ref(&state),
+        resource_config.dashboard(),
+    ) else {
+        return not_found(parts.method.clone(), parts.uri.clone())
+            .await
+            .into_response();
+    };
+
+    // CrateStack's generated procedure transport is `POST /$procs/<name>`
+    // unconditionally — see this function's own doc for why that is not
+    // `dash::required_scope`'s job to admit. Refused before the token is
+    // even looked at, for `require_dashboard_token`'s own reason: a method
+    // this surface does not serve must never be *authenticated*, only
+    // rejected.
+    if parts.method != Method::POST {
+        tracing::warn!(
+            method = %parts.method,
+            "a dashboard procedure request names a method this surface does not serve; refusing"
+        );
+        return ApiError::Forbidden.into_response();
+    }
+    let required_scope = binding.scope.as_str();
+
+    let (tenancy, claims) = match resolve_dashboard_tenancy(
+        &mut parts,
+        &state,
+        &validator,
+        binding,
+        &resource_config,
+        required_scope,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+
+    parts.extensions.insert(MerchantScope::for_dashboard(
+        tenancy.merchant_id().to_owned(),
+    ));
+    parts.extensions.insert(tenancy);
     parts.extensions.insert(claims);
 
     next.run(Request::from_parts(parts, body)).await
@@ -1353,6 +1560,92 @@ pub fn router(deps: RouterDeps) -> Router {
             .layer(from_fn(track_http_metrics))
     });
 
+    // The read-only CrateStack procedure transport (Lane C,
+    // `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`) —
+    // `searchPaymentIntents` answering over HTTP for the first time. A
+    // *second*, separately-mounted router rather than something merged into
+    // `dash` above, for a reason that is not stylistic: CrateStack's
+    // generated `procedure_router` calls its own `.with_state(..)` inside
+    // `vpay_db::Repositories::dashboard_procedure_router` (over CrateStack's
+    // own internal state, never `AppState`), so what it returns is already
+    // `axum::Router<()>` — state-erased — while `dash` above is still
+    // `Router<AppState>` until this function's own `.with_state(state)` at
+    // the very end. `Router::merge`/`Router::nest` both require the *same*
+    // state type on both sides; only `Router::nest_service` treats its
+    // argument as an opaque `tower::Service` and does not care what state,
+    // if any, it closed over — which is exactly what a `Router<()>` needs to
+    // be merged into a tree whose state is not yet fixed.
+    //
+    // Gated on the same `dash_is_configured` condition and mounted at the
+    // same [`dash::DASH_NEST`]: CrateStack's own generated route is already
+    // the absolute path `/$procs/searchPaymentIntents`
+    // (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), so
+    // nesting it under `DASH_NEST` produces exactly
+    // `/dash/v1/$procs/searchPaymentIntents` and nothing this deployment did
+    // not already reserve `/dash/v1` for.
+    let dash_procs = dash_is_configured.then(|| {
+        // The closure is the whole of `vpay_db::DashboardAuthFn`'s contract:
+        // read the tenant [`require_dashboard_procedure_token`] already
+        // resolved onto the request's own extensions, and hand back nothing
+        // else. This crate never constructs a `cratestack::CratestackContext`
+        // — see `vpay_db`'s `dashboard_transport` module doc for why it must
+        // not, and why a plain tenant id is all this closure is trusted
+        // with.
+        let auth = std::sync::Arc::new(|extensions: &axum::http::Extensions| {
+            extensions
+                .get::<dash::DashboardTenancy>()
+                .map(|tenancy| tenancy.merchant_id().to_owned())
+        });
+
+        state
+            .repositories
+            .dashboard_procedure_router(auth)
+            // Authenticated by [`require_dashboard_procedure_token`], not
+            // [`require_dashboard_token`]: CrateStack's generated procedure
+            // transport is always `POST /$procs/<name>`, and
+            // `require_dashboard_token`'s method check exists specifically
+            // to refuse every non-`GET`/`HEAD` request on `/dash/v1` —
+            // reusing it here would refuse the very requests this transport
+            // answers. `require_dashboard_procedure_token`'s own doc says
+            // why that is a narrower boundary of its own rather than a
+            // loosening of `/dash/v1`'s.
+            .layer(from_fn_with_state(
+                state.clone(),
+                require_dashboard_procedure_token::<AppState>,
+            ))
+            // **Added AFTER the token layer, so it is OUTSIDE it — and it is
+            // not optional.** `Router::nest_service` does not mount one path:
+            // it registers a *catch-all* (`/dash/v1/{*rest}`, plus
+            // `/dash/v1` and `/dash/v1/`) in the outer router's **path**
+            // table (`axum-0.8.9/src/routing/path_router.rs:246-282`). A
+            // path-table entry beats the fallback router, where
+            // `Router::nest` put `dash::routes`' own `.fallback(not_found)`
+            // — so without this line every previously-unmatched
+            // `/dash/v1/...` path stops reaching that fallback and reaches
+            // `require_dashboard_procedure_token` instead, which refuses any
+            // non-`POST` with `403` before it looks at the token at all.
+            //
+            // Measured on 2026-09-13, which is why this is spelled out: with
+            // this line removed, `GET /dash/v1/not_a_dashboard_route` with a
+            // perfectly valid dashboard token answers `403 forbidden`
+            // instead of the honest `404`, and `staff::routes`' own doc — "it
+            // is also what keeps an unmatched `/dash/v1/...` path answering
+            // exactly what it answered before this module existed" — stops
+            // being true. `an_unknown_dash_path_is_still_the_honest_404`
+            // pins both halves.
+            //
+            // `not_found` and not a refusal, for `dash`'s own reason: a path
+            // this deployment does not mount is not a permissions question,
+            // and answering one as though it were tells a prober which
+            // prefixes are live.
+            .fallback(not_found)
+            // Same ceiling `/dash/v1`'s other routes carry, for the same
+            // reason: an anonymous caller must not be able to make this
+            // process buffer a body before the token check refuses it.
+            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+            .layer(from_fn(track_http_metrics))
+    });
+
     let router = Router::new()
         .route("/healthz", get(healthz))
         .fallback(not_found)
@@ -1374,6 +1667,15 @@ pub fn router(deps: RouterDeps) -> Router {
     // a reader would then have to check does nothing.
     let router = match dash {
         Some(dash) => router.nest(DASH_NEST, dash),
+        None => router,
+    };
+
+    // `nest_service`, not `nest`: `dash_procs` is already `Router<()>` (see
+    // its own construction above for why), and `nest_service` is the one
+    // combinator that does not require its argument to share this router's
+    // state type — it treats `dash_procs` as an opaque `tower::Service`.
+    let router = match dash_procs {
+        Some(dash_procs) => router.nest_service(DASH_NEST, dash_procs),
         None => router,
     };
 

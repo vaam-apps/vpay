@@ -111,14 +111,30 @@ of them, so a green run never overstates coverage.
 `GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`),
 and behind a merchant bearer token and a scope check:
 
-| Resource                | Methods                                                            |
-| ----------------------- | ------------------------------------------------------------------ |
-| `/v1/payment_intents`   | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
-| `/v1/checkout/sessions` | `POST`, `GET`, `GET {id}`, `POST {id}/expire`                      |
-| `/v1/customers`         | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}`              |
-| `/v1/events`            | `GET`, `GET {id}`                                                  |
-| `/v1/refunds/{id}`      | `GET`                                                              |
-| `/v1/account_holders`   | `GET`                                                              |
+| Resource                               | Methods                                                            |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `/v1/payment_intents`                  | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
+| `/v1/checkout/sessions`                | `POST`, `GET`, `GET {id}`, `POST {id}/expire`                      |
+| `/v1/customers`                        | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}`              |
+| `/v1/invoices`                         | `POST`, `GET`                                                      |
+| `/v1/invoices/{id}`                    | `GET`, `POST`, `PATCH`, `DELETE`                                   |
+| `/v1/invoices/{id}/finalize`           | `POST`                                                             |
+| `/v1/invoices/{id}/void`               | `POST`                                                             |
+| `/v1/invoices/{id}/mark_uncollectible` | `POST`                                                             |
+| `/v1/invoices/{id}/pay`                | `POST`                                                             |
+| `/v1/invoice_items`                    | `POST`                                                             |
+| `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE`                                   |
+| `/v1/events`                           | `GET`, `GET {id}`                                                  |
+| `/v1/refunds/{id}`                     | `GET`                                                              |
+| `/v1/account_holders`                  | `GET`                                                              |
+
+`POST`/`PATCH` are one handler on both `/v1/invoices/{id}` and
+`/v1/invoice_items/{id}` — Stripe's API has no `PATCH`, so a merchant's
+existing client sends `POST`; `PATCH` is mounted beside it because a partial
+update is what the verb means. There is no collection `GET` on
+`/v1/invoice_items`: an invoice's lines are read from the invoice itself. See
+[`docs/flows/invoices.md`](docs/flows/invoices.md) for the object model, the
+state machine and what `pay` does on a market with no stored payment methods.
 
 An `Idempotency-Key` is required on every `POST`. The table is the constant
 `vpay_api::V1_ROUTES`, and a boundary test walks it — it does not list paths of
@@ -169,19 +185,18 @@ deploy/         helm/vpay   (rendered and schema-validated; never applied to a c
 
 `schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
 (`include_server_schema!`) and `just check-schema` runs `cratestack check`
-against the pinned CLI inside `just verify`. **Twelve of the file's
-seventeen models carry statements `vpay-server` actually runs — thirty-two
-statements over twelve tables** — `currencies`, `providers`,
+against the pinned CLI inside `just verify`. **Thirteen of the file's
+nineteen models carry statements `vpay-server` actually runs** — `currencies`, `providers`,
 `disabled_clients`, `customers`, `events`, `webhook_deliveries`,
 `checkout_sessions`, `invoices`, `invoice_items`, `staff_members`,
-`staff_sessions` and `oauth_authorization_codes`; the five that do not are
+`staff_sessions`, `oauth_authorization_codes` and `credentials`; the six that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
-`ledger_entries`, which stay a design sketch a compiler now type-checks.
-_(Measured 2026-09-10; this said "nine of thirteen" and had been stale since
+`ledger_entries`, plus `rate_limit_windows`, whose SQL remains hand-written.
+_(Measured 2026-09-13; this said "nine of thirteen" and had been stale since
 S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
-authoritative schema, and this file has diverged from it on two `CHECK`
-constraints CrateStack's grammar cannot express. See `docs/status.md`
-§ CrateStack.
+authoritative schema, and this file has diverged from it on constraints
+CrateStack's grammar cannot express. See
+[`docs/reference/vpay-db.md`](docs/reference/vpay-db.md#cratestack).
 
 ## Stack
 

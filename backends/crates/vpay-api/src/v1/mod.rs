@@ -996,6 +996,26 @@ impl ResourceConfig {
         self.dashboard.as_ref()
     }
 
+    /// Whether `merchant_id` is one this deployment's `merchant_clients`
+    /// registers — the one validation an admin's `/dash/v1` `?merchant_id=`
+    /// override needs ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)).
+    ///
+    /// Reused from [`Self::merchant_id_by_client_id`] rather than a second
+    /// map built at the same time: every `merchant_clients` entry is already
+    /// a value in it, so a merchant with no registered client could not read
+    /// `/v1` either and naming it here would be a distinction with no
+    /// registration behind it. Answering `false` for an unknown tenant turns
+    /// an operator's typo into a `400` naming the parameter, rather than the
+    /// silently empty page a real-but-wrong tenant already gives — the same
+    /// "an unknown value is not an empty answer" rule this crate's `status`
+    /// filter already follows.
+    #[must_use]
+    pub fn is_known_merchant(&self, merchant_id: &str) -> bool {
+        self.merchant_id_by_client_id
+            .values()
+            .any(|known| known == merchant_id)
+    }
+
     /// The tenant a publishable key names, or `None` if this deployment has
     /// no registration carrying it.
     ///

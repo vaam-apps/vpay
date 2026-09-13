@@ -162,7 +162,7 @@ pub(crate) async fn authorize(
     let now = OffsetDateTime::now_utc();
 
     let (session, staff) = authenticated_session(&state, &headers, now).await?;
-    if staff.password_change_required {
+    if super::password_change_required(state.repositories(), &staff.id).await? {
         return Err(refused("the one-time password has not been replaced"));
     }
     let binding = login.dashboard_op.binding();

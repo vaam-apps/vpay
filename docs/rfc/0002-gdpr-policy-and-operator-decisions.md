@@ -4,11 +4,11 @@
 - **Author:** vpay maintainers
 - **Date:** 2026-09-13
 - **Related:** [issue #149](https://github.com/vaam-apps/vpay/issues/149),
-  [ADR-0018](../adr/0018-privacy-controls-and-evidence.md)
+  [ADR-0020](../adr/0020-privacy-controls-and-evidence.md)
 
 ## Problem
 
-[ADR-0018](../adr/0018-privacy-controls-and-evidence.md) decides how vpay's
+[ADR-0020](../adr/0020-privacy-controls-and-evidence.md) decides how vpay's
 privacy controls fit together. It deliberately does not choose the policy
 values that determine what data may be used, disclosed or retained, who may
 operate privileged workflows, or when an organisation must act under law.
@@ -183,8 +183,10 @@ MSISDN, an unkeyed digest or the returned name.
 ### D8: Operator security boundary
 
 Choose how a human receives permission to query audits, search/export subject
-data and export incident evidence. The current staff model is intentionally
-bound to one merchant and cannot represent a platform operator.
+data and export incident evidence. Staff are tenant-bound by default;
+`staff_members.is_admin` can choose one merchant for dashboard payment reads,
+but grants none of these privacy-control capabilities. Decide whether that
+principal is extended or a separate operator principal is required.
 
 The decision must cover:
 
@@ -201,9 +203,8 @@ The decision must cover:
 **Recommendation, not a decision:** create a separate operator principal and
 surface. Default every operation to exactly one explicitly granted tenant.
 Host access to a one-shot CLI alone does not demonstrate authenticated and
-authorised invocation. ADR-0018 permits explicit operator grants on an
-existing identity model, but ordinary merchant staff permissions cannot imply
-those grants.
+authorised invocation. The existing dashboard-admin flag is not such a grant,
+and ordinary merchant staff permissions cannot imply one.
 
 ### D9: Retention matrix
 
@@ -281,7 +282,7 @@ privilege and workflow rather than broadening the default query. The objective
 supports the organisation's Article 33 process; it does not decide whether an
 incident is a breach or whether notification is required.
 
-**Recommendation, not a decision:** use the ADR-0018 journal and #146 export
+**Recommendation, not a decision:** use the ADR-0020 journal and #146 export
 machinery; default to one tenant and a bounded time range. Keep
 `webhook_deliveries` as current retry state and add an immutable row per
 attempt rather than changing state history into an overloaded JSON field.
@@ -307,7 +308,7 @@ does not operate.
 
 ## Implementation plan
 
-Implementation remains in the dependency order accepted by ADR-0018. The PR
+Implementation remains in the dependency order accepted by ADR-0020. The PR
 boundaries below are targets, not a promise that unknown inventory findings
 will fit without another small change.
 
@@ -535,7 +536,7 @@ telemetry, retention, export and incident evidence. It also makes different
 stories likely to choose incompatible meanings for the same identifier or
 operator.
 
-### Put recommendations directly in ADR-0018
+### Put recommendations directly in ADR-0020
 
 Rejected. An accepted architecture decision would make examples look approved.
 Keeping this RFC mutable distinguishes technical advice from the accountable
@@ -550,7 +551,7 @@ blocked.
 
 ### Let ordinary merchant permissions imply operator access
 
-Rejected by ADR-0018. It would collapse merchant and platform privileges.
+Rejected by ADR-0020. It would collapse merchant and platform privileges.
 Explicit operator grants on an existing identity model remain an option under
 D8, alongside a new principal source, but neither may be inferred from normal
 merchant access.
@@ -565,7 +566,7 @@ All rows D1-D13 are open. This RFC is accepted only when each row either:
 
 ## Impact on existing invariants
 
-- **No feature is done without evidence.** This RFC and ADR-0018 change no
+- **No feature is done without evidence.** This RFC and ADR-0020 change no
   capability. Status pages move only with implemented and exercised behavior.
 - **Tenant isolation remains structural.** Operator workflows add explicit
   grants and keep tenant predicates in repository queries.

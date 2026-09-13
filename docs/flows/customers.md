@@ -286,7 +286,7 @@ The review of the same day carried the fix the rest of the way in:
 `AddressParams` holds the coordinate as the **string the wire sent**, before
 `checked_microdeg` parses it. Five more hand-written impls and
 `no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
-close it; four mutations are on the verification page.
+close it; restoring any removed field assertion makes that test fail.
 
 **One thin spot named and not closed (2026-09-12).** The twelve-month sweep's
 own case,

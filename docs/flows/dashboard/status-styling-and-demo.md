@@ -41,17 +41,23 @@ PaymentIntentListFilter): Page<PaymentIntentSummary>` and `vpay-db`
 implements it — offset paging, the same three filters `GET
 /dash/v1/payment_intents` accepts, a summary row carrying no `metadata` and
 no `client_secret_suffix`, and a tenancy predicate read from the caller's
-context rather than from its arguments. It is **not** wired to this app and
+context rather than from its arguments. ~~It is **not** wired to this app and
 not to any route: no CrateStack router is mounted in this workspace, and the
-only `CratestackContext` vpay mints carries no tenant. **`GET
-/dash/v1/payment_intents` is unchanged and is still the only payments list
-the dashboard can reach**, and its cursor paging stays cursor paging —
-sharing `crate::v1::paging` with the merchant API is what makes `has_more`
-mean one thing to an operator and to a merchant, and moving it is a
-maintainer's decision, not a consequence of this. What the procedure changes
-today is what a future `/payments` table _could_ be paged by; what it changes
-right now is nothing a user can see.
-[../status.md](../../status.md) § "The first `procedure`" has the measurements.
+only `CratestackContext` vpay mints carries no tenant.~~ **Corrected
+2026-09-13 (Lane C, `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`):
+something is wired to it now, at the transport layer — not to this app.**
+`POST /dash/v1/$procs/searchPaymentIntents` answers over HTTP against a real
+Postgres, behind a new `require_dashboard_procedure_token` middleware and a
+context built from the caller's own tenant, never from
+`persistence::system_context()`. **`GET /dash/v1/payment_intents` is
+unchanged and is still the only payments list _this frontend_ can reach** —
+nothing in Lane C touches `frontends/apps/dashboard`, and mounting one
+procedure is not "the dashboard reads through CrateStack." Its cursor paging
+stays cursor paging — sharing `crate::v1::paging` with the merchant API is
+what makes `has_more` mean one thing to an operator and to a merchant, and
+moving the frontend onto the procedure is still a maintainer's decision, not
+a consequence of this. The container-backed evidence is in
+`backends/tests/integration/tests/dashboard_procedure_transport.rs`.
 
 **And the thing to weigh before anyone wires it to a table
 (2026-09-11, exp54 review): offset paging is not stable while payments are

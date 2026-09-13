@@ -74,6 +74,15 @@ pub const CUSTOMER_PREFIX: &str = "cus_";
 /// `/v1` renders one, and `/dash/v1` renders one only as a token's `sub`.
 pub const STAFF_PREFIX: &str = "stf_";
 
+/// The prefix on a Credential id ([ADR-0019](../../../../docs/adr/0019-credential-model.md)).
+///
+/// Never rendered on any surface at all — not `/v1`, not `/dash/v1`, and not
+/// as a token claim. A credential id is an internal handle the login path
+/// carries between two statements; a caller never sends one and never
+/// receives one. It gets a real id anyway, rather than a bare UUID, because
+/// it is the row an operator traces a broken sign-in through.
+pub const CREDENTIAL_PREFIX: &str = "cred_";
+
 /// The prefix on an Invoice id (S4b).
 ///
 /// Stripe's own spelling. `in_` is two letters like `pi_` and `cs_`, and it
@@ -358,6 +367,27 @@ pub fn staff_id() -> String {
     new_id(STAFF_PREFIX)
 }
 
+/// A new Credential id, `cred_…` (ADR-0019).
+///
+/// Minted before the insert exactly as every other id here is. Migration
+/// `0044`'s backfilled rows derive theirs in SQL instead — `'cred_' ||
+/// substr(md5(…), 1, 24)` — which produces an id this module would accept,
+/// because `md5`'s hex alphabet is a subset of [`ALPHABET`]. That is asserted
+/// by [`tests::a_migration_0044_backfilled_id_is_well_formed`] rather than
+/// left as a claim about two files agreeing.
+///
+/// ```
+/// use vpay_core::ids::{self, CREDENTIAL_PREFIX};
+///
+/// let id = ids::credential_id();
+/// assert!(ids::is_well_formed(CREDENTIAL_PREFIX, &id));
+/// assert_ne!(id, ids::credential_id());
+/// ```
+#[must_use]
+pub fn credential_id() -> String {
+    new_id(CREDENTIAL_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
@@ -504,7 +534,7 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 7] = [
+    const GENERATORS: [Generator; 8] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
@@ -512,6 +542,7 @@ mod tests {
         (checkout_session_id, CHECKOUT_SESSION_PREFIX),
         (customer_id, CUSTOMER_PREFIX),
         (staff_id, STAFF_PREFIX),
+        (credential_id, CREDENTIAL_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than
@@ -574,6 +605,49 @@ mod tests {
         for index in 0..(1usize << BITS_PER_CHAR) {
             assert!(ALPHABET.get(index).is_some(), "no digit for {index}");
         }
+    }
+
+    /// Migration `0044` backfills credential ids in SQL, as `'cred_' ||
+    /// substr(md5(<staff id> || ':password'), 1, 24)`, because a random id
+    /// per row would make that migration non-deterministic for no gain.
+    ///
+    /// That only works because of a property of two alphabets that nothing
+    /// else in this repository states: `md5`'s output is lower-case hex, and
+    /// `0123456789abcdef` is a **subset** of [`ALPHABET`]. So 24 hex
+    /// characters are 24 legal id characters and [`is_well_formed`] accepts a
+    /// backfilled row exactly as it accepts a minted one.
+    ///
+    /// Asserted here rather than left as a claim about a `.sql` file and a
+    /// `.rs` file agreeing: if a future Crockford tightening dropped a hex
+    /// letter from the alphabet, every row migration 0044 wrote would stop
+    /// being a well-formed id and **no other test in this repository would
+    /// notice**, because `is_well_formed` is never called on a credential id
+    /// at runtime.
+    #[test]
+    fn a_migration_0044_backfilled_id_is_well_formed() {
+        // The half that decides it: every character `md5` can emit is a
+        // character this module would have minted.
+        for hex in *b"0123456789abcdef" {
+            assert!(
+                ALPHABET.contains(&hex),
+                "md5 can emit {}, which is not in the id alphabet — \
+                 migration 0044's backfilled ids are no longer well-formed",
+                char::from(hex)
+            );
+        }
+
+        // And the whole shape, spelled exactly as the migration spells it.
+        // `substr(..., 1, 24)` is 1-indexed in SQL and takes 24 characters.
+        let md5_hex_width_32 = "0123456789abcdef0123456789abcdef";
+        assert_eq!(md5_hex_width_32.len(), 32, "md5 renders as 32 hex chars");
+        let backfilled = format!("{CREDENTIAL_PREFIX}{}", &md5_hex_width_32[..BODY_CHARS]);
+        assert!(
+            is_well_formed(CREDENTIAL_PREFIX, &backfilled),
+            "{backfilled} is not well-formed"
+        );
+        // Not some *other* object's id, which is the near-miss
+        // `is_well_formed` exists to refuse.
+        assert!(!is_well_formed(STAFF_PREFIX, &backfilled));
     }
 
     #[test]

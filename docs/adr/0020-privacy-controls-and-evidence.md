@@ -1,4 +1,4 @@
-# ADR-0018: Privacy controls share one inventory and evidence architecture
+# ADR-0020: Privacy controls share one inventory and evidence architecture
 
 - **Status:** Accepted
 - **Date:** 2026-09-13
@@ -43,8 +43,10 @@ The repository already has useful pieces, but not the shared control:
   persists nothing;
 - `/v1` authorisation chooses scopes by HTTP method, so it cannot assign a
   dedicated scope to one `GET` route;
-- staff identities belong to one merchant and there is no cross-tenant
-  operator principal;
+- staff identities belong to one merchant by default; an `is_admin` grant can
+  choose one merchant for dashboard payment reads, but no principal can yet
+  query privacy audits, search/export subjects, manage holds, or export
+  incident evidence across tenants;
 - webhook delivery keeps latest state rather than immutable attempt history;
 - authentication and authorisation events are principally tracing records.
 

@@ -106,3 +106,110 @@ Nothing was half-done: no Refine package is installed, no page moved, and the
 BFF is exactly as unused as the Lane 2 row says. **The `OPTIONS` fix and the
 browser evidence stand on their own** — they are about a surface that exists
 either way.
+
+**Built and proven, 2026-09-13 (nav plan Lane A): the "More" drawer.**
+`AppShell` gained a drawer (`src/components/more-menu.tsx`,
+`@vaam-apps/ui`'s `MoreDetailDrawer`) holding the nav tree rendered from the
+same `NAV_ENTRIES` array `SideNav` reads, `ThemeSwitcher`, and a second
+`SignedInBar`. It is a **bottom sheet below `md` and a right-hand panel
+above** — the component ships that split itself, so the call site writes no
+placement class at all. (The first implementation shipped a right-hand panel
+at every width, on the reasoning that `verify-ui`'s 60-character `className`
+cap left no way to a bottom sheet; the review tested that claim and it did
+not hold — the route was to call the component that already had the split.
+`just verify-ui` is silent/exit 0 on the corrected file.) It closes a real gap: `SideNav` only ever renders its
+`accountSlot` in the ≥1280px in-flow sidebar, so below that width there was no
+theme control reachable at all before this. The signed-in identity did
+**not** move into the drawer — `dashboard.cy.ts`'s
+`cy.contains(staffEmail()).should("be.visible")`, with eight tests chained
+after it in a `testIsolation: false` sequence, is why: `SignedInBar` stays
+exactly where it was, unconditionally visible in `<main>`, and the drawer's
+copy is a second mount of the same component rather than a competing one.
+The rail is unchanged (still the one `Payments` entry, still
+`smallScreen="floating"`), and the content column's padding
+(`pb-20 sm:pb-0 sm:pl-20 xl:pl-0`) is untouched — the drawer floats over the
+page like everything else `SideNav`'s rails do, and reserves no space of its
+own.
+
+`pnpm --filter @vpay/dashboard typecheck`, `just lint-web` (`verify-ui`
+included) and `just test-web` all pass — the dashboard suite is **311 vitest
+cases in 30 files, 0 skipped** (303 in 29 as first delivered; the review
+added seven `more-menu.test.tsx` cases and one open-drawer `a11y.test.tsx`
+case, the component having shipped with none) — with no test edited to pass
+and no assertion weakened. Every added case was made to fail first by
+breaking the thing it checks; the surviving tests pin those regressions.
+
+**Not proven in a real browser, and this is the gap to read this row
+against:** no Cypress case opens the drawer, and no screenshot was taken at
+any width. jsdom applies no CSS, so the bottom-sheet claim is evidenced by
+the class attribute on the rendered panel and by `MoreDetailDrawer`'s
+source — not by anything that looked at a phone. A **pre-existing** React
+duplicate-key warning (`SideNav`'s sub-640px rail keys `topItem` and the one
+nav entry both `/payments`) is reported and left: it was reproduced on the
+base commit with this drawer deleted, so it is not this change's, and fixing
+it is nav IA (Lane E) or upstream.
+
+**Built and proven, 2026-09-13: a Storybook, mirroring the checkout's.** This
+app had no visual-review surface and no browser-level accessibility check —
+`frontends/apps/dashboard/.storybook/` now
+exists: 25 stories in `src/components/dashboard-screens.stories.tsx`, bound
+to the same fixtures (`src/testing/fixtures.ts`) `a11y.test.tsx` renders, so a
+screen cannot gain a story without a test already covering it. `just
+build-storybook` exit 0; the built stylesheet defines `--color-base-100`
+(referenced 22×, defined 3×); `just test-storybook` exit 0, **25 passed, 0
+skipped, 0 unhandled errors**, both `@vaam-apps/ui` themes covered (21
+stories `dark`, 4 `light` — `.storybook/preview.ts` names which stories carry
+`light` and why only those are automated). _(Corrected on adversarial review:
+three stories — `Shell`, `ShellLight`, `MoreMenuOpen` — rendered in whatever
+theme the RUNNER's `prefers-color-scheme` said, because `@vaam-apps/ui`'s
+`ThemeSwitcher` overwrites `data-theme` on mount from its own store. The
+decorator now writes the package's storage key too; re-measured, all 25
+stories render the theme they declare under both colour schemes.)_
+
+**One real, third-party finding, not papered over.** At this suite's actual
+browser viewport (1200×900 — below the `xl` breakpoint), `AppShell`'s `Shell`
+story fails axe's `landmark-unique` rule: `@vaam-apps/ui@0.1.2`'s `SideNav`
+renders its in-flow sidebar `<nav aria-label="Primary">` with only
+`xl:`-prefixed utilities and no unprefixed `hidden`, so below `xl` it falls
+back to a `<nav>`'s default `display: block` at the same time the
+1024–1279px floating rail is also visible — two landmarks answering the same
+name at once. Reproduced directly with `axe-core` at both viewports (zero
+violations at 1280×800 and 1440×900, one at 1200×900 and at 1279×900), not
+inferred from the error message, and traced to the exact upstream line
+(`@vaam-apps/ui@0.1.2` `dist/components/primitives/side-nav.js:456`).
+`Shell`/`Shell Light` disable **that one axe rule by id** and keep
+`test: "error"` in force for everything else. _(Corrected on adversarial
+review the same day: they first carried `parameters.a11y = { test: "todo" }`,
+which switches the addon off for the whole story — measured, a
+`#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell` PASSED under it, so the
+chrome around every screen in the app had no colour-contrast verdict at all.
+With the narrowed suppression the same probe fails at 1.73 against `#0a0b0d`.
+`src/a11y-gate.test.ts` now pins which stories may carry a suppression and
+which rule id, verified under three mutations.)_ This is a defect in the
+published package, not in this app's markup, and is not this task's to fix;
+it is reported upstream as
+[`vaam-apps/ui#16`](https://github.com/vaam-apps/ui/issues/16).
+
+**Two router hooks needed a stub, and `next/link` needed a `vite` `define`.**
+`PaymentsFilters` (`useRouter`) and `AppShell` (`usePathname`) throw outside a
+mounted Next app router; `.storybook/main.ts` aliases `next/navigation` to a
+hand-written stub fixing `usePathname()` at `/payments` rather than
+simulating routing. Separately, `PaymentsTable`/`PaymentsPager`'s `next/link`
+is the first `next/link` usage in either app's Storybook: `next/dist/client/
+has-base-path.js` throws `ReferenceError: process is not defined` in a real
+browser without a `define` for the two `process.env.__NEXT_*` flags it reads
+— caught by `test-storybook`, not by `build-storybook`, which bundles the
+reference without executing it.
+
+**Measured rather than carried over: no hand-written
+`@vaam-apps/ui/styles/theme.css` alias.** The checkout's own `main.ts` needs
+one (PR #135's finding). Removing the equivalent entry from a copy of this
+app's config and rebuilding from a cold cache left `--color-base-100` defined
+exactly as often (3×) as with it present — this app's build does not
+reproduce that failure today. `src/a11y-gate.test.ts`'s stylesheet case
+guards the OUTCOME either way — but only where a build exists, which in CI it
+never does (`pnpm -r test` runs before `just build-storybook`), so on review
+that case became an explicit skip and `just build-storybook` itself gained the
+assertion. Verified by mutation: with `app/globals.css`'s `@import` moved
+below `@plugin`, the recipe exits 1 printing
+`dashboard --color-base-100 defined 0x, referenced 22x`.

@@ -7,6 +7,22 @@ on:
   push: { branches: [master] }
   pull_request:
 
+# New 2026-09-13, alongside the `changes` job below: a second push to the
+# same pull request should not wait out the first push's run before its own
+# starts, and the first run's result stops mattering the moment a newer
+# commit lands, so cancel it rather than let it keep spending runner
+# minutes. Grouped by PR number where one exists — so two pushes to the same
+# pull request cancel each other — and by ref otherwise, so two rapid
+# pushes to `master` do the same. `release.yml` also groups by
+# `github.ref` but sets `cancel-in-progress: false`, for the opposite
+# reason: a half-cancelled `imagetools create` there leaves a tag pointing
+# at whichever manifest list won, so that workflow lets every run finish.
+# Nothing here writes anything external, so a cancelled run of this
+# workflow leaves nothing half-done to clean up.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 # The floor for every job below, and no job overrides it: nothing in this
 # workflow writes anything back to GitHub. It checks out, compiles, runs
 # tests, brings a compose stack up and renders a chart. Without this block
@@ -18,8 +34,20 @@ on:
 # uploads through the runtime token the runner injects, not `GITHUB_TOKEN`.
 # `release.yml` is the only workflow here that writes, and it scopes its
 # own permissions per job.
+#
+# `pull-requests: read` was added 2026-09-13 for the `changes` job below:
+# `dorny/paths-filter` needs it to list a pull request's changed files
+# through the GitHub REST API — `action.yml` defaults its `token:` input to
+# `${{ github.token }}`, so that path is taken whether or not the job checks
+# the repository out. Still read-only, so it does not contradict the
+# paragraph above — the job only decides which of the jobs below need to run
+# at all, it does not write anything back. It is also enough for a pull
+# request opened from a FORK: this is `pull_request`, not
+# `pull_request_target`, so the token is read-only whatever this block says,
+# and `pulls.listFiles` is a read of the BASE repository, which is public.
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,8 +59,236 @@ env:
   # The jobs that do not need the binary opt out individually instead.
 
 jobs:
+  # Added 2026-09-13. Decides which of the jobs below actually need to run,
+  # so a docs-only or chart-only change does not pay for a Rust compile and
+  # two Docker image builds it cannot possibly have broken. NOT "does not pay
+  # for a pnpm install and a browser download": `just fmt-check-web` runs
+  # prettier over the whole repository, so `web` runs on a docs-only change
+  # too, deliberately — the `web` filter below says why at length.
+  # `dorny/paths-filter`, pinned to a full commit SHA rather than the `@v4`
+  # tag, matching this file's convention for third-party actions elsewhere
+  # (`taiki-e/install-action`, `azure/setup-helm`): verified 2026-09-13 that
+  # `git/ref/tags/v4.0.3` resolves to `ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d`
+  # with `"type": "commit"` — a lightweight tag pointing straight at it, the
+  # same kind of check `self-checks` records for its own SHA pins below.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      deny: ${{ steps.filter.outputs.deny }}
+      web: ${{ steps.filter.outputs.web }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      # `fetch-depth: 0` (full history) rather than the default shallow
+      # clone: on a `push` to `master` the action runs
+      # `git diff --no-renames --name-status <event.before>..master`, and a
+      # shallow clone may not have `before` at all. On `pull_request` events
+      # it never looks at the checkout — `action.yml` defaults `token:` to
+      # `${{ github.token }}`, and with a token present the pull-request
+      # branch of `getChangedFiles` calls `pulls.listFiles` instead. So this
+      # step is load-bearing on push and inert on a pull request.
+      #
+      # `--no-renames` is why a file moved OUT of a filtered directory still
+      # fires that filter: git reports the move as a delete plus an add, and
+      # the REST path splits `renamed` the same way. None of the rules below
+      # carries an `added|modified:` status key, so deletions match too.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # A `- *anchor` inside one of these lists is a NESTED list after
+          # `js-yaml` parses it, not a splice — YAML aliases do not splat.
+          # It works anyway, and that is checked rather than assumed:
+          # `src/filter.ts` at the pinned commit declares
+          # `FilterItemYaml[] // Supports referencing another rule via YAML
+          # anchor` and `parseFilterItemYaml` recurses into arrays and
+          # `flat()`s the result, so `[[…], […], 'x']` compiles to the same
+          # flat list of picomatch matchers a hand-written list would. The
+          # default `predicate-quantifier` is `some`, so a file matching any
+          # one pattern sets the output.
+          filters: |
+            rust: &rust
+              - 'backends/**'
+              - '.xtask/**'
+              - 'sdks/rust/**'
+              - 'examples/merchant-demo/**'
+              - 'schemas/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - 'clippy.toml'
+              - '.cargo/**'
+              # `cargo nextest run --workspace` and `just verify-ignored` both
+              # read this, and nothing else in this workflow does. It is where
+              # the `postgres-containers` test group's `max-threads = 1` lives
+              # — the serialisation that keeps the container suites from
+              # racing each other for a host port — and where the
+              # `nextest-version` floor is declared. Deleting either is a
+              # change to what the `rust` job actually runs, invisible to
+              # every other filter here.
+              - '.config/nextest.toml'
+              # The Node half this job genuinely uses, not a spare tyre: the
+              # webhook signature-parity test drives the SHIPPING Node SDK in
+              # a subprocess (`VPAY_REQUIRE_NODE: 1` below — it fails rather
+              # than skips), so this job runs `pnpm --filter
+              # @vaam-apps/vpay-sdk build`, and `sdks/nodejs/tsconfig.json`
+              # extends `tsconfig.base.json`.
+              - 'sdks/nodejs/**'
+              - 'tsconfig.base.json'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.nvmrc'
+              - '.npmrc'
+              - 'justfile'
+              - '.github/workflows/ci.yml'
+            # The `web` job's SOURCE trees, split out of `web` so that `e2e`
+            # can take them WITHOUT the repository-wide prettier scope `web`
+            # also has to carry (see the `web` comment below). `e2e` runs no
+            # formatter, so a markdown edit must not build two Docker images.
+            # This key exists to be an anchor; its own output is set by the
+            # action and deliberately used by no job.
+            web-sources: &web-sources
+              - 'frontends/**'
+              - 'sdks/nodejs/**'
+              - 'sdks/stripe-compat/**'
+              - 'sdks/stripe-js/**'
+              - 'examples/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'tsconfig.base.json'
+              - '.prettierrc.json'
+              - '.prettierignore'
+              - '.nvmrc'
+              - '.npmrc'
+              - 'justfile'
+              - '.github/workflows/ci.yml'
+            # `web-sources` PLUS every file prettier can parse, anywhere in
+            # the repository, because the `web` job runs `just fmt-check-web`
+            # and that recipe is `pnpm exec prettier --check .` over the WHOLE
+            # tree — `docs/**`, the root `*.md`, `config/**`, `compose*.yml`,
+            # the chart's `values.yaml`, the other two workflow files. A
+            # `web` filter scoped to the front-end trees would have let a
+            # docs-only commit skip the only job that formats docs, and this
+            # repository requires a status-page edit in the same commit as
+            # every change: the gate would have been quietly absent on the
+            # commits most likely to trip it.
+            #
+            # By extension rather than by directory on purpose — the question
+            # is "can prettier parse this file", not "where does it live". The
+            # list below is prettier 3's own parseable set for the extensions
+            # that exist here plus the ones it would pick up if they appeared;
+            # a prettier upgrade that adds a parser (SQL, TOML) means adding
+            # the extension here in the same commit.
+            #
+            # The honest cost: `web` now runs on nearly every commit, which is
+            # the truth about `fmt-check-web` rather than a regression in this
+            # filter. What still skips it is the case that matters most for
+            # runner minutes — a Rust-only change (`*.rs`, `*.sql`, `*.toml`
+            # are not prettier's). Splitting `fmt-check-web` into its own
+            # always-run job would restore the rest, at the cost of a second
+            # `pnpm install` and a new check name; that is a topology decision
+            # for the maintainer, not one to take inside a filter list.
+            web:
+              - *web-sources
+              # Prettier 3 reads `.gitignore` as its own ignore source (see
+              # `.prettierignore`'s header), so editing it changes which files
+              # `fmt-check-web` checks.
+              - '.gitignore'
+              - '**/*.md'
+              - '**/*.markdown'
+              - '**/*.mdx'
+              - '**/*.json'
+              - '**/*.json5'
+              - '**/*.jsonc'
+              - '**/*.yml'
+              - '**/*.yaml'
+              - '**/*.css'
+              - '**/*.scss'
+              - '**/*.less'
+              - '**/*.html'
+              - '**/*.vue'
+              - '**/*.graphql'
+              - '**/*.js'
+              - '**/*.jsx'
+              - '**/*.mjs'
+              - '**/*.cjs'
+              - '**/*.ts'
+              - '**/*.tsx'
+              - '**/*.mts'
+              - '**/*.cts'
+            deny:
+              # `**/Cargo.toml` matches the root manifest too — a leading
+              # `**/` matches zero directories. Checked rather than assumed,
+              # against picomatch 2.3.1 (what this action's `package.json`
+              # depends on) with the `{dot: true}` options `filter.ts` passes.
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+            # The union of `rust` and `web-sources` via the anchors above,
+            # plus the paths that only the compose stack itself touches — the
+            # Dockerfiles and the compose files that assemble them, `config/`
+            # (mounted into the containers), and `.env.example`. Hand-listing
+            # them a second time here would be the exact drift this file
+            # otherwise avoids by naming a `just` recipe instead of copying
+            # its steps.
+            e2e:
+              - *rust
+              - *web-sources
+              - 'compose*.yml'
+              - 'config/**'
+              - '.env.example'
+              - 'backends/Dockerfile'
+              - 'frontends/Dockerfile'
+              # `examples/shop/Dockerfile` is the third image this stack
+              # builds; `examples/**` in `web-sources` already covers it.
+              - '.dockerignore'
+              # compose.e2e.yml mounts `deploy/dev/postgres-init/*.sql` into
+              # the Postgres container's `docker-entrypoint-initdb.d`, so it
+              # is what creates the shop's database. The only `deploy/` path
+              # this job reads, and it is not under `deploy/helm/`.
+              - 'deploy/dev/**'
+            deploy:
+              # `just helm-check` reads `deploy/helm/vpay` and nothing else in
+              # the tree (`chart := "deploy/helm/vpay"` in the justfile); the
+              # kubeconform schemas it also needs come over the network.
+              - 'deploy/helm/**'
+              - 'justfile'
+              - '.github/workflows/ci.yml'
+
   # The promises this repo makes about itself. Fast, and first — if these
   # fail, nothing else is worth running.
+  #
+  # Deliberately exempt from the path filtering above: it has no `needs:`
+  # and no `if:`, so it always runs. Three reasons. It is fast — no Docker,
+  # no browser, no big test binary, a handful of `cargo xtask` and `just`
+  # invocations — so the cost of running it unconditionally is low. Its
+  # dozen-plus sub-checks are cross-cutting — docs, SDKs, schema, migrations,
+  # serde, repositories, links, toolchain, UI conventions — in a way that
+  # resists being scoped to any single path list without real risk of
+  # silently excluding the one path that would have caught a regression;
+  # that is exactly the failure mode this file's filters exist to avoid
+  # introducing. And it is the ONLY job here that reads `docs/**`, so
+  # `verify-status`, `verify-links` and `verify-docs` would otherwise be
+  # skipped on precisely the changes they exist to check.
+  #
+  # What is NOT a reason, and was written here before it was checked: that
+  # this job's `name:` is pinned as a required status check. It is not.
+  # `master` carries no branch protection and no ruleset on 2026-09-13
+  # (`gh api repos/vaam-apps/vpay/branches/master/protection` → 404 "Branch
+  # not protected"; `gh api repos/vaam-apps/vpay/rules/branches/master` →
+  # `[]`), which is also what makes the filters above worth being careful
+  # with: nothing here blocks a merge, so a job that silently does not run
+  # is a green tick with less behind it, and there is no required-check
+  # machinery to notice. The `name:` still stays exactly as it was, for the
+  # day someone does pin it. (The same claim appears on the job below and
+  # predates this change; it is left there rather than rewritten in passing.)
   verify:
     # The job's display name is what branch protection pins as a required
     # check, so it stays exactly as it was; the new check is named in its
@@ -250,6 +506,10 @@ jobs:
 
   rust:
     name: rust
+    needs: [changes]
+    # Skipped when the `changes` job's `rust` filter found nothing this push
+    # or pull request touched — see the filter group's glob list above.
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       # `backends/tests/integration/tests/webhooks.rs` verifies a
@@ -320,8 +580,7 @@ jobs:
       # Runs the container-backed suites too (vpay-db, vpay-tests-integration,
       # both binaries' tests/cli.rs) — ubuntu-latest has a working Docker
       # daemon and testcontainers fails hard without one, so these cannot
-      # silently skip. This job is the evidence for those suites; see
-      # docs/status.md, "Last verified".
+      # silently skip. This job is the evidence for those suites.
       - run: cargo nextest run --workspace
       # nextest runs NO doctests, so until 2026-09-03 (Step 7) the step above
       # was the whole of this job's Rust testing and the workspace's doctests
@@ -339,6 +598,10 @@ jobs:
 
   deny:
     name: supply chain
+    needs: [changes]
+    # Skipped when the `changes` job's `deny` filter found nothing this push
+    # or pull request touched — see the filter group's glob list above.
+    if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -355,6 +618,10 @@ jobs:
 
   web:
     name: web
+    needs: [changes]
+    # Skipped when the `changes` job's `web` filter found nothing this push
+    # or pull request touched — see the filter group's glob list above.
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     env:
       # This job never runs Cypress; skip the ~200 MB binary download.
@@ -459,6 +726,11 @@ jobs:
 
   e2e:
     name: e2e (compose)
+    needs: [changes]
+    # Skipped when the `changes` job's `e2e` filter found nothing this push
+    # or pull request touched — see the filter group's glob list above (the
+    # union of `rust` and `web` plus the compose/Docker/config paths).
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -760,6 +1032,10 @@ jobs:
   # `justfile`'s `expected_suites` / `min_tests` are untouched by it.
   deploy:
     name: deploy (helm chart)
+    needs: [changes]
+    # Skipped when the `changes` job's `deploy` filter found nothing this
+    # push or pull request touched — see the filter group's glob list above.
+    if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

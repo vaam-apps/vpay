@@ -52,7 +52,10 @@ use axum::{Form, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use vpay_db::{NewSession, SessionRow, SessionState, StaffRow, StaffSessions};
+use vpay_db::{
+    CredentialKind, Credentials, NewCredential, NewSession, Repositories, SessionRow, SessionState,
+    StaffRow, StaffSessions,
+};
 
 use crate::ApiError;
 use crate::op::dashboard::DashboardOp;
@@ -166,15 +169,20 @@ pub struct LoginResponse {
     ///
     /// Enrolment cannot be committed at this step: a secret written before
     /// the person has proved they can generate a code from it locks out
-    /// anybody whose scan failed, permanently, because
-    /// `Staff::enrol_totp`'s guard is `totp_enrolled_at IS NULL`. It also
-    /// cannot live in the session row, which has no column for it — and
-    /// giving it one would mean a table of unconfirmed secrets.
+    /// anybody whose scan failed, permanently, because a `totp` credential
+    /// row can only be created once — `credentials_one_singleton_kind_per_staff_member`
+    /// refuses the second. It also cannot live in the session row, which has
+    /// no column for it, and giving it one would mean a table of unconfirmed
+    /// secrets.
     ///
     /// So it travels sealed. The value is AES-256-GCM under a deployment key
     /// the caller does not have, so the caller learns nothing from holding
-    /// it, and replaying it buys nothing: `enrol_totp` is a compare-and-swap,
-    /// so only the first completion wins and every later one is a no-op.
+    /// it, and replaying it buys nothing: the insert is refused by a unique
+    /// index, so only the first completion wins and every later one is a
+    /// refusal rather than a silent overwrite. That is a **strengthening**
+    /// over the `totp_enrolled_at IS NULL` guard this used to name: a `WHERE`
+    /// clause can be dropped by an edit, and an index cannot be dropped by
+    /// one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enrolment: Option<String>,
 }
@@ -407,9 +415,30 @@ pub(crate) async fn login(
         login.credentials.verify_absent_account(&request.password)?;
         return Err(refused("no such staff account"));
     };
+
+    // THE THIRD CASE, and it is one the split creates. Before ADR-0019 a
+    // staff row *was* a password hash (`password_hash` was NOT NULL), so
+    // "account exists" and "account has a password" were one fact. They are
+    // two now: just-in-time SSO provisioning makes a member who has never had
+    // a password and never will, and every read of `credentials` therefore
+    // answers `None` as an ordinary outcome.
+    //
+    // It takes the DUMMY PATH, deliberately. Returning early here would make
+    // the response time distinguish an SSO-only member from a nonexistent
+    // one, which is an account-enumeration oracle the pre-split code could
+    // not have had — a new hole opened by a refactor rather than by a
+    // feature.
+    let password = repositories
+        .find_for_staff_member(&staff.id, CredentialKind::Password)
+        .await?
+        .and_then(|credential| credential.material);
+    let Some(password_hash) = password else {
+        login.credentials.verify_absent_account(&request.password)?;
+        return Err(refused("staff account holds no password credential"));
+    };
     if !login
         .credentials
-        .verify_password(&request.password, &staff.password_hash)?
+        .verify_password(&request.password, &password_hash)?
     {
         return Err(refused("password"));
     }
@@ -432,13 +461,22 @@ pub(crate) async fn login(
     )
     .await?;
 
+    // Enrolment is the EXISTENCE OF THE ROW now, not a non-NULL column:
+    // ADR-0019 decision 6. `staff_members_totp_is_paired` used to make "a
+    // secret with no enrolment date" impossible; there is nothing left for it
+    // to be untrue about.
+    let enrolled = repositories
+        .find_for_staff_member(&staff.id, CredentialKind::Totp)
+        .await?
+        .is_some();
+
     tracing::info!(
         staff_id = %staff.id,
-        enrolled = staff.is_totp_enrolled(),
+        enrolled,
         "a staff password was accepted; the session is pending its second factor"
     );
 
-    if staff.is_totp_enrolled() {
+    if enrolled {
         return Ok(Json(LoginResponse {
             session: session.token,
             next: NextStep::Totp,
@@ -522,17 +560,19 @@ pub(crate) async fn totp_step(
     // used anyway — the stored one is the only one that may ever
     // authenticate, and honouring a caller-supplied secret here would be a
     // second-factor bypass with no authentication in front of it.
-    let enrolling = !staff.is_totp_enrolled();
-    let sealed = if enrolling {
-        request
+    let stored = repositories
+        .find_for_staff_member(&staff.id, CredentialKind::Totp)
+        .await?;
+    let enrolling = stored.is_none();
+    let sealed = match &stored {
+        None => request
             .enrolment
             .clone()
-            .ok_or_else(|| refused("enrolment secret absent on a first sign-in"))?
-    } else {
-        staff
-            .totp_secret
+            .ok_or_else(|| refused("enrolment secret absent on a first sign-in"))?,
+        Some(credential) => credential
+            .material
             .clone()
-            .ok_or_else(|| refused("enrolled account with no stored secret"))?
+            .ok_or_else(|| refused("enrolled account with no stored secret"))?,
     };
 
     let secret = login.credentials.open_secret(&sealed).map_err(|error| {
@@ -568,22 +608,60 @@ pub(crate) async fn totp_step(
         return Err(refused("totp code"));
     };
 
+    // Which credential row the replay guard will compare-and-swap against:
+    // the stored one, or the one this request is about to create.
+    let credential_id = match &stored {
+        Some(credential) => credential.id.clone(),
+        None => vpay_core::ids::credential_id(),
+    };
+
     if enrolling {
-        // The compare-and-swap that makes enrolment happen once. `false`
-        // means somebody else enrolled this account between the login and
-        // this request, and the honest answer is to refuse rather than to
-        // sign in against a secret that is not the stored one.
-        if !repositories.enrol_totp(&staff.id, &sealed, now).await? {
-            return Err(refused("account was enrolled concurrently"));
+        // The insert that makes enrolment happen once. A second one is
+        // refused by `credentials_one_singleton_kind_per_staff_member`, so a
+        // caller who reached the enrolment screen twice cannot replace a
+        // working second factor with one they were just shown — which is what
+        // an `upsert` here would silently do.
+        //
+        // `Unique` means somebody else enrolled this account between the
+        // login and this request, and the honest answer is to refuse rather
+        // than to sign in against a secret that is not the stored one. Any
+        // other persistence failure is a real error and is not swallowed.
+        // Fully qualified: a dozen repository traits spell `create`, and
+        // `repositories` implements all of them.
+        let created = Credentials::create(
+            repositories,
+            NewCredential {
+                id: credential_id.clone(),
+                staff_member_id: Some(staff.id.clone()),
+                kind: CredentialKind::Totp,
+                material: Some(sealed.clone()),
+                issuer: None,
+                subject: None,
+                must_change: false,
+                expires_at: None,
+                now,
+            },
+        )
+        .await;
+        match created {
+            Ok(()) => {
+                tracing::info!(staff_id = %staff.id, "a staff member completed TOTP enrolment");
+            }
+            Err(vpay_db::DbError::Persistence(vpay_db::PersistenceError::Unique { .. })) => {
+                return Err(refused("account was enrolled concurrently"));
+            }
+            Err(error) => return Err(ApiError::from(error)),
         }
-        tracing::info!(staff_id = %staff.id, "a staff member completed TOTP enrolment");
     }
 
     // THE REPLAY GUARD. `false` means this step has already been accepted,
     // which is exactly what presenting the same six digits twice looks like.
     // It runs for the enrolment path too: the code that completed enrolment
     // is spent by it.
-    if !repositories.record_totp_step(&staff.id, step, now).await? {
+    if !repositories
+        .advance_counter(&credential_id, step, now)
+        .await?
+    {
         tracing::warn!(
             staff_id = %staff.id,
             "a staff TOTP code was presented for a step that was already accepted; refusing"
@@ -598,7 +676,7 @@ pub(crate) async fn totp_step(
 
     tracing::info!(staff_id = %staff.id, "a staff member signed in");
     Ok(Json(TotpResponse {
-        password_change_required: staff.password_change_required,
+        password_change_required: password_change_required(repositories, &staff.id).await?,
     }))
 }
 
@@ -688,16 +766,35 @@ pub(crate) async fn change_password(
     if current.is_empty() || current.chars().count() > MAX_PASSWORD_CHARS {
         return Err(refused("current password absent or out of bounds"));
     }
-    if !login
-        .credentials
-        .verify_password(current, &staff.password_hash)?
-    {
+
+    // A member with no password credential cannot change one. Unreachable in
+    // this deployment — the migration backfilled one per row and `staff add`
+    // writes one — and written as a refusal rather than an `expect` because
+    // the first SSO-provisioned member makes it reachable (ADR-0019 decision
+    // 7). It is the same refusal as "wrong password", which is this module's
+    // one answer.
+    let Some(credential) = repositories
+        .find_for_staff_member(&staff.id, CredentialKind::Password)
+        .await?
+    else {
+        return Err(refused("staff account holds no password credential"));
+    };
+    let Some(current_hash) = credential.material.as_deref() else {
+        return Err(refused("password credential holds no material"));
+    };
+    if !login.credentials.verify_password(current, current_hash)? {
         return Err(refused("current password"));
     }
 
     let hash = login.credentials.hash_password(&request.new_password)?;
-    if !repositories.set_password(&staff.id, &hash, now).await? {
-        return Err(refused("staff row vanished during a password change"));
+    // Clears `must_change` in the same statement, which is what
+    // `Staff::set_password` did and what makes the one-time password stop
+    // being one.
+    if !repositories
+        .replace_material(&credential.id, &hash, now)
+        .await?
+    {
+        return Err(refused("credential row vanished during a password change"));
     }
 
     // AFTER the write, not before. A revocation followed by a failed write
@@ -735,12 +832,15 @@ pub(crate) async fn session(
     // what makes it *idle* rather than "since login".
     state.repositories().touch(&session.id, now).await?;
 
+    // Read before the struct literal, which consumes `staff.id`.
+    let must_change = password_change_required(state.repositories(), &staff.id).await?;
+
     Ok(Json(SessionResponse {
         staff_id: staff.id,
         display_name: staff.display_name,
         email: staff.email,
         merchant_id: staff.merchant_id,
-        password_change_required: staff.password_change_required,
+        password_change_required: must_change,
         access_token: session.access_token,
         // Formatted here rather than sent as a Unix integer for the reason
         // every other instant on this crate's wire is: `crate::model` renders
@@ -866,6 +966,34 @@ pub(crate) fn session_token(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_owned)
+}
+
+/// Whether this staff member still holds a password an **operator** chose
+/// for them, rather than one they chose themselves.
+///
+/// Read off `credentials.must_change` since ADR-0019, where it used to be
+/// `staff_members.password_change_required`. Three routes ask —
+/// [`totp_step`], [`session`] and `oauth::authorize` — and it is deliberately
+/// **not** folded into [`load_session`], which would put a second read on
+/// every authenticated request including the ones that do not care.
+///
+/// `false` for a member with no password credential at all, and that is the
+/// right answer rather than a fallback: there is no operator-issued password
+/// left to replace, so nothing should be gating on replacing one. It is
+/// unreachable in this deployment and reachable the moment a member is
+/// provisioned through SSO.
+///
+/// # Errors
+///
+/// [`ApiError::Db`] if Postgres fails.
+pub(crate) async fn password_change_required(
+    repositories: &dyn Repositories,
+    staff_id: &str,
+) -> Result<bool, ApiError> {
+    Ok(repositories
+        .find_for_staff_member(staff_id, CredentialKind::Password)
+        .await?
+        .is_some_and(|credential| credential.must_change))
 }
 
 /// Loads the session and its staff row, at any stage.

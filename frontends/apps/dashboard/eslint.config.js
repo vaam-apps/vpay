@@ -16,5 +16,13 @@ export default vpayEslintConfig({
   tailwind: true,
   // This app's tsconfig includes `**/*.ts`, so its root-level tooling files
   // are in the program and stay type-aware.
-  outsideTsconfig: ["*.config.js"],
+  // `.storybook/` is inside this app's tsconfig `include` by the letter of
+  // `**/*.ts`, but TypeScript's include-glob expansion skips dot-directories
+  // — measured, not assumed, the same way the checkout's identical comment
+  // was: `tsc -p tsconfig.json --listFiles | grep -F '/.storybook/'` returns
+  // 0 lines against a program of 1713 files. So `main.ts` and `preview.ts`
+  // are linted for syntax and style but have no program behind them, and the
+  // type-aware rules are absent by design here too, exactly the gap
+  // `frontends/apps/checkout/eslint.config.js` already names.
+  outsideTsconfig: ["*.config.js", ".storybook/**"],
 });

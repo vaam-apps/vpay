@@ -91,13 +91,58 @@ describe("the browser a11y suite is still a gate", () => {
     ).toBeLessThan(plugin);
   });
 
-  it("the BUILT storybook stylesheet actually defines the theme", () => {
+  /**
+   * **Nothing gated a story-level suppression here until 2026-09-13.**
+   * `parameters.a11y.test = "todo"` on a single story switches the addon off
+   * for that story ENTIRELY — not just the rule that is failing — and the
+   * suite still reports it as passing. The dashboard's Storybook shipped
+   * exactly that on its two `AppShell` stories, which left the chrome around
+   * every one of its screens with no colour-contrast verdict at all; the
+   * probe that proved it passed at `#3a3a3a` on `#0a0b0d`.
+   *
+   * This app has no suppressions, and this pins that at zero: the expected
+   * arrays are empty, so the FIRST one added fails `just ci` and has to be
+   * argued for in review rather than merged quietly.
+   */
+  it("no story switches the a11y addon off, and nothing disables an axe rule", () => {
+    const dir = join(APP, "src/components");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".stories.tsx"));
+    expect(files.length, "there are story files to check").toBeGreaterThan(0);
+
+    for (const file of files) {
+      const src = code(readFileSync(join(dir, file), "utf8"));
+      expect(
+        src,
+        `${file}: a story-level test:"off"/"todo" turns axe off for that story entirely`,
+      ).not.toMatch(/test:\s*"(off|todo)"/);
+
+      const disabled = [
+        ...src.matchAll(/id:\s*"([^"]+)"\s*,\s*enabled:\s*false/g),
+      ].map((m) => m[1]);
+      expect(
+        disabled,
+        `${file}: axe rules disabled by a story — this app pins the set at none`,
+      ).toEqual([]);
+    }
+  });
+
+  it("the BUILT storybook stylesheet actually defines the theme", (ctx) => {
     // The one check that would have caught six passing-but-unstyled runs.
-    // Skipped rather than failed when there is no build: `just ci` does not
-    // build Storybook, and a test that demands one would make the standard
-    // gate depend on a step that is deliberately not in it.
+    //
+    // **`ctx.skip()`, NOT a bare `return` — corrected 2026-09-13.** A bare
+    // `return` reported this case as PASSED with nothing measured, and CI is
+    // exactly where that happens: the `web` job runs `pnpm -r test` BEFORE
+    // `just build-storybook`, so `storybook-static/` never exists when this
+    // file runs there. The one check standing behind this app's whole
+    // styled-or-not claim was therefore green-and-blind on every CI run —
+    // this repository's named failure mode, inside the test written to
+    // prevent it. Found in the dashboard's copy of this file and fixed in
+    // both. Skipping says so in the count; `just build-storybook` now
+    // carries the assertion that runs against a real artefact, for both
+    // apps (see the recipe's own comment).
     const dir = join(APP, "storybook-static/assets");
     if (!existsSync(dir)) {
+      ctx.skip();
       return;
     }
     const sheets = readdirSync(dir).filter((f) => f.endsWith(".css"));
@@ -105,7 +150,13 @@ describe("the browser a11y suite is still a gate", () => {
     const css = sheets.map((f) => readFileSync(join(dir, f), "utf8")).join("");
     expect(
       css,
-      "`bg-base-100` is generated but `--color-base-100` is defined nowhere — the theme import was dropped",
+      "`bg-base-100` is generated but `--color-base-100` is defined nowhere. " +
+        "Either `app/globals.css` dropped the theme `@import`, or " +
+        "`storybook-static/` is STALE — a `just build-storybook` that failed " +
+        "this same check leaves its theme-less artefact on disk on purpose, " +
+        "so it can be inspected, and every later run of this test then reads " +
+        "that instead of the source. Re-run `just build-storybook`: if it " +
+        "exits 0, the tree was fine and the artefact was stale.",
     ).toMatch(/--color-base-100:\s*#/);
   });
 });

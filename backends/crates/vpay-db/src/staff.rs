@@ -1,28 +1,43 @@
-//! The `staff_members` repository (`backends/migrations/0035_create-staff-auth.sql`)
-//! — who may sign in to `/dash/v1`, and the two credentials that prove it
-//! ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+//! The `staff_members` repository (`backends/migrations/0035_create-staff-auth.sql`,
+//! `0044_create-credentials.sql`) — who may sign in to `/dash/v1`, and which
+//! merchant they may read as
+//! ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md),
+//! [ADR-0019](../../../../docs/adr/0019-credential-model.md)).
+//!
+//! # The credentials are not here any more
+//!
+//! `password_hash`, `password_change_required`, `totp_secret`,
+//! `totp_enrolled_at` and `last_totp_step` moved to [`crate::credentials`] in
+//! migration 0044, and with them `enrol_totp`, `record_totp_step` and
+//! `set_password`. What is left is a trait about **people**: who they are,
+//! which merchant they belong to, whether they may sign in at all, and when
+//! they last did.
+//!
+//! `last_sign_in_at` stayed, deliberately: it is when this *person* last
+//! completed a full sign-in, across every credential they hold and across the
+//! two factors one sign-in presents. `merchant_id` and `is_admin` stayed for
+//! the reason ADR-0019 decision 7 gives — they are who the person may read
+//! as, not how they proved who they are.
 //!
 //! # Every method here runs through CrateStack, and that is the point
 //!
 //! [`crate::disabled_clients`] moved three methods and [`crate::customers`]
-//! two of seven; this module moves all six, because migration 0035 was shaped
+//! two of seven; this module moves all four, because migration 0035 was shaped
 //! so it could — no `jsonb`, no `bytea`, no native enum, no `DEFAULT` on any
 //! column a writer names. `docs/reference/vpay-db.md` § CrateStack carries the
 //! general account; what is specific here is that the *security* properties
 //! are now carried by generated statements, so the four `@@allow` arms on
 //! `model StaffMember` are load-bearing in a way no previous model's were. Two of
-//! the four fail **silently** (see [`Staff::record_totp_step`]), which is why
+//! the four fail **silently**, which is why
 //! [`tests::every_action_this_module_calls_has_an_allow_arm`] exists and runs
-//! without a container.
+//! without a container. The *dangerous* one of those two moved with the
+//! replay guard: see `crate::credentials`' equivalent test.
 //!
 //! # What this module does not know
 //!
-//! It never hashes, never verifies and never decrypts. `password_hash` and
-//! `totp_secret` are opaque strings on the way in and on the way out;
-//! `vpay_api::staff_auth` owns argon2id, RFC 6238 and the AEAD, because those
-//! need deployment secrets this crate has no business holding. The one
-//! credential rule that *is* here is the replay guard, and it is here because
-//! it is a compare-and-swap on a row — see [`Staff::record_totp_step`].
+//! It never hashes, never verifies and never decrypts — and since migration
+//! 0044 it never *sees* a credential at all. That property, and the replay
+//! guard that was its one exception, moved whole to [`crate::credentials`].
 
 use std::fmt;
 
@@ -97,9 +112,12 @@ impl StaffStatus {
 
 /// One `staff_members` row, exactly as stored.
 ///
-/// `Debug` is **hand-written** below: three of these fields are credentials
-/// or personal data, and `{:?}` on this struct reaches `tracing` fields,
-/// `anyhow` chains and every failing assertion's output.
+/// `Debug` is **hand-written** below: two of these fields are personal data,
+/// and `{:?}` on this struct reaches `tracing` fields, `anyhow` chains and
+/// every failing assertion's output. It said "three of these fields are
+/// credentials or personal data" until migration 0044 took the credentials
+/// to [`crate::credentials::CredentialRow`], which carries the same rule and
+/// its own test.
 #[derive(Clone, PartialEq, Eq)]
 pub struct StaffRow {
     /// `stf_…`.
@@ -110,24 +128,17 @@ pub struct StaffRow {
     pub email: String,
     /// What the dashboard greets them by.
     pub display_name: String,
-    /// An argon2id PHC string. Opaque here — `vpay_api::staff_auth` verifies
-    /// it, and the pepper it needs is a deployment secret this crate never
-    /// sees.
-    pub password_hash: String,
-    /// Set by `staff add` and cleared when the person picks their own
-    /// password. Every authenticated route refuses a session whose staff row
-    /// still has it, so the printed one-time password cannot become a
-    /// long-lived credential by being ignored.
-    pub password_change_required: bool,
-    /// The sealed RFC 6238 secret, or `None` before enrolment. Opaque here.
-    pub totp_secret: Option<String>,
-    /// When enrolment completed. `None` exactly when [`Self::totp_secret`]
-    /// is — `staff_members_totp_is_paired` makes that an invariant.
-    pub totp_enrolled_at: Option<OffsetDateTime>,
-    /// The time step of the last accepted code; `0` before the first.
-    pub last_totp_step: i64,
     /// Whether this account may sign in.
     pub status: StaffStatus,
+    /// A cross-tenant read grant
+    /// ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)):
+    /// may this person's `/dash/v1` session read a merchant other than the
+    /// one it is bound to, by naming one in `?merchant_id=`? `false` for
+    /// every row `staff add` writes unless `--admin` is passed, and for
+    /// every row this table held before migration `0043` (backfilled to the
+    /// safe answer, not inferred). Not sensitive — it is not a credential —
+    /// so [`fmt::Debug`] below shows it plainly.
+    pub is_admin: bool,
     /// When the row was created.
     pub created_at: OffsetDateTime,
     /// When it last changed.
@@ -137,13 +148,16 @@ pub struct StaffRow {
     pub last_sign_in_at: Option<OffsetDateTime>,
 }
 
-/// Redacts the password hash, the TOTP secret and the email address.
+/// Redacts the email address and the display name.
 ///
-/// The hash is an offline cracking target; the sealed secret is a second
-/// factor; the address is personal data and is also the sign-in identifier,
-/// so a log line carrying it hands a reader half of a credential pair. The
-/// id, the merchant and the status are what an operator debugging this table
-/// actually needs, and none of them is any of those things.
+/// The address is personal data and is also the sign-in identifier, so a log
+/// line carrying it hands a reader half of a credential pair. The id, the
+/// merchant and the status are what an operator debugging this table actually
+/// needs, and none of them is any of those things.
+///
+/// There is no credential left on this struct to redact — migration 0044 took
+/// them — but the *rule* did not move: `crate::credentials::CredentialRow`
+/// has its own hand-written `Debug` and its own test.
 impl fmt::Debug for StaffRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StaffRow")
@@ -151,15 +165,8 @@ impl fmt::Debug for StaffRow {
             .field("merchant_id", &self.merchant_id)
             .field("email", &"[redacted]")
             .field("display_name", &"[redacted]")
-            .field("password_hash", &"[redacted]")
-            .field("password_change_required", &self.password_change_required)
-            .field(
-                "totp_secret",
-                &self.totp_secret.as_ref().map(|_| "[redacted]"),
-            )
-            .field("totp_enrolled_at", &self.totp_enrolled_at)
-            .field("last_totp_step", &self.last_totp_step)
             .field("status", &self.status)
+            .field("is_admin", &self.is_admin)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
             .field("last_sign_in_at", &self.last_sign_in_at)
@@ -172,13 +179,6 @@ impl StaffRow {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.status == StaffStatus::Active
-    }
-
-    /// Whether TOTP enrolment has happened. Enrolment is mandatory at first
-    /// sign-in, so `false` here means the session may do exactly one thing.
-    #[must_use]
-    pub fn is_totp_enrolled(&self) -> bool {
-        self.totp_secret.is_some()
     }
 }
 
@@ -202,8 +202,12 @@ pub struct NewStaff {
     pub email: String,
     /// What the dashboard greets them by.
     pub display_name: String,
-    /// The argon2id PHC string for the one-time password the CLI printed.
-    pub password_hash: String,
+    /// [`StaffRow::is_admin`]'s doc. `false` unless the operator passed
+    /// `--admin` — a plain `clap` default, not a database one: migration
+    /// `0043` gives this column no `DEFAULT`, on the same rule every other
+    /// column here follows, so a caller that forgot this field is a compile
+    /// error at this literal rather than a row the database half-filled.
+    pub is_admin: bool,
     /// When the row is created; also its `updated_at`.
     pub now: OffsetDateTime,
 }
@@ -216,7 +220,7 @@ impl fmt::Debug for NewStaff {
             .field("merchant_id", &self.merchant_id)
             .field("email", &"[redacted]")
             .field("display_name", &"[redacted]")
-            .field("password_hash", &"[redacted]")
+            .field("is_admin", &self.is_admin)
             .field("now", &self.now)
             .finish()
     }
@@ -224,11 +228,17 @@ impl fmt::Debug for NewStaff {
 
 /// Reads and writes of the `staff_members` table.
 ///
-/// Six methods, every one of them through CrateStack. There is deliberately
+/// Four methods, every one of them through CrateStack. There is deliberately
 /// **no** `list`, no `disable` and no `delete`: the only writer of this table
 /// is the operator CLI, ADR-0017 gives it exactly one subcommand, and a
 /// repository method with no caller is a claim `docs/status.md` would have to
 /// carry.
+///
+/// It was six until migration 0044. `enrol_totp`, `record_totp_step` and
+/// `set_password` are `crate::credentials`' `create`, `advance_counter` and
+/// `replace_material` now — generalised over kind on the way, because none of
+/// the three said anything about a password or a time step that was not
+/// already "opaque material" and "a strictly increasing counter".
 #[async_trait]
 pub trait Staff {
     /// Inserts one staff member. The operator CLI is the only caller, and
@@ -302,88 +312,56 @@ pub trait Staff {
     /// [`Staff::find_by_email`]'s.
     async fn find(&self, id: &str) -> Result<Option<StaffRow>, DbError>;
 
-    /// Records a completed TOTP enrolment: the sealed secret and the instant.
-    ///
-    /// `false` means no row moved, which here means **the account was
-    /// already enrolled** — the guard is `totp_enrolled_at IS NULL`. That
-    /// guard is not decoration: without
-    /// it, a caller who reached the enrolment screen twice could replace a
-    /// working second factor with one they had just been shown, which is a
-    /// second-factor reset with no authentication in front of it.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`] — [`crate::PersistenceError::Check`] if the
-    /// pair invariant would break, [`crate::PersistenceError::Backend`]
-    /// otherwise. A missing `@@allow("update", …)` is **silent** here: see
-    /// [`Staff::record_totp_step`].
-    async fn enrol_totp(
-        &self,
-        id: &str,
-        sealed_secret: &str,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError>;
-
-    /// **The TOTP replay guard.** Records `step` as the last accepted one,
-    /// but only if it is strictly greater than what is stored.
-    ///
-    /// `false` means the code was already spent — the caller refuses the
-    /// sign-in. This is the whole of the replay defence and it is a
-    /// compare-and-swap on the row rather than a check in Rust, because two
-    /// concurrent presentations of the same six digits are exactly the race
-    /// a read-then-write would lose.
-    ///
-    /// # Why a missing `@@allow("update", …)` is the most dangerous edit in
-    /// this crate
-    ///
-    /// `update_many`'s policy is compiled into the statement's own `WHERE`
-    /// (`update_many_exec.rs`), so an empty allow list renders `FALSE`, the
-    /// statement matches zero rows and this returns `Ok(false)` — **with no
-    /// error anywhere**. `Ok(false)` is refuse-the-code, so the immediate
-    /// effect is fail-closed and nobody can sign in; the danger is the fix
-    /// somebody reaches for when every sign-in starts failing. It is pinned
-    /// by [`tests::every_action_this_module_calls_has_an_allow_arm`], which
-    /// names the slot rather than the symptom.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`].
-    async fn record_totp_step(
-        &self,
-        id: &str,
-        step: i64,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError>;
-
-    /// Replaces the password hash and clears `password_change_required`.
-    ///
-    /// `false` means no such staff member. There is no "old password"
-    /// parameter: the caller has already authenticated the session that is
-    /// making the change, and re-checking a password this method would then
-    /// overwrite would be a second copy of that check in the wrong layer.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`].
-    async fn set_password(
-        &self,
-        id: &str,
-        password_hash: &str,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError>;
-
     /// Stamps `last_sign_in_at`, once both factors have been accepted.
     ///
-    /// Deliberately **not** merged into [`Staff::record_totp_step`], although
-    /// both run at the same moment: that one is a compare-and-swap whose
-    /// `false` refuses the sign-in, and this one is bookkeeping whose failure
-    /// must not. Merging them would make a stamp that could not be written
-    /// look like a replayed code.
+    /// Deliberately **not** merged into
+    /// [`crate::credentials::Credentials::advance_counter`], although both run
+    /// at the same moment: that one is a compare-and-swap whose `false`
+    /// refuses the sign-in, and this one is bookkeeping whose failure must
+    /// not. Merging them would make a stamp that could not be written look
+    /// like a replayed code — and since migration 0044 they are not even on
+    /// the same table.
     ///
     /// # Errors
     ///
     /// [`DbError::Persistence`].
     async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError>;
+
+    /// Deletes one staff member, and by cascade their sessions, their
+    /// authorization codes and their credentials.
+    ///
+    /// # This exists for exactly one caller, and it is a compensation
+    ///
+    /// This trait's doc says there is deliberately no `delete`, and that was
+    /// right while `staff add` was **one** insert. ADR-0019 makes it two — a
+    /// `staff_members` row and a `credentials` row — and two inserts that are
+    /// not one statement have a window between them. A failure in that window
+    /// leaves a staff member **who can never sign in and whose address is
+    /// taken**: the email unique index refuses a second `staff add` for them,
+    /// so the operator cannot even retry.
+    ///
+    /// So `staff add` compensates, and this is what it calls. It is not a
+    /// general account-removal facility and there is no surface that reaches
+    /// it; `model StaffMember`'s `@@allow("delete", …)` arm, which had no
+    /// caller until now, is what admits it.
+    ///
+    /// **A real transaction would be better** and is not available here:
+    /// `TxRepositories` is a hand-curated trait of raw `sqlx` statements, and
+    /// putting these two inserts in it would take both tables off the
+    /// generated data layer — which is the property migration 0035 and
+    /// migration 0044 were both shaped to buy. The residual is stated where
+    /// it is paid, in `staff add` itself: if the compensating delete *also*
+    /// fails, the operator is shown both errors and the `stf_…` to remove.
+    ///
+    /// `false` means no such row, which for the compensating caller means the
+    /// insert it is compensating for did not land either.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`]. A missing `@@allow("delete", …)` is
+    /// **silent**: the policy is compiled into the statement's `WHERE`, so an
+    /// empty allow list makes this answer `false` rather than raise.
+    async fn delete(&self, id: &str) -> Result<bool, DbError>;
 }
 
 #[async_trait]
@@ -401,18 +379,8 @@ impl Staff for crate::repository::PgRepositories {
                 merchant_id: new.merchant_id,
                 email: new.email,
                 display_name: new.display_name,
-                password_hash: new.password_hash,
-                // The one-time password the CLI printed is a credential the
-                // operator has seen; it stops being usable the moment its
-                // owner picks their own.
-                password_change_required: true,
-                totp_secret: None,
-                totp_enrolled_at: None,
-                // The seed migration 0035 requires: `NULL < step` is NULL, so
-                // a nullable column would refuse this person's first code
-                // forever.
-                last_totp_step: 0,
                 status: StaffStatus::Active.as_wire_str().to_owned(),
+                is_admin: new.is_admin,
                 created_at: to_chrono(new.now),
                 updated_at: to_chrono(new.now),
                 last_sign_in_at: None,
@@ -455,86 +423,6 @@ impl Staff for crate::repository::PgRepositories {
             .transpose()
     }
 
-    async fn enrol_totp(
-        &self,
-        id: &str,
-        sealed_secret: &str,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError> {
-        // The guard is in the statement, not in Rust: two enrolment posts
-        // racing must not both win, and the loser must not be the one whose
-        // secret the person just scanned.
-        let summary = self
-            .cs
-            .staff_member()
-            .update_many()
-            .where_(staff_member::id().eq(id.to_owned()))
-            .where_(staff_member::totp_enrolled_at().is_null())
-            .set(cratestack_schema::UpdateStaffMemberInput {
-                totp_secret: Some(Some(sealed_secret.to_owned())),
-                totp_enrolled_at: Some(Some(to_chrono(now))),
-                updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffMemberInput::default()
-            })
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
-
-        Ok(summary.ok == 1)
-    }
-
-    async fn record_totp_step(
-        &self,
-        id: &str,
-        step: i64,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError> {
-        // `lt(step)` on the *stored* value, i.e. "the stored step is below
-        // this one". That is the compare half of the compare-and-swap and it
-        // is the reason `last_totp_step` is NOT NULL: `NULL < step` is NULL,
-        // so a nullable column would refuse every first code.
-        let summary = self
-            .cs
-            .staff_member()
-            .update_many()
-            .where_(staff_member::id().eq(id.to_owned()))
-            .where_(staff_member::last_totp_step().lt(step))
-            .set(cratestack_schema::UpdateStaffMemberInput {
-                last_totp_step: Some(step),
-                updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffMemberInput::default()
-            })
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
-
-        Ok(summary.ok == 1)
-    }
-
-    async fn set_password(
-        &self,
-        id: &str,
-        password_hash: &str,
-        now: OffsetDateTime,
-    ) -> Result<bool, DbError> {
-        let summary = self
-            .cs
-            .staff_member()
-            .update_many()
-            .where_(staff_member::id().eq(id.to_owned()))
-            .set(cratestack_schema::UpdateStaffMemberInput {
-                password_hash: Some(password_hash.to_owned()),
-                password_change_required: Some(false),
-                updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffMemberInput::default()
-            })
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
-
-        Ok(summary.ok == 1)
-    }
-
     async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError> {
         let summary = self
             .cs
@@ -549,6 +437,28 @@ impl Staff for crate::repository::PgRepositories {
             .run(&system_context())
             .await
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
+
+        Ok(summary.ok == 1)
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, DbError> {
+        // `delete_many().where_(id)` and not a `delete_unique`, so that the
+        // answer is a row count rather than an error for "no such row": the
+        // one caller is compensating for a failed insert and "there was
+        // nothing to remove" is a success for it.
+        //
+        // The cascades do the rest. `staff_sessions.staff_id`,
+        // `oauth_authorization_codes.staff_id` and `credentials.staff_member_id`
+        // are all ON DELETE CASCADE, so a half-created account takes every
+        // row that names it.
+        let summary = self
+            .cs
+            .staff_member()
+            .delete_many()
+            .where_(staff_member::id().eq(id.to_owned()))
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
 
         Ok(summary.ok == 1)
     }
@@ -570,12 +480,8 @@ fn row_from_model(model: cratestack_schema::models::StaffMember) -> Result<Staff
         merchant_id: model.merchant_id,
         email: model.email,
         display_name: model.display_name,
-        password_hash: model.password_hash,
-        password_change_required: model.password_change_required,
-        totp_secret: model.totp_secret,
-        totp_enrolled_at: model.totp_enrolled_at.map(from_chrono),
-        last_totp_step: model.last_totp_step,
         status,
+        is_admin: model.is_admin,
         created_at: from_chrono(model.created_at),
         updated_at: from_chrono(model.updated_at),
         last_sign_in_at: model.last_sign_in_at.map(from_chrono),
@@ -634,10 +540,10 @@ mod tests {
         );
         assert!(
             !descriptor.update_allow_policies.is_empty(),
-            "model StaffMember lost @@allow(\"update\", …): record_totp_step is an update_many, its \
-             policy is part of the statement's own WHERE, and an empty allow list renders \
-             FALSE — the TOTP replay guard would match zero rows and answer Ok(false) with no \
-             error anywhere"
+            "model StaffMember lost @@allow(\"update\", …): record_sign_in would silently stamp \
+             nothing, because an update policy is part of the statement's own WHERE and an \
+             empty allow list renders FALSE. The *dangerous* update on this path is the replay \
+             guard, which migration 0044 moved to model Credential"
         );
         assert!(
             !descriptor.delete_allow_policies.is_empty(),
@@ -669,7 +575,12 @@ mod tests {
         assert_eq!(StaffStatus::parse("deleted"), None);
     }
 
-    /// Neither credential nor the sign-in identifier reaches a `{:?}`.
+    /// The sign-in identifier does not reach a `{:?}`.
+    ///
+    /// There is no credential left on this struct to leak — migration 0044
+    /// took them — and the half of this test that used to assert that lives in
+    /// `crate::credentials::tests::debug_redacts_material_and_shows_the_public_identity`
+    /// now. The address is still here and is still half of a credential pair.
     #[test]
     fn debug_shows_no_credential_and_no_address() {
         let row = StaffRow {
@@ -677,25 +588,15 @@ mod tests {
             merchant_id: "acct_1".to_owned(),
             email: "ada@example.test".to_owned(),
             display_name: "Ada Lovelace".to_owned(),
-            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_owned(),
-            password_change_required: false,
-            totp_secret: Some("c2VhbGVk".to_owned()),
-            totp_enrolled_at: Some(OffsetDateTime::UNIX_EPOCH),
-            last_totp_step: 42,
             status: StaffStatus::Active,
+            is_admin: false,
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
             last_sign_in_at: None,
         };
 
         let rendered = format!("{row:?}");
-        for secret in [
-            "ada@example.test",
-            "Ada Lovelace",
-            "$argon2id",
-            "aGFzaA",
-            "c2VhbGVk",
-        ] {
+        for secret in ["ada@example.test", "Ada Lovelace"] {
             assert!(
                 !rendered.contains(secret),
                 "StaffRow's Debug leaked {secret}: {rendered}"

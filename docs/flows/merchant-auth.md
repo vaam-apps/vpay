@@ -249,13 +249,8 @@ a client revoked. Two container-backed tests in
 `a_disabled_client_reads_the_same_through_both_paths` and
 `a_client_disabled_through_cratestack_is_visible_to_both_paths` — exist to
 make each of those red, and all four policy mutations plus two code mutations
-were run against a real Postgres. **Corrected 2026-09-06: this paragraph said
-the read parity test "has not been run yet" and was owed to CI. It has been
-run** — `docs/status.md` § "The first CrateStack read" records the first
-execution and the change that moved these writes ran it again, passing, with
-its `@@allow("read", …)` mutation re-verified after the test's seed changed.
-This sentence had simply not been updated when the earlier claim was.
-`docs/status.md` § "The first CrateStack writes" carries all six mutations.
+were run against a real Postgres. The tests above retain the read and write
+parity evidence in the suite, including the `@@allow("read", …)` regression.
 
 **Updated 2026-09-03 (Step 2): the journey now has a far end.**
 `vpay-server` serves `POST /v1/oauth/token`,
@@ -463,8 +458,7 @@ verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
   verifier, so `just sdk-conformance-node` bridges the gap: it mints an
   assertion with the built Node SDK and pipes it into
   `sdks/rust/examples/verify_assertion.rs`, which runs the real
-  `verify_client_assertion`. It is a recipe, not a CI gate; `docs/status.md`
-  records when it was last run and what it printed.
+  `verify_client_assertion`. It is a recipe, not a CI gate.
 - **Form-body parity** between the two SDKs is pinned by tests in
   `sdks/rust/src/form.rs` that carry the exact string the Node encoder
   emitted for the same parameters.
@@ -481,5 +475,3 @@ verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
   a test on either side**: it needed a merchant's server reaching vpay by a name
   vpay does not publish as its own, and until `examples/shop` ran inside the
   compose network, nothing in this repository did.
-
-See [`docs/status.md`](../status.md) for the row-by-row account.
