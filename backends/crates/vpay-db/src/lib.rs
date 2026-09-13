@@ -88,6 +88,11 @@ pub mod webhook_deliveries;
 mod repository;
 
 mod client_assertion;
+// The dashboard's CrateStack auth seam (Lane C). Private, and only
+// `DashboardAuthFn` is re-exported below — `ExtensionAuthProvider` is this
+// crate's own implementation detail; a caller supplies the closure, never
+// the `cratestack::AuthProvider` impl itself.
+mod dashboard_transport;
 mod disabled_clients;
 mod error;
 // The CrateStack layer. Both modules are private and neither exports a
@@ -118,6 +123,7 @@ pub use customers::{
     CustomerAddress, CustomerErasure, CustomerListPage, CustomerPatch, CustomerRow, Customers,
     NewCustomer, REDACTED,
 };
+pub use dashboard_transport::DashboardAuthFn;
 pub use disabled_clients::DisabledClients;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};

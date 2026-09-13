@@ -128,6 +128,15 @@ pub struct StaffRow {
     pub last_totp_step: i64,
     /// Whether this account may sign in.
     pub status: StaffStatus,
+    /// A cross-tenant read grant
+    /// ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)):
+    /// may this person's `/dash/v1` session read a merchant other than the
+    /// one it is bound to, by naming one in `?merchant_id=`? `false` for
+    /// every row `staff add` writes unless `--admin` is passed, and for
+    /// every row this table held before migration `0043` (backfilled to the
+    /// safe answer, not inferred). Not sensitive — it is not a credential —
+    /// so [`fmt::Debug`] below shows it plainly.
+    pub is_admin: bool,
     /// When the row was created.
     pub created_at: OffsetDateTime,
     /// When it last changed.
@@ -160,6 +169,7 @@ impl fmt::Debug for StaffRow {
             .field("totp_enrolled_at", &self.totp_enrolled_at)
             .field("last_totp_step", &self.last_totp_step)
             .field("status", &self.status)
+            .field("is_admin", &self.is_admin)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
             .field("last_sign_in_at", &self.last_sign_in_at)
@@ -204,6 +214,12 @@ pub struct NewStaff {
     pub display_name: String,
     /// The argon2id PHC string for the one-time password the CLI printed.
     pub password_hash: String,
+    /// [`StaffRow::is_admin`]'s doc. `false` unless the operator passed
+    /// `--admin` — a plain `clap` default, not a database one: migration
+    /// `0043` gives this column no `DEFAULT`, on the same rule every other
+    /// column here follows, so a caller that forgot this field is a compile
+    /// error at this literal rather than a row the database half-filled.
+    pub is_admin: bool,
     /// When the row is created; also its `updated_at`.
     pub now: OffsetDateTime,
 }
@@ -217,6 +233,7 @@ impl fmt::Debug for NewStaff {
             .field("email", &"[redacted]")
             .field("display_name", &"[redacted]")
             .field("password_hash", &"[redacted]")
+            .field("is_admin", &self.is_admin)
             .field("now", &self.now)
             .finish()
     }
@@ -413,6 +430,7 @@ impl Staff for crate::repository::PgRepositories {
                 // forever.
                 last_totp_step: 0,
                 status: StaffStatus::Active.as_wire_str().to_owned(),
+                is_admin: new.is_admin,
                 created_at: to_chrono(new.now),
                 updated_at: to_chrono(new.now),
                 last_sign_in_at: None,
@@ -576,6 +594,7 @@ fn row_from_model(model: cratestack_schema::models::StaffMember) -> Result<Staff
         totp_enrolled_at: model.totp_enrolled_at.map(from_chrono),
         last_totp_step: model.last_totp_step,
         status,
+        is_admin: model.is_admin,
         created_at: from_chrono(model.created_at),
         updated_at: from_chrono(model.updated_at),
         last_sign_in_at: model.last_sign_in_at.map(from_chrono),
@@ -683,6 +702,7 @@ mod tests {
             totp_enrolled_at: Some(OffsetDateTime::UNIX_EPOCH),
             last_totp_step: 42,
             status: StaffStatus::Active,
+            is_admin: false,
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
             last_sign_in_at: None,

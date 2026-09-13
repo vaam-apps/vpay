@@ -665,12 +665,17 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
             merchant,
             email,
             name,
-        } => staff_add(args, &merchant, &email, &name).await,
+            admin,
+        } => staff_add(args, &merchant, &email, &name, admin).await,
     }
 }
 
 /// `vpay-server staff add` — the only way a staff member is created
-/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1).
+/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1)
+/// and, since `--admin`, the only way one is created as a cross-tenant
+/// reader ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)).
+/// `admin` defaults to `false` at the `clap` layer, so an operator who never
+/// reads this far gets the narrower account.
 ///
 /// # The order of the checks, and why
 ///
@@ -699,6 +704,7 @@ async fn staff_add(
     merchant: &str,
     email: &str,
     display_name: &str,
+    admin: bool,
 ) -> anyhow::Result<()> {
     let config =
         vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
@@ -746,6 +752,7 @@ async fn staff_add(
             email: email.clone(),
             display_name: display_name.to_owned(),
             password_hash,
+            is_admin: admin,
             now: time::OffsetDateTime::now_utc(),
         },
     )
@@ -755,6 +762,7 @@ async fn staff_add(
     tracing::info!(
         staff_id = %id,
         merchant_id = %merchant,
+        is_admin = admin,
         "created a staff member; the one-time password is on stdout and is not logged"
     );
 

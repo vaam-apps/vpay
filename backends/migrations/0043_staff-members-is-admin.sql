@@ -1,0 +1,53 @@
+-- `staff_members.is_admin` — a cross-tenant read grant (ADR-0018).
+--
+-- WHAT THIS COLUMN MEANS AND WHAT IT DOES NOT
+--
+-- `true` lets `require_dashboard_token` honour a `/dash/v1` request's own
+-- `?merchant_id=` and scope the read to that tenant instead of the
+-- registration's bound one; `false` is every non-`GET` refused (unchanged —
+-- ADR-0008's write boundary does not consult this column at all) and every
+-- `GET` scoped to the registration's own merchant exactly as before this
+-- migration. It is not a scope on any minted token and it is not a column
+-- on `dashboard_client`'s registration — see ADR-0018 § "What an admin is"
+-- for why the row was chosen over both.
+--
+-- THE COLUMN HAS NO DEFAULT ONCE THIS MIGRATION FINISHES, following
+-- migration 0035's rule for every column on this table: `cratestack-macros`
+-- drops a `@default(...)` field from `CreateStaffMemberInput`, and the
+-- schema does not declare one (`model StaffMember.is_admin` in
+-- `schemas/vpay.cstack` carries no `@default`), so a `DEFAULT` here would be
+-- a value the writer could never name and the database would invent
+-- instead. `vpay_db::Staff::create` therefore must name it on every insert,
+-- exactly as it names `status` and `password_change_required`.
+--
+-- BACKFILLING EXISTING ROWS IS THE ONE PLACE A DEFAULT IS ALLOWED. Every
+-- `staff_members` row written before this migration predates the concept of
+-- an admin entirely, and the safe reading of "nobody decided" is "not an
+-- admin" — not "we don't know" and not "admin until proven otherwise". A
+-- transient `DEFAULT false` on the `ADD COLUMN` backfills every existing row
+-- to that safe answer without a table rewrite (PostgreSQL 11+ stores one
+-- catalog value for a newly added `NOT NULL DEFAULT` column rather than
+-- writing it into every row), and the very next statement drops the default
+-- so no future insert can rely on it. This is migration 0033's technique
+-- exactly, applied to a column being added rather than one already there.
+--
+-- WHY A COLUMN AND NOT A SEPARATE `staff_admins` TABLE OR A CLAIM ON THE
+-- TOKEN: ADR-0018 § "What an admin is" has the argument in full. The short
+-- version is that this table is already the one thing
+-- `require_dashboard_token` re-reads on every request to catch a disabled
+-- account and a moved tenant, so a third fact read off the same row costs no
+-- new query and inherits the same "takes effect on the next request"
+-- property — a claim on the token would not, because a token already minted
+-- keeps whatever it says for the rest of its TTL.
+--
+-- DRIFT: a `BOOLEAN` column with no CHECK and no index, following every
+-- other boolean already on this table (`password_change_required`) — the
+-- measured, zero-drift shape `docs/reference/vpay-db/cratestack.md` records
+-- for this table's columns. See that page and
+-- `backends/tests/integration/tests/postgres_smoke.rs`'s `EXPECTED_DRIFT_CHANGES`
+-- for the measurement this migration's commit carries.
+ALTER TABLE staff_members ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE staff_members ALTER COLUMN is_admin DROP DEFAULT;
+
+COMMENT ON COLUMN staff_members.is_admin IS
+    'ADR-0018: may this person''s /dash/v1 session read a merchant other than merchant_id, by naming one in ?merchant_id=? Defaults to false for every row written before this migration (backfilled, not inferred) and has no DEFAULT for any row written after it — vpay-server staff add must name it explicitly, defaulting to false unless --admin is passed. Read-only capability: ADR-0008''s write boundary is unaffected.';

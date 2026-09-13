@@ -501,6 +501,20 @@ pub enum StaffCommand {
         /// matched on.
         #[arg(long)]
         name: String,
+
+        /// A cross-tenant read grant
+        /// ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)):
+        /// may this person's `/dash/v1` session read a merchant other than
+        /// `--merchant` by naming one in `?merchant_id=`? Read-only, like
+        /// every other `/dash/v1` credential — this flag has no bearing on
+        /// ADR-0008's write boundary, which is unimplemented regardless of
+        /// it.
+        ///
+        /// Defaults to `false`, deliberately: an operator who runs `staff
+        /// add` without reading this far must get the narrower account,
+        /// never the wider one.
+        #[arg(long, default_value_t = false)]
+        admin: bool,
     },
 }
 

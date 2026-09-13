@@ -14,6 +14,26 @@
 //! give us `postgres:11-alpine`, which `compose.yml` does not run) and the
 //! retry on a host-port collision are explained.
 //!
+//! # This file is a writer of `staff_members`, and nothing in Rust says so
+//!
+//! Five tests below seed `staff_members` with a **hand-written `INSERT`**
+//! rather than through `vpay_db::Staff::create`, because their subject is a
+//! database constraint and a repository call that refuses the row first
+//! would prove nothing about it. That makes this file a second writer of
+//! that table, invisible to the compiler: every column on `staff_members` is
+//! `NOT NULL` with **no `DEFAULT`** (migration `0035`'s rule, because
+//! `cratestack-macros` drops a `@default(...)` field from
+//! `Create{Model}Input`), so a migration that adds a column here breaks all
+//! five at run time and nothing type-checks the breakage first.
+//!
+//! That is not hypothetical: migration `0043` (`is_admin`, ADR-0018) did
+//! exactly this, and all five failed with `null value in column "is_admin"
+//! … violates not-null constraint` — one of them while *expecting* a
+//! different rejection, so it reported a CHECK constraint as missing when
+//! the CHECK was fine. **A migration adding a column to `staff_members`
+//! should `grep "INTO staff_members"` before assuming `Staff::create` is the
+//! only writer.**
+//!
 //! Helper functions here return `anyhow::Result` and propagate with `?`
 //! rather than `.expect`/`.unwrap`, matching the workspace lint policy:
 //! `expect_used`/`unwrap_used`/`panic` are only exempted *inside* a
@@ -169,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 42,
-        "all forty-two migration files under backends/migrations should be recorded as applied \
+        applied, 43,
+        "all forty-three migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -272,7 +292,13 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          anonymized_customers_carry_the_marker refuses to let the row lie \
          about. The numbering is dense again: 0041 was taken by this branch \
          while 0040 and 0042 were in flight, and all three are in this tree \
-         now, so files and numbers agree at forty-two.)"
+         now, so files and numbers agree at forty-two, and ADR-0018's 0043 \
+         staff_members.is_admin, the cross-tenant read grant -- a BOOLEAN \
+         NOT NULL backfilled to false for every row that predates the \
+         concept of an admin, with the DEFAULT dropped in the very next \
+         statement so that every writer names it, which is 0035's rule for \
+         this table and the reason five hand-written INSERTs in this file \
+         had to grow the column too.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -464,9 +490,10 @@ async fn a_half_enrolled_staff_member_is_refused_by_the_database() -> anyhow::Re
     let insert = |suffix: &str, columns: &str, values: &str| {
         let sql = format!(
             "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-             password_change_required, last_totp_step, status, created_at, updated_at{columns}) \
+             password_change_required, last_totp_step, status, is_admin, created_at, \
+             updated_at{columns}) \
              VALUES ('stf_{suffix}', 'merchant_a', '{suffix}@example.test', 'Ada', 'hash', \
-             true, 0, 'active', now(), now(){values})"
+             true, 0, 'active', false, now(), now(){values})"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
     };
@@ -534,9 +561,10 @@ async fn a_mixed_case_address_and_an_unknown_status_are_refused_by_the_database(
     let insert = |suffix: &str, email: &str, status: &str| {
         let sql = format!(
             "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-             password_change_required, last_totp_step, status, created_at, updated_at) \
+             password_change_required, last_totp_step, status, is_admin, created_at, \
+             updated_at) \
              VALUES ('stf_{suffix}', 'merchant_a', '{email}', 'Ada', 'hash', true, 0, \
-             '{status}', now(), now())"
+             '{status}', false, now(), now())"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
     };
@@ -592,9 +620,9 @@ async fn signing_out_cascades_onto_a_code_in_flight() -> anyhow::Result<()> {
 
     sqlx::query(
         "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
+         password_change_required, last_totp_step, status, is_admin, created_at, updated_at) \
          VALUES ('stf_cascade', 'merchant_a', 'cascade@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await
@@ -672,9 +700,9 @@ async fn a_session_token_without_its_expiry_is_refused_by_the_database() -> anyh
 
     sqlx::query(
         "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
+         password_change_required, last_totp_step, status, is_admin, created_at, updated_at) \
          VALUES ('stf_expiry', 'merchant_a', 'expiry@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await
@@ -740,9 +768,9 @@ async fn an_authorization_code_with_a_plain_pkce_method_is_refused_by_the_databa
 
     sqlx::query(
         "INSERT INTO staff_members (id, merchant_id, email, display_name, password_hash, \
-         password_change_required, last_totp_step, status, created_at, updated_at) \
+         password_change_required, last_totp_step, status, is_admin, created_at, updated_at) \
          VALUES ('stf_plain', 'merchant_a', 'plain@example.test', 'Ada', 'hash', true, 0, \
-         'active', now(), now())",
+         'active', false, now(), now())",
     )
     .execute(&pool)
     .await?;
@@ -2900,6 +2928,20 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// three constraints for two drift lines is the shape this file predicts, and
 /// this measurement is what tested the prediction rather than restating it.
 ///
+/// **Still 179 after migration 0043 (2026-09-13, ADR-0018)**, and this line
+/// is the measurement `0043_staff-members-is-admin.sql`'s own DRIFT note
+/// points a reader at. It had to be *taken*, not predicted: the migration
+/// argues from shape that `staff_members.is_admin` would cost zero — a
+/// `BOOLEAN` with no hand-named CHECK, no index and no `@default`, which is
+/// `password_change_required`'s shape on this same table — and an argument
+/// from shape is exactly the kind of claim this constant exists to refuse.
+/// Measured against a freshly migrated Postgres on 2026-09-13 the report
+/// read `drift detected in 24 table(s)/view(s) (179 change(s) total)` and
+/// `19 column(s) have a Postgres type cratestack could not confidently map`,
+/// so all three constants held and the prediction was right. A `BOOLEAN`
+/// maps outright, so the column costs neither a "type differs" line here nor
+/// an entry in `EXPECTED_UNMAPPABLE_COLUMNS`.
+///
 /// The number is read off a freshly migrated database, never derived by
 /// adding two branches' deltas.
 const EXPECTED_DRIFT_CHANGES: u32 = 179;
@@ -2966,6 +3008,11 @@ const EXPECTED_DRIFT_CHANGES: u32 = 179;
 /// exactly one entry on this list. That is what this constant is for — a +4
 /// in the change count with this number unmoved means lines moved within a
 /// table already here, not that a relation entered or left.
+/// **Still 24 after migration 0043 (2026-09-13, ADR-0018):**
+/// `staff_members` was already on this list as a declared-and-differing
+/// table and stays exactly one entry on it. With `EXPECTED_DRIFT_CHANGES`
+/// unmoved too, the pair says the stronger thing either alone could not: no
+/// line arrived *and* no relation did.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -3031,6 +3078,11 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 24;
 /// reason, so it is *compared* rather than excluded — which is what lets
 /// `EXPECTED_DRIFT_CHANGES` say the column itself drifted by zero instead of
 /// saying nothing about it at all.
+/// **Still 19 after migration 0043 (2026-09-13, ADR-0018):**
+/// `staff_members.is_admin` is `BOOLEAN`, which 0.11.1's `map_scalar` maps
+/// outright, so it is *compared* rather than excluded — which is what lets
+/// `EXPECTED_DRIFT_CHANGES` say the column drifted by zero rather than say
+/// nothing about it at all.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of

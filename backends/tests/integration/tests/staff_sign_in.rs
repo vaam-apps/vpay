@@ -599,6 +599,7 @@ async fn add_staff(
             password_hash: credentials
                 .hash_password(ONE_TIME_PASSWORD)
                 .expect("hashing the one-time password"),
+            is_admin: false,
             now: OffsetDateTime::now_utc(),
         },
     )
@@ -1032,6 +1033,7 @@ async fn a_staff_member_of_another_merchant_cannot_obtain_a_dashboard_token() ->
                 .credentials
                 .hash_password(ONE_TIME_PASSWORD)
                 .expect("hashing"),
+            is_admin: false,
             now: OffsetDateTime::now_utc(),
         },
     )

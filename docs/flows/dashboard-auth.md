@@ -166,6 +166,45 @@ What is built, in the order a request meets it:
   refusal is a property of the mint. It is a tightening over what stood
   before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it.
 
+**Added 2026-09-13 ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)): a
+cross-tenant admin role.** `staff_members.is_admin` (migration `0043`, no
+`@default` — migration `0035`'s rule for every column on this table), read on
+the same `require_dashboard_token` re-read that already answers `status` and
+`merchant_id`, so revoking it takes effect on the next request exactly like
+disabling an account does. A non-admin's boundary is byte-for-byte what it
+was before this ADR: `?merchant_id=` is not even parsed unless the row says
+`is_admin`. An admin's `?merchant_id=` scopes the read to any merchant
+`config.merchant_clients` registers — one at a time, through the same
+single-tenant repository calls every other request already uses — defaulting
+to the bound tenant when none is named, and answering `400` for a merchant
+this deployment does not serve. No write path: ADR-0008's boundary is
+checked before the staff row and therefore before `is_admin` is even read.
+`vpay_api::dash::DashboardTenancy` (`Bound`/`ChosenByAdmin`) is the seam a
+future CrateStack transport (the dashboard-nav plan's Lane C) mints its
+tenant context from.
+`backends/tests/integration/tests/dashboard_read_surface.rs` grew from 16 to
+21 cases: an admin reads a merchant other than its own, a non-admin's
+identical override parameter is silently ignored and the uniform-404
+property holds under it, an admin still cannot write (403 on every
+non-`GET`, override included), the flag defaults to non-admin, and an
+unknown merchant is a `400` naming the parameter. `vpay-server staff add`
+grew `--admin` (defaulting to `false`), proven by
+`staff_add_admin_flag_defaults_to_false_and_admin_sets_it` in
+`backends/apps/vpay-server/tests/cli.rs`.
+
+_Reviewed 2026-09-13._ All 21 cases ran against real Postgres — 21 passed, 0
+ignored, 0 skipped — and the three properties above were **mutation-tested
+rather than asserted**: deleting the `is_admin` check reddens the two
+non-admin cases (the failure body shows the other tenant's row in a
+non-admin's list), deleting `required_scope`'s write refusal reddens
+`an_admin_still_cannot_write` with a `405` where a `403` belongs, and making
+"not yours" distinguishable from "does not exist" reddens the uniform-404
+cases for admin and non-admin alike. The review also found that migration
+`0043`'s dropped `DEFAULT` broke five hand-written `INSERT`s in
+`postgres_smoke.rs` — `staff_members` has a second writer the compiler
+cannot see — and repaired them by naming the column rather than by restoring
+a default. [Verification log](../status/verification/2026-09-13-adr-0018-admin-role-review.md).
+
 **Added 2026-09-10 (issue #79 items 1-3):**
 
 - `rate_limit_windows` (migration `0038`), and with it a sign-in budget that

@@ -9302,6 +9302,7 @@ async fn the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins() -> an
             email: "guards@example.test".to_owned(),
             display_name: "Ada".to_owned(),
             password_hash: "irrelevant-to-this-test".to_owned(),
+            is_admin: false,
             now,
         },
     )
@@ -9382,6 +9383,7 @@ async fn a_staff_address_is_unique_and_looked_up_exactly() -> anyhow::Result<()>
         email: email.to_owned(),
         display_name: "Ada".to_owned(),
         password_hash: "hash".to_owned(),
+        is_admin: false,
         now,
     };
 
@@ -9458,6 +9460,7 @@ async fn a_second_create_for_one_staff_id_is_refused_rather_than_overwriting() -
         email: email.to_owned(),
         display_name: "Ada".to_owned(),
         password_hash: hash.to_owned(),
+        is_admin: false,
         now,
     };
 

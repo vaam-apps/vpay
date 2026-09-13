@@ -1608,6 +1608,25 @@ model StaffMember {
   // migration 0035 seeds it to 0 and declares it `NOT NULL` for that reason.
   last_totp_step Int
   status String
+  // A cross-tenant read grant (ADR-0018), not a scope and not a column on
+  // `DashboardClient`'s registration. `false` for every row `staff add`
+  // writes unless an operator passes `--admin`, which is what "the flag
+  // defaults to non-admin" means at the data layer: there is no `@default`
+  // on this column (the reason is `created_at`'s, two lines below — a
+  // defaulted field is one `CreateStaffMemberInput` could not set), so a
+  // writer that forgot it fails the insert rather than silently minting an
+  // admin or silently minting a non-admin. `require_dashboard_token` reads
+  // this off the same re-read `status` and `merchant_id` already need, so a
+  // `staff add --admin` mistake is contained by the same break-glass switch
+  // (`status = 'disabled'`) that already closes every other one.
+  //
+  // NOT a scope on the minted token and NOT a property of `DashboardClient`
+  // — ADR-0018 § "What an admin is" argues why: this deployment mints one
+  // token shape for every staff member regardless of role, and a token
+  // carrying "I am an admin" would still be true an hour after the flag was
+  // revoked, for the rest of that token's TTL. Reading the row keeps
+  // disabling an admin exactly as immediate as disabling anyone else.
+  is_admin Boolean
   // NO `@default(now())`, unlike `Customer.created_at`, and this is the one
   // difference between these models and 0034's that a reader should notice.
   // `cratestack-macros` drops every `@default(...)` field from

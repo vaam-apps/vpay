@@ -110,6 +110,10 @@ const DASHBOARD_SCOPE: &str = "dashboard:read";
 /// nothing in `require_dashboard_token` authorises against it any more.
 const STAFF_ID: &str = "stf_0000000000000000000dash";
 
+/// The `sub` of the ADR-0018 admin token — a second, distinct staff row so
+/// that a case for one flag can never pass because it forgot to check it.
+const ADMIN_STAFF_ID: &str = "stf_00000000000000000admin";
+
 const PUSH_RAIL: &str = "mtn_momo";
 const CURRENCY: &str = "XAF";
 const AMOUNT: i64 = 5000;
@@ -160,6 +164,21 @@ impl Harness {
     /// [ADR-0017]: ../../../../docs/adr/0017-staff-authentication.md
     fn dashboard_token(&self) -> String {
         self.staff_token(DASHBOARD_CLIENT, DASHBOARD_SCOPE, Some(MERCHANT_A))
+    }
+
+    /// [`Self::dashboard_token`], for [`ADMIN_STAFF_ID`] rather than
+    /// [`STAFF_ID`]. Every claim on it is otherwise identical — same
+    /// audience, same scope, same merchant claim — because ADR-0018 reads
+    /// the admin grant off the re-read `staff_members` row and not off
+    /// anything this token carries; a token this suite could not tell apart
+    /// from a non-admin's is exactly the point.
+    fn admin_dashboard_token(&self) -> String {
+        self.staff_token_for(
+            ADMIN_STAFF_ID,
+            DASHBOARD_CLIENT,
+            DASHBOARD_SCOPE,
+            Some(MERCHANT_A),
+        )
     }
 
     /// A staff token, with every part of it a parameter so a test can move
@@ -279,7 +298,14 @@ impl Harness {
     /// `GET` with a dashboard token, decoded — the shape almost every test
     /// below wants.
     async fn dash_json(&self, path: &str) -> anyhow::Result<(u16, Value)> {
-        let (status, body) = self.get(path, Some(&self.dashboard_token())).await?;
+        self.dash_json_as(path, &self.dashboard_token()).await
+    }
+
+    /// [`Self::dash_json`] with the token as a parameter, for the ADR-0018
+    /// cases that must present the **admin's** token rather than the
+    /// ordinary one.
+    async fn dash_json_as(&self, path: &str, token: &str) -> anyhow::Result<(u16, Value)> {
+        let (status, body) = self.get(path, Some(token)).await?;
         Ok((status, serde_json::from_str(&body).unwrap_or(Value::Null)))
     }
 }
@@ -361,6 +387,7 @@ async fn harness_with(dashboard: bool) -> anyhow::Result<Harness> {
     .await?;
 
     seed_staff(repositories.as_ref()).await?;
+    seed_admin_staff(repositories.as_ref()).await?;
 
     Ok(Harness {
         _container: container,
@@ -404,11 +431,42 @@ async fn seed_staff(repositories: &dyn Repositories) -> anyhow::Result<()> {
             // Never verified here — see this function's doc.
             password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$notarealhash"
                 .to_owned(),
+            // Not an admin: the whole file's other 13 cases are about the
+            // ordinary tenant-bound boundary, and ADR-0018's cases mint their
+            // own row via `seed_admin_staff` so the two never share a fixture.
+            is_admin: false,
             now: time::OffsetDateTime::now_utc(),
         },
     )
     .await
     .context("seeding the staff member every token in this suite names")?;
+    Ok(())
+}
+
+/// [`seed_staff`]'s ADR-0018 counterpart: a second staff row, bound to the
+/// same merchant the dashboard registration is bound to (an admin's own
+/// token can only ever be minted for the bound tenant — ADR-0017 decision 1
+/// is unchanged), but with [`vpay_db::NewStaff::is_admin`] set. What
+/// `is_admin` buys is entirely about what happens *after* the token
+/// validates: this row may have `?merchant_id=` honoured rather than
+/// ignored — see `an_admin_reads_a_merchant_other_than_its_own` below.
+async fn seed_admin_staff(repositories: &dyn Repositories) -> anyhow::Result<()> {
+    vpay_db::Staff::create(
+        repositories,
+        vpay_db::NewStaff {
+            id: ADMIN_STAFF_ID.to_owned(),
+            merchant_id: MERCHANT_A.to_owned(),
+            email: "dash-admin@example.test".to_owned(),
+            display_name: "Dash Admin".to_owned(),
+            // Never verified here — see `seed_staff`'s doc.
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$notarealhash"
+                .to_owned(),
+            is_admin: true,
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .context("seeding the admin staff member ADR-0018's cases name")?;
     Ok(())
 }
 
@@ -1373,6 +1431,249 @@ async fn a_token_whose_subject_names_no_staff_member_is_refused() -> anyhow::Res
     assert!(
         !body.contains("pi_dash_a_only"),
         "and the refusal carries none of the tenant's rows: {body}"
+    );
+    Ok(())
+}
+
+// ------------------------------------------------------------------ ADR-0018: the admin role
+
+/// **An admin's `?merchant_id=` is honoured**, and the read it returns is
+/// `MERCHANT_B`'s rows, not `MERCHANT_A`'s (the dashboard's own binding, and
+/// the admin's home merchant).
+///
+/// The decisive mutation: make `require_dashboard_token` ignore
+/// `staff.is_admin` (always resolve `DashboardTenancy::Bound`), and this
+/// fails with an empty page — the admin token still reads its own merchant
+/// only, exactly like `the_dashboard_lists_only_the_merchant_it_is_bound_to`.
+#[tokio::test]
+async fn an_admin_reads_a_merchant_other_than_its_own() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let repositories = harness.repositories.as_ref();
+    seed_intent(repositories, MERCHANT_A, "pi_dash_admin_a").await?;
+    seed_intent(repositories, MERCHANT_B, "pi_dash_admin_b").await?;
+
+    let token = harness.admin_dashboard_token();
+
+    // No override: an admin who names nothing reads its own merchant, same
+    // as anyone else.
+    let (bound_status, bound_body) = harness
+        .dash_json_as("/dash/v1/payment_intents", &token)
+        .await?;
+    assert_eq!(bound_status, 200, "{bound_body}");
+    let bound_ids: Vec<&str> = at(&bound_body, "/data")
+        .as_array()
+        .expect("the list envelope carries an array")
+        .iter()
+        .filter_map(|intent| intent.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(bound_ids, vec!["pi_dash_admin_a"], "{bound_body}");
+
+    // `?merchant_id=` names the OTHER tenant this deployment serves.
+    let (cross_status, cross_body) = harness
+        .dash_json_as(
+            &format!("/dash/v1/payment_intents?merchant_id={MERCHANT_B}"),
+            &token,
+        )
+        .await?;
+    assert_eq!(cross_status, 200, "{cross_body}");
+    let cross_ids: Vec<&str> = at(&cross_body, "/data")
+        .as_array()
+        .expect("the list envelope carries an array")
+        .iter()
+        .filter_map(|intent| intent.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        cross_ids,
+        vec!["pi_dash_admin_b"],
+        "an admin naming {MERCHANT_B} must read {MERCHANT_B}'s rows, not the token's own \
+         merchant: {cross_body}"
+    );
+
+    // And the detail read for the id honours the same override: MERCHANT_A's
+    // id is a 404 once the request is scoped to MERCHANT_B, exactly as it
+    // would be for a non-admin bound to MERCHANT_B.
+    let (foreign_status, foreign_body) = harness
+        .get(
+            &format!("/dash/v1/payment_intents/pi_dash_admin_a?merchant_id={MERCHANT_B}"),
+            Some(&token),
+        )
+        .await?;
+    assert_eq!(
+        foreign_status, 404,
+        "scoped to {MERCHANT_B}, {MERCHANT_A}'s id must answer the same 404 a missing one \
+         does: {foreign_body}"
+    );
+    Ok(())
+}
+
+/// **The uniform-404 property is unweakened for a non-admin**, even when a
+/// non-admin sends the exact query parameter an admin's request honours.
+///
+/// This is the mutation that matters most: if `?merchant_id=` were read
+/// before `staff.is_admin` were checked, a non-admin could use it to move
+/// the tenant it reads exactly as an admin does, which is precisely the
+/// oracle ADR-0018 says an admin role must not open for anyone who is not
+/// an admin.
+#[tokio::test]
+async fn a_non_admin_cannot_move_the_tenant_with_the_query_parameter() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let repositories = harness.repositories.as_ref();
+    seed_intent(repositories, MERCHANT_A, "pi_dash_nonadmin_a").await?;
+    seed_intent(repositories, MERCHANT_B, "pi_dash_nonadmin_b").await?;
+
+    let token = harness.dashboard_token(); // STAFF_ID, is_admin = false
+
+    let (list_status, list_body) = harness
+        .dash_json_as(
+            &format!("/dash/v1/payment_intents?merchant_id={MERCHANT_B}"),
+            &token,
+        )
+        .await?;
+    assert_eq!(list_status, 200, "{list_body}");
+    let ids: Vec<&str> = at(&list_body, "/data")
+        .as_array()
+        .expect("the list envelope carries an array")
+        .iter()
+        .filter_map(|intent| intent.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["pi_dash_nonadmin_a"],
+        "a non-admin's ?merchant_id= must be silently ignored, not honoured: {list_body}"
+    );
+    assert!(
+        !ids.contains(&"pi_dash_nonadmin_b"),
+        "a non-admin must never see another tenant's rows, override or not: {list_body}"
+    );
+
+    // The uniform-404 half: naming a foreign id, with the override present,
+    // must still answer the same 404 a missing id would — not the row, and
+    // not a *different* refusal that would tell the two cases apart.
+    let (foreign_status, foreign_body) = harness
+        .get(
+            &format!("/dash/v1/payment_intents/pi_dash_nonadmin_b?merchant_id={MERCHANT_B}"),
+            Some(&token),
+        )
+        .await?;
+    let (absent_status, absent_body) = harness
+        .get(
+            &format!("/dash/v1/payment_intents/pi_never_written_at_all?merchant_id={MERCHANT_B}"),
+            Some(&token),
+        )
+        .await?;
+    assert_eq!(foreign_status, 404, "{foreign_body}");
+    assert_eq!(absent_status, 404, "{absent_body}");
+    assert_eq!(
+        foreign_body.replace("pi_dash_nonadmin_b", "X"),
+        absent_body.replace("pi_never_written_at_all", "X"),
+        "a non-admin's override parameter must not turn this surface into an existence oracle \
+         for another tenant's ids"
+    );
+    Ok(())
+}
+
+/// **An admin still cannot write.** `required_scope` refuses every non-`GET`
+/// before the router matches — before the staff row, and therefore before
+/// `is_admin`, is even read — so the admin flag has no way to reach that
+/// check at all. Proven directly rather than inferred from the non-admin
+/// case: `is_admin` is a new fact this boundary reads, and a regression that
+/// let it short-circuit the write refusal would not be caught by any test
+/// that never presents an admin token to a write method.
+#[tokio::test]
+async fn an_admin_still_cannot_write() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    seed_intent(
+        harness.repositories.as_ref(),
+        MERCHANT_A,
+        "pi_dash_admin_ro",
+    )
+    .await?;
+
+    let token = harness.admin_dashboard_token();
+    for method in [
+        reqwest::Method::POST,
+        reqwest::Method::PUT,
+        reqwest::Method::PATCH,
+        reqwest::Method::DELETE,
+    ] {
+        for path in [
+            "/dash/v1/payment_intents",
+            "/dash/v1/payment_intents/pi_dash_admin_ro",
+            // The override must not open a write path either.
+            "/dash/v1/payment_intents?merchant_id=beta-douala-tenant",
+        ] {
+            let (status, body) = harness.request(method.clone(), path, Some(&token)).await?;
+            assert_eq!(
+                status, 403,
+                "{method} {path} must be refused (403) for an admin exactly as for anyone \
+                 else — ADR-0008's write boundary does not consult is_admin at all: {body}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// **The flag defaults to non-admin.** [`seed_staff`] writes [`STAFF_ID`]'s
+/// row through the same `vpay_db::NewStaff` literal every other case in
+/// this file uses, with `is_admin: false` named explicitly — this test is
+/// what makes that a proven property of the boundary rather than an
+/// assertion resting on a fixture nobody re-checks. A row that named no
+/// value at all is not reachable from Rust (the field is not `Option` and
+/// carries no `#[derive(Default)]`); what this test guards is the *other*
+/// way that guarantee could be lost — a future default on the column, or a
+/// boundary that reads `Ok(None)` as "admin" instead of refusing.
+#[tokio::test]
+async fn the_admin_flag_defaults_to_non_admin() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let staff = vpay_db::Staff::find(harness.repositories.as_ref(), STAFF_ID)
+        .await?
+        .expect("seed_staff wrote this row");
+    assert!(
+        !staff.is_admin,
+        "seed_staff names is_admin explicitly and it must be false by default"
+    );
+
+    seed_intent(
+        harness.repositories.as_ref(),
+        MERCHANT_B,
+        "pi_dash_default_b",
+    )
+    .await?;
+    let token = harness.dashboard_token();
+    let (status, body) = harness
+        .dash_json_as(
+            &format!("/dash/v1/payment_intents?merchant_id={MERCHANT_B}"),
+            &token,
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        at(&body, "/data").as_array().map(Vec::len),
+        Some(0),
+        "a non-admin row, even one that names an override, reads only its own merchant: {body}"
+    );
+    Ok(())
+}
+
+/// An admin naming a merchant this deployment does not serve gets a `400`
+/// naming the parameter, not a silently empty page — the same "an unknown
+/// value is not an empty answer" rule `status` already follows on this
+/// surface.
+#[tokio::test]
+async fn an_admin_naming_an_unknown_merchant_is_a_400() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.admin_dashboard_token();
+
+    let (status, body) = harness
+        .get(
+            "/dash/v1/payment_intents?merchant_id=no-such-tenant-anywhere",
+            Some(&token),
+        )
+        .await?;
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("merchant_id"),
+        "the 400 must name the parameter an operator got wrong: {body}"
     );
     Ok(())
 }
