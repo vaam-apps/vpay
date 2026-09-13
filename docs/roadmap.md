@@ -108,3 +108,5 @@ window, the Keycloak/ZITADEL comparison, and the revocation-endpoint gap on
 whether to build the dashboard on CrateStack's refine integration. They are
 questions reserved for the maintainer, and a default chosen in code is not an
 answer to one.
+
+<!-- throwaway line to verify CI path filtering; will be reverted/deleted -->
