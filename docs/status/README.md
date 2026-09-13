@@ -34,6 +34,10 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-13-storybook-reverified.md](verification/2026-09-13-storybook-reverified.md) —
+  the 2026-09-12 Storybook restoration re-run on `origin/master`, the six
+  places that still said the gap was open, and the measured answer to the
+  question `justfile` left about the new `.storybook`'s tsconfig
 - [verification/2026-09-12-erasure-idempotency-window.md](verification/2026-09-12-erasure-idempotency-window.md) —
   issue #111: the 24-hour window in which an update that lost a race to a
   `DELETE` put the payer back into `idempotency_keys.response_body` —
