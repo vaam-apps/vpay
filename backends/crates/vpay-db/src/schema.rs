@@ -27,47 +27,62 @@
 // `ProcedureRegistry` trait it implements lives inside the expansion above,
 // which is private here and stays that way (ADR-0016 standard 5).
 //
-// `allow(dead_code)` and NOT `expect(...)`, ON PURPOSE, AND IT IS THE GAP
-// RATHER THAN THE LINT THAT MATTERS. Nothing in any shipping binary calls
-// this procedure: no CrateStack axum router and no RPC dispatcher is mounted
-// anywhere in this workspace, and `persistence::system_context` — the only
-// `CratestackContext` vpay mints — carries no tenant, so the body would
-// refuse it. The tests are the only callers, which makes `Payments` an
-// un-constructed struct in a non-test build. `expect` would then fire
-// `unfulfilled_lint_expectation` under `cfg(test)`, where it *is*
-// constructed; `cfg_attr(not(test), ...)` keeps the lint where the deadness
-// actually is. Delete this attribute the day something serves the procedure
-// — and update `docs/status.md` in the same commit.
-//
-// ~~ONE THING THE `cfg_attr` COSTS, measured on 2026-09-11 and written down so
-// nobody counts on the wrong thing: `just verify-docs` lists every
-// `#[allow]`/`#[expect]` in production code and its count did NOT move when
-// this landed — it stayed at six. The scanner reads the attribute text, and
-// this one is spelled `#[cfg_attr(not(test), allow(...))]`. So the report is
-// not where this gap is visible.~~
-//
-// **Corrected the same day by the exp54 review: that was a hole in the
-// report, and the report was fixed rather than worked around.** The
-// measurement above was accurate — the count really did stay at six — but
-// "a lint silenced in every shipping build, absent from the list of silenced
-// lints" is the one thing that list cannot afford, and `cfg_attr` is the
-// *correct* spelling whenever the deadness is conditional, so the hole would
-// have widened every time someone did the right thing. `allow_sites` in
-// `.xtask/src/main.rs` now reads the rejoined attribute, and the report
-// prints **seven**, this line among them. Measured both ways: with the four
-// bare needles restored it prints six and omits this file; the other six
-// entries are byte-identical between the two runs, so nothing else had been
-// hiding. `docs/status.md` § "The first `procedure`", this comment and
-// `search_payment_intents`' own module doc still say it too — the report is
-// now a fourth place rather than the missing one.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "no transport serves searchPaymentIntents yet — docs/status.md § CrateStack"
-    )
-)]
+// **No longer `#[cfg_attr(not(test), allow(dead_code))]`, as of Lane C
+// (docs/plans/2026-09-13-dashboard-nav-notes/transport.md).** That attribute
+// said, in so many words, "nothing in any shipping binary calls this
+// procedure" — and said to delete it "the day something serves the
+// procedure". `dashboard_procedure_router` below is that caller:
+// `Payments` is constructed by the line building the procedure router
+// (`cratestack_schema::axum::procedure_router(..., Payments, ...)`) in every
+// build, not only under `cfg(test)`, so the struct is no longer dead outside
+// tests and the lint has nothing to silence. `docs/status.md` § "The first
+// `procedure`" says the same thing in the same words, updated in this
+// commit.
 mod search_payment_intents;
+
+/// Mounts `searchPaymentIntents` over HTTP — the read-only CrateStack
+/// transport this schema has never had a caller for before Lane C
+/// (docs/plans/2026-09-13-dashboard-nav-notes/transport.md).
+///
+/// **`procedure_router`, never `router()`.** The generated `router()`
+/// merges `model_router(...)` — the CRUD CrateStack generates for every one
+/// of this schema's eighteen models, creates/updates/deletes included,
+/// whether or not anything routes it — with `procedure_router(...)`
+/// (`cratestack-macros-0.12.0/src/include/server/axum_module/router_fn.rs`).
+/// `procedure_router` is the same generated function with that merge
+/// removed, emitted `pub` with the same arguments minus
+/// `body_limit_bytes` (`axum_module.rs:138`), so "reads only" is expressed
+/// by calling a different generated function rather than by trusting a
+/// route table.
+///
+/// **`auth_provider` never produces a system context.** This function takes
+/// whatever `cratestack::AuthProvider`-implementing value its caller built
+/// ([`crate::dashboard_transport::ExtensionAuthProvider`], in practice) and
+/// hands it straight to CrateStack; it never calls
+/// [`crate::persistence::system_context`], the only place in this crate
+/// that can produce a context for which `is_system()` is true, and this
+/// file does not call it.
+///
+/// `resolvers: ()` because `schemas/vpay.cstack` declares no `@computed`
+/// field — CrateStack's own macro emits `impl ComputedFieldResolver for
+/// ()` exactly when that is true
+/// (`cratestack-macros-0.12.0/src/include/server.rs:139`), so there is no
+/// hand-written resolver to maintain.
+pub(crate) fn dashboard_procedure_router<Auth>(
+    db: cratestack_schema::Cratestack,
+    auth_provider: Auth,
+) -> ::cratestack::axum::Router
+where
+    Auth: ::cratestack::AuthProvider,
+{
+    cratestack_schema::axum::procedure_router(
+        db,
+        search_payment_intents::Payments,
+        (),
+        ::cratestack_codec_json::JsonCodec,
+        auth_provider,
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -268,6 +283,109 @@ mod tests {
              That is the measured blocker that kept every query on payment_intents, charges \
              and refunds raw — re-read docs/reference/vpay-db.md § \"The money tables\", and \
              if it is genuinely closed, declare the jsonb columns and move the reads"
+        );
+    }
+
+    /// Walks candidate paths for every one of the eighteen models' generated
+    /// CRUD, proving none of them is mounted through
+    /// [`super::dashboard_procedure_router`] — the mechanical version of
+    /// `DASH_ROUTES`' own doc's reason for keeping a route table at all:
+    /// axum 0.8 cannot enumerate a built `Router`, so this probes it instead
+    /// of trying to inspect it.
+    ///
+    /// **Decisive.** Changing `super::dashboard_procedure_router`'s call
+    /// from `cratestack_schema::axum::procedure_router(...)` to
+    /// `cratestack_schema::axum::router(...)` (the merged form that also
+    /// mounts `model_router`) turns every one of the seventy-two assertions
+    /// below red at once, because every model's `list`/`create` path
+    /// (`/{plural}`) and `get`/`update`/`delete` path (`/{plural}/{id}`)
+    /// would start answering `405` (a route matched, the method did not)
+    /// instead of this crate's honest `404` (no route matched at all) —
+    /// `cratestack-macros-0.12.0/src/axum/model/routes.rs` is where those
+    /// paths and that four-method set come from, and
+    /// `docs/reference/vpay-db/cratestack.md`'s "the table name is decided
+    /// by the model name" is why the eighteen strings below are the same
+    /// ones `backends/migrations/*.sql` names as tables.
+    #[tokio::test]
+    async fn no_generated_model_route_is_mounted_only_the_one_procedure_is() {
+        use tower::ServiceExt as _;
+
+        // A pool that never connects, exactly like every other test in this
+        // module. Every probed request below is refused before a statement
+        // could run: the eighteen models' paths never match any route at
+        // all, and the one real procedure is asked with a method it does
+        // not serve (`GET`, never `POST`) so this test proves routing
+        // without needing the lazy pool to answer anything.
+        let cs = lazy_cratestack();
+        let auth = crate::dashboard_transport::ExtensionAuthProvider(std::sync::Arc::new(
+            |_: &::cratestack::axum::http::Extensions| Some("acme-cameroon-tenant".to_owned()),
+        ));
+
+        const MODEL_TABLES: [&str; 18] = [
+            "currencies",
+            "providers",
+            "payment_intents",
+            "charges",
+            "refunds",
+            "checkout_sessions",
+            "ledger_transactions",
+            "ledger_entries",
+            "disabled_clients",
+            "events",
+            "webhook_deliveries",
+            "customers",
+            "staff_members",
+            "staff_sessions",
+            "oauth_authorization_codes",
+            "invoices",
+            "invoice_items",
+            "rate_limit_windows",
+        ];
+
+        for table in MODEL_TABLES {
+            for path in [format!("/{table}"), format!("/{table}/some_id")] {
+                for method in ["GET", "POST", "PATCH", "DELETE"] {
+                    let router = super::dashboard_procedure_router(cs.clone(), auth.clone());
+                    let request = ::cratestack::axum::http::Request::builder()
+                        .method(method)
+                        .uri(&path)
+                        .body(::cratestack::axum::body::Body::empty())
+                        .expect("a well-formed request");
+                    let response = router
+                        .oneshot(request)
+                        .await
+                        .expect("axum's own Router::call is infallible");
+                    assert_eq!(
+                        response.status(),
+                        ::cratestack::axum::http::StatusCode::NOT_FOUND,
+                        "{method} {path} answered something other than this crate's honest \
+                         404 — a generated model CRUD route may be mounted"
+                    );
+                }
+            }
+        }
+
+        // The one path this transport *does* mount, asked with a method it
+        // does not serve — so this test is not merely proving that
+        // everything 404s regardless of what is mounted. CrateStack
+        // procedures are `POST`-only; a `GET` on the same path matches the
+        // route (`405`) rather than missing it (`404`), which is the
+        // discriminator this assertion needs.
+        let router = super::dashboard_procedure_router(cs, auth);
+        let request = ::cratestack::axum::http::Request::builder()
+            .method("GET")
+            .uri("/$procs/searchPaymentIntents")
+            .body(::cratestack::axum::body::Body::empty())
+            .expect("a well-formed request");
+        let response = router
+            .oneshot(request)
+            .await
+            .expect("axum's own Router::call is infallible");
+        assert_eq!(
+            response.status(),
+            ::cratestack::axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            "the one procedure this transport mounts must itself be reachable (a matched \
+             route answering the wrong method), not merely absent"
         );
     }
 }

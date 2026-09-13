@@ -10,17 +10,22 @@
 //! the `Authorized` witness, and nothing else
 //! (`cratestack-macros-0.12.0/src/procedure.rs`).
 //!
-//! # What this is not
+//! # What this is, since Lane C
 //!
-//! **No transport serves it.** Nothing in this workspace mounts a CrateStack
-//! axum router or an RPC dispatcher, `vpay_db::persistence::system_context`
-//! is the only [`CratestackContext`] vpay mints anywhere, and a system
-//! context carries no tenant — so `ProcedureRegistry::search_payment_intents` would
-//! refuse it. **The only callers are this module's own tests**, which is
-//! also why `Payments` is `allow(dead_code)` in a non-test build — see
-//! `crate::schema`'s note on the `mod` declaration. `docs/status.md` says
-//! the same thing in the same words; the declaration in
-//! `schemas/vpay.cstack` is not an endpoint.
+//! **A transport serves it.** `crate::schema::dashboard_procedure_router`
+//! mounts `procedure_router` — never `router()`, which would also mount the
+//! generated CRUD for every one of this schema's eighteen models — behind
+//! `vpay-api`'s `require_dashboard_procedure_token`, over a context built by
+//! `crate::dashboard_transport::ExtensionAuthProvider` from the tenant that
+//! middleware already resolved
+//! (`docs/plans/2026-09-13-dashboard-nav-notes/transport.md`). That context
+//! is never `vpay_db::persistence::system_context()` — the only context in
+//! this crate for which `is_system()` is true, and a system context carries
+//! no tenant, so [`tenant_of`] would refuse it exactly as it refuses any
+//! other tenantless caller. `Payments` is no longer `allow(dead_code)`
+//! outside tests, because this transport constructs one in every build —
+//! see `crate::schema`'s note on the `mod` declaration. `docs/status.md`
+//! says the same thing in the same words.
 //!
 //! # What offset paging cannot promise, and what `seq` does not fix
 //!

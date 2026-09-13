@@ -861,6 +861,25 @@ pub trait Repositories:
     /// Not a general escape hatch: a new `sqlx::query!` behind this call is
     /// a repository method that was not written.
     fn op_store_pool(&self) -> PgPool;
+
+    /// Mounts CrateStack's read-only procedure transport — `procedure_router`,
+    /// never `router()` — over this same connection.
+    ///
+    /// Not [`Self::op_store_pool`] a second time: that accessor is reserved
+    /// for the one foreign trait implementation with no repository shape of
+    /// its own, and "build a second `Cratestack` handle from the pool" is
+    /// exactly the general escape hatch its own doc forbids. This method
+    /// reuses the *existing* handle every implementation already built its
+    /// queries against ([`PgRepositories::cs`]) rather than opening a new
+    /// view of the pool, so there is still exactly one way this crate holds
+    /// a `Cratestack` runtime.
+    ///
+    /// `auth` is a [`crate::DashboardAuthFn`] rather than a generic
+    /// `cratestack::AuthProvider` type parameter: this trait is used as
+    /// `Arc<dyn Repositories>`, and a `dyn`-safe method cannot be generic.
+    /// See `docs/plans/2026-09-13-dashboard-nav-notes/transport.md` for why
+    /// a closure is the whole of what this seam costs.
+    fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
 }
 
 /// The only [`Repositories`].
@@ -921,6 +940,11 @@ impl TransactionSource for PgRepositories {
 impl Repositories for PgRepositories {
     fn op_store_pool(&self) -> PgPool {
         self.pool.clone()
+    }
+
+    fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router {
+        let provider = crate::dashboard_transport::ExtensionAuthProvider(auth);
+        crate::schema::dashboard_procedure_router(self.cs.clone(), provider)
     }
 }
 

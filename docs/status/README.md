@@ -34,6 +34,12 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-13-dash-cratestack-transport.md](verification/2026-09-13-dash-cratestack-transport.md) —
+  mounting CrateStack's read-only procedure transport (nav plan Lane C):
+  `POST /dash/v1/$procs/searchPaymentIntents` answers over a real Postgres, an
+  unauthenticated caller is refused, the tenant-mismatch mutation reddens the
+  procedure body's own container test, and a routing-table walk proves no
+  generated model CRUD route is reachable
 - [verification/2026-09-13-dash-shell-drawer.md](verification/2026-09-13-dash-shell-drawer.md) —
   the dashboard shell's "More" drawer (nav plan Lane A): the theme switcher
   reachable below the ≥1280px sidebar, the signed-in identity kept visible in
@@ -102,6 +108,7 @@ the order they were measured.
 - [cratestack/2026-09-06-customers.md](cratestack/2026-09-06-customers.md)
 - [cratestack/2026-09-07-money-tables.md](cratestack/2026-09-07-money-tables.md) — migration 0037
 - [cratestack/2026-09-11-search-payment-intents.md](cratestack/2026-09-11-search-payment-intents.md) — the first `procedure`
+- [cratestack/2026-09-13-dashboard-procedure-transport.md](cratestack/2026-09-13-dashboard-procedure-transport.md) — the first transport, mounting it
 
 ## What is _not_ here
 

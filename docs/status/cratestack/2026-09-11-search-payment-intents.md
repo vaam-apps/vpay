@@ -12,13 +12,24 @@ on this row.** `schemas/vpay.cstack` declares
 PaymentIntentListFilter): Page<PaymentIntentSummary>`, and
 `backends/crates/vpay-db/src/schema/search_payment_intents.rs` implements the
 `ProcedureRegistry` method it generates, against the real `payment_intents`
-table. **Nothing serves it.** No CrateStack axum router and no RPC dispatcher
-is mounted anywhere in this workspace; `persistence::system_context` is the
-only `CratestackContext` vpay mints and it carries no tenant, so the body
-would refuse it. `GET /dash/v1/payment_intents` is untouched and remains the
-only payments list a dashboard can reach. `Payments` is
+table. ~~**Nothing serves it.** No CrateStack axum router and no RPC
+dispatcher is mounted anywhere in this workspace; `persistence::system_context`
+is the only `CratestackContext` vpay mints and it carries no tenant, so the
+body would refuse it. `GET /dash/v1/payment_intents` is untouched and remains
+the only payments list a dashboard can reach. `Payments` is
 `cfg_attr(not(test), allow(dead_code))` in consequence, which is the gap made
-visible rather than papered over.
+visible rather than papered over.~~ **Corrected 2026-09-13 (Lane C): something
+serves it now.** `vpay_db::Repositories::dashboard_procedure_router` mounts
+CrateStack's generated `procedure_router` behind a new
+`require_dashboard_procedure_token` middleware, and `POST
+/dash/v1/$procs/searchPaymentIntents` answers over a real Postgres — proven
+end to end in `backends/tests/integration/tests/dashboard_procedure_transport.rs`.
+`Payments`' `#[cfg_attr(not(test), allow(dead_code))]` is deleted in the same
+commit, because a shipping build now constructs one. `GET
+/dash/v1/payment_intents` is still untouched; the full account, including the
+context this transport authorizes against and why it is never
+`persistence::system_context()`, is
+[2026-09-13-dashboard-procedure-transport.md](2026-09-13-dashboard-procedure-transport.md).
 
 **Why a procedure could read a table the models cannot.** The row above says
 `model PaymentIntent` carries no `@@allow` arm, so every generated read on it
