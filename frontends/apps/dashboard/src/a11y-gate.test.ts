@@ -175,7 +175,13 @@ describe("the browser a11y suite is still a gate", () => {
     const css = sheets.map((f) => readFileSync(join(dir, f), "utf8")).join("");
     expect(
       css,
-      "`bg-base-100` is generated but `--color-base-100` is defined nowhere — the theme import was dropped",
+      "`bg-base-100` is generated but `--color-base-100` is defined nowhere. " +
+        "Either `app/globals.css` dropped the theme `@import`, or " +
+        "`storybook-static/` is STALE — a `just build-storybook` that failed " +
+        "this same check leaves its theme-less artefact on disk on purpose, " +
+        "so it can be inspected, and every later run of this test then reads " +
+        "that instead of the source. Re-run `just build-storybook`: if it " +
+        "exits 0, the tree was fine and the artefact was stale.",
     ).toMatch(/--color-base-100:\s*#/);
   });
 });
