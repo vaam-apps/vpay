@@ -24,8 +24,13 @@
 //! no tenant, so [`tenant_of`] would refuse it exactly as it refuses any
 //! other tenantless caller. `Payments` is no longer `allow(dead_code)`
 //! outside tests, because this transport constructs one in every build —
-//! see `crate::schema`'s note on the `mod` declaration. `docs/status.md`
-//! says the same thing in the same words.
+//! see `crate::schema`'s note on the `mod` declaration. ~~`docs/status.md`
+//! says the same thing in the same words.~~ **Struck by the Lane C review,
+//! 2026-09-13: it does not — `docs/status.md` was not touched by that
+//! commit.** The page that carries this is `docs/status/cratestack.md`,
+//! which indexes
+//! `docs/status/cratestack/2026-09-13-dashboard-procedure-transport.md`;
+//! `crate::schema`'s note says why the page moved.
 //!
 //! # What offset paging cannot promise, and what `seq` does not fix
 //!

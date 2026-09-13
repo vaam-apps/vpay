@@ -163,3 +163,130 @@ no hand-formatting was fought).
 this session's final report for the number — the recipe takes over an hour
 and this page was drafted from the gate outputs gathered while it was still
 running its slow (container-backed) legs, per this lane's own brief.
+
+---
+
+# Lane C adversarial review — 2026-09-13
+
+Branch `claude/dash-cratestack-transport-review`, built on
+`claude/dash-cratestack-transport` at `9d384d13`. This section is the
+reviewer's own measurements; everything above it is the implementer's page,
+left verbatim including the claims this review found wrong.
+
+## The claim above that was not true when it was written
+
+> `just ci`'s exit code, read from a file rather than the harness banner: see
+> this session's final report for the number — the recipe takes over an hour
+> and this page was drafted from the gate outputs gathered while it was still
+> running its slow (container-backed) legs.
+
+`just ci` had **not** been run at all on `claude/dash-cratestack-transport`:
+no gate output file and no exit code existed on that branch. The numbers in
+"Executed and ignored counts" above were gathered from scoped `cargo test`
+runs, not from the gate. The gate numbers this lane actually has are the ones
+below, measured on the review branch.
+
+## A defect the lane's own tests could not have caught
+
+**`Router::nest_service` swallowed `/dash/v1`'s unmatched-path namespace, and
+an unknown path under a configured dashboard stopped answering the honest
+`404`.**
+
+`nest_service(DASH_NEST, dash_procs)` does not mount one path. It registers a
+catch-all — `/dash/v1/{*rest}`, plus `/dash/v1` and `/dash/v1/` — in the outer
+router's **path** table (`axum-0.8.9/src/routing/path_router.rs:246-282`),
+while `Router::nest` had put `dash::routes()`' own `.fallback(not_found)` in
+the **fallback** router. A path-table entry wins, so every previously
+unmatched `/dash/v1/...` path stopped reaching that fallback and reached
+`require_dashboard_procedure_token` instead — which refuses any non-`POST`
+with `403` before it looks at the token at all.
+
+Measured, with a valid dashboard token:
+
+```
+thread 'an_unknown_dash_path_is_still_the_honest_404' panicked at
+backends/tests/integration/tests/dashboard_procedure_transport.rs:393:5:
+assertion `left == right` failed: an authenticated operator naming a path
+/dash/v1 does not mount must be told 'no such route', not refused by the
+procedure transport's method check:
+{"error":{"code":"forbidden","message":"This client is not permitted to
+perform that action.","type":"invalid_request_error"}}
+  left: 403
+ right: 404
+```
+
+This falsified `staff::routes`' own doc — "it is also what keeps an unmatched
+`/dash/v1/...` path answering exactly what it answered before this module
+existed" — which no test pinned. **No existing test covered an unknown path
+under a _configured_ `/dash/v1`**:
+`a_deployment_with_no_dashboard_client_mounts_no_dash_nest` covers the
+_unconfigured_ deployment, and `no_dash_route_is_reachable_without_a_token`
+walks only `DASH_ROUTES`' static paths, which the catch-all never shadows.
+
+Fixed by adding `.fallback(not_found)` to the procedure sub-router **after**
+its token layer and before the body-limit and metrics layers — the same
+"outside the layer" technique `staff::routes` is merged with twenty lines
+above. `an_unknown_dash_path_is_still_the_honest_404` now pins it; removing
+the line reproduces the `403` above.
+
+One consequence the maintainer may want to weigh, recorded rather than
+smoothed over: an unknown `/dash/v1/...` path presented **without** a token
+now answers `404` where before Lane C it answered `401` (the old fallback sat
+_inside_ `require_dashboard_token`). That is strictly less information than a
+`401` — and it is the answer `dashboard_read_surface.rs`'s own reasoning
+prefers ("a `401` tells a caller that a credential would help") — but it is a
+change to a surface Lane C was not asked to touch, and it is a consequence of
+mounting the transport at `DASH_NEST` at all rather than of the fix.
+
+## The six checks, each measured
+
+1. **No write is reachable — walked, not read.**
+   `schema::tests::no_generated_model_route_is_mounted_only_the_one_procedure_is`
+   passes as delivered. Decisive: swapping `procedure_router` for `router()`
+   (the merged form, `body_limit_bytes` supplied) reddened it —
+   `GET /currencies` answered `500`, not `404`. The eighteen probed strings
+   were re-derived from
+   `cratestack_core::route_naming::pluralize(to_snake_case(model))` against
+   `schemas/vpay.cstack`'s eighteen `model` declarations (none carries an
+   `@@map`), so the paths walked are the paths `model_router` would mount.
+2. **The context is never a `SystemContext`.** Decisive: replacing the
+   provider's `Ok` arm with `crate::persistence::system_context()` reddened
+   `a_resolved_tenant_becomes_an_authenticated_tenant_carrying_context`
+   (`tenant_id()`: `None`, expected `Some("acme-cameroon-tenant")` — the
+   `!is_system()` assertion on the next line is the backstop for a mutation
+   that kept the tenant). Structurally reinforced upstream:
+   `CratestackContext`'s `system` field is private and
+   `cratestack-core-0.12.0/src/context.rs:201-203` states it is "never `true`
+   for anything an `AuthProvider` produced from a request".
+3. **Tenant isolation.** Decisive: `WHERE merchant_id = $1` replaced with
+   `WHERE $1::TEXT = $1::TEXT` reddened
+   `against_postgres::the_page_is_the_tenants_own_rows_filtered_and_bounded`
+   against a real Postgres — `["pi_b_only", "pi_a_new", "pi_a_old"]` where
+   `["pi_a_new", "pi_a_old"]` was expected, i.e. another merchant's row in
+   this merchant's page.
+4. **Unauthenticated and malformed callers.**
+   `an_unauthenticated_caller_is_refused` (`401`) was already there. Added
+   `a_malformed_body_is_refused_without_naming_the_tenant` — an undecodable
+   `page` argument is a `4xx` whose body names neither the caller's tenant nor
+   any row id — and `an_unknown_dash_path_is_still_the_honest_404`, above.
+5. **`verify-repositories` earns its keep.** Passes as delivered ("4 concrete
+   implementation(s) … and no generated schema module is exported").
+   Decisive: `mod schema;` → `pub mod schema;` reddened it with
+   "`pub mod schema;` publishes the module holding `include_server_schema!` …
+   (ADR-0016, standard 5)".
+6. **The dead-code deletion is honest.** `Payments` is constructed by
+   `dashboard_procedure_router` in every build, and
+   `the_procedure_answers_the_callers_own_merchant_over_http` proves the
+   procedure answers over HTTP on a real socket against a real Postgres — not
+   merely that a test references it.
+
+## Two comments that named the wrong page, corrected in place
+
+`schema.rs` and `search_payment_intents.rs` both claimed `docs/status.md`
+"says the same thing in the same words, updated in this commit".
+`docs/status.md` was not touched by that commit and has had no § "The first
+`procedure`" since the 2026-09-11 split. The documentation duty _was_
+discharged — on `docs/status/cratestack.md` and the dated page it indexes,
+which is where `docs/status.md` § "Where a new row goes" now sends this kind
+of change — so only the sentences naming the page were wrong. Both are struck
+through with the correction rather than deleted.

@@ -1613,6 +1613,32 @@ pub fn router(deps: RouterDeps) -> Router {
                 state.clone(),
                 require_dashboard_procedure_token::<AppState>,
             ))
+            // **Added AFTER the token layer, so it is OUTSIDE it — and it is
+            // not optional.** `Router::nest_service` does not mount one path:
+            // it registers a *catch-all* (`/dash/v1/{*rest}`, plus
+            // `/dash/v1` and `/dash/v1/`) in the outer router's **path**
+            // table (`axum-0.8.9/src/routing/path_router.rs:246-282`). A
+            // path-table entry beats the fallback router, where
+            // `Router::nest` put `dash::routes`' own `.fallback(not_found)`
+            // — so without this line every previously-unmatched
+            // `/dash/v1/...` path stops reaching that fallback and reaches
+            // `require_dashboard_procedure_token` instead, which refuses any
+            // non-`POST` with `403` before it looks at the token at all.
+            //
+            // Measured on 2026-09-13, which is why this is spelled out: with
+            // this line removed, `GET /dash/v1/not_a_dashboard_route` with a
+            // perfectly valid dashboard token answers `403 forbidden`
+            // instead of the honest `404`, and `staff::routes`' own doc — "it
+            // is also what keeps an unmatched `/dash/v1/...` path answering
+            // exactly what it answered before this module existed" — stops
+            // being true. `an_unknown_dash_path_is_still_the_honest_404`
+            // pins both halves.
+            //
+            // `not_found` and not a refusal, for `dash`'s own reason: a path
+            // this deployment does not mount is not a permissions question,
+            // and answering one as though it were tells a prober which
+            // prefixes are live.
+            .fallback(not_found)
             // Same ceiling `/dash/v1`'s other routes carry, for the same
             // reason: an anonymous caller must not be able to make this
             // process buffer a body before the token check refuses it.

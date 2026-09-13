@@ -319,3 +319,149 @@ async fn an_unauthenticated_caller_is_refused() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// One arbitrary request against the running server, for the route-shape
+/// assertions below — `search_payment_intents` is the happy path's own
+/// helper and hard-codes both the method and the body.
+impl Harness {
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> anyhow::Result<(u16, Value)> {
+        let client = reqwest::Client::builder()
+            .build()
+            .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed");
+        let mut request = client
+            .request(
+                reqwest::Method::from_bytes(method.as_bytes()).expect("a known method"),
+                format!("{}{path}", self.base_url),
+            )
+            .header("content-type", "application/json");
+        if let Some(body) = body {
+            request = request.body(serde_json::to_vec(&body)?);
+        }
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("sending {method} {path}"))?;
+        let status = response.status().as_u16();
+        let text = response.text().await.context("reading the body")?;
+        Ok((
+            status,
+            serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        ))
+    }
+}
+
+/// **`/dash/v1`'s uniform-404 property, which Lane C must not have widened.**
+///
+/// `dash::routes()`'s own fallback is `vpay_api::not_found`, and
+/// `require_dashboard_token` answers it for every `/dash/v1/...` path the
+/// route table does not name — so an authenticated operator who mistypes a
+/// path is told "no such route", in this crate's own error envelope, and
+/// nothing about what else this deployment mounts.
+///
+/// **Decisive for the way Lane C mounts its transport.** The procedure
+/// router is attached with `Router::nest_service(DASH_NEST, ..)`, and
+/// `nest_service` registers a *catch-all* (`/dash/v1/{*rest}`, plus
+/// `/dash/v1` and `/dash/v1/`) in the outer **path** router
+/// (`axum-0.8.9/src/routing/path_router.rs:246-282`). A path router entry
+/// beats the fallback router, so every previously-unmatched `/dash/v1/...`
+/// path now reaches `require_dashboard_procedure_token` instead of
+/// `dash::routes()`'s fallback — and that middleware refuses a non-`POST`
+/// with `403` before it looks at the token at all. Without the
+/// `.fallback(not_found)` this lane adds *outside* that layer, the two
+/// assertions below are `403` and a CrateStack-shaped body.
+#[tokio::test]
+async fn an_unknown_dash_path_is_still_the_honest_404() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.dashboard_token();
+
+    // A GET, the shape `/dash/v1` actually serves, on a path it does not
+    // mount. `403` here would be `require_dashboard_procedure_token`'s
+    // method check answering for a route that has nothing to do with the
+    // procedure transport.
+    let (status, body) = harness
+        .request("GET", "/dash/v1/not_a_dashboard_route", Some(&token), None)
+        .await?;
+    assert_eq!(
+        status, 404,
+        "an authenticated operator naming a path /dash/v1 does not mount must be told \
+         'no such route', not refused by the procedure transport's method check: {body}"
+    );
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error"),
+        "the 404 must be this crate's own error envelope, not CrateStack's: {body}"
+    );
+
+    // And a POST on a path that is not a procedure: this one *does* reach
+    // the transport, and must still be a 404 rather than anything that
+    // distinguishes "no such procedure" from "no such route".
+    let (status, body) = harness
+        .request(
+            "POST",
+            "/dash/v1/$procs/noSuchProcedure",
+            Some(&token),
+            Some(serde_json::json!({})),
+        )
+        .await?;
+    assert_eq!(
+        status, 404,
+        "a procedure this schema does not declare must be a 404: {body}"
+    );
+    Ok(())
+}
+
+/// **A malformed body is a refusal that says nothing about the tenant.**
+///
+/// Criterion 2's other half: `an_unauthenticated_caller_is_refused` proves
+/// the credential check, and this proves that a caller who *has* a
+/// credential and sends nonsense is told only that the body was
+/// unacceptable — never whether the tenant, or any id inside the body,
+/// exists.
+#[tokio::test]
+async fn a_malformed_body_is_refused_without_naming_the_tenant() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.dashboard_token();
+
+    seed_intent(harness.repositories.as_ref(), MERCHANT_A, "pi_procs_a_mal").await?;
+
+    let (status, body) = harness
+        .request(
+            "POST",
+            PROCS_PATH,
+            Some(&token),
+            // `page` is an object in the schema; a string is the cheapest
+            // well-formed JSON the decoder must refuse.
+            Some(serde_json::json!({ "page": "not-an-object", "filter": {} })),
+        )
+        .await?;
+    // A 4xx, deliberately not pinned to one code: which 4xx CrateStack's
+    // codec chooses for an undecodable argument is its decision, and pinning
+    // it here would make a CrateStack patch release this suite's problem.
+    // What must hold is that the request is *refused* — not served, and not
+    // a 5xx that would say the process fell over on caller-supplied input.
+    assert!(
+        (400..500).contains(&status),
+        "a malformed procedure body must be refused as a client error, not served and not a \
+         500: {status} {body}"
+    );
+
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains(MERCHANT_A),
+        "a decode failure must not echo the caller's tenant back: {body}"
+    );
+    assert!(
+        !rendered.contains("pi_procs_a_mal"),
+        "a decode failure must not name rows: {body}"
+    );
+    Ok(())
+}
