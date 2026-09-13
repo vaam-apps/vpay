@@ -111,14 +111,30 @@ of them, so a green run never overstates coverage.
 `GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`),
 and behind a merchant bearer token and a scope check:
 
-| Resource                | Methods                                                            |
-| ----------------------- | ------------------------------------------------------------------ |
-| `/v1/payment_intents`   | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
-| `/v1/checkout/sessions` | `POST`, `GET`, `GET {id}`, `POST {id}/expire`                      |
-| `/v1/customers`         | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}`              |
-| `/v1/events`            | `GET`, `GET {id}`                                                  |
-| `/v1/refunds/{id}`      | `GET`                                                              |
-| `/v1/account_holders`   | `GET`                                                              |
+| Resource                               | Methods                                                            |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `/v1/payment_intents`                  | `POST`, `GET`, `GET {id}`, `POST {id}/confirm`, `POST {id}/cancel` |
+| `/v1/checkout/sessions`                | `POST`, `GET`, `GET {id}`, `POST {id}/expire`                      |
+| `/v1/customers`                        | `POST`, `GET`, `GET {id}`, `POST {id}`, `DELETE {id}`              |
+| `/v1/invoices`                         | `POST`, `GET`                                                      |
+| `/v1/invoices/{id}`                    | `GET`, `POST`, `PATCH`, `DELETE`                                   |
+| `/v1/invoices/{id}/finalize`           | `POST`                                                             |
+| `/v1/invoices/{id}/void`               | `POST`                                                             |
+| `/v1/invoices/{id}/mark_uncollectible` | `POST`                                                             |
+| `/v1/invoices/{id}/pay`                | `POST`                                                             |
+| `/v1/invoice_items`                    | `POST`                                                             |
+| `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE`                                   |
+| `/v1/events`                           | `GET`, `GET {id}`                                                  |
+| `/v1/refunds/{id}`                     | `GET`                                                              |
+| `/v1/account_holders`                  | `GET`                                                              |
+
+`POST`/`PATCH` are one handler on both `/v1/invoices/{id}` and
+`/v1/invoice_items/{id}` — Stripe's API has no `PATCH`, so a merchant's
+existing client sends `POST`; `PATCH` is mounted beside it because a partial
+update is what the verb means. There is no collection `GET` on
+`/v1/invoice_items`: an invoice's lines are read from the invoice itself. See
+[`docs/flows/invoices.md`](docs/flows/invoices.md) for the object model, the
+state machine and what `pay` does on a market with no stored payment methods.
 
 An `Idempotency-Key` is required on every `POST`. The table is the constant
 `vpay_api::V1_ROUTES`, and a boundary test walks it — it does not list paths of

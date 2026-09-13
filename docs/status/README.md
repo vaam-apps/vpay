@@ -34,6 +34,12 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-13-dash-shell-drawer.md](verification/2026-09-13-dash-shell-drawer.md) —
+  the dashboard shell's "More" drawer (nav plan Lane A): the theme switcher
+  reachable below the ≥1280px sidebar, the signed-in identity kept visible in
+  `<main>` rather than moved behind it, the bottom-sheet-below-`md` /
+  right-panel-above split, and the review that reversed the first
+  implementation's "a bottom sheet cannot pass `verify-ui`" finding
 - [verification/2026-09-13-storybook-reverified.md](verification/2026-09-13-storybook-reverified.md) —
   the 2026-09-12 Storybook restoration re-run on `origin/master`, the six
   places that still said the gap was open, and the measured answer to the

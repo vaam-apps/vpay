@@ -468,6 +468,12 @@ settlement flips only the invoice its own intent is bound to, and from
 `vpay-db`'s own module adds three with no container; `vpay-api`'s `model`
 module pins the wire object's **nineteen** keys.
 
+**The top-level [`README.md`](../../README.md)'s `/v1` route table did not
+list any of these eight routes until 2026-09-13**, although this page's own
+[surface table](#the-surface) always had. It was not a code gap — `finalize`,
+`void`, `mark_uncollectible`, `pay` and the rest shipped in S4b — only a stale
+top-level index. `README.md` now lists all eight, matching `vpay_api::V1_ROUTES`.
+
 **The merchant SDKs caught up on 2026-09-08 (exp33).** `sdks/rust` adds
 sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
 `sdks/nodejs` seventeen in `src/client.test.ts` (207 in the package, 0
