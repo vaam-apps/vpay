@@ -106,3 +106,30 @@ Nothing was half-done: no Refine package is installed, no page moved, and the
 BFF is exactly as unused as the Lane 2 row says. **The `OPTIONS` fix and the
 browser evidence stand on their own** — they are about a surface that exists
 either way.
+
+**Built and proven, 2026-09-13 (nav plan Lane A): the "More" drawer.**
+`AppShell` gained a drawer (`src/components/more-menu.tsx`, `@vaam-apps/ui`'s
+generic `Drawer` composition) holding the nav tree rendered from the same
+`NAV_ENTRIES` array `SideNav` reads, `ThemeSwitcher`, and a second
+`SignedInBar`. It closes a real gap: `SideNav` only ever renders its
+`accountSlot` in the ≥1280px in-flow sidebar, so below that width there was no
+theme control reachable at all before this. The signed-in identity did
+**not** move into the drawer — `dashboard.cy.ts`'s
+`cy.contains(staffEmail()).should("be.visible")`, with eight tests chained
+after it in a `testIsolation: false` sequence, is why: `SignedInBar` stays
+exactly where it was, unconditionally visible in `<main>`, and the drawer's
+copy is a second mount of the same component rather than a competing one.
+The rail is unchanged (still the one `Payments` entry, still
+`smallScreen="floating"`), and the content column's padding
+(`pb-20 sm:pb-0 sm:pl-20 xl:pl-0`) is untouched — the drawer floats over the
+page like everything else `SideNav`'s rails do, and reserves no space of its
+own.
+
+`pnpm --filter @vpay/dashboard typecheck`, `just lint-web` (`verify-ui`
+included) and `just test-web` all pass — the dashboard suite is **303 vitest
+cases in 29 files, 0 skipped** — with no test edited and no assertion
+weakened. **Not proven in a real browser:** no Cypress case opens the
+drawer, so its contents and behaviour at a real viewport are checked by
+jsdom and `tsc` only. Full detail, including why the drawer is a right-hand
+panel rather than the bottom sheet the plan first described, is in
+[../../status/verification/2026-09-13-dash-shell-drawer.md](../../status/verification/2026-09-13-dash-shell-drawer.md).

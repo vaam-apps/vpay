@@ -34,6 +34,11 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-13-dash-shell-drawer.md](verification/2026-09-13-dash-shell-drawer.md) —
+  the dashboard shell's "More" drawer (nav plan Lane A): the theme switcher
+  reachable below the ≥1280px sidebar, the signed-in identity kept visible in
+  `<main>` rather than moved behind it, and why the drawer is a right-hand
+  panel and not the bottom sheet the plan first described
 - [verification/2026-09-12-erasure-idempotency-window.md](verification/2026-09-12-erasure-idempotency-window.md) —
   issue #111: the 24-hour window in which an update that lost a race to a
   `DELETE` put the payer back into `idempotency_keys.response_body` —
