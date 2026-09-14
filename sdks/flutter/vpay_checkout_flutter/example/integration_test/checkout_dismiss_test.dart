@@ -23,6 +23,8 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:vpay_checkout_flutter/src/platform/messages.g.dart'
+    show CheckoutWindowMode;
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
 import 'support/ensure_platform_registered.dart';
@@ -57,6 +59,7 @@ void main() {
         url: fixture.sessionUrl,
         stopUrls: const [],
         allowInsecureUrl: true,
+        mode: CheckoutWindowMode.inApp,
       );
 
       // Gives the Activity transition time to land in the foreground

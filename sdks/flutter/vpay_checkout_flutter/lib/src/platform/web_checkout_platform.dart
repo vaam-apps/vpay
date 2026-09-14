@@ -31,6 +31,14 @@
 /// `OpenCheckoutPopupOptions.completionOrigin`'s default in `popup.ts`,
 /// this only ever accepts a message whose `event.origin` is this page's own
 /// origin, not the checkout page's.
+///
+/// **D8's `VpayCheckoutMode` collapses to one behaviour here.** `inApp` and
+/// `externalBrowser` both open the same `window.open` popup — there is no
+/// in-app WebView on Flutter web to distinguish `inApp` from, and the popup
+/// this class already opens for every mode *is* an external-browser
+/// context. [show]'s `mode` parameter is accepted, never dropped from the
+/// signature (a caller passing `externalBrowser` on web gets a real window,
+/// not an `UnimplementedError`), and then intentionally not read.
 library;
 
 import 'dart:async';
@@ -95,6 +103,20 @@ final class WebVpayCheckoutPlatform extends VpayCheckoutPlatform {
     // the payer whatever scheme `window.open` navigated to; there is no
     // separate host-side check to relax.
     required bool allowInsecureUrl,
+    // D8's `inApp`/`externalBrowser` choice is not applicable on web
+    // either, and not for the same reason as the two params above: it is
+    // not that this platform ignores the distinction, it is that the
+    // distinction does not exist here. There is no in-app WebView option
+    // on Flutter web at all (design doc, "The shape": web's row is
+    // `window.open` popup, "no plugin window") — a `window.open` popup
+    // already **is** an external-browser context, the same surface
+    // `sdks/stripe-js/src/popup.ts` treats as a first-class peer for every
+    // integration on the web. So `inApp` and `externalBrowser` open the
+    // identical popup here; this parameter is accepted (never silently
+    // dropped from the signature — a caller passing `externalBrowser` gets
+    // a real window, not an `UnimplementedError`) and then intentionally
+    // not read.
+    required CheckoutWindowMode mode,
   }) async {
     _teardown();
     _settled = false;

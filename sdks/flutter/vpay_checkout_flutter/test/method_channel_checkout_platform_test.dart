@@ -54,12 +54,14 @@ void main() {
           ),
         ],
         allowInsecureUrl: false,
+        mode: CheckoutWindowMode.inApp,
       );
 
       final ShowCheckoutRequest? request = hostApi.lastShowRequest;
       expect(request, isNotNull);
       expect(request!.url, 'https://checkout.example/c/cs_123#secret');
       expect(request.allowInsecureUrl, isFalse);
+      expect(request.mode, CheckoutWindowMode.inApp);
       expect(request.stopUrls, [
         CheckoutStopUrl(
           scheme: 'https',
@@ -84,10 +86,25 @@ void main() {
         url: 'http://localhost:8081/c/cs_123#secret',
         stopUrls: const [],
         allowInsecureUrl: true,
+        mode: CheckoutWindowMode.inApp,
       );
 
       expect(hostApi.lastShowRequest!.allowInsecureUrl, isTrue);
       expect(hostApi.lastShowRequest!.stopUrls, isEmpty);
+    });
+
+    test('forwards mode: externalBrowser unchanged (D8)', () async {
+      final hostApi = _RecordingHostApi();
+      final platform = MethodChannelVpayCheckoutPlatform(hostApi: hostApi);
+
+      await platform.show(
+        url: 'https://checkout.example/c/cs_123#secret',
+        stopUrls: const [],
+        allowInsecureUrl: false,
+        mode: CheckoutWindowMode.externalBrowser,
+      );
+
+      expect(hostApi.lastShowRequest!.mode, CheckoutWindowMode.externalBrowser);
     });
 
     test('propagates a failure the host API throws, without swallowing it', () {
@@ -100,6 +117,7 @@ void main() {
           url: 'https://checkout.example/c/cs_123#secret',
           stopUrls: const [],
           allowInsecureUrl: false,
+          mode: CheckoutWindowMode.inApp,
         ),
         throwsA(isA<StateError>()),
       );

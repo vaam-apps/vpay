@@ -57,6 +57,7 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
+    required CheckoutWindowMode mode,
   }) {
     return _hostApi.show(
       ShowCheckoutRequest(
@@ -71,6 +72,7 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
             ),
         ],
         allowInsecureUrl: allowInsecureUrl,
+        mode: mode,
       ),
     );
   }

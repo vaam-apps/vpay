@@ -15,7 +15,7 @@
 library;
 
 import '../checkout_controller.dart' show StopUrlSpec;
-import 'messages.g.dart' show CheckoutWindowEvent;
+import 'messages.g.dart' show CheckoutWindowEvent, CheckoutWindowMode;
 
 /// What a platform host must do: show a URL, watch for one of a list of
 /// stop URLs or a dismissal, and say which — nothing else (design doc, "The
@@ -35,10 +35,17 @@ abstract class VpayCheckoutPlatform {
   /// host never has to apply `{CHECKOUT_SESSION_ID}` substitution or decide
   /// what "matches" means itself. [allowInsecureUrl] mirrors
   /// `BrowserClient.allowInsecureBaseUrl` (D6).
+  ///
+  /// [mode] is D8's `inApp`/`externalBrowser` choice. A host that has not
+  /// implemented `externalBrowser` must throw [UnimplementedError] rather
+  /// than silently opening the in-app window instead — see
+  /// `vpay_checkout.dart`'s doc comment on `VpayCheckoutMode.externalBrowser`
+  /// for why that fallback is the worse failure.
   Future<void> show({
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
+    required CheckoutWindowMode mode,
   });
 
   /// Closes the window if one is open.
@@ -68,6 +75,7 @@ final class UnimplementedVpayCheckoutPlatform extends VpayCheckoutPlatform {
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
+    required CheckoutWindowMode mode,
   }) => _unimplemented('show');
 
   @override

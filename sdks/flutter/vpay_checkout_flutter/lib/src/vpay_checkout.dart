@@ -12,29 +12,44 @@ import 'checkout_controller.dart';
 import 'errors.dart';
 import 'platform/checkout_platform.dart';
 import 'platform/messages.g.dart'
-    show CheckoutWindowEvent, CheckoutWindowOutcome;
+    show CheckoutWindowEvent, CheckoutWindowMode, CheckoutWindowOutcome;
 import 'result.dart';
 
 /// D8: the in-app WebView (default) or the external-browser mode. Both are
 /// resolved identically by [CheckoutController] — the mode only changes
 /// what the platform host shows, never how the outcome is decided (D1).
+///
+/// Kept distinct from `pigeons/checkout.dart`'s `CheckoutWindowMode` (the
+/// wire type [_toWire] converts to) rather than exporting that one
+/// directly: this is the public Dart API and must not change shape just
+/// because the pigeon-generated seam does.
 enum VpayCheckoutMode {
   /// The in-app `WebView`/`WKWebView`/popup (design doc D5). The default,
-  /// and the only mode any platform host in this repository implements.
+  /// and the only mode with no scheme-hijack surface at all.
   inApp,
 
-  /// Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
-  /// (design doc D8) — **not implemented on any platform.**
+  /// Custom Tabs (`androidx.browser`) on Android, `SFSafariViewController`
+  /// on iOS below 17.4 (design doc D8). Android is wired end to end and
+  /// compiles for real; iOS/macOS are wired the same way but compiled by
+  /// nobody (no Xcode on this host); web opens the same popup it always
+  /// does, because a `window.open` popup already is an external-browser
+  /// context — see `WebVpayCheckoutPlatform`'s own doc comment.
   ///
-  /// [VpayCheckout.start] throws [UnimplementedError] when this is passed.
-  /// It is deliberately not silently downgraded to [inApp]: until
-  /// 2026-09-14 it was, which made the public API claim a mode that did
-  /// not exist and handed the caller an in-app `WebView` for the one rail
-  /// case (design doc D8: Orange) the mode exists to serve. The value is
-  /// kept in the enum rather than removed because D-M2 is a maintainer
-  /// decision that this mode ships — see `docs/sdks/parity.md`'s dated ⛔
-  /// row for who owns closing it.
+  /// **No custom URL scheme, on any platform, ever** (design doc D8):
+  /// `checked_forward_url` accepts only `http(s)`, and schemes are
+  /// first-come-first-served on Android, so a scheme callback could be
+  /// hijacked by any installed app. Return detection is therefore D8's
+  /// "tier 0" — the payer finishes on the merchant's own page and the
+  /// plugin polls on resume — which D1 already makes correctness-complete:
+  /// the window never decides an outcome, only `/v1/browser` does.
   externalBrowser,
+}
+
+extension on VpayCheckoutMode {
+  CheckoutWindowMode get _toWire => switch (this) {
+    VpayCheckoutMode.inApp => CheckoutWindowMode.inApp,
+    VpayCheckoutMode.externalBrowser => CheckoutWindowMode.externalBrowser,
+  };
 }
 
 /// `{base}/c/{cs_id}?key={pk}#{cs_secret}` (D6), split into the one thing
@@ -98,22 +113,6 @@ final class VpayCheckout {
     String sessionUrl, {
     VpayCheckoutMode mode = VpayCheckoutMode.inApp,
   }) async {
-    if (mode == VpayCheckoutMode.externalBrowser) {
-      // D8 is designed but unwired: `pigeons/checkout.dart`'s
-      // `ShowCheckoutRequest` carries no `mode` field, so no platform host
-      // has anything to act on. Refusing loudly is the honest form of that
-      // gap — silently opening the in-app WebView instead would be this
-      // repository's own first-listed failure mode (CLAUDE.md, "The failure
-      // mode to avoid"): an API that returns something plausible for a
-      // capability it does not have.
-      throw UnimplementedError(
-        'vpay_checkout_flutter: VpayCheckoutMode.externalBrowser is not '
-        'implemented on any platform. pigeons/checkout.dart\'s '
-        'ShowCheckoutRequest carries no mode field, so Custom Tabs / '
-        'SFSafariViewController (design doc D8) are unreachable. Use '
-        'VpayCheckoutMode.inApp; see docs/sdks/parity.md for the dated gap.',
-      );
-    }
     final _SessionUrl? parsed = _SessionUrl.parse(sessionUrl);
     if (parsed == null) {
       return VpayCheckoutUnresolved(
@@ -137,7 +136,7 @@ final class VpayCheckout {
           error: error,
         );
       case CheckoutPreflightSuccess(:final ready):
-        return _showAndResolve(sessionUrl, ready);
+        return _showAndResolve(sessionUrl, ready, mode);
     }
   }
 
@@ -154,6 +153,7 @@ final class VpayCheckout {
   Future<VpayCheckoutResult> _showAndResolve(
     String sessionUrl,
     CheckoutPreflightReady ready,
+    VpayCheckoutMode mode,
   ) async {
     // `VpayCheckoutPlatform.instance` is `UnimplementedVpayCheckoutPlatform`
     // unless a host registered itself; reading `windowEvents` off it throws
@@ -190,6 +190,7 @@ final class VpayCheckout {
           url: sessionUrl,
           stopUrls: ready.stopUrls,
           allowInsecureUrl: _controller.client.allowInsecureBaseUrl,
+          mode: mode._toWire,
         );
       } on UnimplementedError {
         // The honest "no host here" gap, not a runtime failure — it must

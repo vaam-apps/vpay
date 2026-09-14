@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:vpay_checkout_flutter/src/platform/messages.g.dart'
+    show CheckoutWindowMode;
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
 const _piSecret = 'pi_123_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -72,6 +74,7 @@ class _FakePlatform extends VpayCheckoutPlatform {
   final CheckoutWindowOutcome? outcome;
   bool shown = false;
   bool? lastAllowInsecureUrl;
+  CheckoutWindowMode? lastMode;
 
   /// A **broadcast** controller, exactly as both real platform
   /// implementations use — so a test can reproduce the hazard those have:
@@ -86,9 +89,11 @@ class _FakePlatform extends VpayCheckoutPlatform {
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
+    required CheckoutWindowMode mode,
   }) async {
     shown = true;
     lastAllowInsecureUrl = allowInsecureUrl;
+    lastMode = mode;
     final CheckoutWindowOutcome? outcome = this.outcome;
     if (outcome == null) {
       // A host that opened a window and then never reported anything.
@@ -120,6 +125,7 @@ class _RefusingPlatform extends VpayCheckoutPlatform {
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
+    required CheckoutWindowMode mode,
   }) async {
     throw StateError(
       'the browser refused to open https://checkout.example/c/cs_123'
@@ -231,29 +237,32 @@ void main() {
   });
 
   group('VpayCheckout.start — VpayCheckoutMode.externalBrowser (D8)', () {
-    test('is refused with UnimplementedError, never silently downgraded to the in-app WebView', () async {
-      final fake = _FakePlatform(CheckoutWindowOutcome.stopUrlReached);
-      VpayCheckoutPlatform.instance = fake;
-      var called = false;
-      final checkout = VpayCheckout(
-        baseUrl: 'https://api.example',
-        publishableKey: 'pk_test_1',
-        httpClient: MockClient((request) async {
-          called = true;
-          return _json(_sessionJson());
-        }),
-      );
+    test(
+      'is threaded to the platform host as CheckoutWindowMode.externalBrowser',
+      () async {
+        final fake = _FakePlatform(CheckoutWindowOutcome.stopUrlReached);
+        VpayCheckoutPlatform.instance = fake;
+        final checkout = VpayCheckout(
+          baseUrl: 'https://api.example',
+          publishableKey: 'pk_test_1',
+          httpClient: MockClient(
+            (request) async => request.url.path.contains('checkout/sessions')
+                ? _json(_sessionJson())
+                : _json(_paymentIntentJson('succeeded')),
+          ),
+        );
 
-      await expectLater(
-        checkout.start(_sessionUrl, mode: VpayCheckoutMode.externalBrowser),
-        throwsA(isA<UnimplementedError>()),
-      );
-      // Refused before the pre-flight, so before anything at all happens.
-      expect(called, isFalse);
-      expect(fake.shown, isFalse);
-    });
+        await checkout.start(
+          _sessionUrl,
+          mode: VpayCheckoutMode.externalBrowser,
+        );
 
-    test('the default mode is inApp and does open the window', () async {
+        expect(fake.shown, isTrue);
+        expect(fake.lastMode, CheckoutWindowMode.externalBrowser);
+      },
+    );
+
+    test('the default mode is inApp, threaded to the platform host as CheckoutWindowMode.inApp', () async {
       final fake = _FakePlatform(CheckoutWindowOutcome.stopUrlReached);
       VpayCheckoutPlatform.instance = fake;
       final checkout = VpayCheckout(
@@ -269,6 +278,35 @@ void main() {
       await checkout.start(_sessionUrl);
 
       expect(fake.shown, isTrue);
+      expect(fake.lastMode, CheckoutWindowMode.inApp);
+    });
+
+    test('with no platform host at all, still throws UnimplementedError (not special-cased any more — the seam itself has none)', () async {
+      // `VpayCheckout.start` no longer refuses `externalBrowser` itself
+      // (that special case is gone: `pigeons/checkout.dart`'s `mode` field
+      // is real now) — it reaches `UnimplementedVpayCheckoutPlatform`'s own
+      // `show`, which still throws `UnimplementedError` because no host is
+      // registered in this unit-test process at all. Mirrors the "no
+      // platform host exists yet" group above, but with `externalBrowser`
+      // explicitly, so a future change that special-cased the mode again
+      // would be caught here.
+      var called = false;
+      final checkout = VpayCheckout(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          called = true;
+          return _json(_sessionJson());
+        }),
+      );
+
+      await expectLater(
+        checkout.start(_sessionUrl, mode: VpayCheckoutMode.externalBrowser),
+        throwsA(isA<UnimplementedError>()),
+      );
+      // Unlike the pre-2026-09-14 behaviour, the pre-flight DID run — the
+      // refusal now happens at the platform seam, not before it.
+      expect(called, isTrue);
     });
   });
 
