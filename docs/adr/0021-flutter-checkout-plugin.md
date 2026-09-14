@@ -179,12 +179,30 @@ exists (`sdks/flutter/vpay_checkout_flutter/lib/`), and so do the Android and
 web hosts — both compiled, neither ever opened on a device or in a browser.
 The parity table and its dated ⛔ rows exist. What has **not** changed: iOS
 and macOS are **compiled by nobody** (no `xcodebuild` on this repository's
-host), `VpayCheckoutMode.externalBrowser` (D8) is designed and unbuilt — the
-API throws `UnimplementedError` for it — none of the plugin's tests are in
-`just ci` (D-M3), and nothing here has been driven against a real MTN or
-Orange endpoint, a real device, or a store review. The decisions above are
-unchanged; only this paragraph's account of what exists is.
+host), none of the plugin's tests are in `just ci` (D-M3), and nothing here
+has been driven against a real MTN or Orange endpoint, a real device, or a
+store review. The decisions above are unchanged; only this paragraph's
+account of what exists is.
 [`../status/verification/2026-09-14-flutter-review.md`](../status/verification/2026-09-14-flutter-review.md)
+
+**Narrowed again, D8 itself (same day, later pass).** The paragraph above
+said `VpayCheckoutMode.externalBrowser` "is designed and unbuilt — the API
+throws `UnimplementedError` for it." That is no longer the whole truth:
+`pigeons/checkout.dart`'s `ShowCheckoutRequest` now carries a `mode` field,
+threaded end to end. Android's host launches a real Custom Tab
+(`androidx.browser`) and reports a dismissal the moment the host `Activity`
+itself resumes (D8's tier 0 — no custom scheme, D1 makes it
+correctness-complete via the poll); that host compiles for real
+(`flutter build apk --debug`/`--release` on `example/`). iOS's host wraps
+`SFSafariViewController`, not `ASWebAuthenticationSession` — this ADR's
+own D8 reasoning explains why — and macOS's opens the payer's default
+browser via `NSWorkspace`, the maintainer's own call, recorded in that
+file's header. Both are **compiled by nobody**, unchanged. Not built by
+this pass: D8's tier 1 (Android App Links / iOS 17.4+ Associated Domains),
+left as a dated gap because it needs a merchant-hosted deployment this
+repository cannot provide; an emulator run proving Custom Tabs actually
+opens (attempted — see `docs/sdks/parity.md`'s dated row for the outcome);
+and `just ci` still does not run any of this (D-M3, unchanged).
 carries the evidence.
 
 **Reversible, at the cost this repository always pays for a reversal: a new
