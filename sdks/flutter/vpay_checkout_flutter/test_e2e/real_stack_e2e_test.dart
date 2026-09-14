@@ -347,58 +347,59 @@ void main() {
   });
 
   group('real stack — the uniform 404', () {
-    test('an unknown id, a wrong secret and a wrong key all answer the same '
-        '404', () async {
-      final http.Client httpClient = http.Client();
-      addTearDown(httpClient.close);
-      final _ParsedSessionUrl real = _ParsedSessionUrl.parse(
-        fixture.successSessionUrl,
-      );
+    test(
+      'an unknown id, a wrong secret and a wrong key all answer the same 404',
+      () async {
+        final http.Client httpClient = http.Client();
+        addTearDown(httpClient.close);
+        final _ParsedSessionUrl real = _ParsedSessionUrl.parse(
+          fixture.successSessionUrl,
+        );
 
-      final BrowserClient client = BrowserClient(
-        baseUrl: fixture.baseUrl,
-        publishableKey: real.publishableKey,
-        httpClient: httpClient,
-        allowInsecureBaseUrl: true,
-      );
-      final CheckoutSessionResult unknownId = await client
-          .retrieveCheckoutSession(
-            'cs_doesnotexist00000000_secret_'
-            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          );
-      final CheckoutSessionResult wrongSecret = await client
-          .retrieveCheckoutSession(
-            '${real.checkoutSessionId}_secret_'
-            'wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww',
-          );
-      final BrowserClient wrongKeyClient = BrowserClient(
-        baseUrl: fixture.baseUrl,
-        publishableKey: 'pk_test_doesnotexist00000000000',
-        httpClient: httpClient,
-        allowInsecureBaseUrl: true,
-      );
-      final CheckoutSessionResult wrongKey = await wrongKeyClient
-          .retrieveCheckoutSession(real.clientSecret);
+        final BrowserClient client = BrowserClient(
+          baseUrl: fixture.baseUrl,
+          publishableKey: real.publishableKey,
+          httpClient: httpClient,
+          allowInsecureBaseUrl: true,
+        );
+        final CheckoutSessionResult unknownId = await client
+            .retrieveCheckoutSession(
+              'cs_doesnotexist00000000_secret_'
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            );
+        final CheckoutSessionResult wrongSecret = await client
+            .retrieveCheckoutSession(
+              '${real.checkoutSessionId}_secret_'
+              'wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww',
+            );
+        final BrowserClient wrongKeyClient = BrowserClient(
+          baseUrl: fixture.baseUrl,
+          publishableKey: 'pk_test_doesnotexist00000000000',
+          httpClient: httpClient,
+          allowInsecureBaseUrl: true,
+        );
+        final CheckoutSessionResult wrongKey = await wrongKeyClient
+            .retrieveCheckoutSession(real.clientSecret);
 
-      for (final CheckoutSessionResult result in [
-        unknownId,
-        wrongSecret,
-        wrongKey,
-      ]) {
-        expect(result.isError, isTrue);
-        expect(result.error!.type, 'invalid_request_error');
-        expect(result.error!.code, 'resource_missing');
-      }
-      stdout.writeln(
-        '[real_stack_e2e] unknown id / wrong secret / wrong key all -> '
-        'the same 404 (resource_missing), against the real server',
-      );
-    });
+        for (final CheckoutSessionResult result in [
+          unknownId,
+          wrongSecret,
+          wrongKey,
+        ]) {
+          expect(result.isError, isTrue);
+          expect(result.error!.type, 'invalid_request_error');
+          expect(result.error!.code, 'resource_missing');
+        }
+        stdout.writeln(
+          '[real_stack_e2e] unknown id / wrong secret / wrong key all -> '
+          'the same 404 (resource_missing), against the real server',
+        );
+      },
+    );
   });
 
   group('real stack — a session that is not open refuses the confirm', () {
-    test('the intent read still answers, the pre-flight fails closed, and the '
-        'confirm is refused with checkout_session_expired', () async {
+    test('the intent read still answers, the pre-flight fails closed, and the confirm is refused with checkout_session_expired', () async {
       final http.Client httpClient = http.Client();
       addTearDown(httpClient.close);
       final _ParsedSessionUrl parsed = _ParsedSessionUrl.parse(
