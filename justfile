@@ -664,15 +664,22 @@ test-flutter-emulator: _flutter-preflight
     (cd "$example_dir" && flutter test integration_test/checkout_window_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64") || window_status=$?
 
     echo "test-flutter-emulator: === dismiss suite (real back press -> real dismissal) ==="
-    adb -s "$device" logcat -c
     dismiss_log="$tmp/dismiss.log"
+    : > "$dismiss_log"
     (cd "$example_dir" && flutter test integration_test/checkout_dismiss_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64" > "$dismiss_log" 2>&1) &
     dismiss_pid=$!
 
+    # Watched off `$dismiss_log` itself, NOT `adb logcat` — measured on
+    # this host: `print()` inside a `flutter test integration_test/…`
+    # process reaches the flutter tool's own relayed console (what lands
+    # in `$dismiss_log`) but never reaches `adb logcat` at all under this
+    # execution mode, so a logcat-based watch here silently never fires
+    # and every run fell through to the WARNING below and then to the
+    # dismiss suite's own timeout.
     marker_deadline=$((SECONDS + 90))
     pressed=0
     while [ $SECONDS -lt $marker_deadline ]; do
-        if adb -s "$device" logcat -d 2>/dev/null | grep -q 'LANE_E_DISMISS_TEST_READY'; then
+        if grep -q 'LANE_E_DISMISS_TEST_READY' "$dismiss_log" 2>/dev/null; then
             activity_deadline=$((SECONDS + 5))
             while [ $SECONDS -lt $activity_deadline ]; do
                 # Specifically the RESUMED record, not just any mention —
