@@ -188,6 +188,21 @@ private func nilOrValue<T>(_ value: Any?) -> T? {
 }
 
 
+/// D8: which window the platform host shows. Mirrors
+/// `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
+/// distinct on purpose (one is the public Dart API, one is a wire type) so
+/// the pigeon-generated side can change shape without touching the public
+/// one, but every member here must have a same-named counterpart there.
+enum CheckoutWindowMode: Int, CaseIterable {
+  /// The in-app `WebView`/`WKWebView`/popup (design doc D5).
+  case inApp = 0
+  /// Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
+  /// (design doc D8) — no custom URL scheme, ever (D8: schemes are
+  /// first-come-first-served on Android and any installed app could claim
+  /// one).
+  case externalBrowser = 1
+}
+
 /// Which of the two signals `checkout_controller.dart` polls will resolve
 /// happened. Never a `succeeded`/`canceled`/`failed` member — the design's
 /// whole point (D1) is that this interface cannot say that, only Dart's
@@ -273,6 +288,12 @@ struct ShowCheckoutRequest: Hashable, CustomStringConvertible {
   /// D6's named insecure opt-in, forwarded so a platform host does not have
   /// to re-derive "is this the demo stack" from the URL's scheme itself.
   var allowInsecureUrl: Bool
+  /// D8: `inApp` (the default) or `externalBrowser`. A platform host that
+  /// has not implemented `externalBrowser` refuses rather than silently
+  /// falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
+  /// `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
+  /// failure.
+  var mode: CheckoutWindowMode
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -280,11 +301,13 @@ struct ShowCheckoutRequest: Hashable, CustomStringConvertible {
     let url = pigeonVar_list[0] as! String
     let stopUrls = pigeonVar_list[1] as! [CheckoutStopUrl?]
     let allowInsecureUrl = pigeonVar_list[2] as! Bool
+    let mode = pigeonVar_list[3] as! CheckoutWindowMode
 
     return ShowCheckoutRequest(
       url: url,
       stopUrls: stopUrls,
-      allowInsecureUrl: allowInsecureUrl
+      allowInsecureUrl: allowInsecureUrl,
+      mode: mode
     )
   }
   func toList() -> [Any?] {
@@ -292,13 +315,14 @@ struct ShowCheckoutRequest: Hashable, CustomStringConvertible {
       url,
       stopUrls,
       allowInsecureUrl,
+      mode,
     ]
   }
   static func == (lhs: ShowCheckoutRequest, rhs: ShowCheckoutRequest) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return MessagesPigeonInternal.deepEquals(lhs.url, rhs.url) && MessagesPigeonInternal.deepEquals(lhs.stopUrls, rhs.stopUrls) && MessagesPigeonInternal.deepEquals(lhs.allowInsecureUrl, rhs.allowInsecureUrl)
+    return MessagesPigeonInternal.deepEquals(lhs.url, rhs.url) && MessagesPigeonInternal.deepEquals(lhs.stopUrls, rhs.stopUrls) && MessagesPigeonInternal.deepEquals(lhs.allowInsecureUrl, rhs.allowInsecureUrl) && MessagesPigeonInternal.deepEquals(lhs.mode, rhs.mode)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -306,6 +330,7 @@ struct ShowCheckoutRequest: Hashable, CustomStringConvertible {
     MessagesPigeonInternal.deepHash(value: url, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: stopUrls, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: allowInsecureUrl, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: mode, hasher: &hasher)
   }
 
   /// Hand-edited after generation (2026-09-14), and it must stay edited:
@@ -314,7 +339,7 @@ struct ShowCheckoutRequest: Hashable, CustomStringConvertible {
   /// Dart and Kotlin copies. **Compiled by nobody** — this repository has no
   /// Xcode; the Dart copy is the one a test pins.
   public var description: String {
-    return "ShowCheckoutRequest(url: [\(url.count) chars redacted], stopUrls: \(String(describing: stopUrls)), allowInsecureUrl: \(String(describing: allowInsecureUrl)))"
+    return "ShowCheckoutRequest(url: [\(url.count) chars redacted], stopUrls: \(String(describing: stopUrls)), allowInsecureUrl: \(String(describing: allowInsecureUrl)), mode: \(String(describing: mode)))"
   }
 }
 
@@ -373,14 +398,20 @@ private class MessagesPigeonCodecReader: FlutterStandardReader {
     case 129:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return CheckoutWindowOutcome(rawValue: enumResultAsInt)
+        return CheckoutWindowMode(rawValue: enumResultAsInt)
       }
       return nil
     case 130:
-      return CheckoutStopUrl.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return CheckoutWindowOutcome(rawValue: enumResultAsInt)
+      }
+      return nil
     case 131:
-      return ShowCheckoutRequest.fromList(self.readValue() as! [Any?])
+      return CheckoutStopUrl.fromList(self.readValue() as! [Any?])
     case 132:
+      return ShowCheckoutRequest.fromList(self.readValue() as! [Any?])
+    case 133:
       return CheckoutWindowEvent.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -390,17 +421,20 @@ private class MessagesPigeonCodecReader: FlutterStandardReader {
 
 private class MessagesPigeonCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? CheckoutWindowOutcome {
+    if let value = value as? CheckoutWindowMode {
       super.writeByte(129)
       super.writeValue(value.rawValue)
-    } else if let value = value as? CheckoutStopUrl {
+    } else if let value = value as? CheckoutWindowOutcome {
       super.writeByte(130)
-      super.writeValue(value.toList())
-    } else if let value = value as? ShowCheckoutRequest {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? CheckoutStopUrl {
       super.writeByte(131)
       super.writeValue(value.toList())
-    } else if let value = value as? CheckoutWindowEvent {
+    } else if let value = value as? ShowCheckoutRequest {
       super.writeByte(132)
+      super.writeValue(value.toList())
+    } else if let value = value as? CheckoutWindowEvent {
+      super.writeByte(133)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)

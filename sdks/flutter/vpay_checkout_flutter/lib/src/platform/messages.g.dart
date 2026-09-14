@@ -13,9 +13,9 @@ import 'package:meta/meta.dart' show immutable, protected, visibleForTesting;
 import '../redaction.dart';
 
 Object? _extractReplyValueOrThrow(
-  List<Object?>? replyList,
-  String channelName, {
-  required bool isNullValid,
+    List<Object?>? replyList,
+    String channelName, {
+    required bool isNullValid,
 }) {
   if (replyList == null) {
     throw PlatformException(
@@ -37,11 +37,8 @@ Object? _extractReplyValueOrThrow(
   return replyList.firstOrNull;
 }
 
-List<Object?> wrapResponse({
-  Object? result,
-  PlatformException? error,
-  bool empty = false,
-}) {
+
+List<Object?> wrapResponse({Object? result, PlatformException? error, bool empty = false}) {
   if (empty) {
     return <Object?>[];
   }
@@ -50,7 +47,6 @@ List<Object?> wrapResponse({
   }
   return <Object?>[error.code, error.message, error.details];
 }
-
 bool _deepEquals(Object? a, Object? b) {
   if (identical(a, b)) {
     return true;
@@ -63,9 +59,8 @@ bool _deepEquals(Object? a, Object? b) {
   }
   if (a is List && b is List) {
     return a.length == b.length &&
-        a.indexed.every(
-          ((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]),
-        );
+        a.indexed
+            .every(((int, dynamic) item) => _deepEquals(item.$2, b[item.$1]));
   }
   if (a is Map && b is Map) {
     if (a.length != b.length) {
@@ -114,6 +109,22 @@ int _deepHash(Object? value) {
   return value.hashCode;
 }
 
+
+/// D8: which window the platform host shows. Mirrors
+/// `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
+/// distinct on purpose (one is the public Dart API, one is a wire type) so
+/// the pigeon-generated side can change shape without touching the public
+/// one, but every member here must have a same-named counterpart there.
+enum CheckoutWindowMode {
+  /// The in-app `WebView`/`WKWebView`/popup (design doc D5).
+  inApp,
+  /// Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
+  /// (design doc D8) — no custom URL scheme, ever (D8: schemes are
+  /// first-come-first-served on Android and any installed app could claim
+  /// one).
+  externalBrowser;
+}
+
 /// Which of the two signals `checkout_controller.dart` polls will resolve
 /// happened. Never a `succeeded`/`canceled`/`failed` member — the design's
 /// whole point (D1) is that this interface cannot say that, only Dart's
@@ -121,10 +132,9 @@ int _deepHash(Object? value) {
 enum CheckoutWindowOutcome {
   /// A navigation matched one of `ShowCheckoutRequest.stopUrls`.
   stopUrlReached,
-
   /// The payer dismissed the window (back press, swipe, close) without a
   /// navigation ever matching a stop URL.
-  dismissed,
+  dismissed;
 }
 
 /// One stop URL, already normalised the way `checkout_controller.dart`'s
@@ -149,12 +159,16 @@ class CheckoutStopUrl {
   String path;
 
   List<Object?> _toList() {
-    return <Object?>[scheme, host, port, path];
+    return <Object?>[
+      scheme,
+      host,
+      port,
+      path,
+    ];
   }
 
   Object encode() {
-    return _toList();
-  }
+    return _toList();  }
 
   static CheckoutStopUrl decode(Object result) {
     result as List<Object?>;
@@ -175,10 +189,7 @@ class CheckoutStopUrl {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(scheme, other.scheme) &&
-        _deepEquals(host, other.host) &&
-        _deepEquals(port, other.port) &&
-        _deepEquals(path, other.path);
+    return _deepEquals(scheme, other.scheme) && _deepEquals(host, other.host) && _deepEquals(port, other.port) && _deepEquals(path, other.path);
   }
 
   @override
@@ -202,6 +213,7 @@ class ShowCheckoutRequest {
     required this.url,
     required this.stopUrls,
     required this.allowInsecureUrl,
+    required this.mode,
   });
 
   /// The session's own hosted `url` (D6: carries the session secret in its
@@ -215,13 +227,24 @@ class ShowCheckoutRequest {
   /// to re-derive "is this the demo stack" from the URL's scheme itself.
   bool allowInsecureUrl;
 
+  /// D8: `inApp` (the default) or `externalBrowser`. A platform host that
+  /// has not implemented `externalBrowser` refuses rather than silently
+  /// falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
+  /// `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
+  /// failure.
+  CheckoutWindowMode mode;
+
   List<Object?> _toList() {
-    return <Object?>[url, stopUrls, allowInsecureUrl];
+    return <Object?>[
+      url,
+      stopUrls,
+      allowInsecureUrl,
+      mode,
+    ];
   }
 
   Object encode() {
-    return _toList();
-  }
+    return _toList();  }
 
   static ShowCheckoutRequest decode(Object result) {
     result as List<Object?>;
@@ -229,6 +252,7 @@ class ShowCheckoutRequest {
       url: result[0]! as String,
       stopUrls: (result[1]! as List<Object?>).cast<CheckoutStopUrl?>(),
       allowInsecureUrl: result[2]! as bool,
+      mode: result[3]! as CheckoutWindowMode,
     );
   }
 
@@ -241,9 +265,7 @@ class ShowCheckoutRequest {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(url, other.url) &&
-        _deepEquals(stopUrls, other.stopUrls) &&
-        _deepEquals(allowInsecureUrl, other.allowInsecureUrl);
+    return _deepEquals(url, other.url) && _deepEquals(stopUrls, other.stopUrls) && _deepEquals(allowInsecureUrl, other.allowInsecureUrl) && _deepEquals(mode, other.mode);
   }
 
   @override
@@ -268,14 +290,17 @@ class ShowCheckoutRequest {
   @override
   String toString() {
     return 'ShowCheckoutRequest(url: ${redacted(url)}, stopUrls: $stopUrls, '
-        'allowInsecureUrl: $allowInsecureUrl)';
+        'allowInsecureUrl: $allowInsecureUrl, mode: $mode)';
   }
 }
 
 /// One event the platform host reports back through
 /// [VpayCheckoutFlutterApi.onWindowEvent].
 class CheckoutWindowEvent {
-  CheckoutWindowEvent({required this.outcome, this.reachedUrl});
+  CheckoutWindowEvent({
+    required this.outcome,
+    this.reachedUrl,
+  });
 
   CheckoutWindowOutcome outcome;
 
@@ -285,12 +310,14 @@ class CheckoutWindowEvent {
   String? reachedUrl;
 
   List<Object?> _toList() {
-    return <Object?>[outcome, reachedUrl];
+    return <Object?>[
+      outcome,
+      reachedUrl,
+    ];
   }
 
   Object encode() {
-    return _toList();
-  }
+    return _toList();  }
 
   static CheckoutWindowEvent decode(Object result) {
     result as List<Object?>;
@@ -309,8 +336,7 @@ class CheckoutWindowEvent {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(outcome, other.outcome) &&
-        _deepEquals(reachedUrl, other.reachedUrl);
+    return _deepEquals(outcome, other.outcome) && _deepEquals(reachedUrl, other.reachedUrl);
   }
 
   @override
@@ -328,6 +354,7 @@ class CheckoutWindowEvent {
   }
 }
 
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -335,17 +362,20 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
-    } else if (value is CheckoutWindowOutcome) {
+    }    else if (value is CheckoutWindowMode) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is CheckoutStopUrl) {
+    }    else if (value is CheckoutWindowOutcome) {
       buffer.putUint8(130);
-      writeValue(buffer, value.encode());
-    } else if (value is ShowCheckoutRequest) {
+      writeValue(buffer, value.index);
+    }    else if (value is CheckoutStopUrl) {
       buffer.putUint8(131);
       writeValue(buffer, value.encode());
-    } else if (value is CheckoutWindowEvent) {
+    }    else if (value is ShowCheckoutRequest) {
       buffer.putUint8(132);
+      writeValue(buffer, value.encode());
+    }    else if (value is CheckoutWindowEvent) {
+      buffer.putUint8(133);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -357,12 +387,15 @@ class _PigeonCodec extends StandardMessageCodec {
     switch (type) {
       case 129:
         final value = readValue(buffer) as int?;
-        return value == null ? null : CheckoutWindowOutcome.values[value];
+        return value == null ? null : CheckoutWindowMode.values[value];
       case 130:
-        return CheckoutStopUrl.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : CheckoutWindowOutcome.values[value];
       case 131:
-        return ShowCheckoutRequest.decode(readValue(buffer)!);
+        return CheckoutStopUrl.decode(readValue(buffer)!);
       case 132:
+        return ShowCheckoutRequest.decode(readValue(buffer)!);
+      case 133:
         return CheckoutWindowEvent.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -377,46 +410,43 @@ class VpayCheckoutHostApi {
   /// available for dependency injection. If it is left null, the default
   /// BinaryMessenger will be used which routes to the host platform.
   VpayCheckoutHostApi({
-    BinaryMessenger? binaryMessenger,
-    String messageChannelSuffix = '',
-  }) : pigeonVar_binaryMessenger = binaryMessenger,
-       pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty
-           ? '.$messageChannelSuffix'
-           : '';
+      BinaryMessenger? binaryMessenger, 
+      String messageChannelSuffix = '', 
+      })
+      : pigeonVar_binaryMessenger = binaryMessenger,
+        pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
 
   final BinaryMessenger? pigeonVar_binaryMessenger;
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
 
   final String pigeonVar_messageChannelSuffix;
 
+
   /// Opens the native window (Android `Activity`+`WebView`, iOS/macOS
   /// `UIViewController`/`NSViewController`+`WKWebView`, or `window.open` on
   /// web — D5) loading `request.url`. Resolves once the window is showing;
   /// the outcome arrives later, over [VpayCheckoutFlutterApi.onWindowEvent].
   Future<void> show(ShowCheckoutRequest request) async {
-    final pigeonVar_channelName =
-        'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutHostApi.show$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channelName = 'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutHostApi.show$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
     );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
-      <Object?>[request],
-    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[request]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(
-      pigeonVar_replyList,
-      pigeonVar_channelName,
-      isNullValid: true,
-    );
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
   }
 
   /// Closes the window if one is open. A no-op if none is.
   Future<void> dismiss() async {
-    final pigeonVar_channelName =
-        'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutHostApi.dismiss$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channelName = 'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutHostApi.dismiss$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -426,10 +456,11 @@ class VpayCheckoutHostApi {
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(
-      pigeonVar_replyList,
-      pigeonVar_channelName,
-      isNullValid: true,
-    );
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
   }
 }
 
@@ -440,20 +471,16 @@ abstract class VpayCheckoutFlutterApi {
   /// Fired exactly once per `show`, with the one outcome that occurred.
   void onWindowEvent(CheckoutWindowEvent event);
 
-  static void setUp(
-    VpayCheckoutFlutterApi? api, {
-    BinaryMessenger? binaryMessenger,
+  static void setUp(VpayCheckoutFlutterApi? api, {
+    BinaryMessenger? binaryMessenger, 
     String messageChannelSuffix = '',
-  }) {
-    messageChannelSuffix = messageChannelSuffix.isNotEmpty
-        ? '.$messageChannelSuffix'
-        : '';
+  }) 
+{
+    messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
     {
       final pigeonVar_channel = BasicMessageChannel<Object?>(
-        'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutFlutterApi.onWindowEvent$messageChannelSuffix',
-        pigeonChannelCodec,
-        binaryMessenger: binaryMessenger,
-      );
+          'dev.flutter.pigeon.vpay_checkout_flutter.VpayCheckoutFlutterApi.onWindowEvent$messageChannelSuffix', pigeonChannelCodec,
+          binaryMessenger: binaryMessenger);
       if (api == null) {
         pigeonVar_channel.setMessageHandler(null);
       } else {
@@ -465,10 +492,8 @@ abstract class VpayCheckoutFlutterApi {
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);
-          } catch (e) {
-            return wrapResponse(
-              error: PlatformException(code: 'error', message: e.toString()),
-            );
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
           }
         });
       }

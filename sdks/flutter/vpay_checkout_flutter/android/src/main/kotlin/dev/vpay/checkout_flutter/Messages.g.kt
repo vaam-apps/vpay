@@ -202,6 +202,31 @@ class FlutterError (
 ) : RuntimeException()
 
 /**
+ * D8: which window the platform host shows. Mirrors
+ * `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
+ * distinct on purpose (one is the public Dart API, one is a wire type) so
+ * the pigeon-generated side can change shape without touching the public
+ * one, but every member here must have a same-named counterpart there.
+ */
+enum class CheckoutWindowMode(val raw: Int) {
+  /** The in-app `WebView`/`WKWebView`/popup (design doc D5). */
+  IN_APP(0),
+  /**
+   * Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
+   * (design doc D8) — no custom URL scheme, ever (D8: schemes are
+   * first-come-first-served on Android and any installed app could claim
+   * one).
+   */
+  EXTERNAL_BROWSER(1);
+
+  companion object {
+    fun ofRaw(raw: Int): CheckoutWindowMode? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
+/**
  * Which of the two signals `checkout_controller.dart` polls will resolve
  * happened. Never a `succeeded`/`canceled`/`failed` member — the design's
  * whole point (D1) is that this interface cannot say that, only Dart's
@@ -302,7 +327,15 @@ data class ShowCheckoutRequest (
    * D6's named insecure opt-in, forwarded so a platform host does not have
    * to re-derive "is this the demo stack" from the URL's scheme itself.
    */
-  val allowInsecureUrl: Boolean
+  val allowInsecureUrl: Boolean,
+  /**
+   * D8: `inApp` (the default) or `externalBrowser`. A platform host that
+   * has not implemented `externalBrowser` refuses rather than silently
+   * falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
+   * `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
+   * failure.
+   */
+  val mode: CheckoutWindowMode
 )
  {
   companion object {
@@ -310,7 +343,8 @@ data class ShowCheckoutRequest (
       val url = pigeonVar_list[0] as String
       val stopUrls = pigeonVar_list[1] as List<CheckoutStopUrl?>
       val allowInsecureUrl = pigeonVar_list[2] as Boolean
-      return ShowCheckoutRequest(url, stopUrls, allowInsecureUrl)
+      val mode = pigeonVar_list[3] as CheckoutWindowMode
+      return ShowCheckoutRequest(url, stopUrls, allowInsecureUrl, mode)
     }
   }
   fun toList(): List<Any?> {
@@ -318,6 +352,7 @@ data class ShowCheckoutRequest (
       url,
       stopUrls,
       allowInsecureUrl,
+      mode,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -328,7 +363,7 @@ data class ShowCheckoutRequest (
       return true
     }
     val other = other as ShowCheckoutRequest
-    return MessagesPigeonUtils.deepEquals(this.url, other.url) && MessagesPigeonUtils.deepEquals(this.stopUrls, other.stopUrls) && MessagesPigeonUtils.deepEquals(this.allowInsecureUrl, other.allowInsecureUrl)
+    return MessagesPigeonUtils.deepEquals(this.url, other.url) && MessagesPigeonUtils.deepEquals(this.stopUrls, other.stopUrls) && MessagesPigeonUtils.deepEquals(this.allowInsecureUrl, other.allowInsecureUrl) && MessagesPigeonUtils.deepEquals(this.mode, other.mode)
   }
 
   override fun hashCode(): Int {
@@ -336,6 +371,7 @@ data class ShowCheckoutRequest (
     result = 31 * result + MessagesPigeonUtils.deepHash(this.url)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.stopUrls)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.allowInsecureUrl)
+    result = 31 * result + MessagesPigeonUtils.deepHash(this.mode)
     return result
   }
   /**
@@ -348,7 +384,7 @@ data class ShowCheckoutRequest (
    * in this repository.
    */
   override fun toString(): String {
-    return "ShowCheckoutRequest(url=[${url.length} chars redacted], stopUrls=$stopUrls, allowInsecureUrl=$allowInsecureUrl)"
+    return "ShowCheckoutRequest(url=[${url.length} chars redacted], stopUrls=$stopUrls, allowInsecureUrl=$allowInsecureUrl, mode=$mode)"
   }
 }
 
@@ -409,20 +445,25 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
     return when (type) {
       129.toByte() -> {
         return (readValue(buffer) as Long?)?.let {
-          CheckoutWindowOutcome.ofRaw(it.toInt())
+          CheckoutWindowMode.ofRaw(it.toInt())
         }
       }
       130.toByte() -> {
-        return (readValue(buffer) as? List<Any?>)?.let {
-          CheckoutStopUrl.fromList(it)
+        return (readValue(buffer) as Long?)?.let {
+          CheckoutWindowOutcome.ofRaw(it.toInt())
         }
       }
       131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ShowCheckoutRequest.fromList(it)
+          CheckoutStopUrl.fromList(it)
         }
       }
       132.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          ShowCheckoutRequest.fromList(it)
+        }
+      }
+      133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           CheckoutWindowEvent.fromList(it)
         }
@@ -432,20 +473,24 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is CheckoutWindowOutcome -> {
+      is CheckoutWindowMode -> {
         stream.write(129)
         writeValue(stream, value.raw.toLong())
       }
-      is CheckoutStopUrl -> {
+      is CheckoutWindowOutcome -> {
         stream.write(130)
-        writeValue(stream, value.toList())
+        writeValue(stream, value.raw.toLong())
       }
-      is ShowCheckoutRequest -> {
+      is CheckoutStopUrl -> {
         stream.write(131)
         writeValue(stream, value.toList())
       }
-      is CheckoutWindowEvent -> {
+      is ShowCheckoutRequest -> {
         stream.write(132)
+        writeValue(stream, value.toList())
+      }
+      is CheckoutWindowEvent -> {
+        stream.write(133)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
