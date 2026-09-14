@@ -96,6 +96,14 @@ use vpay_core::IntentStatus;
 
 use super::cratestack_schema::{self, procedures, types};
 
+// `#[path]` rather than a plain `mod search_refunds;` in `schema.rs`:
+// `resolve_page`, `tenant_of`, `to_chrono` and `to_time` are private
+// `fn`s in THIS file, so only a child of this module can reach them.
+// The other slices import nothing private and so declare themselves in
+// `schema.rs`; normalising this one to match them does not compile.
+#[path = "search_refunds.rs"]
+mod search_refunds;
+
 /// The largest page this procedure will answer.
 ///
 /// **100, which is a deliberate copy of `vpay_api::v1::paging::MAX_LIMIT`**
@@ -204,6 +212,71 @@ impl procedures::ProcedureRegistry for Payments {
             .map_err(cratestack::cratestack_error_from_sqlx)?;
 
         page_of(rows, limit, offset)
+    }
+
+    // A thin delegation, on purpose: this trait's home is `Payments`, but
+    // the refunds slice's real body — the JOIN onto `payment_intents` that
+    // its own tenancy predicate needs, since `model Refund` has no
+    // `merchant_id` — lives in `search_refunds.rs`, not here. See that
+    // file's module doc for why.
+    async fn search_refunds(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_refunds::Args,
+        authorized: procedures::search_refunds::Authorized,
+    ) -> Result<procedures::search_refunds::Output, CratestackError> {
+        search_refunds::run(db, ctx, args, authorized).await
+    }
+    /// `procedure searchWebhookDeliveries` (Lane D, slice: webhook
+    /// deliveries) — a thin delegation. The real body, including the
+    /// join-based tenancy predicate `webhook_deliveries` needs and this
+    /// table does not, lives in `super::search_webhook_deliveries::search`;
+    /// this method exists only because the generated `ProcedureRegistry`
+    /// trait requires one method per declared procedure on the one type
+    /// that implements it.
+    async fn search_webhook_deliveries(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_webhook_deliveries::Args,
+        _authorized: procedures::search_webhook_deliveries::Authorized,
+    ) -> Result<procedures::search_webhook_deliveries::Output, CratestackError> {
+        super::search_webhook_deliveries::search(db, ctx, args).await
+    }
+    /// `procedure searchCustomers` — a thin delegation, and deliberately no
+    /// more than one. The real body, including its own tenancy predicate and
+    /// its own `anonymized_at` exclusion, is
+    /// `super::search_customers::search_customers`; this method exists only
+    /// because `ProcedureRegistry` requires one implementer for every
+    /// procedure this schema declares, and `Payments` is that implementer.
+    /// `_authorized` is dropped for the reason it is dropped above: the
+    /// witness proves the `@allow` arm already passed, and the body has
+    /// nothing further to ask it.
+    async fn search_customers(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_customers::Args,
+        _authorized: procedures::search_customers::Authorized,
+    ) -> Result<procedures::search_customers::Output, CratestackError> {
+        super::search_customers::search_customers(db, ctx, args).await
+    }
+
+    /// `procedure searchCheckoutSessions` (Lane D, slice: checkout
+    /// sessions) — a thin delegation. The real body, including the two
+    /// payer credentials it refuses to project, is
+    /// `super::search_checkout_sessions::search_checkout_sessions`; this
+    /// method exists only because the generated `ProcedureRegistry` requires
+    /// one implementer for every procedure the schema declares.
+    async fn search_checkout_sessions(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_checkout_sessions::Args,
+        _authorized: procedures::search_checkout_sessions::Authorized,
+    ) -> Result<procedures::search_checkout_sessions::Output, CratestackError> {
+        super::search_checkout_sessions::search_checkout_sessions(db, ctx, args).await
     }
 }
 

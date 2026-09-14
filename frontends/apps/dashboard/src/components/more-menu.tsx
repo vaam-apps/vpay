@@ -21,10 +21,35 @@ export interface MoreMenuProps {
    * `aria-current`, never for routing: every href here still comes from
    * `NAV_ENTRIES`. */
   readonly currentPath: string;
+  /**
+   * Render the trigger as the icon alone, with `aria-label="Menu"`.
+   *
+   * Used where the trigger floats beside `SideNav`'s own rails rather than
+   * sitting in the content column. It has to be narrow there: below `xl`
+   * `<main>` carries `sm:pl-20`, an 80px gutter the vertical rail occupies,
+   * and a labelled button is wider than that — it would sit on top of the
+   * first column of the screen it is meant to navigate away from. The icon
+   * alone is ~44px, which is both inside the gutter and the minimum touch
+   * target the rail's own rows use.
+   *
+   * The accessible name is unchanged, so every test and every screen reader
+   * still finds one control named "Menu".
+   */
+  readonly compact?: boolean;
 }
 
 /**
- * The "More" drawer: everything the rail and the sidebar's `accountSlot`
+ * The "Menu" drawer: everything the rail and the sidebar's `accountSlot`
+ *
+ * **Named "Menu" and not "More", and the rename is load-bearing.** `SideNav`
+ * renders its OWN "More" overflow button below 640px once the rail has more
+ * destinations than fit — four plus an overflow, per its own documentation.
+ * The dashboard crossed that threshold when Lane E grew the nav from one
+ * entry to four, and two different controls both called "More" appeared in
+ * the same pill: one opening the rail's overflow list, one opening this
+ * drawer. `more-menu.test.tsx` and `a11y.test.tsx` found it as "found
+ * multiple elements with the role button and name /more/i", which is the
+ * accessibility tree describing the same collision a person would hit.
  * cannot reach below the full ≥1280px sidebar.
  *
  * # Why this exists at all
@@ -119,28 +144,54 @@ export function MoreMenu({
   merchantId,
   signOut,
   currentPath,
+  compact = false,
 }: MoreMenuProps) {
   const [open, setOpen] = useState(false);
 
   return (
     <>
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        onClick={() => setOpen(true)}
-      >
-        <Menu size={16} aria-hidden="true" />
-        More
-      </Button>
+      {compact ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Menu"
+          title="Menu"
+          /*
+            `h-11 w-11` is 44px, and it is measured rather than chosen:
+            `SideNav`'s floating rail renders its rows at exactly 44x44
+            inside 6px of padding, giving a 58px pill. This trigger was
+            42x32 in a 46px pill, so the two sat side by side at visibly
+            different heights. Matching the row size matches the pill,
+            because both are `p-1.5` around their one item.
+
+            44px is also the rail's own touch-target floor, so this is not
+            only a visual match.
+          */
+          className="h-11 w-11"
+          onClick={() => setOpen(true)}
+        >
+          <Menu size={20} aria-hidden="true" />
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => setOpen(true)}
+        >
+          <Menu size={16} aria-hidden="true" />
+          Menu
+        </Button>
+      )}
       <MoreDetailDrawer
         open={open}
         onOpenChange={setOpen}
-        title="More"
+        title="Menu"
         description="Navigation, theme, and your account."
       >
         <div className="flex flex-col gap-6">
-          <nav aria-label="More destinations">
+          <nav aria-label="Menu destinations">
             <ul className="flex flex-col gap-1">
               {NAV_ENTRIES.map((entry) => {
                 const Icon = entry.icon;

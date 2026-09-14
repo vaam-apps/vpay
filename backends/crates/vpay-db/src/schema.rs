@@ -51,6 +51,31 @@
 // discharged, on the pages that now own it, and only this sentence naming
 // the wrong page was wrong.
 mod search_payment_intents;
+// The body of `procedure searchWebhookDeliveries` (Lane D, slice: webhook
+// deliveries). A sibling of `search_payment_intents` for the reason its own
+// module doc gives: the `ProcedureRegistry` trait lives inside the private
+// expansion above, so every procedure body has to be a child of this module.
+// `search_payment_intents::Payments`'s `impl ProcedureRegistry` delegates to
+// `search_webhook_deliveries::search` — see that file's own header for the
+// join-based tenancy predicate this slice's table needs and
+// `search_payment_intents.rs` does not.
+mod search_webhook_deliveries;
+
+// The body of `procedure searchCustomers` — `search_payment_intents`'
+// sibling for `model Customer`. `pub(super)` on its one free function, not a
+// second `ProcedureRegistry` impl: the trait requires exactly one
+// implementer per schema (`Payments`, in `search_payment_intents.rs`), so
+// this module's contribution is a function that `Payments`' own
+// `search_customers` method delegates to, thinly, rather than a struct of
+// its own.
+mod search_customers;
+
+// The body of `procedure searchCheckoutSessions` (Lane D, slice: checkout
+// sessions). A sibling of `search_customers` and declared the same way — a
+// plain `mod` here rather than a `#[path]` child of `search_payment_intents`,
+// because it imports nothing private from that file. Only `search_refunds`
+// needs the `#[path]` form, and its own comment says why.
+mod search_checkout_sessions;
 
 /// Mounts `searchPaymentIntents` over HTTP — the read-only CrateStack
 /// transport this schema has never had a caller for before Lane C

@@ -27,9 +27,22 @@
  * routes nobody serves would be a nav full of dead links.
  */
 import type { ResourceProps } from "@refinedev/core";
-import { CreditCard, type LucideIcon } from "lucide-react";
+import {
+  CreditCard,
+  ShoppingCart,
+  RotateCcw,
+  Users,
+  Webhook,
+  type LucideIcon,
+} from "lucide-react";
 
-import { PAYMENT_INTENTS } from "./resource-name";
+import {
+  CHECKOUT_SESSIONS,
+  CUSTOMERS,
+  PAYMENT_INTENTS,
+  REFUNDS,
+  WEBHOOK_DELIVERIES,
+} from "./resource-name";
 
 /** A resource, plus the two things the nav needs that Refine does not model. */
 export interface DashResourceEntry {
@@ -52,6 +65,47 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
     },
     label: "Payments",
     icon: CreditCard,
+  },
+  // The three Lane D slices. Each is a CrateStack procedure behind
+  // `/api/dash/<name>`; `create`/`edit` are omitted for the reason the
+  // comment above gives, and `canDelete` stays false — `/dash/v1` answers
+  // `403` to every non-`GET` at its boundary and ADR-0008 gates writes
+  // behind an `audit_log` that does not exist.
+  {
+    resource: {
+      name: REFUNDS,
+      list: "/refunds",
+      meta: { label: "Refunds", canDelete: false },
+    },
+    label: "Refunds",
+    icon: RotateCcw,
+  },
+  {
+    resource: {
+      name: WEBHOOK_DELIVERIES,
+      list: "/deliveries",
+      meta: { label: "Deliveries", canDelete: false },
+    },
+    label: "Deliveries",
+    icon: Webhook,
+  },
+  {
+    resource: {
+      name: CHECKOUT_SESSIONS,
+      list: "/checkouts",
+      meta: { label: "Checkouts", canDelete: false },
+    },
+    label: "Checkouts",
+    icon: ShoppingCart,
+  },
+  {
+    resource: {
+      name: CUSTOMERS,
+      list: "/customers",
+      meta: { label: "Customers", canDelete: false },
+    },
+    label: "Customers",
+    icon: Users,
   },
 ];
 

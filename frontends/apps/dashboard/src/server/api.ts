@@ -332,6 +332,63 @@ export async function getJson<T>(
 }
 
 /**
+ * `POST` a JSON body and read a JSON document back.
+ *
+ * `getJson`'s sibling, and it exists because the three Lane D read slices
+ * are **CrateStack procedures**, not REST routes: the generated transport
+ * mounts them at `POST /dash/v1/$procs/<procedureName>` unconditionally
+ * (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), with the
+ * arguments in the body rather than the query string.
+ *
+ * **A `POST` here is still a read.** The method is a fact about the wire
+ * shape a procedure call takes, not a loosening of `/dash/v1`'s "reads only"
+ * boundary: the procedures carry no write policy arm, no model CRUD route is
+ * mounted, and `vpay_api`'s procedure boundary admits `POST` and nothing
+ * else. The browser-facing half of this app stays `GET`-only regardless —
+ * `middleware.ts` answers `405` to every method but `GET`/`HEAD` on
+ * `/api/dash/:path*`, so this `POST` is only ever made by this process,
+ * server side, on behalf of a `GET` the browser made.
+ *
+ * Everything else is `getJson`'s behaviour, deliberately: `no-store` because
+ * an operator reads this to decide whether something is still happening,
+ * `redirect: "error"` because a redirect from this surface is a
+ * misconfiguration rather than something to follow, and the same
+ * `failureOf`/`unreachable` split so a refusal and an outage stay
+ * distinguishable.
+ */
+export async function postJson<T>(
+  apiBaseUrl: string,
+  path: string,
+  body: unknown,
+  options: CallOptions = {},
+): Promise<ApiResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        ...authHeaders(options),
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      redirect: "error",
+    });
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+  if (!response.ok) {
+    return { ok: false, failure: await failureOf(response) };
+  }
+  try {
+    return { ok: true, value: (await response.json()) as T };
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+}
+
+/**
  * `GET /dash/v1/oauth/authorize`, **without following the redirect**.
  *
  * `redirect: 'manual'` is the whole of ADR-0017 decision 4 in one option:

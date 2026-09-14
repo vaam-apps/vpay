@@ -62,10 +62,24 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead scope="col">Payment</TableHead>
-          <TableHead scope="col">Created (UTC)</TableHead>
+          {/*
+            Created and Methods step aside below `sm`. `Table` already wraps
+            itself in `w-full overflow-x-auto`, so nothing was unreachable —
+            but at 375px five columns put three of them off-screen with no
+            affordance, and an operator who does not know to swipe reads the
+            id and a truncated timestamp as the whole row. Payment, Amount
+            and Status are what the screen is for; the other two return at
+            `sm`. Static classes, never computed: `verify-ui` refuses a
+            computed className in an app.
+          */}
+          <TableHead scope="col" className="hidden sm:table-cell">
+            Created (UTC)
+          </TableHead>
           <TableHead scope="col">Amount</TableHead>
           <TableHead scope="col">Status</TableHead>
-          <TableHead scope="col">Methods</TableHead>
+          <TableHead scope="col" className="hidden sm:table-cell">
+            Methods
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -73,12 +87,34 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
           const status = asPaymentStatus(row.status);
           return (
             <TableRow key={row.id} data-payment-id={row.id}>
+              {/*
+                The id truncates below `sm`, and the row stays one line.
+
+                Measured at 375px, twice. Untouched, a 28-character
+                monospace id held this column open: the table came to 487px
+                inside a 311px box and `Status` sat at 338–527, off-screen
+                behind a swipe with no affordance. With `break-all` every
+                column fitted, but the id wrapped onto FIVE lines and a row
+                became taller than a phone shows of the list — trading one
+                unreadable screen for another.
+
+                So it truncates instead, and the earlier argument against
+                that ("an id is what an operator copies") is answered rather
+                than ignored: this cell is a link to `/payments/{id}`, and
+                the detail screen renders the id in full. It is one tap, not
+                a loss. `sm:max-w-none` gives the whole id back from 640px
+                up, where it fits on one line anyway.
+              */}
               <TableCell>
                 <NextLink href={`/payments/${row.id}`}>
-                  <Code>{row.id}</Code>
+                  <span className="block max-w-[11ch] truncate sm:max-w-none">
+                    <Code>{row.id}</Code>
+                  </span>
                 </NextLink>
               </TableCell>
-              <TableCell>{formatInstant(row.created)}</TableCell>
+              <TableCell className="hidden sm:table-cell">
+                {formatInstant(row.created)}
+              </TableCell>
               <TableCell>{formatAmount(row.amount, row.currency)}</TableCell>
               <TableCell>
                 {/*
@@ -93,7 +129,9 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
                   <PaymentStatusPill state={status} />
                 )}
               </TableCell>
-              <TableCell>{formatMethods(row.payment_method_types)}</TableCell>
+              <TableCell className="hidden sm:table-cell">
+                {formatMethods(row.payment_method_types)}
+              </TableCell>
             </TableRow>
           );
         })}

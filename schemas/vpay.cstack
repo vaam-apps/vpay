@@ -2296,3 +2296,369 @@ type PaymentIntentListFilter {
 // `createCharge` and `deleteCustomer` are unavailable for the same reason.
 procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
   @allow(auth() != null)
+
+// --- Lane D: the refunds slice --------------------------------------------
+//
+// `docs/plans/2026-09-13-dashboard-nav-notes/slices.md` is the brief this
+// was read from before either `type` below was declared; its § 2 and § 4 are
+// the two properties that decide this procedure's shape.
+
+// One row of the refunds list.
+//
+// HAND-WRITTEN, and `failure_raw` is deliberately absent — it is
+// `@sensitive`, up to 2 000 characters of a rail's own prose
+// (`model Refund.failure_raw`), and `PaymentIntentSummary` already made this
+// exact call for its own equivalent: `last_payment_error_code` is in the
+// summary, the raw text is not, because "a list is not where it is read".
+// `@sensitive` itself buys nothing here — `cratestack-macros`' only reader
+// of it is the audit log (`is_sensitive_field`, `shared/attrs.rs:64`), and
+// nothing in this workspace audits through CrateStack — so the field is
+// absent because this file leaves it out, not because the annotation would
+// have.
+//
+// Also absent: `metadata`, for `PaymentIntentSummary`'s reason — it is
+// `jsonb` and undeclared on `model Refund`.
+type RefundSummary {
+  id String
+  // The join key, and the only path from a refund to its tenant: `model
+  // Refund` has no `merchant_id` column. Echoed back for the reason
+  // `PaymentIntentSummary.merchant_id` is: it is what a container test can
+  // assert the tenancy predicate produced.
+  payment_intent_id String
+  charge_id String?
+  amount Int
+  currency_code String
+  status RefundStatus
+  reason String?
+  failure_code FailureCode?
+  provider_reference_id Uuid?
+  fee Int?
+  created_at DateTime
+  updated_at DateTime
+}
+
+// The search filters `searchRefunds` accepts.
+//
+// HAND-ROLLED RATHER THAN `FindMany<Refund>`, for `PaymentIntentListFilter`'s
+// reason: a `FindMany` publishes a filter over every filterable scalar of
+// the model, and the only thing to do with one is the generated model read,
+// which answers `FALSE` forever on this table regardless (`model Refund`
+// carries no `@@allow` arm). Named scalar fields, matching the shape
+// `PaymentIntentListFilter` already settled on.
+type RefundListFilter {
+  // One `RefundStatus` wire value, as TEXT rather than as the enum — see
+  // `PaymentIntentListFilter.status` for why: an unknown value must be a
+  // `400` naming `status`, not a serde decode error, and not an empty page.
+  status String?
+  // Inclusive bounds on `created_at`.
+  created_gte DateTime?
+  created_lte DateTime?
+}
+
+// The dashboard's refunds list, paginated by offset — `searchPaymentIntents`
+// is the template this follows, and the one place this body MUST diverge
+// from it.
+//
+// `model Refund` HAS NO `merchant_id` COLUMN AT ALL. Tenancy reaches a
+// refund only through `payment_intent_id -> PaymentIntent.merchant_id`, so
+// the body's statement is a JOIN onto `payment_intents` rather than a
+// `WHERE merchant_id = $1` on its own table (`docs/plans/2026-09-13-
+// dashboard-nav-notes/slices.md` § 2, and `vpay_db::refunds`'
+// `get_for_merchant`/`list_for_intent`, which join for the same reason). A
+// body that forgets the join does not fail — it returns every tenant's
+// refunds, and only a container test that seeds a second tenant's row can
+// catch it; a unit test cannot observe a predicate, only the rows it
+// excluded.
+//
+// `@allow(auth() != null)`: the caller must be authenticated, exactly as
+// `searchPaymentIntents`. The tenancy predicate is not expressible in the
+// policy — `inTenant(...)` takes a string literal, not the caller's own
+// tenant — so it lives in the body, which reads `ctx.tenant_id()` and
+// refuses its absence rather than reading unscoped.
+//
+// NAMED `search`, NOT `list`: `procedure listRefunds` collides with the
+// generated `list` CRUD handler for `model Refund` — both would emit
+// `handle_list_refunds` — and fails to compile as `error[E0428]`, exactly
+// as `procedure listPaymentIntents` did.
+procedure searchRefunds(page: PageInput, filter: RefundListFilter): Page<RefundSummary>
+  @allow(auth() != null)
+
+// --- webhook deliveries (Lane D, slice: deliveries) --------------------
+
+// The dashboard's answer to "did my webhook actually arrive?" — one row per
+// (event, endpoint) delivery attempt, joined to the event it carries so an
+// operator sees *what* was (or was not) delivered, not just a UUID.
+//
+// THE TENANCY PREDICATE IS A JOIN, AND THAT IS THE WHOLE SHAPE OF THIS TYPE.
+// `model WebhookDelivery` (above) has no `merchant_id` column at all — see
+// its own header comment and `docs/plans/2026-09-13-dashboard-nav-notes/
+// slices.md` item 2. Tenancy reaches a delivery only through
+// `event_id -> Event.merchant_id`, so `merchant_id` here is the JOINED
+// event's column, not a column this table owns. It is carried in the
+// summary for the same reason `PaymentIntentSummary.merchant_id` is: it is
+// what `the_page_is_the_tenants_own_rows_filtered_and_bounded`'s webhook
+// analogue asserts on, and a predicate whose result nothing can be checked
+// against is a predicate nobody can prove fired.
+//
+// `event_type` is `Event.type` through the same join — carried because it is
+// what makes this list answer the question it exists to answer: an operator
+// asks "did my `payment_intent.succeeded` land?", not "did delivery
+// `3f2504e0-...` land?". `Event.data` is NOT carried: it is `jsonb` and
+// unmapped (see `model Event`'s GAP note above), and nothing here changes
+// that.
+//
+// `response_excerpt` is NOT in this type, and deliberately. Up to 2 000
+// characters of a merchant endpoint's own response body
+// (`slices.md` item 4, and `excerpt_length`'s own CHECK) — it belongs to a
+// detail read if it belongs anywhere, exactly as `PaymentIntentSummary`
+// refuses `last_payment_error_message` for the same reason. Nor is
+// `payload_sha256`: a forensic detail with no reading an operator does from
+// a list. `state`, `url`, the four timestamps and `event_type` are the
+// operator's answer to "did it arrive".
+type WebhookDeliverySummary {
+  id Uuid
+  merchant_id String
+  event_id String
+  event_type String
+  endpoint_id String
+  url String
+  // The wire value of `webhook_deliveries.state` — `pending`, `succeeded`,
+  // `failed` or `exhausted` (migration 0022's `state_is_known`). `String`
+  // rather than an enum for the same reason `WebhookDelivery.state` itself
+  // is `String` and not one: no `.cstack` enum can be renamed onto a
+  // hand-named CHECK without a migration (see `model WebhookDelivery`'s own
+  // note on `@db_enforce`), and there is no `vpay_core` type for this
+  // vocabulary to keep an enum here honest against, the way `IntentStatus`
+  // keeps `PaymentIntentSummary.status` honest. The body validates against
+  // the same four strings the CHECK enforces and refuses a fifth.
+  state String
+  created_at DateTime
+  sent_at DateTime?
+  responded_at DateTime?
+  next_attempt_at DateTime?
+}
+
+// The search filters `searchWebhookDeliveries` accepts.
+//
+// HAND-ROLLED, NOT `FindMany<WebhookDelivery>`, for the rule
+// `slices.md` states and `PaymentIntentListFilter` already applies: a
+// generated filter publishes every filterable scalar the model has, and
+// naming the fields here is what keeps that from happening. Three filters,
+// matching what an operator actually asks the delivery log:
+type WebhookDeliveryListFilter {
+  // One `webhook_deliveries.state` wire value, as TEXT and not as an enum —
+  // `WebhookDeliverySummary.state`'s comment gives the type reason; the
+  // 400-not-empty-page reason is `PaymentIntentListFilter.status`'s: an
+  // unknown value is refused naming `state` and listing the four known
+  // ones, not answered with a page that looks like "no deliveries in this
+  // state" when it is actually "your caller mistyped the state".
+  state String?
+  // `Event.type` through the join — the vocabulary an operator actually asks
+  // about ("did `payment_intent.succeeded` land?"). `Event.type` is itself
+  // `String` with a hand-named CHECK and no `.cstack` enum (see `model
+  // Event`), so this filter is `String?` for the same reason `state` is.
+  // Unlike `state`, an unknown value here is not refused: the CHECK's
+  // vocabulary is `model Event`'s to own and this procedure does not carry
+  // a copy of it to validate against, so a typo'd `event_type` is an empty
+  // page — the same answer a real type this merchant has none of would give.
+  event_type String?
+  // Inclusive bounds on `webhook_deliveries.created_at`.
+  created_gte DateTime?
+  created_lte DateTime?
+}
+
+// The dashboard's webhook-deliveries list — "did my webhook actually
+// arrive?" — paginated by offset, the same shape `searchPaymentIntents`
+// answers in and for the same reason (`slices.md`'s "rules that apply to
+// every slice").
+//
+// `@allow(auth() != null)`: the caller must be authenticated, and that is
+// the whole of what the policy decides. The tenancy predicate cannot live
+// here — `inTenant(...)` takes a string literal, not "the caller's own
+// tenant" — and on this table it could not live in a policy at all even if
+// it could: `model WebhookDelivery` carries no `merchant_id` for a policy to
+// compile a predicate over. The body reads `ctx.tenant_id()`, refuses its
+// absence, and joins to `events` to reach the column that is actually
+// there. `backends/crates/vpay-db/src/schema/search_webhook_deliveries.rs`
+// is where that lives and where the join is tested against a tautology.
+//
+// NAMED `search`, NOT `list`, for the reason `searchPaymentIntents` states
+// above: `listWebhookDeliveries` collides with the generated
+// `handle_list_webhook_deliveries` CRUD stem and fails to compile as
+// `error[E0428]`, whether or not that stem is ever routed.
+procedure searchWebhookDeliveries(page: PageInput, filter: WebhookDeliveryListFilter): Page<WebhookDeliverySummary>
+  @allow(auth() != null)
+
+// The dashboard's customers list, `searchPaymentIntents`' sibling and the
+// same shape for the same reason: `model Customer` carries no
+// `@@allow("read", …)` arm (see the model's own comment on why only
+// `update` and `delete` are declared), so a generated read renders `FALSE`
+// and answers zero rows forever. This procedure's body —
+// `backends/crates/vpay-db/src/schema/search_customers.rs` — is the one
+// place this table is read.
+//
+// TWO MAINTAINER DECISIONS, 2026-09-13, IMPLEMENTED HERE RATHER THAN
+// RELITIGATED:
+//
+//   1. `name`, `email` and `phone` are unmasked on this surface, even though
+//      all three carry `@sensitive` above. That attribute has exactly one
+//      reader in this build — `is_sensitive_field`, which redacts a value
+//      from the audit log CrateStack would write if `@@audit` were ever
+//      declared (it is not: nothing in vpay audits today). It has never
+//      masked a value over the wire, here or anywhere else. The maintainer's
+//      call: an operator who can already read a payer's full identifiers off
+//      the payment-detail screen gains nothing from having them hidden on
+//      this one. `type CustomerSummary`'s own comment repeats this, because
+//      the two attributes reading the same word to mean different things is
+//      exactly the kind of gap a future reader would otherwise paper over
+//      with an assumption.
+//   2. An anonymised customer (`anonymized_at` set — the erasure path closed
+//      by issue #111/#143) does not appear in this list, ever. The
+//      predicate excluding it lives in the procedure body's own `WHERE`, not
+//      in a filter the caller could omit.
+//
+// WHAT IS DELIBERATELY NOT ON `type CustomerSummary`: the six `address_*`
+// columns and the two coordinate columns, all `@sensitive`, all excluded for
+// `type PaymentIntentSummary`'s reason applied to the more sensitive case —
+// a list is not where a payer's postal address or GPS point is read, and a
+// customer's coordinates least of all. `metadata` is absent for
+// `type PaymentIntentSummary`'s `Value::from_plain_json` reason: it is
+// `jsonb`, merchant-authored, and a hand-built `Json` field would silently
+// demote a number outside `i64` to a float. `seq` is absent for the same
+// reason it is absent there — it is vpay's internal counter, not part of
+// the answer.
+type CustomerSummary {
+  id String
+  merchant_id String
+  livemode Boolean
+  // Unmasked. See this file's comment on `procedure searchCustomers` —
+  // `@sensitive` here governs an audit log this build does not have, and
+  // has never redacted a wire response.
+  name String?
+  email String?
+  phone String?
+  last_used_at DateTime
+  created_at DateTime
+  updated_at DateTime
+}
+
+// The search filters `searchCustomers` accepts.
+//
+// HAND-ROLLED RATHER THAN `FindMany<Customer>`, for `PaymentIntentListFilter`'s
+// exact reason, applied to a table where it matters more: `FindMany` would
+// publish `startsWith`/`lt`/`gt` over every filterable scalar, `name`,
+// `email` and `phone` included — a prefix oracle that lets a caller narrow in
+// on a payer's email or phone number one character at a time. `email` and
+// `phone` below are `eq`-only for exactly that reason: no `_startsWith`, no
+// `_lt`/`_gt`, and the body must bind them as an exact match and nothing
+// looser.
+type CustomerListFilter {
+  // Inclusive bounds on `created_at`, `PaymentIntentListFilter`'s device.
+  created_gte DateTime?
+  created_lte DateTime?
+  // Exact match only. Absent that discipline, either field is a prefix
+  // oracle over a live payer identifier.
+  email String?
+  phone String?
+}
+
+// The dashboard's customers list, paginated by offset —
+// `searchPaymentIntents`' sibling in shape, policy and the reason both are
+// named `search` rather than `list`: `procedure listCustomers` collides with
+// the generated `list` CRUD handler for `model Customer`
+// (`handle_list_customers`) and fails to compile as `error[E0428]`, exactly
+// as `listPaymentIntents` does for `PaymentIntent`.
+//
+// `@allow(auth() != null)`: the caller must be authenticated. The tenancy
+// predicate is not expressible here — `inTenant(...)` takes a string literal
+// and cannot name the caller's own tenant — so it lives in the procedure
+// body, which reads `ctx.tenant_id()` directly rather than from `filter`,
+// and refuses a tenantless caller. See
+// `backends/crates/vpay-db/src/schema/search_customers.rs`.
+procedure searchCustomers(page: PageInput, filter: CustomerListFilter): Page<CustomerSummary>
+  @allow(auth() != null)
+
+// --- checkout sessions (Lane D, slice: checkout sessions) -----------------
+//
+// The dashboard's answer to "what happened to this checkout, and why did it
+// not convert?" — one row per session.
+
+// One row of the checkout sessions list.
+//
+// WHAT IS DELIBERATELY NOT ON THIS TYPE, and it is the whole of this
+// slice's care:
+//
+//   * `client_secret_suffix` and `return_token`. Both are `@sensitive` and
+//     both are LIVE PAYER CREDENTIALS — the client secret authorises the
+//     payer's browser against this checkout, the return token authorises
+//     the return leg. A list carrying either hands them to everyone who can
+//     read the list. Note that `@sensitive` does NOT protect them: it is
+//     read in exactly one place, `cratestack-macros`' `is_sensitive_field`,
+//     to redact a value from the AUDIT LOG. It excludes nothing from a
+//     response.
+//   * the three URLs (`success_url`, `cancel_url`, `return_url`).
+//     Merchant-supplied and up to 2 048 characters each; three of them
+//     would be the widest thing in the table and none is what an operator
+//     reads a list for. They belong to a detail read, which does not exist
+//     yet — the same call `PaymentIntentSummary` makes for
+//     `last_payment_error_message` and `RefundSummary` for `failure_raw`.
+//   * `publishable_key`. Public by construction, and still nothing a list
+//     answers: every row of one merchant's page carries the same value.
+//   * `seq`, for `PaymentIntentSummary`'s reason — vpay's internal counter
+//     is not part of the answer.
+type CheckoutSessionSummary {
+  id String
+  merchant_id String
+  payment_intent_id String
+  livemode Boolean
+  // `hosted` or `embedded` (`ui_mode_is_known`, migration 0028).
+  ui_mode String
+  // `open`, `complete` or `expired` (`status_is_known`, migration 0028).
+  status String
+  // `unpaid`, `paid` or `failed` (`payment_status_is_known`, migration 0028).
+  //
+  // The pair is what makes this list worth reading: a session `complete`
+  // with `payment_status` `unpaid` is a checkout the payer finished and the
+  // rail did not, which is a different operator question from one still
+  // `open`.
+  payment_status String
+  customer_id String?
+  expires_at DateTime
+  created_at DateTime
+  updated_at DateTime
+}
+
+// The filters `searchCheckoutSessions` accepts.
+//
+// HAND-ROLLED, NOT `FindMany<CheckoutSession>`, and here the reason is
+// sharper than it was for `PaymentIntentListFilter`. A `FindMany` publishes
+// a filter over every filterable scalar, and this model carries TWO live
+// payer credentials as `String` — so it would carry `eq`, `startsWith`, `lt`
+// and `gt` over `client_secret_suffix` and `return_token`. That is a prefix
+// oracle against a credential that authorises a payer's browser, offered to
+// anyone who can call the procedure.
+type CheckoutSessionListFilter {
+  // One `status` wire value, as TEXT. An unknown one is a 400 naming the
+  // parameter and listing the vocabulary, not an empty page — the
+  // vocabulary is closed and the database says so (`status_is_known`).
+  status String?
+  // One `payment_status` wire value (`payment_status_is_known`).
+  payment_status String?
+  // Inclusive bounds on `created_at`.
+  created_gte DateTime?
+  created_lte DateTime?
+}
+
+// The dashboard's checkout sessions list, paginated by offset.
+//
+// `@allow(auth() != null)`: authentication is all the POLICY decides. The
+// tenancy predicate is not here and cannot be — `inTenant(...)` takes a
+// string literal and cannot name the caller's own tenant — so the body reads
+// `ctx.tenant_id()` and refuses when there is none, exactly as
+// `searchPaymentIntents` does.
+//
+// `model CheckoutSession` HAS `merchant_id`, so the predicate is direct
+// rather than a join. It also carries a `seq` with a UNIQUE index
+// (migration 0028), so `ORDER BY seq DESC` is a total order.
+procedure searchCheckoutSessions(page: PageInput, filter: CheckoutSessionListFilter): Page<CheckoutSessionSummary>
+  @allow(auth() != null)

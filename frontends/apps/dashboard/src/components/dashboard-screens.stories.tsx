@@ -277,9 +277,9 @@ export const MoreMenuOpen: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: /more/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /^menu$/i }));
     const body = within(canvasElement.ownerDocument.body);
-    await expect(await body.findByRole("dialog")).toHaveAccessibleName("More");
+    await expect(await body.findByRole("dialog")).toHaveAccessibleName("Menu");
   },
 };
 
