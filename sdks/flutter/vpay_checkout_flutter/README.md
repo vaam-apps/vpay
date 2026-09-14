@@ -15,6 +15,14 @@ Decisions: [ADR-0021](../../../docs/adr/0021-flutter-checkout-plugin.md).
 macOS/iOS toolchain (Linux host), so that Swift is reviewed by reading only,
 never built, never run.
 
+**The Dart core has been driven against a real, running vpay (2026-09-14),
+never a real rail.** `just test-flutter-e2e` mints a real Checkout Session
+through `examples/shop`'s real server and drives this package's own
+`BrowserClient`/`CheckoutController` — a real pre-flight, a real confirm, a
+real poll to a real terminal outcome — against it. The rail behind that
+stack is WireMock, exactly as it is everywhere else in this repository; see
+"Development", below, and `docs/sdks/parity.md`'s two rows on this.
+
 **`VpayCheckoutMode.externalBrowser` is not implemented on any platform, and
 passing it throws `UnimplementedError`.** `pigeons/checkout.dart`'s
 `ShowCheckoutRequest` carries no `mode` field, so there is nothing a
@@ -107,11 +115,25 @@ for the fuller quotes and sources read.
 ```bash
 just install-flutter   # flutter pub get
 just analyze-flutter   # dart analyze --fatal-infos
-just test-flutter      # flutter test (unit tests only, no device)
+just test-flutter      # flutter test (unit tests only, no device, no stack)
+just test-flutter-e2e  # test_e2e/ against a REAL, RUNNING vpay (see below)
 ```
 
-None of the three is in `just ci` yet (D-M3) — see `docs/sdks/parity.md`'s
+None of the four is in `just ci` yet (D-M3) — see `docs/sdks/parity.md`'s
 dated ⛔ row.
+
+**`just test-flutter` is entirely `MockClient` — `just test-flutter-e2e` is
+not.** `test_e2e/real_stack_e2e_test.dart` drives this package's own
+`BrowserClient`/`CheckoutController` with `package:http`'s real `Client`,
+against whatever `just demo-up` has running: a real session read, a real
+pre-flight, a real confirm, a real poll to a real terminal outcome, the
+uniform 404 on a bad credential, and a real `checkout_session_expired` 409 on
+a session that is no longer `open`. The fixture it reads is minted by the
+recipe itself through `examples/shop`'s real server — a real
+`private_key_jwt` exchange, never a credential this package holds (see "What
+this is not", above). It refuses loudly, never skips, when no stack answers.
+**Still not a real rail** — see `docs/sdks/parity.md`'s two Flutter rows on
+this, which are now two rows and not one for exactly this reason.
 
 ## Platform hosts (design doc D5)
 

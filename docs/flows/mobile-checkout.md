@@ -220,6 +220,17 @@ What exists and is verified on this host:
 - **The gate** — `cargo xtask verify-sdk-parity` reads Dart, drops skipped
   tests, and since 2026-09-14 drops a skipped group's tests, commented-out
   declarations and titles quoted inside strings.
+- **The Dart core against a real, running vpay (2026-09-14).**
+  `just test-flutter-e2e` (`test_e2e/real_stack_e2e_test.dart`) mints a real
+  Checkout Session through `examples/shop`'s real server — a real
+  `private_key_jwt` exchange — and drives `BrowserClient`/`CheckoutController`
+  with a real `http.Client` against it: a real pre-flight, a real confirm, a
+  real poll to a real terminal outcome, the uniform 404 on a bad credential,
+  and a real `checkout_session_expired` refusal on a session that is no
+  longer `open`. It found a real bug no `MockClient` fixture had caught — the
+  session model required a field the real server never sends back — fixed
+  the same day. It is **not** in `just ci` (D-M3, see below), and it refuses
+  loudly, never skips, when no stack answers.
 
 What does **not** exist, and is a dated ⛔ in
 [`../sdks/parity.md`](../sdks/parity.md) rather than a silence:
@@ -229,12 +240,14 @@ What does **not** exist, and is a dated ⛔ in
 - **iOS and macOS** — the Swift exists under `ios/` and `macos/` and is
   **compiled by nobody**: this repository runs on Linux and has no
   `xcodebuild`. It has been reviewed by reading, and that is all.
-- **A CI gate** — `install-flutter`/`analyze-flutter`/`test-flutter` exist
-  and none of them is in `just ci` (D-M3). Every count this repository quotes
-  for this package is a human running `just test-flutter` by hand.
-- **A real rail, or even a running vpay.** Every server in this package's
-  suite is `package:http/testing.dart`'s `MockClient`. Nothing here has been
-  driven against `compose.demo.yml`, let alone MTN or Orange.
+- **A CI gate** — `install-flutter`/`analyze-flutter`/`test-flutter`/
+  `test-flutter-e2e` exist and none of them is in `just ci` (D-M3). Every
+  count this repository quotes for this package is a human running the
+  recipe by hand.
+- **A real rail.** The stack `just test-flutter-e2e` drives is real; the
+  rail behind it is still WireMock, exactly as it is everywhere else in this
+  repository (`docs/status.md`'s banner). Nothing here, or anywhere in this
+  repository, has been driven against MTN or Orange for real.
 - **A device, an App Store or Play review, and the Android 21 / iOS 12
   floor**, which is a claim nobody has tested.
 

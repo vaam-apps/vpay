@@ -59,18 +59,41 @@ page below.
    this package's own stated contract.
 7. **`allowInsecureUrl` was hard-coded `false`** and never reached the host.
 
+## Lane D — the Dart core against a real, running vpay (2026-09-14)
+
+Until this lane, every server in this package's test suite was
+`package:http/testing.dart`'s `MockClient`. That is no longer true for
+`test_e2e/real_stack_e2e_test.dart`, run only by `just test-flutter-e2e`,
+never by plain `flutter test` (which stays `MockClient`-only, stack-
+independent, and still 80 passed / 0 skipped).
+
+| Piece                                            | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A real Checkout Session, minted for real         | ✅ the recipe mints two, through `examples/shop`'s real server — a real `POST /v1/payment_intents` + `POST /v1/checkout/sessions`, authenticated with a real `private_key_jwt` `client_credentials` exchange (the same two calls `examples/shop/src/server/orders.ts` makes for a paying customer) — never a credential this package itself holds.                                                                                                                         |
+| `BrowserClient`/`CheckoutController` end to end  | ✅ `mints, preflights, confirms and polls a real session to succeeded` — a real session read, a real pre-flight, a real confirm (`POST /v1/browser/payment_intents/{id}/confirm`, standing in for what vpay's own hosted page submits — this package has no `confirm` method by design), a real poll through the package's own code to a real terminal outcome, re-checked twice more independently (once more through `BrowserClient`, once with no package code at all). |
+| The uniform 404                                  | ✅ `an unknown id, a wrong secret and a wrong key all answer the same 404` — against the real server, not a stub.                                                                                                                                                                                                                                                                                                                                                          |
+| A session that is not `open` refuses the confirm | ✅ `the intent read still answers, the pre-flight fails closed, and the confirm is refused with checkout_session_expired` — the recipe expires a real session with a real merchant access token (minted the same `private_key_jwt` way `examples/merchant-demo` does, off whichever key the running shop container already has), then proves the intent read still works, the pre-flight fails closed, and the confirm answers the real `409 checkout_session_expired`.    |
+| A real bug this found                            | ✅ fixed the same day — `CheckoutSession.fromJson` required a `client_secret` field the real `GET /v1/browser/checkout/sessions/{id}` never sends back (it only ever renders the intent's). Every `MockClient` fixture in `test/` had been fabricating that field, so `flutter test` stayed green while every real pre-flight failed with `unexpected_response(200)`.                                                                                                      |
+| The decisive test — a stack that is down         | ✅ `just demo_port=<nothing listening> test-flutter-e2e` fails LOUDLY (exit 1) before any Flutter process runs, at the `/healthz` check. A green run with nothing listening was measured to be possible before this check existed and is exactly what this recipe refuses.                                                                                                                                                                                                 |
+
+**Still true, narrower than before:** the rail behind that real vpay is
+WireMock, exactly as it is everywhere else in this repository
+(`docs/status.md`'s banner). `docs/sdks/parity.md` now carries this as two
+rows rather than one, for exactly this reason.
+
 ## What is still not real
 
 - **No `just ci` gate** (D-M3). `install-flutter`/`analyze-flutter`/
-  `test-flutter` exist; none is in `just ci` or `just verify`, and
-  `docs/status.md`'s gate table does not claim otherwise. Every count this
-  repository quotes for this package is a human running it by hand.
+  `test-flutter`/`test-flutter-e2e` exist; none is in `just ci` or
+  `just verify`, and `docs/status.md`'s gate table does not claim otherwise.
+  Every count this repository quotes for this package is a human running it
+  by hand.
 - **No iOS or macOS compile.** Not "not yet run" — there is no toolchain on
   this host and there cannot be.
 - **No device, no emulator, no browser.** Android is proven by compiling and
   web by compiling; neither has been opened.
-- **No real rail, and no running vpay.** Every server in this package's suite
-  is `MockClient`. Nothing here has been driven against `compose.demo.yml`.
+- **No real rail.** `just test-flutter-e2e` (Lane D, above) proved the
+  running-vpay half; the rail behind that stack is still WireMock.
 - **No App Store or Play review.** ADR-0021 and D9 read the published rules;
   a reviewer's verdict is a different thing this repository will not have.
 - **The Android 21 / iOS 12 floor is a claim nobody will test.**
@@ -85,3 +108,7 @@ page below.
 - [verification/2026-09-14-flutter-review.md](verification/2026-09-14-flutter-review.md)
   — the review's gate output on the merged head, and every mutation it
   measured, with the exit code read from a file in each case.
+- [verification/2026-09-14-flutter-e2e-real-stack.md](verification/2026-09-14-flutter-e2e-real-stack.md)
+  — Lane D's real-stack run: `just test-flutter-e2e` green with real `cs_…`/
+  `pi_…` ids, the same recipe failing loudly against a down stack, and
+  `just test-flutter` still 80 passed / 0 skipped throughout.
