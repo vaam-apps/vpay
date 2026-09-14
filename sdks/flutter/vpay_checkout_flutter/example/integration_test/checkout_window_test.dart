@@ -105,9 +105,7 @@ void main() {
   });
 
   testWidgets(
-    'VpayCheckout.start opens the real Activity, the real WebView renders '
-    "vpay's real page, a full MTN push is driven through it, and the real "
-    'stop-URL interception reports stopUrlReached, resolving succeeded',
+    "VpayCheckout.start opens the real Activity, the real WebView renders vpay's real page, a full MTN push is driven through it, and the real stop-URL interception reports stopUrlReached, resolving succeeded",
     (WidgetTester tester) async {
       final VpayCheckout checkout = VpayCheckout(
         baseUrl: fixture.baseUrl,
