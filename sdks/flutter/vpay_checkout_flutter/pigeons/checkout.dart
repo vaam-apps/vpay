@@ -56,6 +56,22 @@ class CheckoutStopUrl {
   final String path;
 }
 
+/// D8: which window the platform host shows. Mirrors
+/// `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
+/// distinct on purpose (one is the public Dart API, one is a wire type) so
+/// the pigeon-generated side can change shape without touching the public
+/// one, but every member here must have a same-named counterpart there.
+enum CheckoutWindowMode {
+  /// The in-app `WebView`/`WKWebView`/popup (design doc D5).
+  inApp,
+
+  /// Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
+  /// (design doc D8) — no custom URL scheme, ever (D8: schemes are
+  /// first-come-first-served on Android and any installed app could claim
+  /// one).
+  externalBrowser,
+}
+
 /// What `show` hands the platform host.
 ///
 /// `stopUrls` is empty exactly when the session carries no `success_url` or
@@ -67,6 +83,7 @@ class ShowCheckoutRequest {
     required this.url,
     required this.stopUrls,
     required this.allowInsecureUrl,
+    required this.mode,
   });
 
   /// The session's own hosted `url` (D6: carries the session secret in its
@@ -79,6 +96,13 @@ class ShowCheckoutRequest {
   /// D6's named insecure opt-in, forwarded so a platform host does not have
   /// to re-derive "is this the demo stack" from the URL's scheme itself.
   final bool allowInsecureUrl;
+
+  /// D8: `inApp` (the default) or `externalBrowser`. A platform host that
+  /// has not implemented `externalBrowser` refuses rather than silently
+  /// falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
+  /// `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
+  /// failure.
+  final CheckoutWindowMode mode;
 }
 
 /// Which of the two signals `checkout_controller.dart` polls will resolve
