@@ -6,14 +6,19 @@ intent actually settles. Design:
 [`docs/plans/2026-09-13-flutter-plugin.md`](../../../docs/plans/2026-09-13-flutter-plugin.md).
 Decisions: [ADR-0021](../../../docs/adr/0021-flutter-checkout-plugin.md).
 
-**Status (2026-09-14).** Android and web hosts exist and are wired up
-(`android/`, and the web implementation in
-`lib/src/platform/web_checkout_platform.dart`) — Android compiles for real
-(`flutter build apk --debug` on `example/`) and web compiles for real
-(`flutter build web` on `example/`). **iOS and macOS Swift also exist
-(`ios/`, `macos/`) but are compiled by nobody** — this repository has no
-macOS/iOS toolchain (Linux host), so that Swift is reviewed by reading only,
-never built, never run.
+**Status (2026-09-14, narrowed the same day by D8).** Android and web hosts
+exist and are wired up (`android/`, and the web implementation in
+`lib/src/platform/web_checkout_platform.dart`) for **both**
+`VpayCheckoutMode.inApp` and `.externalBrowser` — Android compiles for real
+(`flutter build apk --debug` **and** `--release` on `example/`; the
+debug-only JS test hook stays debug-only through this change, `0`
+occurrences in the release DEX, `4` in debug) and web compiles for real
+(`flutter build web` on `example/`). Android's `externalBrowser` (Custom
+Tabs) was also **run for real** on a headless emulator — see "Platform
+hosts", below. **iOS and macOS Swift also exist (`ios/`, `macos/`), both
+modes, but are compiled by nobody** — this repository has no macOS/iOS
+toolchain (Linux host), so that Swift is reviewed by reading only, never
+built, never run.
 
 **The Dart core has been driven against a real, running vpay (2026-09-14),
 never a real rail.** `just test-flutter-e2e` mints a real Checkout Session
@@ -23,19 +28,44 @@ real poll to a real terminal outcome — against it. The rail behind that
 stack is WireMock, exactly as it is everywhere else in this repository; see
 "Development", below, and `docs/sdks/parity.md`'s two rows on this.
 
-**`VpayCheckoutMode.externalBrowser` is not implemented on any platform, and
-passing it throws `UnimplementedError`.** `pigeons/checkout.dart`'s
-`ShowCheckoutRequest` carries no `mode` field, so there is nothing a
-platform host could act on to choose Custom Tabs or
-`SFSafariViewController` over the in-app WebView. Until the 2026-09-14
-review this package accepted the parameter and **silently gave you the
-in-app WebView instead** — which is the worst of both, because the one
-reason to reach for this mode is a rail whose page refuses an embedded
-WebView (design doc D8: Orange), and you would have got exactly the thing
-you were avoiding, with no error. Use `VpayCheckoutMode.inApp`, which is
-the default, until the ⛔ row in
-[`docs/sdks/parity.md`](../../../docs/sdks/parity.md) closes. That table is
-also where the rest of what is and is not proven today lives.
+**`VpayCheckoutMode.externalBrowser` is wired end to end (D8, 2026-09-14).**
+`pigeons/checkout.dart`'s `ShowCheckoutRequest` now carries a `mode` field,
+and every platform host acts on it — no custom URL scheme anywhere, on any
+platform (D8: `checked_forward_url` accepts only `http(s)`, and a scheme is
+first-come-first-served on Android, so any installed app could claim one).
+Return detection is D8's own "tier 0": the payer finishes on the merchant's
+own page inside the external window, the window closes or the payer
+switches back, and the plugin reports a dismissal — `checkout_controller
+.dart`'s D4 already polls the real payment intent before answering a
+dismissal, so this is correctness-complete (D1), not a downgrade.
+
+- **Android — Custom Tabs (`androidx.browser`), compiled for real AND run
+  for real on a headless emulator.** `VpayCheckoutFlutterPlugin` launches a
+  `CustomTabsIntent`; `VpayCheckoutExternalBrowserSession` reports a
+  dismissal the moment the host `Activity` itself resumes
+  (`Application.ActivityLifecycleCallbacks` — a Custom Tab is another app's
+  window, with no `startActivityForResult` and no scheme to call back on).
+  `example/integration_test/checkout_external_browser_test.dart` drove this
+  on a real AVD: a real Custom Tab opened (Chrome, confirmed present on the
+  image, `com.android.chrome` as the resumed activity), a real hardware
+  back press returned to the host `Activity`, and the real dismissal
+  arrived over the real platform channel. See
+  [`docs/sdks/parity.md`](../../../docs/sdks/parity.md) for the dated row.
+- **Web** opens the same popup it always does — a `window.open` popup
+  already _is_ an external-browser context; there is no in-app WebView on
+  Flutter web to distinguish `inApp` from. See
+  `WebVpayCheckoutPlatform`'s own doc comment.
+- **iOS** wraps `SFSafariViewController`, never `ASWebAuthenticationSession`
+  — this README's own "App Store and Play policy" section and design doc D8
+  explain why. **macOS** opens the payer's default browser via
+  `NSWorkspace` (the maintainer's own call — no `SFSafariViewController` and
+  no Custom-Tabs equivalent exist on macOS). **Both are compiled by
+  nobody** — see the Status paragraph above.
+- **Not implemented: D8's "tier 1"** (Android App Links / iOS 17.4+
+  Associated Domains, for a tab that closes itself instead of relying on
+  the payer switching back manually). It needs a merchant-hosted deployment
+  this repository cannot provide; see
+  [`docs/sdks/parity.md`](../../../docs/sdks/parity.md)'s dated ⛔ row.
 
 ## What this is not
 
@@ -135,26 +165,40 @@ this is not", above). It refuses loudly, never skips, when no stack answers.
 **Still not a real rail** — see `docs/sdks/parity.md`'s two Flutter rows on
 this, which are now two rows and not one for exactly this reason.
 
-## Platform hosts (design doc D5)
+## Platform hosts (design doc D5, D8)
 
 - **Android** — `VpayCheckoutActivity` (plain `Activity` + `WebView`,
-  `android:exported="false"`) and `VpayCheckoutFlutterPlugin`. Compiled for
-  real: `flutter build apk --debug` in `example/`.
+  `android:exported="false"`, mode `inApp`) and
+  `VpayCheckoutExternalBrowserSession` (`androidx.browser` Custom Tabs, mode
+  `externalBrowser`), both behind `VpayCheckoutFlutterPlugin`. Compiled for
+  real: `flutter build apk --debug`/`--release` in `example/`. **Run for
+  real**, both modes: `just test-flutter-emulator`'s existing suites (in-app
+  window + dismiss) and `example/integration_test
+/checkout_external_browser_test.dart` (external browser), all on a real
+  headless AVD.
 - **Web** — `WebVpayCheckoutPlatform` opens the session's `url` in a popup
   (`window.open`), the same surface `sdks/stripe-js/src/popup.ts` treats as
-  a first-class peer. There is no navigation to watch across a popup's
-  cross-origin boundary, so the only two signals are a
-  `{type: 'vpay:complete', …}` `postMessage` from the popup's own page (the
-  merchant's own return page has to send it — see the module doc comment)
-  and the popup's `closed` property, polled. Compiled for real:
-  `flutter build web` in `example/`.
-- **iOS / macOS** — `VpayCheckoutViewController` /
-  `VpayCheckoutFlutterPlugin` exist under `ios/` and `macos/` and read the
-  same way the Android host does, but **are compiled by nobody**: this
-  repository has no macOS/iOS toolchain. Reviewed by reading only.
-- **`VpayCheckoutMode.externalBrowser` is not implemented on any platform**
-  and `VpayCheckout.start` throws `UnimplementedError` for it — see the
-  Status paragraph above. Custom Tabs (`androidx.browser`) and
-  `SFSafariViewController` are not dependencies of any of the hosts above,
-  on purpose: a dependency with no code path that could ever run is its own
-  kind of false claim.
+  a first-class peer, for **both** `inApp` and `externalBrowser` — there is
+  no in-app WebView on Flutter web to distinguish the two, so a popup
+  already is this platform's external-browser context. There is no
+  navigation to watch across a popup's cross-origin boundary, so the only
+  two signals are a `{type: 'vpay:complete', …}` `postMessage` from the
+  popup's own page (the merchant's own return page has to send it — see the
+  module doc comment) and the popup's `closed` property, polled. Compiled
+  for real: `flutter build web` in `example/`.
+- **iOS** — `VpayCheckoutViewController`/`VpayCheckoutFlutterPlugin` (mode
+  `inApp`) and `VpayCheckoutExternalBrowserSession` wrapping
+  `SFSafariViewController` (mode `externalBrowser`, never
+  `ASWebAuthenticationSession` — see the App Store/Play section above).
+- **macOS** — the same shape, its `externalBrowser` opening the payer's
+  default browser via `NSWorkspace` and watching for this app's own
+  reactivation instead of a Custom Tab or `SFSafariViewController`, neither
+  of which exist on macOS.
+- **iOS and macOS are compiled by nobody**: this repository has no
+  macOS/iOS toolchain. Reviewed by reading only.
+- **D8's "tier 1"** (Android App Links / iOS 17.4+ Associated Domains, so
+  the external window can close itself instead of the payer switching back
+  manually) **is not implemented on any platform** — it needs a
+  merchant-hosted deployment (`assetlinks.json` /
+  `apple-app-site-association`) this repository cannot provide. See
+  `docs/sdks/parity.md`'s dated ⛔ row.

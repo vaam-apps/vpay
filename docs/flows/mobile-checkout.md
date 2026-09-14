@@ -78,17 +78,24 @@ mechanism.
   driven inside one — vpay has only ever talked to a WireMock stub serving two
   links, and "Orange's page inside a WebView is unproven" is named as the
   single biggest technical risk in the design. `VpayCheckoutMode.externalBrowser`
-  (D8) is the designed answer if it turns out to be true: Custom Tabs on
-  Android, `SFSafariViewController` on iOS below 17.4. Because the outcome is
-  always polled (D1), the external mode would degrade correctly with **no
-  merchant deployment work at all** — the payer finishes in the system
-  browser, closes it, and the plugin polls on resume. **It is not built.**
-  `pigeons/checkout.dart`'s `ShowCheckoutRequest` carries no `mode` field, so
-  no host has anything to act on; `VpayCheckout.start` throws
-  `UnimplementedError` for that mode rather than silently opening the in-app
-  WebView, which is what it did until the 2026-09-14 review. So this risk
-  currently has **no mitigation in code** — only a designed one, with a dated
-  ⛔ row in [`../sdks/parity.md`](../sdks/parity.md) and an owner.
+  (D8) is the mitigation, and as of 2026-09-14 it is **wired, not merely
+  designed**: `pigeons/checkout.dart`'s `ShowCheckoutRequest` carries a
+  `mode` field, threaded end to end. Android launches Custom Tabs
+  (`androidx.browser`) and reports the payer's return over
+  `Application.ActivityLifecycleCallbacks` — no `startActivityForResult`, no
+  scheme to call back on, because the outcome is always polled (D1). The
+  external mode degrades correctly with **no merchant deployment work at
+  all**, exactly as designed — the payer finishes in the system browser,
+  closes it or switches back, and the plugin polls on resume. Android's path
+  is **compiled AND run for real** on a headless emulator (a real Custom Tab
+  opened, a real back press returned to the host `Activity`, a real
+  dismissal arrived over the real channel); iOS wraps
+  `SFSafariViewController`, macOS opens the default browser via
+  `NSWorkspace`, both **compiled by nobody**. **Not built**: D8's "tier 1"
+  (Android App Links / iOS 17.4+ Associated Domains, for a window that
+  closes itself), which needs a merchant-hosted deployment this repository
+  cannot provide. See the dated rows in
+  [`../sdks/parity.md`](../sdks/parity.md).
 - **The payer dismisses the window mid-flow.** Handled by D4's short poll
   before reporting anything (above); `VpayCheckoutPending` exists precisely so
   the plugin never has to choose between lying and throwing.
@@ -196,26 +203,42 @@ default. This document does not touch
 
 ## Status
 
-**2026-09-14, after the review of Lanes A, B and C.** All three lanes have
-landed on one branch and been reviewed adversarially; this section replaces
-the Lane-B-only text that stood here, which said "no Dart file exists in this
-repository yet" and was true when it was written and false the moment Lane A
-merged.
+**2026-09-14, after the review of Lanes A, B and C, and narrowed the same
+day by D8.** All three lanes have landed on one branch and been reviewed
+adversarially; this section replaces the Lane-B-only text that stood here,
+which said "no Dart file exists in this repository yet" and was true when
+it was written and false the moment Lane A merged. D8 then widened the
+pigeon seam so `VpayCheckoutMode.externalBrowser` is real rather than
+`UnimplementedError` — see the ⛔→✅ move below and the design doc's own D8
+section for the reasoning.
 
 What exists and is verified on this host:
 
 - **The Dart core** — `sdks/flutter/vpay_checkout_flutter/lib/`: the browser
   client, the pure state machine, the result and error types, redaction, the
-  pigeon seam. `flutter test` is green; the counts and skips are on the dated
-  verification page below, which is also where every mutation this was proven
-  by is recorded.
-- **The Android host** — `VpayCheckoutActivity` (`android:exported="false"`,
-  `onReceivedSslError` not overridden, no `addJavascriptInterface`) and
-  `VpayCheckoutFlutterPlugin`. Proven by compiling: `flutter build apk
---debug` on `example/`, and the merged manifest carries the Activity with
-  `exported="false"`. **No device, no emulator, no instrumentation test.**
-- **The web host** — `WebVpayCheckoutPlatform`, `window.open` plus the
-  `vpay:complete` message and a `closed` poll. Proven by compiling:
+  pigeon seam (now carrying `CheckoutWindowMode`). `flutter test` is green,
+  82 passed / 0 skipped (was 80 before D8 added two); the counts and skips
+  are on the dated verification page below, which is also where every
+  mutation this was proven by is recorded.
+- **The Android host, both modes.** `VpayCheckoutActivity`
+  (`android:exported="false"`, `onReceivedSslError` not overridden, no
+  `addJavascriptInterface`, mode `inApp`) and
+  `VpayCheckoutExternalBrowserSession` (`androidx.browser` Custom Tabs, mode
+  `externalBrowser`), both behind `VpayCheckoutFlutterPlugin`. Proven by
+  compiling: `flutter build apk --debug` **and** `--release` on `example/`
+  (the debug-only JS test hook stays debug-only: DEX string count 4 in
+  debug, 0 in release, unchanged by D8), and the merged manifest carries the
+  Activity with `exported="false"`. **`externalBrowser` proven by running,
+  too** — a dedicated headless AVD (`vpay_d8_avd`, created and deleted for
+  this) showed a real `CustomTabsIntent` open Chrome
+  (`com.android.chrome` as the resumed activity) and a real hardware back
+  press return control to the host `Activity`, reporting a real dismissal
+  over the real channel. `inApp`'s own existing emulator suites (window +
+  dismiss) were re-run on the same device to confirm no regression.
+- **The web host, both modes.** `WebVpayCheckoutPlatform`, `window.open`
+  plus the `vpay:complete` message and a `closed` poll — `inApp` and
+  `externalBrowser` collapse to the identical popup, since there is no
+  in-app WebView on Flutter web to distinguish them. Proven by compiling:
   `flutter build web` on `example/`. **No browser has driven it.**
 - **The gate** — `cargo xtask verify-sdk-parity` reads Dart, drops skipped
   tests, and since 2026-09-14 drops a skipped group's tests, commented-out
@@ -235,11 +258,19 @@ What exists and is verified on this host:
 What does **not** exist, and is a dated ⛔ in
 [`../sdks/parity.md`](../sdks/parity.md) rather than a silence:
 
-- **`VpayCheckoutMode.externalBrowser` (D8)** — designed, not built; the
-  public API refuses it with `UnimplementedError`.
-- **iOS and macOS** — the Swift exists under `ios/` and `macos/` and is
+- **D8's "tier 1"** (Android App Links / iOS 17.4+ Associated Domains, for
+  an external window that closes itself instead of the payer switching back
+  manually) — needs a merchant-hosted `assetlinks.json`/
+  `apple-app-site-association` deployment this repository cannot provide.
+  `ASWebAuthenticationSession` is, deliberately, not a dependency of the iOS
+  host for the same reason `androidx.browser` was not one before D8: a
+  dependency with no code path that could ever run is its own kind of false
+  claim.
+- **iOS and macOS** — the Swift exists under `ios/` and `macos/`, now
+  including `externalBrowser`'s `VpayCheckoutExternalBrowserSession`, and is
   **compiled by nobody**: this repository runs on Linux and has no
-  `xcodebuild`. It has been reviewed by reading, and that is all.
+  `xcodebuild` (`swiftc`/`swift` confirmed absent too). It has been reviewed
+  by reading, and that is all.
 - **A CI gate** — `install-flutter`/`analyze-flutter`/`test-flutter`/
   `test-flutter-e2e` exist and none of them is in `just ci` (D-M3). Every
   count this repository quotes for this package is a human running the
