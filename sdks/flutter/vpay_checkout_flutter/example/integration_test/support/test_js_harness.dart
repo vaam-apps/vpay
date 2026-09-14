@@ -10,9 +10,12 @@
 /// checkout page's own rail/submit/forward buttons with a snippet of
 /// JavaScript instead — a real DOM `.click()`/`.value =`, executed by the
 /// REAL WebView's REAL JS engine on the REAL page vpay served, and reads a
-/// real result back. See `VpayCheckoutActivity.evaluateJavascriptForTests`'s
-/// own doc comment for why this is not `addJavascriptInterface` and changes
-/// no production behaviour.
+/// real result back. See
+/// `VpayCheckoutActivityTestHarness.evaluateJavascriptForTests`'s own doc
+/// comment (`android/src/debug/kotlin/dev/vpay/checkout_flutter/
+/// VpayCheckoutActivityTestHarness.kt` — Gradle's own `debug` source set,
+/// absent from a release build) for why this is not `addJavascriptInterface`
+/// and changes no production behaviour.
 library;
 
 import 'package:flutter/services.dart';

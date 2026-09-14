@@ -4,4 +4,17 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <application>
+        <!-- Lane E's JS-evaluation test harness auto-init
+             (`TestHarnessInitProvider.kt`'s own doc comment) — present
+             only in a debug build, so `MainActivity.kt`'s
+             `TestHarnessBridge.evaluateJavascript` stays null in every
+             other build type. -->
+        <provider
+            android:name=".TestHarnessInitProvider"
+            android:authorities="${applicationId}.testharnessinit"
+            android:exported="false"
+            android:initOrder="100" />
+    </application>
 </manifest>

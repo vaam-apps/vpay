@@ -26,6 +26,25 @@
 //   doing anything special to wipe or sandbox it is what keeps it persistent.
 // - Back press is always a dismissal, **never** a WebView history pop — a
 //   history pop would land the payer back on a stale form (design doc D5).
+// - This file lives in `src/main/kotlin`, so it is compiled into EVERY
+//   build variant, including a merchant's release build. Nothing that
+//   calls `WebView.evaluateJavascript`, and nothing that would let outside
+//   code reach `current`/`webView` in order to call it themselves, may
+//   live here. Lane E's JS-driven emulator test harness — briefly a public
+//   `evaluateJavascriptForTests` method on this companion object, which
+//   made a native -> JS injection point into the payer's live checkout
+//   `WebView` reachable from a release build (`docs/sdks/parity.md`) — now
+//   lives entirely in `../../debug/kotlin/dev/vpay/checkout_flutter/
+//   VpayCheckoutActivityTestHarness.kt`, Gradle's own `debug` source set,
+//   and does not read `current` or `webView` at all: it tracks the open
+//   window independently via `Application.ActivityLifecycleCallbacks` and
+//   `Activity.findViewById`, both stock public Android APIs already
+//   available in every build variant regardless of anything this file
+//   does, so moving the harness there adds nothing to what a release build
+//   already exposes. A release build's DEX carries neither that file nor
+//   its `evaluateJavascriptForTests` symbol — see
+//   `docs/sdks/parity.md`'s Flutter row for the `grep -c` count that
+//   proves it, and that file's own doc comment for the full design.
 package dev.vpay.checkout_flutter
 
 import android.content.Context
@@ -93,34 +112,6 @@ class VpayCheckoutActivity : ComponentActivity() {
       val outcome = CheckoutWindowOutcome.ofRaw(rawOutcome) ?: CheckoutWindowOutcome.DISMISSED
       val reachedUrl = data?.getStringExtra(EXTRA_RESULT_REACHED_URL)
       return CheckoutWindowEvent(outcome, reachedUrl)
-    }
-
-    /**
-     * TEST-ONLY (Lane E, `docs/plans/2026-09-13-flutter-plugin.md` D1/D5's
-     * emulator proof). Not part of `pigeons/checkout.dart`'s frozen
-     * contract, and not called from anywhere in this package's own
-     * production code -- only from `example/android/app`'s own test-harness
-     * `MethodChannel`, itself only present in the example app, never in
-     * this plugin.
-     *
-     * Runs [script] in the currently-open window's `WebView` and hands its
-     * string result to [callback], exactly the one-directional native ->
-     * JS command `WebView.evaluateJavascript` already is (Android's own
-     * public API since API 19). This is **not** `addJavascriptInterface`:
-     * nothing here exposes a native object into the page's own JS world in
-     * either direction, and no production behaviour changes -- a real payer
-     * window never has anything calling this. It exists because a headless
-     * emulator has no way to inject a touch event into this Activity's
-     * `WebView`, so Lane E's integration test drives the REAL hosted
-     * checkout page's own rail/submit/forward buttons and reads its own
-     * `data-screen`/`data-outcome` attributes this way instead of by touch.
-     *
-     * Returns `false` (and never calls [callback]) when no window is open.
-     */
-    fun evaluateJavascriptForTests(script: String, callback: (String?) -> Unit): Boolean {
-      val view = current?.webView ?: return false
-      view.evaluateJavascript(script, callback)
-      return true
     }
   }
 

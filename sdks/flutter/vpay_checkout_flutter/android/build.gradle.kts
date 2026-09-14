@@ -39,6 +39,13 @@ android {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
         }
+        getByName("debug") {
+            // Lane E's JS-evaluation test harness
+            // (VpayCheckoutActivityTestHarness.kt) lives only here, so it
+            // compiles into a debug build and never a release one — see
+            // VpayCheckoutActivity.kt's own file header.
+            java.srcDirs("src/debug/kotlin")
+        }
         getByName("test") {
             java.srcDirs("src/test/kotlin")
         }
