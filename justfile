@@ -711,11 +711,50 @@ test-flutter-emulator: _flutter-preflight
     wait "$dismiss_pid" || dismiss_status=$?
     cat "$dismiss_log"
 
-    if [ "$window_status" -ne 0 ] || [ "$dismiss_status" -ne 0 ]; then
-        echo "test-flutter-emulator: FAIL — window suite exit $window_status, dismiss suite exit $dismiss_status" >&2
+    echo "test-flutter-emulator: === external browser suite (real Custom Tab, real back press -> real dismissed) ==="
+    external_browser_log="$tmp/external_browser.log"
+    : > "$external_browser_log"
+    (cd "$example_dir" && flutter test integration_test/checkout_external_browser_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64" > "$external_browser_log" 2>&1) &
+    external_browser_pid=$!
+
+    # Same rationale as the dismiss suite above: watched off the suite's
+    # own relayed console, not `adb logcat`.
+    marker_deadline=$((SECONDS + 90))
+    pressed=0
+    while [ $SECONDS -lt $marker_deadline ]; do
+        if grep -q 'LANE_D8_EXTERNAL_BROWSER_READY' "$external_browser_log" 2>/dev/null; then
+            activity_deadline=$((SECONDS + 5))
+            while [ $SECONDS -lt $activity_deadline ]; do
+                # A Custom Tab is Chrome's own Activity, not
+                # VpayCheckoutActivity — the resumed component belongs to
+                # `com.android.chrome` once the tab has actually taken
+                # focus.
+                if adb -s "$device" shell dumpsys activity activities 2>/dev/null \
+                    | grep -qE '(mResumedActivity|ResumedActivity:|topResumedActivity=).*com\.android\.chrome'; then
+                    break
+                fi
+                sleep 0.2
+            done
+            sleep 0.3
+            adb -s "$device" shell input keyevent 4
+            pressed=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [ "$pressed" -eq 0 ]; then
+        echo "test-flutter-emulator: WARNING — never saw LANE_D8_EXTERNAL_BROWSER_READY; the external browser suite will time out and fail on its own" >&2
+    fi
+
+    external_browser_status=0
+    wait "$external_browser_pid" || external_browser_status=$?
+    cat "$external_browser_log"
+
+    if [ "$window_status" -ne 0 ] || [ "$dismiss_status" -ne 0 ] || [ "$external_browser_status" -ne 0 ]; then
+        echo "test-flutter-emulator: FAIL — window suite exit $window_status, dismiss suite exit $dismiss_status, external browser suite exit $external_browser_status" >&2
         exit 1
     fi
-    echo "test-flutter-emulator: both suites green"
+    echo "test-flutter-emulator: all three suites green"
 
 # Vendors `@vaam-apps/vpay-stripe-js`'s build output into
 # `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports
