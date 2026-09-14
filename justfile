@@ -649,6 +649,11 @@ test-flutter-emulator: _flutter-preflight
         --arg mtnSucceedsMsisdn "237600000100" \
         '{baseUrl: $baseUrl, publishableKey: $publishableKey, sessionUrl: $sessionUrl, dismissSessionUrl: $dismissSessionUrl, mtnSucceedsMsisdn: $mtnSucceedsMsisdn}' \
         > "$fixture"
+    # `--dart-define`, not `VPAY_E2E_FIXTURE_FILE` in the child process's
+    # environment — `integration_test` runs the compiled app ON THE
+    # DEVICE, a separate Android process the host shell's environment
+    # never reaches. See `support/fixture.dart`'s own doc comment.
+    fixture_b64="$(base64 -w0 "$fixture")"
 
     example_dir="{{ flutter_plugin_dir }}/example"
     echo "test-flutter-emulator: resolving the example app's own dependencies"
@@ -656,12 +661,12 @@ test-flutter-emulator: _flutter-preflight
 
     echo "test-flutter-emulator: === window suite (real Activity, real WebView, full MTN push, real stop-URL interception) ==="
     window_status=0
-    (cd "$example_dir" && VPAY_E2E_FIXTURE_FILE="$fixture" flutter test integration_test/checkout_window_test.dart -d "$device") || window_status=$?
+    (cd "$example_dir" && flutter test integration_test/checkout_window_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64") || window_status=$?
 
     echo "test-flutter-emulator: === dismiss suite (real back press -> real dismissal) ==="
     adb -s "$device" logcat -c
     dismiss_log="$tmp/dismiss.log"
-    (cd "$example_dir" && VPAY_E2E_FIXTURE_FILE="$fixture" flutter test integration_test/checkout_dismiss_test.dart -d "$device" > "$dismiss_log" 2>&1) &
+    (cd "$example_dir" && flutter test integration_test/checkout_dismiss_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64" > "$dismiss_log" 2>&1) &
     dismiss_pid=$!
 
     marker_deadline=$((SECONDS + 90))
@@ -670,11 +675,21 @@ test-flutter-emulator: _flutter-preflight
         if adb -s "$device" logcat -d 2>/dev/null | grep -q 'LANE_E_DISMISS_TEST_READY'; then
             activity_deadline=$((SECONDS + 5))
             while [ $SECONDS -lt $activity_deadline ]; do
-                if adb -s "$device" shell dumpsys activity activities 2>/dev/null | grep -q 'VpayCheckoutActivity'; then
+                # Specifically the RESUMED record, not just any mention —
+                # `dumpsys activity activities` keeps a finished Activity's
+                # history entry around too, which matched immediately and
+                # let this loop send the key press before
+                # VpayCheckoutActivity had actually taken focus (measured:
+                # the earlier plain `grep -q 'VpayCheckoutActivity'` broke
+                # out on the first iteration and the resulting keyevent hit
+                # the wrong window).
+                if adb -s "$device" shell dumpsys activity activities 2>/dev/null \
+                    | grep -qE '(mResumedActivity|ResumedActivity:|topResumedActivity=).*VpayCheckoutActivity'; then
                     break
                 fi
                 sleep 0.2
             done
+            sleep 0.3
             adb -s "$device" shell input keyevent 4
             pressed=1
             break

@@ -4,7 +4,7 @@
 /// point, not a Dart stub of the platform channel.
 ///
 /// Requires an attached device (`flutter test integration_test/
-/// checkout_window_test.dart -d <emulator-serial>`) and a fixture minted by
+/// checkout_window_test.dart -d emulator-serial`) and a fixture minted by
 /// `just test-flutter-emulator` at `$VPAY_E2E_FIXTURE_FILE` — see
 /// `support/fixture.dart`. Never skips: `EmulatorFixture.load` fails loudly
 /// with neither.
@@ -58,6 +58,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
+import 'support/ensure_platform_registered.dart';
 import 'support/fixture.dart';
 import 'support/test_js_harness.dart';
 
@@ -76,7 +77,14 @@ Future<void> _waitUntil(
   final DateTime deadline = DateTime.now().add(timeout);
   String? last;
   while (DateTime.now().isBefore(deadline)) {
-    last = await read();
+    try {
+      last = await read();
+    } on NoCheckoutWindowOpen {
+      // The Activity has not finished `startActivityForResult` yet — not
+      // a failure, just not-yet, exactly like any other not-yet-satisfied
+      // value below.
+      last = null;
+    }
     if (satisfied(last)) {
       return;
     }
@@ -92,6 +100,7 @@ void main() {
   final TestJsHarness js = TestJsHarness();
 
   setUpAll(() {
+    ensurePlatformRegistered();
     fixture = EmulatorFixture.load();
   });
 
@@ -156,9 +165,7 @@ void main() {
             'produce this: it is the real page reporting where it actually '
             'navigated to',
       );
-      final Uri sessionUri = Uri.parse(
-        fixture.sessionUrl.split('#').first,
-      );
+      final Uri sessionUri = Uri.parse(fixture.sessionUrl.split('#').first);
       expect(
         href,
         startsWith(sessionUri.origin),

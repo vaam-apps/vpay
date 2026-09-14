@@ -1,16 +1,27 @@
-/// What `just test-flutter-emulator` mints on the HOST and writes to
-/// `$VPAY_E2E_FIXTURE_FILE` before running this suite ON THE EMULATOR —
-/// the same shape Lane D's `test_e2e/real_stack_e2e_test.dart` reads,
-/// trimmed to what a WebView-driving suite needs (no pre-expired session:
-/// this suite drives the REAL page's own confirm, it never calls
-/// `/confirm` itself).
+/// What `just test-flutter-emulator` mints on the HOST before running this
+/// suite ON THE EMULATOR — the same shape Lane D's
+/// `test_e2e/real_stack_e2e_test.dart` fixture is, trimmed to what a
+/// WebView-driving suite needs (no pre-expired session: this suite drives
+/// the REAL page's own confirm, it never calls `/confirm` itself).
+///
+/// Carried in as `--dart-define=VPAY_E2E_FIXTURE_B64=...`, NOT
+/// `Platform.environment` (`test_e2e/real_stack_e2e_test.dart`'s own
+/// mechanism): that suite runs as a plain Dart VM process on the HOST,
+/// which inherits the host shell's environment; `integration_test` runs
+/// the compiled app ON THE DEVICE, a separate Android process the host
+/// shell's environment never reaches. `--dart-define` is the one channel
+/// that DOES cross that boundary — it is compiled into the app as a
+/// `String.fromEnvironment` constant. Base64-JSON rather than one
+/// `--dart-define` per field: a minted session `url` carries its own `?`,
+/// `&`, `=` and `#` characters, and round-tripping those through a
+/// `KEY=VALUE` shell argument correctly is exactly the kind of thing
+/// worth not hand-rolling twice.
 ///
 /// Loading this is a loud [fail] in `setUpAll`, never a skip — a skipped
 /// test is not a passing test (CLAUDE.md).
 library;
 
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -63,30 +74,35 @@ class EmulatorFixture {
   /// numbers other suites use.
   final String mtnSucceedsMsisdn;
 
+  static const String _fixtureB64 = String.fromEnvironment(
+    'VPAY_E2E_FIXTURE_B64',
+  );
+
   static EmulatorFixture load() {
-    final String? path = Platform.environment['VPAY_E2E_FIXTURE_FILE'];
-    if (path == null || path.trim().isEmpty) {
+    if (_fixtureB64.isEmpty) {
       fail(
-        'VPAY_E2E_FIXTURE_FILE is not set. This is a REAL emulator suite '
-        "and refuses to run against nothing — it never skips. Run it "
-        "through 'just test-flutter-emulator', which mints this fixture "
-        'against a running vpay stack, arms adb reverse, and sets this '
-        'variable — see the justfile.',
+        'VPAY_E2E_FIXTURE_B64 is not set (as a --dart-define). This is a '
+        'REAL emulator suite and refuses to run against nothing — it '
+        "never skips. Run it through 'just test-flutter-emulator', which "
+        'mints this fixture against a running vpay stack, arms adb '
+        'reverse, and passes it in this way — see the justfile.',
       );
     }
-    final File file = File(path);
-    if (!file.existsSync()) {
-      fail('VPAY_E2E_FIXTURE_FILE names $path, and that file does not exist.');
+    late final Map<String, Object?> json;
+    try {
+      final String decoded = utf8.decode(base64.decode(_fixtureB64));
+      final Object? parsed = jsonDecode(decoded);
+      if (parsed is! Map) {
+        fail('VPAY_E2E_FIXTURE_B64 did not decode to a JSON object.');
+      }
+      json = parsed.cast();
+    } on FormatException catch (e) {
+      fail('VPAY_E2E_FIXTURE_B64 is not valid base64/JSON: $e');
     }
-    final Object? decoded = jsonDecode(file.readAsStringSync());
-    if (decoded is! Map) {
-      fail('$path did not decode to a JSON object.');
-    }
-    final Map<String, Object?> json = decoded.cast();
     String field(String name) {
       final Object? value = json[name];
       if (value is! String || value.isEmpty) {
-        fail('$path is missing a non-empty "$name" field.');
+        fail('VPAY_E2E_FIXTURE_B64 is missing a non-empty "$name" field.');
       }
       return value;
     }
