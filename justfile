@@ -343,6 +343,172 @@ analyze-flutter: _flutter-preflight
 test-flutter: _flutter-preflight
     cd {{ flutter_plugin_dir }} && flutter test
 
+# The plugin's Dart core against a REAL, RUNNING vpay stack — Lane D,
+# `docs/plans/2026-09-14-flutter-e2e-real-stack.md`. No `MockClient` anywhere
+# in the path: `sdks/flutter/vpay_checkout_flutter/test_e2e/
+# real_stack_e2e_test.dart` drives the package's own `BrowserClient` and
+# `CheckoutController` against real HTTP, on a session minted through
+# `examples/shop`'s real server (a real `POST /v1/payment_intents` + `POST
+# /v1/checkout/sessions`, authenticated with a real `private_key_jwt`
+# exchange).
+#
+# Separate from `test-flutter`, the way `test-e2e` is separate from
+# `test-web`: `test-flutter` stays stack-independent and MUST keep passing —
+# 80 passed, 0 skipped — with the stack down. This recipe needs a stack and
+# refuses LOUDLY, never a skip, the moment one is not reachable: a green run
+# against nothing listening would be worse than no test at all.
+#
+# Does NOT bring the stack up and does NOT tear it down — `just demo-up` may
+# already be running, shared with other work on this host. It reads two new
+# orders through the shop and expires the second one's session; it never
+# touches anything else already on the stack.
+#
+# The one merchant-only call this needs — expiring the second session, to
+# prove a session that is not `open` refuses the confirm — is made with a
+# real access token this recipe mints itself, the same `private_key_jwt`
+# exchange `examples/merchant-demo` and `just sdk-conformance-node` already
+# do: it reads WHICHEVER private key the running shop container already has
+# baked in (`docker cp`, never generated or committed here) and signs an
+# assertion with `sdks/nodejs`'s own `mintClientAssertion` via
+# `sdks/nodejs/scripts/mint-assertion.mjs`.
+test-flutter-e2e: _flutter-preflight
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in curl docker jq node pnpm; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "test-flutter-e2e: FAIL — needs '$tool' on PATH" >&2; exit 1; }
+    done
+
+    base_url="http://localhost:{{demo_port}}"
+    shop_url="http://localhost:{{demo_shop_port}}"
+
+    # THE DECISIVE CHECK. Everything below assumes a real stack; this is
+    # where a down stack is refused LOUDLY rather than the rest of this
+    # script failing three tools deep with a message that names neither.
+    echo "test-flutter-e2e: checking $base_url/healthz"
+    if ! curl -fsS -o /dev/null --max-time 5 "$base_url/healthz"; then
+        echo "test-flutter-e2e: FAIL — nothing answers $base_url/healthz." >&2
+        echo "test-flutter-e2e: this is a REAL end-to-end test and refuses to fake one." >&2
+        echo "test-flutter-e2e: bring a stack up first: just demo-up" >&2
+        exit 1
+    fi
+    if ! curl -fsS -o /dev/null --max-time 5 "$shop_url/healthz"; then
+        echo "test-flutter-e2e: FAIL — nothing answers $shop_url/healthz (examples/shop)." >&2
+        echo "test-flutter-e2e: bring a stack up first: just demo-up" >&2
+        exit 1
+    fi
+    echo "test-flutter-e2e: stack is up"
+
+    export VPAY_DEMO_PROJECT={{demo_project}}
+    export VPAY_DEMO_PORT={{demo_port}}
+    export VPAY_DEMO_RECEIVER_PORT={{demo_receiver_port}}
+    export VPAY_DEMO_ORANGE_PORT={{demo_orange_port}}
+    export VPAY_DEMO_CHECKOUT_PORT={{demo_checkout_port}}
+    export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
+    export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
+
+    shop_container="$(docker compose {{demo_compose}} ps -q vpay-shop)"
+    if [ -z "$shop_container" ]; then
+        echo "test-flutter-e2e: FAIL — no running 'vpay-shop' container under project {{demo_project}}." >&2
+        exit 1
+    fi
+
+    shop_env="$(docker inspect "$shop_container" --format '{{{{range .Config.Env}}{{{{println .}}{{{{end}}')"
+    client_id="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_CLIENT_ID=//p')"
+    publishable_key="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_PUBLISHABLE_KEY=//p')"
+    private_key_path="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_PRIVATE_KEY_FILE=//p')"
+    if [ -z "$client_id" ] || [ -z "$publishable_key" ] || [ -z "$private_key_path" ]; then
+        echo "test-flutter-e2e: FAIL — could not read VPAY_CLIENT_ID/VPAY_PUBLISHABLE_KEY/VPAY_PRIVATE_KEY_FILE" >&2
+        echo "test-flutter-e2e:   off the running vpay-shop container's own environment." >&2
+        exit 1
+    fi
+    echo "test-flutter-e2e: shop container is client_id=$client_id"
+
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    docker cp "$shop_container:$private_key_path" "$tmp/merchant.pem"
+
+    # Two real orders, through the shop's real server — the same
+    # `orders.create` mutation a buyer's browser calls
+    # (`examples/shop/src/server/routers/orders.ts`), which performs the
+    # real `POST /v1/payment_intents` + `POST /v1/checkout/sessions` with
+    # `private_key_jwt` (`examples/shop/src/server/orders.ts:273`,`:295`).
+    mint_order() {
+        curl -sS -X POST "$shop_url/api/trpc/orders.create" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$1\",\"lines\":[{\"productId\":\"njangi-tote\",\"quantity\":1}],\"mode\":\"hosted\"}"
+    }
+
+    success_order="$(mint_order flutter-e2e-success@example.test)"
+    success_url="$(printf '%s' "$success_order" | jq -er '.result.data.url')" || {
+        echo "test-flutter-e2e: FAIL — orders.create (success fixture) answered: $success_order" >&2
+        exit 1
+    }
+
+    expiring_order="$(mint_order flutter-e2e-expired@example.test)"
+    expiring_url="$(printf '%s' "$expiring_order" | jq -er '.result.data.url')" || {
+        echo "test-flutter-e2e: FAIL — orders.create (expiry fixture) answered: $expiring_order" >&2
+        exit 1
+    }
+    expiring_cs_id="$(printf '%s' "$expiring_url" | sed -E 's#^[^#]*/c/([a-zA-Z0-9_]+).*#\1#')"
+    expiring_cs_secret="${expiring_url#*#}"
+    echo "test-flutter-e2e: minted 2 real checkout sessions (real private_key_jwt, real cs_… ids)"
+
+    # Read the expiring session ONCE while it is still `open`, to capture
+    # the intent's own client_secret (D2 item 1) BEFORE expiring it below —
+    # the whole point of this fixture
+    # (docs/flows/hosted-checkout.md, "A session that is not open refuses
+    # the confirm").
+    expiring_session="$(curl -fsS "$base_url/v1/browser/checkout/sessions/${expiring_cs_id}?key=${publishable_key}&client_secret=${expiring_cs_secret}")"
+    expiring_intent_id="$(printf '%s' "$expiring_session" | jq -er '.payment_intent.id')"
+    expiring_intent_secret="$(printf '%s' "$expiring_session" | jq -er '.payment_intent.client_secret')"
+
+    # A real merchant access token, minted the same way
+    # `examples/merchant-demo` and `just sdk-conformance-node` do —
+    # `client_credentials` + `private_key_jwt`, signed with whichever key
+    # the running shop container actually has.
+    pnpm install --filter @vaam-apps/vpay-sdk... >/dev/null
+    pnpm --filter @vaam-apps/vpay-sdk build >/dev/null
+    assertion="$(VPAY_CLIENT_ID="$client_id" VPAY_PRIVATE_KEY_FILE="$tmp/merchant.pem" \
+        VPAY_AUDIENCE="$base_url/v1/oauth/token" \
+        node sdks/nodejs/scripts/mint-assertion.mjs | jq -er '.assertion')"
+    token_response="$(curl -sS -X POST "$base_url/v1/oauth/token" \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        --data-urlencode 'grant_type=client_credentials' \
+        --data-urlencode "client_assertion=${assertion}" \
+        --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' \
+        --data-urlencode 'audience=vpay:v1')"
+    merchant_token="$(printf '%s' "$token_response" | jq -er '.access_token')" || {
+        echo "test-flutter-e2e: FAIL — could not mint a merchant access token to expire the fixture session." >&2
+        echo "test-flutter-e2e:   token endpoint answered: $token_response" >&2
+        exit 1
+    }
+
+    expire_status="$(curl -sS -o "$tmp/expire.json" -w '%{http_code}' -X POST \
+        "$base_url/v1/checkout/sessions/${expiring_cs_id}/expire" \
+        -H "Authorization: Bearer ${merchant_token}" \
+        -H "Idempotency-Key: test-flutter-e2e-expire-$(date +%s)-$$")"
+    if [ "$expire_status" != "200" ]; then
+        echo "test-flutter-e2e: FAIL — expiring the fixture session answered HTTP $expire_status:" >&2
+        cat "$tmp/expire.json" >&2
+        exit 1
+    fi
+    echo "test-flutter-e2e: expired session $expiring_cs_id (real private_key_jwt token, real 200)"
+
+    fixture="$tmp/fixture.json"
+    jq -n \
+        --arg baseUrl "$base_url" \
+        --arg publishableKey "$publishable_key" \
+        --arg successSessionUrl "$success_url" \
+        --arg expiredSessionUrl "$expiring_url" \
+        --arg expiredIntentId "$expiring_intent_id" \
+        --arg expiredIntentClientSecret "$expiring_intent_secret" \
+        '{baseUrl: $baseUrl, publishableKey: $publishableKey, successSessionUrl: $successSessionUrl, expiredSessionUrl: $expiredSessionUrl, expiredIntentId: $expiredIntentId, expiredIntentClientSecret: $expiredIntentClientSecret}' \
+        > "$fixture"
+
+    echo "test-flutter-e2e: fixture written — driving the plugin's own BrowserClient/CheckoutController"
+    cd {{ flutter_plugin_dir }}
+    VPAY_E2E_FIXTURE_FILE="$fixture" flutter test test_e2e
+
 # Vendors `@vaam-apps/vpay-stripe-js`'s build output into
 # `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports
 # as a plain relative ESM path (no bundler, no import map). A COPY rather
