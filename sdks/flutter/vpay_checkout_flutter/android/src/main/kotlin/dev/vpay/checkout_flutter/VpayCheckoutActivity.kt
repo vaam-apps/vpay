@@ -94,6 +94,34 @@ class VpayCheckoutActivity : ComponentActivity() {
       val reachedUrl = data?.getStringExtra(EXTRA_RESULT_REACHED_URL)
       return CheckoutWindowEvent(outcome, reachedUrl)
     }
+
+    /**
+     * TEST-ONLY (Lane E, `docs/plans/2026-09-13-flutter-plugin.md` D1/D5's
+     * emulator proof). Not part of `pigeons/checkout.dart`'s frozen
+     * contract, and not called from anywhere in this package's own
+     * production code -- only from `example/android/app`'s own test-harness
+     * `MethodChannel`, itself only present in the example app, never in
+     * this plugin.
+     *
+     * Runs [script] in the currently-open window's `WebView` and hands its
+     * string result to [callback], exactly the one-directional native ->
+     * JS command `WebView.evaluateJavascript` already is (Android's own
+     * public API since API 19). This is **not** `addJavascriptInterface`:
+     * nothing here exposes a native object into the page's own JS world in
+     * either direction, and no production behaviour changes -- a real payer
+     * window never has anything calling this. It exists because a headless
+     * emulator has no way to inject a touch event into this Activity's
+     * `WebView`, so Lane E's integration test drives the REAL hosted
+     * checkout page's own rail/submit/forward buttons and reads its own
+     * `data-screen`/`data-outcome` attributes this way instead of by touch.
+     *
+     * Returns `false` (and never calls [callback]) when no window is open.
+     */
+    fun evaluateJavascriptForTests(script: String, callback: (String?) -> Unit): Boolean {
+      val view = current?.webView ?: return false
+      view.evaluateJavascript(script, callback)
+      return true
+    }
   }
 
   private var webView: WebView? = null
