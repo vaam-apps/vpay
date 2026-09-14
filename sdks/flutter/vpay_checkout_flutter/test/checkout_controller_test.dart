@@ -63,7 +63,9 @@ Map<String, Object?> _sessionJson({
   'url': 'https://checkout.example/c/cs_123#$_csSecret',
   'expires_at': 1700086400,
   'created': 1700000000,
-  'client_secret': _csSecret,
+  // No `client_secret` key: the real session read never sends the
+  // session's own secret back — see `CheckoutSession.clientSecret`'s doc
+  // comment in `lib/src/models.dart`.
 };
 
 CheckoutPreflightReady _readyFixture({String? successUrl, String? cancelUrl}) =>

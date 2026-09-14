@@ -44,7 +44,9 @@ Map<String, Object?> _sessionJson({String uiMode = 'hosted'}) => {
   'url': _sessionUrl,
   'expires_at': 1700086400,
   'created': 1700000000,
-  'client_secret': _csSecret,
+  // No `client_secret` key: the real session read never sends the
+  // session's own secret back — see `CheckoutSession.clientSecret`'s doc
+  // comment in `lib/src/models.dart`.
 };
 
 /// A clock that advances instantly rather than waiting real time — keeps

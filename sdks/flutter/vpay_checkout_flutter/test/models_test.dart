@@ -43,8 +43,14 @@ Map<String, Object?> _sampleCheckoutSessionJson({
       'https://checkout.vpay.example/c/cs_123?key=pk_test_1#cs_123_secret_$_csSecretSuffix',
   'expires_at': 1700086400,
   'created': 1700000000,
-  'client_secret': 'cs_123_secret_$_csSecretSuffix',
+  // Deliberately NOT a `client_secret` key: the real
+  // `GET /v1/browser/checkout/sessions/{id}` never sends the session's own
+  // secret back (`CheckoutSession.clientSecret`'s doc comment) — this
+  // fixture used to carry one and every test below decoded it, which is
+  // exactly the gap only a real server catches, not a `MockClient`.
 };
+
+const _sampleSessionClientSecret = 'cs_123_secret_$_csSecretSuffix';
 
 void main() {
   group('PaymentIntent', () {
@@ -129,6 +135,7 @@ void main() {
           successUrl: 'https://shop.example/thanks',
           cancelUrl: 'https://shop.example/cancel',
         ),
+        clientSecret: _sampleSessionClientSecret,
       );
       expect(session.id, 'cs_123');
       expect(session.uiMode, CheckoutUiMode.hosted);
@@ -139,13 +146,19 @@ void main() {
     });
 
     test('expands payment_intent into the whole intent, with the intent\'s own client_secret typed', () {
-      final session = CheckoutSession.fromJson(_sampleCheckoutSessionJson());
+      final session = CheckoutSession.fromJson(
+        _sampleCheckoutSessionJson(),
+        clientSecret: _sampleSessionClientSecret,
+      );
       expect(session.paymentIntent, isA<PaymentIntent>());
       expect(session.paymentIntent.clientSecret, contains('pi_123_secret_'));
     });
 
     test('keeps the expanded intent\'s secret out of the client\'s diagnostics, exactly as it keeps the session\'s', () {
-      final session = CheckoutSession.fromJson(_sampleCheckoutSessionJson());
+      final session = CheckoutSession.fromJson(
+        _sampleCheckoutSessionJson(),
+        clientSecret: _sampleSessionClientSecret,
+      );
       final rendered = session.toString();
       expect(rendered, isNot(contains(_csSecretSuffix)));
       expect(rendered, isNot(contains(_piSecretSuffix)));
@@ -156,7 +169,10 @@ void main() {
     });
 
     test('redacts the hosted url, which carries the session secret in its fragment', () {
-      final session = CheckoutSession.fromJson(_sampleCheckoutSessionJson());
+      final session = CheckoutSession.fromJson(
+        _sampleCheckoutSessionJson(),
+        clientSecret: _sampleSessionClientSecret,
+      );
       expect(session.toString(), isNot(contains('checkout.vpay.example')));
     });
   });

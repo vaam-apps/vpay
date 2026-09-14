@@ -188,8 +188,9 @@ enum CheckoutUiMode {
 /// `checkout.session` as `GET /v1/browser/checkout/sessions/{id}` renders
 /// it, with `payment_intent` **expanded** (the one place this differs from
 /// the merchant SDKs' `CheckoutSession`, mirroring
-/// `sdks/stripe-js/src/types.ts`'s own note on the same field) — fourteen
-/// keys, `client_secret` included.
+/// `sdks/stripe-js/src/types.ts`'s own note on the same field) — thirteen
+/// keys on the wire, plus [clientSecret], which is **not** one of them; see
+/// its own doc comment.
 final class CheckoutSession {
   const CheckoutSession({
     required this.id,
@@ -237,25 +238,45 @@ final class CheckoutSession {
   /// Unix **seconds**.
   final int created;
 
-  /// `cs_…_secret_…`. Never log this — see [toString].
+  /// `cs_…_secret_…` — the credential [BrowserClient.retrieveCheckoutSession]
+  /// was called with. Never log this — see [toString].
+  ///
+  /// **Not a wire field, on purpose, and this was a real bug against the
+  /// real server until 2026-09-14** (found by
+  /// `sdks/flutter/vpay_checkout_flutter/test_e2e/real_stack_e2e_test.dart`,
+  /// which is exactly what a `MockClient`-only suite cannot catch: every
+  /// fixture in `test/` had been fabricating this key). vpay's own handler
+  /// never re-serves the session's own secret — only the intent's
+  /// (`vpay_api::browser::checkout_sessions::retrieve`'s doc comment: "the
+  /// credential exists so this page can drive confirm ... the page loses
+  /// nothing: it read the secret on its first call"). Requiring it in
+  /// [fromJson] made every real pre-flight fail with `unexpected_response`.
+  /// The caller already holds this value — it is what authenticated the
+  /// request — so [fromJson] takes it as a parameter instead of reading it
+  /// off a body that will never carry it.
   final String clientSecret;
 
-  factory CheckoutSession.fromJson(Map<String, Object?> json) =>
-      CheckoutSession(
-        id: json['id']! as String,
-        livemode: json['livemode']! as bool,
-        paymentIntent: PaymentIntent.fromJson(
-          json['payment_intent']! as Map<String, Object?>,
-        ),
-        uiMode: CheckoutUiMode.fromWire(json['ui_mode']! as String),
-        status: CheckoutSessionStatus.fromWire(json['status']! as String),
-        successUrl: json['success_url'] as String?,
-        cancelUrl: json['cancel_url'] as String?,
-        url: json['url'] as String?,
-        expiresAt: json['expires_at']! as int,
-        created: json['created']! as int,
-        clientSecret: json['client_secret']! as String,
-      );
+  /// [clientSecret] is **not** read from [json] — see that field's doc
+  /// comment for why the server never sends it back — so the caller passes
+  /// the value it already authenticated with.
+  factory CheckoutSession.fromJson(
+    Map<String, Object?> json, {
+    required String clientSecret,
+  }) => CheckoutSession(
+    id: json['id']! as String,
+    livemode: json['livemode']! as bool,
+    paymentIntent: PaymentIntent.fromJson(
+      json['payment_intent']! as Map<String, Object?>,
+    ),
+    uiMode: CheckoutUiMode.fromWire(json['ui_mode']! as String),
+    status: CheckoutSessionStatus.fromWire(json['status']! as String),
+    successUrl: json['success_url'] as String?,
+    cancelUrl: json['cancel_url'] as String?,
+    url: json['url'] as String?,
+    expiresAt: json['expires_at']! as int,
+    created: json['created']! as int,
+    clientSecret: clientSecret,
+  );
 
   static bool isCheckoutSessionJson(Object? body) =>
       body is Map &&

@@ -229,7 +229,10 @@ final class BrowserClient {
     }
     if (outcome.ok! && CheckoutSession.isCheckoutSessionJson(outcome.body)) {
       final CheckoutSession? session = _decode(
-        () => CheckoutSession.fromJson((outcome.body! as Map).cast()),
+        () => CheckoutSession.fromJson(
+          (outcome.body! as Map).cast(),
+          clientSecret: clientSecret,
+        ),
       );
       if (session != null) {
         return CheckoutSessionResult.ok(session);

@@ -115,9 +115,7 @@ class _Fixture {
     }
     final File file = File(path);
     if (!file.existsSync()) {
-      fail(
-        'VPAY_E2E_FIXTURE_FILE names $path, and that file does not exist.',
-      );
+      fail('VPAY_E2E_FIXTURE_FILE names $path, and that file does not exist.');
     }
     final Object? decoded = jsonDecode(file.readAsStringSync());
     if (decoded is! Map) {
@@ -185,6 +183,18 @@ class _ParsedSessionUrl {
 
 /// `POST /v1/browser/payment_intents/{id}/confirm` — see this file's header
 /// for why it is not a call on [BrowserClient].
+///
+/// **Builds the body by hand rather than handing `http.Client.post` a
+/// `Map<String, String>`.** vpay's form grammar
+/// (`backends/crates/vpay-api/src/form.rs`) splits a key on its **raw,
+/// still-escaped** `[`/`]` — the brackets are structural wire syntax, never
+/// percent-encoded, exactly like `sdks/nodejs/src/form.ts`'s own encoder.
+/// `http.Client.post`'s map-body helper percent-encodes the KEY too
+/// (`payment_method_data%5Btype%5D`), which vpay's decoder does not
+/// recognise as a bracket at all — measured against this real server: it
+/// answers `400 payment_method_data[type]` on that encoding, not the 200
+/// curl's own `--data-urlencode name=value` (which never escapes the name)
+/// gets.
 Future<http.Response> _rawConfirm(
   http.Client client, {
   required String baseUrl,
@@ -196,16 +206,15 @@ Future<http.Response> _rawConfirm(
   final Uri uri = Uri.parse(
     '$baseUrl/v1/browser/payment_intents/$paymentIntentId/confirm',
   );
+  final String body = [
+    'key=${Uri.encodeQueryComponent(key)}',
+    'client_secret=${Uri.encodeQueryComponent(clientSecret)}',
+    'payment_method_data[type]=${Uri.encodeQueryComponent(paymentMethodType)}',
+  ].join('&');
   return client.post(
     uri,
-    headers: const {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: {
-      'key': key,
-      'client_secret': clientSecret,
-      'payment_method_data[type]': paymentMethodType,
-    },
+    headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body,
   );
 }
 
@@ -230,6 +239,10 @@ void main() {
           baseUrl: fixture.baseUrl,
           publishableKey: parsed.publishableKey,
           httpClient: httpClient,
+          // The demo stack this fixture was minted against is plain HTTP
+          // (`compose.demo.yml`) — the exact, named opt-in `baseUrl`'s own
+          // doc comment describes, never inferred from a debug build.
+          allowInsecureBaseUrl: true,
         );
         final CheckoutController controller = CheckoutController(
           client: browserClient,
@@ -321,8 +334,8 @@ void main() {
           ),
         );
         expect(rawState.statusCode, 200);
-        final Map<String, Object?> rawBody =
-            (jsonDecode(rawState.body) as Map).cast();
+        final Map<String, Object?> rawBody = (jsonDecode(rawState.body) as Map)
+            .cast();
         expect(rawBody['status'], 'succeeded');
         stdout.writeln(
           '[real_stack_e2e] raw HTTP confirms it too: pi '
@@ -334,125 +347,119 @@ void main() {
   });
 
   group('real stack — the uniform 404', () {
-    test(
-      'an unknown id, a wrong secret and a wrong key all answer the same '
-      '404',
-      () async {
-        final http.Client httpClient = http.Client();
-        addTearDown(httpClient.close);
-        final _ParsedSessionUrl real = _ParsedSessionUrl.parse(
-          fixture.successSessionUrl,
-        );
+    test('an unknown id, a wrong secret and a wrong key all answer the same '
+        '404', () async {
+      final http.Client httpClient = http.Client();
+      addTearDown(httpClient.close);
+      final _ParsedSessionUrl real = _ParsedSessionUrl.parse(
+        fixture.successSessionUrl,
+      );
 
-        final BrowserClient client = BrowserClient(
-          baseUrl: fixture.baseUrl,
-          publishableKey: real.publishableKey,
-          httpClient: httpClient,
-        );
-        final CheckoutSessionResult unknownId = await client
-            .retrieveCheckoutSession(
-              'cs_doesnotexist00000000_secret_'
-              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            );
-        final CheckoutSessionResult wrongSecret = await client
-            .retrieveCheckoutSession(
-              '${real.checkoutSessionId}_secret_'
-              'wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww',
-            );
-        final BrowserClient wrongKeyClient = BrowserClient(
-          baseUrl: fixture.baseUrl,
-          publishableKey: 'pk_test_doesnotexist00000000000',
-          httpClient: httpClient,
-        );
-        final CheckoutSessionResult wrongKey = await wrongKeyClient
-            .retrieveCheckoutSession(real.clientSecret);
+      final BrowserClient client = BrowserClient(
+        baseUrl: fixture.baseUrl,
+        publishableKey: real.publishableKey,
+        httpClient: httpClient,
+        allowInsecureBaseUrl: true,
+      );
+      final CheckoutSessionResult unknownId = await client
+          .retrieveCheckoutSession(
+            'cs_doesnotexist00000000_secret_'
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          );
+      final CheckoutSessionResult wrongSecret = await client
+          .retrieveCheckoutSession(
+            '${real.checkoutSessionId}_secret_'
+            'wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww',
+          );
+      final BrowserClient wrongKeyClient = BrowserClient(
+        baseUrl: fixture.baseUrl,
+        publishableKey: 'pk_test_doesnotexist00000000000',
+        httpClient: httpClient,
+        allowInsecureBaseUrl: true,
+      );
+      final CheckoutSessionResult wrongKey = await wrongKeyClient
+          .retrieveCheckoutSession(real.clientSecret);
 
-        for (final CheckoutSessionResult result in [
-          unknownId,
-          wrongSecret,
-          wrongKey,
-        ]) {
-          expect(result.isError, isTrue);
-          expect(result.error!.type, 'invalid_request_error');
-          expect(result.error!.code, 'resource_missing');
-        }
-        stdout.writeln(
-          '[real_stack_e2e] unknown id / wrong secret / wrong key all -> '
-          'the same 404 (resource_missing), against the real server',
-        );
-      },
-    );
+      for (final CheckoutSessionResult result in [
+        unknownId,
+        wrongSecret,
+        wrongKey,
+      ]) {
+        expect(result.isError, isTrue);
+        expect(result.error!.type, 'invalid_request_error');
+        expect(result.error!.code, 'resource_missing');
+      }
+      stdout.writeln(
+        '[real_stack_e2e] unknown id / wrong secret / wrong key all -> '
+        'the same 404 (resource_missing), against the real server',
+      );
+    });
   });
 
   group('real stack — a session that is not open refuses the confirm', () {
-    test(
-      'the intent read still answers, the pre-flight fails closed, and the '
-      'confirm is refused with checkout_session_expired',
-      () async {
-        final http.Client httpClient = http.Client();
-        addTearDown(httpClient.close);
-        final _ParsedSessionUrl parsed = _ParsedSessionUrl.parse(
-          fixture.expiredSessionUrl,
-        );
-        final BrowserClient client = BrowserClient(
-          baseUrl: fixture.baseUrl,
-          publishableKey: parsed.publishableKey,
-          httpClient: httpClient,
-        );
+    test('the intent read still answers, the pre-flight fails closed, and the '
+        'confirm is refused with checkout_session_expired', () async {
+      final http.Client httpClient = http.Client();
+      addTearDown(httpClient.close);
+      final _ParsedSessionUrl parsed = _ParsedSessionUrl.parse(
+        fixture.expiredSessionUrl,
+      );
+      final BrowserClient client = BrowserClient(
+        baseUrl: fixture.baseUrl,
+        publishableKey: parsed.publishableKey,
+        httpClient: httpClient,
+        allowInsecureBaseUrl: true,
+      );
 
-        // D2 item 1: the intent's OWN read outlives the session. Proven
-        // with the secret this file's fixture captured BEFORE the recipe
-        // expired the session below.
-        final PaymentIntentResult stillReadable = await client
-            .retrievePaymentIntent(fixture.expiredIntentClientSecret);
-        expect(stillReadable.isError, isFalse, reason: '${stillReadable.error}');
-        expect(
-          stillReadable.paymentIntent!.status,
-          PaymentIntentStatus.requiresPaymentMethod,
-          reason: 'this intent was never confirmed',
-        );
+      // D2 item 1: the intent's OWN read outlives the session. Proven
+      // with the secret this file's fixture captured BEFORE the recipe
+      // expired the session below.
+      final PaymentIntentResult stillReadable = await client
+          .retrievePaymentIntent(fixture.expiredIntentClientSecret);
+      expect(stillReadable.isError, isFalse, reason: '${stillReadable.error}');
+      expect(
+        stillReadable.paymentIntent!.status,
+        PaymentIntentStatus.requiresPaymentMethod,
+        reason: 'this intent was never confirmed',
+      );
 
-        // But the session's OWN read no longer carries the intent's
-        // client_secret once it is not `open`
-        // (`vpay_api::browser::checkout_sessions`), so the plugin's own
-        // pre-flight must fail CLOSED rather than hand back a stale
-        // credential it invented.
-        final CheckoutController controller = CheckoutController(
-          client: client,
-        );
-        final CheckoutPreflight preflight = await controller.preflight(
-          parsed.clientSecret,
-        );
-        expect(
-          preflight,
-          isA<CheckoutPreflightFailure>(),
-          reason:
-              'an expired session omits payment_intent.client_secret; '
-              'preflight must not paper over that with a stale value',
-        );
+      // But the session's OWN read no longer carries the intent's
+      // client_secret once it is not `open`
+      // (`vpay_api::browser::checkout_sessions`), so the plugin's own
+      // pre-flight must fail CLOSED rather than hand back a stale
+      // credential it invented.
+      final CheckoutController controller = CheckoutController(client: client);
+      final CheckoutPreflight preflight = await controller.preflight(
+        parsed.clientSecret,
+      );
+      expect(
+        preflight,
+        isA<CheckoutPreflightFailure>(),
+        reason:
+            'an expired session omits payment_intent.client_secret; '
+            'preflight must not paper over that with a stale value',
+      );
 
-        // And the confirm itself — the same call vpay's own hosted page
-        // would submit — is refused with the server's own named error, not
-        // a generic 400.
-        final http.Response confirmResponse = await _rawConfirm(
-          httpClient,
-          baseUrl: fixture.baseUrl,
-          paymentIntentId: fixture.expiredIntentId,
-          key: parsed.publishableKey,
-          clientSecret: fixture.expiredIntentClientSecret,
-          paymentMethodType: 'orange_money',
-        );
-        expect(confirmResponse.statusCode, 409);
-        final Map<String, Object?> body =
-            (jsonDecode(confirmResponse.body) as Map).cast();
-        final Map<String, Object?> error =
-            (body['error']! as Map).cast();
-        expect(error['code'], 'checkout_session_expired');
-        stdout.writeln(
-          '[real_stack_e2e] confirm on an expired session -> 409 '
-          'checkout_session_expired (real, against the running server)',
-        );
-      },
-    );
+      // And the confirm itself — the same call vpay's own hosted page
+      // would submit — is refused with the server's own named error, not
+      // a generic 400.
+      final http.Response confirmResponse = await _rawConfirm(
+        httpClient,
+        baseUrl: fixture.baseUrl,
+        paymentIntentId: fixture.expiredIntentId,
+        key: parsed.publishableKey,
+        clientSecret: fixture.expiredIntentClientSecret,
+        paymentMethodType: 'orange_money',
+      );
+      expect(confirmResponse.statusCode, 409);
+      final Map<String, Object?> body =
+          (jsonDecode(confirmResponse.body) as Map).cast();
+      final Map<String, Object?> error = (body['error']! as Map).cast();
+      expect(error['code'], 'checkout_session_expired');
+      stdout.writeln(
+        '[real_stack_e2e] confirm on an expired session -> 409 '
+        'checkout_session_expired (real, against the running server)',
+      );
+    });
   });
 }

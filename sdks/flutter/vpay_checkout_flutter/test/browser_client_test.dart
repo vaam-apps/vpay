@@ -213,7 +213,9 @@ void main() {
       'url': 'https://checkout.example/c/cs_123#$_csSecret',
       'expires_at': 1700086400,
       'created': 1700000000,
-      'client_secret': _csSecret,
+      // No `client_secret` key: the real session read never sends the
+      // session's own secret back — see `CheckoutSession.clientSecret`'s
+      // doc comment in `lib/src/models.dart`.
     };
 
     test('GETs the browser checkout-session route with key and client_secret in the query string', () async {
@@ -291,7 +293,10 @@ void main() {
         'url': 'https://checkout.example/c/cs_123#$_csSecret',
         'expires_at': 1700086400,
         'created': 1700000000,
-        'client_secret': _csSecret,
+        // No `client_secret` key: the real session read never sends the
+        // session's own secret back — see
+        // `CheckoutSession.clientSecret`'s doc comment in
+        // `lib/src/models.dart`.
       };
 
       test('a payment intent missing a required key answers unexpected_response instead of throwing', () async {
