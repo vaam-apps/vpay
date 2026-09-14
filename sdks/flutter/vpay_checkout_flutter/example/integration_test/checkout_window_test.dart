@@ -126,6 +126,7 @@ void main() {
           VpayCheckoutPlatform.instance.windowEvents.listen(rawEvents.add);
       addTearDown(rawSubscription.cancel);
 
+      final Stopwatch clock = Stopwatch()..start();
       final Future<VpayCheckoutResult> resultFuture = checkout.start(
         fixture.sessionUrl,
       );
@@ -146,6 +147,8 @@ void main() {
         (value) => value == 'select_rail',
         timeout: const Duration(seconds: 45),
       );
+      // ignore: avoid_print
+      print('[laneE] t=${clock.elapsed} select_rail rendered');
 
       final String? title = await js.evalString('document.title');
       final String? href = await js.evalString(
@@ -174,6 +177,8 @@ void main() {
             "this suite's own fixture minted, not something this test "
             'invented',
       );
+      // ignore: avoid_print
+      print('[laneE] t=${clock.elapsed} title="$title" href=$href');
 
       // --- Requirement 3, driven for real through the page.
       await js.eval(
@@ -188,6 +193,8 @@ void main() {
         ),
         (value) => value == 'collect_msisdn',
       );
+      // ignore: avoid_print
+      print('[laneE] t=${clock.elapsed} collect_msisdn rendered');
 
       await js.eval(
         "(function(){"
@@ -207,6 +214,8 @@ void main() {
         (value) => value == 'waiting',
         timeout: const Duration(seconds: 30),
       );
+      // ignore: avoid_print
+      print('[laneE] t=${clock.elapsed} waiting screen rendered');
 
       // The rail is WireMock's `mtn-e2e-poll` scenario: PENDING on the
       // first status query, SUCCESSFUL on the next — `vpay-worker`'s own
@@ -224,6 +233,10 @@ void main() {
         timeout: const Duration(seconds: 120),
         interval: const Duration(seconds: 2),
       );
+      // ignore: avoid_print
+      print(
+        '[laneE] t=${clock.elapsed} outcome=succeeded rendered by the page',
+      );
 
       // The forward button — real navigation, real interception. Nothing
       // Dart-side has told the native Activity anything yet; this click is
@@ -235,6 +248,8 @@ void main() {
       final VpayCheckoutResult result = await resultFuture.timeout(
         const Duration(seconds: 30),
       );
+      // ignore: avoid_print
+      print('[laneE] t=${clock.elapsed} checkout.start resolved: $result');
 
       expect(
         rawEvents,

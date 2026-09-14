@@ -694,9 +694,6 @@ test-flutter-emulator: _flutter-preflight
             pressed=1
             break
         fi
-        if ! kill -0 "$dismiss_pid" 2>/dev/null; then
-            break
-        fi
         sleep 0.5
     done
     if [ "$pressed" -eq 0 ]; then
