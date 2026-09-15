@@ -1520,9 +1520,9 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
 /// adapter through a real container, and no adapter is left to reach.
 ///
 /// The name still says `without_the_refund_capability`, which now describes
-/// the arm that does not run. It is kept because five pages and two dated
-/// verification records cite it by name; renaming it would orphan those
-/// references, including records that must not be rewritten.
+/// the arm that does not run. It is kept because three live pages and a dated
+/// verification record cite it by name; renaming it would orphan those
+/// references, including a record that must not be rewritten.
 ///
 /// # What the live arm is worth
 ///

@@ -1040,7 +1040,10 @@ mod tests {
     /// somewhere else and this is where it is legible.
     #[tokio::test]
     async fn refund_is_a_token_about_vpay_not_an_answer_about_orange() {
-        let charge = charge(None, Money::new(5_000, Currency::Xaf).expect("non-negative"));
+        let charge = charge(
+            None,
+            Money::new(5_000, Currency::Xaf).expect("non-negative"),
+        );
         let outcome = adapter()
             .refund(
                 &charge,
