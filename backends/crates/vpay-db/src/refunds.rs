@@ -359,16 +359,33 @@ pub trait Refunds: Send + Sync {
 }
 
 /// The `refunds` columns [`settle_in_tx`] needs to finish the transaction it
-/// is part of: which intent to charge the refund against, and how much.
+/// is part of: which intent to charge the refund against, how much, and in
+/// what currency.
 ///
 /// A second, narrower projection rather than [`RefundRow`], and the split is
 /// deliberate: [`RefundRow`] is *the merchant read*, shaped by what
 /// `GET /v1/refunds/{id}` renders. This one is *the settlement's own
 /// working set* — it exists so the statement that flips the row hands the
-/// caller exactly the two facts the next statement in the same transaction
-/// needs, with no round trip and nothing that could have changed in between.
+/// caller exactly the facts the next statements in the same transaction
+/// need, with no round trip and nothing that could have changed in between.
 /// Reusing the wire projection here would tie a settlement's inputs to a
 /// rendering decision.
+///
+/// # Why `currency_code` is on it (2026-09-16)
+///
+/// [`crate::settlement`]'s refund posting used to build its ledger legs from
+/// the *intent's* `currency_code`, because this projection carried none. But
+/// `refunds.currency_code` is a real column whose only constraint is the
+/// foreign key onto `currencies` (migration `0017`): **nothing in the schema
+/// ties it to the intent's.** They agree today solely because
+/// [`Refunds::create`] is the only writer and derives it from the intent.
+///
+/// A divergent writer would render one currency on the refund object and post
+/// the legs in another, and `vpay_ledger::Transaction::validate` would not
+/// notice — it balances each currency on its own book, and every leg in the
+/// same *wrong* currency balances perfectly. An amount and the currency it is
+/// denominated in are one fact (`docs/flows/money.md`), so they are now read
+/// off one row in one statement.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct SettledRefund {
     /// The refund that was settled.
@@ -378,6 +395,10 @@ pub struct SettledRefund {
     pub payment_intent_id: String,
     /// Minor units, strictly positive (`amount_positive`, migration `0017`).
     pub amount: i64,
+    /// The currency [`amount`](Self::amount) is denominated in, **as stored
+    /// on the refund row itself** — see the type docs for why it is not read
+    /// off the intent.
+    pub currency_code: String,
 }
 
 /// Moves one `pending` refund to `succeeded`, inside the caller's
@@ -415,7 +436,7 @@ pub(crate) async fn settle_in_tx(
     sqlx::query_as::<_, SettledRefund>(
         "UPDATE refunds SET status = 'succeeded', updated_at = $2 \
          WHERE id = $1 AND status = 'pending' \
-         RETURNING id, payment_intent_id, amount",
+         RETURNING id, payment_intent_id, amount, currency_code",
     )
     .bind(refund_id)
     .bind(now)
@@ -467,7 +488,7 @@ pub(crate) async fn fail_in_tx(
         "UPDATE refunds \
          SET status = 'failed', failure_code = $3, failure_raw = $4, updated_at = $2 \
          WHERE id = $1 AND status = 'pending' \
-         RETURNING id, payment_intent_id, amount",
+         RETURNING id, payment_intent_id, amount, currency_code",
     )
     .bind(refund_id)
     .bind(now)
