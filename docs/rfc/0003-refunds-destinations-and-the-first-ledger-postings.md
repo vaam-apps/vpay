@@ -92,9 +92,11 @@ async fn refund(
 ) -> Result<Refunded, ProviderError>;
 ```
 
-`RefundTarget` is opaque to the core in the same way `RefExtra` is: the core
-validates that one is present when the capability demands it, and the adapter
-interprets the interior.
+`RefundTarget` is built **by the adapter**, not by the core — see open
+question 4, decided 2026-09-15. The core reads the capability, refuses a
+request whose shape disagrees with it, and otherwise hands the raw map to
+`parse_destination`. It never learns a rail's wire keys, which is what keeps a
+future non-mobile-money upstream a zero-core-change addition.
 
 **Where a `Required` rail also supports account-holder lookup**, the core
 name-matches the destination through `account_holder_name` before calling
@@ -255,7 +257,16 @@ different destinations.
    upstream exists?** Designing for a bank account now risks modelling an
    upstream nobody has chosen.
 
-4. **Who parses the destination's wire shape — the core, or the adapter?**
+4. **~~Who parses the destination's wire shape — the core, or the adapter?~~
+   DECIDED 2026-09-15: the adapter, via `parse_destination`.** A new port
+   method symmetric with `parse_callback`:
+   `parse_destination(&Map<String, Value>) -> Result<RefundTarget, ProviderError>`.
+   Both the wire keys and the interior stay at the rail, so a future
+   non-mobile-money upstream costs no core change at all. The core's job
+   shrinks to: read the rail's `RefundDestination` capability, hand the raw
+   map to the adapter when one is `Required`, and refuse when the capability
+   and the request disagree. The question as originally posed, retained
+   because the reasoning is what makes the decision reviewable:
    Raised on review of Arm A, and the fork is real. As designed, the core turns
    `destination[<rail_code>][…]` into a `RefundTarget`, exactly as
    `payer_instrument` already reaches into `payment_method_data[code]["msisdn"]`
