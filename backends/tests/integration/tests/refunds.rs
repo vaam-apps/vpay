@@ -29,19 +29,29 @@
 //!
 //! # Why the rows are written here and not created through `/v1`
 //!
-//! Nothing in this repository creates a refund. `POST /v1/refunds` is
-//! declared and unrouted because it needs `ProviderAdapter::refund`, which is
-//! `NotImplemented` on MTN (refunds are the Disbursements product) and
-//! `Unsupported` on Orange (its Web Payment product documents no refund API).
-//! So the rows below are `INSERT`ed by this suite against the real schema,
-//! the way `support::age_the_crash` writes a column no shipping code writes:
-//! **`vpay_db::Refunds` deliberately exposes no `create`**, because a write
+//! **`POST /v1/refunds` is still unrouted**, which is the whole of the reason
+//! and is unchanged: it needs `ProviderAdapter::refund`, which is
+//! `NotImplemented` on both rails (RFC-0003 § 5), and the handler is wave 3's.
+//! So a refund cannot come into existence through `/v1` at all, and the rows
+//! below are seeded directly the way `support::age_the_crash` writes a column
+//! no shipping code writes.
+//!
+//! **What changed on 2026-09-15, and what it does not change.** This paragraph
+//! said "`vpay_db::Refunds` deliberately exposes no `create`, because a write
 //! path no shipping code calls is a feature this repository would be claiming
-//! it has (`AGENTS.md` rule 2).
+//! it has". RFC-0003 § 3 added `Refunds::create` — the database half of a
+//! refund is a decision with consequences (the over-refund guard, the
+//! reservation, the tenancy join) that the absence of a rail does not
+//! postpone. That writer is exercised against a real Postgres in
+//! `postgres_smoke.rs` and in `vpay-db`'s own suite; **this** suite's subject
+//! is the `/v1` read, its tenancy and its rendering, and it seeds rows
+//! directly so that a change to the create path cannot quietly change what
+//! this file is measuring.
 //!
 //! What that costs, stated rather than hidden: these tests prove the read,
 //! the tenancy and the rendering. They prove **nothing** about how a refund
-//! comes to exist, because that code does not exist.
+//! comes to exist — see `docs/status/verification/2026-09-15-refunds-write-path.md`
+//! for the suite that does.
 
 // See `tests/support/mod.rs` for why this allow list mirrors the other
 // integration suites'.

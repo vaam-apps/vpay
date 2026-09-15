@@ -88,3 +88,27 @@ COMMENT ON COLUMN ledger_transactions.id IS
     'Caller-minted lt_… (vpay_core::ids::ledger_transaction_id). Bounded by id_length since migration 0046 — see docs/flows/ledger.md.';
 COMMENT ON COLUMN ledger_entries.id IS
     'Derived by vpay_db::ledger::post_in_tx as {transaction_id}_{index}, so it is longer than the id it comes from; bounded by id_length since migration 0046.';
+
+-- Three table comments that have become false, corrected in a new migration
+-- rather than by editing the files that wrote them — README.md's one rule, and
+-- 0045's own precedent for exactly this.
+--
+-- `refunds` was commented 'NOT WRITTEN OR READ BY ANY CODE IN THIS REPOSITORY'
+-- by 0017 and that was true until this commit. `vpay_db::Refunds::create` is
+-- the first INSERT; `get_for_merchant`/`list_for_intent` have been reading the
+-- table since issue #45. What has NOT changed, and is what the new text says
+-- instead of the old claim, is that no rail can execute a refund and no route
+-- reaches the writer — overstating this is the one thing docs/status.md and
+-- CLAUDE.md both warn against, so the comment states the caller, not the
+-- capability.
+COMMENT ON TABLE refunds IS
+    'Refunds. Written by vpay_db::Refunds::create/cancel and vpay_db::settlement (RFC-0003 § 3) and read by vpay_db::Refunds. NO RAIL CAN EXECUTE ONE: ProviderAdapter::refund is NotImplemented on both adapters and POST /v1/refunds is unrouted — see docs/status.md.';
+
+-- And the two ledger tables, which 0045 commented 'Written by
+-- vpay_db::ledger::post_in_tx, which NO shipping code path calls yet'. Two
+-- call sites call it now, both in vpay_db::settlement, each inside the
+-- transaction that settles the thing it records.
+COMMENT ON TABLE ledger_transactions IS
+    'Mirrors vpay_ledger::Transaction. Written by vpay_db::ledger::post_in_tx, called by Settlement::apply_succeeded (the capture) and apply_refund_succeeded (the refund) — see docs/flows/ledger.md.';
+COMMENT ON TABLE ledger_entries IS
+    'Mirrors vpay_ledger::Entry, including the merchant dimension AccountKind::MerchantPayable carries. Written by vpay_db::ledger::post_in_tx; the merchant is derived from the intent the charge belongs to at the call site, because no constraint can check it — see docs/flows/ledger.md § Status.';
