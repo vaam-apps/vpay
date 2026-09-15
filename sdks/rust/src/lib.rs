@@ -76,9 +76,9 @@ pub use resources::{
     CreateCustomerParams, CreateInvoiceItemParams, CreateInvoiceParams, CreatePaymentIntentParams,
     CreateRefundParams, CustomersResource, EventsResource, InvoiceItemsResource, InvoicesResource,
     ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListInvoicesParams,
-    ListPaymentIntentsParams, PayInvoiceParams, PaymentIntentsResource, RefundsResource,
-    RequestOptions, RetrieveAccountHolderParams, UpdateCustomerParams, UpdateInvoiceItemParams,
-    UpdateInvoiceParams,
+    ListPaymentIntentsParams, ListRefundsParams, PayInvoiceParams, PaymentIntentsResource,
+    RefundDestination, RefundsResource, RequestOptions, RetrieveAccountHolderParams,
+    UpdateCustomerParams, UpdateInvoiceItemParams, UpdateInvoiceParams, UpdateRefundParams,
 };
 
 /// See [`payment_intents`]. The account-holder lookup (issue #47): a
@@ -141,7 +141,11 @@ pub mod invoices {
 
 /// See [`payment_intents`].
 pub mod refunds {
-    pub use crate::resources::{CreateRefundParams, RefundsResource};
+    pub use crate::model::PaymentMethodType;
+    pub use crate::resources::{
+        CreateRefundParams, ListRefundsParams, RefundDestination, RefundsResource,
+        UpdateRefundParams,
+    };
 }
 
 /// See [`payment_intents`].

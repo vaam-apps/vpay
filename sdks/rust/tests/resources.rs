@@ -36,6 +36,7 @@ use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, ListPaymentIntentsParams,
     PaymentMethodType,
 };
+use vpay_sdk::refunds::{ListRefundsParams, RefundDestination, UpdateRefundParams};
 use vpay_sdk::{
     Client, CreateRefundParams, Credentials, Error, IntentStatus, KnownEventType, ListEventsParams,
     NextAction, RefundStatus, RequestOptions,
@@ -555,6 +556,10 @@ async fn create_refund_sends_the_documented_body_and_decodes_the_object() {
                 payment_intent: "pi_1".to_string(),
                 amount: Some(2500),
                 reason: Some("requested_by_customer".to_string()),
+                destination: Some(RefundDestination::mobile_money(
+                    PaymentMethodType::MtnMomo,
+                    "+237600000200",
+                )),
                 metadata,
             },
             RequestOptions::new(),
@@ -569,9 +574,309 @@ async fn create_refund_sends_the_documented_body_and_decodes_the_object() {
     assert_eq!(refund.fee, None);
 
     let request = only_request(&server, "/v1/refunds").await;
+    // The `destination` is the rail's code as the **outer** key, its payee
+    // inside — and the `+` survives to the wire, percent-encoded as `%2B`
+    // rather than dropped or turned into a space. Both halves are the whole
+    // of what this assertion is for: the server refuses a number with no
+    // leading `+` with a 400 naming `destination`.
     assert_eq!(
         body_string(&request),
-        "payment_intent=pi_1&amount=2500&reason=requested_by_customer&metadata[case]=77"
+        "payment_intent=pi_1&amount=2500&reason=requested_by_customer\
+         &destination[mtn_momo][msisdn]=%2B237600000200&metadata[case]=77"
+    );
+}
+
+/// The outer key is the rail the charge was on, and it is **not** a constant.
+///
+/// The one mistake this arm was briefed to avoid: an SDK that hardcodes
+/// `mtn_momo` sends an Orange refund a destination the server strips and
+/// discards, and the merchant is told their nominated payee was honoured when
+/// the rail was never given one. Two rails, one function, and the assertion is
+/// on the key.
+#[tokio::test]
+async fn the_destinations_outer_key_is_the_rail_the_refund_is_on() {
+    for (rail, code) in [
+        (PaymentMethodType::MtnMomo, "mtn_momo"),
+        (PaymentMethodType::OrangeMoney, "orange_money"),
+    ] {
+        let (server, client) = fixture().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/refunds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(refund_json()))
+            .mount(&server)
+            .await;
+
+        client
+            .refunds()
+            .create(
+                CreateRefundParams {
+                    payment_intent: "pi_1".to_string(),
+                    destination: Some(RefundDestination::mobile_money(rail, "+237600000200")),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap();
+
+        let request = only_request(&server, "/v1/refunds").await;
+        assert_eq!(
+            body_string(&request),
+            format!("payment_intent=pi_1&destination[{code}][msisdn]=%2B237600000200"),
+            "the destination must be scoped to {code}"
+        );
+    }
+}
+
+/// The MSISDN reaches the wire **as written**.
+///
+/// `RefundTarget::mobile_money` requires the leading `+` and refuses the bare
+/// national form, because `vpay-provider` is not Cameroon-specific — so an SDK
+/// that "helpfully" normalised a number into the national form, or stripped
+/// the `+`, would turn a working call into a 400 naming `destination`, or
+/// worse, name a payee in another country. This SDK canonicalises nothing:
+/// the separators a caller types survive too, and the server is what decides.
+#[tokio::test]
+async fn the_sdk_never_normalises_a_payees_number() {
+    // Written, and the exact bytes it must reach the wire as —
+    // `encodeURIComponent`, which escapes `+` as `%2B` and a space as `%20`
+    // and leaves `-` alone. Asserted as bytes for this file's stated reason:
+    // the contract the two SDKs share is the body, not a re-parse of it.
+    for (written, encoded) in [
+        ("+237600000200", "%2B237600000200"),
+        ("+237 600 000 200", "%2B237%20600%20000%20200"),
+        ("+237-600-000-200", "%2B237-600-000-200"),
+        // The form the server REFUSES. It must still go out untouched: an SDK
+        // that silently prefixed a `+` here would hide the merchant's mistake
+        // behind a guess about which country they meant.
+        ("600000200", "600000200"),
+    ] {
+        let (server, client) = fixture().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/refunds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(refund_json()))
+            .mount(&server)
+            .await;
+
+        client
+            .refunds()
+            .create(
+                CreateRefundParams {
+                    payment_intent: "pi_1".to_string(),
+                    destination: Some(RefundDestination::mobile_money(
+                        PaymentMethodType::MtnMomo,
+                        written,
+                    )),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap();
+
+        let request = only_request(&server, "/v1/refunds").await;
+        assert_eq!(
+            body_string(&request),
+            format!("payment_intent=pi_1&destination[mtn_momo][msisdn]={encoded}"),
+            "{written} was rewritten on its way to the wire"
+        );
+    }
+}
+
+/// `POST /v1/refunds/{id}` sends `metadata` and nothing else — there is no
+/// field on the params type that could send the other four, and the body is
+/// the proof that none leaks in another way.
+#[tokio::test]
+async fn update_refund_posts_metadata_to_the_object_path() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/refunds/re_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refund_json()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut metadata = BTreeMap::new();
+    metadata.insert("order_id".to_string(), "1234".to_string());
+    // Stripe's per-key delete: an empty value removes the key server-side,
+    // and it must reach the wire as `key=` rather than being dropped as if
+    // the merchant had never mentioned it.
+    metadata.insert("stale".to_string(), String::new());
+    let refund = client
+        .refunds()
+        .update("re_1", UpdateRefundParams { metadata }, RequestOptions::new())
+        .await
+        .unwrap();
+
+    assert_eq!(refund.id, "re_1");
+
+    let request = only_request(&server, "/v1/refunds/re_1").await;
+    assert_eq!(
+        body_string(&request),
+        "metadata[order_id]=1234&metadata[stale]="
+    );
+    // Idempotency-keyed like every other POST on this surface.
+    assert!(request.headers.contains_key("idempotency-key"));
+}
+
+/// An empty `metadata` sends an empty body — the server reads that as a no-op
+/// and answers the refund unchanged, writing no event. It must not become
+/// `metadata=`, which is a different request.
+#[tokio::test]
+async fn an_update_with_no_metadata_sends_an_empty_body() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/refunds/re_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refund_json()))
+        .mount(&server)
+        .await;
+
+    client
+        .refunds()
+        .update("re_1", UpdateRefundParams::default(), RequestOptions::new())
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/refunds/re_1").await;
+    assert!(request.body.is_empty(), "{:?}", body_string(&request));
+}
+
+/// `GET /v1/refunds` with both cursors and the `payment_intent` filter, and
+/// the bare path when nothing is set.
+#[tokio::test]
+async fn list_refunds_sends_the_documented_query_string() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/refunds"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [refund_json()],
+            "has_more": true,
+            "url": "/v1/refunds",
+        })))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .refunds()
+        .list(ListRefundsParams {
+            limit: Some(2),
+            starting_after: Some("re_0".to_string()),
+            ending_before: None,
+            payment_intent: Some("pi_1".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert!(page.has_more);
+    assert_eq!(page.data.len(), 1);
+    assert_eq!(page.data[0].status, RefundStatus::Pending);
+
+    let request = only_request(&server, "/v1/refunds").await;
+    assert_eq!(
+        request.url.query(),
+        Some("limit=2&starting_after=re_0&payment_intent=pi_1")
+    );
+    assert!(request.body.is_empty());
+}
+
+#[tokio::test]
+async fn a_list_of_refunds_with_no_parameters_sends_no_query_string_at_all() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/refunds"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [],
+            "has_more": false,
+            "url": "/v1/refunds",
+        })))
+        .mount(&server)
+        .await;
+
+    client
+        .refunds()
+        .list(ListRefundsParams::default())
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/refunds").await;
+    assert_eq!(request.url.query(), None);
+}
+
+/// `POST /v1/refunds/{id}/cancel` — an empty-bodied POST that still carries
+/// an `Idempotency-Key`, the shape `checkout.sessions.expire` established.
+#[tokio::test]
+async fn cancel_refund_is_an_empty_bodied_post_that_is_still_idempotency_keyed() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/refunds/re_1/cancel"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "re_1",
+            "object": "refund",
+            "amount": 2500,
+            "currency": "xaf",
+            "payment_intent": "pi_1",
+            "status": "canceled",
+            "reason": null,
+            "metadata": {},
+            "created": 1_753_401_600,
+            "fee": null,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let refund = client
+        .refunds()
+        .cancel("re_1", RequestOptions::new())
+        .await
+        .unwrap();
+
+    assert_eq!(refund.status, RefundStatus::Canceled);
+
+    let request = only_request(&server, "/v1/refunds/re_1/cancel").await;
+    assert!(request.body.is_empty());
+    assert!(request.headers.contains_key("idempotency-key"));
+}
+
+/// A hostile id cannot escape `/v1` on any of the three id-bearing refund
+/// routes, not only the one that had a test.
+#[tokio::test]
+async fn a_hostile_refund_id_is_percent_encoded_on_update_and_cancel_too() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refund_json()))
+        .mount(&server)
+        .await;
+
+    let _ = client
+        .refunds()
+        .update(
+            "../../admin",
+            UpdateRefundParams::default(),
+            RequestOptions::new(),
+        )
+        .await;
+    let _ = client
+        .refunds()
+        .cancel("../../admin", RequestOptions::new())
+        .await;
+
+    let paths: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_string())
+        .filter(|path| path != "/v1/oauth/token")
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "/v1/refunds/..%2F..%2Fadmin".to_string(),
+            "/v1/refunds/..%2F..%2Fadmin/cancel".to_string(),
+        ]
     );
 }
 
@@ -2920,4 +3225,21 @@ fn the_four_invoice_event_types_are_known_and_their_payloads_decode() {
     let full: vpay_sdk::Invoice =
         serde_json::from_value(support::invoice_json("in_1")).expect("the response decodes");
     assert_eq!(full.lines.data.len(), 1);
+}
+
+/// One refund object, for the cases whose subject is the **request** rather
+/// than the decode. Ten keys, the set `vpay_api::model::RefundObject` renders.
+fn refund_json() -> Value {
+    json!({
+        "id": "re_1",
+        "object": "refund",
+        "amount": 2500,
+        "currency": "xaf",
+        "payment_intent": "pi_1",
+        "status": "pending",
+        "reason": null,
+        "metadata": {},
+        "created": 1_753_401_600,
+        "fee": null,
+    })
 }
