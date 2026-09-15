@@ -363,7 +363,18 @@ mod tests {
     /// `refunds::fail_in_tx` landed with them and adds **no** site, because
     /// it needs no constant and is a plain `&'static str`; the audit in
     /// `docs/reference/vpay-db/dynamic-sql.md` says so line by line.
-    const EXPECTED_ASSERT_SITES: usize = 66;
+    /// **66 → 69 on 2026-09-16** (RFC-0003 § 2, the four `/v1` refund
+    /// routes) — three additions and no removals, all on `refunds`:
+    /// `lock_for_update`, `update_metadata_in_tx` and `list_page`. Each
+    /// interpolates `COLUMNS`, and `list_page` additionally interpolates the
+    /// `direction` exception the audit already names — the same two literals
+    /// chosen by a `bool` that `invoices::list_page` and
+    /// `customers::list_page` use, and `the_direction_exception_is_two_literals`
+    /// is what keeps that exception from becoming a loophole. Every
+    /// caller-supplied value — the merchant, the refund id, the cursors, the
+    /// `payment_intent` filter, the limit, the metadata and the timestamp —
+    /// is bound.
+    const EXPECTED_ASSERT_SITES: usize = 69;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.
