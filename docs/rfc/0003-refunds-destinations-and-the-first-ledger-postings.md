@@ -39,7 +39,7 @@ Two further facts shape the proposal and are easy to miss:
   its own header.
 - **`Settlement::apply_refund_succeeded` does not touch the intent.** It flips
   the refund row and calls `invoices::add_refund_for_intent_in_tx`, so the
-  *invoice's* `amount_refunded` moves and the *intent's* `amount_refunded` /
+  _invoice's_ `amount_refunded` moves and the _intent's_ `amount_refunded` /
   `amount_refund_pending` do not. [docs/flows/ledger.md](../flows/ledger.md)
   § "When refunds post" requires both.
 
@@ -107,12 +107,12 @@ accepted unverified and that fact is recorded in `docs/status.md`.
 
 `GET /v1/refunds/{id}` is already served. Adding, Stripe-shaped:
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/v1/refunds` | create; `payment_intent`, `amount`, `reason`, `destination[…]`, `metadata[…]` |
-| `POST` | `/v1/refunds/{id}` | update — `metadata` only, as Stripe |
-| `GET` | `/v1/refunds` | list, scoped to the merchant, `payment_intent` filter |
-| `POST` | `/v1/refunds/{id}/cancel` | cancel a refund still `pending` |
+| Method | Path                      | Notes                                                                         |
+| ------ | ------------------------- | ----------------------------------------------------------------------------- |
+| `POST` | `/v1/refunds`             | create; `payment_intent`, `amount`, `reason`, `destination[…]`, `metadata[…]` |
+| `POST` | `/v1/refunds/{id}`        | update — `metadata` only, as Stripe                                           |
+| `GET`  | `/v1/refunds`             | list, scoped to the merchant, `payment_intent` filter                         |
+| `POST` | `/v1/refunds/{id}/cancel` | cancel a refund still `pending`                                               |
 
 Every one is registered in the `V1Route` constant so
 `every_registered_v1_path_answers_401_without_a_token` walks it, per issue
@@ -154,7 +154,7 @@ read as violated on every row.
 - **Refund postings** in `Settlement::apply_refund_succeeded`, likewise.
 - **Closing the `AccountKind` gap.** `MerchantPayable` has no per-merchant
   dimension, so invariant 2 (`balance(merchant_payable) = Σ captures − Σ fees
-  − Σ refunds`) is *uncomputable* as modelled — [ledger.md](../flows/ledger.md)
+− Σ refunds`) is _uncomputable_ as modelled — [ledger.md](../flows/ledger.md)
   and `0005`'s own `GAP` comment both say so. The Rust type gains the
   dimension and `ledger_entries` gains the column that mirrors it. This is a
   change to `vpay_ledger`, not a schema-only patch.
@@ -166,13 +166,13 @@ read as violated on every row.
 
 **Postings**, unchanged from [ledger.md](../flows/ledger.md):
 
-| Event | Account | Direction |
-| --- | --- | --- |
-| capture | `payer_clearing` | debit |
-| | `merchant_payable` | credit |
-| | `platform_fee_revenue` | credit (fee, when any) |
-| refund | `merchant_payable` | debit |
-| | `payer_clearing` | credit |
+| Event   | Account                | Direction              |
+| ------- | ---------------------- | ---------------------- |
+| capture | `payer_clearing`       | debit                  |
+|         | `merchant_payable`     | credit                 |
+|         | `platform_fee_revenue` | credit (fee, when any) |
+| refund  | `merchant_payable`     | debit                  |
+|         | `payer_clearing`       | credit                 |
 
 **The refund fee still posts nothing.** Issue #46's decision stands: the fee is
 reported on the object and posted to no account. Posting it would require
@@ -193,7 +193,7 @@ rail-unproven, and `docs/status.md` must say precisely that — the same posture
 `submit` held until 2026-09-15.
 
 **Orange — the model changes, the wire calls do not exist.** Per the
-maintainer's decision of 2026-09-15, an Orange refund *is* a transfer back, so
+maintainer's decision of 2026-09-15, an Orange refund _is_ a transfer back, so
 Orange's refusal stops being a fact about the rail and becomes work vpay owes:
 
 - `supports_refunds: false` → `true`
@@ -230,12 +230,12 @@ design and the erasure path deliberately does not reach into it. A payer's
 phone number stored there therefore survives an erasure request, sits in the
 `events` table, and is already inside every signed webhook delivered, which
 walks straight into open issues #145 and #147. It is also unvalidated (a
-misspelled key means *no destination*, silently), has no anchor for the
+misspelled key means _no destination_, silently), has no anchor for the
 `account_holders` name match, and lands in an object with a ten-key tripwire
 test.
 
 **A `destination` on the intent rather than the refund.** Rejected: the payee
-is a property of *this* refund, and partial refunds may legitimately go to
+is a property of _this_ refund, and partial refunds may legitimately go to
 different destinations.
 
 **Refund-only ledger postings.** Rejected above: negative
@@ -244,7 +244,7 @@ different destinations.
 ## Open questions
 
 1. **Does a refund destination have to match the payer?** On MTN the confirm
-   carries the payer's MSISDN, so vpay *could* refuse a destination that is not
+   carries the payer's MSISDN, so vpay _could_ refuse a destination that is not
    it. On Orange the payer's number is never learned (`payer_ref: None` on a
    redirect rail), so the same rule cannot be enforced there. Enforcing it on
    one rail and not the other is a real asymmetry the merchant would see.
@@ -255,14 +255,37 @@ different destinations.
    upstream exists?** Designing for a bank account now risks modelling an
    upstream nobody has chosen.
 
+4. **Who parses the destination's wire shape — the core, or the adapter?**
+   Raised on review of Arm A, and the fork is real. As designed, the core turns
+   `destination[<rail_code>][…]` into a `RefundTarget`, exactly as
+   `payer_instrument` already reaches into `payment_method_data[code]["msisdn"]`
+   for the confirm path. ADR-0002 survives either way — no rail-code branch —
+   but a bank-account upstream then costs a **core** change, because the core
+   has learned a second set of wire keys. The alternative has a precedent in
+   this very trait: `parse_callback` has the adapter parse its own wire shape
+   into a port type, and a symmetric
+   `parse_destination(&Map) -> Result<RefundTarget, ProviderError>` would keep
+   both the wire keys and the interior at the rail. **This gets expensive at
+   Wave 3**, where the create handler is written; it is cheap now. Maintainer's
+   call.
+
+5. **What does an adapter answer when the core's `Some`-on-`Required`
+   invariant is broken?** Deliberately unsettled by Arm A, on the grounds that
+   a rule no code exercises is how a guess acquires authority. But
+   `ProviderError` has no honest variant for it — `Unsupported` and
+   `NotImplemented` would both be lies about the rail, and `Rejected` /
+   `Malformed` are about the rail's answer. The first adapter to make a real
+   transfer call decides, and this is recorded so it is decided rather than
+   invented under time pressure.
+
 ## Impact on existing invariants
 
-| Invariant | Effect |
-| --- | --- |
-| `no_over_refund` CHECK (migration `0003`) | First code path that can reach it; it becomes load-bearing rather than test-only |
-| ledger invariant 1 (per transaction, debits = credits) | First enforcement in a live path; `Transaction::validate()` starts being called |
-| ledger invariant 2 (per merchant) | Becomes *computable* for the first time, once `AccountKind` carries the merchant dimension |
-| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds) | First code that maintains the left-hand side on the intent |
-| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one |
-| `partial_refunds_imply_refunds` CHECK (migration `0002`) | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent |
-| `verify-status` | Gains `orange_money::refund`; `mtn_momo::refund` is retired from the list |
+| Invariant                                                         | Effect                                                                                              |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `no_over_refund` CHECK (migration `0003`)                         | First code path that can reach it; it becomes load-bearing rather than test-only                    |
+| ledger invariant 1 (per transaction, debits = credits)            | First enforcement in a live path; `Transaction::validate()` starts being called                     |
+| ledger invariant 2 (per merchant)                                 | Becomes _computable_ for the first time, once `AccountKind` carries the merchant dimension          |
+| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds)      | First code that maintains the left-hand side on the intent                                          |
+| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one                                                                         |
+| `partial_refunds_imply_refunds` CHECK (migration `0002`)          | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent |
+| `verify-status`                                                   | Gains `orange_money::refund`; `mtn_momo::refund` is retired from the list                           |
