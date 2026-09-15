@@ -3668,7 +3668,22 @@ async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()>
 ///
 /// **190 -> 192 on 2026-09-15 (migration 0045, RFC-0003 § 4)**, measured
 /// against a freshly migrated Postgres 16 with `cratestack migrate baseline
-/// --strict`. `ledger_entries` goes 6 -> 8 and nothing else moves at all;
+/// --strict`.
+///
+/// **Measured on cratestack 0.11.1, not on the pinned 0.12.0, and the
+/// difference was controlled for rather than waved at.** The host this ran on
+/// had 0.11.1 on `PATH`; the test warns about that and does not fail, so the
+/// warning is easy to read past. Both numbers were therefore taken with the
+/// *same* binary: with migration 0045 withdrawn and `model LedgerEntry`'s
+/// `merchant_id` commented out, 0.11.1 reported `drift detected in 25
+/// table(s)/view(s) (190 change(s) total)` — **exactly the 0.12.0-measured
+/// constant it replaced** — and with both restored it reported 192. So the
+/// delta is +2 under one binary, and the two releases agree on the absolute
+/// number for this schema, which is what the 2026-09-07 note above already
+/// argued from file identity. If CI (which has 0.12.0) ever disagrees, CI is
+/// the evidence and this constant is what must move.
+///
+/// `ledger_entries` goes 6 -> 8 and nothing else moves at all;
 /// `EXPECTED_DRIFTED_RELATIONS` does not move either, because that table was
 /// already on the list. The +2 is:
 ///

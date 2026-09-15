@@ -305,3 +305,75 @@ packages, 0 skipped.
 
 Review transcript, including what the draft claimed without measuring, in
 [plans/exp25-cratestack-012-notes/opus-review.md](../plans/exp25-cratestack-012-notes/opus-review.md).
+
+## 2026-09-15 — `model LedgerEntry` gains `merchant_id`, and drift goes 190 → 192
+
+RFC-0003 § 4, migration `0045`. Measured against a freshly migrated
+`postgres:16-alpine` with `cratestack migrate baseline --strict` on the branch
+`refunds/w1-ledger`, not predicted from the DDL.
+
+**Caveat, stated first because it is easy to read past:** the host had
+**cratestack 0.11.1** on `PATH`, not the pinned 0.12.0. The drift test warns
+about that and does not fail. So both numbers were taken with the *same*
+binary: with migration `0045` withdrawn and `model LedgerEntry.merchant_id`
+commented out, 0.11.1 reported `drift detected in 25 table(s)/view(s) (190
+change(s) total)` — **exactly the 0.12.0-measured constant it replaced** — and
+with both restored, 192. The delta is +2 under one binary and the two releases
+agree on the absolute number for this schema, which is what this page's
+2026-09-07 entry already argued from file identity. CI runs 0.12.0; if it
+disagrees, CI is the evidence.
+
+```
+drift detected in 25 table(s)/view(s) (192 change(s) total)
+19 column(s) have a Postgres type cratestack could not confidently map
+```
+
+
+```
+drift detected in 25 table(s)/view(s) (192 change(s) total)
+19 column(s) have a Postgres type cratestack could not confidently map
+```
+
+`EXPECTED_DRIFTED_RELATIONS` (25) and `EXPECTED_UNMAPPABLE_COLUMNS` (19) did
+not move — `ledger_entries` was already a declared-and-differing relation, so
+a line arrived and no table did. `EXPECTED_DRIFT_CHANGES` moved 190 → 192 and
+its own doc comment in `backends/tests/integration/tests/postgres_smoke.rs`
+carries the per-line account. In short, `ledger_entries` goes 6 → 8:
+
+- `ledger_entries_merchant_id_length` — one hand-named **single**-column
+  CHECK, the class that has cost every modelled table here a line each since
+  `currencies`. `@db_enforce` on a declared `@length` would emit a drop-and-add
+  **pair** against it (exp17 §1a), which is worse rather than better.
+- `ledger_entries_merchant_payable_idx` — one index, and **partial**
+  (`WHERE account = 'merchant_payable'`), so `@@index([...])` could not express
+  it even if the grammar had a spelling for a partial index.
+
+**What cost nothing is the part worth reading**, and it is `customers`' 2026-09-10
+lesson repeated: the `merchant_id` **column itself** contributes zero — no
+`column … exists in the live database but is not declared`, no `type differs`,
+no `default value differs` — because `model LedgerEntry` declares it in the
+same commit and the migration gave it no DB `DEFAULT`. That is the condition
+migration `0034` established and the reason adding to a modelled table is
+cheap.
+
+And `ledger_entries_merchant_id_iff_merchant_payable` — the pair CHECK that is
+the **load-bearing** half of the migration, `vpay_ledger::AccountKind`'s sum
+type written in SQL — contributes **nothing in either direction**, like the
+twenty multi-column CHECKs before it, because
+`introspect/postgres/constraints.rs` filters `array_length(c.conkey, 1) = 1`.
+It is in the `multi_column_checks_the_report_cannot_see` list beside them, and
+`a_merchant_payable_entry_must_name_its_merchant` /
+`a_pooled_account_entry_must_not_name_a_merchant` write the two rows it
+refuses. **The drift report is not the guard for that constraint and never can
+be.**
+
+Nothing on either ledger model is queried **through** CrateStack; the new
+writer (`vpay_db::ledger::post_in_tx`) is raw sqlx, because `account` and
+`direction` are the last two native Postgres enums in this schema and
+CrateStack's generated row decoders read an enum column with
+`try_get::<String>()`.
+
+Gate evidence for the whole change:
+[verification/2026-09-15-ledger-merchant-dimension.md](verification/2026-09-15-ledger-merchant-dimension.md).
+`just ci` was **not** run locally for it (see that page for why); CI is the
+gate.

@@ -67,9 +67,12 @@ A refund is asynchronous, so:
   would go negative (tested by `refunding_more_than_captured_is_rejected`),
   which stops a single refund larger than what remains captured but says
   nothing about two refunds racing each other. **No ledger posting yet** —
-  nothing in the application writes to `payment_intents` or the ledger
-  tables today; only the integration test does, directly, to prove the
-  constraint fires.
+  no capture and no refund has ever produced a `ledger_transactions` or
+  `ledger_entries` row in any deployment. That sentence used to add "nothing
+  in the application writes to the ledger tables today"; since 2026-09-15
+  (RFC-0003 § 4) a writer exists — `vpay_db::ledger::post_in_tx` — and
+  **nothing calls it**, which is the half that keeps the claim true. See
+  § Status.
 
 - **On success:** in one transaction, decrement pending, increment refunded,
   write the ledger transaction.
@@ -130,19 +133,43 @@ that way without a trigger. This invariant stays application-enforced, in
 The `LedgerTransaction` model's own `GAP` comment in `schemas/vpay.cstack`
 says the same thing.
 
-**Invariant 2 has a modelling gap, surfaced while writing the design-sketch
-schema in `schemas/vpay.cstack`.** `vpay_ledger::AccountKind` has exactly
-three variants — `MerchantPayable`, `PayerClearing`, `PlatformFeeRevenue` —
-with no per-merchant dimension. "Per merchant: `balance(merchant_payable) = …`"
-cannot actually be computed from that type as modelled: nothing says _which_
-merchant a given `MerchantPayable` posting belongs to. Fixing this needs a new
-field on the Rust type (and the table that mirrors it), not a schema-only
-patch — adding a `merchant_id` column to the design sketch without a
-corresponding Rust field would be inventing structure the code doesn't have.
-This is unchanged by the migrations landing: `ledger_transactions` and
-`ledger_entries` exist in `backends/migrations/0005_create-ledger.sql`
-mirroring the same three-variant `AccountKind`, so the gap is now present in
-real SQL too, not just the design sketch.
+**~~Invariant 2 has a modelling gap, surfaced while writing the design-sketch
+schema in `schemas/vpay.cstack`.~~ Closed on 2026-09-15 by RFC-0003 § 4.**
+The paragraph that stood here said, in full:
+
+> `vpay_ledger::AccountKind` has exactly three variants — `MerchantPayable`,
+> `PayerClearing`, `PlatformFeeRevenue` — with no per-merchant dimension.
+> "Per merchant: `balance(merchant_payable) = …`" cannot actually be computed
+> from that type as modelled: nothing says _which_ merchant a given
+> `MerchantPayable` posting belongs to. Fixing this needs a new field on the
+> Rust type (and the table that mirrors it), not a schema-only patch — adding
+> a `merchant_id` column to the design sketch without a corresponding Rust
+> field would be inventing structure the code doesn't have.
+
+It was fixed in the order that paragraph demanded, and the order is the point.
+`AccountKind::MerchantPayable { merchant_id: String }` is the new field;
+migration `0045` is the table mirroring it; `model LedgerEntry` in
+`schemas/vpay.cstack` declares the column only because the Rust field now
+exists behind it.
+
+**It is a variant payload, not a field on `Entry`**, because the two are
+different claims. A field would admit a `payer_clearing` posting carrying a
+merchant — meaningless, the clearing account is vpay's and pooled across
+tenants — and a `merchant_payable` posting carrying none, which is the gap
+reintroduced. `ledger_entries` mirrors the sum type with the CHECK
+`ledger_entries_merchant_id_iff_merchant_payable`:
+`(account = 'merchant_payable') = (merchant_id IS NOT NULL)`. That constraint
+is multi-column, so `cratestack migrate baseline` is blind to it in both
+directions, which is why `a_merchant_payable_entry_must_name_its_merchant` and
+`a_pooled_account_entry_must_not_name_a_merchant` in `postgres_smoke.rs` write
+both rows it refuses.
+
+Invariant 2 is therefore computable for the first time, in two independent
+implementations that the same test checks against each other:
+`vpay_ledger::balance(entries, account, currency)` in memory and
+`vpay_db::Ledger::merchant_payable_balance(merchant_id, currency_code)` in SQL.
+**Computable is not the same as asserted nightly** — nothing schedules it, and
+nothing posts to the ledger in the first place; see § Status.
 
 ## Status
 
@@ -156,7 +183,45 @@ Invariant 1 is implemented and tested in `vpay-ledger`
 and is intentionally application-only — see above. The over-refund guard
 (not one of the four numbered invariants above, but the other constraint
 this doc covers) now has a real database CHECK in addition to `Money`'s
-Rust-level guard — see "When refunds post" above. **Persistence and
-invariants 2–4 are not started**, and invariant 2 additionally cannot be
-computed from the current `AccountKind` type as noted above — see
+Rust-level guard — see "When refunds post" above.
+
+**Persistence: the writer exists and nothing calls it (2026-09-15, RFC-0003
+§ 4). Those are two facts and the second is the one that matters.** This
+section said "persistence and invariants 2–4 are not started" until then, and
+half of that has moved:
+
+- `vpay_db::ledger::post_in_tx`, reached from outside `vpay-db` only through
+  `TxRepositories::post_ledger_transaction_in_tx`, is the first statement in
+  this repository's history to write `ledger_transactions` / `ledger_entries`.
+  It runs inside the caller's transaction — there is deliberately no pooled
+  variant, because a posting that committed apart from the settlement that
+  caused it would be a ledger disagreeing with the charge.
+- **`Transaction::validate()` is finally called by something that writes.** It
+  runs before the first statement, and its failure is `DbError::Ledger` — an
+  error the caller must handle, never an `expect`. That is what makes
+  "invariant 1 stays application-enforced" a property of the write path rather
+  than of a function nothing called; proven by
+  `an_unbalanced_ledger_posting_is_refused_and_writes_nothing`, which asserts
+  both the error **and** that neither table gained a row.
+- Invariant 2 is computable — see the two implementations named above —
+  and `two_merchants_payable_balances_do_not_mix_in_the_database` asserts it
+  against a real Postgres for two merchants at once.
+
+**What has NOT moved, and no reading of the above should suggest otherwise:**
+
+- **No capture and no refund has ever produced a ledger row, in any
+  deployment.** `Settlement::apply_succeeded` and
+  `Settlement::apply_refund_succeeded` do not post. Every deployment's ledger
+  is empty, and it will stay empty until those call sites are wired.
+- Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
+- Invariants 3 and 4 are not started.
+- Invariant 1's "per currency" clause is still not enforced by
+  `Transaction::validate()`, which sums minor units across every leg whatever
+  currency it is in. Neither `Transaction::capture` nor `Transaction::refund`
+  can build a mixed-currency posting, so nothing reaching the database today
+  can trip it; the gap is recorded on the function.
+
+Evidence:
+[../status/verification/2026-09-15-ledger-merchant-dimension.md](../status/verification/2026-09-15-ledger-merchant-dimension.md),
+and the row in [../status/backend.md](../status/backend.md) — see
 [../status.md](../status.md).

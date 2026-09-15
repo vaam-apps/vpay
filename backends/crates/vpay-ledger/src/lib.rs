@@ -633,7 +633,10 @@ mod tests {
     fn a_capture_whose_fee_exceeds_the_gross_is_refused() {
         let error = Transaction::capture("merchant_1", xaf(100), Some(xaf(101)))
             .expect_err("a fee above the gross leaves the merchant owing money");
-        assert!(matches!(error, LedgerError::Money(MoneyError::Negative(-1))));
+        assert!(matches!(
+            error,
+            LedgerError::Money(MoneyError::Negative(-1))
+        ));
     }
 
     #[test]
