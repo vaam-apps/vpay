@@ -704,7 +704,11 @@ async fn update_refund_posts_metadata_to_the_object_path() {
     metadata.insert("stale".to_string(), String::new());
     let refund = client
         .refunds()
-        .update("re_1", UpdateRefundParams { metadata }, RequestOptions::new())
+        .update(
+            "re_1",
+            UpdateRefundParams { metadata },
+            RequestOptions::new(),
+        )
         .await
         .unwrap();
 

@@ -962,7 +962,9 @@ describe("resource methods", () => {
 
     const req = server.requests.find((r) => r.url.startsWith("/v1/refunds"))!;
     expect(req.method).toBe("GET");
-    expect(req.url).toBe("/v1/refunds?limit=2&starting_after=re_0&payment_intent=pi_1");
+    expect(req.url).toBe(
+      "/v1/refunds?limit=2&starting_after=re_0&payment_intent=pi_1",
+    );
     expect(req.body).toBe("");
     expect(req.headers["idempotency-key"]).toBeUndefined();
     expect(result.object).toBe("list");

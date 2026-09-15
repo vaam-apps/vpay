@@ -4664,7 +4664,12 @@ sdk-live: gen-demo-keys
     export VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem"
 
     set +e
-    cargo nextest run -p vpay-sdk --features live-stack --test live_invoices
+    # Both live binaries, named rather than left to `--features live-stack`
+    # alone: that would also compile and run every non-live target in the
+    # crate against this stack, which is a slower way to run tests that need
+    # no stack at all. A third live suite is a third `--test` here.
+    cargo nextest run -p vpay-sdk --features live-stack \
+        --test live_invoices --test live_refunds
     rust=$?
     pnpm --filter @vaam-apps/vpay-sdk test:live
     node=$?

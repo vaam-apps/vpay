@@ -1167,7 +1167,10 @@ pub struct UpdateRefundParams {
 
 impl UpdateRefundParams {
     pub(crate) fn to_form(&self) -> FormValue {
-        FormValue::Object(vec![("metadata".to_string(), metadata_form(&self.metadata))])
+        FormValue::Object(vec![(
+            "metadata".to_string(),
+            metadata_form(&self.metadata),
+        )])
     }
 }
 
