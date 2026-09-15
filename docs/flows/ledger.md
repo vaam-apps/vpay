@@ -375,6 +375,42 @@ superseded:
   how the intent is minted, not a constraint, so the case reaches it
   deliberately and says so.
 
+- **The refund posting's currency is the refund's own, and a disagreement with
+  the intent is refused (2026-09-16).** `settlement::post_refund` built its
+  legs from `intent.currency_code`, because `SettledRefund` carried no currency
+  — and `refunds.currency_code` is a real column whose only constraint is the
+  foreign key onto `currencies` (migration `0017`). **Nothing in the schema
+  ties it to the intent's**; the two agree only because `Refunds::create` is
+  the sole writer. A divergent writer would render one currency on the refund
+  object and post the legs in another, and `Transaction::validate` would not
+  say a word — it balances each currency on its own book (see "Invariants"
+  above), and every leg in the same _wrong_ currency balances perfectly. That
+  is the same "no caller can reach it" reasoning that produced the
+  mixed-currency defect this branch fixed earlier, and it was true right up
+  until the same branch added the writer.
+
+  `SettledRefund` now carries `currency_code`, read off the row being settled
+  in `settle_in_tx`/`fail_in_tx`'s `RETURNING`. **Reading it is not on its own
+  enough**, which is why the mismatch is refused rather than posted:
+  `apply_refund_succeeded` adds the refund's `amount` to
+  `payment_intents.amount_refunded` and to `invoices.amount_refunded` — both
+  denominated in the _intent's_ currency, neither looking at a currency — two
+  statements before the posting is built. On a mismatch there is therefore no
+  correct posting in **either** code, so `DbError::RefundCurrencyMismatch`
+  (`Category::Internal`) aborts the settlement whole and the refund stays
+  `pending`.
+  `a_refund_whose_currency_disagrees_with_its_intent_is_refused_and_posts_nothing`
+  in `postgres_smoke.rs` writes the divergent row with raw SQL — `NewRefund`
+  has no `currency_code` field, which is also why no merchant can cause this —
+  and asserts the refusal, that no leg was written in either currency, that the
+  flip to `succeeded` rolled back, and that neither intent counter moved.
+
+  **The cost, stated:** with the guard in place the two codes are provably
+  equal on the `money_from_row` line, so swapping the argument back to the
+  intent's is unobservable and no test catches it. What the case pins is the
+  guard and the `RETURNING` clause — reading the currency off the intent there
+  instead makes it fail. See the evidence page.
+
 **What has NOT moved, and no reading of the above should suggest otherwise:**
 
 - **No ledger row has ever been produced in any deployment.** The call sites
@@ -437,5 +473,6 @@ payment_intents`, asserting no row disagrees. The balances alone would not
 
 Evidence:
 [../status/verification/2026-09-15-ledger-merchant-dimension.md](../status/verification/2026-09-15-ledger-merchant-dimension.md),
+[../status/verification/2026-09-16-refund-currency-source.md](../status/verification/2026-09-16-refund-currency-source.md),
 and the row in [../status/backend.md](../status/backend.md) — see
 [../status.md](../status.md).
