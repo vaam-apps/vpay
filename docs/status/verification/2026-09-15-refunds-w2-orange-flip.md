@@ -126,26 +126,36 @@ the wrong rail's gap.
 
 All run on `refunds/w2-orange`, Rust 1.98.0.
 
-| Command                                                                                                             | Result                                        |
-| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `cargo nextest run -p vpay-adapter-orange-money -p vpay-tests-conformance`                                          | **123 run, 123 passed, 0 skipped, 0 ignored** |
-| `cargo nextest run -p vpay-provider`                                                                                | **33 run, 33 passed, 0 skipped, 0 ignored**   |
-| `cargo test --doc -p vpay-adapter-orange-money`                                                                     | 1 passed, 0 ignored                           |
-| `cargo test --doc -p vpay-provider`                                                                                 | 12 passed, 0 ignored                          |
-| `cargo clippy -p vpay-adapter-orange-money -p vpay-provider -p vpay-tests-conformance --all-targets -- -D warnings` | clean                                         |
-| `cargo xtask verify-status`                                                                                         | **2 unimplemented item(s)**, both declared    |
-| `cargo xtask verify-links`                                                                                          | clean                                         |
+| Command                                                                                     | Result                                        |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `cargo nextest run -p vpay-adapter-orange-money -p vpay-tests-conformance -p vpay-provider` | **156 run, 156 passed, 0 skipped, 0 ignored** |
+| `cargo test --doc -p vpay-adapter-orange-money`                                             | 1 passed, 0 ignored                           |
+| `cargo test --doc -p vpay-provider`                                                         | 12 passed, 0 ignored                          |
+| `cargo test --doc -p vpay-db`                                                               | 18 passed, 0 ignored                          |
+| `cargo test --doc -p vpay-api`                                                              | 8 passed, 0 ignored                           |
+| `cargo clippy --all-targets --all-features -- -D warnings` over the six crates touched      | clean                                         |
+| `cargo fmt --all -- --check`                                                                | clean                                         |
+| `prettier@3.9.6 --check` over the seven markdown files touched                              | clean                                         |
+| `cargo xtask verify-status`                                                                 | **2 unimplemented item(s)**, both declared    |
+| `cargo xtask verify-links`                                                                  | clean (1 660 links, 364 files)                |
+| `cargo xtask verify-no-mocks`                                                               | clean                                         |
 
-The adapter crate's own count went 65 → 66: one case removed (the tripwire
-line was an assertion inside an existing case, so no case was lost) and one
-added, `refund_is_a_token_about_vpay_not_an_answer_about_orange`. The
-conformance suite's count is unchanged at 57 per its own binary; nothing was
-added or removed there, only strengthened.
+That 156 is 66 in `vpay-adapter-orange-money`, 57 in `vpay-tests-conformance`
+and 33 in `vpay-provider`, measured with `cargo nextest list`. The adapter
+crate went 65 → 66: no case was removed (the tripwire was one assertion inside
+a case that still exists) and one was added,
+`refund_is_a_token_about_vpay_not_an_answer_about_orange`. `vpay-provider` went
+32 → 33 for the relocated default-body case. The conformance count is
+unchanged; nothing was added or removed there, only strengthened.
 
 `just ci` was **not** run — the brief forbade it (five concurrent local builds
 have OOM-killed this host). CI is the gate for everything outside the table
-above, and in particular the integration suite, the doctest sweep across the
-workspace and `verify-docs` were not run here.
+above, and in particular **the integration suite was not run**, nor the
+workspace-wide doctest sweep, nor `verify-docs`, nor the remaining nine gates
+in `just verify`. `prettier` was run through `npx` at the version
+`package.json` pins, because this worktree has no `node_modules` and installing
+one was out of scope; `just fmt-check-web` runs prettier repo-wide in CI and is
+what actually decides.
 
 ## Mutation testing
 
