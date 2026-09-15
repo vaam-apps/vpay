@@ -352,6 +352,18 @@ test-flutter: _flutter-preflight
 # /v1/checkout/sessions`, authenticated with a real `private_key_jwt`
 # exchange).
 #
+# Since the merchant-loop addition (2026-09-15), this also proves the OTHER
+# half of design D1 — that a merchant, not just the payer's device, learns
+# a payment happened. The success fixture is the shop's own real order
+# (`orders.create`, same as ever); this recipe now also captures that
+# order's id and hands it to the Dart suite, which — once the plugin's own
+# poll reaches `VpayCheckoutSucceeded` — asks `examples/shop`'s `orders.get`
+# whether ITS OWN row, written only by its webhook handler
+# (`examples/shop/src/server/webhook.ts`) after a real, signature-verified
+# `payment_intent.succeeded` delivery from `vpay-worker`, says `paid`. That
+# is a second, independent observer: the shop process, driven by a real
+# webhook delivery, never by anything the plugin told it.
+#
 # Separate from `test-flutter`, the way `test-e2e` is separate from
 # `test-web`: `test-flutter` stays stack-independent and MUST keep passing —
 # 80 passed, 0 skipped — with the stack down. This recipe needs a stack and
@@ -443,6 +455,18 @@ test-flutter-e2e: _flutter-preflight
         echo "test-flutter-e2e: FAIL — orders.create (success fixture) answered: $success_order" >&2
         exit 1
     }
+    # The shop's OWN order id for this session — `examples/shop`'s database
+    # row, not anything vpay knows the name of. This is what lets the Dart
+    # suite ask the MERCHANT, independently of the poll it already did
+    # against vpay itself, whether the payment actually happened
+    # (docs/flows/hosted-checkout.md, "every 'it was paid' assertion made on
+    # the shop's own database" — the same authority
+    # `frontends/tests/e2e/cypress/support/shop.ts`'s `readOrder` is for
+    # Cypress).
+    success_order_id="$(printf '%s' "$success_order" | jq -er '.result.data.orderId')" || {
+        echo "test-flutter-e2e: FAIL — orders.create (success fixture) answered no orderId: $success_order" >&2
+        exit 1
+    }
 
     expiring_order="$(mint_order flutter-e2e-expired@example.test)"
     expiring_url="$(printf '%s' "$expiring_order" | jq -er '.result.data.url')" || {
@@ -502,7 +526,9 @@ test-flutter-e2e: _flutter-preflight
         --arg expiredSessionUrl "$expiring_url" \
         --arg expiredIntentId "$expiring_intent_id" \
         --arg expiredIntentClientSecret "$expiring_intent_secret" \
-        '{baseUrl: $baseUrl, publishableKey: $publishableKey, successSessionUrl: $successSessionUrl, expiredSessionUrl: $expiredSessionUrl, expiredIntentId: $expiredIntentId, expiredIntentClientSecret: $expiredIntentClientSecret}' \
+        --arg shopUrl "$shop_url" \
+        --arg successOrderId "$success_order_id" \
+        '{baseUrl: $baseUrl, publishableKey: $publishableKey, successSessionUrl: $successSessionUrl, expiredSessionUrl: $expiredSessionUrl, expiredIntentId: $expiredIntentId, expiredIntentClientSecret: $expiredIntentClientSecret, shopUrl: $shopUrl, successOrderId: $successOrderId}' \
         > "$fixture"
 
     echo "test-flutter-e2e: fixture written — driving the plugin's own BrowserClient/CheckoutController"
