@@ -248,6 +248,7 @@ predictable consequence of the header, not because anything observed it.
   money came back.** The refund is `pending`, no rail in this repository has
   ever returned money, and nothing settles a `pending` refund (RFC-0003 open
   question 8).
+
 - **`/v1/events` and `/v1/events/{id}` _are_ routed** (Step 5), and their
   bodies are Stripe's `event` shape — but **nothing here drives them through
   stripe-node's `events` resource**, so `stripe.events.list()` working is

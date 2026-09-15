@@ -1422,6 +1422,80 @@ async fn the_list_is_merchant_scoped_and_filterable_by_intent() -> anyhow::Resul
     Ok(())
 }
 
+// -------------------------------------------------------------- test 13b
+
+/// **The uniform `404` holds on the routes that WRITE, not only on the read.**
+///
+/// Added by review, 2026-09-16. `merchant_b_cannot_read_merchant_as_refund`
+/// proves the property for `GET /v1/refunds/{id}` and proves it well — bodies
+/// byte for byte, the `resource_missing` envelope rather than the nest's
+/// `unknown_route`. Nothing proved it for `POST /v1/refunds/{id}` or
+/// `POST /v1/refunds/{id}/cancel`, and those two are where it is easiest to
+/// lose: both read the refund before their write in order to tell a `404`
+/// from a `409`, and `cancel_once` re-reads a second time to render the
+/// *status* of the row that refused it. A version of either read that was not
+/// merchant-scoped would answer a foreign refund's owner-only `409` — "this
+/// one is `succeeded`" — and that single sentence confirms both that the id
+/// exists and what state it is in.
+///
+/// Two ids, indistinguishable by construction: another merchant's real refund
+/// and a `re_…` that names nothing. Both verbs, and the assertion is on the
+/// whole body with each request's own id substituted out, exactly as the read
+/// case does it.
+#[tokio::test]
+async fn the_write_routes_answer_the_same_404_for_a_foreign_refund_as_for_a_missing_one()
+-> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+
+    // Merchant B's own refund, seeded straight to the table for
+    // `the_list_is_merchant_scoped_and_filterable_by_intent`'s reason: what
+    // is under test is A's answer, and B's row only has to exist.
+    let other_intent = harness.captured_intent_for(MERCHANT_B, AMOUNT).await?;
+    let foreign_id = seed_refund(&harness.pool, &other_intent, "pending", None).await?;
+
+    // Each pair is (what merchant A sends, the route it sends it to).
+    for (body, suffix) in [("metadata[note]=probe", ""), ("", "/cancel")] {
+        let foreign = harness
+            .post_form(&format!("/v1/refunds/{foreign_id}{suffix}"), body)
+            .await?;
+        let missing = harness
+            .post_form(&format!("/v1/refunds/{MISSING_REFUND_ID}{suffix}"), body)
+            .await?;
+
+        assert_eq!(foreign.status, 404, "{:#}", foreign.body);
+        assert_eq!(missing.status, 404, "{:#}", missing.body);
+
+        // The *resource* envelope, which is also what proves the route is
+        // mounted: an unmounted path answers the nest's `unknown_route`,
+        // which is also a `404` and also the same for both ids.
+        assert_eq!(
+            missing.body.pointer("/error/code").and_then(Value::as_str),
+            Some("resource_missing"),
+            "POST /v1/refunds/{{id}}{suffix}: {:#}",
+            missing.body
+        );
+
+        let foreign_text = serde_json::to_string(&foreign.body)?.replace(&foreign_id, "<id>");
+        let missing_text = serde_json::to_string(&missing.body)?.replace(MISSING_REFUND_ID, "<id>");
+        assert_eq!(
+            foreign_text, missing_text,
+            "POST /v1/refunds/{{id}}{suffix} distinguishes another merchant's refund from an id \
+             that never existed"
+        );
+    }
+
+    // And merchant B's refund is untouched by either attempt — the `404` is a
+    // refusal, not a silent no-op on somebody else's row.
+    let status: String = sqlx::query_scalar("SELECT status FROM refunds WHERE id = $1")
+        .bind(&foreign_id)
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(status, "pending");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // ----------------------------------------------------------------- test 14
 
 /// A replayed `Idempotency-Key` answers the stored response and creates no
