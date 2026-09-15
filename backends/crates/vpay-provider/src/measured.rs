@@ -55,7 +55,7 @@ use vpay_core::metrics::{
 
 use crate::{
     AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, Refunded, Submitted,
+    ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -168,15 +168,20 @@ impl ProviderAdapter for Measured {
         self.inner.parse_callback(body)
     }
 
+    /// Forwarded with the destination untouched: this decorator counts and
+    /// times, and a layer that looked inside a [`RefundTarget`] — even to
+    /// derive a label from it — would put a payee's phone number in a metric
+    /// series. `error_kind` stays the only dimension.
     async fn refund(
         &self,
         charge: &ChargeRef,
         amount: Money,
+        destination: Option<&RefundTarget>,
         config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
         self.measure(
             provider_operation::REFUND,
-            self.inner.refund(charge, amount, config),
+            self.inner.refund(charge, amount, destination, config),
         )
         .await
     }
@@ -246,6 +251,7 @@ mod tests {
                 delivers_callbacks: false,
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
+                refund_destination: crate::RefundDestination::Origin,
             }
         }
 
