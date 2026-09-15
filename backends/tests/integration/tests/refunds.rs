@@ -1461,6 +1461,83 @@ async fn a_replayed_key_answers_the_stored_refund_and_creates_no_second() -> any
     Ok(())
 }
 
+// ----------------------------------------------------------------- test 15
+
+/// **A replay answers the refund the merchant already has, even when the
+/// intent has moved on since.**
+///
+/// This is the case that decides where the `Idempotency-Key` claim sits, and
+/// it is the one an ordering that "validates first" gets wrong. A merchant
+/// whose `201` was lost to a timeout retries under the same key; by then the
+/// intent has nothing left to refund, because the refund they are retrying
+/// took the rest of it. Every refusal in the create reads mutable rows — the
+/// intent's counters among them — so resolving before claiming answers `409
+/// over_refund` for a refund that **exists and is theirs**, and the merchant
+/// has no way to learn its id.
+///
+/// The rule this pins is `vpay_api::v1::customers::create`'s, stated there
+/// and now stated in `v1::refunds`: **a replay answers whatever the original
+/// answered, whatever has changed since.** Move `claim_or_answer` below
+/// `resolve_target` and this case fails; every other case in this file still
+/// passes, including `a_replayed_key_answers_the_stored_refund_and_creates_no_second`,
+/// because that one replays against an intent nothing has changed.
+#[tokio::test]
+async fn a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on()
+-> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+    // **`amount` omitted**, and that is the whole shape of the case: a full
+    // refund is "all of what is left", so the second request's own meaning
+    // depends on what the first one did. A body carrying an explicit `amount`
+    // would not reach the divergence at all — the handler resolves such a
+    // request identically both times and only the *database* refuses it,
+    // after the claim, which is not the ordering under test. Measured
+    // 2026-09-16: with an explicit `amount` this case passed under both
+    // orderings, which is why it does not carry one.
+    let body = format!("payment_intent={intent_id}&destination[{RAIL}][msisdn]={PAYEE}");
+    let key = "w3routes-a-timeout-is-not-a-second-refund";
+
+    let first = harness.post_refund_form_with_key(&body, key).await?;
+    assert_eq!(first.status, 201, "{:#}", first.body);
+    assert_eq!(
+        first.body.get("amount").and_then(Value::as_i64),
+        Some(AMOUNT),
+        "a full refund is the whole of what is left, so the intent has nothing left now"
+    );
+
+    // The same request again — the merchant never saw the answer.
+    let replay = harness.post_refund_form_with_key(&body, key).await?;
+    assert_eq!(
+        replay.status, 201,
+        "a replay must answer the stored response, not re-run the rules against an intent \
+         the first request itself changed: {:#}",
+        replay.body
+    );
+    assert_eq!(first.body, replay.body, "and byte for byte the same body");
+
+    // Proof the state really had moved on: the same body under a *new* key is
+    // the `409` the replay must not have been given.
+    let fresh = harness.post_refund_form(&body).await?;
+    assert_eq!(fresh.status, 409, "{:#}", fresh.body);
+    assert!(
+        fresh
+            .body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("nothing left to refund")),
+        "{:#}",
+        fresh.body
+    );
+
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 1);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------------------- the rail harness
 
 /// The payee every refund here nominates — `basicuserinfo.json`'s

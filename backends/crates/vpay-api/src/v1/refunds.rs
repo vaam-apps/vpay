@@ -237,19 +237,48 @@ pub(crate) async fn create(
     let post = PostRequest::read(request).await?;
     let params: CreateParams = post.form().await?;
 
-    // Everything that can refuse the request runs **before** the claim, and
-    // writes nothing — `crate::v1::payment_intents::confirm`'s ordering and
-    // its reason: a refused refund leaves the key unspent, so a corrected
-    // retry under it is a fresh request rather than a replay of the refusal.
-    // Safe because the check is a function of the body and of rows this
-    // request does not touch: a genuine replay, whose body is byte for byte
-    // the accepted one, can never be shadowed by it.
-    let target = resolve_target(repositories.as_ref(), &config, &adapters, &scope, &params).await?;
-
+    // The claim runs **first, before any rule** — `crate::v1::customers::create`'s
+    // ordering, and its reason: a replay must answer whatever the original
+    // answered, whatever has changed since.
+    //
+    // This is deliberately **not** `crate::v1::payment_intents::confirm`'s
+    // ordering, and the difference is the whole of this comment. That handler
+    // refuses two Stripe parameters before claiming, and its own comment says
+    // why that is safe: the check reads the **body alone**, so a genuine
+    // replay — whose body is byte for byte the one that was accepted — can
+    // never be shadowed by it. Every refusal below reads **mutable rows**,
+    // and the intent's own counters among them. Resolving first would mean a
+    // merchant whose `201` was lost to a timeout, retrying under the same key
+    // against an intent that now has nothing left to refund *because their
+    // own first request took it*, is answered `409` instead of the refund
+    // they already have — and with no `re_…` in the envelope, no way to find
+    // it. That is the exact case an idempotency key exists for.
+    //
+    // Measured 2026-09-16 rather than reasoned about: with the two swapped,
+    // `a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on`
+    // fails and every other case in this repository passes — including the
+    // other replay case, which replays against an intent nothing changed.
     let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
+
+    // Which puts every refusal here, and every one of them **releases the
+    // key**: nothing is written before [`create_once`] opens its transaction,
+    // so re-executing a corrected retry under the same key is exactly
+    // equivalent to this request never having been made.
+    // `crate::v1::customers::create`'s carve-out, applied for its reason —
+    // and it is why the release is here rather than left to
+    // [`PostRequest::finish`], which would store the refusal and replay it at
+    // a merchant who has since corrected their request.
+    let target =
+        match resolve_target(repositories.as_ref(), &config, &adapters, &scope, &params).await {
+            Ok(target) => target,
+            Err(error) => {
+                post.release(repositories.as_ref(), &scope, claim_id).await;
+                return Err(error);
+            }
+        };
 
     let outcome = create_once(repositories.as_ref(), &scope, target).await;
 

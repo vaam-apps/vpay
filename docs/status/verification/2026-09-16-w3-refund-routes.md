@@ -123,6 +123,50 @@ Two cases hold it shut, at two layers, because either alone is bypassable:
 
 Both also assert that the refusal does not echo the number it refused.
 
+## A third mutation, which found a real bug in this arm's own first draft
+
+Not named by the brief. Found by re-reading the handler against
+`crate::v1::customers::create`'s stated rule — **"a replay must answer
+whatever the original answered, whatever has changed since"** — and then
+measured rather than argued.
+
+The first draft claimed `POST /v1/payment_intents/{id}/confirm`'s ordering and
+resolved everything **before** claiming the `Idempotency-Key`, on the grounds
+that a refused refund should leave the key unspent. That reasoning is right
+for `confirm`, whose pre-claim check reads the request body alone. It is wrong
+here: every refusal in the refund create reads **mutable rows**, the intent's
+counters among them. So a merchant whose `201` was lost to a timeout, retrying
+the same full refund under the same key, was answered `409 invalid_state`
+("this payment intent has nothing left to refund") — because their own first
+request had taken it — instead of the refund they already had, and with no
+`re_…` anywhere in the envelope to find it with.
+
+`a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on`
+was written for it, and the **first version of that test did not catch it**:
+it sent an explicit `amount`, which the handler resolves identically both
+times, so only the database refused — after the claim — and the case passed
+under both orderings. Measured, and recorded here because it is the more
+useful half of the finding: a test aimed at an ordering has to be written
+against the code path whose _meaning_ depends on the order, which for a refund
+is `amount` **omitted** — "all of what is left" is a function of what the
+first request did.
+
+With the corrected test and the resolve-before-claim ordering restored as a
+mutation, the result was:
+
+```
+FAIL a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on
+  a replay must answer the stored response, not re-run the rules against an
+  intent the first request itself changed: 409 invalid_state
+  "Payment intent pi_… has nothing left to refund."
+```
+
+and every other case in the file passed, including the other replay case.
+The handler now claims first and **releases the key on every refusal**, which
+is `customers::create`'s shape: nothing is written before the transaction
+opens, so a corrected retry under the same key is equivalent to the request
+never having been made.
+
 ## The silent money bug this arm was positioned to create
 
 RFC-0003 open question 7: `ProviderAdapter::refund` receives one `ChargeRef`
