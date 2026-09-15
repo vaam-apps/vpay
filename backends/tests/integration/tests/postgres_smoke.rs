@@ -3802,6 +3802,106 @@ async fn a_settled_charge_posts_its_capture_in_the_same_transaction() -> anyhow:
     Ok(())
 }
 
+/// Invariant 4 under **concurrency**: two settlements racing the same charge
+/// post exactly one capture, and the loser writes nothing at all.
+///
+/// # Why the sequential case is not enough
+///
+/// `a_settled_charge_posts_its_capture_in_the_same_transaction` settles twice
+/// in sequence, which proves the compare-and-swap refuses a charge that is
+/// *already* `succeeded`. That is not the shape production produces. A poll
+/// job and a rail callback can reach `apply_succeeded` for the same charge at
+/// the same moment, with neither able to see the other's uncommitted write,
+/// and `docs/flows/ledger.md` § Status states that the charge
+/// compare-and-swap is the **only** guard there is — the transaction id is
+/// minted, so `ledger_transactions_pkey` cannot be a second one. A guard that
+/// held only when the two calls were ordered would leave the invariant
+/// resting on nothing at the one moment it is asked to hold.
+///
+/// # The two event ids are deliberately different
+///
+/// A shared `event_id` would make `events_pkey` refuse the loser, and the
+/// case would pass with the charge guard doing nothing. Distinct ids remove
+/// that accidental second guard, so the only thing standing between this
+/// database and two capture postings for one 5 000 XAF charge is
+/// `WHERE id = $1 AND state IN (…)` re-evaluating against the winner's
+/// committed row.
+///
+/// # The mutation it exists for
+///
+/// Widen that `WHERE` to `WHERE id = $1` and this case must fail: both
+/// settlements commit, the ledger holds two captures, and
+/// `merchant_payable_balance` answers 10 000 for a 5 000 capture.
+#[tokio::test]
+async fn two_settlements_racing_one_charge_post_exactly_one_capture() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    insert_payment_intent(&pool, "pi_double", 5_000, 0, 0).await?;
+    insert_charge(&pool, "ch_double", "pi_double").await?;
+
+    let data = serde_json::json!({});
+    let left = repositories.apply_succeeded("ch_double", None, "evt_double_left", &data, None);
+    let right = repositories.apply_succeeded("ch_double", None, "evt_double_right", &data, None);
+    let (left, right) = tokio::join!(left, right);
+
+    let settled =
+        usize::from(matches!(&left, Ok(Some(_)))) + usize::from(matches!(&right, Ok(Some(_))));
+    assert_eq!(
+        settled, 1,
+        "exactly one of two racing settlements may take the charge terminal: {left:?} {right:?}"
+    );
+    let refused = usize::from(matches!(&left, Ok(None))) + usize::from(matches!(&right, Ok(None)));
+    assert_eq!(
+        refused, 1,
+        "the loser's answer must be Ok(None) — 'already settled, nothing written' — and not a \
+         failure a worker would retry: {left:?} {right:?}"
+    );
+
+    // Invariant 4, in the database: one capture transaction for this charge.
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "invariant 4 under concurrency: exactly one capture transaction per succeeded charge"
+    );
+    let legs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger entries")?;
+    assert_eq!(legs, 2, "two legs, and the loser contributed none");
+
+    // The number a double posting would move, asserted on its own: a ledger
+    // with two captures balances per transaction and still tells the merchant
+    // it is owed twice what was taken.
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        5_000,
+        "balance(merchant_payable) must be the one capture, not two"
+    );
+
+    // And the loser wrote nothing else either: one event, not two.
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .context("counting events")?;
+    assert_eq!(
+        events, 1,
+        "the loser's event id is its own, so a second row here would mean its whole transaction \
+         committed"
+    );
+
+    Ok(())
+}
+
 /// The idempotency trap, through the **real** `UnitOfWork` seam: a caller that
 /// swallows a `UniqueViolation` and commits anyway is handed
 /// `TxOutcome::Commit` while everything it wrote is discarded.
