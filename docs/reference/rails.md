@@ -245,6 +245,19 @@ worse thing to hold in memory than one token re-minted when the configuration it
 belongs to changes. The fingerprint is what makes the single slot _safe_; it is
 not what makes it fast.
 
+**MTN has two slots since 2026-09-15, one per product, and that is not a map.**
+Collections and Disbursements have separately scoped tokens, so a single slot
+would have every refund evict the charge path's bearer and every subsequent
+charge evict the refund's. Two named fields are bounded at two by the type
+system — a third product is a compiler error at `Adapter::slot`, not a runtime
+insert — so the objection above does not reach them. **`Product` is also part
+of MTN's credential fingerprint**, which is the part that matters: a
+deployment that pastes the same three strings into both halves of its
+configuration must still get two distinct cache keys, because otherwise a
+Collections-scoped bearer is served to the money-_out_ call.
+(`a_collections_bearer_is_never_served_to_a_disbursement` — the only test in
+that crate that fails when the discriminator is removed.)
+
 ### The two invariants that were each a real defect
 
 Both were found in the Step 3 security review, in different adapters, and a
@@ -339,14 +352,21 @@ and will never succeed. The body's `code` is read before anything is decided.
 charge it is about to accept, and failing it here would lose a payment still in
 flight. (`no_record_of_a_reference_is_not_a_failure`.)
 
-**Refunds are not built.** MTN refunds are the _Disbursements_ product — a
-different subscription key, a separately-scoped token, and a `transfer` call
-this adapter does not make. No deployment of this system holds those
-credentials. `supports_refunds` stays `true` because the rail _does_ support
-refunds; it is we who have not built them, so the answer is
-`ProviderError::NotImplemented("mtn_momo::refund")` and it is listed in
-[`status.md`](../status.md). Answering `Unsupported` would be a lie about the
-rail.
+**Refunds are built and have never been called.** As of 2026-09-15
+(RFC-0003 § 5) `refund` makes MTN's _Disbursements_ `transfer` call —
+`POST /disbursement/v1_0/transfer`, under a different subscription key and a
+separately-scoped token minted from `POST /disbursement/token/` — and the
+`NotImplemented("mtn_momo::refund")` token is retired.
+
+**No deployment of this system holds those credentials, and nothing in this
+repository has ever called MTN's Disbursements product**, in sandbox or
+anywhere else. `config/application.yml` carries the three keys unpopulated;
+`refund` answers `ProviderError::Config` naming the first one missing, and
+`POST /v1/refunds` is unrouted, so no caller can reach it regardless.
+`supports_refunds` stays `true` for the reason it always did: the rail
+refunds, and `Unsupported` would be a lie about MTN. See
+[`adapter-mtn-momo.md`](../flows/adapter-mtn-momo.md) § "The transfer call"
+for the wire and the three things about it that are unsettled.
 
 The 401 path is the adapter's only retry: nothing else is resent, least of all a 500. Resending after a 401 is safe on both calls that use it — `submit` carries
 our own `X-Reference-Id`, so a duplicate is a 409 the caller reads as success,

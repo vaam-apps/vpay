@@ -19,9 +19,138 @@ Confusing these three is the most common onboarding bug.
    portal, **different per product** (Collections vs Disbursements).
 2. **API User + API Key** — created once via `POST /v1_0/apiuser` (you supply a
    UUID and a `providerCallbackHost`) then `POST /v1_0/apiuser/{uuid}/apikey`.
-3. **Access token** — `POST /collection/token/` with HTTP Basic, `expires_in:
-3600`. Collections and Disbursements have **separate tokens**, hence the
-   `scope` column on cached tokens.
+3. **Access token** — `POST /{product}/token/` with HTTP Basic, `expires_in:
+3600`, and a **JSON** body of `{"grant_type":"client_credentials"}` (see
+   "The token grant" below — the spelling is load-bearing). Collections and
+   Disbursements have **separate tokens**, hence the `scope` column on cached
+   tokens.
+
+**What vpay configures, per product** (`config/application.yml`,
+2026-09-15). All three Disbursements keys are explicit and **none falls back
+to its Collections twin** — sending Collections' Basic password to the
+Disbursements mint is a 401 that reads as "MTN refused our partner
+credentials", pages, and names nothing that is actually wrong.
+
+| Product       | Subscription key                          | API user                       | API key                    |
+| ------------- | ----------------------------------------- | ------------------------------ | -------------------------- |
+| Collections   | `credentials.subscription_key`             | `settings.api_user`            | `credentials.api_key`       |
+| Disbursements | `credentials.disbursement_subscription_key` | `settings.disbursement_api_user` | `credentials.disbursement_api_key` |
+
+None of the Disbursements keys is in
+`vpay_config::config::REQUIRED_RAIL_KEYS`: requiring them would stop every
+existing deployment booting in order to enable a call none of them can make.
+An empty value is a missing one, and `refund` answers
+`ProviderError::Config` naming it.
+
+**Whether MTN in fact issues one API user across both product subscriptions
+is unverified** — it may well, in the sandbox — so an operator repeating the
+same UUID and key in both halves is expected and harmless. `Product` is part
+of the token cache's credential fingerprint precisely so that identical
+credentials still mint and cache two separately-scoped bearers
+(`a_collections_bearer_is_never_served_to_a_disbursement`); without it a
+Collections bearer would be served to the money-**out** call.
+
+## The token grant
+
+```http
+POST /collection/token/          (or /disbursement/token/)
+Authorization: Basic base64(api_user:api_key)
+Ocp-Apim-Subscription-Key: <that product's key>
+Content-Type: application/json
+
+{"grant_type":"client_credentials"}
+```
+
+**The body and its content type are load-bearing, and this is the one thing on
+this page a real call proved.** PR #177, on MTN's real sandbox on 2026-09-15:
+a bodyless POST answers `411 Length Required`, and the same grant sent
+**form-encoded** (`grant_type=client_credentials`) answers a `200` "Request
+Rejected" HTML page from MTN's gateway. The sibling rail,
+`vpay-adapter-orange-money`, posts the form-encoded spelling, and the two must
+not be assumed interchangeable.
+
+The conformance stubs enforce it with `equalToJson` plus a `Content-Type`
+matcher. They matched `{"contains": "client_credentials"}` until 2026-09-15 —
+a pattern the *form* body also satisfies, so the exact regression #177 fixed
+would have gone green. Measured on 2026-09-15 with the adapter posting the
+form spelling: under the old matcher **67 of 67 conformance cases passed**;
+under the tightened one **24 fail**
+([status/verification/2026-09-15-mtn-disbursements-refund.md](../status/verification/2026-09-15-mtn-disbursements-refund.md)).
+
+**The Disbursements mint is assumed to behave the same way. Nobody has called
+it.**
+
+## The transfer call (the refund)
+
+```http
+POST /disbursement/v1_0/transfer
+Authorization: Bearer <disbursement-scoped token>
+Ocp-Apim-Subscription-Key: <disbursements key>
+X-Target-Environment: sandbox | mtncameroon
+X-Reference-Id: <the refund's provider_reference_id>
+
+{ "amount": "5000", "currency": "XAF", "externalId": "<the same reference>",
+  "payee": { "partyIdType": "MSISDN", "partyId": "237600000200" },
+  "payerMessage": "…", "payeeNote": "…" }
+```
+
+Returns **202 with an empty body**, exactly as `requesttopay` does.
+
+`payee`, not `payer` — the one structural difference from the collection body,
+and the one that decides who gets the money. `payerMessage` and `payeeNote`
+are documented by MTN and deliberately not sent: the port carries no
+merchant-supplied text, and a constant string would put words nobody chose in
+front of a payee. No `X-Callback-Url` either: the callback route parses a
+*charge* reference, so a Disbursements notification would be refused as
+`Malformed` on every delivery.
+
+`partyId` is the digits-only canonical form
+`vpay_provider::RefundTarget::mobile_money` produces from
+`destination[mtn_momo][msisdn]` — the same spelling `payer.partyId` takes on
+the charge path. The adapter neither re-normalises nor re-validates it; the
+constructor is the only way to obtain a `RefundTarget` at all.
+
+| HTTP                        | →                                                                                            |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `202`                       | `Refunded { ref_extra: {}, fee: None }` — **accepted, not settled**                           |
+| `409 RESOURCE_ALREADY_EXIST` | the same, and that is what makes a crash-retry safe rather than a second payout               |
+| `400`                       | `Rejected`, through the same failure table as the charge path (`PAYEE_NOT_FOUND` → `invalid_payee`) |
+| `401` / `403`               | `Rejected { provider_account_blocked }` — our **Disbursements** credentials, and it pages      |
+| `404`                       | `Config` — the endpoint, most likely a base URL with no Disbursements product behind it        |
+| `500` with a config code    | `Config`, on the charge path's three-code table; otherwise `Transport`                          |
+| any other 5xx               | `Transport`                                                                                    |
+| any 3xx                     | `Malformed` — redirects are never followed, and this body carries the payee's number           |
+
+**Three things about this call are unsettled, and are recorded rather than
+decided for a handler that does not exist yet.**
+
+1. **Which reference it carries.** The port hands `refund` one `ChargeRef`,
+   and a refund needs its own rail reference — `refunds.provider_reference_id`
+   (migration `0017`), minted before any rail call (RFC-0003 § 3 step 2). The
+   adapter uses the reference it is given. If a future `POST /v1/refunds`
+   passes the **charge's**, every partial refund after the first reuses a
+   reference MTN has already seen, is answered `409`, and is reported
+   **accepted with no money moved**. RFC-0003 carries it as an open question;
+   `the_transfer_is_addressed_by_the_reference_the_core_supplied` pins what
+   the adapter does.
+2. **A 202 is accepted, not settled.** `transfer` is asynchronous like
+   `requesttopay`, and its outcome is read from
+   `GET /disbursement/v1_0/transfer/{referenceId}` — a call vpay does not
+   make, because the port has no refund status read and `Refunded` has no
+   status field. A write path that marked a refund `succeeded` on an `Ok`
+   would be asserting something no MTN response has said.
+3. **The failure vocabulary is Collections'.** MTN's portal serves **no
+   OpenAPI schema document for the Disbursement API** (re-checked
+   2026-09-11), so there is nothing to compare a Disbursements-specific table
+   against. The adapter reuses `mapping::failure_code`, and a reason it does
+   not know falls to `provider_error` carrying the rail's own word.
+
+**RFC-0003 open question 6, decided here** because the RFC left it to "the
+first adapter to make a real transfer call": a `Required` rail handed
+`destination: None` answers `ProviderError::Config`. Not `Rejected` (no rail
+was asked), not `Malformed` (there is no answer), not `Unsupported` or
+`NotImplemented` (both lies). `Config` stops the poll ladder, pages, and never
+reaches a payer as a decline.
 
 ## The collection call
 
@@ -206,6 +335,19 @@ never treat 500 as blind-retry.
 
 ## Status
 
+**Updated 2026-09-15 (RFC-0003 § 5, arm D): `refund` is written, and MTN's
+Disbursements product has still never been called.** The
+`ProviderError::NotImplemented("mtn_momo::refund")` token is retired —
+`verify-status` now prints **0 unimplemented items** — and that is a statement
+about a token, not about a rail. See "`refund` IS implemented … and it has
+never been called" below, "The transfer call" above for the wire, and
+[../status.md](../status.md), which says the same thing in the same words.
+The same change tightened both token stubs from
+`{"contains": "client_credentials"}` to `equalToJson` plus a `Content-Type`
+matcher: the loose pattern was also satisfied by the **form-encoded** body PR
+#177 had just proved MTN rejects, so the regression #177 fixed would have gone
+green. Mutation numbers are in "The token grant" above.
+
 `submit`, `query_status` and `parse_callback` are implemented and proven
 against a real `wiremock/wiremock` container by the shared conformance suite
 (`backends/tests/conformance/tests/adapter_conformance.rs`, mappings in
@@ -247,13 +389,27 @@ browser has typed it** — `checkout.cy.ts` drives the hex family, and
 number a payer _can_ type that the adapter is proven to honour, which is not
 the same claim as an exercised browser path.
 
-**`refund` is not implemented** and returns
-`ProviderError::NotImplemented("mtn_momo::refund")` — see
-[../status.md](../status.md). MTN refunds are the _Disbursements_ product: a
-different subscription key, a separately-scoped token and a `transfer` call.
-No deployment holds those credentials, so there is nothing to build against.
-`supports_refunds` stays `true` because the _rail_ refunds; it is we who have
-not built it, and answering `Unsupported` would be a lie about MTN.
+**`refund` IS implemented as of 2026-09-15 (RFC-0003 § 5), and it has never
+been called.** Those are two separate facts and neither one is the other.
+MTN refunds are the _Disbursements_ product — a different subscription key, a
+separately-scoped token and a `transfer` call — and the adapter now makes that
+call: `POST /disbursement/v1_0/transfer`, addressed to the payee the merchant
+nominated in `destination[mtn_momo][msisdn]`. The `NotImplemented` token is
+retired, `verify-status` prints zero items, and **none of that is the claim
+"MTN refunds work".**
+
+**No deployment of this system holds a Disbursements subscription key**, and
+**nothing in this repository has ever called MTN's Disbursements product** —
+not in production, not against the sandbox, not once.
+`config/application.yml` carries `disbursement_subscription_key`,
+`disbursement_api_key` and `disbursement_api_user`; every deployment leaves
+them empty, and `refund` answers `ProviderError::Config` naming the first one
+that is missing. `POST /v1/refunds` is still unrouted, so no caller can reach
+it either way. `supports_refunds` stays `true` for the reason it always did:
+the _rail_ refunds, and answering `Unsupported` would be a lie about MTN.
+
+See "The transfer call" above for the wire and "Not proven" below for what a
+first real call has to check.
 
 **`account_holder_name` IS implemented** (issue #47, 2026-09-05), and
 `supports_account_holder_lookup` is `true` — a claim about the rail _and_
@@ -351,12 +507,38 @@ inherits three refusals that are not MTN-specific:
 ### Not proven
 
 - **Until 2026-09-15 nothing here had ever called MTN; one real sandbox call
-  has now been made.** Every wire assertion in this document is against a
-  `wiremock/wiremock` container except the live-sandbox run of 2026-09-15
-  (Status above), which exercised `submit` and `query_status` against
-  `https://sandbox.momodeveloper.mtn.com` and settled a payment. Both
-  **confirm** rows in the environment table above are still unconfirmed, and a
-  mapping faithful to this document but not to MTN would pass.
+  has now been made, and it was on Collections.** Every wire assertion in this
+  document is against a `wiremock/wiremock` container except the live-sandbox
+  run of 2026-09-15 (Status above), which exercised `submit` and
+  `query_status` against `https://sandbox.momodeveloper.mtn.com` and settled a
+  payment. Both **confirm** rows in the environment table above are still
+  unconfirmed, and a mapping faithful to this document but not to MTN would
+  pass.
+- **MTN's Disbursements product has never been called at all** — not by the
+  2026-09-15 run, which was a Collections payment, and not since. So every
+  line of "The transfer call" above, and the Disbursements half of "The token
+  grant", is a transcription of MTN's published `Transfer` operation rather
+  than an observation, and the portal serves **no OpenAPI schema document for
+  that API** to have compared it against. Specifically unverified, and what a
+  first real call has to check:
+  - that `POST /disbursement/token/` wants the same JSON grant and
+    `Content-Type` that Collections' mint does;
+  - that the transfer path is `/disbursement/v1_0/transfer` and the member is
+    spelled `payee`;
+  - that a `202` really is empty and really carries no fee, which is what
+    keeps `Refunded::fee` at `None` (issue #46);
+  - whether `409 RESOURCE_ALREADY_EXIST` is the duplicate-reference answer on
+    this product as it is on Collections — the whole crash-retry story rests
+    on it;
+  - whether MTN in fact issues one API user across both product
+    subscriptions, which decides whether requiring three separate
+    Disbursements keys is prudence or friction.
+- **`refund`'s conformance cases prove the adapter, not the rail.** Seven of
+  them run against a real container, and the strongest — that the transfer
+  carries a bearer minted from `/disbursement/token/` and the per-product
+  subscription key — works because the stub answers `202` for nothing else. A
+  stub written from the same documentation as the adapter cannot disagree
+  with it.
 - **The 401 → re-mint → retry path is not covered by a test.** The logic is
   there and is bounded at one retry, but no mapping in the conformance suite
   returns 401 from `requesttopay` after a good token, and the adapter's own
@@ -393,9 +575,11 @@ inherits three refusals that are not MTN-specific:
   why "Real sandbox" remains ⛔ for the failure vocabulary even though a
   sandbox payment has now settled.)_
 
-- The crate runs **62 tests, 62 passed, 0 skipped**
-  (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-10; 48 on
-  2026-09-03, before exp48 added the enum-comparison tests).
+- The crate runs **87 tests, 87 passed, 0 skipped**
+  (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-15; 62 on
+  2026-09-10, 48 on 2026-09-03). The shared conformance suite runs **67, 67
+  passed, 0 skipped** (`cargo nextest run -p vpay-tests-conformance`, same
+  date, against real `wiremock/wiremock` containers).
 
 ## Documentation MSISDNs (steering table)
 

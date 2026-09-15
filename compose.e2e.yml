@@ -63,6 +63,19 @@ services:
       # failure this stack has already had once — so the three new names are
       # set on the worker below as well.
       MTN_API_USER: 11111111-2222-3333-4444-555555555555
+      # Added 2026-09-15 (RFC-0003 section 5): MTN's Disbursements product,
+      # which is what a refund on this rail is. Same exit-78 rule as the
+      # three above, and set on the worker below for the same reason.
+      #
+      # These match `wiremock/mtn/mappings/transfer.json`, which answers 202
+      # ONLY for this subscription key and for a bearer minted from
+      # /disbursement/token/ — so a stack whose refund path reached for the
+      # Collections credentials would get a 404 from the stub rather than a
+      # silent success. `just demo-walk` does not refund and nothing routes
+      # POST /v1/refunds, so nothing in this stack calls it today.
+      MTN_DISBURSEMENT_SUBSCRIPTION_KEY: wiremock-stub-disbursement-subscription-key
+      MTN_DISBURSEMENT_API_KEY: wiremock-stub-disbursement-api-key
+      MTN_DISBURSEMENT_API_USER: 66666666-7777-8888-9999-000000000000
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
@@ -145,6 +158,9 @@ services:
       MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
       MTN_API_KEY: wiremock-stub-api-key
       MTN_API_USER: 11111111-2222-3333-4444-555555555555
+      MTN_DISBURSEMENT_SUBSCRIPTION_KEY: wiremock-stub-disbursement-subscription-key
+      MTN_DISBURSEMENT_API_KEY: wiremock-stub-disbursement-api-key
+      MTN_DISBURSEMENT_API_USER: 66666666-7777-8888-9999-000000000000
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret

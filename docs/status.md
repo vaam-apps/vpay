@@ -35,9 +35,17 @@ to.
 > ever been touched.** The payer number was an MTN-sandbox test MSISDN the
 > sandbox settles automatically — no handset was prompted and no real money
 > moved; Orange's redirect rail has still never been called; no webhook has
-> ever reached a merchant endpoint outside this repository; `mtn_momo::refund`
-> is still `NotImplemented`; and no cluster has ever run vpay. Do not deploy
-> it._
+> ever reached a merchant endpoint outside this repository; **MTN's
+> Disbursements product — which is what a refund on that rail is — has never
+> been called at all**, in sandbox or anywhere else, so `mtn_momo::refund` is
+> written and rail-unproven and no deployment even holds the credential it
+> needs; and no cluster has ever run vpay. Do not deploy it._
+>
+> _(That clause said "`mtn_momo::refund` is still `NotImplemented`" until
+> 2026-09-15. Retiring the token did not narrow the banner — the sentence
+> above says the same thing about the rail, which is what the banner is for,
+> and says it about a call that now exists and could therefore be mistaken for
+> one that works.)_
 
 That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a
@@ -60,7 +68,7 @@ Every 🟡 and ⛔ on those pages is there because a test says so.
 | Area                                                     | Today                                                                                                                                         | Detail                                                                                                                                            |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Backend** — `/v1`, `/dash/v1`, `/provider`, `/browser` | 🟡 Real routes, real rows, real adapters; every rail call went to a stub until 2026-09-15, when the MTN push first went to MTN's real sandbox | [status/backend.md](status/backend.md)                                                                                                            |
-| **Adapters** — `mtn_momo`, `orange_money`                | 🟡 Wire calls proven against WireMock; since 2026-09-15 `mtn_momo` proven against MTN's real sandbox, ⛔ `orange_money` never called          | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
+| **Adapters** — `mtn_momo`, `orange_money`                | 🟡 Wire calls proven against WireMock; since 2026-09-15 `mtn_momo`'s **charge path** proven against MTN's real sandbox, ⛔ `mtn_momo::refund` (Disbursements) never called, ⛔ `orange_money` never called | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
 | **Frontend** — checkout page, dashboard, demo shop       | 🟡 Built and walked by a real browser against a stub rail                                                                                     | [status/frontend.md](status/frontend.md)                                                                                                          |
 | **Infrastructure** — images, compose, Helm, migrations   | 🟡 Boots in compose and in CI; ⛔ no pod has ever run                                                                                         | [status/infrastructure.md](status/infrastructure.md)                                                                                              |
 | **Data layer** — sqlx, CrateStack, the schema            | 🟡 `schemas/vpay.cstack` compiles into `vpay-db`; the migration/model drift is counted, not closed                                            | [status/cratestack.md](status/cratestack.md), [status/sqlx-and-op-stores.md](status/sqlx-and-op-stores.md)                                        |
@@ -86,7 +94,7 @@ before this page was written:
 | Gate                  | What it refuses                                                                                                                                                  | Last printed                                 |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | `verify-no-mocks`     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                     |
-| `verify-status`       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                         |
+| `verify-status`       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 0 unimplemented items                        |
 | `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 19 error types, 16 `#[from]` variants        |
 | `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability                                                                                                     | 550 proving tests, 35 dated gaps, 32 methods |
 | `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | 1 600 links in 352 files                     |
@@ -131,9 +139,10 @@ a doc comment to keep this gate green
 `a_token_in_a_doc_attribute_is_not_a_shipping_claim` and
 `the_lexer_tells_the_four_states_apart` in `xtask`).
 
-**There is exactly one, down from eight on 2026-09-03 (Step 3), and the two
-that left did so for opposite reasons — which is the distinction this list
-exists to keep visible.** Six went because the code was _written_:
+**There are none, down from eight on 2026-09-03 (Step 3) and from one on
+2026-09-15 — and the three reasons items left this list are different
+reasons, which is the distinction it exists to keep visible.** Six went
+because the code was _written_:
 `{mtn_momo,orange_money}::{submit, query_status, parse_callback}` are real
 HTTP calls now. `orange_money::refund` went because it was **never unbuilt
 work in the first place** — Orange's Web Payment product documents no refund
@@ -144,19 +153,69 @@ can branch on (`supports_refunds: false`), asserted by the conformance case
 never support an operation must not be described with the same token as work
 someone still has to do.
 
-- `mtn_momo::refund` — MTN refunds are a different product (Disbursements)
-  with its own subscription key and its own token scope; nothing in
-  `config/application.yml` or `ProviderHost` carries a disbursement key and
-  no deployment has been issued one, so nothing honest can be built yet
-  (Step 3 design, decision 3). `supports_refunds` stays **`true`** for
-  `mtn_momo` on purpose: the _rail_ refunds, and answering `Unsupported`
-  would be a lie about MTN rather than an admission about us. `refund` is
-  therefore the one operation on the one rail that still returns a token —
-  reachable only through `POST /v1/refunds`, which is not routed, so no
-  caller can currently provoke it
-  (`refund_is_not_implemented_and_does_not_pretend`,
-  `unimplemented_operations_never_fabricate_success` in the conformance
-  suite).
+`mtn_momo::refund` left on 2026-09-15 for the first reason — the
+Disbursements `transfer` call is written (RFC-0003 § 5) — and **an empty list
+here is the weakest claim this page makes, not the strongest.** A
+`NotImplemented` token is one narrow kind of gap: "this function has no body".
+Zero of them says nothing about whether a written call has ever been made, and
+in the case that just left, it has not. Read the two paragraphs below and the
+Rails row in "Where things stand" before reading this heading as good news.
+
+### `mtn_momo::refund` is written, WireMock-proven and **rail-unproven**
+
+MTN's Disbursements `transfer` call landed on 2026-09-15 (RFC-0003 § 5). It is
+real code — a Disbursements subscription key, a separately scoped token from
+`POST /disbursement/token/`, and `POST /disbursement/v1_0/transfer` addressed
+to the payee the merchant nominated — and **nothing in this repository has
+ever called MTN's Disbursements product.** Not in production, not against
+MTN's sandbox, not once.
+
+**No deployment of this system holds a Disbursements subscription key.**
+`config/application.yml` now carries `disbursement_subscription_key`,
+`disbursement_api_key` and `disbursement_api_user`; every deployment leaves
+all three empty, and `mtn_momo::refund` answers `ProviderError::Config`
+naming the first one that is missing. So the honest summary is: the call
+exists, no caller can reach it (`POST /v1/refunds` is still unrouted), and if
+one could it would answer "this deployment has no Disbursements credential".
+
+What _is_ proven, against a real `wiremock/wiremock` container, is
+seven conformance cases and twelve unit tests — that the transfer is
+addressed to the nominated payee and not to the charge's payer, that it
+carries a bearer minted from the Disbursements token endpoint and the
+per-product subscription key (the stub answers 202 for nothing else), that a
+refused payee is a decline and not a transport failure, that a duplicate
+reference is reported as accepted rather than paid twice, that an unreported
+fee stays `None`, and that no refusal and no log line ever carries the
+payee's number. **A stub faithful to MTN's published `Transfer` operation but
+not to MTN would pass every one of them**, and MTN's portal serves no OpenAPI
+schema document for the Disbursement API at all, so the request shape is a
+transcription and not a comparison. `docs/flows/adapter-mtn-momo.md` § "Not
+proven" carries the list of what a first real call has to check.
+
+**Three things are unsettled and are recorded rather than decided quietly**,
+because the `POST /v1/refunds` handler that would settle them does not exist
+yet:
+
+1. **Which reference the transfer carries.** The port hands `refund` one
+   `ChargeRef` and a refund needs its own rail reference (migration `0017`'s
+   `refunds.provider_reference_id`). The adapter uses the reference it is
+   given; if a future handler passes the _charge's_, every partial refund
+   after the first gets a `409` and is reported **accepted with no money
+   moved**. RFC-0003 carries it as an open question.
+2. **A 202 is _accepted_, not _settled_.** MTN's `transfer` is asynchronous
+   like `requesttopay`, and the port has no refund status read, so
+   `Ok(Refunded)` means the rail took the instruction. A write path that
+   marked a refund `succeeded` on that basis would be asserting something no
+   MTN response has said.
+3. **Whether MTN's Disbursements token endpoint wants the same JSON grant as
+   Collections.** Assumed, because PR #177 measured it on Collections against
+   the real sandbox. Nobody has called the Disbursements mint.
+
+_(This section replaced the `mtn_momo::refund` bullet that stood here from
+Step 3 to 2026-09-15, which said "nothing honest can be built yet". It also
+does not begin with a backticked path, and may not: `verify-status` reads
+`- ` followed by a backtick as a declared token, and the docs→code half of
+the gate would then fail because no shipping code carries one.)_
 
 **Declared and unpopulated, beside that token: the refund `fee`.** Added
 2026-09-05 for [issue #46](https://github.com/vaam-apps/vpay/issues/46), which
@@ -195,14 +254,17 @@ declared `NotImplemented` token, and the docs→code half of the gate would
 then fail because no shipping code carries one. That is the gate working
 rather than a trap, and it is why each bullet above opens with a noun.
 
-**What has to exist before it is ever anything but `null`.** For MTN: a
-Disbursements subscription key and token scope in `config/application.yml` /
-`ProviderHost` (the same missing credential as the token above), a written
-`mtn_momo::refund`, **and** a real Disbursements response that actually
-carries a fee — none of the modelled MTN responses in
-`vpay-adapter-mtn-momo/src/wire.rs` has a fee field today, and whether that
-product reports one has never been verified against MTN's sandbox, which this
-repository has never called. For Orange: nothing, ever — the Web Payment
+**What has to exist before it is ever anything but `null`.** For MTN, two of
+the three landed on 2026-09-15 and the one that matters did not. The
+Disbursements keys are in `config/application.yml` (unpopulated in every
+deployment) and `mtn_momo::refund` is written. What is still missing is **a
+real Disbursements response that actually carries a fee**: MTN's documented
+transfer response has no fee field, `vpay_adapter_mtn_momo::wire::Transfer`'s
+202 carries an empty body, the adapter therefore answers `fee: None`
+(asserted by `an_accepted_transfer_reports_no_fee_and_no_key_material` and by
+the conformance case), and whether that product reports a fee at all has
+never been verified against MTN — **the Disbursements API has never been
+called from this repository.** For Orange: nothing, ever — the Web Payment
 product documents no refund API, the adapter answers `Unsupported`, and there
 is no refund to charge a fee for. **An adapter must not invent one**: `None`
 is "the rail did not report a fee" and `Some(0)` is "the rail said it was
