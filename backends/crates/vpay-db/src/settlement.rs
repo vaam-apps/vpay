@@ -291,7 +291,7 @@ async fn post_capture(
     let posting = LedgerTransaction::capture(&intent.merchant_id, gross, None)?;
 
     let transaction_id = vpay_core::ids::ledger_transaction_id();
-    crate::ledger::post_in_tx(&mut **tx, &transaction_id, &charge.id, &posting).await?;
+    crate::ledger::post_in_tx(tx, &transaction_id, &charge.id, &posting).await?;
 
     tracing::info!(
         ledger_transaction_id = %transaction_id,
@@ -336,7 +336,7 @@ async fn post_refund(
     refund: &crate::refunds::SettledRefund,
     intent: &PaymentIntentRow,
 ) -> Result<(), DbError> {
-    let charge_id = crate::charges::id_for_intent_in_tx(&mut **tx, &intent.id)
+    let charge_id = crate::charges::id_for_intent_in_tx(tx, &intent.id)
         .await?
         .ok_or_else(|| DbError::WriteMatchedNoRow {
             table: "charges",
@@ -347,7 +347,7 @@ async fn post_refund(
     let posting = LedgerTransaction::refund(&intent.merchant_id, amount);
 
     let transaction_id = vpay_core::ids::ledger_transaction_id();
-    crate::ledger::post_in_tx(&mut **tx, &transaction_id, &charge_id, &posting).await?;
+    crate::ledger::post_in_tx(tx, &transaction_id, &charge_id, &posting).await?;
 
     tracing::info!(
         ledger_transaction_id = %transaction_id,
