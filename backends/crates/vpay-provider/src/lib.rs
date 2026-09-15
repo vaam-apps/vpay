@@ -556,6 +556,18 @@ fn canonical_msisdn(input: &str) -> Result<String, InvalidMsisdn> {
 /// lets [`fee`](Refunded::fee) exist here without also appearing on the
 /// charge path, where the rail's charge fee is a *different* number with a
 /// different owner.
+///
+/// # There is no status here, and that is a fact about the port
+///
+/// A rail may answer a refund *asynchronously* — MTN's Disbursements
+/// `transfer` answers `202 ACCEPTED` and settles later — and this type has no
+/// field that could say so, because [`ProviderAdapter`] has no refund status
+/// read to fill one. An `Ok(Refunded)` means **the rail accepted the
+/// instruction**, never that the payee has the money, and a caller that
+/// stores `succeeded` on one is asserting something no rail response has
+/// said. See [`ProviderAdapter::refund`] § "An `Ok` is an *acceptance*" and
+/// RFC-0003 open question 8. _(Added on review, 2026-09-15, when the first
+/// adapter to implement `refund` landed.)_
 #[derive(Debug, Clone)]
 pub struct Refunded {
     /// Key material the core must commit, exactly as on [`Submitted`]: a
@@ -1329,17 +1341,49 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// § 1). An adapter is entitled to that and does not re-check it.
     ///
     /// What an adapter should do if the invariant is ever *broken* — a
-    /// `Required` rail handed `None` — is deliberately **not settled here**.
-    /// No adapter in this workspace implements `refund` yet, so any rule
-    /// written now would be a guess no code exercises; the first adapter to
-    /// make a real transfer call (RFC-0003 § 5) is what decides which variant
-    /// of the error table below says "the core handed me a request this rail
-    /// cannot address", and this paragraph is what must be replaced when it
-    /// does.
+    /// `Required` rail handed `None` — **is
+    /// [`ProviderError::Config`]**, settled on 2026-09-15 by
+    /// `vpay_adapter_mtn_momo`'s `refund`, the first adapter in this
+    /// workspace to make a real transfer call (RFC-0003 § 5, open question
+    /// 6). Not [`ProviderError::Rejected`], which blames a rail that was
+    /// never asked; not [`ProviderError::Malformed`], which is about an
+    /// answer and there is no answer; not [`ProviderError::Unsupported`] or
+    /// [`ProviderError::NotImplemented`], which on a rail that refunds are
+    /// both lies. `Config` is not a perfect fit — no *configuration* is
+    /// wrong — and it is the closest true sentence the enum offers; what
+    /// actually matters is its classification, which stops the poll ladder,
+    /// pages, and never reaches a payer as a decline.
+    ///
+    /// _(This paragraph said the question was "deliberately not settled here"
+    /// and named itself as what must be replaced when an adapter decided.
+    /// That adapter landed on 2026-09-15 and this replacement was written on
+    /// review the same day.)_
     ///
     /// The type does not enforce it because it cannot: one trait serves both
     /// kinds of rail, so the parameter is an `Option` and the guarantee is the
     /// caller's.
+    ///
+    /// # An `Ok` is an *acceptance*. It is not a settlement
+    ///
+    /// **Read this before writing anything that turns a `Refunded` into a
+    /// stored status.** [`Refunded`] has no status field and this trait has
+    /// no refund status read — there is no `query_refund_status` to pair with
+    /// [`query_status`](ProviderAdapter::query_status). So the strongest
+    /// thing an adapter can mean by `Ok` is *the rail took the instruction*,
+    /// and on the one rail that implements this it is literally so: MTN's
+    /// Disbursements `transfer` answers `202 ACCEPTED` with an empty body and
+    /// its outcome is read back from
+    /// `GET /disbursement/v1_0/transfer/{referenceId}`, a call vpay does not
+    /// make.
+    ///
+    /// A caller that writes `refunds.status = 'succeeded'` on an `Ok` is
+    /// therefore telling a merchant money moved on the strength of a response
+    /// that did not say so. `pending` is what an `Ok` supports. RFC-0003 open
+    /// question 8 carries this, and it stays open because closing it needs a
+    /// refund poll ladder that does not exist — which is work, not a doc
+    /// comment. Added on review, 2026-09-15: nothing calls `refund` today, so
+    /// this is a trap set for the `POST /v1/refunds` handler and not a live
+    /// defect.
     ///
     /// # Errors
     ///

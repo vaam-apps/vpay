@@ -28,6 +28,15 @@ builds have OOM-killed this host). CI is the gate. What was run locally:
 | `cargo xtask verify-status`                                                                                   | `ok — 0 unimplemented item(s)`       |
 | `cargo +nightly fmt --all --check`                                                                            | clean                                |
 
+**`cargo nextest run -p vpay-server` was NOT among them, and it was red.**
+Found by the review of 2026-09-15: adding three `${MTN_DISBURSEMENT_*}`
+placeholders to `config/application.yml` made
+`the_repositorys_own_configuration_passes_the_adapter_join` exit 78 on an
+unresolved placeholder (47 passed, 1 failed). Fixed on
+`review/w2d-mtn`. The general lesson is on the review page: a change to
+`config/application.yml` is a change to every crate that loads it, not only to
+the crate that wanted the key.
+
 The conformance suite needs `DOCKER_HOST=unix:///run/user/1000/docker.sock`
 on this host (rootless Docker). **Nothing was skipped**: the suite reports `0
 skipped`, and `just verify-ignored` holds that at zero by construction.
@@ -76,9 +85,22 @@ identical values still mints and caches two separately-scoped bearers.
 
 Removing `self.product.path_segment()` from the fingerprint fails
 `a_collections_bearer_is_never_served_to_a_disbursement` — **and nothing
-else** in the crate (86 of 87 still pass). Without it the single cache lookup
-succeeds and a Collections-scoped bearer is sent on the Disbursements
-`transfer`, which is the only call this rail has that sends money out.
+else** in the crate (86 of 87 still pass).
+
+**The consequence stated here was wrong, and is corrected by the review of
+2026-09-15 (see
+[2026-09-15-mtn-disbursements-refund-review.md](2026-09-15-mtn-disbursements-refund-review.md)).**
+There is no "single cache lookup": `Adapter` holds two named cache fields and
+`Adapter::slot` matches on the product, so removing the discriminator does
+**not** put a Collections bearer on a `transfer`. Reproduced and measured —
+the mutation leaves all 67 conformance cases green. The fingerprint's product
+field is defence in depth for the single-slot or map design this adapter
+rejected; the two slots are the primary guard, and on 2026-09-15 they were
+held by no test at all (collapsing them was green in both suites). The review
+added `a_products_bearer_is_stored_where_only_that_product_can_read_it` for
+them. Neither guard is reachable from the conformance suite, which gives each
+product different credentials and so never constructs the copy-pasted
+configuration both exist for.
 
 ## What is proven, and against what
 
@@ -86,11 +108,17 @@ Seven conformance cases run against a real `wiremock/wiremock` container
 (each × 2 rails; the Orange half asserts `ProviderError::Unsupported` rather
 than skipping):
 
-- `a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted` — and
-  the stub answers `202` only for a bearer minted from `/disbursement/token/`
-  and the per-product subscription key, so an `Ok` **is** the proof of scope.
-  The case does a `submit` first, deliberately, to put a Collections bearer in
-  the adapter's cache — without that line the wrong-scope bug is unreachable.
+- `a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted` — the
+  stub answers `202` only for a bearer minted from `/disbursement/token/` and
+  the per-product subscription key, so an `Ok` proves the adapter read the
+  **Disbursements** configuration keys and asked the **Disbursements** token
+  endpoint. _(Narrowed on review, 2026-09-15: this said an `Ok` "**is** the
+  proof of scope" and that the leading `submit` made the wrong-scope bug
+  reachable. Measured, it does not — the two products have different
+  credentials in this suite, so their cache keys differ however the
+  fingerprint is built, and the adapter's two cache slots keep the bearers
+  apart regardless. The cross-product case is held by two unit tests and by
+  nothing in this suite.)_
 - `the_refund_is_addressed_to_the_payee_the_merchant_nominated` — asserted
   against WireMock's own request journal, on `$.payee.partyId` and the
   reference, because the return value cannot tell a 202 for the right payee

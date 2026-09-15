@@ -22,9 +22,22 @@
 //! token path and, deliberately, a *distinct* [`Credentials::fingerprint`],
 //! so a bearer minted for one product can never be served to a call on the
 //! other even if a deployment configures both with the same three strings.
-//! That last property is the one worth a test: it is the only thing standing
-//! between a copy-pasted sandbox configuration and a Collections-scoped
-//! bearer on the money-**out** path.
+//!
+//! **Two mechanisms hold that shut, not one, and the review of 2026-09-15
+//! corrected which is which.** The primary one is structural and lives in
+//! `crate::Adapter`: there are two named cache fields, `crate::Adapter::slot`
+//! is a match on the product, and both the read and the write go through it,
+//! so a Collections entry cannot be in the slot a `transfer` reads. The
+//! fingerprint's product discriminator is **defence in depth** for the day
+//! someone collapses those two fields into one slot or a map — the design
+//! that was considered and rejected. This module's doc said the fingerprint
+//! was "the only thing standing between a copy-pasted sandbox configuration
+//! and a Collections-scoped bearer on the money-**out** path"; measured, it
+//! is not, and each mechanism now has its own test
+//! (`a_collections_bearer_is_never_served_to_a_disbursement` here,
+//! `a_products_bearer_is_stored_where_only_that_product_can_read_it` in
+//! `crate`). Removing either one alone leaves the other 87 tests in this
+//! crate and all 67 conformance cases green.
 //!
 //! `docs/reference/rails.md` has the rest: why the cache is keyed by a
 //! credential digest at all, why the margin is per-rail rather than shared,
@@ -254,11 +267,31 @@ impl<'a> Credentials<'a> {
     /// operator setting up a sandbox may legitimately paste one API user, one
     /// API key and — by mistake — one subscription key into both halves of
     /// the configuration. Without this field those two `Credentials` values
-    /// would fingerprint identically and the cache would hand a
-    /// Collections-scoped bearer to a Disbursements `transfer`, which is a
-    /// wrong-scope token on the only call this rail has that sends money out.
-    /// `a_collections_bearer_is_never_served_to_a_disbursement` is what holds
-    /// that shut.
+    /// fingerprint identically, and any cache that keyed on the fingerprint
+    /// alone would hand a Collections-scoped bearer to a Disbursements
+    /// `transfer` — a wrong-scope token on the only call this rail has that
+    /// sends money out.
+    ///
+    /// **This is defence in depth and not the primary guard, which is what
+    /// the review of 2026-09-15 corrected.** Today the primary guard is
+    /// structural: `crate::Adapter` holds two named cache fields and
+    /// `crate::Adapter::slot` matches on the product, so a Collections entry
+    /// is never in the slot a `transfer` reads whatever this function
+    /// returns. This paragraph claimed the fingerprint was the only thing
+    /// standing in the way; measured, removing `self.product.path_segment()`
+    /// below fails exactly one test in this crate
+    /// (`a_collections_bearer_is_never_served_to_a_disbursement`) and leaves
+    /// all 67 conformance cases green, because the two slots still keep the
+    /// bearers apart. It stays because the map-or-single-slot design is the
+    /// one this adapter nearly took, and on that design it *would* be the
+    /// only guard.
+    ///
+    /// **Neither mechanism is reachable from the conformance suite**, and
+    /// that is worth knowing before trusting a green run on this point: that
+    /// suite configures a different subscription key and API key per product,
+    /// so its fingerprints differ with or without this field and the
+    /// copy-pasted-configuration case it exists for is never constructed.
+    /// The two unit tests are the whole of the evidence.
     pub(crate) fn fingerprint(&self) -> [u8; 32] {
         vpay_provider::token::fingerprint(&[
             self.product.path_segment(),

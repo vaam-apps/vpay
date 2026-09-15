@@ -174,19 +174,36 @@ MTN's sandbox, not once.
 `config/application.yml` now carries `disbursement_subscription_key`,
 `disbursement_api_key` and `disbursement_api_user`; every deployment leaves
 all three empty, and `mtn_momo::refund` answers `ProviderError::Config`
-naming the first one that is missing. So the honest summary is: the call
+naming the first one that is missing. **Empty, not absent** — corrected on
+review 2026-09-15: those three lines added three `${VAR}` names that every
+environment loading that file must now define, because an unresolved
+placeholder is exit 78 on both binaries before any key check runs. The list
+went seven to ten; `.env.example`, `compose.e2e.yml`, `deploy/helm/vpay` and
+`docs/runbooks/rotate-rail-credentials.md` carry it, and
+`the_repositorys_own_configuration_passes_the_adapter_join` was red on the
+arm's branch until the three names were set. So the honest summary is: the call
 exists, no caller can reach it (`POST /v1/refunds` is still unrouted), and if
 one could it would answer "this deployment has no Disbursements credential".
 
 What _is_ proven, against a real `wiremock/wiremock` container, is
-seven conformance cases and twelve unit tests — that the transfer is
+seven conformance cases and thirteen unit tests — that the transfer is
 addressed to the nominated payee and not to the charge's payer, that it
 carries a bearer minted from the Disbursements token endpoint and the
 per-product subscription key (the stub answers 202 for nothing else), that a
 refused payee is a decline and not a transport failure, that a duplicate
 reference is reported as accepted rather than paid twice, that an unreported
 fee stays `None`, and that no refusal and no log line ever carries the
-payee's number. **A stub faithful to MTN's published `Transfer` operation but
+payee's number.
+
+**What the container suite does _not_ prove, stated because the arm's first
+write-up claimed it did**: that a deployment which pasted identical
+credentials into both product configurations still gets two separately-scoped
+bearers. That suite gives each product different credentials, so the case is
+never constructed — remove `Product` from the token fingerprint, collapse the
+adapter's two cache slots, or do both, and all 67 cases stay green. Two unit
+tests in `vpay-adapter-mtn-momo` are the whole of that evidence, one per
+mechanism, and the second of them was added on review because collapsing the
+slots was caught by nothing at all. **A stub faithful to MTN's published `Transfer` operation but
 not to MTN would pass every one of them**, and MTN's portal serves no OpenAPI
 schema document for the Disbursement API at all, so the request shape is a
 transcription and not a comparison. `docs/flows/adapter-mtn-momo.md` § "Not

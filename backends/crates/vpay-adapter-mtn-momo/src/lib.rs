@@ -1244,6 +1244,52 @@ mod tests {
         RefundTarget::mobile_money(DOCUMENTATION_PAYEE).expect("a documentation MSISDN")
     }
 
+    /// **The structural half of the token-scope guarantee, and the half the
+    /// fingerprint does not cover.**
+    ///
+    /// Added on review, 2026-09-15, because the claim it holds up was being
+    /// made by the wrong thing. `Credentials::fingerprint`'s doc comment,
+    /// `docs/reference/rails.md` and this adapter's flow page all said the
+    /// product discriminator in the fingerprint was "the only thing standing
+    /// between a copy-pasted sandbox configuration and a Collections-scoped
+    /// bearer on the money-out path". Measured, it is not: delete
+    /// `self.product.path_segment()` from the fingerprint and **the whole
+    /// conformance suite stays green at 67/67**, because a cached bearer is
+    /// only ever read from [`Adapter::slot`], `slot` is a match on the
+    /// product, and [`Adapter::mint`] writes through the same match. The two
+    /// named fields are what make cross-product serving unrepresentable; the
+    /// fingerprint is defence in depth for the day someone collapses them
+    /// into one slot or a map, which is exactly the design that was
+    /// considered and rejected.
+    ///
+    /// Nothing held the fields. Collapse `slot` to `&self.collections_token`
+    /// for both arms and this is the test that fails; before it, that
+    /// mutation passed all 87 of this crate's tests and all 67 conformance
+    /// cases, and every subsequent `transfer` would carry whatever bearer the
+    /// charge path had minted.
+    #[tokio::test]
+    async fn a_products_bearer_is_stored_where_only_that_product_can_read_it() {
+        let adapter = adapter();
+        let entry = token::cache_entry(
+            "a-collections-bearer".to_owned(),
+            [0_u8; 32],
+            std::time::Instant::now(),
+            Some(3600),
+        );
+        *adapter.slot(Product::Collections).write().await = Some(entry);
+
+        assert!(
+            adapter.slot(Product::Disbursements).read().await.is_none(),
+            "a Collections bearer landed in the slot `refund` reads: the two products share \
+             a cache entry, so a transfer would carry a Collections-scoped token"
+        );
+        assert!(
+            adapter.slot(Product::Collections).read().await.is_some(),
+            "the Collections slot did not keep what was written to it, so the assertion \
+             above would hold for a cache that stores nothing at all"
+        );
+    }
+
     // -- the refund path ---------------------------------------------------
 
     /// `refund` is no longer a `NotImplemented` token, and answering

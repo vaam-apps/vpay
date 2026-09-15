@@ -44,11 +44,28 @@ An empty value is a missing one, and `refund` answers
 
 **Whether MTN in fact issues one API user across both product subscriptions
 is unverified** — it may well, in the sandbox — so an operator repeating the
-same UUID and key in both halves is expected and harmless. `Product` is part
-of the token cache's credential fingerprint precisely so that identical
-credentials still mint and cache two separately-scoped bearers
-(`a_collections_bearer_is_never_served_to_a_disbursement`); without it a
-Collections bearer would be served to the money-**out** call.
+same UUID and key in both halves is expected and harmless. Two mechanisms
+keep the two bearers apart even then, and the review of 2026-09-15 corrected
+which of them is load-bearing:
+
+1. **The cache is two named fields, one per product**, and `Adapter::slot` is
+   a match on the product through which both the read and the write go. A
+   Collections entry is therefore never in the slot a `transfer` reads. This
+   is the primary guard.
+   (`a_products_bearer_is_stored_where_only_that_product_can_read_it`.)
+2. **`Product` is part of the credential fingerprint**, so identical
+   credentials still produce two distinct cache keys. This is defence in
+   depth — it is what would carry the guarantee on the single-slot or map
+   design this adapter rejected.
+   (`a_collections_bearer_is_never_served_to_a_disbursement`.)
+
+This page said (2) was the whole of it. Measured on 2026-09-15: removing the
+discriminator, collapsing the slots, or doing both at once each leaves **all
+67 conformance cases green**, because that suite configures a different
+subscription key and API key per product and so never builds the
+copy-pasted-configuration case the guards exist for. Those two unit tests are
+the entire evidence for this paragraph; the container suite is not evidence
+for it at all.
 
 ## The token grant
 
@@ -539,6 +556,13 @@ inherits three refusals that are not MTN-specific:
   subscription key — works because the stub answers `202` for nothing else. A
   stub written from the same documentation as the adapter cannot disagree
   with it.
+- **The conformance suite cannot see the credential-separation guards at
+  all**, added on review 2026-09-15. It configures a different subscription
+  key and API key per product, so the copy-pasted-configuration case is never
+  constructed; removing `Product` from the token fingerprint, collapsing the
+  adapter's two cache slots, or both together, each leaves it green at 67/67.
+  Two unit tests in `vpay-adapter-mtn-momo` are the whole of that evidence
+  and a green container run says nothing about it.
 - **The 401 → re-mint → retry path is not covered by a test.** The logic is
   there and is bounded at one retry, but no mapping in the conformance suite
   returns 401 from `requesttopay` after a good token, and the adapter's own

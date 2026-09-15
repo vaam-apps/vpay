@@ -105,7 +105,7 @@ witness is a stub; ⛔ means not built.
 
 | Rail                      | Capabilities           | Wire calls (vs. WireMock)                                               | Real sandbox    | Callbacks                                                   | Refunds                                         |
 | ------------------------- | ---------------------- | ----------------------------------------------------------------------- | --------------- | ----------------------------------------------------------- | ----------------------------------------------- |
-| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | ⛔ `NotImplemented("mtn_momo::refund")`         |
+| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | 🟡 `transfer` written, **product never called** |
 | `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called | 🟡 parsed, routed, never received; `notif_token` unverified | ✅ `Unsupported` — permanent, capability-driven |
 
 **Each rail parses its own refund destination (2026-09-15, RFC-0003 open
@@ -114,10 +114,44 @@ turning the `destination[<rail_code>]` sub-map the core hands over into a
 `RefundTarget`. It is not a wire call and is absent from the table above on
 purpose: it opens no socket, and the conformance case that covers it
 (`a_required_rail_parses_its_own_destination`) starts no container. The
-refund columns are unchanged — `mtn_momo::refund` is still its
-`NotImplemented` token and `orange_money` still answers the port's permanent
-`Unsupported` — so **no refund is any closer to working**. What moved is that
-a future bank-account upstream now costs no change in the core.
+refund columns moved the next day and `orange_money` still answers the port's
+permanent `Unsupported`. What moved here is that a future bank-account
+upstream now costs no change in the core.
+
+**`mtn_momo::refund` is written and MTN's Disbursements product has never been
+called (2026-09-15, RFC-0003 § 5, arm D; row corrected on review the same
+day).** The cell above is 🟡 and not ✅ on the section's own rule: the code is
+real and its only witness is a stub. `POST /disbursement/v1_0/transfer`, under
+a second subscription key and a token minted from `POST /disbursement/token/`,
+addressed to the payee the merchant nominated in
+`destination[mtn_momo][msisdn]`. The `NotImplemented("mtn_momo::refund")`
+token is retired and `cargo xtask verify-status` prints **0 unimplemented
+items**, which is a fact about a token and not about a rail.
+
+**No deployment holds a Disbursements subscription key and nothing in this
+repository has ever called that product** — not in production, not against the
+sandbox, not once. `POST /v1/refunds` is still unrouted and nothing inserts a
+`refunds` row, so **no refund is any closer to working end to end**; what
+moved is one of the two halves that were missing. Seven conformance cases and
+thirteen unit tests drive it against a `wiremock/wiremock` container, and a
+stub faithful to MTN's published `Transfer` operation but not to MTN would
+pass every one. [status.md](../status.md) § "`mtn_momo::refund` is written,
+WireMock-proven and **rail-unproven**",
+[flows/adapter-mtn-momo.md](../flows/adapter-mtn-momo.md) § "The transfer
+call", and the two dated pages —
+[verification/2026-09-15-mtn-disbursements-refund.md](verification/2026-09-15-mtn-disbursements-refund.md)
+and its
+[review](verification/2026-09-15-mtn-disbursements-refund-review.md) — carry
+the evidence and the three things about the call that are unsettled.
+
+**Three of those are worth reading before the write path is written**: a `202`
+is _accepted_ and not settled and the port has no refund status read, so an
+`Ok(Refunded)` must not become `refunds.status = 'succeeded'`; the port hands
+`refund` one `ChargeRef` and a refund needs its own rail reference, so a
+handler passing the charge's would have every partial refund after the first
+answered `409` and reported accepted with no money moved; and the
+Disbursements token grant is assumed to be Collections' JSON spelling, which
+nobody has verified because nobody has called that mint.
 
 **Owed by wave 3: a `parse_destination` refusal must be translated, not
 forwarded** (recorded on review, 2026-09-15). `ProviderError::Malformed` is the

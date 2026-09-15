@@ -29,7 +29,7 @@ To correct an applied migration, write a **new** migration that corrects it.
 purpose is a `COMMENT ON` — a stale comment that is **in the database** is
 worth one, because an operator reads it in `\d+`.
 
-A stale `--` comment in a migration's own *header* is the one thing this rule
+A stale `--` comment in a migration's own _header_ is the one thing this rule
 cannot reach: it is in no database and no statement addresses it. Record it in
 [`backends/migrations/README.md`](../../backends/migrations/README.md) § Errata
 instead, dated, naming the file and where the current truth is. Three headers

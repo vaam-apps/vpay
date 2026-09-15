@@ -24,10 +24,10 @@ made went to a WireMock host ([../status.md](../status.md)).
 Rail credentials live in YAML as `${VAR}` placeholders, resolved from the
 process environment at boot. From `config/application.yml`:
 
-| Rail           | `settings` (printed in full by `ProviderHost`'s `Debug`) | `credentials` (redacted)                                                                                                    |
-| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Rail           | `settings` (printed in full by `ProviderHost`'s `Debug`)                                                       | `credentials` (redacted)                                                                                                                                                                                       |
+| -------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mtn_momo`     | `target_environment`, `api_user` = `${MTN_API_USER}`, `disbursement_api_user` = `${MTN_DISBURSEMENT_API_USER}` | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}`, `disbursement_subscription_key` = `${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}`, `disbursement_api_key` = `${MTN_DISBURSEMENT_API_KEY}` |
-| `orange_money` | `env`, `lang`                                            | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}` |
+| `orange_money` | `env`, `lang`                                                                                                  | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}`                                                                                    |
 
 Nine rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
 (`docs/flows/webhooks.md`, Step 5) for ten **on this branch, as of

@@ -364,6 +364,14 @@ different destinations.
    step must not turn an `Ok` into `refunds.status = succeeded`, and a refund
    poll ladder is unscoped work that this RFC did not anticipate.
 
+   _(On review, 2026-09-15: this was recorded in the MTN adapter, in this RFC
+   and on two status pages, and in none of the three places a handler author
+   actually reads first. It is now on `ProviderAdapter::refund` § "An `Ok` is
+   an *acceptance*", on the `Refunded` type itself, and on
+   `vpay_db::settlement::apply_refund_succeeded` — the method that would
+   record the lie. It stays OPEN: closing it needs a refund poll ladder, which
+   is work and not a doc comment.)_
+
 ## Impact on existing invariants
 
 | Invariant                                                         | Effect                                                                                                                                                    |
