@@ -328,12 +328,6 @@ drift detected in 25 table(s)/view(s) (192 change(s) total)
 19 column(s) have a Postgres type cratestack could not confidently map
 ```
 
-
-```
-drift detected in 25 table(s)/view(s) (192 change(s) total)
-19 column(s) have a Postgres type cratestack could not confidently map
-```
-
 `EXPECTED_DRIFTED_RELATIONS` (25) and `EXPECTED_UNMAPPABLE_COLUMNS` (19) did
 not move — `ledger_entries` was already a declared-and-differing relation, so
 a line arrived and no table did. `EXPECTED_DRIFT_CHANGES` moved 190 → 192 and

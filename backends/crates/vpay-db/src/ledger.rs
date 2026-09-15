@@ -6,13 +6,28 @@
 //! One write, [`post_in_tx`], and one read,
 //! [`Ledger::merchant_payable_balance`]. The write is `pub(crate)` and is
 //! reached from outside this crate only through
-//! [`crate::TxRepositories::post_ledger_transaction_in_tx`] — the shape
-//! [`crate::refunds::settle_in_tx`] has, and for the same reason: a ledger
-//! posting has to commit with the settlement that caused it, so the only
+//! [`crate::TxRepositories::post_ledger_transaction_in_tx`], so the only
 //! spelling available to a consumer is one that already holds a transaction.
 //! There is deliberately **no pooled variant**; a `post` that opened its own
 //! transaction would make "the ledger agrees with the charge" a property of
 //! whoever remembered to call it in the right place.
+//!
+//! **That is `enqueue_in_tx`'s shape, NOT [`crate::refunds::settle_in_tx`]'s,
+//! and the difference is worth being honest about.** `settle_in_tx` has no
+//! entry on any public trait at all: it is `pub(crate)` and called only by
+//! [`crate::settlement`], so what a consumer of this crate can reach is the
+//! business operation (`Settlement::apply_refund_succeeded`) and never the
+//! raw `UPDATE` — [`crate::refunds::Refunds`]' own doc says that is
+//! deliberate. A method on [`crate::TxRepositories`] is one step wider: any
+//! caller holding a `PendingTransaction` can post an arbitrary balanced
+//! transaction against an arbitrary `charge_id` under an id of its choosing,
+//! with no settlement anywhere near it. The narrower shape is available —
+//! the call sites that will post (`Settlement::apply_succeeded`,
+//! `Settlement::apply_refund_succeeded`) live inside this crate and can call
+//! [`post_in_tx`] directly, which would need no public method at all.
+//! Whether the trait method survives once those call sites land is a
+//! maintainer's call; it is recorded here rather than left as an
+//! unremarked widening.
 //!
 //! **No shipping code path calls the write yet, and that is not an
 //! oversight.** `Settlement::apply_succeeded` and
@@ -161,7 +176,11 @@ pub(crate) async fn post_in_tx(
 /// One, and it is the one `docs/flows/ledger.md` invariant 2 names. The write
 /// is **not** on this trait, for [`crate::refunds::Refunds`]' reason: it is
 /// `pub(crate)` and belongs to the caller's transaction, so a consumer cannot
-/// post to the ledger without the settlement that justifies the posting.
+/// post to the ledger through a pooled handle.
+///
+/// It can still post through [`crate::TxRepositories`] without a settlement —
+/// see this module's own docs, which say why that is wider than
+/// `refunds::settle_in_tx` and what the narrower option is.
 #[async_trait]
 pub trait Ledger: Send + Sync {
     /// `balance(merchant_payable) = Σ credit − Σ debit` for one merchant in

@@ -23,17 +23,46 @@
 --
 -- **While it keeps running, yes, completely, and this migration is unusual in
 -- how easy that is to establish.** No binary in any release vpay has cut
--- reads or writes `ledger_entries` or `ledger_transactions` at all: before
--- RFC-0003 § 4 the tables were named in three places in the whole workspace —
--- the CrateStack drift list in `vpay-db/src/schema.rs`, a comment string in
--- `config_reconcile.rs`, and `backends/tests/integration/tests/postgres_smoke.rs`
--- — and not one of them is a statement a server runs. There is therefore no
--- in-flight failure mode of 0037's kind to drain for: an old process serving
--- a confirm, a settlement, a cancel or any read whatsoever touches no
--- statement this migration changes, because this migration changes no
--- statement any old process issues. Nothing here alters an existing column,
--- an existing type or an existing constraint; it adds one nullable column,
--- two constraints on it and one partial index.
+-- reads or writes `ledger_entries` or `ledger_transactions` at all. Before
+-- RFC-0003 § 4 the two table names appeared in hand-written Rust in exactly
+-- three places, and every one of them is inside a `#[cfg(test)]` module, so
+-- none is even linked into a shipping binary, let alone issued by one:
+--
+--   * `vpay-db/src/schema.rs`'s `MODEL_TABLES`, the nineteen-name list
+--     `no_generated_model_route_is_mounted_only_the_one_procedure_is` probes;
+--   * an `assert!` message in `config_reconcile.rs`'s tests, naming
+--     `ledger_entries` as one of the tables whose foreign key onto
+--     `currencies` is why nothing deletes a currency;
+--   * `backends/tests/integration/tests/postgres_smoke.rs`.
+--
+-- **A grep of `*.rs` is not the whole argument, and the half it misses is the
+-- half worth stating.** `schemas/vpay.cstack` declares `model
+-- LedgerTransaction` and `model LedgerEntry`, and `vpay-db`'s private `mod
+-- schema` compiles that file — so the previous release's binary *does* carry
+-- generated CRUD and generated row decoders for both tables, in a module that
+-- exists in no source file and that no grep of this repository can find (see
+-- CLAUDE.md, and `docs/reference/vpay-db/cratestack.md`). That generated code
+-- is unreachable rather than absent: `schema.rs::dashboard_procedure_router`
+-- mounts `cratestack_schema::axum::procedure_router(...)` and never
+-- `router()`, so the generated model routes are not mounted, and the only
+-- procedure that is mounted is `searchPaymentIntents`. The first of the three
+-- tests above is what pins that, by probing all seventy-six
+-- `/{plural}`/`/{plural}/{id}` × four-method paths for a 404.
+--
+-- There is therefore no in-flight failure mode of 0037's kind to drain for:
+-- an old process serving a confirm, a settlement, a cancel or any read
+-- whatsoever touches no statement this migration changes, because this
+-- migration changes no statement any old process issues. Nothing here alters
+-- an existing column, an existing type or an existing constraint; it adds one
+-- nullable column, two constraints on it and one partial index.
+--
+-- Unlike 0037, which measured its claim by building the previous release's
+-- binary and running it against a migrated database, this half is argued
+-- rather than measured — deliberately, because there is no statement to run:
+-- the measurement 0037 took exists precisely to find out which statements
+-- break, and the claim here is that the set of candidate statements is empty.
+-- What that leaves unmeasured is the generated surface above, which is why
+-- its unreachability is named as a test rather than asserted.
 --
 -- **Across a RESTART, no — and that is 0032's and 0037's property, shared by
 -- every migration in this repository rather than created by this one.**
@@ -51,6 +80,37 @@
 -- (backends/migrations/README.md, issue #76).
 --
 --
+-- WHY A COLUMN AT ALL, WHEN THE MERCHANT WAS ALREADY DERIVABLE
+--
+-- It was. `ledger_entries.transaction_id -> ledger_transactions.charge_id ->
+-- charges.payment_intent_id -> payment_intents.merchant_id` is a three-hop
+-- join that answers "whose posting is this?" against the schema exactly as it
+-- stood before this migration. So migration 0005's GAP note — repeated in
+-- docs/flows/ledger.md and in the opening line of this file — is precise about
+-- `vpay_ledger::AccountKind`, which carried no merchant at all and genuinely
+-- could not compute invariant 2, and overstated about the *table*, which
+-- could. Read "becomes a query this table can answer" above as "answers it
+-- without leaving the ledger", which is the claim that is actually true.
+--
+-- The reason to store it anyway is not that the value is unavailable but that
+-- the derivation is not stable. A ledger records what was true when the money
+-- moved; a balance computed through `charges` and `payment_intents` is a
+-- balance that silently changes whenever an operational row does, and a
+-- historical figure that moves under a later UPDATE is not a ledger. This
+-- column pins the posting's merchant at write time. The partial index below
+-- is the second reason and much the smaller one.
+--
+-- THE COST OF THAT CHOICE, STATED HERE RATHER THAN DISCOVERED LATER: nothing
+-- constrains `ledger_entries.merchant_id` to agree with the merchant of the
+-- charge its transaction names. No SQL constraint can — the fact is three
+-- tables away, and a CHECK sees one row — and `vpay_db::ledger::post_in_tx`
+-- does not check it either: it binds whatever
+-- `AccountKind::MerchantPayable` was built with. Whoever assembles the
+-- posting is the only guarantor that a merchant's balance is made of that
+-- merchant's charges, and that is a property the call sites owe a test, not
+-- something this file can enforce.
+--
+--
 -- WHY NULLABLE, AND WHY THAT IS NOT A HOLE
 --
 -- A `NOT NULL` column would be wrong rather than merely inconvenient: two of
@@ -66,6 +126,33 @@
 -- from `ledger_transactions -> charges -> payment_intents.merchant_id`, and
 -- only then constrained; that ordering is recorded here because the absence of
 -- a backfill in this file is a fact about today's data, not a general licence.
+--
+--
+-- WHAT THIS MIGRATION DOES NOT FIX, AND IS THE OBVIOUS PLACE TO HAVE FIXED
+--
+-- `ledger_transactions.id` and `ledger_entries.id` carry no
+-- `CHECK (char_length(id) BETWEEN 1 AND 64)`. `payment_intents`, `charges`,
+-- `refunds`, `events`, `customers`, `checkout_sessions`, `credentials`,
+-- `invoices`, `invoice_items`, `merchant_api_keys`, `oauth_signing_keys`,
+-- `rate_limit_windows`, `staff_members` and `staff_sessions` all bound their
+-- caller-supplied id; migration 0005 gave these two none, and THIS migration
+-- adds `ledger_entries_merchant_id_length` to a *new* column on exactly the
+-- grounds that would demand one — "a copy with a wider domain than its source
+-- is a copy that can hold something the source could not". A primary key with
+-- no source at all has a wider domain than any of them. They also have no
+-- minter:
+-- `vpay_core::ids` closes the `pi_`/`ch_`/`re_`/`evt_`/`cs_`/`cus_`/`in_`/
+-- `ii_`/`stf_`/`cred_` vocabulary and mints a prefix even for ids no surface
+-- ever renders, and `ledger_transactions.id` is supplied by the caller with
+-- no prefix, no shape check and nothing to check it against.
+--
+-- Left alone here rather than fixed, for one reason and it is not a good one:
+-- two more single-column CHECKs would move `EXPECTED_DRIFT_CHANGES` by +2 and
+-- that constant may only be moved by a measurement, which needs the pinned
+-- `cratestack` 0.12.0 this branch could not run. Recorded so the gap is
+-- visible rather than silent; it is a maintainer's call whether the id
+-- vocabulary grows an `lt_`/`le_` prefix or the ledger stays caller-named,
+-- and whichever way that goes, the bound belongs in the same migration.
 --
 --
 -- DRIFT — measured, not predicted, on 2026-09-15 against a freshly migrated

@@ -3784,6 +3784,14 @@ const EXPECTED_DRIFT_CHANGES: u32 = 192;
 /// lost a line, not its place — so the pair says what neither constant could
 /// alone: one relation arrived, and every line that arrived with it landed on
 /// that relation.
+/// **Still 25 after migration 0045 (2026-09-15, RFC-0003 § 4):**
+/// `ledger_entries` was already on this list as a declared-and-differing
+/// relation and stays exactly one entry on it, so `EXPECTED_DRIFT_CHANGES`'
+/// +2 means what it says — two lines arrived and no relation did. Read that
+/// pair with the caveat `EXPECTED_DRIFT_CHANGES`' own note states at length:
+/// the run it comes from was taken at cratestack **0.11.1**, not the pinned
+/// 0.12.0, controlled by re-measuring the withdrawn change with the same
+/// binary. CI runs 0.12.0 and is the evidence if it disagrees.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -3866,6 +3874,12 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 /// `EXPECTED_DRIFT_CHANGES` saying nothing at all about it. `material`,
 /// `issuer` and `subject` are `TEXT`; `counter` is `BIGINT` and not `INT`,
 /// because `int4` is one of the six `map_scalar` does not map.
+/// **Still 19 after migration 0045 (2026-09-15, RFC-0003 § 4):**
+/// `ledger_entries.merchant_id` is `TEXT`, which `map_scalar` maps outright,
+/// so it is *compared* rather than excluded — which is what lets
+/// `EXPECTED_DRIFT_CHANGES` say the new column itself drifted by zero rather
+/// than say nothing at all about it. Same 0.11.1-not-0.12.0 caveat as the two
+/// constants above; see `EXPECTED_DRIFT_CHANGES`' note.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -4378,11 +4392,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
          and the drift count below cannot"
     );
 
-    // None of the eighteen reaches the report. (This line and the one below
-    // said "eleven" until 2026-09-10; the list had grown to seventeen by then
-    // and the counts had not been re-read. Corrected here rather than left,
-    // because a comment that miscounts the list beside it is the one a reader
-    // trusts instead of counting.)
+    // None of the twenty-six reaches the report. (This line and the one below
+    // said "eleven" until 2026-09-10, and "eighteen" until 2026-09-15; the
+    // list was twenty-five entries long when migration 0045 added the
+    // twenty-sixth, so the correction of 2026-09-10 had itself gone stale by
+    // seven. Counted, not estimated. The lesson the 2026-09-10 note drew
+    // stands and is now twice-earned: a comment that miscounts the list
+    // beside it is the one a reader trusts instead of counting, and nothing
+    // in this file fails when it drifts — only a reader does.)
     //
     // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
     // from `cratestack-cli` 0.12.0's `src/migrate/drift_report.rs::describe`,
@@ -4408,11 +4425,15 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         );
     }
 
-    // Three of the eighteen sit on tables the schema *does* model, so their absence
-    // is not the table being skipped: a single-column CHECK on each of those
-    // very tables is reported, and pinning both lines is what separates "the
-    // tool cannot see cross-column CHECKs" from "the tool said nothing about
-    // `providers` or `payment_intents` at all".
+    // Many of the twenty-six sit on tables the schema *does* model, so their
+    // absence is not the table being skipped. Two of those tables are pinned
+    // below: a single-column CHECK on each of `providers` and
+    // `payment_intents` IS reported, which is what separates "the tool cannot
+    // see cross-column CHECKs" from "the tool said nothing about `providers`
+    // or `payment_intents` at all". (This said "Three of the eighteen" until
+    // 2026-09-15 and had been at odds with the two-element loop below it and
+    // with the list above it for longer than that; the loop is the thing that
+    // runs, so the prose was moved onto it rather than the other way round.)
     //
     // Why this matters beyond the `@@check` ask: a future `--strict` run that
     // exits 0 would say nothing whatever about the over-refund guard or the

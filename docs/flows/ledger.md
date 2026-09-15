@@ -220,6 +220,24 @@ half of that has moved:
   currency it is in. Neither `Transaction::capture` nor `Transaction::refund`
   can build a mixed-currency posting, so nothing reaching the database today
   can trip it; the gap is recorded on the function.
+- **A ledger transaction has no minter and no bound.**
+  `ledger_transactions.id` is supplied by the caller, `vpay_core::ids` has no
+  `lt_`/`le_` prefix, and neither ledger table carries the
+  `CHECK (char_length(id) BETWEEN 1 AND 64)` every other caller-named id
+  column in `backends/migrations` has. `vpay_db::ledger::post_in_tx` derives
+  each entry's id as `{transaction_id}_{index}`, which is deterministic —
+  and, for two transactions whose ids differ only by a `_N` suffix, not
+  unique; the primary key would refuse the second, loudly. Whether the id
+  vocabulary grows a ledger prefix is a maintainer's call, recorded in
+  migration `0045`'s header rather than decided by the branch that wrote the
+  first writer.
+- **Nothing checks that a posting's merchant is the merchant of the charge it
+  is attributed to.** `ledger_entries.merchant_id` is denormalised from
+  `ledger_transactions -> charges -> payment_intents.merchant_id` on purpose
+  (a ledger must not change when an operational row does — migration `0045`
+  § "Why a column at all"), and no SQL constraint can span three tables.
+  Whoever assembles the `AccountKind::MerchantPayable` is the only guarantor,
+  so the call sites that eventually post owe that a test.
 
 Evidence:
 [../status/verification/2026-09-15-ledger-merchant-dimension.md](../status/verification/2026-09-15-ledger-merchant-dimension.md),
