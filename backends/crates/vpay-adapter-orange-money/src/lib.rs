@@ -843,10 +843,7 @@ mod tests {
     #[test]
     fn a_refund_on_this_rail_would_need_a_payee() {
         let capabilities = adapter().capabilities();
-        assert_eq!(
-            capabilities.refund_destination,
-            RefundDestination::Required
-        );
+        assert_eq!(capabilities.refund_destination, RefundDestination::Required);
         assert!(
             !capabilities.supports_refunds,
             "vpay has not built Orange refunds; flipping this is Arm E's, and RFC-0003 § 5              says what it owes"
