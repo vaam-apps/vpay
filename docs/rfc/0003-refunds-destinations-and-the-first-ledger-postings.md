@@ -250,14 +250,30 @@ different destinations.
    it. On Orange the payer's number is never learned (`payer_ref: None` on a
    redirect rail), so the same rule cannot be enforced there. Enforcing it on
    one rail and not the other is a real asymmetry the merchant would see.
-2. **Retention of the destination MSISDN.** The customer object settled on
+2. **~~Does a refund destination have to match the payer?~~ Partly settled
+   2026-09-15: the destination is CANONICALISED, not matched.**
+   `RefundTarget::mobile_money` is fallible and the only way to obtain a
+   `RefundTarget`, so an invalid number is unconstructible rather than
+   refused late. The rule lives in `vpay-provider` beside the type it guards.
+   Its cost, stated because it is visible to merchants: a market-agnostic
+   crate has no country to attach a bare national number to, so
+   `vpay-provider` **requires the leading `+`**, while
+   `GET /v1/account_holders` (which is Cameroon-specific and lives in
+   `vpay-api`) still accepts the national form. The asymmetry runs in the safe
+   direction. **The confirm path is deliberately unchanged** —
+   `payer_instrument` still accepts any non-whitespace string for a _payer_,
+   because a mistyped payer number merely fails a charge while a mistyped
+   payee number sends money to a stranger. Whether confirm should be tightened
+   to match is a charge-path decision and is still open.
+
+3. **Retention of the destination MSISDN.** The customer object settled on
    12 months. A refund destination is the same class of data and has no policy
    yet.
-3. **Does `RefundTarget` need a non-MSISDN shape before a non-mobile-money
+4. **Does `RefundTarget` need a non-MSISDN shape before a non-mobile-money
    upstream exists?** Designing for a bank account now risks modelling an
    upstream nobody has chosen.
 
-4. **~~Who parses the destination's wire shape — the core, or the adapter?~~
+5. **~~Who parses the destination's wire shape — the core, or the adapter?~~
    DECIDED 2026-09-15: the adapter, via `parse_destination`.** A new port
    method symmetric with `parse_callback`:
    `parse_destination(&Map<String, Value>) -> Result<RefundTarget, ProviderError>`.
@@ -280,7 +296,7 @@ different destinations.
    Wave 3**, where the create handler is written; it is cheap now. Maintainer's
    call.
 
-5. **What does an adapter answer when the core's `Some`-on-`Required`
+6. **What does an adapter answer when the core's `Some`-on-`Required`
    invariant is broken?** Deliberately unsettled by Arm A, on the grounds that
    a rule no code exercises is how a guess acquires authority. But
    `ProviderError` has no honest variant for it — `Unsupported` and
