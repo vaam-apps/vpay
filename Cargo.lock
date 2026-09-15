@@ -4724,6 +4724,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vpay-core",
+ "vpay-ledger",
  "vpay-testkit",
 ]
 

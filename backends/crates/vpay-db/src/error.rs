@@ -331,6 +331,32 @@ pub enum DbError {
     /// wants them matches on it.
     #[error(transparent)]
     Persistence(#[from] crate::PersistenceError),
+
+    /// A ledger posting did not balance, or had fewer than two legs, and was
+    /// therefore not written. Raised by `crate::ledger::post_in_tx`, which
+    /// calls [`vpay_ledger::Transaction::validate`] before its first
+    /// statement (RFC-0003 § 4).
+    ///
+    /// **This is a storage error only in the sense that it stops a write.**
+    /// Nothing about the database is wrong when it fires: the posting vpay
+    /// built for a settlement it had already decided on does not balance,
+    /// which is this system's own invariant failing. Its classification is
+    /// *delegated* to [`vpay_ledger::LedgerError`] for [`Self::Persistence`]'s
+    /// reason — that leaf has already decided that an unbalanced transaction
+    /// is `Category::Internal`, never retried, and pages — and
+    /// `cargo xtask verify-errors` fails if the `Classify` impl below ever
+    /// answers for this variant with a wildcard instead of naming it.
+    ///
+    /// Why it is a variant here rather than a second error type returned
+    /// alongside `DbError`: the caller is a settlement transaction that
+    /// already handles `DbError` and must roll back whole either way, and a
+    /// second error type would make "the posting was refused" and "the
+    /// posting failed to write" two different shapes of the same abandoned
+    /// transaction. Invariant 1 is deliberately not a database constraint
+    /// (`docs/flows/ledger.md`), so this variant is the *only* thing standing
+    /// between an unbalanced posting and the `ledger_entries` table.
+    #[error(transparent)]
+    Ledger(#[from] vpay_ledger::LedgerError),
 }
 
 /// Maps a failed *write* onto the variant that says whose problem it is:
@@ -435,7 +461,17 @@ impl vpay_core::Classify for DbError {
             // Delegated, never re-decided. Named explicitly rather than
             // caught by a wildcard, which is both ADR-0011's rule and what
             // `verify-errors` checks.
+            //
+            // `Ledger` delegates for the same reason and reaches
+            // `Category::Internal` by it — but through `vpay_ledger`'s own
+            // decision rather than through a second one taken here, which
+            // matters because `LedgerError::Money` is *not* internal and a
+            // classification written out by hand here would have flattened
+            // the two. `vpay_api::ApiError::Ledger` delegates to the same
+            // leaf, so a ledger failure classifies identically whether it
+            // surfaced through this crate or beside it.
             Self::Persistence(error) => error.category(),
+            Self::Ledger(error) => error.category(),
         }
     }
 
@@ -459,6 +495,11 @@ impl vpay_core::Classify for DbError {
             Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
             Self::Persistence(error) => error.code(),
+            // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
+            // `database_…` code, deliberately: nothing about the database
+            // failed, and an operator grepping for a storage incident should
+            // not find this.
+            Self::Ledger(error) => error.code(),
         }
     }
 }

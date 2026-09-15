@@ -36,6 +36,7 @@ use crate::health::Health;
 use crate::idempotency::Idempotency;
 use crate::invoices::Invoices;
 use crate::jobs::Jobs;
+use crate::ledger::Ledger;
 use crate::migrations::Migrations;
 use crate::payment_intents::PaymentIntents;
 use crate::provider_requests::ProviderRequests;
@@ -256,6 +257,43 @@ pub trait TxRepositories: Send {
     /// [`DbError::UniqueViolation`] on a replayed `event_id`;
     /// [`DbError::Query`] otherwise.
     async fn insert_in_tx(&mut self, new: &crate::NewEvent) -> Result<crate::EventRow, DbError>;
+
+    /// `ledger_transactions` / `ledger_entries`: records one balanced double
+    /// entry against a charge (RFC-0003 § 4).
+    ///
+    /// **Transactional-only, and there is no pooled variant to fall back
+    /// to** — the strongest form of the rule
+    /// [`TxRepositories::enqueue_in_tx`] states. A ledger posting that
+    /// committed apart from the settlement that caused it would be a ledger
+    /// claiming money moved when the charge says it did not, or the reverse;
+    /// `docs/flows/ledger.md` § "When refunds post" is explicit that the
+    /// posting happens "in one transaction" with the counters it agrees with.
+    ///
+    /// `transaction_id` is the caller's — migration `0005` mints none — and a
+    /// caller that derives it deterministically from what it is settling gets
+    /// idempotency out of the primary key. `crate::ledger`'s module docs say
+    /// why, and why each entry's id is derived from it in turn.
+    ///
+    /// **No caller in any shipping path yet.** `Settlement::apply_succeeded`
+    /// and `Settlement::apply_refund_succeeded` do not post; this is the
+    /// machinery they will call, and `docs/status.md` records that they do
+    /// not call it today rather than letting the method's existence imply
+    /// they do.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Ledger`] if the posting does not balance or has fewer than
+    /// two legs — `vpay_ledger::Transaction::validate` runs before the first
+    /// statement, so nothing is written and the caller's transaction is
+    /// untouched. [`DbError::UniqueViolation`] on a replayed
+    /// `transaction_id`; [`DbError::ForeignKeyViolation`] for an unknown
+    /// `charge_id`; [`DbError::Query`] otherwise.
+    async fn post_ledger_transaction_in_tx(
+        &mut self,
+        transaction_id: &str,
+        charge_id: &str,
+        transaction: &vpay_ledger::Transaction,
+    ) -> Result<(), DbError>;
 
     /// `invoices`: creates a draft invoice.
     ///
@@ -566,6 +604,15 @@ impl TxRepositories for PendingTransaction {
         crate::events::insert_in_tx(self.conn(), new).await
     }
 
+    async fn post_ledger_transaction_in_tx(
+        &mut self,
+        transaction_id: &str,
+        charge_id: &str,
+        transaction: &vpay_ledger::Transaction,
+    ) -> Result<(), DbError> {
+        crate::ledger::post_in_tx(self.conn(), transaction_id, charge_id, transaction).await
+    }
+
     async fn insert_invoice_in_tx(
         &mut self,
         new: &crate::NewInvoice,
@@ -825,6 +872,7 @@ pub trait Repositories:
     + Idempotency
     + Invoices
     + Jobs
+    + Ledger
     + Migrations
     + PaymentIntents
     + ProviderRequests
