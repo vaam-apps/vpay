@@ -1,12 +1,21 @@
 //! Orange Money Cameroun adapter — the Web Payment (redirect) rail.
 //!
 //! Implements `submit`, `query_status` and `parse_callback` against the three
-//! calls transcribed in `docs/flows/adapter-orange-money.md`. `refund` is not
-//! overridden: Orange documents no refund API for Web Payment, so the port's
-//! default [`ProviderError::Unsupported`] is the permanent, correct answer
-//! and [`Capabilities::supports_refunds`] is what the core branches on
-//! (ADR-0002). It is deliberately *not* `NotImplemented` — there is nothing
-//! to build.
+//! calls transcribed in `docs/flows/adapter-orange-money.md`. `refund` is
+//! overridden with a declared `NotImplemented("orange_money::refund")` token:
+//! per the maintainer's decision of 2026-09-15 (RFC-0003 § 5) an Orange refund
+//! *is* an outbound transfer to a payee, so the rail can do it and
+//! [`Capabilities::supports_refunds`] is `true` — what is missing is vpay's
+//! call, which is an admission about *us* and not a capability answer the core
+//! may branch on. Inheriting the port's [`ProviderError::Unsupported`] would
+//! now be a claim about Orange rather than about this repository.
+//!
+//! **No Orange transfer wire call is written here, and that is deliberate.**
+//! No Orange transfer API is documented in this repository — not even
+//! reconstructed — so an endpoint path and a request body would be invented in
+//! the money path. The token stays until item 5 of
+//! `docs/flows/adapter-orange-money.md`'s "To confirm with Orange Cameroun"
+//! list has an answer.
 //!
 //! **That flow doc is reconstructed from Orange Developer's public overview
 //! and community SDKs, not from a vendor specification**, and the error-body
@@ -28,10 +37,10 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use vpay_core::{FailureCode, ProviderFlow};
+use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, RefundDestination, RefundTarget, Submitted,
+    ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -97,12 +106,15 @@ impl Adapter {
     /// // returns a hosted-page URL and a `pay_token` the core must commit
     /// // before that URL reaches anyone.
     /// assert_eq!(adapter.capabilities().flow, ProviderFlow::Redirect);
-    /// // Still `false`, but no longer because the rail cannot: the
-    /// // maintainer decided on 2026-09-15 that an Orange refund *is* an
-    /// // outbound transfer, so this flag is now a statement about what vpay
-    /// // has built, and RFC-0003 § 5 says what it owes before it moves.
-    /// // `capabilities()` below carries the whole account.
-    /// assert!(!adapter.capabilities().supports_refunds);
+    /// // `true` since 2026-09-15, and it is a claim about the *rail*: the
+    /// // maintainer decided that an Orange refund *is* an outbound transfer
+    /// // to a payee, which Orange plainly can make. What vpay has not built
+    /// // is the call — `refund` answers its own
+    /// // `NotImplemented("orange_money::refund")` token, declared in
+    /// // `docs/status.md`, rather than the port's `Unsupported`.
+    /// assert!(adapter.capabilities().supports_refunds);
+    /// // `false`, and decided rather than inherited: see `capabilities()`.
+    /// assert!(!adapter.capabilities().supports_partial_refunds);
     /// ```
     #[must_use]
     pub fn new(http: reqwest::Client) -> Self {
@@ -329,36 +341,64 @@ impl ProviderAdapter for Adapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             flow: ProviderFlow::Redirect,
-            supports_refunds: false,
+            // `true` since 2026-09-15, and a claim about the *rail*, not
+            // about vpay: an Orange refund is an outbound transfer to a payee
+            // and Orange makes transfers. It was `false` until the maintainer
+            // decided what an Orange refund *is* (RFC-0003 § 5); answering
+            // the port's `Unsupported` now would tell the core that Orange
+            // has no refund product, which is a lie about Orange rather than
+            // an admission about us. The admission is `refund`'s
+            // `NotImplemented("orange_money::refund")` token below, which
+            // `verify-status` counts and `docs/status.md` declares.
+            supports_refunds: true,
+            // `false`, and *decided* rather than left over from the flip.
+            // `partial_refunds_imply_refunds` (migration `0002`) and
+            // `Capabilities::is_coherent` both permit `true` now, and
+            // permitted is not decided.
+            //
+            // The flag above rests on one thing being known — that an Orange
+            // refund is a transfer — and nothing else about Orange transfers
+            // is known here: no endpoint, no body, no amount semantics, no
+            // minimum, no per-transaction limit (item 7 of the flow doc's "to
+            // confirm" list is open for payments, and there is no transfer
+            // equivalent of it at all). "Any amount up to the charge" is a
+            // property of a transfer product, and this repository has never
+            // seen Orange's.
+            //
+            // So it is the merchant-visible direction that decides it. With
+            // `false` the core refuses a part-refund on this rail and a
+            // merchant is told no. With `true` it accepts one, and if the
+            // real transfer product turns out to reverse whole payments only,
+            // or to floor at some amount, a capability merchants have already
+            // integrated against has to be *withdrawn*. `false` → `true` is
+            // additive and costs nobody anything; the reverse is a breaking
+            // change made on a guess. Flipping it is part of writing the
+            // transfer call against a real specification, not part of this
+            // declaration.
             supports_partial_refunds: false,
             delivers_callbacks: true,
             requires_ip_allowlist: false,
             // `false`, and it means "Orange's Web Payment product documents
             // no account-holder lookup", not "we have not written one".
             // That is why this adapter overrides nothing and inherits the
-            // port's `Unsupported` — the same shape `refund` already has
-            // here, and the opposite of `mtn_momo`, whose rail *does* expose
-            // one. Orange has a KYC/customer product elsewhere; its route is
+            // port's `Unsupported` — which is no longer the shape `refund`
+            // has here, and is the opposite of `mtn_momo`, whose rail *does*
+            // expose one. Orange has a KYC/customer product elsewhere; its route is
             // unconfirmed from this repository and belongs on
             // `docs/flows/adapter-orange-money.md`'s "to confirm" list, not
             // in a `true` nobody can honour (issue #47).
             supports_account_holder_lookup: false,
-            // `Required`, while `supports_refunds` immediately above is still
-            // `false`, and the two are not in conflict. An Orange refund *is*
-            // an outbound transfer to a payee — there is no "back the way it
-            // came" on a redirect rail where `payer_ref` is `None` and vpay
-            // never learns who paid — so `Required` is the truth about the
-            // rail's refund product. `supports_refunds: false` is the truth
-            // about *this repository*: no Orange transfer API is documented
-            // here, not even reconstructed, so writing one would be inventing
-            // an endpoint in the money path (RFC-0003 § 5, maintainer
-            // decision of 2026-09-15).
+            // `Required`, and it is the same sentence `supports_refunds`
+            // above is now true by: an Orange refund *is* an outbound
+            // transfer to a payee. There is no "back the way it came" on a
+            // redirect rail where `payer_ref` is `None` and vpay never learns
+            // who paid, so a refund here is addressed or it is nowhere.
             //
-            // The value is inert until that flag flips, and it is declared
-            // truthfully now so that the flip is one line about refunds and
-            // not also a new guess about destinations.
-            // `Capabilities::is_coherent` records why this pair is
-            // deliberately not a coherence violation.
+            // This value was declared, and declared `Required`, while
+            // `supports_refunds` was still `false` — deliberately, so that
+            // the flip would be one line about refunds and not also a fresh
+            // guess about destinations. It was. `Capabilities::is_coherent`
+            // records why the pair was never a coherence violation.
             refund_destination: RefundDestination::Required,
         }
     }
@@ -582,25 +622,29 @@ impl ProviderAdapter for Adapter {
     /// `destination[orange_money][msisdn]` — the payee a refund on this rail
     /// would be transferred to.
     ///
-    /// # Why this exists on a rail whose `refund` does not
+    /// # Why this is built while `refund` is a token
     ///
-    /// `supports_refunds` is `false` here and `refund` is the port's
-    /// permanent `Unsupported`, so nothing calls this today. It is written
-    /// anyway, and the distinction is the same one `capabilities` already
-    /// draws: the *destination* is a fact about the rail's product — an
-    /// Orange refund is an outbound transfer to a payee, which is why
-    /// [`RefundDestination::Required`] is declared — while the missing
-    /// `refund` is a fact about this repository. Leaving `parse_destination`
-    /// to the port's default would have this adapter answer
-    /// [`ProviderError::Unsupported`] to a question about the payee, i.e.
-    /// claim Orange returns money to the instrument that paid, which is false
-    /// on a redirect rail where `payer_ref` is `None` and vpay never learns
-    /// who paid.
+    /// Nothing calls this today: `refund` is
+    /// `NotImplemented("orange_money::refund")` and `POST /v1/refunds` is
+    /// unrouted. It is built anyway, because the two answer different
+    /// questions and only one of them needs Orange's transfer
+    /// specification. *Who* a refund is addressed to is vpay's own
+    /// merchant-facing parameter (RFC-0003 § 1) and is fully known — it is
+    /// the sub-map the merchant sends, and this method reads it. *How* an
+    /// Orange transfer body would carry that payee is not known here at all,
+    /// and stays unwritten, which is why `refund` is a token.
     ///
-    /// Nothing here is an invention about Orange's API. The key parsed is
-    /// vpay's own merchant-facing parameter (RFC-0003 § 1); how an Orange
-    /// transfer body would render it is unknown and stays unwritten, which is
-    /// exactly why `refund` is still the default.
+    /// This heading used to read "why this exists on a rail whose `refund`
+    /// does not", and rested on `supports_refunds: false` — before
+    /// 2026-09-15, when the maintainer decided an Orange refund *is* a
+    /// transfer back and the flag became `true`. The method did not move; the
+    /// reason it is here got simpler.
+    ///
+    /// Leaving this to the port's default would still be wrong for the
+    /// original reason: [`ProviderError::Unsupported`] answered to a question
+    /// about the payee claims Orange returns money to the instrument that
+    /// paid, which is false on a redirect rail where `payer_ref` is `None`
+    /// and vpay never learns who paid.
     ///
     /// # What is refused
     ///
@@ -656,11 +700,46 @@ impl ProviderAdapter for Adapter {
         })
     }
 
-    // `refund` is deliberately not overridden: the port's default is
-    // `Err(ProviderError::Unsupported)`, which is the permanent answer for a
-    // rail with no refund API. See the module doc. `parse_destination`
-    // *is* overridden, immediately above, and that comment says why the two
-    // differ.
+    /// Not built, and honestly so.
+    ///
+    /// Overrides the port's default so this rail answers
+    /// [`ProviderError::NotImplemented`] rather than
+    /// [`ProviderError::Unsupported`]. `Unsupported` is a claim about
+    /// *Orange* — "this rail has no refund API" — and since the maintainer's
+    /// decision of 2026-09-15 (RFC-0003 § 5) it is not true: an Orange refund
+    /// is an outbound transfer to a payee, which Orange makes. The token is
+    /// an admission about *vpay*, `cargo xtask verify-status` is what counts
+    /// it, and `docs/status.md` is where it is declared.
+    ///
+    /// # Why there is no wire call here
+    ///
+    /// **No Orange transfer API is documented in this repository — not even
+    /// reconstructed.** The three calls this adapter does make came from
+    /// Orange Developer's public overview plus several community SDKs that
+    /// agree with each other; for transfers no such source exists here, so an
+    /// endpoint path and a request body would be *invented*, in the money
+    /// path, on a rail nobody has ever called. That is the failure mode
+    /// `CLAUDE.md` names first. What unblocks it is an answer to item 5 of
+    /// `docs/flows/adapter-orange-money.md`'s "To confirm with Orange
+    /// Cameroun" list, not more reading.
+    ///
+    /// `destination` is `Some` here because this rail declares
+    /// [`RefundDestination::Required`], and [`Self::parse_destination`] is
+    /// what produced it. It is ignored rather than read: there is no call to
+    /// put it in, and reading it would be the first half of a pretence.
+    ///
+    /// # Errors
+    ///
+    /// Always [`ProviderError::NotImplemented`].
+    async fn refund(
+        &self,
+        _charge: &ChargeRef,
+        _amount: Money,
+        _destination: Option<&RefundTarget>,
+        _config: &ProviderConfig,
+    ) -> Result<Refunded, ProviderError> {
+        Err(ProviderError::NotImplemented("orange_money::refund"))
+    }
 }
 
 /// The one key this rail names inside `destination[orange_money]`, and the
