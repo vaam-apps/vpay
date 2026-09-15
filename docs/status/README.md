@@ -35,6 +35,16 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-16-w3-refund-routes.md](verification/2026-09-16-w3-refund-routes.md) —
+  RFC-0003 § 2 wave 3: the four `/v1` refund routes and the first
+  `charge.refunded` / `charge.refund.updated` this repository has ever emitted
+  (384 `vpay-api` + 243 `vpay-db` + 260 port/adapter/core + 40 integration
+  incl. eleven new WireMock-backed refund cases + 168 `vpay-sdk`, **0
+  skipped**). The decisive mutation — deleting the `RefundDestination::Origin`
+  refusal — run, and the finding recorded: it fails **one** test in the
+  workspace, because vpay carries no `Origin` rail for any integration suite
+  to reach. Three things still stand between these routes and a refund a payer
+  receives, and the page names all three
 - [verification/2026-09-15-refunds-write-path-money-review.md](verification/2026-09-15-refunds-write-path-money-review.md) —
   the adversarial money/concurrency review of the entry below: six mutations
   with their numbers, eight claims confirmed TRUE, and one finding — the

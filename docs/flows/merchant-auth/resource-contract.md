@@ -103,21 +103,49 @@ against `vpay_api::V1_ROUTES` on **2026-09-06** (issue #45 rebased onto issue
 implemented by both SDKs and by no server route: an authenticated call gets
 the honest `404`.
 
-`GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
-unusual pair and a deliberate one (issue #45). Creating a refund needs a
-handler, and `POST /v1/refunds` is routed nowhere — `vpay_db::Refunds::create`
-exists (RFC-0003 § 3) and nothing calls it. The rail half is no longer the
-reason on MTN: `mtn_momo::refund` makes MTN's Disbursements `transfer` call
-since 2026-09-15, against a credential no deployment holds and a product this
-repository has never called, while `orange_money::refund` is a
-`NotImplemented` token from the same day (an Orange refund is an outbound
-transfer this repository has no specification for — RFC-0003 § 5; this
-sentence read `Unsupported` on Orange until then). **Reading** one is the
-authoritative read `docs/flows/provider-port.md` requires of every money
-movement, and without it a merchant holding a `re_…` has neither a call nor
-an event — `charge.refunded` and `charge.refund.updated` are emitted by
-nothing ([../status.md](../../status.md)) and webhook delivery is at-least-once
-and unordered in any case ([webhooks.md](../webhooks.md)).
+~~`GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
+unusual pair and a deliberate one (issue #45).~~ **All four refund routes are
+served since 2026-09-16** (RFC-0003 § 2): the create, the metadata update, the
+list and the cancel. The paragraph that stood here said creating a refund
+needed a handler and that `POST /v1/refunds` was routed nowhere; that handler
+is what changed, and **nothing about the rails did**. `mtn_momo::refund` makes
+MTN's Disbursements `transfer` call against a credential no deployment holds,
+for a product this repository has never called; `orange_money::refund` is a
+`NotImplemented` token (an Orange refund is an outbound transfer this
+repository has no specification for — RFC-0003 § 5); and **nothing settles a
+`pending` refund**, because the port has no refund status read (RFC-0003 open
+question 8). A refund created here is therefore _instructed_, never _paid_,
+and `status` on the object is the whole of that answer.
+
+Two things the create adds to the row below, both of them capability-driven
+and neither a provider check (ADR-0002). `destination[<payment_method_type>][…]`
+is **required** on a rail whose `RefundDestination` is `Required` — both rails
+here — and **refused** on one that returns money to the instrument that paid;
+the adapter parses the inner map, so the core never learns a rail's wire keys.
+**The cancel refuses every refund the create produces, and that is the rule
+rather than a gap.** `POST /v1/refunds` writes its `provider_requests` row
+before the transfer, so a merchant holding a `re_…` is holding one the rail has
+already been given — and nothing settles it. Canceling such a refund would
+write `canceled`, a promise that no money will move, and give back the
+reservation `no_over_refund` is computed from; measured 2026-09-16 before the
+guard existed, that turned one 5 000 charge into two 5 000 transfers at the
+rail. The cancel's remaining subject is the create that died between committing
+the row and recording the attempt ([crash-safety.md](../crash-safety.md)'s "no
+`provider_requests` row"), and a merchant with a stuck `pending` refund
+reconciles it against the rail by `provider_reference_id`. That is worse for a
+merchant than a `200` and it is the only true answer until a refund poll ladder
+exists (RFC-0003 open question 8).
+
+And where the rail exposes an account-holder lookup, the nominated payee is
+checked through it first, which is the caller issue #47 built that route for.
+
+**Reading** a refund is still the authoritative read
+`docs/flows/provider-port.md` requires of every money movement — and it is no
+longer the only answer a merchant has, because ~~`charge.refunded` and
+`charge.refund.updated` are emitted by nothing~~ **both are emitted by these
+routes since 2026-09-16**, each in the transaction of the write it reports.
+Webhook delivery is at-least-once and unordered in any case
+([webhooks.md](../webhooks.md)), which is why the read exists at all.
 
 Two corrections this re-measurement produced, both of documents rather than
 of code. The `/v1/events` row read `⛔ 404` and had been wrong since Step 5
@@ -142,7 +170,10 @@ can carry, are [customers.md](../customers.md).
 | `POST`   | `/v1/payment_intents/{id}/confirm` | `payment_method_data[type]`, `payment_method_data[mtn_momo][msisdn]` (push), `return_url` (redirect) | `payment_intent`                    | 🟡 reaches a rail over HTTP: `processing` / `requires_action`, `409 charge_declined`, `502`. 🟡 because that rail has only ever been a WireMock stub                                                                                                                                                                                                                                           |
 | `POST`   | `/v1/payment_intents/{id}/cancel`  |                                                                                                      | `payment_intent`                    | ✅                                                                                                                                                                                                                                                                                                                                                                                             |
 | `GET`    | `/v1/payment_intents`              | `limit`, `starting_after`, `ending_before`                                                           | `list` of `payment_intent`          | ✅                                                                                                                                                                                                                                                                                                                                                                                             |
-| `POST`   | `/v1/refunds`                      | `payment_intent`, `amount` (omit for full), `reason`, `metadata[…]`                                  | `refund`                            | ⛔ 404                                                                                                                                                                                                                                                                                                                                                                                         |
+| `POST`   | `/v1/refunds`                      | `payment_intent`, `amount` (omit for full), `reason`, `destination[<type>][…]`, `metadata[…]`        | `refund`                            | ✅ since 2026-09-16; always `pending`                                                                                                                                                                                                                                                                                                                                                          |
+| `POST`   | `/v1/refunds/{id}`                 | `metadata[…]` only                                                                                   | `refund`                            | ✅ since 2026-09-16                                                                                                                                                                                                                                                                                                                                                                            |
+| `GET`    | `/v1/refunds`                      | `limit`, `starting_after`, `ending_before`, `payment_intent`                                         | list of `refund`                    | ✅ since 2026-09-16                                                                                                                                                                                                                                                                                                                                                                            |
+| `POST`   | `/v1/refunds/{id}/cancel`          |                                                                                                      | `refund`                            | ✅ since 2026-09-16; `pending` **and no rail instructed** — which is no refund the create route produces, see below                                                                                                                                                                                                                                                                            |
 | `GET`    | `/v1/refunds/{id}`                 |                                                                                                      | `refund`                            | ✅                                                                                                                                                                                                                                                                                                                                                                                             |
 | `GET`    | `/v1/events`                       | `limit`, `starting_after`, `ending_before`, `type`                                                   | `list` of `event`                   | ✅ since 2026-09-03 (Step 5), merchant-scoped and newest first (`events_are_listed_newest_first_scoped_to_the_merchant`). **`type` is accepted and ignored**, not refused — a filtered call gets an unfiltered page ([../status.md](../../status.md))                                                                                                                                          |
 | `GET`    | `/v1/events/{id}`                  |                                                                                                      | `event`                             | ✅ since 2026-09-03 (Step 5). A foreign merchant's id is the same `404` a nonexistent one gets, byte for byte (`events_get_by_id_is_merchant_scoped`)                                                                                                                                                                                                                                          |
@@ -204,7 +235,10 @@ that a vpay older than the field still decodes; see
 proves it.
 
 **Every `refund` this deployment could produce carries `fee: null`**, and will
-until a rail reports one. `orange_money::refund` is an unbuilt
+until a rail reports one — `POST /v1/refunds` does not write the column
+either, and logs a warning if an adapter ever hands it a fee, because writing
+it is a settlement-path change and a fee reported by a rail that has never
+been called is not a number to start persisting. `orange_money::refund` is an unbuilt
 `NotImplemented` token — since 2026-09-15 an Orange refund is an outbound
 transfer this repository has no specification for (RFC-0003 § 5); this sentence
 read "Orange's Web Payment product documents no refund API" until that date —

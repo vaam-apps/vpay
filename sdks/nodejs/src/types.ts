@@ -1163,6 +1163,19 @@ export type ListCheckoutSessionsParams = {
   payment_intent?: string | undefined;
 };
 
+/**
+ * `POST /v1/refunds` request fields.
+ *
+ * **Dated gap, 2026-09-16, `docs/sdks/parity.md`.** There is no `destination`
+ * field, and `POST /v1/refunds` refuses a refund without one on any rail
+ * whose `RefundDestination` is `Required` — which is both rails vpay carries,
+ * because a mobile-money refund is an outbound transfer and needs a payee. A
+ * `refunds.create` from this SDK is therefore answered `400` with
+ * `param: "destination"`. It was harmless until the route was mounted, when
+ * the call went from an honest `404` to a refusal it cannot satisfy. Adding
+ * the field is a wire-shape change both merchant SDKs make together, so it is
+ * recorded as a gap rather than fixed on one side.
+ */
 export interface CreateRefundParams {
   payment_intent: string;
   /** Integer minor units. Omit for a full refund. */

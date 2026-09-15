@@ -3463,15 +3463,18 @@ mod tests {
     /// omitted key would decode without complaint and the merchant would
     /// simply never learn the field exists.
     ///
-    /// # The event row here is hand-built, because nothing writes one
+    /// # The event row here is hand-built, and stays hand-built
     ///
-    /// Neither `charge.refunded` nor `charge.refund.updated` has ever been
-    /// emitted: both are in the `type_is_a_documented_event` vocabulary
-    /// (migrations `0018`/`0029`) and no code path writes either. So this
-    /// case seeds `events.data` itself with what the renderer produced,
-    /// rather than driving a transition that would produce it. What it
-    /// proves is the *contract* — that `data.object` is this object, key for
-    /// key — and not that a refund event works.
+    /// It said "because nothing writes one" until 2026-09-16, when
+    /// `vpay_api::v1::refunds` became the first writer of both types
+    /// (RFC-0003 § 2). The row is still built here rather than driven,
+    /// deliberately: what this case proves is the *contract* — that
+    /// `data.object` is this object, key for key, on **both** types — and a
+    /// case that drove one real transition would prove it for that
+    /// transition's type alone. The end-to-end half is
+    /// `a_created_refund_emits_charge_refunded_with_the_api_body` in
+    /// `backends/tests/integration/tests/refunds.rs`, which compares a real
+    /// emitted body to the real route's response.
     ///
     /// Both types are covered because `docs/flows/merchant-auth.md`,
     /// `docs/flows/webhooks.md` and `docs/status.md` all claim the same value

@@ -666,25 +666,31 @@ pub trait Settlement: Send + Sync {
     /// `invoice.paid` is **not** re-emitted (D5) — the invoice is still
     /// `paid` and telling a merchant a second time that a bill was settled
     /// because part of it came back would be a lie about a transition that
-    /// did not happen. `charge.refunded` and `charge.refund.updated` are
-    /// documented types this repository still emits nothing for
-    /// (`docs/status.md`), and this method does not change that: emitting one
-    /// needs the wire object `vpay-api` shapes, which is the caller's to
-    /// supply, and there is no caller until Wave 3.
+    /// did not happen. ~~`charge.refunded` and `charge.refund.updated` are
+    /// documented types this repository still emits nothing for~~ — **both
+    /// have been emitted by `vpay_api::v1::refunds` since 2026-09-16
+    /// (RFC-0003 § 2), and this method still emits neither.** The reason is
+    /// unchanged and is the reason it was written down: emitting one needs
+    /// the wire object `vpay-api` shapes, which is the caller's to supply.
+    /// A caller that settles a refund through here owes the merchant a
+    /// `charge.refund.updated`, and this method's signature is what would
+    /// have to carry it — as `erase_customer_in_tx`'s does.
     ///
-    /// # There is still no rail behind this
+    /// # Nothing reaches this method, and the reason changed on 2026-09-16
     ///
-    /// `POST /v1/refunds` is unrouted, so no shipping binary calls this
-    /// method today, even though [`crate::Refunds::create`] can now write the
-    /// `pending` row it settles. The rails stopped being the reason on
+    /// ~~`POST /v1/refunds` is unrouted, so no shipping binary calls this
+    /// method today~~ — the route is mounted now, and it still does not call
+    /// this method, because **an `Ok` from a rail is an acceptance and not a
+    /// settlement** (below). What reaches it is nothing at all: there is no
+    /// refund poll ladder, so no code path in this repository moves a refund
+    /// out of `pending`. The rails stopped being the reason on
     /// 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
     /// call — against a credential no deployment holds and a product this
     /// repository has never called — and `orange_money::refund` is a declared
-    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`. What is
-    /// missing is the caller: the `POST /v1/refunds` handler that would drive
-    /// RFC-0003 § 3's transaction and then this one.
+    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`.
     ///
-    /// **And when that handler is written, an `Ok(Refunded)` must not become
+    /// **And when that handler was written it did not, which is why nothing
+    /// calls this: an `Ok(Refunded)` must not become
     /// `refunds.status = 'succeeded'` on its own.** MTN's `transfer` answers
     /// `202 ACCEPTED`; the port has no refund status read and `Refunded` has
     /// no status field, so the most an adapter can report is that the rail
@@ -828,6 +834,68 @@ pub trait Settlement: Send + Sync {
         cutoff: OffsetDateTime,
         limit: i64,
     ) -> Result<Vec<String>, DbError>;
+}
+
+/// Fails one `pending` refund and releases its reservation, **inside the
+/// caller's transaction**.
+///
+/// The whole of what [`Settlement::apply_refund_failed`] does; that method is
+/// now this function plus a transaction. Extracted on 2026-09-16 for
+/// `POST /v1/refunds`, which has to write `charge.refund.updated` in the same
+/// commit — an event apart from the transition it reports is either a webhook
+/// for something that did not happen or a transition no merchant hears about
+/// (`docs/flows/webhooks.md`). One implementation, two entry points: a second
+/// copy of "fail the row and give the reservation back" is how the refund and
+/// the intent's counters stop agreeing.
+///
+/// `Ok(None)` means the refund was not `pending` — already settled, already
+/// failed, or no such row — and nothing has been written, so the caller may
+/// abandon its transaction. Nothing is rolled back here; the transaction is
+/// not this function's.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the refund was
+/// `pending` but the intent carried no matching reservation — a broken
+/// invariant, which pages. [`DbError::Query`] if any statement fails,
+/// including a `code` outside `refunds_failure_code_enum_check`'s vocabulary.
+pub(crate) async fn fail_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    refund_id: &str,
+    code: &str,
+    raw: &str,
+    now: OffsetDateTime,
+) -> Result<Option<crate::refunds::SettledRefund>, DbError> {
+    let Some(refund) = crate::refunds::fail_in_tx(&mut *conn, refund_id, code, raw, now).await?
+    else {
+        return Ok(None);
+    };
+
+    // The reservation goes back and nothing else moves. `amount_refunded`
+    // is untouched, the invoice is untouched, and **no ledger row is
+    // written** — there is none to reverse, which
+    // `docs/flows/ledger.md` § "When refunds post" names as the reason
+    // the reservation column exists at all.
+    let intent =
+        payment_intents::release_refund_in_tx(&mut *conn, &refund.payment_intent_id, refund.amount)
+            .await?
+            .ok_or_else(|| DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                key: refund.payment_intent_id.clone(),
+            })?;
+
+    tracing::info!(
+        refund_id = %refund.id,
+        payment_intent_id = %intent.id,
+        amount = refund.amount,
+        failure_code = %code,
+        amount_refunded = intent.amount_refunded,
+        amount_refund_pending = intent.amount_refund_pending,
+        "a refund failed at the rail; its reservation was released and nothing was posted, \
+         pending this transaction's commit"
+    );
+
+    Ok(Some(refund))
 }
 
 #[async_trait::async_trait]
@@ -1044,39 +1112,12 @@ impl Settlement for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let Some(refund) = crate::refunds::fail_in_tx(&mut tx, refund_id, code, raw, now).await?
-        else {
+        let Some(refund) = fail_refund_in_tx(&mut tx, refund_id, code, raw, now).await? else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);
         };
 
-        // The reservation goes back and nothing else moves. `amount_refunded`
-        // is untouched, the invoice is untouched, and **no ledger row is
-        // written** — there is none to reverse, which
-        // `docs/flows/ledger.md` § "When refunds post" names as the reason
-        // the reservation column exists at all.
-        let intent = payment_intents::release_refund_in_tx(
-            &mut tx,
-            &refund.payment_intent_id,
-            refund.amount,
-        )
-        .await?
-        .ok_or_else(|| DbError::WriteMatchedNoRow {
-            table: "payment_intents",
-            key: refund.payment_intent_id.clone(),
-        })?;
-
         tx.commit().await.map_err(DbError::Query)?;
-
-        tracing::info!(
-            refund_id = %refund.id,
-            payment_intent_id = %intent.id,
-            amount = refund.amount,
-            failure_code = %code,
-            amount_refunded = intent.amount_refunded,
-            amount_refund_pending = intent.amount_refund_pending,
-            "a refund failed at the rail; its reservation was released and nothing was posted"
-        );
 
         Ok(Some(refund))
     }

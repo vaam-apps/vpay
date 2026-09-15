@@ -20,8 +20,12 @@
 //!   and no Orange transfer API is documented in this repository, so the
 //!   token is vpay's unbuilt work rather than a fact about the rail.
 //!
-//! `supports_refunds` is `true` on both rails, and `POST /v1/refunds` stays
-//! unrouted until Wave 3 (`docs/status.md`).
+//! `supports_refunds` is `true` on both rails, and ~~`POST /v1/refunds` stays
+//! unrouted until Wave 3~~ — **it is routed since 2026-09-16 (RFC-0003 § 2),
+//! so this module's writes are reachable by a merchant.** What has not
+//! changed is anything about the rails, and one thing got a name: **nothing
+//! settles a `pending` refund**, because the port has no refund status read
+//! (RFC-0003 open question 8). `docs/status.md`.
 //!
 //! The other thing this module has is the **authoritative read** a refund has
 //! to have once it exists at all: `docs/flows/provider-port.md` calls
@@ -44,12 +48,17 @@
 //! counters and the ledger posting that go with it. The same is true of the
 //! ledger write itself: it is not reachable from outside this crate either.
 //!
-//! What that costs, stated rather than hidden: **no rail call has ever been
-//! made for a refund.** Nothing in a shipping binary calls
-//! [`Refunds::create`] — `POST /v1/refunds` is not routed — so no rail can
-//! produce the `pending` row [`settle_in_tx`] settles, nothing in
-//! `vpay-server` reaches it, and every deployment's `refunds` table is empty
-//! but for rows an operator or a test put there. `docs/status.md` says so.
+//! What that costs, stated rather than hidden, and **re-stated 2026-09-16**:
+//! `vpay_api::v1::refunds` is now the caller, so [`Refunds::create`]'s
+//! statements — through [`create_in_tx`], which is the shape that lets the
+//! handler commit `charge.refunded` beside them — do run in a shipping
+//! binary, and a rail *is* instructed. **What still has no caller at all is
+//! the settlement half**: nothing moves a refund out of `pending`, because
+//! the port has no refund status read and there is no refund poll ladder, so
+//! [`settle_in_tx`] is reached by nothing a merchant can cause. And **no rail
+//! has ever returned money**: MTN's Disbursements product has never been
+//! called and no deployment holds its credential, and Orange's transfer is a
+//! declared `NotImplemented` token. `docs/status.md` says so.
 //! The seam exists because D5's and RFC-0003's decisions are about what the
 //! *database* does when a refund lands, and a decision with no statement
 //! behind it is a sentence in a document.
@@ -216,6 +225,38 @@ pub struct NewRefund {
     pub provider_reference_id: uuid::Uuid,
 }
 
+/// One page request for [`Refunds::list_page`].
+///
+/// # Why the cursor is not a `seq`
+///
+/// `refunds` has no `seq` column — unlike `payment_intents`, `customers` and
+/// `invoices`, whose list pages carry one — so the order this page walks is
+/// `(created_at, id)` and a cursor is resolved to that pair by a correlated
+/// sub-select on the public `re_…` id. The id is the tie-break and it is
+/// load-bearing rather than decorative: two refunds of one intent written in
+/// the same transaction share a timestamp, and a cursor over a non-unique
+/// key skips or repeats rows at a page boundary. [`Refunds::list_for_intent`]
+/// already orders the same way, for the same reason.
+///
+/// Cursors are public ids, never row positions, exactly as
+/// [`crate::CustomerListPage`]'s are.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefundListPage {
+    /// How many rows the caller wants. `vpay-api` applies the product limits.
+    pub limit: i64,
+    /// Return refunds strictly *older* than this `re_…`.
+    pub starting_after: Option<String>,
+    /// Return refunds strictly *newer* than this `re_…` — scans ascending
+    /// and is reversed in Rust, so `data` is newest-first either way.
+    pub ending_before: Option<String>,
+    /// Only this intent's refunds. A `pi_…`, **not** validated for
+    /// existence: an unknown intent yields an empty page, exactly as an
+    /// unknown `customer` does on `GET /v1/invoices`, because answering
+    /// `404` would make the filter an existence oracle for another
+    /// merchant's ids.
+    pub payment_intent: Option<String>,
+}
+
 /// The `refunds` writes and reads a consumer of this crate may perform.
 ///
 /// # What [`Refunds::create`] changed, and what it did not
@@ -237,10 +278,15 @@ pub struct NewRefund {
 /// § 5, 2026-09-15) because an Orange refund is an outbound transfer and no
 /// Orange transfer API is documented in this repository, which makes that
 /// token vpay's unbuilt work rather than a fact about the rail.
-/// `POST /v1/refunds` is unrouted until Wave 3, so nothing in a
+/// ~~`POST /v1/refunds` is unrouted until Wave 3, so nothing in a
 /// shipping binary calls this method today and no rail call has ever been
-/// made for a refund. `docs/status.md` says so; this doc says so rather than
-/// letting the method's existence imply otherwise.
+/// made for a refund.~~ **Routed since 2026-09-16 (RFC-0003 § 2):
+/// `vpay_api::v1::refunds` reaches these statements through
+/// [`crate::TxRepositories::create_refund_in_tx`], which is the same
+/// sequence in a transaction it also writes `charge.refunded` into. A rail
+/// is instructed; no rail has returned money.** `docs/status.md` says so;
+/// this doc says so rather than letting the method's existence imply
+/// otherwise.
 ///
 /// # Which writes are on this trait and which are not
 ///
@@ -287,12 +333,19 @@ pub trait Refunds: Send + Sync {
         new: &NewRefund,
     ) -> Result<Option<RefundRow>, DbError>;
 
-    /// Cancels a refund that is still `pending` and gives its reservation
-    /// back, in one transaction (RFC-0003 § 2).
+    /// Cancels a refund that is still `pending` **and that no rail has been
+    /// instructed for**, and gives its reservation back, in one transaction
+    /// (RFC-0003 § 2).
     ///
     /// Returns the canceled row, or `Ok(None)` for a refund that is not this
-    /// merchant's or is no longer `pending` — the same fold
-    /// [`Refunds::create`] makes, and for the same reason.
+    /// merchant's, is no longer `pending`, or is one of the two
+    /// [`CancelRefusal`]s that mean a transfer may already be on its way —
+    /// the same fold [`Refunds::create`] makes, and for the same reason.
+    /// [`cancel_in_tx`] is where the second half of that rule lives and why.
+    /// A caller that needs to tell the refusals apart — every merchant-facing
+    /// one does — goes through
+    /// [`crate::TxRepositories::cancel_refund_in_tx`], which answers a
+    /// [`CancelOutcome`].
     ///
     /// # Nothing is reversed, because nothing was posted
     ///
@@ -356,6 +409,27 @@ pub trait Refunds: Send + Sync {
         merchant_id: &str,
         payment_intent_id: &str,
     ) -> Result<Vec<RefundRow>, DbError>;
+
+    /// One page of this merchant's refunds, newest first, plus whether more
+    /// exist beyond it — `GET /v1/refunds` (RFC-0003 § 2).
+    ///
+    /// Distinct from [`Refunds::list_for_intent`] and not a generalisation of
+    /// it: that one is an operator's *timeline* of one intent, ascending and
+    /// unbounded because the number of refunds of one intent is bounded by
+    /// its amount. This one is a merchant-facing **page** over a table that
+    /// grows with traffic, so it is descending, limited, and cursored — and
+    /// the `payment_intent` filter is a filter, never a second scope: it is
+    /// applied in the same `WHERE` as the tenant predicate, so it can only
+    /// ever narrow.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if the read fails.
+    async fn list_page(
+        &self,
+        merchant_id: &str,
+        page: &RefundListPage,
+    ) -> Result<(Vec<RefundRow>, bool), DbError>;
 }
 
 /// The `refunds` columns [`settle_in_tx`] needs to finish the transaction it
@@ -561,9 +635,49 @@ async fn insert_in_tx(
 /// scope is the same join through `payment_intents`, because `refunds` still
 /// carries no `merchant_id` of its own.
 ///
-/// `Ok(None)` folds "not yours", "no such refund" and "no longer pending"
-/// into one answer, which is what stops a caller learning that another
-/// tenant's refund exists.
+/// `Ok(None)` folds "not yours", "no such refund", "no longer pending" and
+/// both halves of [`CancelRefusal`] into one answer, which is what stops a
+/// caller learning that another tenant's refund exists.
+/// [`diagnose_cancel_refusal`] tells them apart afterwards, and is a
+/// *diagnosis of a refusal that has already happened* rather than the thing
+/// that decides the write.
+///
+/// # A refund the rail has already been given is **not** cancellable
+///
+/// `NOT EXISTS (… provider_requests … operation = 'refund')` is the second
+/// half of the state machine and is in the `WHERE` clause for the first
+/// half's reason. `provider_requests` is written **before** the transfer is
+/// sent (`crate::provider_requests`, `docs/flows/crash-safety.md`), so a row
+/// under this refund's own `provider_reference_id` is the durable record that
+/// a rail may already be moving money. Cancelling such a refund would write
+/// `canceled` — a promise that no money will move — release the reservation
+/// that `no_over_refund` is computed from, and leave the merchant free to
+/// refund the same amount again. Measured on 2026-09-16 before this predicate
+/// existed: one 5 000 charge, a full refund accepted by MTN, a `200 canceled`,
+/// and a second full refund that put **two** transfers of 5 000 on the rail's
+/// journal. `a_refund_the_rail_has_already_been_instructed_is_not_cancelable`
+/// is the case, and deleting this predicate is what makes it fail.
+///
+/// This is the same asymmetry `vpay_api::v1::refunds::finish_refund` already
+/// draws for a rail error — release only where the rail provably never took
+/// the instruction — applied to the one path that had not been given it.
+///
+/// # And neither is one whose create may still be running
+///
+/// The attempt row is committed by a statement of its own, *after* the
+/// transaction that writes the refund. So there is a window — between that
+/// commit and that insert — in which a committed `pending` refund carries no
+/// attempt row and is nonetheless about to be sent to a rail. The age
+/// predicate is what closes it, and it is
+/// `docs/flows/crash-safety.md`'s own answer to the identical ambiguity on a
+/// `submitting` charge ("Charge younger than 60 s — a confirm may still be
+/// running — **Wait**"): younger than the window, nothing on disk
+/// distinguishes a create that crashed from one that is still going.
+///
+/// `now()` rather than the `$3` this statement stamps `updated_at` with,
+/// because that page requires the age to be measured by Postgres at both
+/// ends — a window computed from the caller's clock is a window a fast host
+/// does not have.
 ///
 /// # Errors
 ///
@@ -584,12 +698,332 @@ async fn cancel_in_tx(
          WHERE r.id = $2 AND r.status = 'pending' \
            AND EXISTS (SELECT 1 FROM payment_intents p \
                        WHERE p.id = r.payment_intent_id AND p.merchant_id = $1) \
+           AND NOT EXISTS (SELECT 1 FROM provider_requests q \
+                           WHERE q.provider_reference_id = r.provider_reference_id \
+                             AND q.operation = 'refund') \
+           AND r.created_at < now() - make_interval(secs => $4) \
          RETURNING {COLUMNS}"
     );
 
     sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
         .bind(merchant_id)
         .bind(refund_id)
+        .bind(now)
+        .bind(CREATE_IN_FLIGHT_WINDOW_SECONDS)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(crate::error::classify_write)
+}
+
+/// How old a `pending` refund with no attempt row must be before its missing
+/// attempt row may be read as "the create never reached the rail", in
+/// seconds.
+///
+/// Sixty, which is `docs/flows/crash-safety.md`'s `not_found_window` for a
+/// `submitting` charge, transcribed rather than shared: that constant lives
+/// in `vpay_worker::RecoveryPolicy`, which this crate does not and should not
+/// depend on. The number is the same because the ambiguity is the same one —
+/// a row that a live operation and a crashed one both leave behind — and not
+/// because anything reads it from there.
+const CREATE_IN_FLIGHT_WINDOW_SECONDS: f64 = 60.0;
+
+/// Why a cancel did not fire.
+///
+/// The statement folds every refusal into "no row", for the tenancy reason
+/// [`cancel_in_tx`] gives. This is the read that tells them apart **after**
+/// the fact, so the merchant gets a sentence they can act on instead of one
+/// `409` that means four different things. It never decides a write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelRefusal {
+    /// This merchant has no such refund — a missing id and another tenant's
+    /// id, folded, exactly as [`Refunds::get_for_merchant`] folds them.
+    NoSuchRefund,
+    /// It exists and is not `pending`; the status it is in, for the message.
+    NotPending(String),
+    /// It is `pending` and vpay has already handed a rail the instruction to
+    /// move this money. See [`cancel_in_tx`].
+    RailInstructed,
+    /// It is `pending`, no instruction is recorded, and it is young enough
+    /// that the create which would record one may still be running.
+    CreateMayStillBeRunning,
+}
+
+/// A cancel's two outcomes.
+///
+/// An enum rather than `Option<RefundRow>` because the refusals are not one
+/// answer: `404`, `409 not pending`, and `409 the rail already has it` are
+/// three different things for a merchant to do next, and the third is the one
+/// this type exists for.
+#[derive(Debug)]
+pub enum CancelOutcome {
+    /// It fired; the row as the database now holds it.
+    Canceled(Box<RefundRow>),
+    /// It did not, and why.
+    Refused(CancelRefusal),
+}
+
+/// Reads why [`cancel_in_tx`] matched no row, inside the same transaction.
+///
+/// Inside it on purpose: a diagnosis read on a pooled connection could see a
+/// state later than the one the statement refused, and would then explain a
+/// refusal that did not happen.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+async fn diagnose_cancel_refusal(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    refund_id: &str,
+) -> Result<CancelRefusal, DbError> {
+    let found: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT r.status, \
+                EXISTS (SELECT 1 FROM provider_requests q \
+                        WHERE q.provider_reference_id = r.provider_reference_id \
+                          AND q.operation = 'refund'), \
+                r.created_at < now() - make_interval(secs => $3) \
+         FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id \
+         WHERE r.id = $2 AND p.merchant_id = $1",
+    )
+    .bind(merchant_id)
+    .bind(refund_id)
+    .bind(CREATE_IN_FLIGHT_WINDOW_SECONDS)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(DbError::Query)?;
+
+    let Some((status, instructed, old_enough)) = found else {
+        return Ok(CancelRefusal::NoSuchRefund);
+    };
+    if status != "pending" {
+        return Ok(CancelRefusal::NotPending(status));
+    }
+    if instructed {
+        return Ok(CancelRefusal::RailInstructed);
+    }
+    if !old_enough {
+        return Ok(CancelRefusal::CreateMayStillBeRunning);
+    }
+    // Every predicate the statement carries now holds, so the refusal was a
+    // race this transaction can no longer see: something moved the row
+    // between the `UPDATE` and this read. `NotPending` is the honest answer —
+    // it is what was true at the moment of the refusal.
+    Ok(CancelRefusal::NotPending(status))
+}
+
+/// Reserves the refund's amount against the intent and inserts the `pending`
+/// row, **inside the caller's transaction** — RFC-0003 § 3 steps 1 to 3.
+///
+/// `Ok(None)` is the same fold [`Refunds::create`] documents: this merchant
+/// has no such `succeeded` intent. Nothing has been written when it is
+/// returned, so the caller may abandon its transaction; this function does
+/// not roll anything back, because the transaction is not its own.
+///
+/// # Why this is `pub(crate)` and reached two ways
+///
+/// [`Refunds::create`] wraps it in a transaction of its own, and
+/// [`crate::TxRepositories::create_refund_in_tx`] hands it one `vpay-api`
+/// already holds — because `charge.refunded` is written beside it, and
+/// `docs/flows/webhooks.md`'s standing rule is that an event commits with the
+/// transition it reports or not at all. Two entry points, one statement
+/// sequence: a second implementation is how the reservation and the row stop
+/// agreeing.
+///
+/// # Errors
+///
+/// [`DbError::OverRefund`], [`DbError::UniqueViolation`] and
+/// [`DbError::Query`], exactly as [`Refunds::create`] lists them.
+pub(crate) async fn create_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    new: &NewRefund,
+) -> Result<Option<RefundRow>, DbError> {
+    // The reservation comes **first**, and the ordering is deliberate.
+    // It is the statement that can be refused by `no_over_refund`, and a
+    // refusal aborts the transaction — so doing it before the insert
+    // means the refused case has written nothing anyone would have to
+    // reason about. It is also the statement that locks the intent row,
+    // which is what makes two concurrent creates serialize rather than
+    // interleave.
+    //
+    // It is merchant-scoped in SQL. A handler cannot forget to filter,
+    // and another tenant's intent is indistinguishable from a missing
+    // one — this module's standing rule.
+    let Some(intent) = crate::payment_intents::reserve_refund_in_tx(
+        &mut *conn,
+        merchant_id,
+        &new.payment_intent_id,
+        new.amount,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    // Both derived from the intent this transaction has just locked, and
+    // neither from anything the caller passed: the currency because
+    // `docs/flows/money.md` says a refund's currency is the intent's
+    // carried verbatim, and the charge because it is the row a rail
+    // movement — and, when this refund settles, a ledger posting — hangs
+    // off. `None` is storable (migration `0017` made the column
+    // nullable) and, for a `succeeded` intent, unreachable.
+    let charge_id = crate::charges::id_for_intent_in_tx(&mut *conn, &intent.id).await?;
+
+    let row = insert_in_tx(&mut *conn, new, &intent.currency_code, charge_id.as_deref()).await?;
+
+    // Logged here rather than after a commit this function does not own, and
+    // worded for what is true at this point: the statements have landed and
+    // the transaction has not committed. The line used to sit after
+    // `tx.commit()` and claim the same thing; leaving it there would have
+    // meant either two log lines for one operation or none at all for the
+    // caller that commits an event beside it.
+    tracing::info!(
+        refund_id = %row.id,
+        payment_intent_id = %row.payment_intent_id,
+        amount = row.amount,
+        currency_code = %row.currency_code,
+        amount_refund_pending = intent.amount_refund_pending,
+        "a refund was written and its amount reserved against the intent, pending this \
+         transaction's commit"
+    );
+
+    Ok(Some(row))
+}
+
+/// Moves one `pending` refund to `canceled` for this merchant and gives its
+/// reservation back, **inside the caller's transaction** (RFC-0003 § 2).
+///
+/// [`create_in_tx`]'s twin, reached the same two ways and for the same
+/// reason: `charge.refund.updated` is written beside it by `vpay-api`, and
+/// [`Refunds::cancel`] wraps it for callers with no event to write.
+///
+/// `Ok(None)` folds "not yours", "no such refund" and "no longer pending"
+/// into one answer — see [`cancel_in_tx`], which is the statement that
+/// decides it.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the refund was
+/// `pending` but the intent carried no matching reservation — a broken
+/// invariant, which pages. [`DbError::Query`] if any statement fails.
+pub(crate) async fn cancel_and_release_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    now: OffsetDateTime,
+) -> Result<CancelOutcome, DbError> {
+    let Some(row) = cancel_in_tx(&mut *conn, merchant_id, id, now).await? else {
+        let refusal = diagnose_cancel_refusal(&mut *conn, merchant_id, id).await?;
+        return Ok(CancelOutcome::Refused(refusal));
+    };
+
+    // The reservation goes back. `Ok(None)` here is not a lost race — the
+    // compare-and-swap above has already matched a `pending` refund, and
+    // a `pending` refund whose amount is not reserved on its intent is an
+    // invariant this crate is supposed to maintain — so it pages rather
+    // than being reported as a merchant's problem, and the whole
+    // transaction rolls back so the refund stays cancellable.
+    crate::payment_intents::release_refund_in_tx(&mut *conn, &row.payment_intent_id, row.amount)
+        .await?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: row.payment_intent_id.clone(),
+        })?;
+
+    tracing::info!(
+        refund_id = %row.id,
+        payment_intent_id = %row.payment_intent_id,
+        amount = row.amount,
+        "a pending refund was canceled and its reservation released; nothing was posted, so \
+         nothing was reversed"
+    );
+
+    Ok(CancelOutcome::Canceled(Box::new(row)))
+}
+
+/// Reads one refund of this merchant's and **holds its row lock** for the
+/// rest of the transaction.
+///
+/// The first half of `POST /v1/refunds/{id}`, whose `metadata` merge is a
+/// read-modify-write over the stored map — `crate::customers`' `lock_for_update`
+/// situation exactly, and the lock is here for the same measured reason: a
+/// pooled read leaves a window in which two concurrent updates each adding
+/// one key lose one of them, and the `charge.refund.updated` the merchant
+/// then receives describes a state the database does not hold.
+///
+/// `FOR UPDATE OF r` and not a bare `FOR UPDATE`: the join onto
+/// `payment_intents` is the tenancy predicate, and locking the intent row
+/// here would make a settlement touching that intent's counters wait behind
+/// a merchant's metadata edit.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+pub(crate) async fn lock_for_update(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+) -> Result<Option<RefundRow>, DbError> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id \
+         WHERE p.merchant_id = $1 AND r.id = $2 \
+         FOR UPDATE OF r"
+    );
+
+    sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(DbError::Query)
+}
+
+/// Replaces a refund's `metadata`, merchant-scoped in the statement, inside
+/// the caller's transaction.
+///
+/// The merge is the caller's: Stripe's contract is key-wise, so the value
+/// written is a function of the stored one and the merge has to happen
+/// between [`lock_for_update`] and this statement. What is written here is
+/// the whole map.
+///
+/// # Why there is no status guard, when every other write in this module has
+/// one
+///
+/// `metadata` is the merchant's own annotation and says nothing about where
+/// the money is. Stripe lets a refund's metadata be updated in any state, and
+/// a guard here would take a merchant's ability to label a refund away at the
+/// exact moment it becomes interesting — when it failed. The tenancy
+/// predicate stays, because that is a different question.
+///
+/// # Errors
+///
+/// [`DbError::Query`], including `metadata_is_object` for a value that is not
+/// a JSON object, which `vpay-api` refuses first with a `400` naming the
+/// parameter.
+pub(crate) async fn update_metadata_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    metadata: &serde_json::Value,
+    now: OffsetDateTime,
+) -> Result<Option<RefundRow>, DbError> {
+    // `EXISTS` rather than `UPDATE ... FROM`, for `cancel_in_tx`'s reason:
+    // the only relation this statement may write is the refund.
+    let sql = format!(
+        "UPDATE refunds AS r \
+         SET metadata = $3, updated_at = $4 \
+         WHERE r.id = $2 \
+           AND EXISTS (SELECT 1 FROM payment_intents p \
+                       WHERE p.id = r.payment_intent_id AND p.merchant_id = $1) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .bind(metadata)
         .bind(now)
         .fetch_optional(&mut *conn)
         .await
@@ -605,25 +1039,7 @@ impl Refunds for crate::repository::PgRepositories {
     ) -> Result<Option<RefundRow>, DbError> {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
 
-        // The reservation comes **first**, and the ordering is deliberate.
-        // It is the statement that can be refused by `no_over_refund`, and a
-        // refusal aborts the transaction — so doing it before the insert
-        // means the refused case has written nothing anyone would have to
-        // reason about. It is also the statement that locks the intent row,
-        // which is what makes two concurrent creates serialize rather than
-        // interleave.
-        //
-        // It is merchant-scoped in SQL. A handler cannot forget to filter,
-        // and another tenant's intent is indistinguishable from a missing
-        // one — this module's standing rule.
-        let Some(intent) = crate::payment_intents::reserve_refund_in_tx(
-            &mut tx,
-            merchant_id,
-            &new.payment_intent_id,
-            new.amount,
-        )
-        .await?
-        else {
+        let Some(row) = create_in_tx(&mut tx, merchant_id, new).await? else {
             // Nothing was written, so the transaction is closed explicitly
             // rather than dropped: the connection returns to the pool
             // without waiting for a background rollback. Same reason
@@ -632,27 +1048,7 @@ impl Refunds for crate::repository::PgRepositories {
             return Ok(None);
         };
 
-        // Both derived from the intent this transaction has just locked, and
-        // neither from anything the caller passed: the currency because
-        // `docs/flows/money.md` says a refund's currency is the intent's
-        // carried verbatim, and the charge because it is the row a rail
-        // movement — and, when this refund settles, a ledger posting — hangs
-        // off. `None` is storable (migration `0017` made the column
-        // nullable) and, for a `succeeded` intent, unreachable.
-        let charge_id = crate::charges::id_for_intent_in_tx(&mut tx, &intent.id).await?;
-
-        let row = insert_in_tx(&mut tx, new, &intent.currency_code, charge_id.as_deref()).await?;
-
         tx.commit().await.map_err(DbError::Query)?;
-
-        tracing::info!(
-            refund_id = %row.id,
-            payment_intent_id = %row.payment_intent_id,
-            amount = row.amount,
-            currency_code = %row.currency_code,
-            amount_refund_pending = intent.amount_refund_pending,
-            "a refund was created and its amount reserved against the intent"
-        );
 
         Ok(Some(row))
     }
@@ -661,35 +1057,16 @@ impl Refunds for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let Some(row) = cancel_in_tx(&mut tx, merchant_id, id, now).await? else {
+        let CancelOutcome::Canceled(row) =
+            cancel_and_release_in_tx(&mut tx, merchant_id, id, now).await?
+        else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);
         };
 
-        // The reservation goes back. `Ok(None)` here is not a lost race — the
-        // compare-and-swap above has already matched a `pending` refund, and
-        // a `pending` refund whose amount is not reserved on its intent is an
-        // invariant this crate is supposed to maintain — so it pages rather
-        // than being reported as a merchant's problem, and the whole
-        // transaction rolls back so the refund stays cancellable.
-        crate::payment_intents::release_refund_in_tx(&mut tx, &row.payment_intent_id, row.amount)
-            .await?
-            .ok_or_else(|| DbError::WriteMatchedNoRow {
-                table: "payment_intents",
-                key: row.payment_intent_id.clone(),
-            })?;
-
         tx.commit().await.map_err(DbError::Query)?;
 
-        tracing::info!(
-            refund_id = %row.id,
-            payment_intent_id = %row.payment_intent_id,
-            amount = row.amount,
-            "a pending refund was canceled and its reservation released; nothing was posted, so \
-             nothing was reversed"
-        );
-
-        Ok(Some(row))
+        Ok(Some(*row))
     }
 
     async fn get_for_merchant(
@@ -742,5 +1119,69 @@ impl Refunds for crate::repository::PgRepositories {
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+
+    async fn list_page(
+        &self,
+        merchant_id: &str,
+        page: &RefundListPage,
+    ) -> Result<(Vec<RefundRow>, bool), DbError> {
+        let limit = page.limit.max(1);
+        let backwards = page.ending_before.is_some();
+        let direction = if backwards { "ASC" } else { "DESC" };
+
+        // Every filter is `$n IS NULL OR …`, so the statement is one shape
+        // whatever the caller asked for — `invoices::list_page`'s device, and
+        // the reason `crate::sql_audit` can prove this `format!` interpolates
+        // only constants.
+        //
+        // The cursor comparisons are ROW comparisons on `(created_at, id)`
+        // and not on a `seq`, because `refunds` has none — see
+        // [`RefundListPage`]. Postgres compares the tuple lexicographically,
+        // which is exactly the order the `ORDER BY` below walks, so a page
+        // boundary that falls between two refunds sharing a `created_at`
+        // neither skips a row nor repeats one.
+        //
+        // Both sub-selects carry the tenant predicate themselves. Without it
+        // a cursor naming another merchant's refund would resolve to that
+        // row's position and page this merchant's list from a point they
+        // could not otherwise learn — the filter must never widen the scope
+        // it is applied inside.
+        let sql = format!(
+            "SELECT {COLUMNS} FROM refunds r \
+             JOIN payment_intents p ON p.id = r.payment_intent_id \
+             WHERE p.merchant_id = $1 \
+               AND ($2::TEXT IS NULL \
+                    OR (r.created_at, r.id) < (SELECT c.created_at, c.id FROM refunds c \
+                                               JOIN payment_intents cp \
+                                                 ON cp.id = c.payment_intent_id \
+                                               WHERE c.id = $2 AND cp.merchant_id = $1)) \
+               AND ($3::TEXT IS NULL \
+                    OR (r.created_at, r.id) > (SELECT c.created_at, c.id FROM refunds c \
+                                               JOIN payment_intents cp \
+                                                 ON cp.id = c.payment_intent_id \
+                                               WHERE c.id = $3 AND cp.merchant_id = $1)) \
+               AND ($4::TEXT IS NULL OR r.payment_intent_id = $4) \
+             ORDER BY r.created_at {direction}, r.id {direction} \
+             LIMIT $5"
+        );
+
+        let mut rows = sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+            .bind(merchant_id)
+            .bind(page.starting_after.as_deref())
+            .bind(page.ending_before.as_deref())
+            .bind(page.payment_intent.as_deref())
+            .bind(limit.saturating_add(1))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DbError::Query)?;
+
+        let has_more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
+        rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        if backwards {
+            rows.reverse();
+        }
+
+        Ok((rows, has_more))
     }
 }

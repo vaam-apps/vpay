@@ -212,7 +212,9 @@ pub struct InvoiceRow {
     ///
     /// `0` on every row in every deployment today: the only statement that
     /// moves it is reached from [`crate::Settlement::apply_refund_succeeded`],
-    /// which no shipping binary calls because `POST /v1/refunds` is routed
+    /// which no shipping binary calls — not because `POST /v1/refunds` is
+    /// unrouted, which it no longer is (2026-09-16), but because nothing
+    /// settles a `pending` refund. The original sentence: routed
     /// nowhere, so nothing reaches [`crate::Refunds::create`] and no rail has
     /// ever executed a refund (`docs/status.md`).
     pub amount_refunded: i64,
