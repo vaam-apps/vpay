@@ -1314,7 +1314,9 @@ async fn an_update_merges_metadata_and_refuses_everything_else() -> anyhow::Resu
 async fn a_pending_refund_cancels_once_and_gives_its_reservation_back() -> anyhow::Result<()> {
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
-    let refund_id = harness.seed_crashed_create(&intent_id, REFUND_AMOUNT).await?;
+    let refund_id = harness
+        .seed_crashed_create(&intent_id, REFUND_AMOUNT)
+        .await?;
     harness.age_past_the_cancel_window(&refund_id).await?;
 
     let canceled = harness
@@ -1481,7 +1483,9 @@ async fn a_refund_the_rail_has_already_been_instructed_is_not_cancelable() -> an
 async fn a_refund_whose_create_may_still_be_running_is_not_canceled_yet() -> anyhow::Result<()> {
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
-    let refund_id = harness.seed_crashed_create(&intent_id, REFUND_AMOUNT).await?;
+    let refund_id = harness
+        .seed_crashed_create(&intent_id, REFUND_AMOUNT)
+        .await?;
 
     let canceled = harness
         .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")

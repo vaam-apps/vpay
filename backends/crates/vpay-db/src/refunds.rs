@@ -1036,8 +1036,8 @@ impl Refunds for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let CancelOutcome::Canceled(row) = cancel_and_release_in_tx(&mut tx, merchant_id, id, now)
-            .await?
+        let CancelOutcome::Canceled(row) =
+            cancel_and_release_in_tx(&mut tx, merchant_id, id, now).await?
         else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);

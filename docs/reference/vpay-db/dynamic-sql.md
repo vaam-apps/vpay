@@ -131,6 +131,12 @@ RETURNING {COLUMNS}`. The alias is what lets the `RETURNING` list be the
   reads cannot drift on what a `RefundRow` decodes.
 - `refunds::cancel_in_tx` — `UPDATE refunds AS r SET status = 'canceled' …
 RETURNING {COLUMNS}`, with the tenant predicate an `EXISTS` over bound values.
+  Two more predicates joined it on 2026-09-16 and neither adds an
+  interpolation: a `NOT EXISTS` over `provider_requests` correlated on the
+  row's own `provider_reference_id` — the money guard, see
+  `docs/flows/ledger.md` — and `r.created_at < now() - make_interval(secs =>
+$4)`, whose window is a **bound** `f64` constant rather than an interval
+  spliced into the text.
 
 The increments and decrements are **expressions over the row's own column**,
 exactly as `invoices::add_refund_for_intent_in_tx` is, so no arithmetic result

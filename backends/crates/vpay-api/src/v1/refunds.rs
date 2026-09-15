@@ -318,6 +318,38 @@ pub(crate) async fn create(
 /// Everything that can refuse the request is in steps 1 to 4, before anything
 /// is written — so a refused refund costs no row, no reservation and no event.
 ///
+/// # Where the reservation can be left held, traced rather than assumed
+///
+/// A reservation that is never released is money a merchant can never refund,
+/// so every exit from here is listed. Reviewed 2026-09-16; `release` below
+/// means `amount_refund_pending` goes back.
+///
+/// | Exit | Row | Reservation | Rail |
+/// | --- | --- | --- | --- |
+/// | steps 1–4 refuse | none | never taken | never asked |
+/// | [`write_pending_refund`] fails or abandons | none | rolled back whole | never asked |
+/// | `insert_pending` fails | `pending` | **held** | never asked |
+/// | rail `Ok`, `record_response` fails | `pending` | **held** | asked, accepted |
+/// | rail `Ok` | `pending` | **held** | asked, accepted |
+/// | fail-and-release variants | `failed` | released | not taken |
+/// | `record_response`/[`fail_with_event`] fails on that path | `pending` | **held** | not taken |
+/// | `Transport`/`Malformed` | `pending` | **held** | unknown |
+/// | a panic anywhere after the commit | `pending` | **held** | unknown |
+///
+/// Held is the safe direction and every row above is deliberate, but two of
+/// them are **held with nothing that will ever release it**, and they are the
+/// cost of there being no refund poll ladder (RFC-0003 open question 8):
+/// anything at or after the rail call. The merchant's remedy is reconciliation
+/// against `provider_reference_id`, not a cancel — `vpay_db`'s cancel refuses
+/// a refund an attempt row exists for, deliberately, because releasing that
+/// one is how a payee is paid twice.
+///
+/// The two rows that are held *without* the rail having been asked —
+/// `insert_pending` failing, and a panic in the same gap — are the one state
+/// [`cancel`] still serves: no attempt row, so a minute later the merchant can
+/// cancel it and get the reservation back. That is the whole of what the
+/// cancel route is for now.
+///
 /// # Errors
 ///
 /// `404` for an intent this scope cannot see; `400` for a parameter this
@@ -841,13 +873,37 @@ async fn refund_at_rail(
 /// The question every arm below answers is one thing: **did the rail take the
 /// instruction?**
 ///
-/// * It provably did not — the adapter refused before or instead of a call
-///   ([`ProviderError::NotImplemented`], [`ProviderError::Unsupported`],
-///   [`ProviderError::Config`]) or the rail itself refused
-///   ([`ProviderError::Rejected`]). The refund is `failed`, the reservation
-///   goes back, `charge.refund.updated` says so, and the merchant gets the
-///   error's own classification. Retrying is then safe, because nothing is in
-///   flight.
+/// * It provably did not — **no transfer exists at the rail**. The refund is
+///   `failed`, the reservation goes back, `charge.refund.updated` says so,
+///   and the merchant gets the error's own classification. Retrying is then
+///   safe, because nothing is in flight. Walked against `mtn_momo::refund`,
+///   which is the only adapter that makes the call, rather than asserted:
+///     * [`ProviderError::NotImplemented`] (Orange's token) and
+///       [`ProviderError::Unsupported`] (the port's default) — returned
+///       before any socket is opened;
+///     * [`ProviderError::Config`] for a missing Disbursements credential or
+///       a `None` destination on a `Required` rail — likewise before any
+///       socket;
+///     * [`ProviderError::Config`] for the transfer path answering **404** —
+///       the rail *did* answer, and the answer is that the endpoint is not
+///       there, so no transfer was created;
+///     * [`ProviderError::Config`] for a **500** carrying one of
+///       `mtn_momo::mapping::CONFIGURATION_CODES` — the rail answered, and
+///       the code says it refused the request we sent
+///       (`INVALID_CURRENCY`, `NOT_ALLOWED_TARGET_ENVIRONMENT`,
+///       `INVALID_CALLBACK_URL_HOST`). **This one is an inference and is the
+///       weakest arm here**: MTN publishes no Disbursements schema, so that
+///       vocabulary is Collections' reused as a deliberate assumption, and
+///       the product has never been called. A 500 with any *other* code, or
+///       none, is `Transport` and holds — which is the arm below;
+///     * [`ProviderError::Rejected`] for a documented **400**, and for a
+///       **401/403** that survived one token re-mint — authentication is
+///       refused before a transfer is created, and a 400 is the gateway
+///       declining the request rather than accepting it.
+///
+///   A future adapter that returned one of these variants *after* a rail may
+///   have acted would make this arm wrong. That is why the reason stated here
+///   is "no transfer exists", not "these four variants".
 /// * It may have — a transport failure or an answer that could not be parsed
 ///   ([`ProviderError::Transport`], [`ProviderError::Malformed`], and any
 ///   variant a future port adds). **Nothing is released and nothing is
@@ -1486,18 +1542,16 @@ fn cancel_refused(id: &str, refusal: &CancelRefusal) -> ApiError {
             ),
         },
         CancelRefusal::RailInstructed => ApiError::Conflict {
-            message:
-                "This refund has already been given to the payment rail, so it cannot be \
+            message: "This refund has already been given to the payment rail, so it cannot be \
                  canceled: canceling it would promise that no money will move when it may \
                  already have. Reconcile it with the rail against the refund's \
                  `provider_reference_id`."
-                    .to_owned(),
+                .to_owned(),
         },
         CancelRefusal::CreateMayStillBeRunning => ApiError::Conflict {
-            message:
-                "This refund was created moments ago and may still be on its way to the \
+            message: "This refund was created moments ago and may still be on its way to the \
                  payment rail, so it cannot be canceled yet. Retrieve it again in a minute."
-                    .to_owned(),
+                .to_owned(),
         },
     }
 }

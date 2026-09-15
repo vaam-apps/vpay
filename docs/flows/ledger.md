@@ -119,7 +119,10 @@ A refund is asynchronous, so:
   claiming money moved twice when it never moved at all.
 - **On cancellation:** the same release, with the refund moving `pending` to
   `canceled` (`vpay_db::Refunds::cancel`). Nothing was posted, so nothing is
-  reversed.
+  reversed. **A cancel is only reachable for a refund no rail was given**
+  (2026-09-16): releasing the reservation for one whose transfer is with the
+  rail would let the same money be refunded twice, and the reservation is the
+  only thing standing between a merchant and that second transfer.
 
 ## A rail-charged refund fee is reported, not posted
 
@@ -246,7 +249,9 @@ and no adapter can produce a fee to write.
 over-refund CHECK now refuses under real traffic.** `POST /v1/refunds`
 increments `amount_refund_pending` in the same transaction as the row, so
 migration `0003`'s `no_over_refund` is reached by a merchant request rather
-than only by a test; the cancel and the rail-failure path release it; and
+than only by a test; the rail-failure path releases it, and the cancel does
+too but only for a refund no rail was ever given — which is no refund this
+route produces, because the attempt row is written before the transfer; and
 nothing else moves, because a `pending` refund posts no ledger entries and has
 nothing to reverse. **No refund has ever reached `succeeded` through this
 route**, so the refund postings in `Settlement::apply_refund_succeeded` are

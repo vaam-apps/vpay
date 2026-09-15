@@ -208,7 +208,9 @@ suite's own MTN mappings:
 - the update merges `metadata` key-wise, removes a key sent empty, refuses
   `amount`, and emits one event for the write and none for the refusal;
 - a cancel releases the reservation, cannot be repeated, and posts nothing to
-  the ledger;
+  the ledger — **for a refund no rail was given**; one the rail already has is
+  a `409`, and so is one created within the last minute (added by the money
+  review, below);
 - the list is merchant-scoped, newest-first, filterable by `payment_intent`,
   and another merchant's intent id is an empty page rather than a `404`;
 - a replayed `Idempotency-Key` answers the stored response and instructs no
@@ -234,3 +236,110 @@ suite's own MTN mappings:
 - **`refunds.fee` is still written by nothing.** The handler logs a warning if
   an adapter ever reports one.
 - **`just ci` was not run**, per the brief. The table above is what was run.
+
+## The money review, 2026-09-16 (branch `review/w3f-money`)
+
+An adversarial review of this arm, lens: **money safety and the failure
+branches**. It found one bug, measured it, fixed it, and re-measured. Every
+claim it checked is recorded below — including the ones that held.
+
+### The bug: a refund the rail already had could be canceled
+
+`POST /v1/refunds/{id}/cancel` guarded on `status = 'pending'` and nothing
+else. Nothing settles a refund (open question 8), so **every** refund this
+route creates is `pending` for ever with its transfer already accepted — which
+made every one of them cancelable. Measured against a real Postgres and the
+MTN WireMock, before the fix:
+
+| Step                                  | Result                                         |
+| ------------------------------------- | ---------------------------------------------- |
+| charge                                | 5 000                                          |
+| full refund                           | `201 pending`, **1** transfer on MTN's journal |
+| `POST /v1/refunds/{id}/cancel`        | **`200`, `status: "canceled"`**                |
+| reservation after the cancel          | **0**                                          |
+| second full refund                    | `201`                                          |
+| transfers at the rail                 | **2**                                          |
+| refund written against a 5 000 charge | **10 000**                                     |
+
+A merchant told the first refund was called off, a payee instructed twice, and
+no error anywhere. The `no_over_refund` CHECK could not object, because the
+cancel had handed the reservation back.
+
+The fix is two predicates in the cancel statement, beside the tenancy and
+status guards that were already there: `NOT EXISTS (… provider_requests …
+operation = 'refund')`, and `r.created_at < now() - 60s` for the window
+between the refund's own commit and the attempt row's insert. The API answers
+a `409` naming which one refused.
+
+**What it costs, and it is not small: no refund this route creates is
+cancelable at all.** The cancel's remaining subject is a create that died
+between committing the row and recording the attempt
+([crash-safety.md](../../flows/crash-safety.md)'s "no `provider_requests`
+row"), and a merchant with a stuck `pending` refund reconciles it against the
+rail by `provider_reference_id`. That is worse for a merchant than a `200` and
+it is the only true answer until there is a refund poll ladder.
+`a_pending_refund_cancels_once_and_gives_its_reservation_back` used to create
+its refund through the route and assert the `200` — it pinned the bug as the
+contract — and now builds the crashed-create state directly.
+
+### Mutations, with their numbers
+
+Every one was applied to the shipping code, run, and reverted.
+
+| Mutation                                                            | Expected to fail                                                             | Measured                                                                                           |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| claim the `Idempotency-Key` **after** `resolve_target`              | `a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on` | **1 failed, 15 passed** — the replay got `409 invalid_state` where the stored `201` was owed       |
+| …the same, with the case sending an explicit `amount`               | it should NOT fail — the author's claim about their first draft              | the replay assertions **passed** under the bad ordering; only the unrelated message assert tripped |
+| `reference = target.charge.provider_reference_id` (mint _and_ send) | `two_partial_refunds_of_one_charge_carry_two_references`                     | **1 failed, 15 passed** — `left != right` on the two references, same UUID twice                   |
+| mint a fresh reference, persist it, **send the charge's**           | the same case, by its journal assertion                                      | **2 failed, 14 passed** — `each refund reached the rail under its own reference: left 0, right 1`  |
+| delete the `NOT EXISTS (provider_requests)` predicate               | `a_refund_the_rail_has_already_been_instructed_is_not_cancelable`            | **first attempt: all 18 passed.** See below                                                        |
+| …the same, with that case aging its refund first                    | the same                                                                     | **1 failed** — `left 200, right 409`, the body carrying `status: "canceled"`                       |
+| delete the `created_at < now() - 60s` predicate                     | `a_refund_whose_create_may_still_be_running_is_not_canceled_yet`             | **1 failed, 17 passed**                                                                            |
+
+**The row that matters most is the fifth.** The first version of the money
+case left its refund young, so the _age_ predicate answered the same `409`
+with the same message — the diagnosis reads "instructed" before "too young" —
+and the guard the case is named after could be deleted outright with all 18
+cases green. The case ages its refund now, and the reason is written into it.
+This is the arm's own failure mode repeating one level up: a test that passes
+for a reason other than the one it claims.
+
+### Claims checked that held
+
+- **`Transport`/`Malformed` answering `201` with the pending refund is
+  right.** Failing and releasing there is the double payout, because
+  `PostRequest::finish` releases the key on a 5xx and the retry would instruct
+  a second transfer. The hole was never this branch; it was that `cancel`
+  offered the merchant the same release through the front door.
+- **The fail-and-release set really is "no transfer exists at the rail"**,
+  walked variant by variant against `mtn_momo::refund` rather than assumed —
+  the walk is now on `finish_refund`. `Malformed` is correctly **not** in it:
+  it is a response the rail sent, so the rail may have acted. Two arms are
+  answers rather than pre-call refusals and were checked individually: a
+  **404** on the transfer path (`Config` — the endpoint is not there) and a
+  **500** carrying one of `CONFIGURATION_CODES` (`Config` — the code says our
+  request was refused). The second is the weakest and is now labelled as such
+  in the code: MTN publishes no Disbursements schema, so that vocabulary is
+  Collections' reused by assumption, and a 500 with any other code or none is
+  `Transport` and holds.
+- **The reservation trace** out of `create_once` is a table on that function
+  now. Nothing releases a reservation it should not. Two exits hold one with
+  nothing that will ever release it — anything at or after the rail call —
+  and that is the poll-ladder gap rather than a defect in this handler.
+- **The honesty about `pending`** is sufficient: the module header, the
+  resource contract ("_instructed_, never _paid_") and this page all say a
+  `201` is not money moved, and `status` on the object says it on every read.
+
+### Gates run by the review
+
+| Command                                                                                      | Result                                                  |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `cargo nextest run -p vpay-api`                                                              | 384 passed, 0 skipped, 0 ignored                        |
+| `cargo nextest run -p vpay-db` (with `DOCKER_HOST` set)                                      | 243 passed, 0 skipped, 0 ignored                        |
+| `cargo nextest run -p vpay-db` (with `DOCKER_HOST` **unset**)                                | **fails** at case 10 of 243 — it does not silently pass |
+| `cargo nextest run -p vpay-tests-integration --test refunds`                                 | 18 passed, 0 skipped, 0 ignored (16 before)             |
+| `cargo test --doc -p vpay-db -p vpay-api`                                                    | 8 + 18 passed                                           |
+| `cargo clippy -p vpay-db -p vpay-api -p vpay-tests-integration --all-targets -- -D warnings` | clean                                                   |
+| `cargo +nightly fmt --all --check`                                                           | clean                                                   |
+
+`just ci` was not run, per the brief.
