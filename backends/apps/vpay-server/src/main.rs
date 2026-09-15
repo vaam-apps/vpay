@@ -303,20 +303,64 @@ async fn run() -> anyhow::Result<()> {
     let dashboard_validator =
         loopback_dashboard_validator(bound, &booted.merchant_op, &booted.config)?;
 
+    // Corrected 2026-09-16. This said "Refunds are not routed: nothing calls
+    // the `refunds` writer", and it had been false since the four refund
+    // routes were mounted the same day — the one in-code claim of its kind
+    // that the change mounting them did not move. It was measured, not
+    // reasoned about: a real boot of this binary printed it while
+    // `sdks/rust/tests/live_refunds.rs` was creating, updating, listing and
+    // cancelling refunds through the very process that printed it.
+    //
+    // What replaces it keeps every true half of the sentence, because the
+    // reason this banner exists is that a merchant must not conclude from a
+    // mounted route that money has come back.
+    //
+    // Narrowed again on review the same day, on one clause and measured the
+    // same way. The replacement above still said "no deployment holds the
+    // credential", and the e2e/demo stack had been given one hours earlier so
+    // that the live refund suites could run at all — so this binary printed
+    // that sentence while its own `config` held a
+    // `disbursement_subscription_key`. The credential it holds is a stub
+    // string addressed at a `wiremock/wiremock` container, which is what the
+    // clause now says; the sentence that matters is unchanged and no weaker.
+    //
+    // Merged 2026-09-16. Two wave-3 reviews rewrote this one literal
+    // independently — `review/w3f-contract` by sweeping the repository for
+    // claims that `POST /v1/refunds` was unrouted, `review/w3g-sdks` by
+    // watching a real boot print one — so git could not merge them and a
+    // human had to pick a sentence true of both. What each side contributed
+    // and what was dropped:
+    //
+    //   * arm F's review named the routes as paths but listed only four of
+    //     the five; its list omitted `GET /v1/refunds/{id}`, which has been
+    //     routed since 2026-09-05 (issue #45). All five are named here, and
+    //     `V1_ROUTES`' own test
+    //     (`the_refund_resource_is_mounted_for_exactly_five_methods`) is
+    //     what pins the list this sentence has to agree with.
+    //   * arm F's review also carried "no deployment holds the credential",
+    //     which arm G's `gen-demo-keys` change had already made false. Arm
+    //     G's narrower clause wins, unchanged.
+    //   * arm F's consequence clause — an Orange refund fails at once and
+    //     gives its reservation back — is kept, because it is still true
+    //     after the money review: `finish_refund` fails and releases on
+    //     `NotImplemented`, which is what `orange_money::refund` answers
+    //     before any socket is opened.
     tracing::warn!(
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
-         authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
-         cancel). Both rail adapters implement `submit` and `query_status`; the MTN push was \
-         first proven against MTN's real sandbox on 2026-09-15. Refunds ARE routed since \
-         2026-09-16 (POST/GET /v1/refunds, POST /v1/refunds/{{id}}, POST \
-         /v1/refunds/{{id}}/cancel) — this line said they were not until then — but no rail \
-         has ever returned money and NOTHING SETTLES A PENDING REFUND: there is no refund \
-         status read on the port, so a refund created here stays pending until an operator \
-         moves it. `mtn_momo::refund` IS written (MTN Disbursements) but no deployment holds \
-         the credential and the product has never been called; `orange_money::refund` \
-         answers a NotImplemented token, not Unsupported, so an Orange refund fails at once \
-         and gives its reservation back. Every other /v1 resource answers the honest 404. \
-         See docs/status.md"
+         authentication boundary, /v1/payment_intents (create, retrieve, list, confirm, \
+         cancel) and, since 2026-09-16, all five /v1 refund routes: POST /v1/refunds \
+         (create), GET /v1/refunds/{{id}} (retrieve), GET /v1/refunds (list), POST \
+         /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). Both rail \
+         adapters implement `submit` and `query_status`; the MTN push was first proven \
+         against MTN's real sandbox on 2026-09-15. NO REFUND HAS EVER MOVED MONEY: \
+         `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
+         credential exists in this project — the only one anywhere is the stub the e2e/demo \
+         stack points at a WireMock container — and the product has never been called; \
+         `orange_money::refund` answers a NotImplemented token, not Unsupported, so an \
+         Orange refund fails at once and gives its reservation back; and NOTHING SETTLES A \
+         PENDING REFUND — there is no refund poll ladder, so a refund these routes create \
+         stays `pending` until an operator moves it. Every other /v1 resource answers the \
+         honest 404. See docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 

@@ -50,6 +50,22 @@ to.
 > Retiring MTN's token did not narrow the banner — the sentence above says the
 > same thing about the rail, which is what the banner is for, and says it about
 > a call that now exists and could therefore be mistaken for one that works.)_
+>
+> _(**Narrowed on one clause, 2026-09-16, and on no other.** "No deployment
+> even holds the credential it needs" was true of every deployment and is now
+> imprecise about one: the **e2e/demo compose stack** holds a
+> `disbursement_subscription_key`, which is a stub string addressed at a
+> `wiremock/wiremock` container, put there so the SDKs' live refund suites
+> could drive the path end to end. It had no value at all until then, and the
+> consequence was that a refund on that stack was a `500` before it reached
+> even the stub. **Nothing else in the sentence moved**, and nothing in it is
+> weaker: no real MTN Disbursements credential exists anywhere in this
+> project, the product has still never been called, and **no rail has ever
+> refunded anything**. The four refund routes and both SDKs' refund surfaces
+> exist as of 2026-09-16 and **nothing settles a `pending` refund** — there is
+> no refund poll ladder — so every refund they can create stays `pending`
+> forever. See
+> [status/verification/2026-09-16-w3-sdk-refunds.md](status/verification/2026-09-16-w3-sdk-refunds.md).)_
 
 That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a

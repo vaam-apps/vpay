@@ -299,6 +299,40 @@ until 2026-09-15, when RFC-0003 § 3 added `Refunds::create` and
 change to the create path cannot quietly change what these cases measure; what
 did not change is that nothing reachable over `/v1` writes a refund.)_
 
+**Corrected 2026-09-16 (wave 3).** Two claims in the paragraph above are now
+false and are left standing rather than rewritten: ~~"`POST /v1/refunds` is
+unrouted until wave 3"~~ and ~~"nothing reachable over `/v1` writes a
+refund"~~. Wave 3 arrived. Arm F mounted `POST /v1/refunds`,
+`GET /v1/refunds`, `POST /v1/refunds/{id}` and
+`POST /v1/refunds/{id}/cancel`, and arm G put all four plus the existing
+retrieve in **both** merchant SDKs, with the `destination` a
+`RefundDestination::Required` rail needs:
+
+    POST /v1/refunds
+      payment_intent=pi_...
+      amount=2000                          # omit for a full refund
+      destination[mtn_momo][msisdn]=%2B237600000200
+
+The rail's own code is the outer key — the same envelope
+`payment_method_data[<rail_code>]` uses on the confirm path — and the payee
+must be **international, starting with `+`**: `RefundTarget::mobile_money`
+refuses the bare national form because `vpay-provider` is not
+Cameroon-specific, which is a rule `GET /v1/account_holders` deliberately does
+**not** apply. Neither SDK canonicalises the number.
+
+**What is still true, and is the sentence that matters:** no refund has ever
+moved money. `orange_money::refund` is a `NotImplemented` token,
+`mtn_momo::refund` is MTN's Disbursements `transfer` and that product has
+never been called from this repository, and **nothing settles a `pending`
+refund** — there is no refund poll ladder (RFC-0003 open question 8).
+
+Both SDKs now drive a **real** `vpay-server` over a socket for this surface —
+`sdks/rust/tests/live_refunds.rs` (behind the `live-stack` feature) and
+`sdks/nodejs/src/refunds.live.test.ts` (its own vitest project), both run by
+`just sdk-live`, both failing rather than skipping with no stack. The run, and
+the demo-stack misconfiguration it found, are in
+[docs/status/verification/2026-09-16-w3-sdk-refunds.md](../status/verification/2026-09-16-w3-sdk-refunds.md).
+
 **Evidence for the Step 2 half, run on this machine on 2026-09-03 with a
 working rootless Docker daemon:** `cargo nextest run -p vpay-db -p
 vpay-tests-integration` — **74 passed, 0 failed, 0 skipped**, of which 16 are

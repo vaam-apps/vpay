@@ -75,6 +75,9 @@ export type {
   MtnMomoPaymentMethodData,
   OrangeMoneyPaymentMethodData,
   CreateRefundParams,
+  RefundDestination,
+  UpdateRefundParams,
+  ListRefundsParams,
   RequestOptions,
 } from "./types.js";
 
