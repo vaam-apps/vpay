@@ -108,6 +108,35 @@ witness is a stub; ⛔ means not built.
 | `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | ⛔ `NotImplemented("mtn_momo::refund")`         |
 | `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called | 🟡 parsed, routed, never received; `notif_token` unverified | ✅ `Unsupported` — permanent, capability-driven |
 
+**Each rail parses its own refund destination (2026-09-15, RFC-0003 open
+question 4).** Both adapters implement `ProviderAdapter::parse_destination`,
+turning the `destination[<rail_code>]` sub-map the core hands over into a
+`RefundTarget`. It is not a wire call and is absent from the table above on
+purpose: it opens no socket, and the conformance case that covers it
+(`a_required_rail_parses_its_own_destination`) starts no container. The
+refund columns are unchanged — `mtn_momo::refund` is still its
+`NotImplemented` token and `orange_money` still answers the port's permanent
+`Unsupported` — so **no refund is any closer to working**. What moved is that
+a future bank-account upstream now costs no change in the core.
+
+**An open question for the maintainer: where the one MSISDN rule lives.**
+`parse_destination` applies the _confirm path's_ rule for a payer number —
+`vpay_api::v1::payment_intents`' `payer_instrument` demands present, a JSON
+string, not whitespace-only, and passes it to the rail as written — so a
+number vpay accepts as a payer it accepts as a payee, and `not a phone
+number` is accepted by both and refused by the rail. It does **not** apply
+`vpay_api::v1::account_holders::canonical_msisdn`, the stricter E.164 rule
+the account-holder route and the customer object use: that function is
+`pub(crate)` to `vpay-api`, the adapter crates sit below it in the graph and
+cannot name it, and re-spelling it once per adapter is the drift the repo has
+refused elsewhere. Closing the gap means moving one canonicaliser to a crate
+both layers can see — `vpay-core` or `vpay-provider` — which changes where the
+**confirm** path validates and puts a Cameroon-specific rule in a
+market-agnostic crate. That is a decision about a rule's home, not about
+refunds, so it is recorded here rather than taken. Until it is taken, the
+confirm path and the refund path are wrong in the same direction, which is at
+least not a new asymmetry.
+
 **Failure mapping, re-grounded 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** ✅ in the wire-call
 column above has never meant the _mapping tables_ were faithful to the rails
