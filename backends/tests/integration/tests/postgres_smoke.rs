@@ -3403,6 +3403,171 @@ async fn a_succeeded_refund_moves_both_counters_and_posts_a_balanced_transaction
     Ok(())
 }
 
+/// A refund whose `currency_code` is not its intent's is **refused**, and the
+/// whole settlement rolls back.
+///
+/// # What the schema does not stop, and why that matters
+///
+/// `refunds.currency_code` is a real column whose only constraint is the
+/// foreign key onto `currencies` (migration `0017`). Nothing ties it to the
+/// intent's; the two agree today only because `vpay_db::Refunds::create` is
+/// the sole writer and derives it from the intent. Before 2026-09-16,
+/// `settlement::post_refund` built its ledger legs from the *intent's*
+/// currency because `SettledRefund` carried none — so a second writer would
+/// have rendered `EUR` on the refund object and posted `XAF` legs, and
+/// `vpay_ledger::Transaction::validate` would not have said a word: it
+/// balances each currency on its own book, and every leg in the same wrong
+/// currency balances perfectly.
+///
+/// That "no caller can reach it" reasoning is exactly what produced the
+/// mixed-currency ledger defect earlier on this branch, where it was true
+/// right up until the same branch added the writer.
+///
+/// # Why refusal, and not simply posting in the refund's own currency
+///
+/// By the time the posting is built, `apply_refund_succeeded` has already
+/// added the refund's `amount` to `payment_intents.amount_refunded` and to
+/// `invoices.amount_refunded`, both denominated in the intent's currency and
+/// neither looking at a currency at all. On a mismatch there is therefore no
+/// correct posting to make in *either* code — so the settlement aborts whole
+/// and the refund stays `pending` for a human. This case is what pins that.
+///
+/// # This test is a second writer of `refunds`, deliberately
+///
+/// The row is inserted with hand-written SQL because `vpay_db::NewRefund` has
+/// no `currency_code` field to diverge with — see its docs, which is the same
+/// reason a merchant cannot cause this error. The reservation is set by hand
+/// for the same reason: `Refunds::create` writes the row and the reservation
+/// in one transaction and would have written a currency that agrees.
+#[tokio::test]
+async fn a_refund_whose_currency_disagrees_with_its_intent_is_refused_and_posts_nothing()
+-> anyhow::Result<()> {
+    use vpay_core::Classify as _;
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_mixed",
+        "ch_mixed",
+        5_000,
+    )
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
+         VALUES ('re_mixed', 'pi_mixed', 2000, 'EUR', 'pending', '{}'::jsonb)",
+    )
+    .execute(&pool)
+    .await
+    .context("the divergent writer inserts a EUR refund against an XAF intent")?;
+    sqlx::query("UPDATE payment_intents SET amount_refund_pending = 2000 WHERE id = 'pi_mixed'")
+        .execute(&pool)
+        .await
+        .context("the reservation Refunds::create would have taken")?;
+
+    // The premise, asserted rather than assumed: the database really did
+    // accept a refund in a currency that is not its intent's. If a future
+    // migration ties the two together with a constraint, this insert starts
+    // failing above and the rest of this case becomes moot — which is the
+    // outcome we would want, and it should be visible rather than silent.
+    let codes: (String, String) = sqlx::query_as(
+        "SELECT r.currency_code, p.currency_code FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id WHERE r.id = 're_mixed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("reading the two currency codes back")?;
+    assert_eq!(
+        (codes.0.as_str(), codes.1.as_str()),
+        ("EUR", "XAF"),
+        "the premise of this test is that nothing in the schema stops the two from diverging"
+    );
+
+    let legs_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting the capture's legs")?;
+
+    let error = repositories
+        .apply_refund_succeeded("re_mixed")
+        .await
+        .expect_err("a refund denominated in a currency that is not its intent's must be refused");
+
+    assert!(
+        matches!(
+            &error,
+            vpay_db::DbError::RefundCurrencyMismatch {
+                refund_id,
+                refund_currency,
+                payment_intent_id,
+                intent_currency,
+            } if refund_id == "re_mixed"
+                && refund_currency == "EUR"
+                && payment_intent_id == "pi_mixed"
+                && intent_currency == "XAF"
+        ),
+        "the refusal must name both codes and both objects, and the refund's must be read off \
+         the refund row rather than off the intent: {error:?}"
+    );
+
+    // Internal, not Conflict or InvalidRequest. `NewRefund` has no
+    // `currency_code` field, so no request a merchant can send produces this;
+    // blaming the caller with a `409` would point an operator at the only
+    // party who could not have caused it, and `Storage`'s "retry" would have
+    // the worker re-run a settlement that fails identically forever.
+    assert_eq!(error.category(), vpay_core::Category::Internal);
+    assert_eq!(error.code(), "refund_currency_mismatch");
+
+    // Nothing was posted — not two legs in the wrong currency, and not a
+    // compensating pair that nets to zero. Both would satisfy invariant 1.
+    let legs_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting legs after the refusal")?;
+    assert_eq!(
+        legs_after, legs_before,
+        "the refused settlement must post no ledger entry at all"
+    );
+    let eur_legs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries WHERE currency_code = 'EUR'")
+            .fetch_one(&pool)
+            .await
+            .context("looking for a leg in the refund's currency")?;
+    assert_eq!(
+        eur_legs, 0,
+        "a EUR leg would be a merchant_payable balance going negative in a currency nothing was \
+         ever captured in"
+    );
+
+    // And the rest of the transaction rolled back with it: the refund is
+    // still `pending`, so the poll job will see it again, and both intent
+    // counters are exactly where the reservation left them.
+    let status: String = sqlx::query_scalar("SELECT status FROM refunds WHERE id = 're_mixed'")
+        .fetch_one(&pool)
+        .await
+        .context("reading the refund's status back")?;
+    assert_eq!(
+        status, "pending",
+        "the compare-and-swap out of `pending` must roll back with the posting it could not make"
+    );
+    assert_eq!(
+        refund_figures(&pool, "pi_mixed").await?,
+        (5_000, 0, 2_000),
+        "`amount_refunded` must not have absorbed 2 000 EUR into an XAF total, and the \
+         reservation must still be held"
+    );
+
+    Ok(())
+}
+
 /// A failed refund releases the reservation, leaves `amount_refunded` alone,
 /// and **posts nothing**.
 ///

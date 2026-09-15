@@ -327,15 +327,64 @@ async fn post_capture(
 /// forever — so `None` is the broken invariant the caller turns into
 /// [`DbError::WriteMatchedNoRow`].
 ///
+/// # The currency is the **refund's**, and a disagreement is refused
+/// (2026-09-16)
+///
+/// Both halves of the [`Money`] come off `refunds` — [`money_from_row`]'s own
+/// rule, which this function used to break by pairing `refund.amount` with
+/// `intent.currency_code`. `crate::refunds::SettledRefund` carried no
+/// currency, and `refunds.currency_code`'s only constraint is its foreign key
+/// onto `currencies` (migration `0017`); nothing in the schema ties it to the
+/// intent's. They agree today only because `Refunds::create` is the sole
+/// writer.
+///
+/// Reading the refund's own column is not on its own enough, because by the
+/// time this runs [`Settlement::apply_refund_succeeded`] has already added
+/// `refund.amount` to two figures denominated in the *intent's* currency —
+/// `payment_intents.amount_refunded`
+/// ([`payment_intents::settle_refund_in_tx`]) and `invoices.amount_refunded`
+/// ([`invoices::add_refund_for_intent_in_tx`]). Neither addition looks at a
+/// currency. **So when the two codes differ there is no correct posting to
+/// make**: whichever one these legs carried, the intent and the invoice would
+/// already be counting minor units of one currency into a total denominated
+/// in another.
+///
+/// The refusal is therefore the fix, and reading the currency off the refund
+/// is what makes the refusal possible. [`DbError::RefundCurrencyMismatch`]
+/// aborts the settlement, which rolls back the flip to `succeeded`, both
+/// counters and the invoice, leaving the refund `pending` for a human — the
+/// fail-closed direction every other error on this path takes. It is
+/// `Category::Internal` because a mismatch is a vpay bug and not a request
+/// any merchant can make: `NewRefund` has no `currency_code` field to pass.
+///
+/// The cost is stated plainly: with this guard in place `refund.currency_code`
+/// and `intent.currency_code` are provably equal on the line below, so
+/// swapping one for the other is unobservable. The guard, not the argument to
+/// [`money_from_row`], is what
+/// `a_refund_whose_currency_disagrees_with_its_intent_is_refused_and_posts_nothing`
+/// in `postgres_smoke.rs` pins. The argument stays the refund's because the
+/// ledger must record what the *object the merchant sees* says, if these two
+/// ever come apart again.
+///
 /// # Errors
 ///
 /// [`post_capture`]'s, plus [`DbError::WriteMatchedNoRow`] on `charges` if the
-/// refunded intent has none.
+/// refunded intent has none, and [`DbError::RefundCurrencyMismatch`] if the
+/// refund's currency is not the intent's.
 async fn post_refund(
     tx: &mut Transaction<'_, Postgres>,
     refund: &crate::refunds::SettledRefund,
     intent: &PaymentIntentRow,
 ) -> Result<(), DbError> {
+    if refund.currency_code != intent.currency_code {
+        return Err(DbError::RefundCurrencyMismatch {
+            refund_id: refund.id.clone(),
+            refund_currency: refund.currency_code.clone(),
+            payment_intent_id: intent.id.clone(),
+            intent_currency: intent.currency_code.clone(),
+        });
+    }
+
     let charge_id = crate::charges::id_for_intent_in_tx(tx, &intent.id)
         .await?
         .ok_or_else(|| DbError::WriteMatchedNoRow {
@@ -343,7 +392,7 @@ async fn post_refund(
             key: intent.id.clone(),
         })?;
 
-    let amount = money_from_row(refund.amount, &intent.currency_code, "payment_intents")?;
+    let amount = money_from_row(refund.amount, &refund.currency_code, "refunds")?;
     let posting = LedgerTransaction::refund(&intent.merchant_id, amount);
 
     let transaction_id = vpay_core::ids::ledger_transaction_id();
@@ -356,7 +405,7 @@ async fn post_refund(
         payment_intent_id = %intent.id,
         merchant_id = %intent.merchant_id,
         amount = refund.amount,
-        currency_code = %intent.currency_code,
+        currency_code = %refund.currency_code,
         "a refund was posted to the ledger"
     );
 

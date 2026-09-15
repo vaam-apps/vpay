@@ -231,6 +231,62 @@ pub enum DbError {
         source: sqlx::Error,
     },
 
+    /// A `refunds` row's `currency_code` is not the `currency_code` of the
+    /// `payment_intents` row it refunds, so the settlement was refused
+    /// (2026-09-16).
+    ///
+    /// # Why this needs refusing rather than reconciling
+    ///
+    /// `refunds.currency_code` is a real column whose only constraint is the
+    /// foreign key onto `currencies` (migration `0017`). **Nothing in the
+    /// schema ties it to the intent's**, and `docs/flows/money.md` is one
+    /// currency per object with no conversion anywhere — so there is no
+    /// arithmetic that makes a mismatched pair agree. It cannot be resolved
+    /// by picking a side either: by the time
+    /// [`crate::Settlement::apply_refund_succeeded`] builds the posting it
+    /// has already added the refund's `amount` to
+    /// `payment_intents.amount_refunded` and to `invoices.amount_refunded`,
+    /// both denominated in the *intent's* currency and neither looking at a
+    /// currency at all. Whichever code the ledger legs then carried, those
+    /// two totals would already be counting minor units of one currency into
+    /// another.
+    ///
+    /// The refusal aborts the settlement transaction whole, which is the
+    /// fail-closed direction: the flip to `succeeded`, both counters, the
+    /// invoice and the posting all roll back and the refund stays `pending`.
+    ///
+    /// # Why it fires today only for a writer that does not exist yet
+    ///
+    /// `vpay_db::Refunds::create` is the only writer of the column and
+    /// derives it from the intent inside the same transaction — [`crate::
+    /// NewRefund`] has no `currency_code` field for a caller to fill — so a
+    /// coherent deployment cannot produce one. That is precisely
+    /// [`Self::UnknownCurrency`]'s standing, and the same reasoning applies:
+    /// "unreachable from today's call sites" is a fact about today's call
+    /// sites, and `vpay_ledger::Transaction::validate` would not catch the
+    /// mismatch if a second writer ever appeared — it balances each currency
+    /// on its own book, and every leg in the same *wrong* currency balances
+    /// perfectly.
+    ///
+    /// `Category::Internal`: a merchant cannot ask for this, no retry
+    /// changes it, and it pages rather than being reported as somebody's bad
+    /// request.
+    #[error(
+        "refund {refund_id} is denominated in {refund_currency} but payment intent \
+         {payment_intent_id} is in {intent_currency}; vpay converts no currency, so the \
+         settlement was refused rather than posted in either"
+    )]
+    RefundCurrencyMismatch {
+        /// The `re_…` whose settlement was refused.
+        refund_id: String,
+        /// The code stored on the refund. Never a secret — an ISO-4217 code.
+        refund_currency: String,
+        /// The `pi_…` it refunds.
+        payment_intent_id: String,
+        /// The code stored on the intent. Never a secret — an ISO-4217 code.
+        intent_currency: String,
+    },
+
     /// A `currencies` row already exists with a different `exponent` than
     /// the boot-time seed claims — e.g. the deployment says `XAF` has two
     /// decimal places while the database recorded zero.
@@ -535,11 +591,19 @@ impl vpay_core::Classify for DbError {
             // A stored currency this build does not model is the third
             // shape of the same thing — see the variant for why it cannot
             // arise from anything a merchant sent.
+            //
+            // A refund denominated in a currency that is not its intent's is
+            // the fourth, and reaches Internal by the same door: `NewRefund`
+            // has no `currency_code` field, so no request can produce one.
+            // Not `Conflict`: nothing raced and nothing about the merchant's
+            // request was wrong, so `409`/"do not repeat this" would put the
+            // blame on the only party who could not have caused it.
             Self::WriteMatchedNoRow { .. }
             | Self::StaffStatusUnknown { .. }
             | Self::CredentialKindUnknown { .. }
             | Self::SessionStateUnknown { .. }
-            | Self::UnknownCurrency { .. } => Category::Internal,
+            | Self::UnknownCurrency { .. }
+            | Self::RefundCurrencyMismatch { .. } => Category::Internal,
             // Delegated, never re-decided. Named explicitly rather than
             // caught by a wildcard, which is both ADR-0011's rule and what
             // `verify-errors` checks.
@@ -583,6 +647,12 @@ impl vpay_core::Classify for DbError {
             Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
             Self::UnknownCurrency { .. } => "unknown_currency",
+            // Not `unknown_currency`: both codes are currencies this build
+            // models and both are in `currencies`. What is wrong is that
+            // they are not the same one, and an operator grepping the two
+            // apart is the difference between "seed the currency" and "find
+            // the writer".
+            Self::RefundCurrencyMismatch { .. } => "refund_currency_mismatch",
             Self::Persistence(error) => error.code(),
             // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
             // `database_…` code, deliberately: nothing about the database
