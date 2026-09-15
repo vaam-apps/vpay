@@ -243,34 +243,32 @@ pub struct Submitted {
 
 /// Where a [`RefundDestination::Required`] rail must send the money.
 ///
-/// # Opaque to the core once it exists — but the core is what builds one
+/// # Opaque to the core, and built by the adapter
 ///
-/// After construction the core's entire business with one of these is
-/// **presence**: it checks that a refund on a `Required` rail carries one and
-/// that a refund on an `Origin` rail does not, and hands it through
-/// untouched. The adapter reads the interior and renders it onto its own
-/// wire. A core code path that branched on what is inside would have put the
-/// rail's shape back in the core, which is what ADR-0002 exists to prevent.
+/// The core never constructs one and never reads one. Its entire business
+/// with a destination is **presence**: it checks that a refund on a
+/// `Required` rail carries one and that a refund on an `Origin` rail does
+/// not, hands the uninterpreted `destination[<rail_code>]` sub-map to
+/// [`ProviderAdapter::parse_destination`], and passes the result through
+/// untouched to [`ProviderAdapter::refund`]. A core code path that branched
+/// on what is inside would have put the rail's shape back in the core, which
+/// is what ADR-0002 exists to prevent.
 ///
-/// The analogy with [`RefExtra`] stops one step short of that, and the gap is
-/// worth naming because it is where the *next* shape gets decided.
+/// This *was* the core's job, and RFC-0003 open question 4 decided against it
+/// on 2026-09-15 — the reasoning is worth keeping because it is what the next
+/// shape will be argued from. The analogy with [`RefExtra`] is the frame:
 /// `RefExtra` is untyped and travels adapter → core → adapter, so a rail with
 /// new key material costs no change to this crate and none to the core. A
-/// destination travels merchant → core → adapter, so something has to turn
-/// `destination[<rail_code>][…]` into one of these, and today that something
-/// is the core: [`mobile_money`](RefundTarget::mobile_money) is called from
-/// `vpay_api`. A non-mobile-money upstream therefore costs a **core** change
-/// — not a rail-code branch, so ADR-0002 still holds, but a core that has
-/// learned a second set of wire keys.
+/// destination travels merchant → core → adapter, so *something* has to turn
+/// `destination[<rail_code>][…]` into one of these. Had that something been
+/// the core, ADR-0002 would still have held — no rail-code branch — but a
+/// bank-account upstream would then have cost a **core** change, because the
+/// core would have learned a second set of wire keys. Putting it on the
+/// adapter, symmetric with [`ProviderAdapter::parse_callback`], is what makes
+/// a second destination shape genuinely zero-core-change.
 ///
-/// The alternative, if that is judged wrong, is the symmetry
-/// [`ProviderAdapter::parse_callback`] already has: the adapter parses its
-/// own wire shape into the port's type and the core hands over an
-/// uninterpreted sub-map, which would make a second destination shape
-/// genuinely zero-core-change. That is **not decided here.** It is RFC-0003
-/// open question 3, it belongs with whoever has the upstream that needs it,
-/// and RFC-0003 § 2's `POST /v1/refunds` is the first code that has to build
-/// one of these and so the first place the cost is real.
+/// What is *not* decided is the shape itself: that is RFC-0003 open question
+/// 3, and it belongs with whoever has the upstream that needs it.
 ///
 /// # Why one shape, and no bank-account variant
 ///
@@ -324,10 +322,35 @@ impl RefundTarget {
     /// Builds the mobile-money destination: a payee's MSISDN.
     ///
     /// Infallible, on [`AccountHolder::new`]'s terms — the caller supplies a
-    /// number it has **already canonicalised**. The port cannot do that
-    /// itself: the server-side MSISDN rule lives in `vpay_api`, which depends
-    /// on this crate, and a second copy of a validation rule is how the two
-    /// spellings drift apart.
+    /// number it has already decided is one. The port cannot decide that
+    /// itself, and a second copy of a validation rule is how two spellings
+    /// drift apart.
+    ///
+    /// # Who the caller is, and how strict it is — a named gap
+    ///
+    /// Since RFC-0003 open question 4 was decided on 2026-09-15 the caller is
+    /// an adapter's [`ProviderAdapter::parse_destination`], not `vpay_api`.
+    /// The rule those implementations apply is deliberately the **confirm
+    /// path's**: `vpay_api::v1::payment_intents`' `payer_instrument` accepts a
+    /// payer MSISDN that is present, a JSON string and not whitespace-only,
+    /// and passes it to the rail as written. A destination is held to exactly
+    /// that, so a number vpay would accept as a payer is a number it accepts
+    /// as a payee.
+    ///
+    /// It is **not** held to `vpay_api`'s stricter E.164 canonicaliser,
+    /// `v1::account_holders::canonical_msisdn` — the one the account-holder
+    /// route and the customer object use. That function is `pub(crate)` to
+    /// `vpay_api`, an adapter crate cannot name it, and writing a second
+    /// spelling of it inside each adapter is the drift this paragraph exists
+    /// to refuse. So `+237600000200` and `not a phone number` are both
+    /// accepted here and both refused by the rail, exactly as they are on the
+    /// confirm path today.
+    ///
+    /// Closing that gap means moving one canonicaliser to a crate both
+    /// `vpay_api` and the adapters can see, which changes where the *confirm*
+    /// path validates and is a decision about a market-specific rule's home,
+    /// not about refunds. It is deliberately left open rather than guessed
+    /// at, and `docs/status/backend.md` records it.
     ///
     /// Named for the shape rather than `new` so that a future non-mobile-money
     /// destination is a sibling constructor, not a silent change of meaning to
@@ -918,20 +941,26 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `refund` | `account_holder_name` | what it means |
-/// |---|:-:|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Also an unknown fate, never a decline |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. On `parse_destination` alone it is not the rail at all but the *merchant's* parameters, which is the same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
+/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+///
+/// The two blank columns are as load-bearing as the ticks. `parse_callback`
+/// and `parse_destination` are the only pure functions in the table: neither
+/// opens a socket, neither reads a credential, and neither relays anything a
+/// rail decided — so `Config`, `Rejected` and `Transport` are not merely
+/// unused there, they would be untrue.
 ///
 /// There is deliberately **no** `ProviderError::retryable()`: retry policy is
 /// [`Classify::retry`](vpay_core::Classify::retry) and a second oracle beside
 /// it is what ADR-0011 exists to prevent.
 ///
-/// # Why `#[async_trait]`, and why `parse_callback` is not async
+/// # Why `#[async_trait]`, and why the two `parse_*` methods are not async
 ///
 /// A trait with a native `async fn` is not dyn-safe, and this port is *only*
 /// ever used as `Box<dyn ProviderAdapter>` — which is what keeps
@@ -942,7 +971,10 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// `parse_callback` stays synchronous so that it *cannot* make a network
 /// call: a callback is a hint, and an adapter that could fetch something
 /// while "parsing" one could smuggle a status out of an unauthenticated
-/// request (`docs/flows/reconciler.md`).
+/// request (`docs/flows/reconciler.md`). `parse_destination` is synchronous
+/// on the same terms — it reads a merchant's parameters, and an adapter that
+/// could call a rail while "parsing" them would turn one refund request into
+/// an unbounded number of outbound calls.
 #[async_trait]
 pub trait ProviderAdapter: Debug + Send + Sync {
     /// Stable code, equal to the `payment_method_types` value.
@@ -1011,6 +1043,93 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// is not parseable, or that names no charge this deployment could have
     /// generated, must be refused rather than attributed to something.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError>;
+
+    /// Turns this rail's own `destination[<rail_code>][…]` sub-map into a
+    /// [`RefundTarget`].
+    ///
+    /// The symmetry with [`parse_callback`](ProviderAdapter::parse_callback)
+    /// is the whole point. There, an adapter turns *its* wire shape into a
+    /// port type and the core never learns the rail's field names; here the
+    /// values travel the other way — merchant → core → adapter — and the
+    /// same rule applies. That is what makes a future non-mobile-money
+    /// upstream a zero-core-change addition rather than a core that has
+    /// learned a second set of wire keys. RFC-0003 open question 4, decided
+    /// 2026-09-15.
+    ///
+    /// # What `raw` is, and what the core has already done to it
+    ///
+    /// `raw` is the **rail-scoped inner map**: the value of
+    /// `destination[<rail_code>]`, with the rail code already stripped. That
+    /// outer key is vpay's own envelope — it is a [`code`](ProviderAdapter::code),
+    /// which is core knowledge by definition, and it is spelled the same way
+    /// on the confirm path's `payment_method_data[<code>]` — so a
+    /// `destination` naming no rail, or naming one as something that is not
+    /// an object, is the core's refusal and never reaches here. Everything
+    /// *inside* is the rail's, and an implementation of this method is the
+    /// only code in the workspace entitled to know those names.
+    ///
+    /// The core has also already checked
+    /// [`Capabilities::refund_destination`], so this is called on a
+    /// [`Required`](RefundDestination::Required) rail and not on an
+    /// [`Origin`](RefundDestination::Origin) one (ADR-0002: the capability,
+    /// never the code).
+    ///
+    /// Synchronous for `parse_callback`'s reason: parsing caller-supplied
+    /// values must not be able to reach the network.
+    ///
+    /// # What an [`Origin`](RefundDestination::Origin) rail answers, and why
+    /// there is a default at all
+    ///
+    /// [`ProviderError::Unsupported`], by taking this default and writing
+    /// nothing — exactly as such a rail already does for
+    /// [`refund`](ProviderAdapter::refund) and
+    /// [`account_holder_name`](ProviderAdapter::account_holder_name), and for
+    /// their reason: "this rail has no such API, permanently", a fact the
+    /// core branched on before it could call. A rail that returns money to
+    /// the instrument that paid has no destination to parse at all, so there
+    /// is no body it could honestly be made to write.
+    ///
+    /// `parse_callback` has no default because every rail has a callback
+    /// shape: leaving it abstract costs an adapter nothing it did not already
+    /// owe. A destination shape is conditional on a capability, so a required
+    /// method here would make every `Origin` rail hand-write the same
+    /// `Err(ProviderError::Unsupported)` — and give it the opportunity to
+    /// write `Ok` of an invented payee instead, which is the failure this
+    /// default removes rather than documents.
+    ///
+    /// A `Required` rail that takes the default is a bug in *that adapter*
+    /// and not a fact about the rail. `a_required_rail_parses_its_own_destination`
+    /// in `backends/tests/conformance` is what refuses it, on the adapter's
+    /// own declaration rather than on a table in the test.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`] for a sub-map missing this rail's key, or
+    /// carrying it as something unusable — an empty map included. It is never
+    /// an `Ok` with no payee: a refund that reached the rail with a silently
+    /// dropped destination is money sent somewhere nobody nominated.
+    ///
+    /// In practice nothing else, on `parse_callback`'s reasoning: this
+    /// touches no network, holds no credential and reads no configuration, so
+    /// there is no transport to fail and no rail decision to relay.
+    /// [`ProviderError::Unsupported`] is the default above, and
+    /// [`ProviderError::NotImplemented`] is open to a `Required` rail whose
+    /// parser is unbuilt on every other method's terms — no adapter in this
+    /// workspace raises one.
+    ///
+    /// **The error must not carry the number.** A destination is a third
+    /// party's phone number, a parse failure is the exact moment an adapter
+    /// is tempted to echo its input back, and `ProviderError`'s `context` is
+    /// rendered into logs and into `vpay_api`'s error envelope. Name the key
+    /// that was wrong, never the value that was in it —
+    /// [`RefundTarget`]'s redacting [`Debug`] is undone by one `{input}` in a
+    /// format string.
+    fn parse_destination(
+        &self,
+        _raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
 
     /// Returns part or all of a settled charge.
     ///
