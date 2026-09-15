@@ -597,6 +597,204 @@ pub(crate) async fn fail_after_submission(
         .map_err(classify_write)
 }
 
+/// The intent statuses a refund may be reserved against.
+///
+/// One, and it is not a simplification. Money can only come back if it went
+/// in: `amount_received` is set by [`succeed_after_submission`] and by nothing
+/// else, so an intent outside `succeeded` has captured nothing, and a
+/// reservation against it would be a promise to return money vpay never took.
+/// Written as SQL text rather than derived from `vpay_core::IntentStatus` for
+/// `SETTLEABLE_STATUSES`' reason — this crate carries the vocabularies as
+/// text (D4).
+const REFUNDABLE_STATUSES: &str = "'succeeded'";
+
+/// Migration `0003`'s over-refund CHECK, by name.
+///
+/// Spelled once so the statement that trips it and the error that reports it
+/// cannot name different rules.
+const NO_OVER_REFUND: &str = "no_over_refund";
+
+/// Turns the `no_over_refund` refusal into [`DbError::OverRefund`], and
+/// leaves every other failure exactly as `classify_write` classified it.
+///
+/// A local narrowing rather than a new arm in `classify_write`, because the
+/// general rule there is right and this is the one documented exception to
+/// it: a CHECK violation is a vpay bug *except* this one, which is a
+/// merchant's request being refused by the guard `docs/flows/ledger.md`
+/// requires to live in the database. See [`DbError::OverRefund`].
+///
+/// The constraint is matched **by name**, not by SQLSTATE: `payment_intents`
+/// carries four other CHECKs on these same columns
+/// (`amount_refunded_non_negative` and friends), every one of which is a
+/// genuine invariant violation, and folding them in here would hide a vpay
+/// bug behind a merchant-facing `409`.
+fn classify_reservation(error: sqlx::Error, payment_intent_id: &str) -> DbError {
+    let is_over_refund = error
+        .as_database_error()
+        .is_some_and(|db| db.constraint() == Some(NO_OVER_REFUND));
+
+    if is_over_refund {
+        DbError::OverRefund {
+            payment_intent_id: payment_intent_id.to_owned(),
+            source: error,
+        }
+    } else {
+        classify_write(error)
+    }
+}
+
+/// Reserves `amount` minor units of this intent's refundable balance, inside
+/// the caller's transaction (RFC-0003 § 3).
+///
+/// # This statement is the over-refund guard, and nothing beside it is
+///
+/// `amount_refund_pending = amount_refund_pending + $2` is evaluated by
+/// Postgres against the row it has just locked, so migration `0003`'s
+/// `no_over_refund` CHECK — `amount_refunded + amount_refund_pending <=
+/// amount` — sees the *committed* total of every refund that got there first.
+/// Two concurrent refunds of an intent with only one refund's worth left
+/// therefore serialize on the row lock MVCC already takes, and the second one
+/// fails the CHECK. An application `SELECT` followed by a comparison in Rust
+/// would let both read the same balance and both pass; `docs/flows/ledger.md`
+/// § "When refunds post" is explicit that the guard must be this UPDATE, and
+/// `two_concurrent_refunds_race_and_the_database_refuses_the_second` in
+/// `postgres_smoke.rs` is the case that proves the reservation reaches it.
+///
+/// # Merchant-scoped in SQL, unlike the two settlement writes above
+///
+/// This is the one refund statement a *merchant* drives — the others are
+/// driven by a rail's answer about a movement vpay initiated — so it carries
+/// the tenant predicate every merchant-facing query in this module carries. A
+/// handler cannot forget to filter, and "not yours" is indistinguishable from
+/// "no such intent", which is the property that stops the existence of
+/// another tenant's intent leaking out of a refund request.
+///
+/// `Ok(None)` therefore means: not this merchant's, or no such intent, or an
+/// intent that is not `succeeded`. All three are a refusal, never a race —
+/// an intent that captured nothing has nothing to refund — and it is
+/// deliberately not an error, so the caller can answer a merchant rather than
+/// page.
+///
+/// # Why `pub(crate)`
+///
+/// [`succeed_after_submission`]'s reason. The reservation is only half a
+/// refund — the `refunds` row is the other half — and the two must reach one
+/// commit or an intent carries a reservation for a refund that does not
+/// exist. Visibility is what keeps [`crate::refunds`] the only caller.
+///
+/// # Errors
+///
+/// [`DbError::OverRefund`] when the CHECK refuses the reservation.
+/// [`DbError::Query`] if the statement fails for any other reason.
+pub(crate) async fn reserve_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    amount: i64,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET amount_refund_pending = amount_refund_pending + $3, \
+             updated_at = now() \
+         WHERE merchant_id = $1 AND id = $2 AND status IN ({REFUNDABLE_STATUSES}) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .bind(amount)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|error| classify_reservation(error, id))
+}
+
+/// Turns a reservation into a settled refund: `amount_refund_pending` down by
+/// `amount`, `amount_refunded` up by the same, in one statement.
+///
+/// The pair moves together because `no_over_refund` reads their sum: a split
+/// into two statements would pass through a moment where the sum is short by
+/// `amount`, which is harmless, and the reverse ordering would pass through
+/// one where it is over, which is not — the CHECK would abort the settlement
+/// transaction for a refund that is entirely legitimate.
+///
+/// # The guard is `amount_refund_pending >= $2`
+///
+/// Not a read-then-subtract, and not a bare decrement trusting
+/// `amount_refund_pending_non_negative` to catch the bad case. A bare
+/// decrement that went negative would be a `23514`, and a failed statement
+/// **aborts the whole transaction** — Postgres then turns the following
+/// `COMMIT` into a silent `ROLLBACK`, which
+/// `swallowing_a_duplicate_posting_inside_a_transaction_discards_the_whole_transaction`
+/// in `postgres_smoke.rs` measures. As a `WHERE` clause the same condition is
+/// `Ok(None)`, which the caller can act on with its transaction still alive.
+///
+/// `Ok(None)` therefore means the intent has no such reservation outstanding,
+/// which is a broken invariant rather than a race — [`crate::settlement`]
+/// reaches this only after the refund row's own compare-and-swap out of
+/// `pending` has matched — and the caller turns it into
+/// [`DbError::WriteMatchedNoRow`].
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+pub(crate) async fn settle_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    id: &str,
+    amount: i64,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET amount_refund_pending = amount_refund_pending - $2, \
+             amount_refunded = amount_refunded + $2, \
+             updated_at = now() \
+         WHERE id = $1 AND amount_refund_pending >= $2 \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(id)
+        .bind(amount)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(classify_write)
+}
+
+/// Gives a reservation back: `amount_refund_pending` down by `amount`,
+/// `amount_refunded` untouched.
+///
+/// The failed and canceled halves of [`settle_refund_in_tx`], and the reason
+/// `amount_refund_pending` is a column at all. Nothing was posted to the
+/// ledger for a refund that never succeeded, so there is no reversal entry to
+/// write — `docs/flows/ledger.md` § "When refunds post" calls that out as the
+/// point of reserving rather than posting optimistically and unwinding.
+///
+/// Guard, `Ok(None)` and errors are [`settle_refund_in_tx`]'s, unchanged.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+pub(crate) async fn release_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    id: &str,
+    amount: i64,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "UPDATE payment_intents \
+         SET amount_refund_pending = amount_refund_pending - $2, \
+             updated_at = now() \
+         WHERE id = $1 AND amount_refund_pending >= $2 \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(id)
+        .bind(amount)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(classify_write)
+}
+
 /// The `charges.state` labels a charge is in while the rail may still act on
 /// it — the four non-terminal members of the vocabulary migration 0004
 /// created as the `charge_state` enum and migration `0037` re-closed as

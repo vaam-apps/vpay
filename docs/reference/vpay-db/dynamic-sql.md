@@ -109,6 +109,41 @@ check is never switched off for it. A statement that does not have to be a
 `format!` should not be one — the count above is the budget, and this is what
 spending nothing looks like.
 
+**Re-done 2026-09-15 for RFC-0003 § 3's refunds write path, where the count
+moved 61 → 66 — five additions, no removals.** Three are on
+`payment_intents` and two on `refunds`:
+
+- `payment_intents::reserve_refund_in_tx` —
+  `UPDATE payment_intents SET amount_refund_pending = amount_refund_pending + $3
+… WHERE merchant_id = $1 AND id = $2 AND status IN ({REFUNDABLE_STATUSES})
+RETURNING {COLUMNS}`. Two crate constants; the merchant, the intent and the
+  amount are all bound. `REFUNDABLE_STATUSES` is a new `const … : &str`
+  spelling one status, added for exactly the reason `SETTLEABLE_STATUSES`
+  exists: the list has to appear inside a statement and this crate carries the
+  vocabularies as text.
+- `payment_intents::settle_refund_in_tx` and
+  `payment_intents::release_refund_in_tx` — the same shape, interpolating
+  `COLUMNS` alone, with the guard `amount_refund_pending >= $2` as a **bound**
+  comparison rather than a computed predicate.
+- `refunds::insert_in_tx` — `INSERT INTO refunds AS r (…) VALUES (…)
+RETURNING {COLUMNS}`. The alias is what lets the `RETURNING` list be the
+  module's table-qualified `COLUMNS` verbatim, so the one write and the two
+  reads cannot drift on what a `RefundRow` decodes.
+- `refunds::cancel_in_tx` — `UPDATE refunds AS r SET status = 'canceled' …
+RETURNING {COLUMNS}`, with the tenant predicate an `EXISTS` over bound values.
+
+The increments and decrements are **expressions over the row's own column**,
+exactly as `invoices::add_refund_for_intent_in_tx` is, so no arithmetic result
+is interpolated either — and in the reservation's case that is not a style
+choice but the over-refund guard itself: a total computed in Rust and
+interpolated would be a total read before the row was locked. See
+`docs/flows/ledger.md` § "When refunds post".
+
+The statement that landed beside them and adds **no site**, for
+`refunds::settle_in_tx`'s reason, is `refunds::fail_in_tx`: it needs no
+constant, so it is a plain `&'static str` and the compiler's own check is
+never switched off for it.
+
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is
 already a bind parameter — the `.bind(..)` calls immediately below each

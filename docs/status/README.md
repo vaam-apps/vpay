@@ -35,6 +35,22 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-15-refunds-write-path-money-review.md](verification/2026-09-15-refunds-write-path-money-review.md) —
+  the adversarial money/concurrency review of the entry below: six mutations
+  with their numbers, eight claims confirmed TRUE, and one finding — the
+  narrowing that followed the over-refund guard moving to `Refunds::create`
+  dropped the only assertion that `apply_refund_succeeded` is one transaction,
+  measured by splitting it in two and watching all 25 refund and ledger cases
+  still pass (328 `vpay-db`/`vpay-ledger`/`vpay-core` + 52 `postgres_smoke`,
+  **0 skipped**; `EXPECTED_DRIFT_CHANGES` re-measured off-pin at cratestack
+  0.11.1 and therefore **not** verified here — CI is the arbiter)
+- [verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md) —
+  RFC-0003 §§ 3-4 wave 2: the first `refunds` INSERT this repository has ever
+  issued from Rust, the intent counters `apply_refund_succeeded` never moved,
+  and the first ledger postings a call site ever made (241 `vpay-db` + 51
+  `postgres_smoke` + 86 `vpay-core`/`vpay-ledger` tests, **0 skipped**; the
+  decisive mutation — deleting the `amount_refund_pending` increment — run,
+  failed the race test as it must, and reverted)
 - [verification/2026-09-13-flutter-lane-b-gate.md](verification/2026-09-13-flutter-lane-b-gate.md) —
   Lane B of the Flutter plugin brief: `verify-sdk-parity` learns Dart
   (245 xtask tests, 0 ignored; clippy `--all-targets -D warnings` clean; the

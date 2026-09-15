@@ -258,42 +258,32 @@ pub trait TxRepositories: Send {
     /// [`DbError::Query`] otherwise.
     async fn insert_in_tx(&mut self, new: &crate::NewEvent) -> Result<crate::EventRow, DbError>;
 
-    /// `ledger_transactions` / `ledger_entries`: records one balanced double
-    /// entry against a charge (RFC-0003 § 4).
-    ///
-    /// **Transactional-only, and there is no pooled variant to fall back
-    /// to** — the strongest form of the rule
-    /// [`TxRepositories::enqueue_in_tx`] states. A ledger posting that
-    /// committed apart from the settlement that caused it would be a ledger
-    /// claiming money moved when the charge says it did not, or the reverse;
-    /// `docs/flows/ledger.md` § "When refunds post" is explicit that the
-    /// posting happens "in one transaction" with the counters it agrees with.
-    ///
-    /// `transaction_id` is the caller's — migration `0005` mints none — and a
-    /// caller that derives it deterministically from what it is settling gets
-    /// idempotency out of the primary key. `crate::ledger`'s module docs say
-    /// why, and why each entry's id is derived from it in turn.
-    ///
-    /// **No caller in any shipping path yet.** `Settlement::apply_succeeded`
-    /// and `Settlement::apply_refund_succeeded` do not post; this is the
-    /// machinery they will call, and `docs/status.md` records that they do
-    /// not call it today rather than letting the method's existence imply
-    /// they do.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Ledger`] if the posting does not balance or has fewer than
-    /// two legs — `vpay_ledger::Transaction::validate` runs before the first
-    /// statement, so nothing is written and the caller's transaction is
-    /// untouched. [`DbError::UniqueViolation`] on a replayed
-    /// `transaction_id`; [`DbError::ForeignKeyViolation`] for an unknown
-    /// `charge_id`; [`DbError::Query`] otherwise.
-    async fn post_ledger_transaction_in_tx(
-        &mut self,
-        transaction_id: &str,
-        charge_id: &str,
-        transaction: &vpay_ledger::Transaction,
-    ) -> Result<(), DbError>;
+    // THE LEDGER WRITE IS DELIBERATELY NOT HERE, and was, briefly.
+    //
+    // `post_ledger_transaction_in_tx` stood in this list from RFC-0003 § 4's
+    // first half (the machinery) until its second (the call sites). What it
+    // published was too wide: any consumer holding a `PendingTransaction`
+    // could post an arbitrary balanced transaction, against an arbitrary
+    // `charge_id`, under an id of its choosing, with **no settlement anywhere
+    // near it** — while this trait's own doc claimed the opposite.
+    //
+    // The precedent is in the same crate and predates it:
+    // `crate::refunds::settle_in_tx` has no entry on any public trait,
+    // because "a consumer cannot settle a refund without the invoice update
+    // that goes with it" is a property of visibility and not of a convention
+    // (`crate::refunds::Refunds`' own doc). `crate::ledger::post_in_tx` is
+    // now the same shape: `pub(crate)`, reached only from
+    // `crate::settlement`'s two posting call sites, which are inside this
+    // crate. What a consumer can name is the business operation
+    // (`Settlement::apply_succeeded`, `Settlement::apply_refund_succeeded`)
+    // and never the raw double entry.
+    //
+    // The tests that drive the raw writer — an unbalanced posting, a
+    // mixed-currency one, a replayed id, the swallowed duplicate — moved into
+    // `crate::ledger`'s own `#[cfg(test)]` module with it, for the reason
+    // `config_reconcile.rs`'s container test gives about
+    // `PgRepositories::cs`: adding a public method purely to give a test a
+    // door is publishing a capability vpay does not have.
 
     /// `invoices`: creates a draft invoice.
     ///
@@ -602,15 +592,6 @@ impl TxRepositories for PendingTransaction {
 
     async fn insert_in_tx(&mut self, new: &crate::NewEvent) -> Result<crate::EventRow, DbError> {
         crate::events::insert_in_tx(self.conn(), new).await
-    }
-
-    async fn post_ledger_transaction_in_tx(
-        &mut self,
-        transaction_id: &str,
-        charge_id: &str,
-        transaction: &vpay_ledger::Transaction,
-    ) -> Result<(), DbError> {
-        crate::ledger::post_in_tx(self.conn(), transaction_id, charge_id, transaction).await
     }
 
     async fn insert_invoice_in_tx(

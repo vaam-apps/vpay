@@ -499,10 +499,15 @@ mod tests {
                     .with_context(|| format!("seeding {id}"))?;
             }
 
-            // Raw inserts: this crate's `refunds` module deliberately has no
-            // `create` (module doc: no rail can produce a refund yet), so
-            // the only way to put a row in this table is the statement the
-            // migration itself would run.
+            // Raw inserts, still, and by choice rather than by necessity:
+            // this comment read "this crate's `refunds` module deliberately
+            // has no `create`" until 2026-09-15, when RFC-0003 section 3
+            // added `Refunds::create`. That writer needs a `succeeded`
+            // intent with a charge behind it and reserves against the intent
+            // as it writes, which is a fixture this read-only procedure has
+            // no use for and a second thing whose failure could fail these
+            // cases. What the procedure is measured on is the rows it
+            // returns, so the rows go in by statement.
             let pool = PgPoolOptions::new()
                 .max_connections(2)
                 .connect(&url)

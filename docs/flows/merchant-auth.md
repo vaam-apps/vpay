@@ -288,9 +288,14 @@ exists behind it. Proven by five container-backed cases in
 `merchant_b_cannot_read_merchant_as_refund`,
 `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
 `a_refund_id_without_the_re_prefix_is_never_looked_up`,
-`creating_a_refund_is_still_the_honest_404`). **Nothing creates a refund**:
-the rows those cases read are `INSERT`ed by the suite, because
-`vpay_db::Refunds` exposes one read and no write.
+`creating_a_refund_is_still_the_honest_404`). **No merchant can create a
+refund**: `POST /v1/refunds` is unrouted until wave 3 and no rail can execute
+one, so the rows those cases read are `INSERT`ed by the suite itself. _(That
+last clause read "because `vpay_db::Refunds` exposes one read and no write"
+until 2026-09-15, when RFC-0003 § 3 added `Refunds::create` and
+`Refunds::cancel`. The suite still seeds its own rows, deliberately, so that a
+change to the create path cannot quietly change what these cases measure; what
+did not change is that nothing reachable over `/v1` writes a refund.)_
 
 **Evidence for the Step 2 half, run on this machine on 2026-09-03 with a
 working rootless Docker daemon:** `cargo nextest run -p vpay-db -p
@@ -415,9 +420,12 @@ work does not close them.
   and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
   migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
   never written**: the column is in the repository's projection and the key
-  is on every refund this API renders, and because nothing writes a refund at
-  all — and no adapter can supply a fee — the value is `null` on every object
-  this repository can produce.
+  is on every refund this API renders, and because no rail can supply a fee —
+  `ProviderAdapter::refund` is a `NotImplemented` token on both rails — the
+  value is `null` on every object this repository can produce. _(This read
+  "because nothing writes a refund at all" until 2026-09-15;
+  `vpay_db::Refunds::create` writes the row, and it writes no fee: nothing in
+  this repository has ever had one to write.)_
 - **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and

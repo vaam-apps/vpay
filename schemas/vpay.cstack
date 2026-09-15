@@ -173,11 +173,16 @@ enum FailureCode {
 // column with `try_get::<String>()`, so a native enum column fails to decode
 // on every read.
 //
-// `canceled` is in the vocabulary because migration 0017 put it there, not
-// because anything reaches it: nothing in this repository writes a refund at
-// all (`vpay_db::refunds` is two reads and no write, because
-// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported` on
-// Orange). docs/status.md says so.
+// `canceled` was in the vocabulary because migration 0017 put it there and
+// not because anything reached it — this comment read "nothing in this
+// repository writes a refund at all (`vpay_db::refunds` is two reads and no
+// write …)" until 2026-09-15, when RFC-0003 section 3 added
+// `Refunds::create` and `Refunds::cancel`, which reach `pending` and
+// `canceled`, and the settlement, which reaches `succeeded` and `failed`.
+// No MERCHANT reaches any of them: `POST /v1/refunds` is unrouted and
+// `ProviderAdapter::refund` is a `NotImplemented` token on both rails —
+// `Unsupported` on neither, since both declare `supports_refunds`.
+// docs/status.md says so.
 enum RefundStatus {
   pending
   succeeded
@@ -603,11 +608,20 @@ model Charge {
 
 model Refund {
   // New in S5, and the table is the one place in this file where "modelled"
-  // buys the least: `vpay_db::refunds` is TWO READS AND NO WRITE, because
-  // creating a refund needs `ProviderAdapter::refund` and that is
-  // `NotImplemented` on MTN and `Unsupported` on Orange (docs/status.md).
-  // The brief that produced this model asked for "refunds' create/get" to
-  // move; there is no create to move, and saying so is the point.
+  // buys the least. This comment read "`vpay_db::refunds` is TWO READS AND
+  // NO WRITE … there is no create to move" until 2026-09-15, when RFC-0003
+  // section 3 added `Refunds::create` and `Refunds::cancel` — the first
+  // INSERT INTO refunds this repository has ever issued. Nothing moves here
+  // even so: `create` pairs the insert with a reservation on
+  // `payment_intents` in one transaction and `cancel` scopes the tenant
+  // through an EXISTS on the same table, and a generated write touches ONE
+  // table (the paragraph below is the same argument for the reads).
+  //
+  // What did not change is that no rail can execute what `create` writes:
+  // `ProviderAdapter::refund` is a `NotImplemented` token on MTN and, since
+  // 2026-09-15, on Orange too — `Unsupported` on neither, since both rails
+  // declare `supports_refunds` (docs/status.md) — and `POST /v1/refunds` is
+  // routed nowhere.
   //
   // Neither read moves either, and for two independent reasons rather than
   // one: `RefundRow` carries `metadata`, which is `JSONB` and undeclared

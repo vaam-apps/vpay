@@ -61,24 +61,65 @@ A refund is asynchronous, so:
   are a property of the CHECK plus Postgres's own MVCC, not of anything vpay
   has written.
 
+  **That last paragraph stopped being true on 2026-09-15 (RFC-0003 section 3),
+  and the half that changed is precisely the half about application code.**
+  `vpay_db::Refunds::create` writes the `refunds` row and increments
+  `amount_refund_pending` in **one transaction**, so there is now an
+  application path that reaches the constraint. It is still not a
+  `SELECT ... FOR UPDATE`: there is no application read of the balance at all,
+  which is stronger rather than weaker, because the increment is an expression
+  over the row's own column and the row lock is the one any `UPDATE` already
+  takes. What remains exactly as described is the guarantee and its mechanism.
+
+  The refusal is `vpay_db::DbError::OverRefund`, its own variant rather than
+  the `DbError::Query` an unclassified CHECK violation becomes:
+  `Category::Conflict`, `409`, never retried. `Query` is `Category::Storage`,
+  which on a refund would tell a merchant to re-send a request that can never
+  succeed. `two_concurrent_refunds_race_and_the_database_refuses_the_second`
+  in `backends/tests/integration/tests/postgres_smoke.rs` issues two 3,000
+  refunds against a 5,000 capture with `tokio::join!` and asserts exactly one
+  commits, the kind of the refusal, and the stored figures afterwards. **The
+  mutation it exists for**: delete the `amount_refund_pending` increment from
+  `payment_intents::reserve_refund_in_tx` and both commit, 6,000 pending
+  against a 5,000 capture — measured on 2026-09-15 and reverted
+  ([../status/verification/2026-09-15-refunds-write-path.md](../status/verification/2026-09-15-refunds-write-path.md)).
+
   Separately, the only over-refund guard that exists in Rust today remains
   narrower and non-concurrent: `Money::checked_sub` in
   `backends/crates/vpay-core/src/money.rs` rejects an arithmetic result that
   would go negative (tested by `refunding_more_than_captured_is_rejected`),
   which stops a single refund larger than what remains captured but says
-  nothing about two refunds racing each other. **No ledger posting yet** —
-  no capture and no refund has ever produced a `ledger_transactions` or
-  `ledger_entries` row in any deployment. That sentence used to add "nothing
-  in the application writes to the ledger tables today"; since 2026-09-15
-  (RFC-0003 § 4) a writer exists — `vpay_db::ledger::post_in_tx` — and
-  **nothing calls it**, which is the half that keeps the claim true. See
-  § Status.
+  nothing about two refunds racing each other.
+
+  ~~**No ledger posting yet** — no capture and no refund has ever produced a
+  `ledger_transactions` or `ledger_entries` row in any deployment.~~
+  **Retired on 2026-09-15 (RFC-0003 sections 3-4).** That sentence had already
+  been narrowed once, from "nothing in the application writes to the ledger
+  tables today" to "a writer exists and nothing calls it"; two call sites call
+  it now. `Settlement::apply_succeeded` posts the capture and
+  `apply_refund_succeeded` posts the refund, each inside the transaction that
+  settles the thing it records. What is true instead, and is narrower, is in
+  section Status: a ledger row has still never been produced in any
+  **deployment**, because no deployment has ever taken a payment.
 
 - **On success:** in one transaction, decrement pending, increment refunded,
-  write the ledger transaction.
+  write the ledger transaction. `vpay_db::Settlement::apply_refund_succeeded`
+  does all three since 2026-09-15, plus the `invoices.amount_refunded` update
+  it already did (issue #91's D5). Before that it did **only** the invoice
+  half, so a refund moved the document and left the intent claiming the whole
+  amount was still kept — which is why invariant 3 below had no code
+  maintaining its left-hand side.
 - **On failure:** decrement pending only. Nothing was posted, so **no reversal
   entry is needed** — which is why the reservation column exists rather than
   posting optimistically and unwinding.
+  `vpay_db::Settlement::apply_refund_failed` is that path, and
+  `a_failed_refund_releases_the_reservation_and_posts_nothing` asserts the
+  ledger tables are untouched rather than holding a pair of legs that net to
+  zero. A netting pair would satisfy invariants 1 and 2 and still be a ledger
+  claiming money moved twice when it never moved at all.
+- **On cancellation:** the same release, with the refund moving `pending` to
+  `canceled` (`vpay_db::Refunds::cancel`). Nothing was posted, so nothing is
+  reversed.
 
 ## A rail-charged refund fee is reported, not posted
 
@@ -138,12 +179,15 @@ own `GAP` comment in `schemas/vpay.cstack` says the same thing.
 the first writer made the gap reachable.** `validate()` used to sum minor
 units across every leg whatever currency it was in, so 100 XAF debited
 against 100 EUR credited balanced. While nothing wrote the ledger that was a
-statement about an unreachable function; `TxRepositories::
-post_ledger_transaction_in_tx` is `pub` and takes a `Transaction` whose
-`entries` field is `pub`, so a hand-built mixed-currency posting reached
+statement about an unreachable function; the writer takes a `Transaction`
+whose `entries` field is `pub`, so a hand-built mixed-currency posting reached
 `ledger_entries` — measured, by running
-`a_mixed_currency_ledger_posting_is_refused_and_writes_nothing` against the
-code before the fix and watching it commit. `validate()` now balances each
+`a_mixed_currency_posting_is_refused_and_writes_nothing` (then in
+`postgres_smoke.rs`, now in `vpay_db::ledger`'s own test module) against the
+code before the fix and watching it commit. It was reachable from _any_
+consumer at the time, through a `pub` trait method that no longer exists; it
+is reachable only from inside `vpay-db` now, which narrows who could make the
+mistake and not whether the guard is needed. `validate()` now balances each
 currency in `Currency::ALL` on its own book and `LedgerError::Unbalanced`
 names the currency that is short. Nothing in the schema could have caught
 this: `currency_code` is per row, and per the paragraph above invariant 1 is
@@ -201,30 +245,54 @@ and is intentionally application-only — see above. The over-refund guard
 this doc covers) now has a real database CHECK in addition to `Money`'s
 Rust-level guard — see "When refunds post" above.
 
-**Persistence: the writer exists and nothing calls it (2026-09-15, RFC-0003
-§ 4). Those are two facts and the second is the one that matters.** This
-section said "persistence and invariants 2–4 are not started" until then, and
-half of that has moved:
+**Persistence: the writer exists and two settlement call sites call it
+(2026-09-15, RFC-0003 sections 3-4).** This section said "persistence and
+invariants 2-4 are not started" until 2026-09-15, then "the writer exists and
+nothing calls it" for the half-day between wave 1 and wave 2. Both are
+superseded:
 
-- `vpay_db::ledger::post_in_tx`, reached from outside `vpay-db` only through
-  `TxRepositories::post_ledger_transaction_in_tx`, is the first statement in
-  this repository's history to write `ledger_transactions` / `ledger_entries`.
+- `vpay_db::ledger::post_in_tx` is the first statement in this repository's
+  history to write `ledger_transactions` / `ledger_entries`.
   It runs inside the caller's transaction — there is deliberately no pooled
   variant, because a posting that committed apart from the settlement that
   caused it would be a ledger disagreeing with the charge.
+- **It is `pub(crate)` and on no public trait.** It was briefly reachable
+  from outside `vpay-db` through `TxRepositories::post_ledger_transaction_in_tx`,
+  which let any consumer holding a `PendingTransaction` post an arbitrary
+  balanced transaction against an arbitrary `charge_id` under an id of its
+  choosing, with no settlement anywhere near it — while that trait's own doc
+  claimed the opposite. The method is gone; the shape is
+  `vpay_db::refunds::settle_in_tx`'s, and what a consumer can name is the
+  business operation and never the raw double entry. The six cases that drive
+  the raw writer moved into `vpay_db::ledger`'s own `#[cfg(test)]` module with
+  it, because giving a test a public door is publishing a capability vpay does
+  not have.
+- **`Settlement::apply_succeeded` posts the capture and
+  `apply_refund_succeeded` posts the refund**, each in the transaction that
+  settles the thing it records. The capture posting is **two legs, not three**:
+  no column in this schema holds a capture-time platform fee and no
+  configuration computes one, so the call site passes `None` and
+  `platform_fee_revenue` is never credited. That is a fact about this
+  repository rather than a simplification, and
+  `a_settled_charge_posts_its_capture_in_the_same_transaction` asserts the
+  two-leg shape so that a fee model cannot land silently.
+- **A ledger transaction id is minted.** `vpay_core::ids::ledger_transaction_id`
+  (`lt_`) was added with migration `0046`'s
+  `CHECK (char_length(id) BETWEEN 1 AND 64)` on both ledger tables — the two
+  halves of the gap migration `0045`'s header recorded and left open.
 - **`Transaction::validate()` is finally called by something that writes.** It
   runs before the first statement, and its failure is `DbError::Ledger` — an
   error the caller must handle, never an `expect`. That is what makes
   "invariant 1 stays application-enforced" a property of the write path rather
   than of a function nothing called; proven by
-  `an_unbalanced_ledger_posting_is_refused_and_writes_nothing`, which asserts
+  `an_unbalanced_posting_is_refused_and_writes_nothing`, which asserts
   both the error **and** that neither table gained a row.
 - Invariant 2 is computable — see the two implementations named above —
-  and `two_merchants_payable_balances_do_not_mix_in_the_database` asserts it
+  and `two_merchants_payable_balances_do_not_mix` asserts it
   against a real Postgres for two merchants at once.
 - **The caller's `transaction_id` is the idempotency key, and the duplicate
   it raises must not be swallowed inside the transaction that raised it.**
-  `a_replayed_ledger_transaction_id_is_refused_and_adds_no_legs` pins the
+  `a_replayed_transaction_id_is_refused_and_adds_no_legs` pins the
   first half: a replay is a `UniqueViolation` on `ledger_transactions_pkey`
   and adds no legs, and a _different_ posting reusing a spent id is refused
   by the same key.
@@ -235,42 +303,134 @@ half of that has moved:
   duplicate and commits anyway is handed `TxOutcome::Commit` while its
   charge, its event and its posting are all discarded. A settlement that may
   run twice has to abandon and re-read, or take a `SAVEPOINT` — not treat
-  the violation as "already done, carry on".
+  the violation as "already done, carry on". **It is a property of every write
+  in `vpay-db`, not of the ledger**, which is why
+  `swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_transaction`
+  in `postgres_smoke.rs` pins the same thing for a duplicate `event_id`
+  through the real `UnitOfWork` seam. The two posting call sites let the
+  duplicate propagate; neither can raise one, because both mint a fresh id.
+
+**Invariant 3 is maintained, and invariant 4 has one guard rather than two
+(2026-09-15, RFC-0003 section 3).**
+
+- Invariant 3 (`amount_refunded` = the sum of succeeded refunds for that
+  intent) has code on both sides for the first time:
+  `Settlement::apply_refund_succeeded` moves `amount_refunded` up and
+  `amount_refund_pending` down in one statement, and
+  `apply_refund_failed` / `Refunds::cancel` release the reservation without
+  touching `amount_refunded`.
+  `amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials`
+  asserts the counter against a `SUM` over the rows, after two partials **and
+  a failure** — the failure being what tells an implementation that adds every
+  refund it sees apart from one that adds only the succeeded ones.
+- Invariant 4 (one capture transaction per succeeded charge) is upheld by
+  `apply_succeeded`'s compare-and-swap on the charge still being live, which
+  is what stops a settlement running twice at all. It is **not** upheld by
+  `ledger_transactions_pkey`: the transaction id is minted afresh, so the
+  primary key cannot be a second, independent guard. A deterministic id, or a
+  `kind` column and a partial unique index on `charge_id` (a bare
+  `UNIQUE (charge_id)` is wrong — refunds post against the same charge), would
+  add one. Which of those, if any, is a maintainer decision and is recorded in
+  `vpay_core::ids::ledger_transaction_id`'s own doc rather than taken by the
+  branch that wired the first call site.
+
+  **That guard is asserted under concurrency, and "one guard" needs one
+  correction (2026-09-15, money review).**
+  `a_settled_charge_posts_its_capture_in_the_same_transaction` settles twice in
+  sequence, which is not the shape production makes: a poll job and a rail
+  callback reach `apply_succeeded` for one charge at the same moment, neither
+  able to see the other's uncommitted write.
+  `two_settlements_racing_one_charge_post_exactly_one_capture` in
+  `postgres_smoke.rs` is that shape — its two `event_id`s differ on purpose, so
+  `events_pkey` cannot stand in for the charge guard — and it holds: one
+  `Ok(Some(_))`, one `Ok(None)`, one transaction, two legs.
+  The correction is that widening the charge compare-and-swap to
+  `WHERE id = $1` does **not** produce a second capture posting. The loser is
+  refused by `payment_intents::succeed_after_submission`'s
+  `status IN (SETTLEABLE_STATUSES)`, which does not contain `succeeded`, and
+  the transaction aborts. What the widening destroys is the _answer_: the loser
+  gets `DbError::WriteMatchedNoRow` where it should get `Ok(None)`, which a
+  worker retries forever. The charge compare-and-swap is what makes the
+  settlement **idempotent**; the intent guard is what makes it **safe**.
+
+- **A refund settlement is one transaction, and that is asserted again
+  (2026-09-15, money review).** `apply_refund_succeeded` flips the refund,
+  moves both intent counters, touches the invoice and posts two legs; a partial
+  commit of that is a refund a merchant is told succeeded with nothing
+  recording the money leaving, or a ledger permanently short one refund. The
+  claim used to ride on
+  `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused`, whose
+  over-refund aborted the settlement from inside — and moving the guard forward
+  to `Refunds::create` took the provocation away and the rider with it, while
+  the same change made the transaction two statements longer. Measured: split
+  `apply_refund_succeeded` into two commits and every refund and ledger case on
+  that branch still passed, 11 in `vpay-db` and 14 in `postgres_smoke`.
+  `a_refund_settlement_that_cannot_finish_rolls_back_the_flip_the_counters_and_the_posting`
+  provokes migration `0042`'s backstop by hand and asserts the flip, both
+  counters, the ledger and `merchant_payable_balance` are all where they were.
+  Migration `0042`'s ceiling really is unreachable from the write path — it is
+  `amount_paid = amount_due`, and `vpay_api::v1::invoices::intent_for` mints
+  the intent with `amount = invoice.amount_remaining`, so the two ceilings are
+  the same number and the intent's is checked first — but that is a property of
+  how the intent is minted, not a constraint, so the case reaches it
+  deliberately and says so.
 
 **What has NOT moved, and no reading of the above should suggest otherwise:**
 
-- **No capture and no refund has ever produced a ledger row, in any
-  deployment.** `Settlement::apply_succeeded` and
-  `Settlement::apply_refund_succeeded` do not post. Every deployment's ledger
-  is empty, and it will stay empty until those call sites are wired.
+- **No ledger row has ever been produced in any deployment.** The call sites
+  are wired and proven against a real Postgres 16 in CI; no deployment has ever
+  taken a payment, so every deployment's ledger is empty for the same reason
+  every deployment's `charges` table is.
+- **No rail can execute a refund.** `ProviderAdapter::refund` is
+  `NotImplemented` on both rails and `POST /v1/refunds` is unrouted until
+  wave 3, so the write path above is reachable from tests and from nothing
+  else. `../status.md` carries the gap.
 - Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
-- Invariants 3 and 4 are not started.
-- **A ledger transaction has no minter and no bound.**
-  `ledger_transactions.id` is supplied by the caller, `vpay_core::ids` has no
-  `lt_`/`le_` prefix, and neither ledger table carries the
-  `CHECK (char_length(id) BETWEEN 1 AND 64)` every other caller-named id
-  column in `backends/migrations` has. `vpay_db::ledger::post_in_tx` derives
-  each entry's id as `{transaction_id}_{index}`, which is deterministic —
-  and, for two transactions whose ids differ only by a `_N` suffix, not
-  unique; the primary key would refuse the second, loudly. Whether the id
-  vocabulary grows a ledger prefix is a maintainer's call, recorded in
-  migration `0045`'s header rather than decided by the branch that wrote the
-  first writer.
-- **Nothing checks that a posting's `merchant_id` is the merchant the charge
-  belongs to.** `ledger_entries.merchant_id` is a bare `TEXT` with a length
-  CHECK and the pair CHECK; it has no foreign key and no relation to
-  `ledger_transactions -> charges -> payment_intents.merchant_id`. A posting
-  crediting `merchant_2` against `merchant_1`'s charge is storable, and
-  invariant 2 would then answer confidently and wrongly for both. The writer
-  takes the merchant from `AccountKind`, so this is a **call-site**
-  obligation: whoever wires `Settlement::apply_succeeded` must build the
-  `AccountKind` from the intent's own `merchant_id` and not from anything a
-  request carried. It is listed here rather than fixed because closing it in
-  the schema means denormalising the merchant onto `ledger_transactions` or
-  adding a trigger, and which of those is right is a maintainer decision.
-  The denormalisation is deliberate — a ledger must not change when an
-  operational row does (migration `0045` § "Why a column at all") — and no
-  SQL constraint can span three tables.
+  Neither are 1, 3 or 4.
+- **The refund posting emits no event.** `charge.refunded` and
+  `charge.refund.updated` are documented types nothing emits; the wire object
+  is `vpay-api`'s to shape and there is no caller until wave 3.
+- **NOT A GAP, retracted 2026-09-15: `{transaction_id}_{index}` is injective.**
+  This list carried an entry saying the derivation was "not injective in
+  general", that `x` and `x_0` both derive `x_0_0`, and that closing it at
+  `post_in_tx` needed a shape check and a new `DbError` variant. That was
+  wrong, and it was wrong in the amendment it came from before it was wrong
+  here. `x` derives `x_0, x_1, …`; `x_0` derives `x_0_0, x_0_1, …`. The two
+  families are disjoint, and they are disjoint for **every** pair of
+  transaction ids, minted or hand-built, because the index is a `usize`
+  rendered in decimal and decimal contains no `_` — so the last `_` of an
+  entry id recovers exactly one `(transaction_id, index)` pair.
+  `vpay_db::ledger::entry_id` carries the argument,
+  `vpay_db::ledger::tests::the_entry_id_derivation_is_injective` asserts it
+  over all 340 ids of length 1-4 over the alphabet `{_, 0, 1, p}` — the only
+  characters that could produce a collision — crossed with 13 leg indices, and
+  it fails naming a colliding pair if the separator is removed; and
+  `entry_ids_do_not_collide_between_ids_that_share_a_prefix` ties it to the
+  real `ledger_entries_pkey`. Migration `0046`'s header still carries the
+  false sentence and cannot be edited — migrations here are forward-only
+  (issue #76); this bullet and `entry_id`'s doc are the correction of record.
+  The entry is left in place rather than deleted so that the next reader of
+  0046's header finds the retraction.
+- **Nothing in the schema checks that a posting's `merchant_id` is the merchant
+  the charge belongs to, and nothing can.** `ledger_entries.merchant_id` is a
+  bare `TEXT` with a length CHECK and the pair CHECK; the merchant is three
+  tables away (`ledger_entries -> ledger_transactions -> charges ->
+payment_intents.merchant_id`) and a row-level CHECK sees one row. The
+  denormalisation is deliberate — a ledger must not change when an operational
+  row does (migration `0045` section "Why a column at all").
+
+  **This is a call-site obligation, and since 2026-09-15 it is discharged
+  rather than merely stated.** `settlement::post_capture` and
+  `settlement::post_refund` build the `AccountKind::MerchantPayable` from the
+  `merchant_id` of the intent row _that same transaction_ wrote, and from
+  nothing a caller passed — `apply_succeeded` and `apply_refund_succeeded`
+  take no merchant argument at all, so threading one through would be a change
+  to those signatures rather than a value someone could quietly pass.
+  `a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller`
+  captures and refunds for two merchants in one database and joins **every**
+  `merchant_payable` row back through `ledger_transactions -> charges ->
+payment_intents`, asserting no row disagrees. The balances alone would not
+  catch a consistent mix-up; the join is what does.
 
 Evidence:
 [../status/verification/2026-09-15-ledger-merchant-dimension.md](../status/verification/2026-09-15-ledger-merchant-dimension.md),

@@ -51,12 +51,19 @@ exist in the live database` line while leaving the live column just as
 standing permission nobody asked for.
 
 `refunds` has a second, independent blocker worth recording because the brief
-that produced this work assumed otherwise: **there is no refund create to
-move.** `vpay_db::refunds` is two reads and no write, because
-`ProviderAdapter::refund` is `NotImplemented` on MTN and, since 2026-09-15
-(RFC-0003 § 5), `NotImplemented` on Orange too — this sentence read
-`Unsupported` on Orange until that date, and the blocker it records did not
-move (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
+that produced this work assumed otherwise: **there was no refund create to
+move.** That was true when this page was written — `vpay_db::refunds` was two
+reads and no write — and stopped being true on 2026-09-15, when RFC-0003 § 3
+added `Refunds::create` and `Refunds::cancel`. Neither is a generated call either, and for
+the reason this section already gives rather than for a missing method: both
+reach across `payment_intents` — `create` pairs the `INSERT` with the
+reservation on the intent in one transaction, and `cancel` scopes the tenant
+through an `EXISTS` on it — and a generated read or write filters columns of
+one table. Both are hand-written statements with their own `sql_audit` sites
+(`insert_in_tx`, `cancel_in_tx`). What has not changed is that no
+rail can execute a refund — `ProviderAdapter::refund` is `NotImplemented` on
+MTN and, since 2026-09-15 (RFC-0003 § 5), `NotImplemented` on Orange too;
+this sentence read `Unsupported` on Orange until that date (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
 onto `payment_intents` — the table carries no `merchant_id` of its own, and
 migration 0017 argues why it should not — and a generated read filters
 columns of one table.

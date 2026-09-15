@@ -352,12 +352,17 @@ what is missing is vpay's call, and this repository has no Orange transfer
 specification). _(This read "Orange Money answers `Unsupported` (its Web
 Payment product documents no refund API at all)" until that date; the
 conclusion below did not move, only the reason on one of the two rails.)_
-`POST /v1/refunds` is unrouted and `vpay_db::Refunds` exposes no `create` —
-[../status.md](../status.md) carries all four. So **`amount_refunded` is `0`
-on every invoice in every deployment**, `apply_refund_succeeded` is called by
-no shipping binary, and the cases that prove it seed a `pending` refunds row
-with a raw `INSERT`, exactly as `backends/tests/integration/tests/refunds.rs`
-already does.
+`POST /v1/refunds` is unrouted until wave 3 — [../status.md](../status.md)
+carries all three. So **`amount_refunded` is `0` on every invoice in every
+deployment** and `apply_refund_succeeded` is called by no shipping binary.
+_(This paragraph also read "`vpay_db::Refunds` exposes no `create`" until
+2026-09-15, when RFC-0003 § 3 added `Refunds::create` and `Refunds::cancel`;
+the conclusion did not move, because no rail and no route can reach them.)_
+The cases that prove it now seed their `pending` refund **through
+`Refunds::create`** — a hand-written `INSERT` would produce a refund with no
+matching reservation, a state the write path cannot reach — while
+`backends/tests/integration/tests/refunds.rs` still seeds its rows directly,
+for the reason its module header gives.
 
 What is built is the _database's_ answer and the transaction that writes it.
 What is not built is everything that would produce a refund in the first

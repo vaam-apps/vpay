@@ -259,17 +259,29 @@ an Orange refund is a transfer back.) **An adapter must not invent one**: `None`
 is "the rail did not report a fee" and `Some(0)` is "the rail said it was
 free", and collapsing them is the exact defect the issue reports one layer up.
 
-**Also missing, and larger:** nothing **writes** a `refunds` row. Reading one
-is no longer missing — issue #45 landed `vpay_db::Refunds::get_for_merchant`
-and `GET /v1/refunds/{id}` on 2026-09-06, while this branch was open, so
-`RefundObject` does cross a wire and `fee` is `null` on every object it can
-produce. What is still missing is the whole of the write side: no
-`POST /v1/refunds` (it is declared in the wire contract and mounted nowhere),
-no `create` in the repository, no adapter that can execute a refund, and no
-writer for `charge.refunded` / `charge.refund.updated` — both types are in the
-`type_is_a_documented_event` vocabulary and neither has ever been emitted. So
-what the tests above prove about the _event_ surface is that the contract
-holds, not that a refund event works.
+**Also missing, and larger:** no **shipping** path writes a `refunds` row.
+Reading one stopped being missing on 2026-09-06 — issue #45 landed
+`vpay_db::Refunds::get_for_merchant` and `GET /v1/refunds/{id}` while this
+branch was open, so `RefundObject` does cross a wire and `fee` is `null` on
+every object it can produce. _(This paragraph read "nothing **writes** a
+`refunds` row … no `create` in the repository" until 2026-09-15, when
+RFC-0003 § 3 landed `vpay_db::Refunds::create` and `cancel` — the first
+`INSERT INTO refunds` this repository has ever issued, paired with the
+reservation on `payment_intents.amount_refund_pending` — plus
+`Settlement::apply_refund_succeeded`/`apply_refund_failed` and the first
+ledger postings for a refund. See the
+"Refunds write path" row in [status/backend.md](status/backend.md).)_ What is
+still missing is everything between that writer and a merchant: no
+`POST /v1/refunds` (it is declared in the wire contract, mounted nowhere, and
+is wave 3's), no adapter that can execute a refund — `mtn_momo::refund` and
+`orange_money::refund` are both `NotImplemented` tokens and **no rail call has
+ever been made for a refund** — and no writer for `charge.refunded` /
+`charge.refund.updated`, both of which are in the `type_is_a_documented_event`
+vocabulary and neither of which has ever been emitted. So nothing in a
+shipping binary calls `create`, every deployment's `refunds` table is empty
+but for rows an operator or a test put there, and what the tests above prove
+about the _event_ surface is that the contract holds, not that a refund event
+works.
 
 ## Legend
 

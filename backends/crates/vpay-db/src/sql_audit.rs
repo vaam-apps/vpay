@@ -351,7 +351,19 @@ mod tests {
     /// spelling of the redaction would have been a second site here, and the
     /// two sides of that race would then be free to disagree about which keys
     /// are a payer's.
-    const EXPECTED_ASSERT_SITES: usize = 61;
+    /// **61 → 66 on 2026-09-15** (RFC-0003 § 3, the refunds write path) —
+    /// five additions and no removals. Three on `payment_intents`
+    /// (`reserve_refund_in_tx`, `settle_refund_in_tx`,
+    /// `release_refund_in_tx`) and two on `refunds` (`insert_in_tx`,
+    /// `cancel_in_tx`). Each interpolates `COLUMNS` and, in the
+    /// reservation's case, the new `REFUNDABLE_STATUSES`; every caller value
+    /// is bound, and the three amount changes are expressions over the row's
+    /// own column rather than totals computed in Rust — which for the
+    /// reservation is the over-refund guard itself and not a style choice.
+    /// `refunds::fail_in_tx` landed with them and adds **no** site, because
+    /// it needs no constant and is a plain `&'static str`; the audit in
+    /// `docs/reference/vpay-db/dynamic-sql.md` says so line by line.
+    const EXPECTED_ASSERT_SITES: usize = 66;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

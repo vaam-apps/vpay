@@ -26,20 +26,61 @@ renderer they and the deliverer must share live in `vpay-api`.
 
 ## `refunds`
 
-**One read, no write, and the write's absence is the point.** `GET
-/v1/refunds/{id}` was made part of the `/v1` contract on 2026-09-05 (issue
-#45) because a refund is the one money movement on this surface with no
-authoritative read: it is asynchronous and non-terminal (`pending`), the two
-documented refund event types are emitted by nothing, and webhook delivery is
-at-least-once and unordered. **Creating** one is a different question and is
-still unanswered — `ProviderAdapter::refund` is `NotImplemented` on MTN
-(refunds are the Disbursements product) and, since 2026-09-15, `NotImplemented`
-on Orange too (RFC-0003 § 5 decided an Orange refund is an outbound transfer
-this repository has no specification for; this sentence read `Unsupported` on
-Orange until that date) — so `Refunds` exposes `get_for_merchant` and nothing
-else. A `create` here would
-be a write path no shipping code calls, which is a feature this repository
-would be claiming it has.
+**Two reads and two writes since 2026-09-15; it was two reads and no write
+until then, and the change is worth stating precisely.** `GET /v1/refunds/{id}`
+was made part of the `/v1` contract on 2026-09-05 (issue #45) because a refund
+is the one money movement on this surface with no authoritative read: it is
+asynchronous and non-terminal (`pending`), the two documented refund event
+types are emitted by nothing, and webhook delivery is at-least-once and
+unordered.
+
+This section said, of the write: "**Creating** one is a different question and
+is still unanswered … `Refunds` exposes `get_for_merchant` and nothing else. A
+`create` here would be a write path no shipping code calls, which is a feature
+this repository would be claiming it has." RFC-0003 § 3 answered the question,
+and the reason is that the _database_ half of a refund is a decision with
+consequences the absence of a rail does not postpone.
+
+`Refunds::create` writes the row **and** increments
+`payment_intents.amount_refund_pending`, in one transaction. That pairing is
+the whole design: migration `0003`'s `no_over_refund` CHECK
+(`amount_refunded + amount_refund_pending <= amount`) is evaluated by Postgres
+against the row it has just locked, so two concurrent refunds serialize and the
+second is refused against the first's _committed_ value. There is deliberately
+no read-then-compare in Rust anywhere on this path — both callers would read
+the same balance and both pass it. The refusal is `DbError::OverRefund`, its
+own variant rather than the `DbError::Query` an unclassified CHECK violation
+becomes, because `Query` is `Category::Storage` and `503`/"retry" on a refund
+is an instruction to re-send a request that can never succeed.
+
+`Refunds::cancel` is the other write: `pending` → `canceled` plus the release
+of the reservation, merchant-scoped through the same join as the reads. The
+three settlement writes — `settle_in_tx`, `fail_in_tx` and the intent counters
+they move — are **not** on the trait: they are `pub(crate)` and belong to
+`crate::settlement`'s transaction, so a consumer cannot settle a refund
+without the invoice update, the intent counters and the ledger posting that go
+with it.
+
+**None of this means vpay can refund anything.** `ProviderAdapter::refund` is
+a declared `NotImplemented` token on **both** rails and `Unsupported` on
+neither: `NotImplemented("mtn_momo::refund")` because refunds are the
+Disbursements product and no deployment holds its subscription key, and —
+since 2026-09-15 — `NotImplemented("orange_money::refund")` because RFC-0003
+§ 5 decided an Orange refund is an outbound transfer this repository has no
+specification for. This section read `Unsupported` on Orange until that date;
+`supports_refunds` is now `true` on both rails, so each token is vpay's
+unbuilt work rather than a fact about a rail. `POST /v1/refunds` is unrouted
+until wave 3, no rail call has ever been made for a refund, and no shipping
+binary reaches any of the four methods. `docs/status.md` says so.
+
+**`NewRefund` carries four fewer fields than the table has columns, and that
+is the same rule in a different place.** `currency_code`, `merchant_id` and
+`charge_id` are read off the intent inside the transaction, and `status` is
+always `pending`. A caller free to pass its own currency could refund 2 000 EUR
+against a 5 000 XAF capture and the schema would store it; a caller free to
+pass a merchant would let a ledger posting be attributed to one the charge does
+not belong to, which is the gap `docs/flows/ledger.md` § Status names and which
+no constraint can close.
 
 **The tenant is reached by a join, and migration `0017` was deliberately not
 altered.** `refunds` has no `merchant_id`; it has a `NOT NULL` foreign key
@@ -66,9 +107,11 @@ does not exist. `fee` (migration `0031`, issue #46, 2026-09-06) **is** in the
 projection, for the mirror-image reason: it is on the wire object as the tenth
 key, so leaving it out would make the renderer invent a value. It is
 `Option<i64>` all the way through — the column has no `DEFAULT`, `NULL` means
-"the rail reported no fee" and `0` means "the movement was free" — and, since
-nothing writes a `refunds` row at all, every value this repository can read
-today is `NULL`. That is `events::EventRow`'s rule for `fanout_attempts`, not
+"the rail reported no fee" and `0` means "the movement was free" — and every
+value this repository can read today is still `NULL`, now for a narrower
+reason: `Refunds::create` does not write the column at all, because no rail
+reports a refund fee to this repository and inventing a zero is exactly what
+issue #46 was filed about. That is `events::EventRow`'s rule for `fanout_attempts`, not
 `checkout_sessions::CheckoutSessionRow`'s one-to-one rule, and it is the right
 one here precisely because guessing at the shape of code nobody has written is
 what this repository calls claiming a feature.
