@@ -22,7 +22,10 @@ the worst possible carrier for "money actually arrived".
 
 ### Which of them is written, and by what
 
-**Eleven of the fifteen are written, and only eleven.** Every writer below puts
+**Thirteen of the fifteen are written, and only thirteen.** It was eleven
+until 2026-09-16, when `POST /v1/refunds` landed (RFC-0003 § 2) and the two
+refund types acquired the writers this table had carried a "— nothing" for
+since the vocabulary was closed. Every writer below puts
 its `events` row in the _same transaction_ as the transition it reports;
 there is no other shape in this repository, and TX 1 below is the reason.
 
@@ -33,8 +36,8 @@ there is no other shape in this repository, and TX 1 below is the reason.
 | `payment_intent.succeeded`      | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                                                                                                                                            | 2026-09-03                                                                                      |
 | `payment_intent.payment_failed` | `vpay_db::settlement::apply_failed` (TX 1), **and** `vpay_api::v1::payment_intents::persist_decline` for a decline at submit                                                                                                                             | 2026-09-03; the submit path **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57)) |
 | `payment_intent.canceled`       | `vpay_api::v1::payment_intents::cancel_with_event`                                                                                                                                                                                                       | **2026-09-10** ([#57](https://github.com/vaam-apps/vpay/issues/57))                             |
-| `charge.refunded`               | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
-| `charge.refund.updated`         | — nothing                                                                                                                                                                                                                                                | —                                                                                               |
+| `charge.refunded`               | `vpay_api::v1::refunds::create`, in the same transaction as the `refunds` row and its reservation                                                                                                                                                        | —                                                                                               |
+| `charge.refund.updated`         | `vpay_api::v1::refunds`' `update_once`, `cancel_once` and `fail_with_event`, each in the transaction of the write it reports                                                                                                                             | —                                                                                               |
 | `checkout.session.expired`      | `vpay_db::checkout_sessions::expire_due`, from the hourly sweep                                                                                                                                                                                          | 2026-09-04                                                                                      |
 | `customer.created`              | `vpay_api::v1::customers::create_with_event`                                                                                                                                                                                                             | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
 | `customer.updated`              | `vpay_api::v1::customers::update_once`, under the row's lock                                                                                                                                                                                             | **2026-09-10** ([#66](https://github.com/vaam-apps/vpay/issues/66))                             |
@@ -44,10 +47,18 @@ there is no other shape in this repository, and TX 1 below is the reason.
 | `invoice.paid`                  | `vpay_db::settlement::apply_succeeded` (TX 1)                                                                                                                                                                                                            | 2026-09-07                                                                                      |
 | `invoice.voided`                | `vpay_api::v1::invoices::write_with_event`                                                                                                                                                                                                               | 2026-09-07                                                                                      |
 
-The four with no writer are documented shapes nothing emits — events are
-written for terminal transitions only, and `created`/`processing` are
-progress. The two refund types have no writer because no rail in this
-repository refunds anything (`../status.md`).
+~~The four with no writer~~ **The two with no writer** are documented shapes
+nothing emits — events are written for terminal transitions only, and
+`created`/`processing` are progress. The sentence that followed read "the two
+refund types have no writer because no rail in this repository refunds
+anything"; it was true until 2026-09-16 and half of it still is. **What
+changed is the route, not the rails**: `POST /v1/refunds` writes a refund and
+instructs a rail, and no rail in this repository has still ever moved money
+back — MTN's Disbursements product has never been called and no deployment
+holds its credential, Orange's transfer is a declared `NotImplemented` token,
+and nothing settles a `pending` refund. So a merchant now receives
+`charge.refunded` for a refund that has been _instructed_, which is what the
+`status` on the object says and why the object is the whole answer.
 
 **`payment_intent.payment_failed` has two writers, and that is deliberate.**
 A rail can refuse a charge in two places — at the submit, before the charge
@@ -158,8 +169,16 @@ drives both refund event types against a real route to prove it. The key is alwa
 and, on every refund this deployment could produce, always `null`; **`null` is
 not `0`** and a receiver must not treat it as one
 (`a_refund_delivered_as_either_refund_event_carries_fee_present_and_null`;
-[merchant-auth.md](merchant-auth.md) has the table). Neither type has ever been
-emitted, as the paragraph above says.
+[merchant-auth.md](merchant-auth.md) has the table). ~~Neither type has ever
+been emitted~~ **— since 2026-09-16 both are, by the four `/v1` refund
+routes.** `charge.refunded` reports "this charge now has a refund against it"
+and is written in the transaction that writes the row; `charge.refund.updated`
+reports every later move of one — a metadata update, a cancellation, and a
+rail that refused the instruction.
+`a_created_refund_emits_charge_refunded_with_the_api_body` in
+`backends/tests/integration/tests/refunds.rs` is the case that drives the
+first through the real route and compares its body to the API's, byte for
+byte.
 
 **`checkout.session.expired` is the only one whose `data.object` is not a
 `payment_intent` or a `refund`.** It carries a `checkout.session`: the thirteen
@@ -220,9 +239,24 @@ from.
 
 ## Status
 
-**Eleven of the fifteen event types have a writer** (the table above says which,
-and since when), the two-step outbox is real, and a signed delivery has been
-read back out of a receiver's own journal. **Every receiver in this
+**Updated 2026-09-16 (RFC-0003 § 2, the four `/v1` refund routes):
+thirteen of the fifteen event types have a writer**, and the two that gained
+one are `charge.refunded` and `charge.refund.updated` — documented shapes this
+repository had emitted nothing for since the vocabulary was closed. Both are
+written by `vpay_api::v1::refunds`, each in the transaction of the write it
+reports, and both carry the same `RefundObject` `GET /v1/refunds/{id}`
+renders, so the webhook body and the API response cannot answer different
+questions.
+`a_created_refund_emits_charge_refunded_with_the_api_body` drives the first
+through the real route against a real Postgres and compares the two bodies.
+**What a `charge.refunded` does not mean: that money moved.** The refund it
+reports is `pending`, nothing in this repository settles a `pending` refund,
+and no rail has ever returned money — read the `status` on the object, which
+is the whole answer.
+
+**~~Eleven~~ Thirteen of the fifteen event types have a writer** (the table
+above says which, and since when), the two-step outbox is real, and a signed
+delivery has been read back out of a receiver's own journal. **Every receiver in this
 repository's history is a WireMock host on a compose network; no merchant
 endpoint outside this repository has ever been POSTed to.** The four pages
 below are where that is measured rather than asserted, and the last of them is

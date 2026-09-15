@@ -839,7 +839,6 @@ async fn refund_at_rail(
 ///
 /// Whatever the adapter answered, for the arms that fail the refund;
 /// [`ApiError::Db`] if the bookkeeping write fails.
-#[allow(clippy::too_many_arguments)]
 async fn finish_refund(
     repositories: &dyn Repositories,
     scope: &MerchantScope,

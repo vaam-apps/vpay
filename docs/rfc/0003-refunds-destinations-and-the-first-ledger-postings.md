@@ -320,9 +320,26 @@ different destinations.
    deliberately unsettled by Arm A, on the grounds that a rule no code
    exercises is how a guess acquires authority.
 
-7. **Which reference does a refund's rail call carry? — OPEN, and it decides
-   whether partial refunds work.** Raised 2026-09-15 by `mtn_momo::refund`,
-   which is the first code that had to answer it.
+7. **~~Which reference does a refund's rail call carry?~~ DECIDED 2026-09-16
+   by the `POST /v1/refunds` handler, which is the caller the question was
+   waiting for: the **refund's** own `provider_reference_id`, minted before
+   the row is written and persisted in the same transaction as it, and
+   passed as `ChargeRef::reference_id`.** No second port parameter and no
+   breaking trait change — the precondition the adapter documents is now
+   satisfied by the only caller there is, and it is satisfied by
+   construction rather than by care: the handler has no access to the
+   charge's reference at the point it builds the `ChargeRef`, because the
+   value it passes is the one it minted two statements earlier.
+   `two_partial_refunds_of_one_charge_carry_two_references` in
+   `backends/tests/integration/tests/refunds.rs` is the half that proves it
+   from the outside, and it asserts three things rather than one: that the
+   two refunds carry different references, that neither is the charge's, and
+   that the **rail's own request journal** shows one transfer per reference
+   — the first two would pass an implementation that minted a reference and
+   then sent a different one. The question as posed is retained below,
+   because the bug it describes is the reason the test asserts what it
+   asserts. It was raised 2026-09-15 by `mtn_momo::refund`, which is the
+   first code that had to answer it.
 
    `ProviderAdapter::refund` takes one `ChargeRef`, which carries one
    reference. A refund needs its _own_ rail reference: § 3 step 2 above mints

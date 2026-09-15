@@ -235,8 +235,23 @@ nothing posts to the ledger in the first place; see § Status.
 
 **The refund `fee` posts nothing, and nothing posts it** — see the section
 above. The column (`refunds.fee`, migration `0031`) and the wire field
-(`vpay_api::model::RefundObject::fee`) exist and are asserted; no application
-code writes a `refunds` row at all, and no adapter can produce a fee to write.
+(`vpay_api::model::RefundObject::fee`) exist and are asserted; ~~no application
+code writes a `refunds` row at all~~ **— corrected 2026-09-16: `POST
+/v1/refunds` writes one (RFC-0003 § 2). It does not write the `fee` column,
+and logs a warning if an adapter ever hands it one, because filling that
+column is a settlement-path change and no adapter can produce a fee anyway** —
+and no adapter can produce a fee to write.
+
+**Updated 2026-09-16: the reservation has a live producer, and it is what the
+over-refund CHECK now refuses under real traffic.** `POST /v1/refunds`
+increments `amount_refund_pending` in the same transaction as the row, so
+migration `0003`'s `no_over_refund` is reached by a merchant request rather
+than only by a test; the cancel and the rail-failure path release it; and
+nothing else moves, because a `pending` refund posts no ledger entries and has
+nothing to reverse. **No refund has ever reached `succeeded` through this
+route**, so the refund postings in `Settlement::apply_refund_succeeded` are
+still reached by nothing a merchant can cause: the port has no refund status
+read and there is no refund poll ladder (RFC-0003 open question 8).
 
 Invariant 1 is implemented and tested in `vpay-ledger`
 (`a_capture_with_a_fee_balances`, `an_unbalanced_transaction_is_rejected`),

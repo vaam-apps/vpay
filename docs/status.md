@@ -293,8 +293,10 @@ went seven to ten; `.env.example`, `compose.e2e.yml`, `deploy/helm/vpay` and
 `docs/runbooks/rotate-rail-credentials.md` carry it, and
 `the_repositorys_own_configuration_passes_the_adapter_join` was red on the
 arm's branch until the three names were set. So the honest summary is: the call
-exists, no caller can reach it (`POST /v1/refunds` is still unrouted), and if
-one could it would answer "this deployment has no Disbursements credential".
+exists, ~~no caller can reach it (`POST /v1/refunds` is still unrouted)~~
+**— corrected 2026-09-16: `POST /v1/refunds` is mounted (RFC-0003 § 2), so a
+caller can reach it —** and what it answers on every deployment there is, is
+"this deployment has no Disbursements credential".
 
 What _is_ proven, against a real `wiremock/wiremock` container, is
 seven conformance cases and thirteen unit tests — that the transfer is
@@ -320,9 +322,18 @@ schema document for the Disbursement API at all, so the request shape is a
 transcription and not a comparison. `docs/flows/adapter-mtn-momo.md` § "Not
 proven" carries the list of what a first real call has to check.
 
-**Three things are unsettled and are recorded rather than decided quietly**,
-because the `POST /v1/refunds` handler that would settle them does not exist
-yet — `vpay_db::Refunds::create` writes the row, and nothing routes to it:
+**Three things were unsettled and were recorded rather than decided quietly**,
+because the `POST /v1/refunds` handler that would settle them did not exist —
+`vpay_db::Refunds::create` wrote the row, and nothing routed to it. **That
+handler landed on 2026-09-16 and answered the first two; the third is
+unchanged.** Item 1 is decided: the handler mints the refund's own
+`provider_reference_id`, persists it before the call and passes that, which
+`two_partial_refunds_of_one_charge_carry_two_references` proves against the
+stub's own request journal. Item 2 is obeyed: an `Ok` leaves the refund
+`pending`, and the consequence — **nothing in this repository settles a
+`pending` refund** — is now a live gap rather than a warning about a future
+one. Item 3 is untouched, because nobody has called that mint. The three as
+they were written:
 
 1. **Which reference the transfer carries.** The port hands `refund` one
    `ChargeRef` and a refund needs its own rail reference (migration `0017`'s
@@ -361,20 +372,33 @@ RFC-0003 § 3 landed `vpay_db::Refunds::create` and `cancel` — the first
 reservation on `payment_intents.amount_refund_pending` — plus
 `Settlement::apply_refund_succeeded`/`apply_refund_failed` and the first
 ledger postings for a refund. See the
-"Refunds write path" row in [status/backend.md](status/backend.md).)_ What is
-still missing is everything between that writer and a merchant: no
-`POST /v1/refunds` (it is declared in the wire contract, mounted nowhere, and
-is wave 3's), no adapter that has ever executed a refund — `mtn_momo::refund`
-is written but its Disbursements product has never been called and no
-deployment holds its key, `orange_money::refund` is a `NotImplemented` token,
-neither answers `Unsupported`, and **no rail call has ever been made for a
-refund** — and no writer for `charge.refunded` /
-`charge.refund.updated`, both of which are in the `type_is_a_documented_event`
-vocabulary and neither of which has ever been emitted. So nothing in a
-shipping binary calls `create`, every deployment's `refunds` table is empty
-but for rows an operator or a test put there, and what the tests above prove
-about the _event_ surface is that the contract holds, not that a refund event
-works.
+"Refunds write path" row in [status/backend.md](status/backend.md).)_
+
+_(Wave 3, 2026-09-16: the four `/v1` refund routes and the first refund events
+— see the "four `/v1` refund routes" row on the same page. Two of the three
+things named below as missing are no longer missing: `POST /v1/refunds` is
+mounted, and `charge.refunded` / `charge.refund.updated` have writers. The
+third is unchanged, and a fourth has been added to it.)_
+
+What was still missing after RFC-0003 § 3 was everything between that writer
+and a merchant: ~~no `POST /v1/refunds` (it is declared in the wire contract,
+mounted nowhere, and is wave 3's)~~, no adapter that has ever executed a
+refund — `mtn_momo::refund` is written but its Disbursements product has never
+been called and no deployment holds its key, `orange_money::refund` is a
+`NotImplemented` token, neither answers `Unsupported`, and **no rail call has
+ever been made for a refund against a real rail** — and ~~no writer for
+`charge.refunded` / `charge.refund.updated`~~, both of which are in the
+`type_is_a_documented_event` vocabulary.
+
+**What is still missing, as of 2026-09-16, and it is the whole of what stands
+between these routes and a working refund:** no deployment holds the
+Disbursements credential, so on MTN a refund reaches
+`ProviderError::Config`; Orange's transfer is unbuilt, so on Orange a refund
+is created and immediately `failed` with its reservation released; and
+**nothing settles a `pending` refund** — the port has no refund status read
+and there is no refund poll ladder (RFC-0003 open question 8, open). A refund
+created through `/v1` is therefore _instructed and not paid_, and its
+`status` says so.
 
 ## Legend
 
