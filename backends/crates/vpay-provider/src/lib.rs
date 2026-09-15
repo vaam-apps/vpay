@@ -170,6 +170,17 @@ impl Capabilities {
     ///    (see the field). A Rust-only "coherence" rule with no database half
     ///    would be a different kind of thing wearing this method's name.
     ///
+    /// Reason 1 has a shelf life and is the weakest of the three: it stops
+    /// being true the day RFC-0003 § 5 flips `orange_money`'s
+    /// `supports_refunds`, and nothing fires on *this* text when it does —
+    /// the tripwire in that adapter's tests fires on the flag. The decision
+    /// survives on reasons 2 and 3, which do not depend on what any rail
+    /// declares today. Reason 2 in particular is an argument about the
+    /// field's **type** rather than about this method: a two-variant enum has
+    /// no honest value for a rail with no refund product at all, which an
+    /// `Option<RefundDestination>` would, and that is a modelling question
+    /// RFC-0003 does not answer and this change deliberately did not decide.
+    ///
     /// `a_refund_destination_is_inert_to_coherence` pins that decision, and
     /// what would have to change before it may be reversed.
     #[must_use]
@@ -232,14 +243,34 @@ pub struct Submitted {
 
 /// Where a [`RefundDestination::Required`] rail must send the money.
 ///
-/// # Opaque to the core, in [`RefExtra`]'s sense
+/// # Opaque to the core once it exists — but the core is what builds one
 ///
-/// The core's entire business with one of these is **presence**: it checks
-/// that a refund on a `Required` rail carries one and that a refund on an
-/// `Origin` rail does not, and hands it through untouched. The adapter reads
-/// the interior and renders it onto its own wire. A core code path that
-/// branched on what is inside would have put the rail's shape back in the
-/// core, which is what ADR-0002 exists to prevent.
+/// After construction the core's entire business with one of these is
+/// **presence**: it checks that a refund on a `Required` rail carries one and
+/// that a refund on an `Origin` rail does not, and hands it through
+/// untouched. The adapter reads the interior and renders it onto its own
+/// wire. A core code path that branched on what is inside would have put the
+/// rail's shape back in the core, which is what ADR-0002 exists to prevent.
+///
+/// The analogy with [`RefExtra`] stops one step short of that, and the gap is
+/// worth naming because it is where the *next* shape gets decided.
+/// `RefExtra` is untyped and travels adapter → core → adapter, so a rail with
+/// new key material costs no change to this crate and none to the core. A
+/// destination travels merchant → core → adapter, so something has to turn
+/// `destination[<rail_code>][…]` into one of these, and today that something
+/// is the core: [`mobile_money`](RefundTarget::mobile_money) is called from
+/// `vpay_api`. A non-mobile-money upstream therefore costs a **core** change
+/// — not a rail-code branch, so ADR-0002 still holds, but a core that has
+/// learned a second set of wire keys.
+///
+/// The alternative, if that is judged wrong, is the symmetry
+/// [`ProviderAdapter::parse_callback`] already has: the adapter parses its
+/// own wire shape into the port's type and the core hands over an
+/// uninterpreted sub-map, which would make a second destination shape
+/// genuinely zero-core-change. That is **not decided here.** It is RFC-0003
+/// open question 3, it belongs with whoever has the upstream that needs it,
+/// and RFC-0003 § 2's `POST /v1/refunds` is the first code that has to build
+/// one of these and so the first place the cost is real.
 ///
 /// # Why one shape, and no bank-account variant
 ///

@@ -71,3 +71,80 @@ column in (the `supports_account_holder_lookup` precedent).
 `a_refund_destination_is_inert_to_coherence` in `vpay-provider` pins that
 decision, over all four combinations of the two flags, and says what would have
 to change — the column and the migration — before it may be reversed.
+
+## Amended the same day by an adversarial review (conventions, blast radius)
+
+Branch `review/w1-port-conventions`. A second review covered correctness and
+privacy and is not recorded here.
+
+**Confirmed, independently of the report above.** The brief's decisive grep
+returns the same two lines under `backends/crates/vpay-api/src/` as at the
+base commit, both prose in doc comments; the diff adds none. Every
+`ProviderAdapter` implementor in the workspace is accounted for — the two
+adapters, `Measured`, and four `#[cfg(test)]` fixtures — and nothing outside
+the test trees constructs a `Capabilities`. `RefundTarget` is modelled on
+`AccountHolder` (private field, redacting `Debug`, `# Errors: None` carrying
+the caller's obligation) and that is this crate's practiced convention, not an
+invention. `RefundDestination` is deliberately not `#[non_exhaustive]`, which
+matches what `vpay_api::ApiError` and `vpay_worker`'s error enum say in so
+many words about workspace-internal enums.
+
+**Changed by the review.**
+
+- `vpay-adapter-orange-money`'s `Adapter::new` doctest still said Orange
+  "documents no refund API … the port's default `Unsupported` is the
+  permanent, correct answer", three hundred lines above a new
+  `capabilities()` comment saying the opposite. The value is unchanged and
+  still `false`; the *reason* now matches the maintainer's 2026-09-15 decision
+  and RFC-0003 § 5.
+- `a_refund_on_this_rail_would_need_a_payee`'s failure message named "Arm E",
+  a word that appears nowhere else in this repository and that no reader can
+  resolve, and carried a fourteen-space typo `cargo fmt` cannot see. It now
+  names RFC-0003 § 5 and lists the prose claims that must move with the flag.
+- `RefundTarget`'s doc claimed opacity "in `RefExtra`'s sense". `RefExtra` is
+  untyped and adapter-constructed; a destination is **core**-constructed, so a
+  non-mobile-money upstream costs a core change (not a rail-code branch —
+  ADR-0002 still holds). The doc now says that, and names the alternative
+  (`parse_callback`'s symmetry) without deciding it: it is RFC-0003 open
+  question 3.
+- `is_coherent`'s first reason for owing no coherence rule stops being true
+  when RFC-0003 § 5 flips `orange_money`'s flag. The doc now says the decision
+  survives on reasons 2 and 3, and that reason 2 is really an argument about
+  the field's type (`Option<RefundDestination>`), which nothing here decided.
+- `docs/flows/provider-port.md` § Status gained the list of claims on that
+  page that go stale, and which single test guards one of them.
+
+**Left deliberately.** The three doc edits the report flagged as scope creep
+are kept: `docs/status.md` § "Where a new row goes" sends a new capability to
+`status/backend.md` and gate output to a dated page, and `CLAUDE.md` step 3
+requires the `docs/flows/*.md` **Status** section, so reverting them would
+break the repository's own rule rather than avoid a conflict.
+`docs/status/README.md`'s "verification log, newest first" is **not** amended
+here: it already omits the three 2026-09-14 pages that merged before this
+work, and six arms each inserting at the head of one list is a six-way
+conflict. That list is the seam owner's, in one pass, and the omission is
+pre-existing rather than introduced by this arm.
+
+### Gates re-run after the review's edits
+
+| Gate                                                                 | Result                                  |
+| -------------------------------------------------------------------- | ----------------------------------------- |
+| `cargo nextest run -p vpay-provider -p vpay-adapter-orange-money`    | **82 passed, 0 skipped, 0 ignored**     |
+| `cargo test --doc -p vpay-provider -p vpay-adapter-orange-money`     | **12 passed, 0 failed, 0 ignored**      |
+| `cargo clippy -p vpay-provider -p vpay-adapter-orange-money --all-targets -- -D warnings` | exit `0`    |
+| `cargo fmt --all -- --check`                                         | exit `0`                                |
+| `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p vpay-provider --no-deps` | exit `0` |
+| `cargo check --all-targets` for every crate depending on `vpay-provider` | exit `0`                             |
+| `cargo xtask verify-serde`                                           | ok — 92 types, 16 exempted              |
+| `cargo xtask verify-errors`                                          | ok — 19 error types, all classified     |
+| `cargo xtask verify-status`                                          | ok — 1 unimplemented item               |
+| `cargo xtask verify-links`                                           | ok — 1621 links in 358 files            |
+
+`just ci` was not run, by instruction. The conformance suite was compiled
+(`cargo check -p vpay-tests-conformance --all-targets`, exit `0`) and **not**
+executed by this review — its WireMock containers are the arm's own evidence
+above, not re-measured here. `pnpm exec prettier --check` could not run: the
+web dependencies are not installed in this worktree. `proseWrap` is
+`"preserve"` in `.prettierrc.json` and no table was touched, so the markdown
+edits are reflow-free, but that is reasoning rather than a gate. CI is the
+gate for both.

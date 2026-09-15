@@ -162,6 +162,15 @@ destination, and nothing calls it yet.**
   Disbursements call (RFC-0003 § 5), any Orange transfer call, any ledger
   posting. The core does not yet check a destination against this capability,
   because there is no core path that creates a refund at all.
+- **Three claims on this page are time-limited, and only one of them has a
+  test.** `orange_money`'s `false` in the `supports_refunds` row, and the
+  paragraph under the table that reads that `false` as the capability system
+  earning its keep, both stop being true when RFC-0003 § 5 flips the flag; the
+  `refund_destination` row's "no core code reads it yet" stops being true when
+  § 2's `POST /v1/refunds` lands. The one guard is
+  `a_refund_on_this_rail_would_need_a_payee` in `vpay-adapter-orange-money`,
+  whose failure message names this page. Nothing guards the third — the arm
+  that builds the route has to come back here.
 
 **Updated 2026-09-06 (review of exp20): "Adding a rail" steps 2 and 3 above
 were both wrong about where a rail is written down.** Step 2 said `INSERT INTO
