@@ -1244,16 +1244,26 @@ async fn cancel_once(
         .await?;
 
     let Some(canceled) = canceled.into_inner() else {
-        // The read above found the refund and found it this merchant's, so
-        // the statement's only other guard is the one that refused: it is no
-        // longer `pending`. The status named is the one the read saw, which
-        // is the most useful thing that can honestly be said — it may have
-        // moved again since, and the merchant re-reads either way.
+        // The read at the top found the refund and found it this merchant's,
+        // so the statement's only other guard is the one that refused: it is
+        // no longer `pending`. **Re-read to say which status**, rather than
+        // naming the one the first read saw — in the race this message is
+        // about, the first read saw `pending` and printing it would produce
+        // "can only be canceled while `pending`; this one is `pending`",
+        // which is the one sentence a merchant cannot act on. A row that has
+        // vanished between the two is the `404` the second read gives.
+        //
+        // This read is a *diagnosis of a refusal that has already happened*
+        // and is never what decides the write — `vpay_db::Invoices::update_draft`'s
+        // rule, and the reason the guard is in the statement.
+        let now = lookup(repositories, scope.merchant_id(), id)
+            .await?
+            .ok_or_else(|| not_found(id))?;
         return Err(ApiError::Conflict {
             message: format!(
                 "A refund can only be canceled while its status is `pending`; this one is \
                  `{}`.",
-                row.status
+                now.status
             ),
         });
     };
