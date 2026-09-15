@@ -236,50 +236,6 @@ pub struct NewCharge {
     pub payer_ref_masked: Option<String>,
 }
 
-/// The id of the one charge an intent has, inside the caller's transaction.
-///
-/// # Why this exists beside [`Charges::get_for_intent`], which reads the same
-/// row
-///
-/// That one runs on the pool, so its answer is a fact from *before* the
-/// caller's transaction and could have changed by the time the caller writes.
-/// This one runs inside the transaction, which is what makes it usable as an
-/// attribution: `crate::refunds::Refunds::create` stamps `refunds.charge_id`
-/// with it, and `crate::settlement::post_refund` names it as the
-/// `ledger_transactions.charge_id` a posting hangs off. A ledger row
-/// attributed to a charge read on a different connection is a ledger row
-/// attributed to a guess.
-///
-/// It returns the id alone rather than a [`ChargeRow`] because both callers
-/// want a foreign key and neither branches on the charge's state — and
-/// selecting `COLUMNS` to throw all but one away is how a row struct starts
-/// being decoded in places that do not need it.
-///
-/// At most one row can match: `one_charge_per_intent` (migration `0004`) is a
-/// unique index on `payment_intent_id`, so `fetch_optional` is reading the
-/// only row there can be rather than picking one of several.
-///
-/// `Ok(None)` means the intent has no charge. For a `succeeded` intent that
-/// cannot happen — the only statement that sets `succeeded` is
-/// `crate::payment_intents::succeed_after_submission`, reached only from
-/// [`crate::settlement`] after a charge compare-and-swap has matched — so a
-/// caller that has already established the intent is `succeeded` treats it as
-/// the broken invariant it would be.
-///
-/// # Errors
-///
-/// [`DbError::Query`] if the read fails.
-pub(crate) async fn id_for_intent_in_tx(
-    conn: &mut PgConnection,
-    payment_intent_id: &str,
-) -> Result<Option<String>, DbError> {
-    sqlx::query_scalar::<_, String>("SELECT id FROM charges WHERE payment_intent_id = $1")
-        .bind(payment_intent_id)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(DbError::Query)
-}
-
 /// Opens the single charge for an intent, inside the caller's transaction.
 ///
 /// Does **not** count the transition: the caller owns the commit, so the
@@ -323,6 +279,53 @@ pub(crate) async fn insert_for_intent(
         .map_err(classify_write)?;
 
     Ok(row)
+}
+
+/// The id of the one charge an intent has, inside the caller's transaction.
+///
+/// `fetch_optional` rather than `fetch_one` over a predicate that is not the
+/// primary key is safe here for one reason, and it is a schema fact rather
+/// than a convention: `one_charge_per_intent` (migration `0004`) is a **full**
+/// unique index on `payment_intent_id`, so this `SELECT` can match at most one
+/// row and "the one charge" is literal. A partial index would make it a silent
+/// choice between several.
+///
+/// # Why this exists beside [`Charges::get_for_intent`], which reads the same
+/// row
+///
+/// That one runs on the pool, so its answer is a fact from *before* the
+/// caller's transaction and could have changed by the time the caller writes.
+/// This one runs inside the transaction, which is what makes it usable as an
+/// attribution: [`crate::refunds::Refunds::create`] stamps `refunds.charge_id`
+/// with it, and `crate::settlement`'s `post_refund` names it as the
+/// `ledger_transactions.charge_id` a posting hangs off. A ledger row
+/// attributed to a charge read on a different connection is a ledger row
+/// attributed to a guess.
+///
+/// It returns the id alone rather than a [`ChargeRow`] because both callers
+/// want a foreign key and neither branches on the charge's state — and
+/// selecting `COLUMNS` to throw all but one away is how a row struct starts
+/// being decoded in places that do not need it.
+///
+/// `Ok(None)` means the intent has no charge. For a `succeeded` intent that
+/// cannot happen — the only statement that sets `succeeded` is
+/// `crate::payment_intents::succeed_after_submission`, reached only from
+/// [`crate::settlement`] after a charge compare-and-swap has matched — so a
+/// caller that has already established the intent is `succeeded` treats it as
+/// the broken invariant it would be.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+pub(crate) async fn id_for_intent_in_tx(
+    conn: &mut PgConnection,
+    payment_intent_id: &str,
+) -> Result<Option<String>, DbError> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM charges WHERE payment_intent_id = $1")
+        .bind(payment_intent_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(DbError::Query)
 }
 
 /// Records what the rail answered a `submit` with, as a compare-and-swap out
