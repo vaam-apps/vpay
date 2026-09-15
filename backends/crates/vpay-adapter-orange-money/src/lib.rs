@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vpay_core::{FailureCode, ProviderFlow};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, Submitted,
+    ProviderError, RefExtra, RefundDestination, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -340,6 +340,23 @@ impl ProviderAdapter for Adapter {
             // `docs/flows/adapter-orange-money.md`'s "to confirm" list, not
             // in a `true` nobody can honour (issue #47).
             supports_account_holder_lookup: false,
+            // `Required`, while `supports_refunds` immediately above is still
+            // `false`, and the two are not in conflict. An Orange refund *is*
+            // an outbound transfer to a payee — there is no "back the way it
+            // came" on a redirect rail where `payer_ref` is `None` and vpay
+            // never learns who paid — so `Required` is the truth about the
+            // rail's refund product. `supports_refunds: false` is the truth
+            // about *this repository*: no Orange transfer API is documented
+            // here, not even reconstructed, so writing one would be inventing
+            // an endpoint in the money path (RFC-0003 § 5, maintainer
+            // decision of 2026-09-15).
+            //
+            // The value is inert until that flag flips, and it is declared
+            // truthfully now so that the flip is one line about refunds and
+            // not also a new guess about destinations.
+            // `Capabilities::is_coherent` records why this pair is
+            // deliberately not a coherence violation.
+            refund_destination: RefundDestination::Required,
         }
     }
 
@@ -813,6 +830,27 @@ mod tests {
     #[test]
     fn capabilities_are_coherent() {
         assert!(adapter().capabilities().is_coherent());
+    }
+
+    /// The declaration Arm E's `supports_refunds` flip will land on top of:
+    /// an Orange refund is a transfer to a payee, so the core must demand a
+    /// destination the moment refunds are switched on, and must demand it on
+    /// this value rather than on the string `"orange_money"` (ADR-0002).
+    ///
+    /// Asserted while `supports_refunds` is still `false` on purpose — that
+    /// pair is exactly what a mistaken coherence rule would have refused, and
+    /// this is where a reader finds out it is intentional.
+    #[test]
+    fn a_refund_on_this_rail_would_need_a_payee() {
+        let capabilities = adapter().capabilities();
+        assert_eq!(
+            capabilities.refund_destination,
+            RefundDestination::Required
+        );
+        assert!(
+            !capabilities.supports_refunds,
+            "vpay has not built Orange refunds; flipping this is Arm E's, and RFC-0003 § 5              says what it owes"
+        );
     }
 
     #[test]
