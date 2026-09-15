@@ -314,18 +314,28 @@ async fn run() -> anyhow::Result<()> {
     // What replaces it keeps every true half of the sentence, because the
     // reason this banner exists is that a merchant must not conclude from a
     // mounted route that money has come back.
+    //
+    // Narrowed again on review the same day, on one clause and measured the
+    // same way. The replacement above still said "no deployment holds the
+    // credential", and the e2e/demo stack had been given one hours earlier so
+    // that the live refund suites could run at all — so this binary printed
+    // that sentence while its own `config` held a
+    // `disbursement_subscription_key`. The credential it holds is a stub
+    // string addressed at a `wiremock/wiremock` container, which is what the
+    // clause now says; the sentence that matters is unchanged and no weaker.
     tracing::warn!(
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
          authentication boundary, /v1/payment_intents (create, retrieve, list, confirm, \
          cancel) and /v1/refunds (create, retrieve, list, update, cancel). Both rail \
          adapters implement `submit` and `query_status`; the MTN push was first proven \
          against MTN's real sandbox on 2026-09-15. NO REFUND HAS EVER MOVED MONEY: \
-         `mtn_momo::refund` IS written (MTN Disbursements) but no deployment holds the \
-         credential and the product has never been called; `orange_money::refund` answers a \
-         NotImplemented token, not Unsupported; and NOTHING SETTLES A PENDING REFUND — there \
-         is no refund poll ladder, so a refund these routes create stays `pending` until an \
-         operator moves it. Every other /v1 resource answers the honest 404. See \
-         docs/status.md"
+         `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
+         credential exists in this project — the only one anywhere is the stub the e2e/demo \
+         stack points at a WireMock container — and the product has never been called; \
+         `orange_money::refund` answers a NotImplemented token, not Unsupported; and \
+         NOTHING SETTLES A PENDING REFUND — there is no refund poll ladder, so a refund \
+         these routes create stays `pending` until an operator moves it. Every other /v1 \
+         resource answers the honest 404. See docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 

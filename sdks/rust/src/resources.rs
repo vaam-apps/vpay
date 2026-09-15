@@ -1070,7 +1070,10 @@ impl std::fmt::Debug for RefundDestination {
 /// The route is real and so is every refusal it makes, but nothing on the
 /// other side of it pays anybody: `orange_money`'s refund is a declared
 /// `NotImplemented` token, `mtn_momo`'s is MTN's Disbursements `transfer`
-/// which is WireMock-proven and which no deployment holds a credential for,
+/// which is WireMock-proven and for which **no real MTN credential exists in
+/// this project** — the only `disbursement_subscription_key` anywhere is the
+/// stub the e2e/demo stack points at a WireMock container, and the product
+/// has never been called —
 /// and **nothing settles a `pending` refund** — there is no refund poll
 /// ladder, so a refund this creates stays
 /// [`Pending`](crate::RefundStatus::Pending) until an operator moves it.

@@ -11,8 +11,10 @@
  * - `orange_money`'s refund is a declared `NotImplemented` token — an Orange
  *   refund is an outbound transfer this repository has no specification for;
  * - `mtn_momo`'s is MTN's Disbursements `transfer`, WireMock-proven and
- *   rail-unproven: no deployment holds a Disbursements subscription key and
- *   the product has never been called;
+ *   rail-unproven: **no real MTN Disbursements credential exists in this
+ *   project** — the only `disbursement_subscription_key` anywhere is the stub
+ *   the e2e/demo stack points at a WireMock container — and the product has
+ *   never been called;
  * - **nothing settles a `pending` refund.** There is no refund poll ladder,
  *   so a refund created here stays `"pending"` until an operator or the
  *   settlement path moves it.

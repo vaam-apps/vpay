@@ -191,7 +191,10 @@ restored.
 
 ## What this arm did NOT do
 
-- **No `just ci`**, no `cargo test --doc`, no `just verify`. CI is the gate.
+- **No `just ci`**, ~~no `cargo test --doc`~~, no `just verify`. CI is the
+  gate. (Corrected on review, 2026-09-16: `cargo test --doc -p vpay-sdk` **was**
+  run — its numbers are in the table above — so this line contradicted that
+  table. Only the workspace-wide `just test-doc` was not run.)
 - **No Flutter plugin.** `sdks/flutter` has no refund surface and this arm did
   not add one; it is not in `docs/sdks/parity.md`'s columns either, so no
   dated gap was owed. Stated here rather than left to be discovered.
@@ -203,3 +206,117 @@ restored.
   here; what is observed is that both SDKs know the types and decode their
   payload.
 - **No claim that any rail refunded anybody.** See the headline.
+
+## Adversarial review, 2026-09-16 — what was re-measured, and what moved
+
+Branch `review/w3g-sdks`, from `refunds/w3-sdks` (`ea21b658`). Every number
+below was measured on this host, on that head, and not taken from the sections
+above. `just ci` was not run here either.
+
+### The live proof is live
+
+Both suites were run first **with no stack and no environment at all**, which
+is the claim that mattered most, and both **fail**:
+
+| Suite, with nothing running                                                                    | Result                                                                                                                   |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `cargo nextest run -p vpay-sdk --features live-stack --test live_invoices --test live_refunds` | **4 tests run: 0 passed, 4 failed, 0 skipped**, exit 100. Each panic names `VPAY_BASE_URL`                               |
+| `pnpm --filter @vaam-apps/vpay-sdk test:live`                                                  | exit 1 — the `globalSetup` throws out of `readLiveEnv` before collection. No case is reported as passed, skipped or todo |
+
+Then a stack of this branch's head was built and run — project
+`vpay-w3greview`, published on **19080/19082/19083** so the `vpay-demo` stack
+already on 8080 was never touched — and both suites were run against it
+**twice**: once through `just sdk-live`, and once more directly after
+confirming `git status --porcelain -- sdks` was empty, so that no mutation from
+the review's own mutation testing could be in the binary.
+
+| Suite, against `vpay-w3greview`   | Run 1                                | Run 2 (clean tree)                   |
+| --------------------------------- | ------------------------------------ | ------------------------------------ |
+| `live_invoices` + `live_refunds`  | **4 tests run: 4 passed, 0 skipped** | **4 tests run: 4 passed, 0 skipped** |
+| `vitest -c vitest.live.config.ts` | **2 files, 5 tests, 5 passed**       | **2 files, 5 tests, 5 passed**       |
+
+### Read off the running stack rather than reported
+
+- `wiremock-mtn`'s journal, fetched from inside the compose network: **8
+  `POST /disbursement/v1_0/transfer`, every one answered `202`** — four per
+  live run, which is the number this page claims — and every one carrying
+  `payee: {"partyId": "237600000200", "partyIdType": "MSISDN"}`. **No `+`
+  reached the rail**, and no other payee spelling appears.
+- `/collection/v1_0/accountholder/msisdn/237600000404/basicuserinfo` was called
+  **4 times** (twice per run), which is the half that proves the envelope's
+  interior really reached `mtn_momo`'s adapter rather than being shape-checked
+  by the core.
+- `vpay-server`'s own log: **8 `instructing a rail to return money` lines**,
+  each `destination="+2376••••200"`, and `docker logs … | grep -c 600000200`
+  is **0** — the payee's digits appear nowhere in the log at all.
+- The boot banner this binary printed is the corrected one, naming all five
+  refund routes. The claim it replaced really was false: `v1::mod`'s route
+  table mounts `/refunds`, `/refunds/{id}` and `/refunds/{id}/cancel` as of arm
+  F, and arm F's own diff **edited that same banner** and left "Refunds are not
+  routed" standing in it.
+
+### Counts reproduced, including the parity baseline
+
+| Gate                                                                  | Re-measured                                                     |
+| --------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `cargo nextest run -p vpay-sdk`                                       | **178 passed, 0 skipped**                                       |
+| `pnpm --filter @vaam-apps/vpay-sdk test`                              | **222 passed, 9 files**                                         |
+| `cargo test --doc -p vpay-sdk`                                        | **8 passed, 0 failed, 1 ignored**                               |
+| `cargo xtask verify-sdk-parity`, arm G's head                         | **600 / 35 / 35 / 39** — exactly as claimed                     |
+| the same gate with `sdks/` and `docs/sdks/` checked out at `5aaac9ca` | **559 / 37 / 32 / 36** — the baseline was measured, not guessed |
+
+All four mutations this page lists were applied again, independently, and all
+four were caught by the test it names: the Rust outer-key constant fails
+`the_destinations_outer_key_is_the_rail_the_refund_is_on` (1 of 75 in
+`--test resources`), the Rust `Debug` leak fails
+`a_create_refund_params_debug_output_never_contains_the_payees_number` (1 of 8
+in `--test debug_redaction`), the Node outer-key constant fails 1 of 222, and
+the Node `+237`-stripper fails 3 of 222.
+
+### What the review changed
+
+1. **A parity row that over-claimed in one column.** "The payee's number is on
+   no refund object, no event body and no `Debug`/`inspect` output" was ✅/✅,
+   and the `inspect` half is **not true of `sdks/nodejs`**: a
+   `CreateRefundParams` there is a plain object literal the merchant builds, so
+   `util.inspect` prints `msisdn: '+237600000200'` in full — measured, not
+   reasoned about — and neither Node proving test on that row checked it (both
+   are about the delivered event body). This is issue #122's trap one level up:
+   the gate proved the two Node test names exist, which they do, while the row
+   title said something else. The row is now split — "on no refund object and
+   no event body" stays ✅/✅, and a second row for the `Debug`/`inspect`
+   guarantee is ✅ for Rust and a **dated ⛔ for Node**. `verify-sdk-parity`
+   now reports **603 proving tests, 36 dated gaps, 35 SDK methods across 39
+   rows**.
+2. **One clause of the honesty banner, again.** The corrected banner still said
+   "no deployment holds the credential", and this arm had given the e2e/demo
+   stack a `disbursement_subscription_key` hours earlier — so the binary
+   printed that sentence on a stack whose config held one, which is the same
+   shape of false in-code claim the arm had just fixed. Narrowed in
+   `main.rs` and in the matching sentence in both SDKs' doc comments: **no real
+   MTN credential exists in this project**, the only one anywhere is the stub
+   the e2e/demo stack points at WireMock, and the product has never been
+   called. `docs/status.md`'s addendum already said exactly this; the three
+   in-code copies did not.
+3. **A contradiction in this page**, above: the gate table reported
+   `cargo test --doc -p vpay-sdk` and "What this arm did NOT do" said it was
+   not run.
+
+Not changed, and reported rather than fixed: the same "no deployment holds"
+sentence appears in `vpay-db`'s doc comments, `repositories.rs` and **two
+migration comments**. Migration text is byte-checksummed
+(`just verify-migrations`), so 0047 cannot be edited; that is itself the
+argument for reading "deployment" as a real one, and for the narrower wording
+used above rather than a repo-wide rewrite. Owner: the maintainer.
+
+### The flake
+
+`a_refused_connection_to_the_token_endpoint_is_a_transport_error` is
+**pre-existing and not this arm's**, confirmed two ways: `git log` on
+`sdks/rust/tests/errors.rs` shows its last commit is `a15df87f`, the original
+SDK commit, and `git diff refunds/w3-routes..refunds/w3-sdks -- sdks/rust/tests/errors.rs`
+is empty. `closed_port()`'s own comment says "Racy in principle (something else
+could claim it)" — it binds `127.0.0.1:0`, reads the port and drops the
+listener. Its stated reason for tolerating that ("nothing else in this test
+binary binds ports") is what is no longer safe on a host running several Docker
+stacks. It did not fail in any run during this review.
