@@ -35,6 +35,13 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md) —
+  RFC-0003 §§ 3-4 wave 2: the first `refunds` INSERT this repository has ever
+  issued from Rust, the intent counters `apply_refund_succeeded` never moved,
+  and the first ledger postings a call site ever made (241 `vpay-db` + 51
+  `postgres_smoke` + 86 `vpay-core`/`vpay-ledger` tests, **0 skipped**; the
+  decisive mutation — deleting the `amount_refund_pending` increment — run,
+  failed the race test as it must, and reverted)
 - [verification/2026-09-13-flutter-lane-b-gate.md](verification/2026-09-13-flutter-lane-b-gate.md) —
   Lane B of the Flutter plugin brief: `verify-sdk-parity` learns Dart
   (245 xtask tests, 0 ignored; clippy `--all-targets -D warnings` clean; the

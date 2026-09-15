@@ -371,3 +371,35 @@ Gate evidence for the whole change:
 [verification/2026-09-15-ledger-merchant-dimension.md](verification/2026-09-15-ledger-merchant-dimension.md).
 `just ci` was **not** run locally for it (see that page for why); CI is the
 gate.
+
+## 2026-09-15 — migration `0046` bounds the two ledger ids, and drift goes 192 → 194
+
+RFC-0003 § 3, wave 2, on the branch `refunds/w2-writepath`. Measured the same
+way and on the same host as the entry above, with the same caveat and the same
+force: **cratestack 0.11.1 on `PATH`, not the pinned 0.12.0**, the drift test
+warning about it and not failing. The report read
+
+```
+drift detected in 25 table(s)/view(s) (194 change(s) total)
+```
+
+so `EXPECTED_DRIFTED_RELATIONS` (25) does not move either — both ledger tables
+were already declared-and-differing relations. CI runs 0.12.0; if it disagrees,
+CI is the evidence and the constant is what moves.
+
+The +2 is the +2 migration `0045`'s own header **predicted** when it declined
+to add these two CHECKs, and the prediction is the interesting part: it argued
+from shape that `ledger_transactions.id_length` and `ledger_entries.id_length`
+would cost one line each, being hand-named single-column CHECKs — the class
+that has cost every table in this schema a line apiece since `currencies` —
+and said so while refusing to move the constant without a measurement. The
+measurement agrees.
+
+Neither `model LedgerTransaction` nor `model LedgerEntry` was touched. A
+declared `@length` with `@db_enforce` on either `id` would emit a drop-and-add
+**pair** against a hand-named CHECK (exp17 §1a), which is the trade this page
+has refused six times.
+
+Gate evidence:
+[verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md).
+`just ci` was **not** run locally for it either; CI is the gate.
