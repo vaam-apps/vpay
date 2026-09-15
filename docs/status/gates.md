@@ -45,7 +45,23 @@ dependency rule would ever object to it; what it defeats is the property
 `connect` exists to hold, that a process which cannot reach its database
 fails at boot rather than at the first payment.
 AGENTS.md's claim that `verify-status` "fails in both directions" is,
-as of this pass, true. Since 2026-09-02 `cargo xtask
+as of this pass, true — and **since 2026-09-15 there is a third direction**,
+added on review of the Orange refund flip. The two directions compare *sets of
+token strings*; neither knows which file a token was written in, so an adapter
+answering another rail's token satisfied both. Measured on the flip's own tree
+before the rule existed: with `NotImplemented("orange_money::refund")` in the
+Orange adapter replaced by `NotImplemented("mtn_momo::refund")` — the adapters'
+`refund` bodies are one line apart — the gate failed the docs→code way, whose
+message invites the wrong repair ("delete the bullet"); with the bullet then
+deleted it printed **"ok — 1 unimplemented item(s)"**, and a whole rail's gap
+had left `docs/status.md` with a green build. A token whose prefix names a rail
+this workspace ships a `vpay-adapter-*` crate for must now be carried by that
+crate. Prefixes naming no rail are deliberately unconstrained: there is no
+convention in this repository saying where a `worker::…` token may live, and a
+gate that invented one would be a rule about characters.
+`a_token_naming_another_rail_is_refused_however_well_the_page_matches` in
+`.xtask` pins it and asserts the passing half too, so the rule cannot degrade
+into "refuse every rail-prefixed token". Since 2026-09-02 `cargo xtask
 verify-errors` likewise fails the build if an error type in
 `backends/crates` is not classified per [ADR-0011](../adr/0011-error-modelling.md),
 or if `anyhow` leaks into a library crate. **Extended 2026-09-03 (Step 7):**
