@@ -307,11 +307,16 @@ async fn run() -> anyhow::Result<()> {
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
          authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
          cancel). Both rail adapters implement `submit` and `query_status`; the MTN push was \
-         first proven against MTN's real sandbox on 2026-09-15. Refunds are not routed: \
-         nothing calls the `refunds` writer. `mtn_momo::refund` IS written (MTN \
-         Disbursements) but no deployment holds the credential and the product has never \
-         been called; `orange_money::refund` answers a NotImplemented token, not Unsupported. \
-         Every other /v1 resource answers the honest 404. See docs/status.md"
+         first proven against MTN's real sandbox on 2026-09-15. Refunds ARE routed since \
+         2026-09-16 (POST/GET /v1/refunds, POST /v1/refunds/{{id}}, POST \
+         /v1/refunds/{{id}}/cancel) — this line said they were not until then — but no rail \
+         has ever returned money and NOTHING SETTLES A PENDING REFUND: there is no refund \
+         status read on the port, so a refund created here stays pending until an operator \
+         moves it. `mtn_momo::refund` IS written (MTN Disbursements) but no deployment holds \
+         the credential and the product has never been called; `orange_money::refund` \
+         answers a NotImplemented token, not Unsupported, so an Orange refund fails at once \
+         and gives its reservation back. Every other /v1 resource answers the honest 404. \
+         See docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 

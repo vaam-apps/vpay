@@ -142,14 +142,22 @@ its own — asserting every entry answers `401` without a token
 (`every_registered_v1_path_answers_401_without_a_token`,
 `backends/tests/integration/tests/payment_intents.rs`).
 
-**`POST /v1/refunds` and `GET /v1/balance` are routed nowhere** and answer the
-honest 404 from the nest's fallback. Creating a refund will keep doing so until
-a route reaches the writer, and none does. The database half exists:
-`vpay_db::Refunds::create` inserts the row and reserves its amount against the
-intent in one transaction (RFC-0003 § 3), exercised against a real Postgres —
-but nothing routes to it, so `GET /v1/refunds/{id}` is a read whose every row
-was put there by an operator or by the suite itself. The _rail_ half moved on
-2026-09-15 and is in two states, **neither of them `Unsupported`**:
+**`GET /v1/balance` is routed nowhere** and answers the honest 404 from the
+nest's fallback. `POST /v1/refunds` was beside it in that sentence until
+2026-09-16, when RFC-0003 § 2 mounted the create, the update, the list and
+the cancel alongside the read — so a merchant can now create a refund, and
+the database half it reaches has been there since 2026-09-15:
+`vpay_db::Refunds::create` inserts the row and reserves its amount against
+the intent in one transaction (RFC-0003 § 3), exercised against a real
+Postgres.
+
+**A `201` from that route does not mean money came back**, and nothing in
+this repository can make it mean that yet. The refund is written as
+`pending`, `charge.refunded` is emitted in the same transaction, the rail is
+instructed — and **nothing settles a `pending` refund**, because the provider
+port has no refund status read and there is no refund poll ladder (RFC-0003
+open question 8, open). The _rail_ half moved on 2026-09-15 and is in two
+states, **neither of them `Unsupported`**:
 `mtn_momo::refund` makes MTN's Disbursements `transfer` call (RFC-0003 § 5) —
 but **no deployment holds a Disbursements subscription key and MTN's
 Disbursements product has never been called from this repository**, so it is
