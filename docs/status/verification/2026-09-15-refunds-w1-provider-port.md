@@ -71,3 +71,92 @@ column in (the `supports_account_holder_lookup` precedent).
 `a_refund_destination_is_inert_to_coherence` in `vpay-provider` pins that
 decision, over all four combinations of the two flags, and says what would have
 to change — the column and the migration — before it may be reversed.
+
+## Correctness-and-privacy review, 2026-09-15 (`review/w1-port-correctness`)
+
+An adversarial re-run of the claims above, on a second branch off
+`refunds/w1-port`. Every number here was measured on this host with rootless
+Docker 29.7.2 (`DOCKER_HOST=unix:///run/user/1000/docker.sock`), not copied.
+
+### The claims, re-measured
+
+| Claim                                                                       | Result                                                                                                                                                                                  |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo nextest run -p vpay-provider -p vpay-tests-conformance`              | **true** — 78 run, 78 passed, 0 skipped. No `#[ignore]` exists in either package                                                                                                        |
+| The conformance cases ran against real containers                           | **true** — 1.1–3.5 s per wire-level case; `start_wiremock` returns a `Result` and has no skip-on-missing-daemon path, so a dead daemon would have failed the run rather than passing it |
+| `cargo nextest run -p vpay-adapter-mtn-momo -p vpay-adapter-orange-money`   | **true** — 121 run, 121 passed, 0 skipped                                                                                                                                               |
+| `cargo test --doc -p vpay-provider`                                         | **true** — 11 passed, 0 ignored                                                                                                                                                         |
+| `RefundTarget` has no `Serialize`/`Deserialize` and nothing else renders it | **true** — `Debug` is the only `impl` on the type anywhere in the workspace; nothing embeds it; `Measured` derives no label from it                                                     |
+| The ADR-0002 grep gains no rail-code branch                                 | **true** — the two matches under `vpay-api/src/` are prose in doc comments                                                                                                              |
+
+### Mutations run
+
+| Mutation                                                          | Caught as delivered?                                                                                                       |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `ProviderAdapter::refund`'s default returns `Ok(Refunded { .. })` | **yes** — `a_rail_without_the_refund_capability_answers_unsupported::case_2_orange_money` fails naming the fabricated `Ok` |
+| `RefundTarget`'s `Debug` prints `self.msisdn`                     | **yes** — the unit case and the `msisdn` doctest both fail (two runners)                                                   |
+| `mtn_momo::refund` returns `Ok(Refunded { .. })`                  | **yes** — `refund_is_not_implemented_and_does_not_pretend` fails                                                           |
+| `Measured::refund` forwards `None` instead of the destination     | **NO** — 199 tests across four packages stayed green                                                                       |
+| `destination_for(Required)` returns `None`                        | **NO** — all 54 conformance cases stayed green                                                                             |
+| `destination_for(Origin)` returns `Some(..)`                      | **NO** — same                                                                                                              |
+
+The last three are one failure with one cause: **no adapter reads the
+`destination` argument yet**, so every test that passes one passes it into a
+body that discards it, and nothing observes what arrived. That is tolerable in
+an argument nobody reads — except that `Measured` is the decorator
+`vpay_api::v1::boot::adapters_by_code` wraps **every** shipping adapter in, so
+the dropped-destination mutation is one that would reach production and
+address every refund on a `Required` rail to nobody.
+
+### What the review changed
+
+- `vpay-provider/src/measured.rs`:
+  `the_destination_reaches_the_inner_adapter_and_never_a_metric`, with a
+  recording inner adapter. It asserts the destination arrives unchanged, that
+  the call is still counted on the `refund` series, and that the payee's
+  number appears nowhere in a real Prometheus scrape.
+- `backends/tests/conformance/tests/adapter_conformance.rs`: the per-rail
+  invariant — a payee is supplied exactly when the rail declares `Required` —
+  is now asserted against the adapter's own capability inside
+  `a_rail_without_the_refund_capability_answers_unsupported`, and
+  `a_destination_is_offered_exactly_when_the_capability_demands_one` pins the
+  helper's `Origin` arm, which no rail in this workspace reaches.
+- `vpay-adapter-orange-money/src/lib.rs`: a panic message carried fourteen
+  stray spaces from a line wrap, and it and the doc comment above it named an
+  orchestration arm a reader of this repository cannot resolve. Reworded to
+  cite RFC-0003 § 5, which they already cited. No assertion changed.
+
+After the change each of the three surviving mutations fails: the `Measured`
+one on the new case, `destination_for(Required) => None` on three cases, and
+`destination_for(Origin) => Some(..)` on the new conformance case.
+
+### Gates re-run on the review head
+
+| Gate                                                                      | Result                    |
+| ------------------------------------------------------------------------- | ------------------------- |
+| `cargo nextest run -p vpay-provider -p vpay-tests-conformance`            | **80 passed, 0 skipped**  |
+| `cargo nextest run -p vpay-adapter-mtn-momo -p vpay-adapter-orange-money` | **121 passed, 0 skipped** |
+| `cargo test --doc -p vpay-provider`                                       | **11 passed, 0 ignored**  |
+| `cargo clippy -p vpay-provider --all-targets -- -D warnings`              | exit `0`                  |
+| `cargo clippy -p vpay-tests-conformance --all-targets -- -D warnings`     | exit `0`                  |
+| `cargo clippy -p vpay-adapter-orange-money --all-targets -- -D warnings`  | exit `0`                  |
+| `cargo fmt --all -- --check`                                              | exit `0`                  |
+
+Not run here, and therefore not claimed: `just ci`, `just verify`'s
+self-checks, the integration suite, and the web gates. CI is the gate for
+those.
+
+### Left alone, deliberately
+
+- **The invariant the port documents is still owed by a core that does not
+  exist.** `ProviderAdapter::refund`'s doc says `destination` is `Some`
+  exactly when the rail declares `Required`; nothing enforces that, because no
+  core path creates a refund. Wave 3 is where it becomes enforceable, and
+  writing a check now would be checking a caller nobody has written.
+- **Nothing stops a future `#[derive(Serialize)]` on `RefundTarget`.** The
+  absence is a true statement about today's source and a doc comment saying
+  why, not a gate: `verify-serde` checks that a serde type spells
+  `rename_all`, not that a type has no serde impl. Recorded rather than
+  fixed — the machinery to assert a negative impl is more than this is worth
+  while RFC-0003 open question 2 is undecided, and question 2 is what would
+  settle it.

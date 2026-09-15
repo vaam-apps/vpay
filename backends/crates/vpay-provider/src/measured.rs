@@ -539,7 +539,7 @@ mod tests {
     /// Measured on 2026-09-15, before this test existed: replacing the
     /// forwarded `destination` with `None` in [`Measured::refund`] left
     /// `vpay-provider`, both adapter crates and the conformance suite green
-    /// - 199 tests, 0 failures - because no adapter reads the argument yet.
+    /// (199 tests, 0 failures), because no adapter reads the argument yet.
     /// `Measured` is what `vpay_api::v1::boot::adapters_by_code` wraps every
     /// shipping adapter in, so that mutation would have addressed every
     /// refund on a `Required` rail to nobody, in production, silently.
@@ -557,12 +557,8 @@ mod tests {
         let destination = RefundTarget::mobile_money("+237600000200");
 
         let scrape = scrape_of(|| {
-            let refunded = block_on(adapter.refund(
-                &charge(),
-                charge().amount,
-                Some(&destination),
-                &config(),
-            ));
+            let refunded =
+                block_on(adapter.refund(&charge(), charge().amount, Some(&destination), &config()));
             assert!(
                 matches!(refunded, Err(ProviderError::NotImplemented(_))),
                 "the inner adapter's answer is forwarded: {refunded:?}"

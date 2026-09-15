@@ -832,7 +832,7 @@ mod tests {
         assert!(adapter().capabilities().is_coherent());
     }
 
-    /// The declaration Arm E's `supports_refunds` flip will land on top of:
+    /// The declaration a future `supports_refunds` flip will land on top of:
     /// an Orange refund is a transfer to a payee, so the core must demand a
     /// destination the moment refunds are switched on, and must demand it on
     /// this value rather than on the string `"orange_money"` (ADR-0002).
@@ -846,7 +846,8 @@ mod tests {
         assert_eq!(capabilities.refund_destination, RefundDestination::Required);
         assert!(
             !capabilities.supports_refunds,
-            "vpay has not built Orange refunds; flipping this is Arm E's, and RFC-0003 § 5              says what it owes"
+            "vpay has not built Orange refunds; RFC-0003 § 5 says what flipping \
+             this owes"
         );
     }
 

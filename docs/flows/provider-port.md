@@ -162,6 +162,16 @@ destination, and nothing calls it yet.**
   Disbursements call (RFC-0003 § 5), any Orange transfer call, any ledger
   posting. The core does not yet check a destination against this capability,
   because there is no core path that creates a refund at all.
+- **The destination is proven to survive the decorator.** `Measured` is what
+  `vpay_api::v1::boot::adapters_by_code` wraps every shipping adapter in, and
+  until the correctness review of the same day nothing observed what it
+  forwarded: dropping the destination there left 199 tests green, because no
+  adapter reads the argument yet.
+  `the_destination_reaches_the_inner_adapter_and_never_a_metric` is what fails
+  now, and it also asserts the payee's number reaches no metric label. The
+  conformance suite asserts the other half — a payee is supplied exactly when
+  the rail declares `Required`, read off the adapter's own capability. See
+  [verification/2026-09-15-refunds-w1-provider-port.md](../status/verification/2026-09-15-refunds-w1-provider-port.md).
 
 **Updated 2026-09-06 (review of exp20): "Adding a rail" steps 2 and 3 above
 were both wrong about where a rail is written down.** Step 2 said `INSERT INTO
