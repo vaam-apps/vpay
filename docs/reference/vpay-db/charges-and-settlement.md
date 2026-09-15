@@ -170,6 +170,41 @@ the money has moved; an intent without its event means the merchant's webhook
 never fires and nothing retries it, because nothing knows it was missed; an
 event without the rows is a webhook for a payment that did not settle.
 
+
+**Since 2026-09-15 `apply_succeeded` writes a fourth thing: the capture
+posting** (RFC-0003 § 4), in the same transaction, through
+`ledger::post_in_tx`. It is the same argument one step further — a charge that
+settled without its ledger row would leave the ledger permanently one capture
+short and `balance(merchant_payable)` wrong for that merchant forever, with
+nothing that would ever notice. RFC-0003 is explicit that this could not wait
+for the refund work it was written beside: a ledger holding refunds and no
+captures drives `merchant_payable` negative and reads as violating invariant 2
+on every row.
+
+Two properties of that posting are load-bearing and are documented on
+`settlement::post_capture` itself rather than only here. **The merchant, the
+amount and the currency are all read off the intent row this transaction just
+wrote** — `apply_succeeded` takes no merchant argument at all, which is what
+makes "a caller could not have supplied one" a fact about the signature.
+And **it is two legs, not three**: no column in this schema holds a
+capture-time platform fee and no configuration computes one, so
+`Transaction::capture` is passed `None` and `platform_fee_revenue` is never
+credited. That is the honest reading of the table rather than a simplification,
+and `a_settled_charge_posts_its_capture_in_the_same_transaction` asserts the
+two-leg shape so a future fee model cannot land silently.
+
+**The duplicate a replayed posting would raise is never swallowed.** The
+transaction id is minted fresh (`vpay_core::ids::ledger_transaction_id`), so
+`ledger_transactions_pkey` cannot fire — and if it did the error propagates and
+the settlement rolls back. Catching it and committing anyway would hand the
+caller `TxOutcome::Commit` while Postgres had already turned the `COMMIT` into
+a `ROLLBACK`, discarding the charge, the intent and the event as well as the
+posting. That is measured, for a duplicate `event_id` through the real
+`UnitOfWork`, by
+`swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_transaction`
+in `postgres_smoke.rs`; it is a property of every write in this crate, not of
+the ledger.
+
 **Idempotent by compare-and-swap, not by a flag.** Both guard the charge
 `UPDATE` on the charge still being in a _live_ state. A re-run after a commit —
 the poll job was rescheduled because the worker died between committing and

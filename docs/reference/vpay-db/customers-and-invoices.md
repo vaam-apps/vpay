@@ -341,16 +341,40 @@ the fail-closed direction, pinned by
 
 ### The refund settlement, and why it is a second transaction rather than a hook
 
-`Settlement::apply_refund_succeeded` (issue #91 D5, migration `0042`) opens one
-transaction and runs two statements in it:
+`Settlement::apply_refund_succeeded` (issue #91 D5, migration `0042`; extended
+by RFC-0003 § 3) opens one transaction and runs four statements in it. It ran
+**two** until 2026-09-15, and the two that were missing are the ones on the
+intent — so a refund moved the document and left the intent claiming the whole
+amount was still kept:
 
 1. `refunds::settle_in_tx` — `UPDATE refunds SET status = 'succeeded' WHERE id
 = $1 AND status = 'pending'`. `Ok(None)` is "already settled", the answer an
    at-least-once retry has to get.
-2. `invoices::add_refund_for_intent_in_tx` — `UPDATE invoices SET
+2. `payment_intents::settle_refund_in_tx` — `amount_refund_pending` down and
+   `amount_refunded` up by the same amount, in one statement, guarded on
+   `amount_refund_pending >= $2`. **New.** The pair moves together because
+   `no_over_refund` reads their sum: split into two statements, one ordering
+   passes through a moment where the sum is over and the CHECK aborts a
+   settlement that is entirely legitimate. The guard is a `WHERE` clause rather
+   than a trust in `amount_refund_pending_non_negative`, because a failed
+   statement aborts the whole transaction and Postgres then turns the following
+   `COMMIT` into a silent `ROLLBACK`; as a `WHERE` clause the same condition is
+   `Ok(None)`, which the caller can act on with its transaction still alive.
+3. `invoices::add_refund_for_intent_in_tx` — `UPDATE invoices SET
 amount_refunded = amount_refunded + $2 WHERE payment_intent_id = $1 AND
 status = 'paid'`. `Ok(None)` is "this intent pays no invoice", which is most
    of them.
+4. `ledger::post_in_tx` — the refund's two legs, `merchant_payable` debited and
+   `payer_clearing` credited, against the charge the intent owns. **New.** Two
+   legs, never three: the rail's refund fee is reported on the object and
+   posted to no account (issue #46). The merchant comes from the intent row
+   statement 2 returned, which is the only thing that makes the posting's
+   `merchant_id` agree with the charge — no constraint can, the merchant being
+   three tables away (`docs/flows/ledger.md` § Status).
+
+`Settlement::apply_refund_failed` is the same transaction minus statements 3
+and 4, with the reservation released instead of consumed: nothing was posted,
+so there is nothing to reverse, and `amount_refunded` does not move.
 
 Both are `pub(crate)`, so a consumer of this crate cannot settle a refund
 without the document update in the same commit — `mark_paid_for_intent_in_tx`'s
@@ -377,19 +401,28 @@ transition), and `charge.refunded` / `charge.refund.updated` stay types nothing
 writes: emitting one needs the wire object `vpay-api` shapes, which is the
 caller's to supply, and there is no caller.
 
-**There is no caller at all, and that is the honest part.** No rail can refund,
-`POST /v1/refunds` is unrouted and `Refunds` still exposes no `create`, so
-nothing in `vpay-server` reaches this method and every deployment's
-`invoices.amount_refunded` is `0`. It exists because D5 is a decision about
-what the database does when a refund lands, and the alternative was to leave
-that decision as a sentence in a document. `docs/status.md` carries the gap.
+**There is still no caller in any shipping path, and that is the honest
+part.** No rail can refund (`ProviderAdapter::refund` is `NotImplemented` on
+both) and `POST /v1/refunds` is unrouted until wave 3, so nothing in
+`vpay-server` reaches this method and every deployment's
+`invoices.amount_refunded` is `0`. What changed is the other half of that
+sentence: `Refunds` **does** expose a `create` now, so the `pending` row this
+settles can be produced by vpay rather than only by an operator or a test.
+`docs/status.md` carries the gap.
 
 `payment_intents.amount_refunded` and `amount_refund_pending` (migration
-`0003`) are deliberately **not** maintained here. Migration `0017`'s own GAP
-note pairs them with the `INSERT` that creates a `refunds` row, and that insert
-does not exist; incrementing one half of a paired total whose other half
-nothing writes would leave `no_over_refund` counting money twice the day the
-insert lands.
+`0003`) were deliberately **not** maintained here until 2026-09-15, and the
+paragraph that said so gave the reason and the condition for changing it:
+
+> Migration `0017`'s own GAP note pairs them with the `INSERT` that creates a
+> `refunds` row, and that insert does not exist; incrementing one half of a
+> paired total whose other half nothing writes would leave `no_over_refund`
+> counting money twice the day the insert lands.
+
+The insert exists now, and it is `Refunds::create` — which writes the row and
+the reservation in one transaction, so the paired total is paired from the
+moment it is written. That is exactly the condition, met rather than waived,
+and statement 2 above is the other half of the pair.
 
 ### `NO_LIVE_INTENT` is one rule with three call sites, and one of them cannot carry it
 
