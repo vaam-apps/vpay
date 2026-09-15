@@ -92,12 +92,14 @@ pub mod invoices;
 // cannot be called from one. Nothing here reaches a database or a rail.
 pub mod paging;
 pub mod payment_intents;
-/// The Refund resource — one route, `GET /v1/refunds/{id}` (issue #45).
+/// The Refund resource — five methods over three paths: the read issue #45
+/// shipped first, and the create, update, list and cancel RFC-0003 § 2 added
+/// on 2026-09-16.
 ///
 /// Its own module for [`payment_intents`]'s reason: one resource, one file,
-/// and the routes below name it. `POST /v1/refunds` is **not** here and is
-/// still unrouted — see the module's own docs for why a read exists before a
-/// create does.
+/// and the routes below name it. Its header is where the rails' state is
+/// written down, and it is the first thing to read before believing a `201`
+/// from the create means money moved.
 pub mod refunds;
 /// Which URL a redirect rail is told to send the payer back to.
 ///
