@@ -22,7 +22,7 @@ import {
   isInvoiceEvent,
   isPaymentIntentEvent,
 } from "./types.js";
-import type { Event, KnownEventType, PaymentIntent } from "./types.js";
+import type { Event, KnownEventType, PaymentIntent, Refund } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
@@ -99,6 +99,28 @@ function makeSamplePaymentIntent(
     description: null,
     created: 1_700_000_000,
     livemode: false,
+    ...overrides,
+  };
+}
+
+/**
+ * One refund object, for the cases whose subject is the **request** rather
+ * than the decode. The ten keys `vpay_api::model::RefundObject` renders, with
+ * `fee: null` because no rail reports a refund fee and `status: "pending"`
+ * because nothing settles a refund.
+ */
+function makeSampleRefund(overrides: Partial<Refund> = {}): Refund {
+  return {
+    id: "re_1",
+    object: "refund",
+    amount: 2000,
+    currency: "xaf",
+    payment_intent: "pi_123",
+    status: "pending",
+    reason: null,
+    metadata: {},
+    created: 1_700_000_000,
+    fee: null,
     ...overrides,
   };
 }
@@ -781,6 +803,232 @@ describe("resource methods", () => {
     expect(result.payment_intent).toBe("pi_1");
     expect(result.status).toBe("pending");
     expect(result.reason).toBe("requested_by_customer");
+  });
+
+  // The gap Arm F left and this closes: a `refunds.create` with no
+  // `destination` is a 400 on both rails vpay carries, because a mobile-money
+  // refund is an outbound transfer that needs a payee. The body is what this
+  // asserts — the parity matrix proves a name exists, not that the SDK sends
+  // the field (issue #122).
+  it("refunds.create sends destination[<rail>][msisdn], the rail's code as the outer key", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSampleRefund() }),
+    });
+    const client = makeClient(server);
+
+    await client.refunds.create({
+      payment_intent: "pi_123",
+      amount: 2000,
+      reason: "requested_by_customer",
+      destination: {
+        kind: "mobile_money",
+        payment_method_type: "mtn_momo",
+        msisdn: "+237600000200",
+      },
+      metadata: { order_id: "1234" },
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/refunds")!;
+    expect(req.method).toBe("POST");
+    // Nested under the rail, and the `+` survives as `%2B` rather than being
+    // dropped or read as a space. The server refuses a number with no leading
+    // `+` with a 400 naming `destination`, so both halves matter.
+    expect(req.body).toBe(
+      "payment_intent=pi_123&amount=2000&reason=requested_by_customer" +
+        "&destination[mtn_momo][msisdn]=%2B237600000200&metadata[order_id]=1234",
+    );
+  });
+
+  // The one mistake this surface was briefed to avoid: an SDK that hardcodes
+  // `mtn_momo` sends an Orange refund a destination the server strips and
+  // discards, and the merchant is told their nominated payee was honoured
+  // when the rail was never given one.
+  it("refunds.create scopes the destination to the rail it was given, not a constant", async () => {
+    for (const rail of ["mtn_momo", "orange_money"] as const) {
+      const server = await withServer({
+        resource: () => ({ status: 200, body: makeSampleRefund() }),
+      });
+      const client = makeClient(server);
+
+      await client.refunds.create({
+        payment_intent: "pi_123",
+        destination: {
+          kind: "mobile_money",
+          payment_method_type: rail,
+          msisdn: "+237600000200",
+        },
+      });
+
+      const req = server.requests.find((r) => r.url === "/v1/refunds")!;
+      expect(req.body, rail).toBe(
+        `payment_intent=pi_123&destination[${rail}][msisdn]=%2B237600000200`,
+      );
+    }
+  });
+
+  // `RefundTarget::mobile_money` requires the leading `+` and refuses the
+  // bare national form, because `vpay-provider` is not Cameroon-specific —
+  // read as an international number, `600000200` names a different country.
+  // An SDK that "helpfully" normalised would either break a working call or,
+  // worse, guess a payee. This one canonicalises nothing.
+  it("refunds.create never normalises a payee's number on its way to the wire", async () => {
+    const cases: Array<[string, string]> = [
+      ["+237600000200", "%2B237600000200"],
+      ["+237 600 000 200", "%2B237%20600%20000%20200"],
+      ["+237-600-000-200", "%2B237-600-000-200"],
+      // The form the server REFUSES. It must still go out untouched: an SDK
+      // that silently prefixed a `+` here would hide the merchant's mistake
+      // behind a guess about which country they meant.
+      ["600000200", "600000200"],
+    ];
+
+    for (const [written, encoded] of cases) {
+      const server = await withServer({
+        resource: () => ({ status: 200, body: makeSampleRefund() }),
+      });
+      const client = makeClient(server);
+
+      await client.refunds.create({
+        payment_intent: "pi_123",
+        destination: {
+          kind: "mobile_money",
+          payment_method_type: "mtn_momo",
+          msisdn: written,
+        },
+      });
+
+      const req = server.requests.find((r) => r.url === "/v1/refunds")!;
+      expect(req.body, written).toBe(
+        `payment_intent=pi_123&destination[mtn_momo][msisdn]=${encoded}`,
+      );
+    }
+  });
+
+  it("refunds.update: POST to the object path, metadata and nothing else", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSampleRefund() }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.update("re_1", {
+      // Stripe's per-key delete: an empty value removes the key server-side,
+      // and must reach the wire as `key=` rather than being dropped as if the
+      // merchant had never mentioned it.
+      metadata: { order_id: "1234", stale: "" },
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/refunds/re_1")!;
+    expect(req.method).toBe("POST");
+    expect(req.body).toBe("metadata[order_id]=1234&metadata[stale]=");
+    // Idempotency-keyed like every other write on this surface.
+    expect(req.headers["idempotency-key"]).toBeDefined();
+    expect(result.object).toBe("refund");
+  });
+
+  it("refunds.update with no metadata sends an empty body, not metadata=", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSampleRefund() }),
+    });
+    const client = makeClient(server);
+
+    await client.refunds.update("re_1", {});
+
+    const req = server.requests.find((r) => r.url === "/v1/refunds/re_1")!;
+    // The server reads an absent `metadata` as a no-op: the refund comes back
+    // unchanged and no event is written. `metadata=` would be a different
+    // request.
+    expect(req.body).toBe("");
+  });
+
+  it("refunds.list: exact query string with both cursors and the payment_intent filter", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [makeSampleRefund()],
+          has_more: true,
+          url: "/v1/refunds",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.list({
+      limit: 2,
+      starting_after: "re_0",
+      payment_intent: "pi_1",
+    });
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/refunds"))!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe("/v1/refunds?limit=2&starting_after=re_0&payment_intent=pi_1");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+    expect(result.object).toBe("list");
+    expect(result.data).toHaveLength(1);
+    expect(result.has_more).toBe(true);
+  });
+
+  it("refunds.list with no parameters sends a bare path, not an empty query", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [],
+          has_more: false,
+          url: "/v1/refunds",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    await client.refunds.list();
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/refunds"))!;
+    expect(req.url).toBe("/v1/refunds");
+  });
+
+  it("refunds.cancel: empty-bodied POST that still carries an Idempotency-Key", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { ...makeSampleRefund(), status: "canceled" },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.cancel("re_1");
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/refunds/re_1/cancel",
+    )!;
+    expect(req.method).toBe("POST");
+    expect(req.body).toBe("");
+    // A cancel changes state, so it is keyed: a retry of a lost 200 must
+    // answer the stored one rather than a 409 against a refund the first
+    // attempt already canceled.
+    expect(req.headers["idempotency-key"]).toBeDefined();
+    expect(result.status).toBe("canceled");
+  });
+
+  it("refunds percent-encodes a hostile id on update and cancel too", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSampleRefund() }),
+    });
+    const client = makeClient(server);
+
+    await client.refunds.update("../../admin", {});
+    await client.refunds.cancel("../../admin");
+
+    const urls = server.requests
+      .filter((r) => r.url !== TOKEN_PATH)
+      .map((r) => r.url);
+    expect(urls).toEqual([
+      "/v1/refunds/..%2F..%2Fadmin",
+      "/v1/refunds/..%2F..%2Fadmin/cancel",
+    ]);
   });
 
   it("refunds percent-encodes a hostile id so it cannot escape /v1", async () => {
