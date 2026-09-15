@@ -259,22 +259,46 @@ pub const V1_ROUTES: &[V1Route] = &[
         methods: &["POST"],
         mount: || post(checkout_sessions::expire),
     },
-    // `GET` only. `POST /v1/refunds` is declared in
-    // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
-    // refund needs the `POST /v1/refunds` handler RFC-0003 § 3 describes, and
-    // nothing routes to `vpay_db::Refunds::create`. The rails stopped being
-    // the blocker on MTN on 2026-09-15 — `mtn_momo::refund` makes MTN's
-    // Disbursements `transfer` call, against a credential no deployment holds
-    // and a product this repository has never called — while
-    // `orange_money::refund` is a declared `NotImplemented` token, not
-    // `Unsupported`. Mounting a create with no handler behind it would put a
-    // route in this table that takes no money back — the read is what issue
-    // #45 decided was part of the contract, and it is the whole of what is
-    // mounted.
+    // All four, since 2026-09-16 (RFC-0003 § 2, Wave 3). This entry was
+    // `GET /refunds/{id}` alone from 2026-09-05, because creating a refund
+    // needed the handler RFC-0003 § 3 describes and nothing routed to
+    // `vpay_db::Refunds::create` — the read is what issue #45 decided was
+    // part of the contract, and it was the whole of what was mounted.
+    //
+    // **What being mounted does and does not claim.** These routes write a
+    // refund, reserve its amount, refuse an over-refund, emit the first
+    // `charge.refunded` this repository has ever emitted, and instruct the
+    // rail. They do not mean a payer has ever received money:
+    // `mtn_momo::refund` is WireMock-proven and rail-unproven against a
+    // Disbursements credential no deployment holds, `orange_money::refund`
+    // is a declared `NotImplemented` token, and nothing settles a `pending`
+    // refund because the port has no refund status read (RFC-0003 open
+    // question 8). `docs/status.md` carries all three, and
+    // [`refunds`]' module header is the long version.
+    V1Route {
+        path: "/refunds",
+        methods: &["POST", "GET"],
+        mount: || post(refunds::create).get(refunds::list),
+    },
+    // `POST` is the update — Stripe's spelling, and `metadata` is the only
+    // field it takes. There is no `PATCH` beside it, unlike `/v1/invoices/{id}`:
+    // a refund's amount, reason and destination are fixed at creation, so
+    // "partial update" describes the only update there is and mounting a
+    // second verb would suggest otherwise.
     V1Route {
         path: "/refunds/{id}",
-        methods: &["GET"],
-        mount: || get(refunds::retrieve),
+        methods: &["GET", "POST"],
+        mount: || get(refunds::retrieve).post(refunds::update),
+    },
+    // A `POST`, not a `DELETE`: cancelling a refund is a *transition* that
+    // returns the object and removes nothing, exactly as `cancel` is for a
+    // payment intent and `expire` for a checkout session. It is legal only
+    // while the refund is `pending`, and it is the database's `WHERE` clause
+    // that enforces that, not a check beside it.
+    V1Route {
+        path: "/refunds/{id}/cancel",
+        methods: &["POST"],
+        mount: || post(refunds::cancel),
     },
     V1Route {
         path: "/customers",
@@ -1472,22 +1496,29 @@ mod tests {
         assert!(!resource_config.admits_currency("EUR"));
     }
 
-    /// The Refund resource is mounted for exactly one method, and it is a
-    /// read (issue #45).
+    /// The Refund resource's whole mounted surface, pinned as a literal.
     ///
-    /// Decisive in both directions. Delete the `/refunds/{id}` entry from
-    /// [`V1_ROUTES`] and this fails naming it — which is the same mutation
-    /// that turns `backends/tests/integration/tests/refunds.rs` from a
-    /// `resource_missing` `404` into an `unknown_route` one, a difference no
-    /// status code alone would show. Add a `POST /refunds` and it fails too:
-    /// creating a refund needs the `POST /v1/refunds` handler RFC-0003 § 3
-    /// describes, and nothing routes to `vpay_db::Refunds::create`.
-    /// (`mtn_momo::refund` stopped being the blocker on 2026-09-15 — it makes
-    /// MTN's Disbursements `transfer` call, under a credential no deployment
-    /// holds — while `orange_money::refund` is still a `NotImplemented`
-    /// token.) So a mounted create could only ever invent an answer.
+    /// **Five methods over three paths since 2026-09-16** (RFC-0003 § 2). It
+    /// said "one method, and it is a read" from issue #45 until Wave 3, and
+    /// the reason it did is worth keeping: a create with no handler behind it
+    /// would have been a route in this table that takes no money back. That
+    /// handler exists now, and the rails' own state is unchanged and is
+    /// stated where a reader will actually meet it — in `v1::refunds`' module
+    /// header, on the [`V1_ROUTES`] entries themselves, and in
+    /// `docs/status.md` — rather than here, where it would be a claim about
+    /// rails in a test about routing.
+    ///
+    /// Decisive in both directions. Delete any entry and this fails naming it
+    /// — deleting `/refunds/{id}` is the same mutation that turns
+    /// `backends/tests/integration/tests/refunds.rs` from a `resource_missing`
+    /// `404` into an `unknown_route` one, a difference no status code alone
+    /// would show. Add a method (a `DELETE` on a refund, a `PATCH` beside the
+    /// update) and it fails too, which is the direction that matters now that
+    /// the resource writes: every route here is walked by
+    /// `every_registered_v1_path_answers_401_without_a_token`, and a route
+    /// that is not in this constant does not exist (issue #159).
     #[test]
-    fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
+    fn the_refund_resource_is_mounted_for_exactly_five_methods() {
         let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES
             .iter()
             .filter(|route| route.path.starts_with("/refunds"))
@@ -1496,9 +1527,12 @@ mod tests {
 
         assert_eq!(
             refund_routes,
-            vec![("/refunds/{id}", &["GET"][..])],
-            "GET /v1/refunds/{{id}} is served and POST /v1/refunds is not; see \
-             docs/api/README.md's \"Not served\" table"
+            vec![
+                ("/refunds", &["POST", "GET"][..]),
+                ("/refunds/{id}", &["GET", "POST"][..]),
+                ("/refunds/{id}/cancel", &["POST"][..]),
+            ],
+            "the four routes RFC-0003 § 2 documents, plus the read issue #45 shipped first"
         );
     }
 }

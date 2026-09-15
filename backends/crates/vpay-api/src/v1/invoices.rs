@@ -1575,7 +1575,7 @@ pub(crate) fn validated_metadata(
 /// [`ApiError::invalid_param`] naming `metadata`, or [`ApiError::Internal`]
 /// for a stored `metadata` that is not an object — which
 /// `metadata_is_object` makes impossible.
-fn merged_metadata(
+pub(crate) fn merged_metadata(
     stored: &Value,
     sent: &BTreeMap<String, String>,
 ) -> Result<Map<String, Value>, ApiError> {

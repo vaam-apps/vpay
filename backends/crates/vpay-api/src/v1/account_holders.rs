@@ -391,7 +391,7 @@ pub(crate) fn canonical_msisdn(input: &str) -> Option<String> {
 /// The bullet count is **fixed at four** and is not the number of digits
 /// hidden; a mask whose length revealed the input's length would be a small
 /// oracle for free.
-fn masked(canonical: &str) -> String {
+pub(crate) fn masked(canonical: &str) -> String {
     /// How many trailing digits stay visible.
     const VISIBLE_TAIL: usize = 3;
 
