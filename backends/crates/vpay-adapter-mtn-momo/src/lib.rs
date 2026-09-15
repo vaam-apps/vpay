@@ -31,7 +31,7 @@ use vpay_provider::{
     ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
-use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
+use crate::token::{Credentials, Product, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
 
 /// The reference *we* generate. It is MTN's transaction id, which is what
 /// makes a same-reference resubmission idempotent rather than a second
@@ -64,14 +64,31 @@ pub struct Adapter {
     /// Built once per process by the binary and cloned in
     /// (`reqwest::Client` is an `Arc` internally, so a clone shares the pool).
     http: reqwest::Client,
-    /// The cached bearer token, or `None` before the first call.
+    /// The cached Collections bearer, or `None` before the first charge-path
+    /// call.
     ///
     /// An async `RwLock` because it is held across the `.await` that mints a
     /// token, and a blocking lock over an await point parks a runtime thread
     /// on a network round trip. One slot, not a map keyed by fingerprint —
     /// `docs/reference/rails.md` says why that is safe *and* why a map would
     /// be worse.
-    token: RwLock<Option<vpay_provider::token::CachedToken>>,
+    collections_token: RwLock<Option<vpay_provider::token::CachedToken>>,
+    /// The cached Disbursements bearer, kept apart from the Collections one.
+    ///
+    /// **Two named slots, and still not a map.** `docs/reference/rails.md`'s
+    /// objection to a map is that it would be "an unbounded, never-evicted
+    /// cache of bearer tokens keyed by credentials"; two fields are bounded
+    /// at two by the type system, one per product this adapter can call, and
+    /// a third would be a compiler-visible edit rather than a runtime insert.
+    ///
+    /// A single shared slot would have been *correct* — the fingerprint
+    /// carries [`token::Product`], so a Collections bearer can never be
+    /// handed to a `transfer` — but it would have made every refund evict the
+    /// charge path's token and every subsequent charge evict the refund's, so
+    /// a deployment doing both would mint on essentially every call. The
+    /// fingerprint is what makes the split *safe*; this split is what makes
+    /// it not cost two extra round trips per refund.
+    disbursement_token: RwLock<Option<vpay_provider::token::CachedToken>>,
 }
 
 impl Adapter {
@@ -95,19 +112,32 @@ impl Adapter {
     pub fn new(http: reqwest::Client) -> Self {
         Self {
             http,
-            token: RwLock::new(None),
+            collections_token: RwLock::new(None),
+            disbursement_token: RwLock::new(None),
         }
     }
 
-    /// A usable bearer token, minting one only if the cache cannot serve the
-    /// call.
+    /// The cache slot this product's bearer lives in.
+    ///
+    /// A function rather than an index so that the two slots cannot be
+    /// confused at a call site, and so that the day a third product appears
+    /// the missing arm is a compiler error.
+    const fn slot(&self, product: Product) -> &RwLock<Option<vpay_provider::token::CachedToken>> {
+        match product {
+            Product::Collections => &self.collections_token,
+            Product::Disbursements => &self.disbursement_token,
+        }
+    }
+
+    /// A usable bearer token for `credentials`' product, minting one only if
+    /// that product's cache cannot serve the call.
     async fn bearer(
         &self,
         config: &ProviderConfig,
         credentials: &Credentials<'_>,
     ) -> Result<String, ProviderError> {
         let fingerprint = credentials.fingerprint();
-        if let Some(cached) = self.token.read().await.as_ref()
+        if let Some(cached) = self.slot(credentials.product()).read().await.as_ref()
             && let Some(value) = cached.usable(std::time::Instant::now(), &fingerprint)
         {
             return Ok(value.to_owned());
@@ -140,7 +170,7 @@ impl Adapter {
     ) -> Result<String, ProviderError> {
         let minted = token::mint(&self.http, config, credentials).await?;
         let value = minted.value().to_owned();
-        *self.token.write().await = Some(minted);
+        *self.slot(credentials.product()).write().await = Some(minted);
         Ok(value)
     }
 
@@ -320,6 +350,123 @@ fn submit_outcome(status: StatusCode, body: &str) -> Result<Submitted, ProviderE
         ))),
         _ => Err(ProviderError::malformed(format!(
             "mtn_momo: requesttopay answered an unexpected HTTP {status}"
+        ))),
+    }
+}
+
+/// `POST {base}/disbursement/v1_0/transfer` — the refund, and the only call
+/// this adapter makes that sends money out.
+const TRANSFER_PATH: &str = "/v1_0/transfer";
+
+/// What a `transfer` response means, as a pure function of the status and the
+/// body.
+///
+/// Pure for [`submit_outcome`]'s reason, and more so: this is the money-out
+/// table, it is proven row by row without a network in this module's tests,
+/// and the conformance suite then proves the same rows arrive over a socket
+/// from a real WireMock container.
+///
+/// # A 202 is *accepted*, not *settled* — and the port cannot say so
+///
+/// MTN's `transfer` is asynchronous exactly as `requesttopay` is: the 202
+/// means the rail took the instruction, and the outcome is read back from
+/// `GET /disbursement/v1_0/transfer/{referenceId}`. [`Refunded`] carries no
+/// status, and [`ProviderAdapter`] has no `query_refund_status`, so the most
+/// this function can honestly report is what the 202 says: **the rail
+/// accepted the transfer.**
+///
+/// That gap is real and is recorded rather than smoothed over — see
+/// [`Adapter::refund`] § "What a success does and does not mean" and
+/// `docs/flows/adapter-mtn-momo.md`. A write path that marked a refund
+/// `succeeded` on the strength of an `Ok` from here would be asserting
+/// something no MTN response has said.
+///
+/// # The rows, and where they come from
+///
+/// The statuses mirror `requesttopay`'s because MTN's gateway is the same
+/// gateway and its documented Disbursement responses are the same set. The
+/// **failure vocabulary** is Collections' `ErrorReason` enum
+/// ([`mapping::failure_code`]), reused here as a deliberate assumption: MTN
+/// publishes no schema document for the Disbursement API at all
+/// (`docs/flows/adapter-mtn-momo.md`, re-checked 2026-09-11), so there is
+/// nothing to compare a Disbursements-specific table against. A reason this
+/// table does not know falls to `provider_error` carrying the rail's own
+/// word, which is the same safe direction the charge path takes.
+fn refund_outcome(status: StatusCode, body: &str) -> Result<Refunded, ProviderError> {
+    // MTN answers a transfer with 202 and an empty body: no key material, no
+    // fee, nothing to carry. `RefExtra::new()` for `submit_outcome`'s reason
+    // — the reference this side generated is the whole address of the
+    // transfer, and inventing a second identifier to store would be key
+    // material the rail never issued.
+    //
+    // `fee: None` is load-bearing and is NOT a placeholder for zero. MTN's
+    // documented transfer response has no fee field; `None` says "the rail
+    // did not report one" and `Some(zero)` would say "the rail said it was
+    // free" (issue #46). An adapter that collapsed them would put an invented
+    // number in a settlement statement.
+    let accepted = || {
+        Ok(Refunded {
+            ref_extra: RefExtra::new(),
+            fee: None,
+        })
+    };
+
+    match status.as_u16() {
+        202 => accepted(),
+        // The rail already has this reference. Safe as a success **only**
+        // under the invariant in `Adapter::refund` § "Which reference the
+        // transfer carries": the reference is this refund's own, so "MTN has
+        // already seen it" means this transfer was already instructed, which
+        // is exactly what a retry after a crash needs to hear. Reporting it
+        // as an error would make a caller re-refund and pay a payee twice.
+        409 => accepted(),
+        400 => {
+            let error = wire::ApiError::parse(body);
+            let raw = error.code.clone().unwrap_or_else(|| truncated(body));
+            Err(ProviderError::Rejected {
+                code: mapping::failure_code(&raw),
+                message: format!(
+                    "mtn_momo: transfer {raw}{}",
+                    error
+                        .message
+                        .map(|m| format!(" — {}", truncated(&m)))
+                        .unwrap_or_default()
+                ),
+            })
+        }
+        // Not reachable through `send_authorized`, which converts a 401 that
+        // survived a token refresh itself; enumerated anyway, for
+        // `submit_outcome`'s reason. On this path it means the
+        // **Disbursements** credentials, which are a separate subscription
+        // key and a separately scoped token from the charge path's.
+        401 | 403 => Err(rail_credentials_refused(status)),
+        500 => Err(mapping::internal_error(
+            wire::ApiError::parse(body).code.as_deref(),
+            &truncated(body),
+        )),
+        _ if status.is_server_error() => Err(ProviderError::transport(format!(
+            "mtn_momo: transfer answered HTTP {status}"
+        ))),
+        // The endpoint, not the refund — and on this rail it is the likeliest
+        // symptom of a deployment that has a Disbursements subscription key
+        // but is pointed at a base URL with no Disbursements product behind
+        // it. `Config`, so the poll ladder stops rather than retrying a URL
+        // that will never exist.
+        404 => Err(ProviderError::Config(format!(
+            "mtn_momo: transfer answered HTTP {status}; check base_url and that this \
+             deployment's subscription is for the Disbursements product"
+        ))),
+        // Redirects are never followed (`vpay_provider::http` builds every
+        // client with `redirect::Policy::none()`), so a 3xx arrives intact
+        // instead of replaying the Disbursements subscription key, bearer
+        // token, reference **and the payee's number** at whatever host
+        // `Location` named.
+        _ if status.is_redirection() => Err(ProviderError::malformed(format!(
+            "mtn_momo: transfer answered a redirect (HTTP {status}), which is not followed; \
+             check base_url"
+        ))),
+        _ => Err(ProviderError::malformed(format!(
+            "mtn_momo: transfer answered an unexpected HTTP {status}"
         ))),
     }
 }
@@ -579,7 +726,7 @@ impl ProviderAdapter for Adapter {
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<Submitted, ProviderError> {
-        let credentials = Credentials::from_config(config)?;
+        let credentials = Credentials::from_config(config, Product::Collections)?;
         let body = wire::RequestToPay::new(charge)?;
         let url = format!("{}/collection/v1_0/requesttopay", base_url(config));
 
@@ -631,7 +778,7 @@ impl ProviderAdapter for Adapter {
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<ChargeStatus, ProviderError> {
-        let credentials = Credentials::from_config(config)?;
+        let credentials = Credentials::from_config(config, Product::Collections)?;
         let (subscription, environment) = Adapter::common_headers(&credentials)?;
         let url = format!(
             "{}/collection/v1_0/requesttopay/{}",
@@ -765,34 +912,165 @@ impl ProviderAdapter for Adapter {
         })
     }
 
-    /// Not built, and honestly so.
+    /// `POST /disbursement/v1_0/transfer` — MTN's refund, and the only call
+    /// in this adapter that sends money **out**.
     ///
-    /// MTN refunds are the **Disbursements** product: a different
-    /// subscription key, a separately-scoped token, and a `transfer` call
-    /// this adapter does not make. No deployment of this system holds those
-    /// credentials, so there is nothing to implement against — and
-    /// [`Capabilities::supports_refunds`] stays `true` because the rail *does*
-    /// support refunds; it is we who have not built them. Answering
-    /// [`ProviderError::Unsupported`] instead would be a lie about the rail.
+    /// # WireMock-proven, rail-UNPROVEN
     ///
-    /// `destination` is the payee that `transfer` would be addressed to, and
-    /// is `Some` here because this rail declares
-    /// [`RefundDestination::Required`]. It is ignored rather than read: there
-    /// is no call to put it in, and reading it would be the first half of a
-    /// pretence. See the port's `refund` for who guarantees it is `Some`.
+    /// **No deployment of this system holds a Disbursements subscription key,
+    /// and nothing in this repository has ever called MTN's Disbursements
+    /// product — not once, not against the sandbox.** Every assertion about
+    /// this method is against a `wiremock/wiremock` container answering a
+    /// stub this repository wrote from MTN's own documentation. A body, a
+    /// header set or a status table faithful to that documentation but not to
+    /// the rail would pass all of it. `docs/status.md` and
+    /// `docs/flows/adapter-mtn-momo.md` say the same thing, and none of it is
+    /// the claim "MTN refunds work".
+    ///
+    /// The `NotImplemented("mtn_momo::refund")` token this replaced was the
+    /// honest answer while there was no call at all; a written call that has
+    /// never been made needs a different kind of honesty, which is this
+    /// paragraph and the two status pages rather than a token.
+    ///
+    /// # Which reference the transfer carries, and the invariant the core owes
+    ///
+    /// `X-Reference-Id` and the body's `externalId` are both
+    /// `charge.reference_id`, and **that is only correct if the core hands
+    /// this method the refund's own `provider_reference_id`** — the value
+    /// RFC-0003 § 3 step 2 mints before any rail call and migration `0017`
+    /// stores on `refunds.provider_reference_id`.
+    ///
+    /// The port cannot express the difference: `refund` takes a
+    /// [`ChargeRef`], which carries exactly one reference, and
+    /// [`Refunded::ref_extra`] is documented as key material for "a reference
+    /// this side generated before the call". Two references are needed and
+    /// one is passed, so one of them has to be the refund's, and it is this
+    /// one. What follows if it is instead the *charge's* reference is worth
+    /// stating because it is silent:
+    ///
+    /// * a second partial refund on the same charge would reuse a reference
+    ///   MTN has already seen, be answered `409 RESOURCE_ALREADY_EXIST`, and
+    ///   be reported by [`refund_outcome`] as **accepted** — a refund the
+    ///   merchant is told happened and for which no money moved;
+    /// * the Collections charge and the Disbursements transfer would share an
+    ///   id, which is at best confusing in MTN's own records.
+    ///
+    /// This is unsettled at the port and is recorded as such in RFC-0003
+    /// rather than decided here on behalf of the Wave-3 handler that does not
+    /// exist yet. `the_transfer_is_addressed_by_the_reference_the_core_supplied`
+    /// pins what this method *does*, so a handler author can read one
+    /// assertion instead of this paragraph.
+    ///
+    /// # What a success does and does not mean
+    ///
+    /// `Ok(Refunded)` means **the rail accepted the transfer**, not that the
+    /// payee has the money. MTN's `transfer` is asynchronous exactly as
+    /// `requesttopay` is, and its outcome is read back from
+    /// `GET /disbursement/v1_0/transfer/{referenceId}` — a call this adapter
+    /// does not make, because [`ProviderAdapter`] has no refund status read
+    /// and [`Refunded`] has no status field. See [`refund_outcome`].
+    ///
+    /// # The destination, and what happens when the core's invariant breaks
+    ///
+    /// `destination` is `Some` exactly when this rail declares
+    /// [`RefundDestination::Required`], which it does — the core has checked
+    /// that before calling (ADR-0002). **RFC-0003 open question 6 left the
+    /// broken case to "the first adapter to make a real transfer call", and
+    /// this is it: a `None` here is [`ProviderError::Config`].** Not
+    /// `Rejected`, which would blame a rail that was never asked; not
+    /// `Malformed`, which is about an answer and there is no answer; not
+    /// `Unsupported` or `NotImplemented`, which are both lies — about a rail
+    /// that refunds, and about code that exists. `Config`'s own description
+    /// on the port's error-surface table — "a credential, setting or URL this
+    /// deployment did not supply, or supplied unusably … no retry against the
+    /// rail can fix it" — is the closest true sentence available, and its
+    /// classification is the behaviour that matters: it stops the poll
+    /// ladder, it pages, and it never reaches a payer as a decline.
+    ///
+    /// The payee's number is read through [`RefundTarget::msisdn`] and is
+    /// neither re-normalised nor re-validated: the constructor is fallible
+    /// and canonicalising (maintainer's decision, 2026-09-15), so what comes
+    /// out is already the digits-only `partyId` shape this rail takes.
     ///
     /// # Errors
     ///
-    /// Always [`ProviderError::NotImplemented`] — listed in `docs/status.md`,
-    /// which `cargo xtask verify-status` enforces.
+    /// [`ProviderError::Config`] for a Disbursements credential this
+    /// deployment did not supply (**which is every deployment today**), for
+    /// an absent destination, and for a `base_url` with no Disbursements
+    /// product behind it; [`ProviderError::Rejected`] when the rail refuses
+    /// the transfer or refuses our partner credentials;
+    /// [`ProviderError::Transport`] when the rail could not be reached or
+    /// finished with; [`ProviderError::Malformed`] for an answer this adapter
+    /// cannot act on. Never [`ProviderError::Unsupported`] — MTN refunds —
+    /// and no longer [`ProviderError::NotImplemented`]. See
+    /// [`refund_outcome`] for the whole table.
     async fn refund(
         &self,
-        _charge: &ChargeRef,
-        _amount: Money,
-        _destination: Option<&RefundTarget>,
-        _config: &ProviderConfig,
+        charge: &ChargeRef,
+        amount: Money,
+        destination: Option<&RefundTarget>,
+        config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
-        Err(ProviderError::NotImplemented("mtn_momo::refund"))
+        // RFC-0003 open question 6, decided above. The message names the
+        // parameter and the capability that should have guaranteed it; there
+        // is no number in scope to leak, and there must never be one added.
+        let destination = destination.ok_or_else(|| {
+            ProviderError::Config(
+                "mtn_momo: a refund on this rail is a Disbursements transfer and must be \
+                 addressed to a payee, but the core supplied none — this rail declares \
+                 RefundDestination::Required"
+                    .to_owned(),
+            )
+        })?;
+
+        let credentials = Credentials::from_config(config, Product::Disbursements)?;
+        let body = wire::Transfer::new(charge.reference_id, amount, destination);
+        let url = format!(
+            "{}/{}{TRANSFER_PATH}",
+            base_url(config),
+            Product::Disbursements.path_segment()
+        );
+
+        let (subscription, environment) = Adapter::common_headers(&credentials)?;
+        let reference = HeaderValue::from_str(&charge.reference_id.to_string()).map_err(|_| {
+            ProviderError::malformed("mtn_momo: reference_id is not a header value".to_owned())
+        })?;
+
+        // No `X-Callback-Url`. MTN documents one on `transfer` as it does on
+        // `requesttopay`, and sending it would register a Disbursements
+        // notification against `POST /provider/mtn_momo/callback` — a route
+        // whose parser (`parse_callback`) reads a *charge* reference and
+        // whose only effect is to pull a charge's poll job forward. A
+        // callback naming a refund reference would find no charge and be
+        // refused as `Malformed` on every delivery. The header goes in when
+        // there is a refund poll job for it to pull forward, which is the
+        // same gap as "a 202 is not a settlement" above.
+        let response = self
+            .send_authorized(config, &credentials, |token| {
+                Ok(self
+                    .http
+                    .post(&url)
+                    .bearer_auth(token)
+                    .header(SUBSCRIPTION_KEY_HEADER, subscription.clone())
+                    .header(TARGET_ENVIRONMENT_HEADER, environment.clone())
+                    .header(REFERENCE_ID_HEADER, reference.clone())
+                    .timeout(config.request_timeout)
+                    .json(&body))
+            })
+            .await?;
+
+        let (status, text) = read_body(response).await?;
+        // `reference_id` only. The payee's number is deliberately absent:
+        // `RefundTarget`'s redacting `Debug` exists precisely so a
+        // `tracing::debug!(?destination)` here would be harmless, and a
+        // `%destination.msisdn()` would undo it in one line.
+        tracing::debug!(
+            rail = "mtn_momo",
+            reference_id = %charge.reference_id,
+            status = status.as_u16(),
+            "transfer answered"
+        );
+        refund_outcome(status, &text)
     }
 
     /// `GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo` —
@@ -821,7 +1099,7 @@ impl ProviderAdapter for Adapter {
         msisdn: &str,
         config: &ProviderConfig,
     ) -> Result<Option<AccountHolder>, ProviderError> {
-        let credentials = Credentials::from_config(config)?;
+        let credentials = Credentials::from_config(config, Product::Collections)?;
         let (subscription, environment) = Adapter::common_headers(&credentials)?;
         // Percent-encoded inside `account_holder_url`, although `/v1`'s own
         // validation admits digits only: this adapter is reachable from the

@@ -1,16 +1,30 @@
-//! The OAuth token MTN's Collections API wants on every call, and this
+//! The OAuth tokens MTN's two **products** want on every call, and this
 //! rail's half of the cache that keeps one request from becoming two.
 //!
-//! `POST /collection/token/` mints a bearer from HTTP Basic credentials
+//! `POST /{product}/token/` mints a bearer from HTTP Basic credentials
 //! (`api_user:api_key`), a subscription key, and a **JSON** OAuth2 body of
 //! `{"grant_type":"client_credentials"}`. The body is load-bearing and so is
 //! its content type: MTN's API gateway answers `411 Length Required` to a
 //! bodyless POST and a 200 "Request Rejected" HTML page to the same grant
-//! sent form-encoded — both measured on the real sandbox on 2026-09-15. The
-//! cache entry itself is
+//! sent form-encoded — both measured on the real sandbox on 2026-09-15, on
+//! Collections. The cache entry itself is
 //! [`vpay_provider::token::CachedToken`]; what is MTN's alone is
 //! [`REFRESH_MARGIN`], [`ASSUMED_LIFETIME`] (MTN may omit `expires_in`), and
 //! the fields [`Credentials::fingerprint`] hashes.
+//!
+//! # Two products, two subscription keys, two token scopes
+//!
+//! `docs/flows/adapter-mtn-momo.md` § "Credential hierarchy" has had this
+//! since Step 3 and nothing acted on it until Disbursements was built
+//! (2026-09-15): the subscription key is **per product**, and Collections and
+//! Disbursements have **separate tokens**. [`Product`] is what makes that a
+//! value rather than a convention — it selects the configuration keys, the
+//! token path and, deliberately, a *distinct* [`Credentials::fingerprint`],
+//! so a bearer minted for one product can never be served to a call on the
+//! other even if a deployment configures both with the same three strings.
+//! That last property is the one worth a test: it is the only thing standing
+//! between a copy-pasted sandbox configuration and a Collections-scoped
+//! bearer on the money-**out** path.
 //!
 //! `docs/reference/rails.md` has the rest: why the cache is keyed by a
 //! credential digest at all, why the margin is per-rail rather than shared,
@@ -70,23 +84,120 @@ const CLIENT_CREDENTIALS_JSON: &str = r#"{"grant_type":"client_credentials"}"#;
 /// rail never has to guess what a bare string body is.
 const APPLICATION_JSON: &str = "application/json";
 
+/// Which MTN **product** a call belongs to.
+///
+/// MTN sells Collections (money in) and Disbursements (money out) as separate
+/// API products with separate subscription keys, separate token endpoints and
+/// separate token scopes — `docs/flows/adapter-mtn-momo.md` § "Credential
+/// hierarchy" calls confusing the three credential kinds "the most common
+/// onboarding bug", and this type is what keeps the product half of that
+/// distinction out of the call sites.
+///
+/// A two-variant enum rather than a `&str` parameter so that adding a third
+/// product (Remittance) is a compiler error at every match rather than a
+/// string nobody grepped for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Product {
+    /// `requesttopay`, the status read and `basicuserinfo` — everything the
+    /// charge path does.
+    Collections,
+    /// `transfer` — the refund path, and the only thing on this rail that
+    /// sends money *out*.
+    Disbursements,
+}
+
+impl Product {
+    /// The first path segment of every URL under this product — which is how
+    /// [`mint`] builds the token endpoint (`/collection/token/`,
+    /// `/disbursement/token/`) and how `crate::TRANSFER_PATH` is spelled.
+    ///
+    /// **Singular, both of them**, and neither matches the product's English
+    /// name. MTN spells the Collections base path `collection` and the
+    /// Disbursements one `disbursement`; a plural in either is a 404 from the
+    /// gateway.
+    ///
+    /// Also the product discriminator in [`Credentials::fingerprint`]. Two
+    /// jobs for one string is deliberate: the fingerprint has to differ per
+    /// product and the value that already does is the one MTN itself uses to
+    /// tell them apart.
+    pub(crate) const fn path_segment(self) -> &'static str {
+        match self {
+            Self::Collections => "collection",
+            Self::Disbursements => "disbursement",
+        }
+    }
+
+    /// `credentials.<this>` — the per-product `Ocp-Apim-Subscription-Key`.
+    const fn subscription_key_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "subscription_key",
+            Self::Disbursements => "disbursement_subscription_key",
+        }
+    }
+
+    /// `credentials.<this>` — the Basic-auth password of this product's token
+    /// mint.
+    const fn api_key_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "api_key",
+            Self::Disbursements => "disbursement_api_key",
+        }
+    }
+
+    /// `settings.<this>` — the Basic-auth username (a UUID) of this product's
+    /// token mint.
+    const fn api_user_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "api_user",
+            Self::Disbursements => "disbursement_api_user",
+        }
+    }
+}
+
 /// The credentials and non-secret settings one MTN call needs, borrowed from
 /// a [`ProviderConfig`] rather than copied, so no secret is duplicated into a
 /// second allocation that outlives the call.
 pub(crate) struct Credentials<'a> {
-    /// `credentials.subscription_key` — the Collections product key.
+    /// Which product these belong to. Part of [`Credentials::fingerprint`],
+    /// and the reason a Collections bearer cannot be served to a `transfer`.
+    product: Product,
+    /// This product's `Ocp-Apim-Subscription-Key`.
     subscription_key: &'a str,
-    /// `credentials.api_key` — the Basic-auth password for the token call.
+    /// This product's Basic-auth password for the token call.
     api_key: &'a str,
-    /// `settings.api_user` — a UUID, and the Basic-auth username. Not a
-    /// secret, which is why it lives in `settings`.
+    /// A UUID, and the Basic-auth username. Not a secret, which is why it
+    /// lives in `settings`.
     api_user: &'a str,
-    /// `settings.target_environment`.
+    /// `settings.target_environment`. The one value the two products share:
+    /// it names the MTN *environment* (`sandbox`, `mtncameroon`), not the
+    /// product, and a deployment cannot be in two environments at once.
     target_environment: &'a str,
 }
 
 impl<'a> Credentials<'a> {
-    /// Reads the four values this adapter needs out of a `ProviderConfig`.
+    /// Reads the four values one product's calls need out of a
+    /// `ProviderConfig`.
+    ///
+    /// # No fallback from Disbursements to Collections, deliberately
+    ///
+    /// A missing `disbursement_api_key` does **not** fall back to `api_key`,
+    /// and the same for the API user. The convenience is real — an MTN
+    /// sandbox account may well end up with one API user across both product
+    /// subscriptions — and it is refused anyway, because the failure it
+    /// creates is silent and lands on the money-**out** path: a deployment
+    /// that configures a Disbursements subscription key and forgets the rest
+    /// would send Collections' Basic credentials to the Disbursements token
+    /// mint and get a 401 that reads as "MTN refused our partner
+    /// credentials", pages, and names nothing that is actually wrong. Three
+    /// explicit keys cost an operator three lines of YAML, once, and no
+    /// deployment holds them yet (`docs/status.md`) — so there is nobody to
+    /// inconvenience and the cheap moment to be strict is now.
+    ///
+    /// Whether MTN's sandbox in fact issues one API user for both products is
+    /// **unverified** — nothing in this repository has ever called
+    /// Disbursements. `docs/flows/adapter-mtn-momo.md` records it as a thing
+    /// to check on the first real call, and the answer is one `unwrap_or`
+    /// away in either direction.
     ///
     /// # Errors
     ///
@@ -94,7 +205,10 @@ impl<'a> Credentials<'a> {
     /// credential is a deployment mistake, not a rail failure and certainly
     /// not a decline: `Category::Configuration` is what stops it being
     /// retried against a rail that will keep saying no.
-    pub(crate) fn from_config(config: &'a ProviderConfig) -> Result<Self, ProviderError> {
+    pub(crate) fn from_config(
+        config: &'a ProviderConfig,
+        product: Product,
+    ) -> Result<Self, ProviderError> {
         fn required<'m>(
             map: &'m std::collections::BTreeMap<String, String>,
             key: &str,
@@ -109,22 +223,49 @@ impl<'a> Credentials<'a> {
         }
 
         Ok(Self {
-            subscription_key: required(&config.credentials, "subscription_key", "credentials")?,
-            api_key: required(&config.credentials, "api_key", "credentials")?,
-            api_user: required(&config.settings, "api_user", "settings")?,
+            product,
+            subscription_key: required(
+                &config.credentials,
+                product.subscription_key_setting(),
+                "credentials",
+            )?,
+            api_key: required(&config.credentials, product.api_key_setting(), "credentials")?,
+            api_user: required(&config.settings, product.api_user_setting(), "settings")?,
             target_environment: required(&config.settings, "target_environment", "settings")?,
         })
     }
 
-    /// The cache key: a digest of the credentials that mint a token.
+    /// The cache key: a digest of the credentials that mint a token, **and of
+    /// the product whose scope the token carries**.
     ///
     /// `api_key` is hashed in **because** it is the token's password, not
     /// despite it — leaving it out meant a deployment that rotated only the
     /// API key kept serving calls with the bearer minted from the old one
     /// until it aged out. `docs/reference/rails.md` records the tenancy
     /// argument for the other fields and why a digest is safe to hold.
+    ///
+    /// The product is hashed in for a reason the other three cannot cover.
+    /// The two tokens are minted from *different endpoints* and are scoped to
+    /// different products, but nothing forces their credentials to differ: an
+    /// operator setting up a sandbox may legitimately paste one API user, one
+    /// API key and — by mistake — one subscription key into both halves of
+    /// the configuration. Without this field those two `Credentials` values
+    /// would fingerprint identically and the cache would hand a
+    /// Collections-scoped bearer to a Disbursements `transfer`, which is a
+    /// wrong-scope token on the only call this rail has that sends money out.
+    /// `a_collections_bearer_is_never_served_to_a_disbursement` is what holds
+    /// that shut.
     pub(crate) fn fingerprint(&self) -> [u8; 32] {
-        vpay_provider::token::fingerprint(&[self.subscription_key, self.api_key, self.api_user])
+        vpay_provider::token::fingerprint(&[
+            self.product.path_segment(),
+            self.subscription_key,
+            self.api_key,
+            self.api_user,
+        ])
+    }
+
+    pub(crate) const fn product(&self) -> Product {
+        self.product
     }
 
     pub(crate) const fn target_environment(&self) -> &'a str {
@@ -156,6 +297,7 @@ impl<'a> Credentials<'a> {
 impl fmt::Debug for Credentials<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
+            .field("product", &self.product)
             .field("api_user", &self.api_user)
             .field("target_environment", &self.target_environment)
             .field("subscription_key", &"<redacted>")
@@ -233,9 +375,17 @@ impl ExpiresIn {
     }
 }
 
-/// Mints a fresh bearer token. Always a network call — the cache lives in
-/// [`crate::Adapter`], which is the only thing that can decide whether one is
-/// needed.
+/// Mints a fresh bearer token for `credentials`' own product. Always a
+/// network call — the cache lives in [`crate::Adapter`], which is the only
+/// thing that can decide whether one is needed.
+///
+/// The URL is derived from [`Credentials::product`] and never passed in, so
+/// there is no call site that can ask the Disbursements mint for a
+/// Collections token or the other way round. The grant body and its content
+/// type are the same on both endpoints — **assumed**, not measured: PR #177
+/// established the JSON spelling against Collections on MTN's real sandbox on
+/// 2026-09-15, and nothing has ever called the Disbursements mint. See
+/// `docs/flows/adapter-mtn-momo.md` § "Not proven".
 ///
 /// # Errors
 ///
@@ -251,7 +401,11 @@ pub(crate) async fn mint(
     config: &ProviderConfig,
     credentials: &Credentials<'_>,
 ) -> Result<CachedToken, ProviderError> {
-    let url = format!("{}/collection/token/", crate::base_url(config));
+    let url = format!(
+        "{}/{}/token/",
+        crate::base_url(config),
+        credentials.product.path_segment()
+    );
     // Recorded before the call, not after: a token's life starts when MTN
     // mints it, and counting from the response would credit the token with
     // however long the round trip took.
@@ -285,7 +439,11 @@ pub(crate) async fn mint(
                 "mtn_momo: token response is not the documented shape: {e}"
             ))
         })?;
-        tracing::debug!(rail = "mtn_momo", "minted a collections access token");
+        tracing::debug!(
+            rail = "mtn_momo",
+            product = credentials.product.path_segment(),
+            "minted an access token"
+        );
         return Ok(cache_entry(
             parsed.access_token,
             credentials.fingerprint(),
