@@ -556,8 +556,12 @@ mod tests {
         ) -> Result<RefundTarget, ProviderError> {
             raw.get("msisdn")
                 .and_then(serde_json::Value::as_str)
-                .map(RefundTarget::mobile_money)
                 .ok_or_else(|| ProviderError::malformed("recording: no msisdn".to_owned()))
+                .and_then(|msisdn| {
+                    RefundTarget::mobile_money(msisdn).map_err(|invalid| {
+                        ProviderError::malformed(format!("recording: {invalid}"))
+                    })
+                })
         }
 
         async fn refund(
@@ -600,7 +604,8 @@ mod tests {
         let adapter = Measured::wrap(Box::new(RecordingRefund {
             seen: Arc::clone(&seen),
         }));
-        let destination = RefundTarget::mobile_money("+237600000200");
+        let destination =
+            RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN");
 
         let scrape = scrape_of(|| {
             let refunded =
@@ -613,7 +618,7 @@ mod tests {
 
         assert_eq!(
             seen.lock().expect("the stub released the lock").as_slice(),
-            [Some("+237600000200".to_owned())],
+            [Some("237600000200".to_owned())],
             "the inner adapter must be handed the destination it was called with"
         );
         assert!(
@@ -665,7 +670,7 @@ mod tests {
                 .as_ref()
                 .map(|target| target.msisdn().to_owned())
                 .map_err(|error| format!("{error}")),
-            Ok("+237600000200".to_owned()),
+            Ok("237600000200".to_owned()),
             "the inner adapter's parser must be the one that answered, not the port's default"
         );
         assert!(

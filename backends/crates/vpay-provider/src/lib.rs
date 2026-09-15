@@ -318,48 +318,150 @@ impl std::fmt::Debug for RefundTarget {
     }
 }
 
+/// Why a string was refused as a payee's MSISDN.
+///
+/// # Every variant is a unit variant, and that is the design
+///
+/// An error about a phone number is the single easiest place to leak one:
+/// the offending value is right there in scope, and `ProviderError`'s
+/// `context` — which this ends up inside — is rendered into every log line it
+/// reaches. A variant carrying the input would make that leak a `#[derive]`
+/// away. There is nothing here to carry it, so no rendering of this type can
+/// print a number, and `an_invalid_msisdn_never_names_the_number_it_refused`
+/// holds that shut.
+///
+/// The cost is that an integrator is told *which rule* their number broke and
+/// not *what they sent*. That is the right trade for a third party's phone
+/// number, and it is the same trade [`RefundTarget`]'s redacting [`Debug`]
+/// already makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum InvalidMsisdn {
+    /// No leading `+`. See [`RefundTarget::mobile_money`] § "Why the `+` is
+    /// required": this crate has no country to attach to a bare national
+    /// number, and guessing one sends money to a different country's
+    /// subscriber.
+    #[error("a refund destination must be a full international number written with its `+`")]
+    NotInternational,
+    /// Something that is neither a digit, the leading `+`, nor one of the
+    /// separators a caller may type.
+    #[error("a refund destination must contain only digits, separators and a leading `+`")]
+    NotADigitString,
+    /// Outside E.164's 15-digit ceiling, or below the floor that catches a
+    /// truncated number.
+    #[error("a refund destination must be between 8 and 15 digits long")]
+    WrongLength,
+    /// `+0…`. No E.164 country code begins with zero, so this is a national
+    /// trunk prefix that survived a merchant's `+` being prepended.
+    #[error("a refund destination must not begin with a national trunk prefix, `0`")]
+    TrunkPrefix,
+}
+
+/// E.164's ceiling: fifteen digits including the country code (ITU-T E.164,
+/// § 6.2). A sixteenth digit is not a number anywhere.
+const E164_MAX_DIGITS: usize = 15;
+
+/// A floor, not a validity oracle. Eight digits is the shortest number in
+/// service internationally, so this catches a truncated or half-pasted value
+/// and nothing subtler — no digit-count rule can catch a single-digit typo,
+/// which is why `account_holder_name` exists on the rails that have it.
+const E164_MIN_DIGITS: usize = 8;
+
+/// Bounds the input before it is walked, on
+/// `vpay_api::v1::account_holders::canonical_msisdn`'s reasoning and with its
+/// number: past this, a caller is not mistyping a phone number.
+const MAX_MSISDN_INPUT_CHARS: usize = 32;
+
 impl RefundTarget {
-    /// Builds the mobile-money destination: a payee's MSISDN.
+    /// Builds the mobile-money destination: a payee's MSISDN, canonicalised.
     ///
-    /// Infallible, on [`AccountHolder::new`]'s terms — the caller supplies a
-    /// number it has already decided is one. The port cannot decide that
-    /// itself, and a second copy of a validation rule is how two spellings
-    /// drift apart.
+    /// # Fallible on purpose, and the asymmetry that makes it so
     ///
-    /// # Who the caller is, and how strict it is — a named gap
+    /// Maintainer's decision, 2026-09-15. Until then this was infallible on
+    /// [`AccountHolder::new`]'s terms and both adapters applied the *confirm*
+    /// path's rule — `payer_instrument` accepts any non-whitespace string and
+    /// hands it to the rail. Those two cases are not symmetric. A mistyped
+    /// **payer** number fails the charge and the money never moves. A
+    /// mistyped **payee** number sends real money to whoever actually owns
+    /// that number, and it does not come back.
     ///
-    /// Since RFC-0003 open question 4 was decided on 2026-09-15 the caller is
-    /// an adapter's [`ProviderAdapter::parse_destination`], not `vpay_api`.
-    /// The rule those implementations apply is deliberately the **confirm
-    /// path's**: `vpay_api::v1::payment_intents`' `payer_instrument` accepts a
-    /// payer MSISDN that is present, a JSON string and not whitespace-only,
-    /// and passes it to the rail as written. A destination is held to exactly
-    /// that, so a number vpay would accept as a payer is a number it accepts
-    /// as a payee.
+    /// So the rule lives here, next to the type it guards, and the
+    /// canonicaliser is private: the only way to obtain a [`RefundTarget`] is
+    /// through this constructor, so no adapter can construct an invalid one
+    /// and none has to re-spell the rule.
     ///
-    /// It is **not** held to `vpay_api`'s stricter E.164 canonicaliser,
-    /// `v1::account_holders::canonical_msisdn` — the one the account-holder
-    /// route and the customer object use. That function is `pub(crate)` to
-    /// `vpay_api`, an adapter crate cannot name it, and writing a second
-    /// spelling of it inside each adapter is the drift this paragraph exists
-    /// to refuse. So `+237600000200` and `not a phone number` are both
-    /// accepted here and both refused by the rail, exactly as they are on the
-    /// confirm path today.
+    /// # What is accepted, and the shape it comes out in
     ///
-    /// Closing that gap means moving one canonicaliser to a crate both
-    /// `vpay_api` and the adapters can see, which changes where the *confirm*
-    /// path validates and is a decision about a market-specific rule's home,
-    /// not about refunds. It is deliberately left open rather than guessed
-    /// at, and `docs/status/backend.md` records it.
+    /// A leading `+`, ASCII digits, and the separator set a caller actually
+    /// types — ASCII space, tab, hyphen, dot, parentheses, and the two spaces
+    /// a phone keypad or a French locale inserts. So `+237 6 00 00 02 00`,
+    /// `+237-600-000-200` and `+237600000200` are one destination.
+    ///
+    /// What comes out is **digits only, no `+`**: `237600000200`. That is not
+    /// E.164's own rendering, and it is deliberate —
+    /// [`msisdn`](RefundTarget::msisdn) is documented as "what the adapter
+    /// must spell on its rail", `payer.partyId` is `237600000000` in
+    /// `vpay-adapter-mtn-momo` and in every conformance mapping, and
+    /// `vpay_api::v1::account_holders::canonical_msisdn` already produces that
+    /// same twelve-digit form for a payer. One spelling in the workspace.
+    ///
+    /// # Why the `+` is required, when `canonical_msisdn` does not require one
+    ///
+    /// Because that function knows it is in Cameroon and this crate does not.
+    /// `canonical_msisdn` accepts a bare `6XXXXXXXX` and prefixes `237`,
+    /// which is correct there and unavailable here: `vpay-provider` carries no
+    /// `CM_COUNTRY_CODE` and must not acquire one, because a market-agnostic
+    /// crate that hardcodes one market is how the *next* rail's country gets
+    /// silently assumed. Read as an international number instead,
+    /// `600000200` is nine digits beginning with country code `6` — a real
+    /// prefix, belonging to Malaysia — so accepting it would not be lenient,
+    /// it would be a different payee in a different country.
+    ///
+    /// Requiring the `+` makes the merchant say which. The cost is a real
+    /// asymmetry to state plainly: `GET /v1/account_holders` accepts
+    /// `600000200` and a refund destination does not. It is asymmetric in the
+    /// safe direction — a lookup that guesses wrong returns the wrong name, a
+    /// transfer that guesses wrong sends the money — and it is the reason the
+    /// Cameroon-specific rule stayed in `vpay-api` rather than moving down
+    /// here. `docs/status/backend.md` records it.
     ///
     /// Named for the shape rather than `new` so that a future non-mobile-money
     /// destination is a sibling constructor, not a silent change of meaning to
     /// this one.
-    #[must_use]
-    pub fn mobile_money(msisdn: impl Into<String>) -> Self {
-        Self {
-            msisdn: msisdn.into(),
-        }
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidMsisdn`], whose every variant is a unit variant so that no
+    /// refusal can carry the number it refused.
+    ///
+    /// ```
+    /// use vpay_provider::{InvalidMsisdn, RefundTarget};
+    ///
+    /// // The three spellings a merchant types are one destination, and the
+    /// // rail-facing form has no `+`.
+    /// for spelling in ["+237600000200", "+237 6 00 00 02 00", "+237-600-000-200"] {
+    ///     let destination = RefundTarget::mobile_money(spelling)?;
+    ///     assert_eq!(destination.msisdn(), "237600000200");
+    /// }
+    ///
+    /// // A bare national number is ambiguous to a crate with no country.
+    /// assert_eq!(
+    ///     RefundTarget::mobile_money("600000200"),
+    ///     Err(InvalidMsisdn::NotInternational)
+    /// );
+    /// assert_eq!(
+    ///     RefundTarget::mobile_money("not a phone number"),
+    ///     Err(InvalidMsisdn::NotInternational)
+    /// );
+    /// // And no refusal names what it refused.
+    /// let refused = RefundTarget::mobile_money("+23760000020x").unwrap_err();
+    /// assert!(!format!("{refused}").contains("23760000020"));
+    /// # Ok::<(), InvalidMsisdn>(())
+    /// ```
+    pub fn mobile_money(msisdn: impl AsRef<str>) -> Result<Self, InvalidMsisdn> {
+        Ok(Self {
+            msisdn: canonical_msisdn(msisdn.as_ref())?,
+        })
     }
 
     /// The payee's MSISDN, as the adapter must spell it on its rail.
@@ -373,8 +475,9 @@ impl RefundTarget {
     /// ```
     /// use vpay_provider::RefundTarget;
     ///
-    /// let destination = RefundTarget::mobile_money("+237600000000");
-    /// assert_eq!(destination.msisdn(), "+237600000000");
+    /// let destination = RefundTarget::mobile_money("+237600000000")?;
+    /// // Canonical, and in the shape a rail's `partyId` takes: no `+`.
+    /// assert_eq!(destination.msisdn(), "237600000000");
     /// // Debug redacts: a `{:?}` of a destination — or of anything holding
     /// // one, such as the `Option` the port passes it in — never prints it.
     /// assert_eq!(
@@ -382,11 +485,64 @@ impl RefundTarget {
     ///     r#"RefundTarget { msisdn: "[redacted]" }"#
     /// );
     /// assert!(!format!("{:?}", Some(&destination)).contains("237600000000"));
+    /// # Ok::<(), vpay_provider::InvalidMsisdn>(())
     /// ```
     #[must_use]
     pub fn msisdn(&self) -> &str {
         &self.msisdn
     }
+}
+
+/// E.164 in, `237600000200` out — the whole rule
+/// [`RefundTarget::mobile_money`] enforces, and private so that it is the
+/// only way in.
+///
+/// Deliberately **not** a port of
+/// `vpay_api::v1::account_holders::canonical_msisdn`, though it shares that
+/// function's separator set and input bound on purpose: sharing the
+/// *specification* is what keeps a merchant's three spellings resolving the
+/// same way on both surfaces, while sharing the *code* would have meant
+/// moving `CM_COUNTRY_CODE` into a market-agnostic crate. The one behavioural
+/// difference is the one that decision is about, and it is stated on the
+/// constructor: no bare national form here, because there is no country to
+/// attach it to.
+fn canonical_msisdn(input: &str) -> Result<String, InvalidMsisdn> {
+    /// Separators a caller may send, matching
+    /// `vpay_api::v1::account_holders::canonical_msisdn`'s set and the
+    /// checkout page's: ASCII space, tab, hyphen, dot, parentheses, and the
+    /// two spaces a phone keypad or a French locale inserts (U+00A0, U+202F).
+    /// Written as escapes because a literal one is invisible in a diff.
+    const SEPARATORS: [char; 8] = [' ', '\t', '-', '.', '(', ')', '\u{00a0}', '\u{202f}'];
+
+    let trimmed = input.trim();
+    if trimmed.chars().count() > MAX_MSISDN_INPUT_CHARS {
+        return Err(InvalidMsisdn::WrongLength);
+    }
+    let Some(rest) = trimmed.strip_prefix('+') else {
+        return Err(InvalidMsisdn::NotInternational);
+    };
+
+    let mut digits = String::with_capacity(E164_MAX_DIGITS);
+    for character in rest.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if SEPARATORS.contains(&character) {
+            // Dropped.
+        } else {
+            // A letter, a second `+`, punctuation: not a phone number. The
+            // hex steering numbers the WireMock mappings key on
+            // (`237600000f01`) are refused here for exactly this reason.
+            return Err(InvalidMsisdn::NotADigitString);
+        }
+    }
+
+    if digits.len() < E164_MIN_DIGITS || digits.len() > E164_MAX_DIGITS {
+        return Err(InvalidMsisdn::WrongLength);
+    }
+    if digits.starts_with('0') {
+        return Err(InvalidMsisdn::TrunkPrefix);
+    }
+    Ok(digits)
 }
 
 /// What a rail answered when asked to return money.
@@ -1463,8 +1619,10 @@ mod tests {
     /// this ground and the replacement must not reintroduce it.
     #[test]
     fn a_refund_destination_never_prints_the_payees_number() {
-        let destination = RefundTarget::mobile_money("+237600000200");
-        assert_eq!(destination.msisdn(), "+237600000200");
+        let destination =
+            RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN");
+        // Canonical: the `+` a merchant must send is not what a rail is told.
+        assert_eq!(destination.msisdn(), "237600000200");
 
         for rendered in [
             format!("{destination:?}"),
@@ -1473,6 +1631,98 @@ mod tests {
         ] {
             assert!(!rendered.contains("237600000200"), "{rendered}");
             assert!(rendered.contains("[redacted]"), "{rendered}");
+        }
+    }
+
+    /// One payee, every spelling a merchant types, one string on the rail.
+    ///
+    /// The separator set is deliberately the same as
+    /// `vpay_api::v1::account_holders::canonical_msisdn`'s and the checkout
+    /// page's, so a number a payer enters on the page is a number a merchant
+    /// can name as a payee. What the three surfaces share is the
+    /// specification, not the code — see `canonical_msisdn` in this crate for
+    /// why sharing the code would have meant moving `CM_COUNTRY_CODE` into a
+    /// market-agnostic crate.
+    #[test]
+    fn every_spelling_of_one_payee_canonicalises_to_one_string() {
+        for spelling in [
+            "+237600000200",
+            "  +237600000200  ",
+            "+237 600 000 200",
+            "+237-600-000-200",
+            "+237.600.000.200",
+            "+(237)600000200",
+            "+237\u{00a0}600\u{202f}000\u{00a0}200",
+        ] {
+            let parsed = RefundTarget::mobile_money(spelling)
+                .unwrap_or_else(|error| panic!("{spelling:?} must parse: {error}"));
+            assert_eq!(parsed.msisdn(), "237600000200", "{spelling:?}");
+        }
+    }
+
+    /// What is refused, and with which reason.
+    ///
+    /// The bare national form is the one worth staring at. `600000200` is
+    /// what `GET /v1/account_holders` accepts — correctly, because it knows
+    /// it is in Cameroon — and read as an international number it is nine
+    /// digits under country code `6`, which is Malaysia. Accepting it here
+    /// would not be leniency, it would be a different subscriber in a
+    /// different country receiving a refund.
+    #[test]
+    fn a_number_that_is_not_an_unambiguous_payee_is_refused() {
+        for (input, expected) in [
+            // No `+`: this crate has no country to attach.
+            ("600000200", InvalidMsisdn::NotInternational),
+            ("237600000200", InvalidMsisdn::NotInternational),
+            ("", InvalidMsisdn::NotInternational),
+            ("   ", InvalidMsisdn::NotInternational),
+            ("not a phone number", InvalidMsisdn::NotInternational),
+            // Past the `+`, anything that is not a digit or a separator.
+            ("+237600000f01", InvalidMsisdn::NotADigitString),
+            ("++237600000200", InvalidMsisdn::NotADigitString),
+            ("+237600000200x", InvalidMsisdn::NotADigitString),
+            ("+٢٣٧٦٠٠٠٠٠٢٠٠", InvalidMsisdn::NotADigitString),
+            // E.164's ceiling and a floor against a truncated paste.
+            ("+2376000002001234", InvalidMsisdn::WrongLength),
+            ("+2376000", InvalidMsisdn::WrongLength),
+            ("+", InvalidMsisdn::WrongLength),
+            // A national trunk prefix that survived someone's `+`.
+            ("+0600000200", InvalidMsisdn::TrunkPrefix),
+        ] {
+            assert_eq!(
+                RefundTarget::mobile_money(input),
+                Err(expected),
+                "{input:?} must be refused as {expected:?}"
+            );
+        }
+    }
+
+    /// A refusal names the rule and can never name the number.
+    ///
+    /// Not "does not today" — [`InvalidMsisdn`]'s variants are unit variants,
+    /// so there is structurally nothing for a number to be carried in. This
+    /// case is what would fail if one ever grew a field, which is the moment
+    /// `ProviderError`'s `context` — and every log line it reaches — would
+    /// start carrying a third party's phone number.
+    #[test]
+    fn an_invalid_msisdn_never_names_the_number_it_refused() {
+        for input in [
+            "600000200",
+            "+237600000f01",
+            "+2376000002001234",
+            "+0600000200",
+        ] {
+            let refused = RefundTarget::mobile_money(input).expect_err("refused");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                assert!(
+                    !rendered.contains(input),
+                    "{input:?} reached a refusal's message: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("600000"),
+                    "nor did any run of its digits: {rendered}"
+                );
+            }
         }
     }
 

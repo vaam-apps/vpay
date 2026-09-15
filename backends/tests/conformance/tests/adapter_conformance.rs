@@ -1274,13 +1274,24 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     let _: &vpay_provider::RefExtra = &parsed.ref_extra;
 }
 
-/// A payee's number that belongs to nobody.
+/// A payee's number that belongs to nobody, as a merchant sends it.
 ///
 /// One constant rather than a literal per case, because every assertion about
 /// it is a *negative* one — "this string must not appear in an error, a log
 /// line or a metric label" — and a second spelling is a second string those
 /// assertions would not be looking for.
 const DOCUMENTATION_MSISDN: &str = "+237600000200";
+
+/// The same payee as [`DOCUMENTATION_MSISDN`], in the shape the rail is
+/// given: `RefundTarget::mobile_money` canonicalises to digits only, no `+`,
+/// matching the `partyId` both adapters already send on the charge path.
+///
+/// Two constants because the boundary between them is what the maintainer
+/// decided on 2026-09-15, and a test that used one string for both would not
+/// notice if the canonicalisation stopped happening. The negative assertions
+/// below check **both**: a redaction that hid the `+` form and printed the
+/// digits would have leaked the number just the same.
+const DOCUMENTATION_MSISDN_CANONICAL: &str = "237600000200";
 
 /// A destination for whatever the rail under test declares it needs, built
 /// from the capability value alone.
@@ -1294,7 +1305,10 @@ const DOCUMENTATION_MSISDN: &str = "+237600000200";
 /// to rails whose `refund` is unbuilt, so nothing is ever sent anywhere.
 fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
     match destination {
-        RefundDestination::Required => Some(RefundTarget::mobile_money(DOCUMENTATION_MSISDN)),
+        RefundDestination::Required => Some(
+            RefundTarget::mobile_money(DOCUMENTATION_MSISDN)
+                .expect("the documentation MSISDN is a valid payee"),
+        ),
         // Not "no destination handy": an `Origin` rail returns money to the
         // instrument that paid, and offering it a payee would be asking it to
         // ignore one.
@@ -1378,9 +1392,38 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
                 });
             assert_eq!(
                 parsed.msisdn(),
-                DOCUMENTATION_MSISDN,
-                "the payee the merchant nominated is the payee the adapter carries"
+                DOCUMENTATION_MSISDN_CANONICAL,
+                "the payee the merchant nominated is the payee the adapter carries, in the \
+                 canonical shape the rail is given"
             );
+
+            // A well-formed string that is not a usable payee. Every rail
+            // refuses it, and none of them decides that for itself: the
+            // refusal comes from `RefundTarget::mobile_money`, which is the
+            // whole point of the constructor being fallible (maintainer's
+            // decision, 2026-09-15). The bare national form is the case that
+            // matters — `GET /v1/account_holders` accepts it, because it
+            // knows it is in Cameroon, and a market-agnostic crate with no
+            // country must not guess one for money going out.
+            for not_a_payee in ["600000200", "not a phone number", "+0600000200", "+1234567"] {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "msisdn".to_owned(),
+                    serde_json::Value::String(not_a_payee.to_owned()),
+                );
+                let refused = adapter.parse_destination(&map);
+                assert!(
+                    matches!(refused, Err(ProviderError::Malformed { .. })),
+                    "{not_a_payee:?} is not a payee any rail may be given: {refused:?}"
+                );
+                let refused = refused.expect_err("refused just above");
+                for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                    assert!(
+                        !rendered.contains(not_a_payee),
+                        "a refusal must name the rule, never the number: {rendered}"
+                    );
+                }
+            }
 
             // The decisive one. An empty sub-map is what
             // `destination[<rail_code>]` with nothing under it produces, and
@@ -1410,10 +1453,12 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
             );
             let refused = refused.expect_err("refused just above");
             for rendered in [format!("{refused}"), format!("{refused:?}")] {
-                assert!(
-                    !rendered.contains(DOCUMENTATION_MSISDN),
-                    "no refusal may echo a payee's number: {rendered}"
-                );
+                for spelling in [DOCUMENTATION_MSISDN, DOCUMENTATION_MSISDN_CANONICAL] {
+                    assert!(
+                        !rendered.contains(spelling),
+                        "no refusal may echo a payee's number, in either spelling: {rendered}"
+                    );
+                }
             }
         }
         RefundDestination::Origin => {

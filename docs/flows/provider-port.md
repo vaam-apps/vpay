@@ -143,6 +143,63 @@ whether this is a port or just a folder.
 
 ## Status
 
+**Decided and built 2026-09-15: `RefundTarget::mobile_money` canonicalises,
+and refuses.** The constructor is fallible —
+`Result<RefundTarget, InvalidMsisdn>` — and the rule lives in `vpay-provider`,
+next to the type it guards and private to it, so no adapter can construct an
+invalid destination and none re-spells the rule. The asymmetry that decides it:
+a mistyped **payer** number fails a charge, a mistyped **payee** number sends
+real money to whoever owns that number and it does not come back. The arm had
+applied the confirm path's rule (`payer_instrument`: any non-whitespace string,
+passed on as written) on the grounds of symmetry with a payer, and those two
+cases are not symmetric.
+
+What that costs, stated rather than buried: **`vpay-provider` requires a full
+international number with its `+`**, because a market-agnostic crate has no
+country to attach to a bare national form and must not acquire one —
+`CM_COUNTRY_CODE` stays in `vpay-api`. So `600000200` is accepted by
+`GET /v1/account_holders`, which knows it is in Cameroon, and **refused** as a
+refund destination. Read as an international number it is country code `6`,
+which is Malaysia; accepting it would be a different subscriber in a different
+country receiving the money. The asymmetry runs in the safe direction and is
+recorded in [status/backend.md](../status/backend.md). What is shared with
+`canonical_msisdn` is the _specification_ — the separator set, the input bound,
+and the digits-only `237600000200` output a rail's `partyId` takes — and not the
+code, which is what would have moved the market rule down a crate.
+`InvalidMsisdn`'s variants are all **unit** variants, so a refusal structurally
+cannot carry the number it refused.
+
+**Reviewed 2026-09-15 (adversarial review of wave 1b).** Every number the arm
+reported reproduced exactly — 216 run / 216 passed / 0 skipped / 0 ignored
+against real containers, 13 doctests, clippy and fmt clean. Three holes its own
+tests could not see were closed, and one obligation on wave 3 was recorded:
+
+- **A forwarded `parse_destination` refusal is a 502, and wave 3 must not
+  forward it.** `ProviderError::Malformed` is the honest variant, but
+  `Classify` derives `Category::Rail` from it — so a merchant's typo in
+  `destination[<rail_code>][msisdn]` becomes HTTP 502, `Retry::AfterBackoff`,
+  and the envelope sentence "The payment rail is temporarily unavailable. The
+  charge will be retried.", while the parameter name the adapter put in
+  `context` reaches only the log. `POST /v1/refunds` must translate it to
+  `ApiError::invalid_param("destination", …)`, as `payer_instrument` already
+  answers for `payment_method_data`.
+  `a_malformed_destination_is_classified_as_a_rail_fault` pins the
+  classification.
+- **The `raw` boundary now fails safe, and only that.** Nothing connects the
+  two sides of "the rail-scoped inner map" until wave 3 writes the caller;
+  `the_outer_destination_map_is_refused_rather_than_misread` pins that handing
+  over the _un-stripped_ map is `Malformed`, never an `Ok` carrying a payee
+  nobody nominated.
+- **The impl probe covers three more leak routes.** Measured: with
+  `impl Deref for RefundTarget { type Target = str; }`, `to_string()` printed
+  the number in full while the case passed. `Deref`, `AsRef<str>` and
+  `Into<String>` now have constants of their own.
+- **The conformance no-echo assertion was unfalsifiable** — it ran against the
+  empty-map refusal, which never held a number — and now refuses a map that
+  carries one.
+- Evidence:
+  [verification/2026-09-15-refunds-w1b-parse-destination-review.md](../status/verification/2026-09-15-refunds-w1b-parse-destination-review.md).
+
 **Updated 2026-09-15 (RFC-0003 wave 1b): the adapter parses the destination,
 not the core.**
 
@@ -165,17 +222,11 @@ not the core.**
   `vpay_api::v1::boot::adapters_by_code` wraps every shipping adapter.
   `a_defaulted_method_is_not_silently_answered_by_the_wrapper` fails if the
   forward is deleted.
-- **MSISDN validation did not move and was not copied — a named gap.** The
-  rule the adapters apply is the _confirm path's_ (`payer_instrument`:
-  present, a JSON string, not whitespace-only), so a number vpay accepts as a
-  payer it accepts as a payee. It is **not** `vpay_api`'s stricter E.164
-  `canonical_msisdn`, which is `pub(crate)` there and which an adapter crate
-  cannot reach; writing a second spelling of it per adapter is the drift this
-  refused. `not a phone number` is therefore accepted here and refused by the
-  rail, exactly as on confirm today. Closing it means giving one
-  canonicaliser a home both layers can see, which changes where the confirm
-  path validates — [status/backend.md](../status/backend.md) records it as a
-  maintainer decision rather than guessing.
+- ~~**MSISDN validation did not move and was not copied — a named gap.**~~
+  **Decided by the maintainer on 2026-09-15 and closed the same day** (see the
+  next section). The arm was right to leave it rather than guess, and right
+  about the reasoning; the decision went the other way from the rule it had
+  applied.
 - **Not built by this change:** still no `POST /v1/refunds` (wave 3), no core
   code reading `refund_destination`, no MTN Disbursements call, no Orange
   transfer, no ledger posting. Nothing calls `parse_destination` outside

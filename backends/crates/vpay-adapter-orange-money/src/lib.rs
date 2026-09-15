@@ -610,10 +610,20 @@ impl ProviderAdapter for Adapter {
     /// choice, and must fail where a missing one does rather than travel as
     /// `""`.
     ///
-    /// A string that is not a phone number is **not** refused — the rule is
-    /// the confirm path's, not `vpay_api`'s stricter E.164 canonicaliser,
-    /// which an adapter crate cannot name and must not re-spell. See
-    /// [`vpay_provider::RefundTarget::mobile_money`].
+    /// A string that is not a usable international number is refused as well,
+    /// but by [`vpay_provider::RefundTarget::mobile_money`] and not by
+    /// anything here: this adapter owns the *key*, the port owns the
+    /// *number*. That is the maintainer's decision of 2026-09-15, and it is
+    /// why there is no second spelling of the rule to keep in step — an
+    /// adapter cannot construct an invalid `RefundTarget` at all.
+    ///
+    /// It replaced the confirm path's rule, which this method applied first:
+    /// any non-whitespace string, handed to the rail as written. A mistyped
+    /// payer number fails a charge; a mistyped payee number sends money to
+    /// whoever owns it. A bare `600000200` is therefore refused here while
+    /// `GET /v1/account_holders` accepts it, and
+    /// [`vpay_provider::RefundTarget::mobile_money`] § "Why the `+` is
+    /// required" argues that asymmetry.
     ///
     /// # Errors
     ///
@@ -636,7 +646,14 @@ impl ProviderAdapter for Adapter {
                      non-empty string in `destination[orange_money][{DESTINATION_MSISDN_KEY}]`"
                 ))
             })?;
-        Ok(RefundTarget::mobile_money(msisdn))
+        // `InvalidMsisdn` is rendered, the input is not: every variant of it
+        // is a unit variant, so this cannot echo the number even by accident.
+        RefundTarget::mobile_money(msisdn).map_err(|invalid| {
+            ProviderError::malformed(format!(
+                "orange_money: `destination[orange_money][{DESTINATION_MSISDN_KEY}]` is not a payee this \
+                 rail can be given — {invalid}"
+            ))
+        })
     }
 
     // `refund` is deliberately not overridden: the port's default is
@@ -1290,27 +1307,29 @@ mod tests {
     /// payee is treated differently from a payer here.
     #[test]
     fn a_documented_destination_parses_to_the_payee() {
-        let parsed = adapter()
-            .parse_destination(
-                json!({ "msisdn": "+237600000200" })
-                    .as_object()
-                    .expect("a JSON object"),
-            )
-            .expect("the documented destination parses");
-        assert_eq!(parsed.msisdn(), "+237600000200");
-
-        let padded = adapter()
-            .parse_destination(
-                json!({ "msisdn": "  237600000200\t" })
-                    .as_object()
-                    .expect("a JSON object"),
-            )
-            .expect("a padded destination parses");
-        assert_eq!(
-            padded.msisdn(),
-            "237600000200",
-            "leading and trailing whitespace must not reach the rail"
-        );
+        // Every spelling a merchant may send for one payee, including the
+        // whitespace a copy-paste carries, resolves to the one string the
+        // rail is given — `partyId`'s twelve digits, no `+`.
+        for spelling in [
+            "+237600000200",
+            "  +237600000200\t",
+            "+237 6 00 00 02 00",
+            "+237-600-000-200",
+            "+237.600.000.200",
+        ] {
+            let parsed = adapter()
+                .parse_destination(
+                    json!({ "msisdn": spelling })
+                        .as_object()
+                        .expect("a JSON object"),
+                )
+                .unwrap_or_else(|error| panic!("{spelling:?} must parse: {error}"));
+            assert_eq!(
+                parsed.msisdn(),
+                "237600000200",
+                "{spelling:?} is the same payee in the shape the rail takes"
+            );
+        }
     }
 
     /// An **empty** map is the decisive case: it is the shape a merchant
@@ -1412,6 +1431,50 @@ mod tests {
                 !rendered.contains("699887766"),
                 "a payee's number must not reach an error message: {rendered}"
             );
+        }
+    }
+
+    /// A **well-formed string that is not a usable payee** is `Malformed`
+    /// here, and the refusal still names no number.
+    ///
+    /// This is the failure mode the maintainer's decision of 2026-09-15
+    /// created: before it, `orange_money` handed any non-whitespace string to
+    /// `RefundTarget::mobile_money`, which took it. The rule now lives in
+    /// `vpay-provider`, next to the type it guards, so this adapter's job is
+    /// only to surface the refusal as the port's error table requires — no
+    /// network was touched and no rail decided anything, so `Malformed` is
+    /// the same answer for the same reason a missing key gets.
+    ///
+    /// `600000200` is the case to look at: `GET /v1/account_holders` accepts
+    /// it and this refuses it. See `RefundTarget::mobile_money` § "Why the
+    /// `+` is required".
+    #[test]
+    fn a_number_that_is_not_a_usable_payee_is_malformed_and_never_echoed() {
+        for not_a_payee in [
+            "600000200",
+            "237600000200",
+            "not a phone number",
+            "+237699887f66",
+            "+0699887766",
+            "+69988",
+        ] {
+            let map = json!({ "msisdn": not_a_payee });
+            let refused = adapter().parse_destination(map.as_object().expect("a JSON object"));
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "{not_a_payee:?} must be Malformed, never a payee: {refused:?}"
+            );
+            let refused = refused.expect_err("refused just above");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                assert!(
+                    !rendered.contains(not_a_payee),
+                    "a payee's number must not reach an error message: {rendered}"
+                );
+                assert!(
+                    rendered.contains("destination[orange_money][msisdn]"),
+                    "the refusal must still name the parameter: {rendered}"
+                );
+            }
         }
     }
 
