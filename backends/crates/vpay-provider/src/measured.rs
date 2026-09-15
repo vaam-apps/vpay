@@ -212,6 +212,7 @@ impl ProviderAdapter for Measured {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     use metrics_exporter_prometheus::PrometheusBuilder;
     use uuid::Uuid;
@@ -455,6 +456,129 @@ mod tests {
                 r#"vpay_provider_requests_total{provider="mtn_momo",operation="account_holder_name",error_kind="operation_unsupported_by_rail"} 1"#
             ),
             "{scrape}"
+        );
+    }
+
+    /// An inner adapter that records the `destination` it was handed, so the
+    /// decorator's forwarding can be observed rather than read.
+    ///
+    /// Its own type rather than a third field on [`Answering`]: every other
+    /// case here builds `Answering` by struct literal, and what this proves
+    /// is about one argument of one method. It declares
+    /// [`RefundDestination::Required`](crate::RefundDestination::Required)
+    /// because that is the only declaration for which a `destination` is
+    /// ever `Some` (RFC-0003 section 1) - the value the argument exists for.
+    #[derive(Debug)]
+    struct RecordingRefund {
+        /// Shared with the test, which cannot reach the stub again: the
+        /// adapter is moved into a `Box<dyn ProviderAdapter>` by
+        /// [`Measured::wrap`] and never comes back out.
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl ProviderAdapter for RecordingRefund {
+        fn code(&self) -> &'static str {
+            "mtn_momo"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                flow: ProviderFlow::Push,
+                supports_refunds: true,
+                supports_partial_refunds: false,
+                delivers_callbacks: false,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+                refund_destination: crate::RefundDestination::Required,
+            }
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn refund(
+            &self,
+            _charge: &ChargeRef,
+            _amount: Money,
+            destination: Option<&RefundTarget>,
+            _config: &ProviderConfig,
+        ) -> Result<Refunded, ProviderError> {
+            self.seen
+                .lock()
+                .expect("no test panics while holding this lock")
+                .push(destination.map(|target| target.msisdn().to_owned()));
+            Err(ProviderError::NotImplemented("recording::refund"))
+        }
+    }
+
+    /// The destination reaches the inner adapter **unchanged**, and never
+    /// reaches a metric.
+    ///
+    /// Two claims in one case because they are the two halves of the same
+    /// argument about this decorator: it must pass the payee through, and it
+    /// must not read it.
+    ///
+    /// Measured on 2026-09-15, before this test existed: replacing the
+    /// forwarded `destination` with `None` in [`Measured::refund`] left
+    /// `vpay-provider`, both adapter crates and the conformance suite green
+    /// (199 tests, 0 failures), because no adapter reads the argument yet.
+    /// `Measured` is what `vpay_api::v1::boot::adapters_by_code` wraps every
+    /// shipping adapter in, so that mutation would have addressed every
+    /// refund on a `Required` rail to nobody, in production, silently.
+    ///
+    /// The second half is the privacy one: a payee's phone number in a
+    /// metric label is a high-cardinality series that outlives any erasure
+    /// request, and its retention is RFC-0003 open question 2, undecided.
+    /// `error_kind` stays the only dimension.
+    #[test]
+    fn the_destination_reaches_the_inner_adapter_and_never_a_metric() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::clone(&seen),
+        }));
+        let destination = RefundTarget::mobile_money("+237600000200");
+
+        let scrape = scrape_of(|| {
+            let refunded =
+                block_on(adapter.refund(&charge(), charge().amount, Some(&destination), &config()));
+            assert!(
+                matches!(refunded, Err(ProviderError::NotImplemented(_))),
+                "the inner adapter's answer is forwarded: {refunded:?}"
+            );
+        });
+
+        assert_eq!(
+            seen.lock().expect("the stub released the lock").as_slice(),
+            [Some("+237600000200".to_owned())],
+            "the inner adapter must be handed the destination it was called with"
+        );
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="refund",error_kind="not_implemented"} 1"#
+            ),
+            "the call is still counted on the refund series: {scrape}"
+        );
+        assert!(
+            !scrape.contains("237600000200"),
+            "a payee's number must never reach a metric label: {scrape}"
         );
     }
 }
