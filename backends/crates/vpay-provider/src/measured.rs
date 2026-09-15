@@ -543,6 +543,23 @@ mod tests {
             Err(ProviderError::Unsupported)
         }
 
+        /// A `Required` rail's parser, spelled as simply as one can be: it
+        /// answers `Ok` for a key nobody else in this module uses.
+        ///
+        /// It exists so the wrapper's forward can be told apart from the
+        /// port's default, which answers `Err(Unsupported)`. A stub that
+        /// also defaulted would make the two indistinguishable and the test
+        /// below unfalsifiable.
+        fn parse_destination(
+            &self,
+            raw: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<RefundTarget, ProviderError> {
+            raw.get("msisdn")
+                .and_then(serde_json::Value::as_str)
+                .map(RefundTarget::mobile_money)
+                .ok_or_else(|| ProviderError::malformed("recording: no msisdn".to_owned()))
+        }
+
         async fn refund(
             &self,
             _charge: &ChargeRef,
@@ -608,6 +625,52 @@ mod tests {
         assert!(
             !scrape.contains("237600000200"),
             "a payee's number must never reach a metric label: {scrape}"
+        );
+    }
+
+    /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather
+    /// than inheriting the port's default.
+    ///
+    /// `parse_destination` is the only port method whose default body is a
+    /// *refusal* an adapter is expected to override, which makes a missing
+    /// forward in this decorator uniquely dangerous: it compiles, every
+    /// adapter's own unit tests keep passing because they hold the adapter
+    /// unwrapped, and every refund in production — `Measured` wraps every
+    /// adapter `vpay_api::v1::boot::adapters_by_code` resolves — answers
+    /// "this rail has no such API" for a rail that plainly does.
+    ///
+    /// The decisive mutation: delete `Measured::parse_destination` and this
+    /// case fails on `Unsupported`.
+    ///
+    /// The second assertion is `refund`'s privacy half, on a method that is
+    /// *un*measured: no series at all may be emitted here, and in particular
+    /// none carrying the number.
+    #[test]
+    fn a_defaulted_method_is_not_silently_answered_by_the_wrapper() {
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "msisdn".to_owned(),
+            serde_json::Value::String("+237600000200".to_owned()),
+        );
+
+        let mut parsed = None;
+        let scrape = scrape_of(|| parsed = Some(adapter.parse_destination(&raw)));
+
+        let parsed = parsed.expect("the closure ran");
+        assert_eq!(
+            parsed
+                .as_ref()
+                .map(|target| target.msisdn().to_owned())
+                .map_err(|error| format!("{error}")),
+            Ok("+237600000200".to_owned()),
+            "the inner adapter's parser must be the one that answered, not the port's default"
+        );
+        assert!(
+            !scrape.contains("parse_destination") && !scrape.contains("237600000200"),
+            "parsing a merchant's parameters reaches no rail and must emit no series: {scrape}"
         );
     }
 }

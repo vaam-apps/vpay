@@ -1447,6 +1447,148 @@ mod tests {
             assert!(rendered.contains("[redacted]"), "{rendered}");
         }
     }
+
+    /// Compile-time probe for "does `T` implement this trait?".
+    ///
+    /// An inherent associated constant takes priority over a trait one, and
+    /// an inherent `impl` whose bound is unsatisfied is not a candidate at
+    /// all — so each constant below is `true` exactly when the corresponding
+    /// `impl` exists. The alternative, a negative trait bound, is not stable
+    /// Rust, and the alternative to *that* is a comment nobody checks.
+    struct Probe<T>(std::marker::PhantomData<T>);
+
+    trait ProbeFallback {
+        const DISPLAY: bool = false;
+        const SERIALIZE: bool = false;
+        const DESERIALIZE: bool = false;
+    }
+
+    impl<T> ProbeFallback for Probe<T> {}
+
+    impl<T: std::fmt::Display> Probe<T> {
+        const DISPLAY: bool = true;
+    }
+
+    impl<T: Serialize> Probe<T> {
+        const SERIALIZE: bool = true;
+    }
+
+    impl<T: serde::de::DeserializeOwned> Probe<T> {
+        const DESERIALIZE: bool = true;
+    }
+
+    /// The redacting [`Debug`] is the **only** rendering impl on
+    /// [`RefundTarget`], and every line here is a way the redaction gets
+    /// undone by accident.
+    ///
+    /// * A `Display` would be printed by `tracing::info!(%destination)`, a
+    ///   `{}` in a `format!`, and by `ApiError`'s own `Display` chain — none
+    ///   of which the `Debug` impl above intercepts.
+    /// * A `Serialize` would put the number one derive away from a webhook
+    ///   payload and from a persisted column, while its retention is RFC-0003
+    ///   open question 2 and **undecided**.
+    /// * A `Deserialize` would make it re-enter from a stored blob, which is
+    ///   the same question read backwards.
+    ///
+    /// The probe is self-checking: `String` is asserted to trip all three, so
+    /// a constant that silently stopped detecting anything fails here rather
+    /// than passing vacuously. That is the mutation this case is built
+    /// around — measured on 2026-09-15 by adding `impl Display for
+    /// RefundTarget`, which turns the first assertion red.
+    #[test]
+    fn a_refund_destination_has_no_impl_but_the_redacting_debug() {
+        assert!(
+            Probe::<String>::DISPLAY && Probe::<String>::SERIALIZE && Probe::<String>::DESERIALIZE,
+            "the probe must detect impls that do exist, or it proves nothing below"
+        );
+
+        assert!(
+            !Probe::<RefundTarget>::DISPLAY,
+            "a Display on RefundTarget prints the number through `%destination` and `{{}}`, \
+             which the redacting Debug cannot intercept"
+        );
+        assert!(
+            !Probe::<RefundTarget>::SERIALIZE,
+            "a Serialize puts a payee's number one derive away from a webhook payload while \
+             RFC-0003 open question 2 (retention) is undecided"
+        );
+        assert!(
+            !Probe::<RefundTarget>::DESERIALIZE,
+            "a Deserialize is the same question read backwards: it lets the number re-enter \
+             from wherever a Serialize had put it"
+        );
+    }
+
+    /// A rail with nowhere to send a refund takes the port's default and says
+    /// so permanently.
+    ///
+    /// `Unsupported` and not `NotImplemented`: there is nothing to build. An
+    /// [`Origin`](RefundDestination::Origin) rail returns money to the
+    /// instrument that paid, the core has already refused a request carrying
+    /// a `destination` on the capability alone (ADR-0002), and this is what
+    /// the adapter answers if that invariant is ever broken.
+    ///
+    /// The stub is deliberately as empty as the trait allows — it overrides
+    /// nothing optional — because what is under test is the *default body*,
+    /// which only an adapter that writes nothing can exercise.
+    #[test]
+    fn an_origin_rail_takes_the_default_and_answers_unsupported() {
+        #[derive(Debug)]
+        struct OriginRail;
+
+        #[async_trait]
+        impl ProviderAdapter for OriginRail {
+            fn code(&self) -> &'static str {
+                "origin_rail"
+            }
+
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    flow: ProviderFlow::Push,
+                    supports_refunds: true,
+                    supports_partial_refunds: false,
+                    delivers_callbacks: false,
+                    requires_ip_allowlist: false,
+                    supports_account_holder_lookup: false,
+                    refund_destination: RefundDestination::Origin,
+                }
+            }
+
+            async fn submit(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<Submitted, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::submit"))
+            }
+
+            async fn query_status(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<ChargeStatus, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::query_status"))
+            }
+
+            fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::parse_callback"))
+            }
+        }
+
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "msisdn".to_owned(),
+            serde_json::Value::String("+237600000200".to_owned()),
+        );
+
+        for map in [serde_json::Map::new(), raw] {
+            let refused = OriginRail.parse_destination(&map);
+            assert!(
+                matches!(refused, Err(ProviderError::Unsupported)),
+                "an Origin rail has no destination to parse and says so permanently: {refused:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
