@@ -3311,7 +3311,7 @@ async fn a_failed_refund_releases_the_reservation_and_posts_nothing() -> anyhow:
     assert_eq!(refund_figures(&pool, "pi_failed").await?, (5_000, 0, 2_000));
 
     let failed = repositories
-        .apply_refund_failed("re_failed", "provider_declined", "the rail declined the transfer")
+        .apply_refund_failed("re_failed", "payee_account_blocked", "the payee wallet is blocked")
         .await
         .context("failing a pending refund must commit")?
         .context("the refund was pending, so it must move")?;
@@ -3331,8 +3331,8 @@ async fn a_failed_refund_releases_the_reservation_and_posts_nothing() -> anyhow:
             .await
             .context("reading the failed refund back")?;
     assert_eq!(status, "failed");
-    assert_eq!(code.as_deref(), Some("provider_declined"));
-    assert_eq!(raw.as_deref(), Some("the rail declined the transfer"));
+    assert_eq!(code.as_deref(), Some("payee_account_blocked"));
+    assert_eq!(raw.as_deref(), Some("the payee wallet is blocked"));
 
     // The capture, and nothing else. This is the assertion the section header
     // calls out: a failure posts NOTHING, not a pair of legs that cancel.
@@ -3400,7 +3400,7 @@ async fn amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials()
     repositories.apply_refund_succeeded("re_p1").await?;
     repositories.apply_refund_succeeded("re_p2").await?;
     repositories
-        .apply_refund_failed("re_p3", "provider_declined", "declined")
+        .apply_refund_failed("re_p3", "payee_account_blocked", "the payee wallet is blocked")
         .await?;
 
     let (amount, refunded, pending) = refund_figures(&pool, "pi_partials").await?;
@@ -4395,18 +4395,20 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// every table in this schema a line apiece since `currencies`.
 /// `EXPECTED_DRIFTED_RELATIONS` does not move: both tables were already on it.
 ///
-/// **This number was NOT re-measured against a freshly migrated database on
-/// the pinned cratestack, and that is stated rather than papered over.** The
-/// note above records that the 190 -> 192 measurement was taken on
-/// `cratestack-cli` **0.11.1** while this repository pins **0.12.0**, because
-/// the host had 0.11.1 on `PATH`; the same is true of this host, and
-/// `cargo install`ing 0.12.0 into a shared `~/.cargo/bin` while other work is
-/// running on this machine is not a thing this branch will do. What is
-/// claimed here is therefore a *derivation* — 192 plus two single-column
-/// CHECKs of exactly the shape this file has measured twenty times — and not
-/// a measurement, which is the weaker kind of claim and the one
-/// `EXPECTED_DRIFT_CHANGES` exists to distrust. **If CI disagrees, CI is the
-/// evidence and this constant is what moves.**
+/// **Measured on 2026-09-15, and measured OFF-PIN — on `cratestack-cli`
+/// 0.11.1, not the 0.12.0 this repository pins.** The report read
+/// `drift detected in 25 table(s)/view(s) (194 change(s) total)`, and
+/// `EXPECTED_DRIFTED_RELATIONS` is unmoved at 25.
+///
+/// That is the same limitation the 190 -> 192 note above records and for the
+/// same reason: the host has 0.11.1 on `PATH`, and `cargo install`ing 0.12.0
+/// into a shared `~/.cargo/bin` while other agents are working on this
+/// machine is not a thing this branch will do. It is weaker evidence than the
+/// on-pin measurement the constant deserves, and the mitigation is the one
+/// 0045 used — the *delta* was taken with a single binary, so the two
+/// releases' agreement on the absolute number for this schema is inherited
+/// rather than re-argued. **If CI (which has 0.12.0) disagrees, CI is the
+/// evidence and this constant is what must move.**
 const EXPECTED_DRIFT_CHANGES: u32 = 194;
 
 /// Tables and views the drift above is spread across. Reported on the same
