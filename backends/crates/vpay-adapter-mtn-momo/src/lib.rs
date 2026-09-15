@@ -844,6 +844,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::Duration;
 
+    use serde_json::json;
     use uuid::Uuid;
     use vpay_core::{Currency, Money};
 
@@ -1488,5 +1489,141 @@ mod tests {
 
         let rendered = format!("{adapter:?}");
         assert!(!rendered.contains("super-secret-token"), "{rendered}");
+    }
+
+    // -- the destination this rail parses for itself ------------------------
+    //
+    // RFC-0003 open question 4, decided 2026-09-15: the adapter owns the wire
+    // shape, so these cases live here and not in `vpay-api`. They are
+    // deliberately *not* shared with the other adapter — two rails agreeing
+    // on a key today is a coincidence, and a shared helper would make the
+    // next rail's different key a change to a common file.
+
+    /// The documented shape parses to the payee, and surrounding whitespace
+    /// is removed rather than carried onto the rail.
+    ///
+    /// The trim is the one deliberate deviation from `vpay_api`'s
+    /// `payer_instrument`, which tests `trim().is_empty()` and then stores the
+    /// untrimmed string — see `parse_destination`'s doc comment for why a
+    /// payee is treated differently from a payer here.
+    #[test]
+    fn a_documented_destination_parses_to_the_payee() {
+        let parsed = adapter()
+            .parse_destination(
+                json!({ "msisdn": "+237600000200" })
+                    .as_object()
+                    .expect("a JSON object"),
+            )
+            .expect("the documented destination parses");
+        assert_eq!(parsed.msisdn(), "+237600000200");
+
+        let padded = adapter()
+            .parse_destination(
+                json!({ "msisdn": "  237600000200\t" })
+                    .as_object()
+                    .expect("a JSON object"),
+            )
+            .expect("a padded destination parses");
+        assert_eq!(
+            padded.msisdn(),
+            "237600000200",
+            "leading and trailing whitespace must not reach the rail"
+        );
+    }
+
+    /// An **empty** map is the decisive case: it is the shape a merchant
+    /// sends when they send `destination[mtn_momo]` with nothing under it, and
+    /// the one an over-eager parser answers `Ok` to with no payee at all.
+    ///
+    /// Mutation this case exists for, run on 2026-09-15: making
+    /// `parse_destination` answer `Ok(RefundTarget::mobile_money(""))` for an
+    /// empty map fails here.
+    #[test]
+    fn a_destination_missing_this_rails_key_is_malformed() {
+        for map in [
+            json!({}),
+            // A neighbouring key is not this one. Named `phone` rather than a
+            // near-miss so the case reads as "we look up one key", not "we
+            // guess".
+            json!({ "phone": "+237600000200" }),
+            json!({ "MSISDN": "+237600000200" }),
+        ] {
+            let refused = adapter().parse_destination(map.as_object().expect("a JSON object"));
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "{map} must be Malformed, not a silent success: {refused:?}"
+            );
+        }
+    }
+
+    /// A blank value is an absent one, and must fail where a missing key
+    /// does — never as an `Ok` carrying an empty payee, which is a refund
+    /// addressed to nobody.
+    #[test]
+    fn a_blank_destination_is_malformed_and_never_a_silent_none() {
+        for blank in ["", " ", "\t", "\n", "   \t  "] {
+            let refused = adapter().parse_destination(
+                json!({ "msisdn": blank }).as_object().expect("a JSON object"),
+            );
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "{blank:?} must be Malformed: {refused:?}"
+            );
+        }
+    }
+
+    /// A non-string value is refused rather than coerced.
+    ///
+    /// A JSON number in particular: a leading `+` and a leading `0` do not
+    /// survive one, so `237600000200` as a number is a value that has already
+    /// lost information — and the form encoding a merchant actually posts
+    /// never produces one, so accepting it would only ever admit a hand-built
+    /// body whose author had already been surprised.
+    #[test]
+    fn a_non_string_destination_is_refused_rather_than_coerced() {
+        for value in [
+            json!(237_600_000_200_i64),
+            json!(null),
+            json!(true),
+            json!(["+237600000200"]),
+            json!({ "value": "+237600000200" }),
+        ] {
+            let map = json!({ "msisdn": value });
+            let refused = adapter().parse_destination(map.as_object().expect("a JSON object"));
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "{map} must be Malformed: {refused:?}"
+            );
+        }
+    }
+
+    /// A refusal names the parameter and **never** the number in it.
+    ///
+    /// This is the single easiest way to leak a payee's phone number:
+    /// `RefundTarget`'s `Debug` redacts, but a parse failure happens *before*
+    /// there is a `RefundTarget`, and the raw value is right there in scope.
+    /// `ProviderError`'s `context` is rendered into an operator's log and,
+    /// through `ApiError`, into what a merchant is shown.
+    ///
+    /// The value used is one that *would* parse if the key were right, so the
+    /// assertion cannot pass merely because the number never reached the
+    /// function.
+    #[test]
+    fn a_refused_destination_never_echoes_the_number() {
+        let map = json!({ "wrong_key": "+237699887766" });
+        let refused = adapter()
+            .parse_destination(map.as_object().expect("a JSON object"))
+            .expect_err("a destination under the wrong key is refused");
+
+        for rendered in [format!("{refused}"), format!("{refused:?}")] {
+            assert!(
+                !rendered.contains("699887766"),
+                "a payee's number must not reach an error message: {rendered}"
+            );
+        }
+        assert!(
+            format!("{refused}").contains("destination[mtn_momo][msisdn]"),
+            "the refusal must name the parameter an integrator should fix: {refused}"
+        );
     }
 }
