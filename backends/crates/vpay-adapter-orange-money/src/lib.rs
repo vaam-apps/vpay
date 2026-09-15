@@ -382,13 +382,18 @@ impl ProviderAdapter for Adapter {
             // nobody anything. Flipping it is part of writing the transfer
             // call against a real specification, not part of this declaration.
             //
-            // **No core code reads this today** (2026-09-15), on either rail:
-            // `POST /v1/refunds` is unrouted, and `is_coherent` plus the
-            // `providers` seed write are the only readers in the workspace. An
-            // earlier version of this comment said "the core refuses a
-            // part-refund on this rail and a merchant is told no" — there is
-            // no such refusal, and describing one is how this repository would
-            // start sounding more finished than it is.
+            // **The core reads this since 2026-09-16**, and until then it did
+            // not: `POST /v1/refunds` was unrouted, and `is_coherent` plus the
+            // `providers` seed write were the only readers in the workspace.
+            // `vpay_api::v1::refunds`' `resolve_amount` is the reader — a
+            // refund on this rail for anything but the intent's whole amount
+            // is a `400` naming `amount`, decided on this flag and never on a
+            // provider code (ADR-0002), and
+            // `a_rail_without_partial_refunds_refuses_a_partial_amount` pins
+            // it. An earlier version of this comment described that refusal
+            // while no such code existed, which is how this repository would
+            // start sounding more finished than it is; it is true now, and it
+            // is dated so that the difference stays visible.
             supports_partial_refunds: false,
             delivers_callbacks: true,
             requires_ip_allowlist: false,

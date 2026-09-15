@@ -986,8 +986,12 @@ async fn an_unbuilt_rail_refund_fails_and_releases_its_reservation() -> anyhow::
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent_on(AMOUNT, ORANGE_RAIL).await?;
 
+    // `amount` omitted: Orange declares `supports_partial_refunds: false`,
+    // so the only refund this rail takes is the whole of what is left — a
+    // refusal this handler makes on the capability and never on the code,
+    // and one that reaches the rail check below only because it passes.
     let response = harness
-        .create_refund_on(&intent_id, Some(REFUND_AMOUNT), PAYEE, ORANGE_RAIL)
+        .create_refund_on(&intent_id, None, PAYEE, ORANGE_RAIL)
         .await?;
     assert_eq!(
         response.status, 501,
