@@ -4060,9 +4060,33 @@ gen-demo-keys: gen-e2e-signing-key
           subscription_key_header: Ocp-Apim-Subscription-Key
           target_environment: sandbox
           api_user: \${MTN_API_USER}
+          # The Disbursements API user, added 2026-09-16. NOTE FOR ANY
+          # FUTURE EDIT OF THIS HEREDOC: it is UNQUOTED, so a backtick here
+          # is command substitution and the word between a pair of them
+          # vanishes from the generated file. These comments therefore carry
+          # no backticks; that is not a style choice.
+          #
+          # providers is a LIST, so this block REPLACES
+          # config/application.yml's outright -- which means a key the base
+          # file carries and this one omits is simply absent from the demo
+          # stack, with no merge to fall back on. These three were omitted
+          # until the refund routes were mounted, and the consequence was
+          # exact: mtn_momo::refund answered ProviderError::Config --
+          # "credentials.disbursement_subscription_key is required" -- so a
+          # refund on this stack was a 500 before it ever reached the rail
+          # stub. Found by the SDKs' live refund suites, which is what
+          # driving a real server over HTTP is for.
+          disbursement_api_user: \${MTN_DISBURSEMENT_API_USER}
         credentials:
           subscription_key: \${MTN_SUBSCRIPTION_KEY}
           api_key: \${MTN_API_KEY}
+          # See the note above. compose.e2e.yml sets the subscription key to
+          # the exact value wiremock/mtn/mappings/transfer.json matches on,
+          # so a transfer from this stack reaches the 202 rather than a 404.
+          # It is a STUB: MTN's Disbursements product has never been called
+          # from this repository, in sandbox or anywhere else.
+          disbursement_subscription_key: \${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}
+          disbursement_api_key: \${MTN_DISBURSEMENT_API_KEY}
       - code: orange_money
         host:
           # The \`/orange-money-webpay/{env}\` path prefix is part of the base
