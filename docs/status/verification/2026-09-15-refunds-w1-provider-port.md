@@ -95,7 +95,7 @@ many words about workspace-internal enums.
   "documents no refund API … the port's default `Unsupported` is the
   permanent, correct answer", three hundred lines above a new
   `capabilities()` comment saying the opposite. The value is unchanged and
-  still `false`; the *reason* now matches the maintainer's 2026-09-15 decision
+  still `false`; the _reason_ now matches the maintainer's 2026-09-15 decision
   and RFC-0003 § 5.
 - `a_refund_on_this_rail_would_need_a_payee`'s failure message named "Arm E",
   a word that appears nowhere else in this repository and that no reader can
@@ -127,18 +127,18 @@ pre-existing rather than introduced by this arm.
 
 ### Gates re-run after the review's edits
 
-| Gate                                                                 | Result                                  |
-| -------------------------------------------------------------------- | ----------------------------------------- |
-| `cargo nextest run -p vpay-provider -p vpay-adapter-orange-money`    | **82 passed, 0 skipped, 0 ignored**     |
-| `cargo test --doc -p vpay-provider -p vpay-adapter-orange-money`     | **12 passed, 0 failed, 0 ignored**      |
-| `cargo clippy -p vpay-provider -p vpay-adapter-orange-money --all-targets -- -D warnings` | exit `0`    |
-| `cargo fmt --all -- --check`                                         | exit `0`                                |
-| `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p vpay-provider --no-deps` | exit `0` |
-| `cargo check --all-targets` for every crate depending on `vpay-provider` | exit `0`                             |
-| `cargo xtask verify-serde`                                           | ok — 92 types, 16 exempted              |
-| `cargo xtask verify-errors`                                          | ok — 19 error types, all classified     |
-| `cargo xtask verify-status`                                          | ok — 1 unimplemented item               |
-| `cargo xtask verify-links`                                           | ok — 1621 links in 358 files            |
+| Gate                                                                                      | Result                              |
+| ----------------------------------------------------------------------------------------- | ----------------------------------- |
+| `cargo nextest run -p vpay-provider -p vpay-adapter-orange-money`                         | **82 passed, 0 skipped, 0 ignored** |
+| `cargo test --doc -p vpay-provider -p vpay-adapter-orange-money`                          | **12 passed, 0 failed, 0 ignored**  |
+| `cargo clippy -p vpay-provider -p vpay-adapter-orange-money --all-targets -- -D warnings` | exit `0`                            |
+| `cargo fmt --all -- --check`                                                              | exit `0`                            |
+| `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p vpay-provider --no-deps`  | exit `0`                            |
+| `cargo check --all-targets` for every crate depending on `vpay-provider`                  | exit `0`                            |
+| `cargo xtask verify-serde`                                                                | ok — 92 types, 16 exempted          |
+| `cargo xtask verify-errors`                                                               | ok — 19 error types, all classified |
+| `cargo xtask verify-status`                                                               | ok — 1 unimplemented item           |
+| `cargo xtask verify-links`                                                                | ok — 1621 links in 358 files        |
 
 `just ci` was not run, by instruction. The conformance suite was compiled
 (`cargo check -p vpay-tests-conformance --all-targets`, exit `0`) and **not**

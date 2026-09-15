@@ -236,19 +236,6 @@ pub struct NewCharge {
     pub payer_ref_masked: Option<String>,
 }
 
-/// Opens the single charge for an intent, inside the caller's transaction.
-///
-/// Does **not** count the transition: the caller owns the commit, so the
-/// caller calls [`Charges::record_opened`] once it has one. See this module's header.
-///
-/// # Errors
-///
-/// [`DbError::UniqueViolation`] with `constraint: "one_charge_per_intent"`
-/// if this intent already has a charge — the load-bearing case, and the one
-/// `a_second_charge_for_one_intent_is_refused_by_name` pins. Also
-/// [`DbError::UniqueViolation`] on `charges_pkey` for a reused `id`,
-/// [`DbError::ForeignKeyViolation`] for an unknown intent, provider or
-/// currency, and [`DbError::Query`] otherwise.
 /// The id of the one charge an intent has, inside the caller's transaction.
 ///
 /// # Why this exists beside [`Charges::get_for_intent`], which reads the same
@@ -257,8 +244,8 @@ pub struct NewCharge {
 /// That one runs on the pool, so its answer is a fact from *before* the
 /// caller's transaction and could have changed by the time the caller writes.
 /// This one runs inside the transaction, which is what makes it usable as an
-/// attribution: `crate::refunds::create_in_tx` stamps `refunds.charge_id` with
-/// it, and `crate::settlement::apply_refund_succeeded` names it as the
+/// attribution: `crate::refunds::Refunds::create` stamps `refunds.charge_id`
+/// with it, and `crate::settlement::post_refund` names it as the
 /// `ledger_transactions.charge_id` a posting hangs off. A ledger row
 /// attributed to a charge read on a different connection is a ledger row
 /// attributed to a guess.
@@ -267,6 +254,10 @@ pub struct NewCharge {
 /// want a foreign key and neither branches on the charge's state — and
 /// selecting `COLUMNS` to throw all but one away is how a row struct starts
 /// being decoded in places that do not need it.
+///
+/// At most one row can match: `one_charge_per_intent` (migration `0004`) is a
+/// unique index on `payment_intent_id`, so `fetch_optional` is reading the
+/// only row there can be rather than picking one of several.
 ///
 /// `Ok(None)` means the intent has no charge. For a `succeeded` intent that
 /// cannot happen — the only statement that sets `succeeded` is
@@ -289,6 +280,19 @@ pub(crate) async fn id_for_intent_in_tx(
         .map_err(DbError::Query)
 }
 
+/// Opens the single charge for an intent, inside the caller's transaction.
+///
+/// Does **not** count the transition: the caller owns the commit, so the
+/// caller calls [`Charges::record_opened`] once it has one. See this module's header.
+///
+/// # Errors
+///
+/// [`DbError::UniqueViolation`] with `constraint: "one_charge_per_intent"`
+/// if this intent already has a charge — the load-bearing case, and the one
+/// `a_second_charge_for_one_intent_is_refused_by_name` pins. Also
+/// [`DbError::UniqueViolation`] on `charges_pkey` for a reused `id`,
+/// [`DbError::ForeignKeyViolation`] for an unknown intent, provider or
+/// currency, and [`DbError::Query`] otherwise.
 pub(crate) async fn insert_for_intent(
     tx: &mut PgConnection,
     new: &NewCharge,

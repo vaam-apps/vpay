@@ -349,16 +349,27 @@ superseded:
 - **The refund posting emits no event.** `charge.refunded` and
   `charge.refund.updated` are documented types nothing emits; the wire object
   is `vpay-api`'s to shape and there is no caller until wave 3.
-- **`{transaction_id}_{index}` is still not injective in general, and
-  `post_in_tx` does not refuse an id that could collide.** `x` and `x_0` both
-  derive `x_0_0`. No pair of minted `lt_` ids can be in that relation — every
-  body is exactly 24 characters of an alphabet with no `_`, asserted by
-  `vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`
-  — and both call sites mint, so it is unreachable from the write path rather
-  than closed at the writer. An in-crate caller that hand-built the colliding
-  pair would be refused by `ledger_entries_pkey`, loudly, never silently.
-  Closing it at `post_in_tx` needs a shape check there and a `DbError` variant
-  to carry the refusal; left open deliberately and recorded here.
+- **NOT A GAP, retracted 2026-09-15: `{transaction_id}_{index}` is injective.**
+  This list carried an entry saying the derivation was "not injective in
+  general", that `x` and `x_0` both derive `x_0_0`, and that closing it at
+  `post_in_tx` needed a shape check and a new `DbError` variant. That was
+  wrong, and it was wrong in the amendment it came from before it was wrong
+  here. `x` derives `x_0, x_1, …`; `x_0` derives `x_0_0, x_0_1, …`. The two
+  families are disjoint, and they are disjoint for **every** pair of
+  transaction ids, minted or hand-built, because the index is a `usize`
+  rendered in decimal and decimal contains no `_` — so the last `_` of an
+  entry id recovers exactly one `(transaction_id, index)` pair.
+  `vpay_db::ledger::entry_id` carries the argument,
+  `vpay_db::ledger::tests::the_entry_id_derivation_is_injective` asserts it
+  over all 340 ids of length 1-4 over the alphabet `{_, 0, 1, p}` — the only
+  characters that could produce a collision — crossed with 13 leg indices, and
+  it fails naming a colliding pair if the separator is removed; and
+  `entry_ids_do_not_collide_between_ids_that_share_a_prefix` ties it to the
+  real `ledger_entries_pkey`. Migration `0046`'s header still carries the
+  false sentence and cannot be edited — migrations here are forward-only
+  (issue #76); this bullet and `entry_id`'s doc are the correction of record.
+  The entry is left in place rather than deleted so that the next reader of
+  0046's header finds the retraction.
 - **Nothing in the schema checks that a posting's `merchant_id` is the merchant
   the charge belongs to, and nothing can.** `ledger_entries.merchant_id` is a
   bare `TEXT` with a length CHECK and the pair CHECK; the merchant is three

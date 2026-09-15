@@ -400,6 +400,18 @@ declared `@length` with `@db_enforce` on either `id` would emit a drop-and-add
 **pair** against a hand-named CHECK (exp17 §1a), which is the trade this page
 has refused six times.
 
+**The +2 is not the evidence that either CHECK fires, and the conventions
+review added the evidence that is.** A count is satisfied by any two
+single-column CHECKs anywhere in the schema, so a later branch that dropped
+one of these and added an unrelated one would leave it at 194 with nothing
+noticing. `an_over_long_ledger_id_is_refused_by_the_database` in
+`postgres_smoke.rs` writes a 65-character id into each table, asserts
+`constraint() == Some("id_length")` on both refusals, admits 64 to show the
+bound is inclusive, and writes the 66-character id a hand-built 64-character
+transaction id would derive — the case migration `0046`'s own header
+predicted. Measured to fail (`rows_affected: 1` on the first INSERT) with
+`ALTER TABLE ledger_transactions DROP CONSTRAINT id_length` applied first.
+
 Gate evidence:
 [verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md).
 `just ci` was **not** run locally for it either; CI is the gate.

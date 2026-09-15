@@ -44,8 +44,7 @@
 //! `0046`'s `id_length` CHECK on both tables — the two halves of the gap
 //! migration `0045`'s header recorded and left open.
 //!
-//! It makes the derived entry ids below unambiguous (see [`post_in_tx`]), and
-//! it does **not** make `ledger_transactions_pkey` a guard of
+//! It does **not** make `ledger_transactions_pkey` a guard of
 //! `docs/flows/ledger.md` invariant 4. A random id cannot be; what stops a
 //! charge growing a second capture transaction is
 //! [`crate::Settlement::apply_succeeded`]'s compare-and-swap on the charge
@@ -89,18 +88,11 @@
 //! transaction it belongs to without a join — which is what an operator
 //! reading a row in isolation actually needs.
 //!
-//! **`{transaction_id}_{index}` is ambiguous in general and unambiguous for
-//! minted ids, and this function does not enforce the difference.** `x` and
-//! `x_0` both derive `x_0_0`; no pair of `lt_…` ids can be in that relation,
-//! because every minted body is exactly 24 characters of an alphabet that
-//! does not contain `_`
-//! (`vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`).
-//! `transaction_id` is still a bare `&str` here, so an in-crate caller that
-//! hand-built the colliding pair would reach it — and be refused by
-//! `ledger_entries_pkey`, loudly, never silently. Closing it at this function
-//! rather than at its callers needs a shape check here and a `DbError`
-//! variant to carry the refusal; it is recorded in `docs/flows/ledger.md`
-//! § Status as open rather than done quietly.
+//! **That derivation is injective for every pair of transaction ids, minted
+//! or not**, because the index is decimal and decimal contains no `_`. See
+//! [`entry_id`], which is where the argument and its test live; RFC-0003
+//! § 4's amendment recorded an ambiguity here that does not exist, and that
+//! function is the correction of record.
 
 use async_trait::async_trait;
 use vpay_ledger::{AccountKind, Direction, Transaction};
@@ -130,6 +122,41 @@ fn direction_label(direction: Direction) -> &'static str {
         Direction::Debit => "debit",
         Direction::Credit => "credit",
     }
+}
+
+/// The `ledger_entries.id` for one leg: its transaction's id, then the leg's
+/// index.
+///
+/// # Injective, and the reason is the separator rather than the minter
+///
+/// RFC-0003 § 4's amendment recorded this derivation as ambiguous "across two
+/// transactions whose ids differ only by a `_N` suffix" and asked
+/// `vpay_core::ids` for a minter that would make the ambiguity unreachable.
+/// **There is no ambiguity to reach.** `index` is a `usize` rendered in
+/// decimal, decimal contains no `_`, so the *last* `_` of the result splits
+/// it back into exactly one `(transaction_id, index)` pair — for any
+/// transaction ids at all, minted or hand-built. The pair the amendment
+/// named is not a counterexample: `x` derives `x_0, x_1, …` and `x_0` derives
+/// `x_0_0, x_0_1, …`, which are disjoint.
+///
+/// So this function, not the minter, is what
+/// [`crate::Ledger::merchant_payable_balance`] and every operator reading one
+/// row in isolation depend on, and [`tests::the_entry_id_derivation_is_injective`]
+/// is the assertion. Change the separator to something the index can contain,
+/// or render the index in a base that admits `_`, and it fails there rather
+/// than at `ledger_entries_pkey` in production.
+///
+/// [`vpay_core::ids::ledger_transaction_id`] is still what both settlement
+/// call sites mint through, for the reason its own doc gives — a vocabulary,
+/// so the id is not invented at whichever call site writes one first — and
+/// not for this.
+fn entry_id(transaction_id: &str, index: usize) -> String {
+    // Not a statement — `crate::sql_audit` scans only a `format!` whose
+    // result is bound to a `sql` variable, and this one builds a value that
+    // its caller passes as `$1`. It is spelled with `format!` for the same
+    // reason every other id in this crate is a `&str`: the database is never
+    // handed a fragment, only a parameter.
+    format!("{transaction_id}_{index}")
 }
 
 /// Records one balanced ledger transaction and every leg of it, inside the
@@ -172,12 +199,7 @@ pub(crate) async fn post_in_tx(
         .map_err(classify_write)?;
 
     for (index, entry) in transaction.entries.iter().enumerate() {
-        // Not a statement — `crate::sql_audit` scans only a `format!` whose
-        // result is bound to a `sql` variable, and this one builds a value
-        // that is passed as `$1`. It is spelled with `format!` for the same
-        // reason every other id in this crate is a `&str`: the database is
-        // never handed a fragment, only a parameter.
-        let entry_id = format!("{transaction_id}_{index}");
+        let entry_id = entry_id(transaction_id, index);
         sqlx::query(
             "INSERT INTO ledger_entries \
                  (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
@@ -287,15 +309,22 @@ impl Ledger for crate::repository::PgRepositories {
 
 #[cfg(test)]
 mod tests {
-    //! Two container-free label tests, and six that start a Postgres.
+    //! Three container-free tests, and seven that start a Postgres.
     //!
-    //! # Why the six live here and not in `postgres_smoke.rs`
+    //! The three that need no container are the two label tests and
+    //! [`the_entry_id_derivation_is_injective`]; the seven are the six
+    //! `docs/status/backend.md` lists as the writer's evidence, plus
+    //! [`swallowing_a_duplicate_posting_inside_a_transaction_discards_the_whole_transaction`],
+    //! which that row names separately because its subject is the trap in the
+    //! idempotency rather than the writer's own refusals.
+    //!
+    //! # Why the seven live here and not in `postgres_smoke.rs`
     //!
     //! They were there, driving [`post_in_tx`] through the `pub`
     //! `TxRepositories::post_ledger_transaction_in_tx` that existed between
     //! RFC-0003 § 4's two halves. That method is gone — see this module's
     //! header — so the raw writer is `pub(crate)` and nothing outside this
-    //! crate can name it. Every one of the six needs to: their subject is
+    //! crate can name it. Every one of the seven needs to: their subject is
     //! what the writer refuses (an unbalanced posting, a mixed-currency one,
     //! a replayed id) or what it derives (entry ids), and none of it is
     //! reachable through the business operations a consumer *can* call —
@@ -857,25 +886,20 @@ mod tests {
         Ok(())
     }
 
-    /// Two postings whose ids are prefixes of one another do not collide on
-    /// `ledger_entries.id` **for these three ids**, and the general statement
-    /// is narrower than that.
+    /// Three postings whose ids are prefixes of one another write six
+    /// distinct `ledger_entries` rows — [`entry_id`]'s injectivity, against a
+    /// real primary key rather than against a `HashSet`.
     ///
-    /// `{transaction_id}_{index}` is injective as long as the last `_` in an
-    /// entry id always splits it back into the transaction that wrote it —
-    /// `lt_p` leg 0 is `lt_p_0` and `lt_p_0` leg 0 is `lt_p_0_0`, which is
-    /// what this case measures. It is **not** injective in general: `x_0` and
-    /// `x` both derive `x_0_0` when `x` has two legs and `x_0` has one, and
-    /// no minimum-two-leg transaction reaches that shape, which is why the
-    /// six ids below are all distinct rather than five.
+    /// The ids are hand-made and deliberately adversarial: `lt_p`, `lt_p_0`
+    /// and `lt_p_0_0` are the worst family the derivation can be handed, and
+    /// they are the family RFC-0003 § 4's amendment predicted would collide.
+    /// They do not, and `ledger_entries_pkey` is what would have said so if
+    /// they did — this case would fail on the second `post`, not on the
+    /// assertion.
     ///
-    /// What makes the ambiguity unreachable from a shipping path is the
-    /// minter, not this derivation: no two `lt_…` ids can be in a
-    /// prefix-plus-`_N` relation
-    /// (`vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`).
-    /// This case keeps hand-made ids precisely because they are the ones that
-    /// could collide, and it records that the outcome would be a loud
-    /// primary-key violation rather than silent mixing.
+    /// [`the_entry_id_derivation_is_injective`] is the same property over a
+    /// much wider family and with no container; this case is what ties it to
+    /// the actual column.
     #[tokio::test]
     async fn entry_ids_do_not_collide_between_ids_that_share_a_prefix() -> anyhow::Result<()> {
         let (_container, pool, _repositories) = migrated_postgres().await?;
@@ -1021,5 +1045,69 @@ mod tests {
             AccountKind::merchant_payable("merchant_1").merchant_id(),
             Some("merchant_1")
         );
+    }
+
+    /// [`entry_id`] is injective over `(transaction_id, index)` — for every
+    /// transaction id, not only the ones [`vpay_core::ids`] mints.
+    ///
+    /// # Why this is asserted and not argued
+    ///
+    /// RFC-0003 § 4's amendment recorded the opposite as an open gap on a
+    /// money table, named `x` and `x_0` as a colliding pair, and asked a
+    /// later branch to close it at the writer with a shape check and a new
+    /// `DbError` variant. There is nothing to close: the index is decimal,
+    /// decimal contains no `_`, so the last `_` of an entry id recovers the
+    /// pair that made it. A paragraph saying so is exactly what got the
+    /// question wrong the first time, which is why this is a test.
+    ///
+    /// The family below is adversarial on purpose — every id is built from
+    /// `_` and the two digits that appear in small indices, which is the only
+    /// alphabet that can produce a collision if one is producible at all.
+    /// Ordinary `lt_…` ids would prove nothing here.
+    ///
+    /// It fails if the separator is changed to something an index can
+    /// contain, or if the index stops being rendered in a base that excludes
+    /// it — which are the two ways this could actually break, and neither is
+    /// visible to `ledger_entries_pkey` until rows collide in production.
+    #[test]
+    fn the_entry_id_derivation_is_injective() {
+        // Every string of length 1..=4 over `{_, 0, 1, p}`, crossed with the
+        // indices a posting can reach. `_` and the digits are in there
+        // because they are the characters the derivation itself uses.
+        let mut level = vec![String::new()];
+        let mut transaction_ids: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            level = level
+                .iter()
+                .flat_map(|base| ['_', '0', '1', 'p'].map(|c| format!("{base}{c}")))
+                .collect();
+            transaction_ids.extend(level.iter().cloned());
+        }
+
+        let mut seen: std::collections::HashMap<String, (String, usize)> =
+            std::collections::HashMap::new();
+        for id in &transaction_ids {
+            for index in 0..13 {
+                let derived = entry_id(id, index);
+                if let Some(previous) = seen.insert(derived.clone(), (id.clone(), index)) {
+                    panic!(
+                        "{derived} is derived by both {previous:?} and {:?}; \
+                         `ledger_entries.id` would collide across two transactions",
+                        (id, index)
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            transaction_ids.len() * 13,
+            "every (transaction_id, index) pair must have produced its own entry id"
+        );
+
+        // And the pair the amendment named, spelled out, because it is the
+        // one a reader will come here to check.
+        assert_eq!(entry_id("x", 0), "x_0");
+        assert_eq!(entry_id("x_0", 0), "x_0_0");
+        assert_ne!(entry_id("x", 0), entry_id("x_0", 0));
     }
 }

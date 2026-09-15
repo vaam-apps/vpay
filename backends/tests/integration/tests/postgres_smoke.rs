@@ -2751,11 +2751,14 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 // reachable from outside `vpay-db` through nothing at all since the call sites
 // landed — the `pub` `TxRepositories::post_ledger_transaction_in_tx` that made
 // it reachable is gone, because it let any consumer post an arbitrary
-// transaction with no settlement near it. The six cases that need the raw
+// transaction with no settlement near it. The seven cases that need the raw
 // writer (a balanced capture read back out of Postgres, an unbalanced
 // posting, a mixed-currency one, two merchants' balances, a replayed id, the
+// entry ids derived for three prefix-sharing transaction ids, and the
 // swallowed duplicate) moved into that module's own `#[cfg(test)]` block with
-// it. What is here instead is the other half and the better half: the
+// it. (This said "six" and listed six, omitting the entry-id case, until the
+// conventions review counted the module.)
+// What is here instead is the other half and the better half: the
 // postings the SHIPPING PATH makes, driven through
 // `Settlement::apply_succeeded` and `apply_refund_succeeded` — see § "the
 // refunds write path" below.
@@ -2854,6 +2857,111 @@ async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()>
             "{account} must be refused by the pair CHECK: {message}"
         );
     }
+
+    Ok(())
+}
+
+// ------------------------------- migration 0046 (the ledger ids' bound) ----
+
+/// `id_length` on **both** ledger tables (migration 0046) refuses an id past
+/// 64 characters, by name.
+///
+/// # Why this exists when `EXPECTED_DRIFT_CHANGES` already moved 192 -> 194
+///
+/// Added by the conventions review of RFC-0003 § 3. The +2 on that constant
+/// is evidence that two single-column CHECKs appeared somewhere in the
+/// schema; it is **not** evidence that these two appeared, and it is not
+/// evidence that either fires. A later branch that dropped one of them and
+/// added an unrelated single-column CHECK would leave the count at 194 and
+/// nothing would notice. CLAUDE.md's rule is the one being followed here:
+/// changed the schema, so apply it to a real Postgres and prove the
+/// constraint fires.
+///
+/// Hand-written SQL for `a_merchant_payable_entry_must_name_its_merchant`'s
+/// reason, one step stronger: no writer in this repository can produce either
+/// row. `ledger_transactions.id` comes from `vpay_core::ids::
+/// ledger_transaction_id`, which is 27 characters by construction, and
+/// `ledger_entries.id` is derived from it by `vpay_db::ledger::entry_id` and
+/// is 29 or 30. A case driven through the writer would pass whether or not
+/// the CHECKs existed.
+///
+/// The entry row is written under a **legal** transaction id, so the refusal
+/// can only be the entry's own `id_length` — a 65-character parent would have
+/// failed one statement earlier and proved the wrong table's constraint.
+#[tokio::test]
+async fn an_over_long_ledger_id_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_length", "ch_ledger_length").await?;
+
+    // 65 characters: one past the bound, which is the only length that tells
+    // "the CHECK is there" from "the CHECK is there and off by one".
+    let too_long = "l".repeat(65);
+    let error = sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ($1, $2)")
+        .bind(&too_long)
+        .bind("ch_ledger_length")
+        .execute(&pool)
+        .await
+        .expect_err("a 65-character ledger transaction id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "the refusal must come from migration 0046's CHECK on ledger_transactions: {error}"
+    );
+
+    // And 64 is admitted, so the bound is inclusive the way every other
+    // `id_length` in this schema is. This row is also the legal parent the
+    // entry below needs.
+    let at_the_bound = "l".repeat(64);
+    sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ($1, $2)")
+        .bind(&at_the_bound)
+        .bind("ch_ledger_length")
+        .execute(&pool)
+        .await
+        .context("64 characters is inside the bound and must be admitted")?;
+
+    let error = sqlx::query(
+        "INSERT INTO ledger_entries \
+             (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+         VALUES ($1, $2, 'payer_clearing', 'debit', 100, 'XAF', NULL)",
+    )
+    .bind(&too_long)
+    .bind(&at_the_bound)
+    .execute(&pool)
+    .await
+    .expect_err("a 65-character ledger entry id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "the refusal must come from migration 0046's CHECK on ledger_entries: {error}"
+    );
+
+    // The shape migration 0046's header calls out: a caller that hand-built a
+    // 64-character transaction id would derive a 66-character entry id and be
+    // refused *here*, which is the outcome that header says is correct. This
+    // is that sentence as an assertion rather than as a prediction.
+    let derived = format!("{at_the_bound}_0");
+    assert_eq!(derived.chars().count(), 66);
+    let error = sqlx::query(
+        "INSERT INTO ledger_entries \
+             (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+         VALUES ($1, $2, 'payer_clearing', 'debit', 100, 'XAF', NULL)",
+    )
+    .bind(&derived)
+    .bind(&at_the_bound)
+    .execute(&pool)
+    .await
+    .expect_err("the entry id derived from a 64-character transaction id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "a derived id past the bound must be refused by the same CHECK: {error}"
+    );
 
     Ok(())
 }

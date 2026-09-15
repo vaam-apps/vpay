@@ -39,7 +39,7 @@ run, and its exact output:
 **Postgres tests ran; none skipped.** Every count above is a real container
 (`postgres:16-alpine`, `DOCKER_HOST=unix:///run/user/1000/docker.sock`), and
 nextest reports `0 skipped` on all three runs. The `vpay-db` run includes the
-six ledger cases that moved into that crate — see below — and takes ~204 s
+seven ledger cases that moved into that crate — see below — and takes ~204 s
 because each starts its own container.
 
 ## The decisive mutation, run and reverted
@@ -84,7 +84,8 @@ had let any caller holding a `PendingTransaction` post an arbitrary balanced
 transaction against an arbitrary `charge_id` under an id of its choosing, with
 no settlement anywhere near it.
 
-**Six tests moved with it**, out of `postgres_smoke.rs` and into
+**Seven tests moved with it** (this page said six until the conventions review
+counted them), out of `postgres_smoke.rs` and into
 `vpay_db::ledger`'s own `#[cfg(test)]` module: the balanced capture read back
 out of Postgres, the unbalanced posting, the mixed-currency posting, the two
 merchants' balances, the replayed transaction id, the prefix-shared entry ids,
@@ -133,21 +134,59 @@ migration `0046` adds `CHECK (char_length(id) BETWEEN 1 AND 64)` to
 migration `0045`'s own header named and left open. Both settlement call sites
 mint through it.
 
+**Added by the conventions review:** the two CHECKs were pinned only by
+`EXPECTED_DRIFT_CHANGES` going 192 → 194, which is a count and is satisfied by
+any two single-column CHECKs anywhere in the schema.
+`an_over_long_ledger_id_is_refused_by_the_database` in `postgres_smoke.rs` now
+proves each one fires, by name — a 65-character id into each table, 64
+admitted so the bound is inclusive, and the 66-character entry id a hand-built
+64-character transaction id would derive, which is the case `0046`'s header
+predicted in prose. Measured to fail with `ALTER TABLE ledger_transactions
+DROP CONSTRAINT id_length` applied first (`rows_affected: 1`).
+
 ## What was left open, deliberately, and is not claimed as done
 
-- **`{transaction_id}_{index}` is still not injective in general, and
-  `post_in_tx` does not refuse an id that could collide.** `x` and `x_0` both
-  derive `x_0_0`. No pair of _minted_ ids can be in that relation — every body
-  is exactly 24 characters of an alphabet with no `_`, asserted by
-  `vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`
-  — and both call sites mint, so the ambiguity is unreachable from the write
-  path rather than closed at the writer. An in-crate caller that hand-built the
-  colliding pair would be refused by `ledger_entries_pkey`, loudly, never
-  silently. Closing it at `post_in_tx` needs a shape check there and a
-  `DbError` variant to carry the refusal.
+- **RETRACTED by the conventions review, 2026-09-15: the
+  `{transaction_id}_{index}` ambiguity does not exist.** This entry said the
+  derivation was "not injective in general", that `x` and `x_0` both derive
+  `x_0_0`, and that closing it needed a shape check in `post_in_tx` plus a new
+  `DbError` variant. All three are wrong. `x` derives `x_0, x_1, …` and `x_0`
+  derives `x_0_0, x_0_1, …`; the derivation is injective for **every** pair of
+  transaction ids, because the index is a `usize` rendered in decimal and
+  decimal contains no `_`, so the last `_` of an entry id recovers exactly one
+  pair. The claim was inherited from RFC-0003 § 4's amendment and repeated
+  into five files without being tested. It is now tested:
+  `vpay_db::ledger::tests::the_entry_id_derivation_is_injective` — no
+  container, 340 adversarial ids × 13 indices, and it fails naming a colliding
+  pair if the separator is removed — and
+  `entry_ids_do_not_collide_between_ids_that_share_a_prefix` against the real
+  `ledger_entries_pkey`. Migration `0046`'s header still carries the false
+  sentence; migrations here are forward-only, so `vpay_db::ledger::entry_id`'s
+  doc and `docs/flows/ledger.md` § Status are the correction of record.
 - **No `le_` prefix was added.** Entry ids are _derived_, not minted, and a
   vocabulary entry with no minter behind it would be a claim about code nobody
-  has written.
+  has written. The review confirms this: with the derivation injective, a
+  minter for entry ids would buy nothing at all.
+- **Found by the conventions review and left for the maintainer: a refund
+  posting's currency comes from the intent, while `refunds.currency_code` is a
+  column of its own that nothing ties to it.** `settlement::post_refund` calls
+  `money_from_row(refund.amount, &intent.currency_code, "payment_intents")`
+  because `SettledRefund` carries `id`, `payment_intent_id` and `amount` and no
+  currency. The two agree today by construction — `Refunds::create` reads the
+  currency off the intent it has locked and that is the only writer — and
+  nothing in the schema enforces it: migration `0017` gives
+  `refunds.currency_code` a foreign key to `currencies` and no relation to the
+  intent's. So a second writer, or a hand-written `INSERT`, could produce a
+  refund whose object renders one currency while its ledger legs are posted in
+  another, and `Transaction::validate` would not notice: it balances each
+  currency on its own book, and a posting whose every leg is in the same
+  _wrong_ currency balances perfectly. The fix is small — add `currency_code`
+  to `SettledRefund` and read it off the row being settled, so the posting's
+  currency comes from the refund rather than from a row that merely ought to
+  agree — but it changes a money-path type and is one statement's worth of
+  behaviour, so the review reports it rather than taking it. This is the only
+  place left on the path where "unreachable from today's one call site" is
+  doing load-bearing work.
 - **Invariant 4 has one guard, not two.** `apply_succeeded`'s compare-and-swap
   on the charge still being live is what stops a second capture transaction; a
   randomly minted id cannot make `ledger_transactions_pkey` a second,
@@ -215,8 +254,121 @@ Two of those cases changed meaning, which is stated rather than smoothed over:
   two releases.
 - `backends/crates/vpay-db/src/settlement.rs` — `post_capture`, `post_refund`,
   the refund counters, `apply_refund_failed`.
-- `backends/crates/vpay-db/src/ledger.rs` — the six moved tests.
+- `backends/crates/vpay-db/src/ledger.rs` — the seven moved tests, plus
+  `entry_id` and its injectivity test from the review.
 - `backends/crates/vpay-db/src/error.rs` — `OverRefund`, `UnknownCurrency`.
 - `backends/crates/vpay-db/src/repository.rs` — the trait method removed.
 - `backends/crates/vpay-db/src/charges.rs` — `id_for_intent_in_tx`.
 - `backends/migrations/0046_ledger-id-length.sql`.
+
+## 2026-09-15 — the conventions, schema and blast-radius review
+
+A second, adversarial pass over the branch, on `review/w2c-conventions`. Its
+lens was conventions, schema and blast radius; money correctness and
+concurrency were a separate reviewer's and are not re-litigated here.
+
+### What it confirmed
+
+- **Amendment 1 stayed discharged.** `TxRepositories::post_ledger_transaction_in_tx`
+  exists nowhere. A tree-wide grep for both names finds only `pub(crate) async
+fn post_in_tx`, its two call sites in `vpay_db::settlement`, its own tests,
+  and prose. `pub mod ledger` exports the `Ledger` **read** trait and nothing
+  else, and `cargo xtask verify-repositories` passes.
+- **The moved tests still prove what they proved.** Diffed case by case
+  against `be55ff6c`; the assertions are carried over verbatim, including the
+  `LedgerError::Unbalanced { currency, debits, credits }` match and the
+  `(0, 0)` both-tables count. Nine tests in `vpay_db::ledger::tests`, seven of
+  them on a real container, all passing.
+- **`OverRefund` is classified as claimed.** `Category::Conflict` → `409` →
+  `Retry::Never` (`vpay_core::error`), code `over_refund` rather than
+  `resource_conflict` so a merchant can tell "not that much left" from "you
+  already did this". It carries `#[source] sqlx::Error`, **not** `#[from]`, so
+  the delegation rule `verify-errors` enforces does not apply to it — and
+  could not, since `sqlx::Error` implements no `Classify`. Matching migration
+  `0003`'s constraint by **name** rather than by SQLSTATE `23514` is right:
+  `payment_intents` carries four other CHECKs on the same columns and every
+  one of them is a vpay bug. `cargo xtask verify-errors` passes: 19 error
+  types, 17 `#[from]` variants.
+- **Migration `0046` meets `0045`'s header standard** — `DEPLOY ORDERING` in
+  both directions (forward-compatible because a CHECK only narrows and the
+  tables are empty; not backward, because `run_migrations()` never sets
+  `ignore_missing`) and a measured `DRIFT` section. `verify-migrations` passes
+  at 46 files and `MANIFEST.sha256` gained exactly one line.
+- **`EXPECTED_DRIFT_CHANGES`' off-pin note is good enough to make a CI
+  disagreement cheap.** It names the binary (0.11.1), the exact report line,
+  that `EXPECTED_DRIFTED_RELATIONS` is unmoved at 25, that the delta was taken
+  under a single binary, and that CI is the arbiter. Nothing was `cargo
+install`ed into the shared `~/.cargo/bin`.
+- **`NewRefund` carries no `currency_code`, `merchant_id` or `charge_id`, and
+  nothing else on the path takes them from caller input either.** The
+  currency and the charge come off the intent row the transaction has locked
+  (`reserve_refund_in_tx` → `charges::id_for_intent_in_tx`); `post_capture`
+  and `post_refund` build `AccountKind::MerchantPayable` from
+  `intent.merchant_id`. `merchant_id` on `Refunds::create` and `cancel` is a
+  tenant **filter** in the `WHERE` clause, never a written value.
+
+### What it changed
+
+- **A doc comment had come unattached from its function.**
+  `charges::id_for_intent_in_tx` was inserted between `insert_for_intent`'s
+  doc block and `insert_for_intent`, so a `SELECT` was documented as "opens
+  the single charge for an intent" and as raising
+  `UniqueViolation { constraint: "one_charge_per_intent" }`, and the INSERT
+  was left undocumented. Reordered. Two stale paths in the new doc
+  (`crate::refunds::create_in_tx`, which never existed) corrected.
+- **The `{transaction_id}_{index}` collision was retracted.** See "What was
+  left open" above; the short version is that the derivation is injective for
+  every pair of transaction ids, the counterexample in the amendment is not
+  one, and it had been repeated into five files untested.
+  `vpay_db::ledger::entry_id` is now a named function carrying the argument,
+  and `tests::the_entry_id_derivation_is_injective` asserts it.
+- **Migration `0046`'s two CHECKs now have a test that proves they fire**, not
+  just a drift count that moved. See "Ledger ids are minted" above.
+- **Three counts corrected**: `vpay_db::ledger::tests` says seven container
+  tests, not six; `postgres_smoke.rs`'s § 0045 banner lists all seven that
+  moved (it had listed six, omitting the entry-id case); this page says seven.
+
+### Gates re-run on `review/w2c-conventions`
+
+| Command                                                                         | Result                           |
+| ------------------------------------------------------------------------------- | -------------------------------- |
+| `cargo nextest run -p vpay-core -p vpay-ledger`                                 | 86 passed, 0 skipped, 0 ignored  |
+| `cargo nextest run -p vpay-db`                                                  | 242 passed, 0 skipped, 0 ignored |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(postgres_smoke)'`       | 52 passed, 0 skipped, 0 ignored  |
+| `cargo test --doc -p vpay-core -p vpay-ledger -p vpay-db`                       | 57 + 6 + 8 passed, 0 ignored     |
+| `cargo clippy -p vpay-core -p vpay-ledger -p vpay-db --all-targets -D warnings` | clean                            |
+| `cargo clippy -p vpay-tests-integration --all-targets -D warnings`              | clean                            |
+| `cargo +nightly fmt --all --check`                                              | clean                            |
+| `cargo xtask verify-errors`                                                     | ok — 19 types, 17 `#[from]`      |
+| `cargo xtask verify-migrations`                                                 | ok — 46 files                    |
+| `cargo xtask verify-repositories`                                               | ok — 4 implementations           |
+| `cargo xtask verify-status`                                                     | ok — 1 unimplemented item        |
+| `cargo xtask verify-links`                                                      | ok — 1 650 links                 |
+| `just check-schema`                                                             | ok (0.11.1 on `PATH`, warned)    |
+
+`just ci` was **not** run, for the branch's reason. The counts moved by +1 in
+`vpay-db` and +1 in `postgres_smoke` because the review added one test to
+each; nothing was removed.
+
+### Two mutations, run and reverted
+
+- `format!("{transaction_id}_{index}")` → `format!("{transaction_id}{index}")`
+  in `vpay_db::ledger::entry_id`. `the_entry_id_derivation_is_injective`
+  **failed**: `_10 is derived by both ("_", 10) and ("_1", 0)`. Reverted and
+  re-run green.
+- `ALTER TABLE ledger_transactions DROP CONSTRAINT id_length` applied before
+  `an_over_long_ledger_id_is_refused_by_the_database`. It **failed**:
+  `a 65-character ledger transaction id must be refused: PgQueryResult {
+rows_affected: 1 }`. Reverted and re-run green.
+
+### What the review deliberately did NOT do
+
+- It did not edit migration `0046`, which still carries the sentence "its ids
+  are exactly the ones that can collide with each other". Migrations here are
+  forward-only and immutable (issue #76), and adding a migration whose only
+  content is a corrected comment is a maintainer's call, not a reviewer's.
+  `vpay_db::ledger::entry_id`'s doc and `docs/flows/ledger.md` § Status are
+  the correction of record, and the test `0046`'s header cites still exists
+  under the name it cites.
+- It did not change `SettledRefund` to carry `currency_code`. See the note
+  under "What was left open".
