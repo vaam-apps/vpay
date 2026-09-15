@@ -43,6 +43,10 @@ const privateKeyPath =
 const publishableKey =
   process.env.CHECKOUT_PUBLISHABLE_KEY ?? "pk_test_shopmerchantsandbox1";
 const checkoutPort = process.env.CHECKOUT_BROWSER_PORT ?? "4180";
+// The rail's settlement currency. Defaults to XAF, the demo stack's; the
+// `live` profile (MTN's real sandbox) settles `mtn_momo` in EUR, which is why
+// docs/runbooks/live-sandbox-test.md sets MINT_CURRENCY=eur (docs/flows/money.md).
+const currency = process.env.MINT_CURRENCY ?? "xaf";
 
 let privateKeyPem;
 try {
@@ -79,7 +83,7 @@ async function main() {
       // mismatch: `invalid_request_error/invalid_request: rail 'mtn_momo'
       // settles in <x>; this PaymentIntent is <y>`.
       amount: 5000,
-      currency: "xaf",
+      currency,
       payment_method_types: ["mtn_momo"],
       metadata: { source: "examples/checkout-browser" },
     },

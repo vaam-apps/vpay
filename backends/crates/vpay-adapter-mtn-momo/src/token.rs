@@ -2,7 +2,12 @@
 //! rail's half of the cache that keeps one request from becoming two.
 //!
 //! `POST /collection/token/` mints a bearer from HTTP Basic credentials
-//! (`api_user:api_key`) plus a subscription key. The cache entry itself is
+//! (`api_user:api_key`), a subscription key, and a **JSON** OAuth2 body of
+//! `{"grant_type":"client_credentials"}`. The body is load-bearing and so is
+//! its content type: MTN's API gateway answers `411 Length Required` to a
+//! bodyless POST and a 200 "Request Rejected" HTML page to the same grant
+//! sent form-encoded — both measured on the real sandbox on 2026-09-15. The
+//! cache entry itself is
 //! [`vpay_provider::token::CachedToken`]; what is MTN's alone is
 //! [`REFRESH_MARGIN`], [`ASSUMED_LIFETIME`] (MTN may omit `expires_in`), and
 //! the fields [`Credentials::fingerprint`] hashes.
@@ -19,7 +24,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
 use vpay_core::FailureCode;
 use vpay_provider::token::CachedToken;
@@ -52,6 +57,18 @@ const REFRESH_MARGIN: Duration = Duration::from_secs(60);
 /// MTN documents `expires_in: 3600` and sends it, so this is a fallback for
 /// a rail that changed its mind, not the normal path.
 const ASSUMED_LIFETIME: Duration = Duration::from_secs(300);
+
+/// The OAuth2 client-credentials grant as MTN's `/collection/token/` demands
+/// it: a **JSON** body. A bodyless POST answers `411 Length Required`, and
+/// the same grant sent form-encoded (`grant_type=client_credentials`) answers
+/// a 200 "Request Rejected" HTML page from MTN's gateway — the sibling rail,
+/// `vpay-adapter-orange-money`, posts the form-encoded spelling, and the two
+/// must NOT be assumed interchangeable for MTN.
+const CLIENT_CREDENTIALS_JSON: &str = r#"{"grant_type":"client_credentials"}"#;
+
+/// The content type of [`CLIENT_CREDENTIALS_JSON`], set explicitly so the
+/// rail never has to guess what a bare string body is.
+const APPLICATION_JSON: &str = "application/json";
 
 /// The credentials and non-secret settings one MTN call needs, borrowed from
 /// a [`ProviderConfig`] rather than copied, so no secret is duplicated into a
@@ -247,6 +264,8 @@ pub(crate) async fn mint(
         // base64 by hand.
         .basic_auth(credentials.api_user, Some(credentials.api_key))
         .header(SUBSCRIPTION_KEY_HEADER, credentials.subscription_header()?)
+        .header(CONTENT_TYPE, APPLICATION_JSON)
+        .body(CLIENT_CREDENTIALS_JSON)
         // Per-request rather than per-client: one `reqwest::Client` is shared
         // by every rail in the process, so the deadline has to come from this
         // rail's `ProviderConfig` (see its docs).

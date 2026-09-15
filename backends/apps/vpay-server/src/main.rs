@@ -306,9 +306,10 @@ async fn run() -> anyhow::Result<()> {
     tracing::warn!(
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
          authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
-         cancel). No rail adapter implements `submit`, so a confirm reaches the rail and \
-         answers 501 not_implemented; every other /v1 resource answers the honest 404. See \
-         docs/status.md"
+         cancel). Both rail adapters implement `submit` and `query_status`; the MTN push was \
+         first proven against MTN's real sandbox on 2026-09-15. Refunds are not routed \
+         (`mtn_momo::refund` is NotImplemented, Orange answers Unsupported); every other /v1 \
+         resource answers the honest 404. See docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 
