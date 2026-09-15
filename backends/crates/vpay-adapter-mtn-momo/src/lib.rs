@@ -1135,7 +1135,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::Duration;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
     use uuid::Uuid;
     use vpay_core::{Currency, Money};
 
@@ -1198,24 +1198,394 @@ mod tests {
         assert_eq!(adapter().code(), "mtn_momo");
     }
 
-    /// The one operation that is genuinely unbuilt must say so — not answer
-    /// `Unsupported`, which would claim the rail cannot refund, and not
-    /// fabricate a success.
+    /// A configuration that also carries the **Disbursements** credentials,
+    /// which [`config`] deliberately does not.
+    ///
+    /// Every value differs from its Collections twin, and that is the whole
+    /// point: a test that gave both products the same three strings could
+    /// not tell "the refund path read the Disbursements keys" from "the
+    /// refund path read whatever was there".
+    fn config_with_disbursements() -> ProviderConfig {
+        let mut config = config();
+        config.credentials.insert(
+            "disbursement_subscription_key".to_owned(),
+            "stub-disbursement-subscription-key".to_owned(),
+        );
+        config.credentials.insert(
+            "disbursement_api_key".to_owned(),
+            "stub-disbursement-api-key".to_owned(),
+        );
+        config.settings.insert(
+            "disbursement_api_user".to_owned(),
+            "66666666-7777-8888-9999-000000000000".to_owned(),
+        );
+        config
+    }
+
+    /// The payee every refund test addresses. Not a real subscriber — it is
+    /// `basicuserinfo.json`'s registered-holder number, reused so that the
+    /// one number in this crate's refund tests is one a reader can look up.
+    const DOCUMENTATION_PAYEE: &str = "+237600000200";
+
+    /// The same payee in the shape the rail is handed: digits only, no `+`.
+    /// Two constants because the canonicalisation between them is what
+    /// `RefundTarget::mobile_money` promises and what this adapter must not
+    /// re-do.
+    const DOCUMENTATION_PAYEE_CANONICAL: &str = "237600000200";
+
+    fn payee() -> RefundTarget {
+        RefundTarget::mobile_money(DOCUMENTATION_PAYEE).expect("a documentation MSISDN")
+    }
+
+    // -- the refund path ---------------------------------------------------
+
+    /// `refund` is no longer a `NotImplemented` token, and answering
+    /// `Unsupported` would still be a lie about a rail that refunds.
+    ///
+    /// The configuration here has **no Disbursements credentials** — which is
+    /// every deployment of this system today (`docs/status.md`) — so the
+    /// honest answer is `Config` naming the first key that is missing. That
+    /// is the assertion, and it is deliberately not "the call succeeds": a
+    /// unit test cannot reach a rail (ADR-0006), and the wire is proven by
+    /// the conformance suite against a real container.
     #[tokio::test]
-    async fn refund_is_not_implemented_and_does_not_pretend() {
+    async fn a_deployment_without_a_disbursement_key_is_told_which_key_and_not_declined() {
         let charge = charge();
+        let outcome = adapter()
+            .refund(&charge, charge.amount, Some(&payee()), &config())
+            .await;
+
+        let Err(ProviderError::Config(message)) = outcome else {
+            panic!("a missing Disbursements credential is a Config error, got {outcome:?}");
+        };
+        assert!(
+            message.contains("disbursement_subscription_key"),
+            "the message names the key an operator must set: {message}"
+        );
+        // The failure mode this replaces: a token that said "unbuilt" for
+        // work that is now built, and an `Unsupported` that would say MTN
+        // cannot refund.
+        assert!(
+            !message.contains("NotImplemented"),
+            "the token is retired: {message}"
+        );
+    }
+
+    /// Each of the three Disbursements keys is required on its own, named on
+    /// its own, and never satisfied by its Collections twin.
+    ///
+    /// The fallback this refuses is the tempting one — `disbursement_api_key`
+    /// defaulting to `api_key` — and it is refused because it would send
+    /// Collections' Basic password to the Disbursements token mint and
+    /// surface as `provider_account_blocked`, which pages and names nothing
+    /// that is wrong. See `Credentials::from_config`.
+    #[tokio::test]
+    async fn every_disbursement_credential_is_required_by_name_with_no_fallback() {
+        for key in [
+            "disbursement_subscription_key",
+            "disbursement_api_key",
+            "disbursement_api_user",
+        ] {
+            let mut config = config_with_disbursements();
+            config.credentials.remove(key);
+            config.settings.remove(key);
+
+            let charge = charge();
+            let outcome = adapter()
+                .refund(&charge, charge.amount, Some(&payee()), &config)
+                .await;
+
+            let Err(ProviderError::Config(message)) = outcome else {
+                panic!("{key}: expected a Config error, got {outcome:?}");
+            };
+            assert!(message.contains(key), "{key}: {message}");
+        }
+    }
+
+    /// RFC-0003 open question 6, decided by this adapter (see `refund`).
+    ///
+    /// The core owes `Some` on a `Required` rail. When that invariant breaks
+    /// the answer is `Config` — never a decline, never `Unsupported`, never a
+    /// fabricated success — and it must be reached **before** any credential
+    /// is read, so a deployment that has neither is told about the thing that
+    /// is actually wrong with the request rather than about its YAML.
+    #[tokio::test]
+    async fn a_refund_with_no_payee_is_refused_before_a_credential_is_read() {
+        let charge = charge();
+        // A configuration that WOULD satisfy the credential check, so the
+        // only thing this can be failing on is the absent destination.
         let outcome = adapter()
             .refund(
                 &charge,
                 charge.amount,
-                Some(&RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN")),
-                &config(),
+                None,
+                &config_with_disbursements(),
             )
             .await;
-        assert!(matches!(
-            outcome,
-            Err(ProviderError::NotImplemented("mtn_momo::refund"))
-        ));
+
+        let Err(ProviderError::Config(message)) = outcome else {
+            panic!("a Required rail handed no payee answers Config, got {outcome:?}");
+        };
+        assert!(
+            message.contains("payee") && message.contains("RefundDestination::Required"),
+            "the message says what the core failed to supply: {message}"
+        );
+        assert!(
+            !message.contains("disbursement_"),
+            "the destination is checked before the credentials, so this must not be a \
+             configuration complaint: {message}"
+        );
+    }
+
+    /// A refusal never echoes the payee's number — the rule the whole
+    /// `RefundTarget` design rests on, asserted at the one call site that
+    /// holds a real one.
+    ///
+    /// Both spellings, because a message that hid the `+` form and printed
+    /// the digits would have leaked it just the same.
+    #[tokio::test]
+    async fn no_refund_refusal_ever_names_the_payee() {
+        let charge = charge();
+        // Every configuration failure this method can reach while it still
+        // has a destination in scope.
+        let mut no_environment = config_with_disbursements();
+        no_environment.settings.remove("target_environment");
+
+        for config in [config(), no_environment] {
+            let refused = adapter()
+                .refund(&charge, charge.amount, Some(&payee()), &config)
+                .await
+                .expect_err("no rail is reachable from a unit test");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                for spelling in [DOCUMENTATION_PAYEE, DOCUMENTATION_PAYEE_CANONICAL] {
+                    assert!(
+                        !rendered.contains(spelling),
+                        "a refusal must never carry the payee's number: {rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    // -- the transfer body, without a network ------------------------------
+
+    /// The one field that decides where the money goes.
+    ///
+    /// `payee`, not `payer` — the single structural difference between a
+    /// collection and a disbursement — and the `partyId` inside it is the
+    /// canonical digits-only form `RefundTarget` produced, not the `+` form
+    /// the merchant typed. A mutation that read `charge.payer_ref` here
+    /// instead would send the refund to the person who *paid*, which on a
+    /// third-party refund is the wrong human.
+    #[test]
+    fn the_transfer_is_addressed_to_the_payee_and_never_to_the_payer() {
+        let body = transfer_body(Uuid::from_u128(0x0202), Money::new(5_000, Currency::Eur).expect("non-negative"));
+
+        let payee = body.get("payee").expect("the body has a payee");
+        assert_eq!(payee.get("partyIdType").and_then(Value::as_str), Some("MSISDN"));
+        assert_eq!(
+            payee.get("partyId").and_then(Value::as_str),
+            Some(DOCUMENTATION_PAYEE_CANONICAL),
+            "the rail takes the canonical form the constructor produced, not the merchant's \
+             spelling"
+        );
+        assert!(
+            body.get("payer").is_none(),
+            "a `payer` on a transfer would be MTN's other product's body: {body}"
+        );
+        // The charge's payer is a different number from the payee in
+        // `charge()`, so this is falsifiable.
+        assert!(
+            !body.to_string().contains("237600000000"),
+            "the charge's payer must not appear in a transfer: {body}"
+        );
+    }
+
+    /// The reference the transfer is addressed by is the one the core
+    /// supplied, in both places MTN reads it — and nowhere is one invented.
+    ///
+    /// This is the assertion RFC-0003's open reference question points at:
+    /// whether that value is the refund's `provider_reference_id` or the
+    /// charge's is the core's to decide, and what this adapter does with it
+    /// is here rather than only in prose.
+    #[test]
+    fn the_transfer_is_addressed_by_the_reference_the_core_supplied() {
+        let reference = Uuid::from_u128(0x0de1);
+        let body = transfer_body(reference, Money::new(5_000, Currency::Eur).expect("non-negative"));
+        assert_eq!(
+            body.get("externalId").and_then(Value::as_str),
+            Some(reference.to_string().as_str()),
+            "externalId is the reference handed in, never a freshly minted one"
+        );
+    }
+
+    /// The refund's **own** amount reaches the rail, in MTN's string shape
+    /// and in its own currency.
+    ///
+    /// A partial refund is the case this exists for: `refund` takes an
+    /// `amount` separately from `charge.amount` precisely because they
+    /// differ, and an implementation that reached for the charge's would
+    /// refund the whole thing every time.
+    #[test]
+    fn a_partial_refund_sends_its_own_amount_and_not_the_charges() {
+        let charge = charge();
+        let partial = Money::new(1_500, Currency::Eur).expect("non-negative");
+        assert_ne!(partial, charge.amount, "the fixture must make this falsifiable");
+
+        let body = transfer_body(charge.reference_id, partial);
+        assert_eq!(
+            body.get("amount").and_then(Value::as_str),
+            Some(partial.to_provider_string().as_str())
+        );
+        assert!(
+            body.get("amount").expect("an amount").is_string(),
+            "MTN takes the amount as a decimal string on both products: {body}"
+        );
+        assert_eq!(body.get("currency").and_then(Value::as_str), Some("EUR"));
+    }
+
+    /// The serialised `transfer` body, as a `Value`, so the assertions above
+    /// are about the bytes that would go on the wire rather than about
+    /// struct fields a rename would silently change.
+    fn transfer_body(reference: Uuid, amount: Money) -> Value {
+        serde_json::to_value(wire::Transfer::new(reference, amount, &payee()))
+            .expect("the transfer body serialises")
+    }
+
+    // -- the refund outcome table, without a network -----------------------
+
+    /// A 202 is the accepted answer, and it carries **no fee** and no key
+    /// material.
+    ///
+    /// `fee: None` is the assertion that matters: issue #46 is about an
+    /// integrator hardcoding `0`, and `None` ("the rail did not say") must
+    /// never become `Some(zero)` ("the rail said it was free"). MTN's
+    /// documented transfer response has no fee field at all.
+    #[test]
+    fn an_accepted_transfer_reports_no_fee_and_no_key_material() {
+        let refunded = refund_outcome(StatusCode::ACCEPTED, "").expect("202 is accepted");
+        assert!(refunded.ref_extra.is_empty());
+        assert!(
+            refunded.fee.is_none(),
+            "an unreported fee is None, never Some(0): {:?}",
+            refunded.fee
+        );
+    }
+
+    /// The line a crash-safe retry depends on, on the money-out path.
+    ///
+    /// See `Adapter::refund` § "Which reference the transfer carries": this
+    /// is correct because the reference is the refund's own, and reporting a
+    /// 409 as an error would make a caller re-instruct a transfer the rail
+    /// already has — paying a payee twice.
+    #[test]
+    fn a_duplicate_transfer_reference_is_a_success_not_an_error() {
+        let refunded = refund_outcome(
+            StatusCode::CONFLICT,
+            r#"{"code":"RESOURCE_ALREADY_EXIST","message":"Duplicated Reference Id"}"#,
+        )
+        .expect("409 means the rail already has this transfer");
+        assert!(refunded.fee.is_none());
+    }
+
+    /// A rail refusal is a decline with the rail's own word mapped through
+    /// the shared table — and `PAYEE_NOT_FOUND` is the row a refund reaches
+    /// that a charge does not.
+    #[test]
+    fn a_refused_transfer_is_a_decline_carrying_the_rails_own_reason() {
+        let outcome = refund_outcome(
+            StatusCode::BAD_REQUEST,
+            r#"{"code":"PAYEE_NOT_FOUND","message":"Party not found"}"#,
+        );
+        let Err(ProviderError::Rejected { code, message }) = outcome else {
+            panic!("a 400 from the rail is a decision, got {outcome:?}");
+        };
+        assert_eq!(code, FailureCode::InvalidPayee);
+        assert!(message.contains("PAYEE_NOT_FOUND"), "{message}");
+    }
+
+    /// Our own Disbursements credentials being refused pages, and is never
+    /// reported as a payer's or payee's problem.
+    #[test]
+    fn disbursement_credentials_the_rail_refuses_are_not_a_payees_problem() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            let outcome = refund_outcome(status, "");
+            assert!(
+                matches!(
+                    outcome,
+                    Err(ProviderError::Rejected {
+                        code: FailureCode::ProviderAccountBlocked,
+                        ..
+                    })
+                ),
+                "{status}: {outcome:?}"
+            );
+        }
+    }
+
+    /// MTN's biggest wart, on the refund path too: a *logical* error arrives
+    /// as HTTP 500 with a code in the body, and three of them are our own
+    /// misconfiguration that no retry can fix.
+    #[test]
+    fn a_transfer_500_that_names_our_misconfiguration_is_never_retried() {
+        let outcome = refund_outcome(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"code":"NOT_ALLOWED_TARGET_ENVIRONMENT"}"#,
+        );
+        assert!(
+            matches!(outcome, Err(ProviderError::Config(_))),
+            "a configuration 500 stops the ladder: {outcome:?}"
+        );
+
+        // A 500 with no code left is the rail, not us.
+        let outcome = refund_outcome(StatusCode::INTERNAL_SERVER_ERROR, "<html>oops</html>");
+        assert!(
+            matches!(outcome, Err(ProviderError::Transport { .. })),
+            "an opaque 500 leaves the transfer's fate unknown: {outcome:?}"
+        );
+    }
+
+    /// A 3xx is refused rather than followed — which on this path would
+    /// replay the Disbursements key, the bearer **and the payee's number** at
+    /// whatever host `Location` named.
+    #[test]
+    fn a_transfer_redirect_is_refused_and_says_so() {
+        let outcome = refund_outcome(StatusCode::TEMPORARY_REDIRECT, "");
+        let Err(ProviderError::Malformed { context, .. }) = &outcome else {
+            panic!("a redirect is Malformed, got {outcome:?}");
+        };
+        assert!(context.contains("not followed"), "{context}");
+    }
+
+    /// A 404 on this path is the endpoint, not the refund: the likeliest
+    /// cause is a deployment pointed at a base URL with no Disbursements
+    /// product behind it. `Config`, so the poll ladder stops.
+    #[test]
+    fn a_transfer_404_is_our_configuration_and_never_a_refund_that_failed() {
+        let outcome = refund_outcome(StatusCode::NOT_FOUND, "");
+        assert!(
+            matches!(outcome, Err(ProviderError::Config(_))),
+            "{outcome:?}"
+        );
+    }
+
+    /// Every status this table does not enumerate must land somewhere that
+    /// leaves the transfer's fate unknown — never on a success and never on
+    /// a decline, either of which would be a claim about money.
+    #[test]
+    fn an_undocumented_transfer_status_is_never_a_success_and_never_a_decline() {
+        for code in [200_u16, 201, 204, 302, 418, 451] {
+            let status = StatusCode::from_u16(code).expect("a real status");
+            let outcome = refund_outcome(status, "");
+            assert!(
+                !matches!(outcome, Ok(_)),
+                "HTTP {code} must not be read as an accepted transfer: {outcome:?}"
+            );
+            assert!(
+                !matches!(outcome, Err(ProviderError::Rejected { .. })),
+                "HTTP {code} says nothing about a payee: {outcome:?}"
+            );
+        }
     }
 
     #[test]
@@ -1409,8 +1779,8 @@ mod tests {
     async fn a_cached_token_is_reused_without_touching_the_rail() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config).expect("a complete configuration");
-        *adapter.token.write().await = Some(token::cache_entry(
+        let credentials = Credentials::from_config(&config, Product::Collections).expect("a complete configuration");
+        *adapter.collections_token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),
@@ -1441,15 +1811,15 @@ mod tests {
             "another-merchants-key".to_owned(),
         );
 
-        let credentials = Credentials::from_config(&mine).expect("complete");
-        *adapter.token.write().await = Some(token::cache_entry(
+        let credentials = Credentials::from_config(&mine, Product::Collections).expect("complete");
+        *adapter.collections_token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),
             Some(3_600),
         ));
 
-        let other = Credentials::from_config(&theirs).expect("complete");
+        let other = Credentials::from_config(&theirs, Product::Collections).expect("complete");
         let outcome = adapter.bearer(&theirs, &other).await;
         assert!(
             matches!(outcome, Err(ProviderError::Transport { .. })),
@@ -1472,7 +1842,7 @@ mod tests {
     async fn a_transport_failures_source_chain_reaches_the_reqwest_error() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config).expect("complete");
+        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
 
         let error = adapter
             .bearer(&config, &credentials)
@@ -1506,8 +1876,8 @@ mod tests {
     async fn an_expired_token_is_not_reused() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config).expect("complete");
-        *adapter.token.write().await = Some(token::cache_entry(
+        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
+        *adapter.collections_token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now() - Duration::from_secs(3_600),
@@ -1770,8 +2140,8 @@ mod tests {
     async fn debugging_the_adapter_does_not_print_the_token() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config).expect("complete");
-        *adapter.token.write().await = Some(token::cache_entry(
+        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
+        *adapter.collections_token.write().await = Some(token::cache_entry(
             "super-secret-token".to_owned(),
             credentials.fingerprint(),
             std::time::Instant::now(),

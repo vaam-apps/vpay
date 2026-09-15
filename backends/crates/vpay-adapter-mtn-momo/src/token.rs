@@ -518,7 +518,7 @@ mod tests {
         for key in ["subscription_key", "api_key"] {
             let mut cfg = complete();
             cfg.credentials.remove(key);
-            match Credentials::from_config(&cfg) {
+            match Credentials::from_config(&cfg, Product::Collections) {
                 Err(ProviderError::Config(message)) => {
                     assert!(message.contains(key), "{message}");
                     assert!(
@@ -533,7 +533,7 @@ mod tests {
             let mut cfg = complete();
             cfg.settings.remove(key);
             assert!(matches!(
-                Credentials::from_config(&cfg),
+                Credentials::from_config(&cfg, Product::Collections),
                 Err(ProviderError::Config(_))
             ));
         }
@@ -548,7 +548,7 @@ mod tests {
         cfg.credentials
             .insert("api_key".to_owned(), "   ".to_owned());
         assert!(matches!(
-            Credentials::from_config(&cfg),
+            Credentials::from_config(&cfg, Product::Collections),
             Err(ProviderError::Config(_))
         ));
     }
@@ -567,16 +567,16 @@ mod tests {
         d.credentials
             .insert("api_key".to_owned(), "r0tated".to_owned());
 
-        let fa = Credentials::from_config(&a)
+        let fa = Credentials::from_config(&a, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fb = Credentials::from_config(&b)
+        let fb = Credentials::from_config(&b, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fc = Credentials::from_config(&c)
+        let fc = Credentials::from_config(&c, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fd = Credentials::from_config(&d)
+        let fd = Credentials::from_config(&d, Product::Collections)
             .expect("complete")
             .fingerprint();
 
@@ -589,7 +589,7 @@ mod tests {
         );
         assert_eq!(
             fa,
-            Credentials::from_config(&complete())
+            Credentials::from_config(&complete(), Product::Collections)
                 .expect("complete")
                 .fingerprint(),
             "the same credentials must reuse their token"
@@ -621,13 +621,103 @@ mod tests {
             ]),
         );
         assert_ne!(
-            Credentials::from_config(&left)
+            Credentials::from_config(&left, Product::Collections)
                 .expect("complete")
                 .fingerprint(),
-            Credentials::from_config(&right)
+            Credentials::from_config(&right, Product::Collections)
                 .expect("complete")
                 .fingerprint()
         );
+    }
+
+    /// **The token-scope test**, and the reason [`Product`] is in the
+    /// fingerprint at all.
+    ///
+    /// Two products' credentials configured with *identical* strings — which
+    /// is what an operator setting up a sandbox plausibly produces, and what
+    /// a copy-paste of three YAML lines certainly produces — must still
+    /// fingerprint differently, because the two bearers are minted from
+    /// different endpoints and carry different scopes. Without the product
+    /// discriminator these two values collide, the single cache lookup
+    /// succeeds, and a Collections-scoped bearer is sent on the
+    /// Disbursements `transfer` — a wrong-scope token on the only call this
+    /// rail has that sends money out.
+    ///
+    /// Delete `self.product.path_segment()` from `Credentials::fingerprint`
+    /// and this is the test that fails. Nothing else in this crate does:
+    /// every other configuration in this file differs in a value as well as
+    /// in a product.
+    #[test]
+    fn a_collections_bearer_is_never_served_to_a_disbursement() {
+        let identical = config(
+            BTreeMap::from([
+                ("subscription_key".to_owned(), "same".to_owned()),
+                ("disbursement_subscription_key".to_owned(), "same".to_owned()),
+                ("api_key".to_owned(), "same".to_owned()),
+                ("disbursement_api_key".to_owned(), "same".to_owned()),
+            ]),
+            BTreeMap::from([
+                ("api_user".to_owned(), "same".to_owned()),
+                ("disbursement_api_user".to_owned(), "same".to_owned()),
+                ("target_environment".to_owned(), "sandbox".to_owned()),
+            ]),
+        );
+
+        let collections = Credentials::from_config(&identical, Product::Collections)
+            .expect("complete")
+            .fingerprint();
+        let disbursements = Credentials::from_config(&identical, Product::Disbursements)
+            .expect("complete")
+            .fingerprint();
+
+        assert_ne!(
+            collections, disbursements,
+            "two products' tokens are separately scoped; identical credentials must not make \
+             one cache entry serve both"
+        );
+    }
+
+    /// The Disbursements half of `a_missing_credential_names_the_key_and_never_the_value`,
+    /// and the half that says there is **no fallback**: a configuration
+    /// complete for Collections is not a configuration for Disbursements, and
+    /// the error names the disbursement key rather than silently borrowing
+    /// the Collections one.
+    #[test]
+    fn a_collections_configuration_is_not_a_disbursements_one() {
+        let collections_only = complete();
+        for key in [
+            "disbursement_subscription_key",
+            "disbursement_api_key",
+            "disbursement_api_user",
+        ] {
+            match Credentials::from_config(&collections_only, Product::Disbursements) {
+                Err(ProviderError::Config(message)) => {
+                    // The first missing key is the one named, so this loop
+                    // asserts the message is about *a* disbursement key; the
+                    // per-key naming is `refund`'s own test in `lib.rs`.
+                    assert!(
+                        message.contains("disbursement_"),
+                        "{key}: a Collections value must not satisfy a Disbursements key: \
+                         {message}"
+                    );
+                    assert!(
+                        !message.contains("sh1bboleth") && !message.contains("0pen-sesame"),
+                        "the value leaked: {message}"
+                    );
+                }
+                other => panic!("expected a Config error naming a disbursement key, got {other:?}"),
+            }
+        }
+    }
+
+    /// The two token endpoints, spelled once each. Both are **singular**, and
+    /// neither matches the product's English name — a plural in either is a
+    /// 404 from MTN's gateway, and there is no test anywhere else that would
+    /// notice.
+    #[test]
+    fn each_product_has_its_own_token_path_segment() {
+        assert_eq!(Product::Collections.path_segment(), "collection");
+        assert_eq!(Product::Disbursements.path_segment(), "disbursement");
     }
 
     /// A fingerprint no `Credentials` in this file produces, for the tests
@@ -741,7 +831,7 @@ mod tests {
     #[test]
     fn debugging_credentials_does_not_print_them() {
         let config = complete();
-        let rendered = format!("{:?}", Credentials::from_config(&config).expect("complete"));
+        let rendered = format!("{:?}", Credentials::from_config(&config, Product::Collections).expect("complete"));
         assert!(!rendered.contains("sh1bboleth"), "{rendered}");
         assert!(!rendered.contains("0pen-sesame"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
