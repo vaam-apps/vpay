@@ -11,6 +11,39 @@ nomination is `UNVERIFIABLE` and every one is refused — safe, and dead.
 **This is the only route on `/v1` that returns information about a person who
 is not the caller.** Everything below follows from that.
 
+## Two callers since 2026-09-16, and only one of them is this route
+
+`POST /v1/refunds` (RFC-0003 § 2) asks the same question about a nominated
+payee before it instructs a transfer, on the capability and never on a rail
+code. It is the in-repo half of the caller described above, and it is
+deliberately **narrower**: it refuses a number the rail has no record of, and
+it never compares a name, because vpay holds no verified buyer name to
+compare one against. Matching the holder's name to the buyer's is still the
+integrator's job and is still what this route is for — see
+[merchant-auth/resource-contract.md](merchant-auth/resource-contract.md).
+
+Both callers go through one function,
+`vpay_api::v1::account_holders::ask_rail`, so the counter, the masked log
+line and the three-way answer below are the same in both. That was **not**
+true as the refund routes were first written: the refund path called the
+adapter directly and so incremented nothing and logged nothing, which is
+recorded here because both halves of it mattered — the metric stopped being
+every lookup vpay makes (the `not_found` alarm under Status reads a
+denominator, so a missing caller makes it quieter rather than louder), and a
+refund refused for an unregistered payee was refused before any row, any
+provider-request attempt and any rail instruction, leaving no trace in vpay
+at all. `a_refund_path_lookup_is_counted_and_logged_like_the_routes`
+(`vpay-api`) is the case that fails if a future author points that call back
+at the adapter.
+
+**This widens the abuse question below rather than adding a second one.** A
+credential with `payments:write` can put any number in `destination` on a
+refund of its own intent and read "not a registered account" off the `400`,
+without ever calling `GET /v1/account_holders`. So the reserved decisions —
+rate limit, dedicated scope, audit log — are reserved about **lookups**, not
+about a path, and a control fitted to this route alone would not be the
+control it reads as.
+
 ## What happens, in order
 
 ```text
@@ -251,6 +284,12 @@ about the _rail_, and this one answers a question about the _route_.
 - `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`). Merchant
   token required (`payments:read` or `payments:write`), tenant-scoped
   extractor bound, no persistence, four-key response.
+- `POST /v1/refunds` — **a second caller since 2026-09-16** (RFC-0003 § 2).
+  Refuses a nominated payee the rail has no record of with a `400` naming
+  `destination`; never compares a name; skips the lookup entirely on a rail
+  whose capability is `false`, which is `orange_money`. Counted and logged
+  through the same function as the route
+  (`a_refund_path_lookup_is_counted_and_logged_like_the_routes`).
 - `ProviderAdapter::account_holder_name` — on the port, defaulted to
   `ProviderError::Unsupported`.
 - `mtn_momo` — `supports_account_holder_lookup: true`, implemented against
@@ -288,7 +327,10 @@ about the _rail_, and this one answers a question about the _route_.
 - **Orange's route is unconfirmed**, so `false` there is "we do not know of
   one", not "Orange has none".
 - **No rate limit, no audit log, no dedicated scope** — the three reserved
-  decisions above.
+  decisions above, and since 2026-09-16 they are reserved about **lookups**
+  and not about this route: `POST /v1/refunds` reaches the same rail method,
+  so a control fitted to `GET /v1/account_holders` alone would leave the
+  question askable by any credential that can write a refund.
 - **Neither SDK has run against a live vpay** for this resource; both are
   tested against in-process HTTP stubs
   ([../sdks/parity.md](../sdks/parity.md)'s gap ledger, 2026-09-05).
@@ -305,6 +347,8 @@ about the _rail_, and this one answers a question about the _route_.
 | Orange answers `Unsupported` rather than a token                              | all five conformance cases above, on their `orange_money` parameterisation                                                                                                                    |
 | the whole `account_holder_outcome` table                                      | `the_account_holder_table_maps_every_documented_status` (`vpay-adapter-mtn-momo`)                                                                                                             |
 | the route's validation and refusals                                           | `a_missing_or_malformed_parameter_names_itself`, `a_rail_that_has_no_such_api_is_a_400_naming_the_parameter`, `a_disabled_or_unknown_rail_is_the_same_refusal_as_an_incapable_one`            |
+| every lookup vpay makes is counted and masked, from either caller               | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`, `a_lookup_logs_a_masked_number_and_never_a_name` (the route), `a_refund_path_lookup_is_counted_and_logged_like_the_routes` (`POST /v1/refunds`)                                                                       |
+| the refund path's three-way answer: unregistered is a `400`, unreachable is not | `an_unregistered_payee_is_a_400_and_an_unreachable_rail_is_not`, `a_rail_without_a_lookup_accepts_the_destination_unverified` (`vpay-api`), `a_payee_the_rail_does_not_know_is_refused_before_the_transfer` (integration, against a real WireMock MTN)                                        |
 | every outcome counted, no label carrying the number or the name               | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                        |
 | the route, end to end, over a socket, against a real WireMock MTN             | `backends/tests/integration/tests/account_holders.rs` — six cases                                                                                                                             |
 | both SDKs speak the same query string and read the same object                | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                            |

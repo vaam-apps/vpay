@@ -471,7 +471,13 @@ async fn resolve_target<'a>(
     )?;
 
     if let Some(destination) = destination.as_ref() {
-        verify_registered_holder(adapter.as_ref(), destination, &rail.provider_config()).await?;
+        verify_registered_holder(
+            adapter.as_ref(),
+            &charge.provider_code,
+            destination,
+            &rail.provider_config(),
+        )
+        .await?;
     }
 
     let reason = validated_reason(params.reason.as_deref())?;
@@ -667,8 +673,21 @@ fn resolve_destination(
 /// A rail with no lookup skips this entirely, on the capability and never on
 /// a code (ADR-0002) — `orange_money` is exactly that case, and RFC-0003 § 1
 /// says so: on Orange the destination is accepted unverified.
+///
+/// # The rail is asked through [`crate::v1::account_holders::ask_rail`], not
+/// through the adapter directly
+///
+/// Because this is the second caller of that port method and the first one
+/// that is not the route built for it, and a lookup vpay makes has to be
+/// counted and logged wherever it is made from. Calling the adapter here
+/// would leave `vpay_account_holder_lookups_total` counting a fraction of
+/// vpay's lookups — under the alarm the flow doc asks an operator to set on
+/// it — and would let a refused payee leave **no trace at all**, since the
+/// refusal happens before any row, any attempt and any rail instruction.
+/// Added by review, 2026-09-16; see that function's own doc.
 async fn verify_registered_holder(
     adapter: &dyn ProviderAdapter,
+    code: &str,
     destination: &RefundTarget,
     config: &ProviderConfig,
 ) -> Result<(), ApiError> {
@@ -676,9 +695,14 @@ async fn verify_registered_holder(
         return Ok(());
     }
 
-    match adapter
-        .account_holder_name(destination.msisdn(), config)
-        .await?
+    match crate::v1::account_holders::ask_rail(
+        adapter,
+        code,
+        destination.msisdn(),
+        config,
+        crate::v1::account_holders::caller::REFUND_DESTINATION,
+    )
+    .await?
     {
         Some(_holder) => Ok(()),
         None => Err(ApiError::invalid_param(
@@ -1909,7 +1933,7 @@ mod tests {
             lookup: Some(Ok(None)),
         };
         let destination = RefundTarget::mobile_money(PAYEE).expect("a documentation MSISDN");
-        let error = verify_registered_holder(&unregistered, &destination, &rail)
+        let error = verify_registered_holder(&unregistered, "required_rail", &destination, &rail)
             .await
             .expect_err("the rail has no record of this number");
         assert_eq!(param_of(&error), DESTINATION_PARAM);
@@ -1917,11 +1941,85 @@ mod tests {
         let unreachable = RequiredRail {
             lookup: Some(Err(ProviderError::transport("unreachable"))),
         };
-        let error = verify_registered_holder(&unreachable, &destination, &rail)
+        let error = verify_registered_holder(&unreachable, "required_rail", &destination, &rail)
             .await
             .expect_err("nobody asked");
         assert!(matches!(error, ApiError::Provider(_)), "{error:?}");
         assert_eq!(error.category().http_status(), 502);
+    }
+
+    /// **A lookup this handler makes is counted and logged, exactly as the
+    /// route's is.**
+    ///
+    /// The decisive case for the change review made on 2026-09-16. Point
+    /// [`verify_registered_holder`] at `adapter.account_holder_name` again
+    /// — which is what it did as delivered, and which compiles — and this
+    /// fails twice over: `vpay_account_holder_lookups_total` does not move,
+    /// and the log is empty. Nothing else in the workspace fails with it,
+    /// because every other assertion about that series is made through
+    /// `GET /v1/account_holders`.
+    ///
+    /// Why either half matters is in [`crate::v1::account_holders::ask_rail`]'s
+    /// doc: an uncounted caller silently shrinks the denominator of the
+    /// `not_found` alarm `docs/flows/account-holder-lookup.md` § Status asks
+    /// an operator to set, and a refused payee is refused *before* any row,
+    /// any `provider_requests` attempt and any rail instruction — so without
+    /// the line it is a lookup of a third party that leaves no trace in vpay
+    /// at all.
+    ///
+    /// The number is masked and the holder's name is absent, which are this
+    /// module's rules 3 and 4 asserted at the second caller rather than
+    /// assumed from the first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refund_path_lookup_is_counted_and_logged_like_the_routes() {
+        let rail = provider_config();
+        let destination = RefundTarget::mobile_money(PAYEE).expect("a documentation MSISDN");
+        let holder_name = "Ada Lovelace";
+        let found = RequiredRail {
+            lookup: Some(Ok(Some(AccountHolder::new(holder_name.to_owned())))),
+        };
+
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let sink = crate::test_log::CapturedLog::default();
+
+        {
+            let _metrics = metrics::set_default_local_recorder(&recorder);
+            let _logs = tracing::subscriber::set_default(crate::test_log::captured_log_subscriber(
+                sink.clone(),
+            ));
+            verify_registered_holder(&found, "required_rail", &destination, &rail)
+                .await
+                .expect("a registered payee may be paid");
+        }
+
+        let scrape = handle.render();
+        assert!(
+            scrape.contains(&format!(
+                "vpay_account_holder_lookups_total{{outcome=\"{}\"}} 1",
+                vpay_core::metrics::account_holder_outcome::FOUND
+            )),
+            "a lookup made on the refund path was not counted:\n{scrape}"
+        );
+
+        let logged = sink.contents();
+        assert!(
+            logged.contains("+2376••••200"),
+            "the masked number must be there, or the line tells an operator nothing:\n{logged}"
+        );
+        assert!(
+            !logged.contains(PAYEE) && !logged.contains(destination.msisdn()),
+            "the payee's number reached a log line unmasked:\n{logged}"
+        );
+        assert!(
+            !logged.contains(holder_name),
+            "the holder's NAME reached a log line — the one thing \
+             docs/flows/account-holder-lookup.md forbids outright:\n{logged}"
+        );
+        assert!(
+            !scrape.contains(PAYEE) && !scrape.contains(holder_name),
+            "no metric label may carry the number looked up or the name returned:\n{scrape}"
+        );
     }
 
     /// A rail with no lookup accepts the destination unverified, and does so
@@ -1931,7 +2029,7 @@ mod tests {
     async fn a_rail_without_a_lookup_accepts_the_destination_unverified() {
         let rail = provider_config();
         let destination = RefundTarget::mobile_money(PAYEE).expect("a documentation MSISDN");
-        verify_registered_holder(&required(), &destination, &rail)
+        verify_registered_holder(&required(), "required_rail", &destination, &rail)
             .await
             .expect("a rail with no lookup has nothing to ask");
     }
