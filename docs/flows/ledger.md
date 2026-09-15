@@ -129,9 +129,25 @@ at a time and cannot see its siblings, so no schema grammar (raw SQL
 included, not just `schemas/vpay.cstack`'s CrateStack subset) can express it
 that way without a trigger. This invariant stays application-enforced, in
 `vpay_ledger::Transaction::validate()`, tested by
-`a_capture_with_a_fee_balances` and `an_unbalanced_transaction_is_rejected`.
-The `LedgerTransaction` model's own `GAP` comment in `schemas/vpay.cstack`
-says the same thing.
+`a_capture_with_a_fee_balances`, `an_unbalanced_transaction_is_rejected` and
+— for the "per currency" clause — `a_mixed_currency_transaction_does_not_balance`
+and `each_currency_balances_on_its_own_book`. The `LedgerTransaction` model's
+own `GAP` comment in `schemas/vpay.cstack` says the same thing.
+
+**"Per currency" is part of the check, and became so on 2026-09-15 because
+the first writer made the gap reachable.** `validate()` used to sum minor
+units across every leg whatever currency it was in, so 100 XAF debited
+against 100 EUR credited balanced. While nothing wrote the ledger that was a
+statement about an unreachable function; `TxRepositories::
+post_ledger_transaction_in_tx` is `pub` and takes a `Transaction` whose
+`entries` field is `pub`, so a hand-built mixed-currency posting reached
+`ledger_entries` — measured, by running
+`a_mixed_currency_ledger_posting_is_refused_and_writes_nothing` against the
+code before the fix and watching it commit. `validate()` now balances each
+currency in `Currency::ALL` on its own book and `LedgerError::Unbalanced`
+names the currency that is short. Nothing in the schema could have caught
+this: `currency_code` is per row, and per the paragraph above invariant 1 is
+not a database constraint, so this function is the only guard there is.
 
 **~~Invariant 2 has a modelling gap, surfaced while writing the design-sketch
 schema in `schemas/vpay.cstack`.~~ Closed on 2026-09-15 by RFC-0003 § 4.**
@@ -206,6 +222,20 @@ half of that has moved:
 - Invariant 2 is computable — see the two implementations named above —
   and `two_merchants_payable_balances_do_not_mix_in_the_database` asserts it
   against a real Postgres for two merchants at once.
+- **The caller's `transaction_id` is the idempotency key, and the duplicate
+  it raises must not be swallowed inside the transaction that raised it.**
+  `a_replayed_ledger_transaction_id_is_refused_and_adds_no_legs` pins the
+  first half: a replay is a `UniqueViolation` on `ledger_transactions_pkey`
+  and adds no legs, and a _different_ posting reusing a spent id is refused
+  by the same key.
+  `swallowing_a_duplicate_posting_inside_a_transaction_discards_the_whole_transaction`
+  pins the trap in the second: Postgres aborts a
+  transaction at the first failed statement and turns the following
+  `COMMIT` into a `ROLLBACK` without raising, so a call site that catches the
+  duplicate and commits anyway is handed `TxOutcome::Commit` while its
+  charge, its event and its posting are all discarded. A settlement that may
+  run twice has to abandon and re-read, or take a `SAVEPOINT` — not treat
+  the violation as "already done, carry on".
 
 **What has NOT moved, and no reading of the above should suggest otherwise:**
 
@@ -215,11 +245,6 @@ half of that has moved:
   is empty, and it will stay empty until those call sites are wired.
 - Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
 - Invariants 3 and 4 are not started.
-- Invariant 1's "per currency" clause is still not enforced by
-  `Transaction::validate()`, which sums minor units across every leg whatever
-  currency it is in. Neither `Transaction::capture` nor `Transaction::refund`
-  can build a mixed-currency posting, so nothing reaching the database today
-  can trip it; the gap is recorded on the function.
 - **A ledger transaction has no minter and no bound.**
   `ledger_transactions.id` is supplied by the caller, `vpay_core::ids` has no
   `lt_`/`le_` prefix, and neither ledger table carries the
@@ -231,13 +256,21 @@ half of that has moved:
   vocabulary grows a ledger prefix is a maintainer's call, recorded in
   migration `0045`'s header rather than decided by the branch that wrote the
   first writer.
-- **Nothing checks that a posting's merchant is the merchant of the charge it
-  is attributed to.** `ledger_entries.merchant_id` is denormalised from
-  `ledger_transactions -> charges -> payment_intents.merchant_id` on purpose
-  (a ledger must not change when an operational row does — migration `0045`
-  § "Why a column at all"), and no SQL constraint can span three tables.
-  Whoever assembles the `AccountKind::MerchantPayable` is the only guarantor,
-  so the call sites that eventually post owe that a test.
+- **Nothing checks that a posting's `merchant_id` is the merchant the charge
+  belongs to.** `ledger_entries.merchant_id` is a bare `TEXT` with a length
+  CHECK and the pair CHECK; it has no foreign key and no relation to
+  `ledger_transactions -> charges -> payment_intents.merchant_id`. A posting
+  crediting `merchant_2` against `merchant_1`'s charge is storable, and
+  invariant 2 would then answer confidently and wrongly for both. The writer
+  takes the merchant from `AccountKind`, so this is a **call-site**
+  obligation: whoever wires `Settlement::apply_succeeded` must build the
+  `AccountKind` from the intent's own `merchant_id` and not from anything a
+  request carried. It is listed here rather than fixed because closing it in
+  the schema means denormalising the merchant onto `ledger_transactions` or
+  adding a trigger, and which of those is right is a maintainer decision.
+  The denormalisation is deliberate — a ledger must not change when an
+  operational row does (migration `0045` § "Why a column at all") — and no
+  SQL constraint can span three tables.
 
 Evidence:
 [../status/verification/2026-09-15-ledger-merchant-dimension.md](../status/verification/2026-09-15-ledger-merchant-dimension.md),

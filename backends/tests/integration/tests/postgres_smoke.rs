@@ -2910,6 +2910,7 @@ async fn an_unbalanced_ledger_posting_is_refused_and_writes_nothing() -> anyhow:
         matches!(
             refused,
             vpay_db::DbError::Ledger(vpay_ledger::LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
                 debits: 5_000,
                 credits: 4_900
             })
@@ -3177,6 +3178,314 @@ async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()>
             "{account} must be refused by the pair CHECK: {message}"
         );
     }
+
+    Ok(())
+}
+
+/// A posting whose legs are in **different currencies** is refused, and
+/// writes nothing.
+///
+/// `docs/flows/ledger.md` invariant 1 is `SUM(debit) = SUM(credit)` **per
+/// currency**, and 100 XAF debited against 100 EUR credited balances only if
+/// a franc is added to a euro.
+///
+/// **This case is here because RFC-0003 § 4 made the gap reachable.** Before
+/// it, `Transaction::validate()`'s currency-blind sum was a property of a
+/// function that no writer called. `post_ledger_transaction_in_tx` is a `pub`
+/// method on a `pub` trait taking a `vpay_ledger::Transaction` whose
+/// `entries` field is `pub`, so any consumer can hand-build one — exactly as
+/// `an_unbalanced_ledger_posting_is_refused_and_writes_nothing` above does,
+/// and as the call sites that will post captures and refunds are free to.
+/// Nothing in the schema would catch it either: `currency_code` is per row,
+/// and invariant 1 is deliberately not a database constraint.
+#[tokio::test]
+async fn a_mixed_currency_ledger_posting_is_refused_and_writes_nothing() -> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_mixed", "ch_ledger_mixed").await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    // 100 XAF out, 100 EUR in: equal in minor units and in nothing else.
+    let mixed = vpay_ledger::Transaction {
+        entries: vec![
+            vpay_ledger::Entry {
+                account: vpay_ledger::AccountKind::merchant_payable("merchant_1"),
+                direction: vpay_ledger::Direction::Debit,
+                amount: vpay_core::Money::new(100, vpay_core::Currency::Xaf)?,
+            },
+            vpay_ledger::Entry {
+                account: vpay_ledger::AccountKind::PayerClearing,
+                direction: vpay_ledger::Direction::Credit,
+                amount: vpay_core::Money::new(100, vpay_core::Currency::Eur)?,
+            },
+        ],
+    };
+
+    let refused = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.post_ledger_transaction_in_tx("ltx_mixed", "ch_ledger_mixed", &mixed)
+                    .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .expect_err("a franc is not a euro and this posting balances in neither");
+
+    assert!(
+        matches!(
+            refused,
+            vpay_db::DbError::Ledger(vpay_ledger::LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
+                debits: 100,
+                credits: 0
+            })
+        ),
+        "the refusal must name the currency whose book is short — XAF is \
+         debited 100 and credited nothing: {refused:?}"
+    );
+
+    let transactions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger entries")?;
+    assert_eq!(
+        (transactions, entries),
+        (0, 0),
+        "a mixed-currency posting must write nothing at all"
+    );
+
+    Ok(())
+}
+
+/// Replaying a posting is refused by `ledger_transactions`' primary key, and
+/// a *different* posting reusing a spent id is refused by the same key —
+/// which is the whole of the idempotency `vpay_db::ledger`'s module docs
+/// claim, stated as two separate facts because the second does not follow
+/// from the first.
+///
+/// The first is the one a settlement job that may run twice needs: the second
+/// attempt does not double the ledger. The second is the one that says the id
+/// is a *key* and not a hint — a caller that derived the same id for two
+/// different postings finds out loudly rather than appending a refund's legs
+/// to a capture's transaction.
+#[tokio::test]
+async fn a_replayed_ledger_transaction_id_is_refused_and_adds_no_legs() -> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_replay", "ch_ledger_replay").await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    let xaf = |n| vpay_core::Money::new(n, vpay_core::Currency::Xaf).expect("non-negative");
+    let post = async |id: &'static str, transaction: vpay_ledger::Transaction| {
+        repositories
+            .transaction(move |tx| {
+                Box::pin(async move {
+                    tx.post_ledger_transaction_in_tx(id, "ch_ledger_replay", &transaction)
+                        .await?;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    };
+
+    let capture = vpay_ledger::Transaction::capture("merchant_1", xaf(5_000), Some(xaf(100)))
+        .context("a 5 000 XAF capture with a 100 XAF fee")?;
+    post("ltx_replay", capture.clone())
+        .await
+        .context("the first posting commits")?;
+
+    // Same id, same posting: the replay a job that ran twice would make.
+    let replayed = post("ltx_replay", capture)
+        .await
+        .expect_err("the second attempt at the same posting must not commit");
+    assert!(
+        matches!(
+            &replayed,
+            vpay_db::DbError::UniqueViolation { constraint, .. }
+                if constraint == "ledger_transactions_pkey"
+        ),
+        "a replay must be refused by the primary key, which is what makes the \
+         caller's id the idempotency key: {replayed:?}"
+    );
+
+    // Same id, a *different* posting: a refund, which is two legs rather than
+    // three and moves the money the other way. It must not land either, and
+    // in particular its legs must not join the capture's transaction.
+    let collided = post(
+        "ltx_replay",
+        vpay_ledger::Transaction::refund("merchant_1", xaf(2_000)),
+    )
+    .await
+    .expect_err("a different posting reusing a spent id must not commit");
+    assert!(
+        matches!(&collided, vpay_db::DbError::UniqueViolation { .. }),
+        "{collided:?}"
+    );
+
+    // Three legs, still, and they are the capture's. A writer that inserted
+    // the entries before the parent row, or that swallowed the duplicate,
+    // would have five here — and `merchant_payable` would be 2 000 short.
+    let legs: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT id, amount FROM ledger_entries WHERE transaction_id = 'ltx_replay' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("reading the legs back")?;
+    assert_eq!(
+        legs,
+        vec![
+            ("ltx_replay_0".to_owned(), 5_000),
+            ("ltx_replay_1".to_owned(), 4_900),
+            ("ltx_replay_2".to_owned(), 100),
+        ]
+    );
+
+    Ok(())
+}
+
+/// Two postings whose ids are prefixes of one another do not collide on
+/// `ledger_entries.id`, so `{transaction_id}_{index}` is a key and not a
+/// coincidence.
+///
+/// The derivation is injective because the index carries no underscore, so
+/// the last `_` in an entry id always splits it back into the transaction
+/// that wrote it — `ltx_p` leg 0 is `ltx_p_0` and `ltx_p_0` leg 0 is
+/// `ltx_p_0_0`. That is an argument, and this is the case that makes it a
+/// measurement; a scheme that collided would surface as a primary-key
+/// violation on an unrelated posting rather than as silent mixing, but a
+/// settlement refused because another settlement chose a prefix of its id is
+/// not a failure anyone should have to diagnose from first principles.
+#[tokio::test]
+async fn entry_ids_do_not_collide_between_transactions_whose_ids_share_a_prefix()
+-> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_prefix", "ch_ledger_prefix").await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    let xaf = |n| vpay_core::Money::new(n, vpay_core::Currency::Xaf).expect("non-negative");
+    for id in ["ltx_p", "ltx_p_0", "ltx_p_0_0"] {
+        let refund = vpay_ledger::Transaction::refund("merchant_1", xaf(1_000));
+        repositories
+            .transaction(move |tx| {
+                Box::pin(async move {
+                    tx.post_ledger_transaction_in_tx(id, "ch_ledger_prefix", &refund)
+                        .await?;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+            .with_context(|| format!("posting {id} must commit"))?;
+    }
+
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM ledger_entries ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .context("reading every entry id back")?;
+    assert_eq!(
+        ids,
+        vec![
+            "ltx_p_0".to_owned(),
+            "ltx_p_0_0".to_owned(),
+            "ltx_p_0_0_0".to_owned(),
+            "ltx_p_0_0_1".to_owned(),
+            "ltx_p_0_1".to_owned(),
+            "ltx_p_1".to_owned(),
+        ],
+        "six legs from three two-legged postings, all distinct"
+    );
+
+    Ok(())
+}
+
+/// **The trap in the idempotency, measured.** A caller that treats
+/// [`vpay_db::DbError::UniqueViolation`] as "already posted, carry on" and
+/// commits anyway loses its *whole* transaction — silently, with
+/// `TxOutcome::Commit` in hand.
+///
+/// Postgres aborts a transaction at the first failed statement and turns a
+/// subsequent `COMMIT` into a `ROLLBACK` without raising anything, so
+/// `UnitOfWork::transaction`'s `pending.commit().await?` succeeds and the
+/// closure's answer comes back as a commit. The settlement's charge row, its
+/// event and its ledger posting are all gone.
+///
+/// This case exists because swallowing the duplicate is the *natural* reading
+/// of "the primary key is the idempotency", and it is the one reading that
+/// must not be taken inside the settlement's own transaction. It is not a
+/// defect in this arm's writer — it is a property of every write in this
+/// crate — but it is load-bearing for whoever wires
+/// `Settlement::apply_succeeded`, which is why it is pinned here beside the
+/// posting rather than left to be rediscovered.
+#[tokio::test]
+async fn swallowing_a_duplicate_posting_inside_a_transaction_discards_the_whole_transaction()
+-> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_swallow", "ch_ledger_swallow").await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    let xaf = |n| vpay_core::Money::new(n, vpay_core::Currency::Xaf).expect("non-negative");
+    let capture = vpay_ledger::Transaction::capture("merchant_1", xaf(5_000), Some(xaf(100)))
+        .context("a 5 000 XAF capture with a 100 XAF fee")?;
+    let replay = capture.clone();
+
+    let outcome = repositories
+        .transaction(move |tx| {
+            Box::pin(async move {
+                // The good posting.
+                tx.post_ledger_transaction_in_tx("ltx_swallow", "ch_ledger_swallow", &capture)
+                    .await?;
+                // ... and the same id again, with the duplicate swallowed the
+                // way an "already posted, that is fine" branch would.
+                let duplicate = tx
+                    .post_ledger_transaction_in_tx("ltx_swallow", "ch_ledger_swallow", &replay)
+                    .await;
+                assert!(
+                    matches!(duplicate, Err(vpay_db::DbError::UniqueViolation { .. })),
+                    "{duplicate:?}"
+                );
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .context("committing an aborted transaction does not report an error")?;
+
+    assert!(
+        matches!(outcome, TxOutcome::Commit(())),
+        "the caller is told it committed"
+    );
+
+    let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger entries")?;
+    assert_eq!(
+        entries, 0,
+        "... and nothing was written, including the posting that succeeded. \
+         A duplicate must not be swallowed inside the transaction that raised \
+         it; the caller has to abandon and re-read, or take a SAVEPOINT."
+    );
 
     Ok(())
 }

@@ -143,12 +143,24 @@ pub struct Transaction {
 /// What can go wrong building a ledger transaction.
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
-    /// Debits and credits do not sum to the same number.
-    #[error("transaction does not balance: debits {debits}, credits {credits}")]
+    /// Debits and credits do not sum to the same number **in one currency**.
+    ///
+    /// The currency is part of the variant because
+    /// [`Transaction::validate`] balances each currency's book separately
+    /// (`docs/flows/ledger.md` invariant 1 is per currency), so "debits 100,
+    /// credits 0" on its own would not say which book is short — and this
+    /// error pages, so the operator woken by it is reading exactly this
+    /// sentence.
+    #[error(
+        "transaction does not balance in {}: debits {debits}, credits {credits}",
+        .currency.code()
+    )]
     Unbalanced {
-        /// The sum of every debit leg, in minor units.
+        /// Whose book does not balance. Every other currency's may.
+        currency: Currency,
+        /// The sum of every debit leg in `currency`, in minor units.
         debits: i64,
-        /// The sum of every credit leg, in minor units.
+        /// The sum of every credit leg in `currency`, in minor units.
         credits: i64,
     },
     /// Fewer than two legs — a single-legged transaction cannot balance and
@@ -322,21 +334,37 @@ impl Transaction {
         }
     }
 
-    /// Checks the double-entry invariant: at least two legs, debits equal to
-    /// credits.
+    /// Checks the double-entry invariant: at least two legs, and debits equal
+    /// to credits **within each currency**.
     ///
-    /// **Not per currency, which `docs/flows/ledger.md` invariant 1 is** —
-    /// this sums minor units across every leg whatever currency it is in, so
-    /// a hand-built transaction debiting 100 XAF and crediting 100 EUR passes
-    /// it. That is a pre-existing gap, unchanged by RFC-0003 § 4 and recorded
-    /// here rather than quietly fixed: neither [`Transaction::capture`] nor
-    /// [`Transaction::refund`] can produce such a transaction (both build
-    /// every leg from one [`Money`], and `capture` rejects a fee in another
-    /// currency), so nothing that reaches the database today can trip it.
+    /// # Per currency, because a franc is not a euro
+    ///
+    /// `docs/flows/ledger.md` invariant 1 is "per transaction:
+    /// `SUM(debit) = SUM(credit)`, per currency", and until 2026-09-15 this
+    /// function summed minor units across every leg whatever currency it was
+    /// in — so a hand-built transaction debiting 100 XAF and crediting 100
+    /// EUR passed it. That was harmless only for as long as it was
+    /// unreachable: nothing wrote the ledger at all, and the two
+    /// constructors here cannot build such a transaction (both derive every
+    /// leg from one [`Money`], and `capture` rejects a fee in another
+    /// currency).
+    ///
+    /// RFC-0003 § 4 ended that. `vpay_db::ledger::post_in_tx` — reached
+    /// through the `pub` `TxRepositories::post_ledger_transaction_in_tx` —
+    /// takes a [`Transaction`] whose `entries` field is `pub`, so a caller
+    /// hand-building one is both possible and the idiom the tests around it
+    /// already use. The database would not have caught it either:
+    /// `ledger_entries.currency_code` is per row, and invariant 1 is
+    /// deliberately not a database constraint, so this function is the only
+    /// guard there is. It is now the guard the invariant actually describes;
+    /// `a_mixed_currency_ledger_posting_is_refused_and_writes_nothing` in
+    /// `postgres_smoke.rs` is the case that proves it, and that case commits
+    /// two mismatched legs to Postgres if this loop goes back to one sum.
     ///
     /// # Errors
     /// [`LedgerError::TooFewEntries`] for fewer than two legs,
-    /// [`LedgerError::Unbalanced`] unless debits equal credits.
+    /// [`LedgerError::Unbalanced`] — naming the currency — for the first
+    /// currency in [`Currency::ALL`] whose debits and credits differ.
     ///
     /// ```
     /// use vpay_core::{Classify, Currency, Money, Severity};
@@ -363,6 +391,7 @@ impl Transaction {
     /// assert!(matches!(
     ///     error,
     ///     LedgerError::Unbalanced {
+    ///         currency: Currency::Xaf,
     ///         debits: 5_000,
     ///         credits: 4_900
     ///     }
@@ -379,24 +408,60 @@ impl Transaction {
     ///     single.validate(),
     ///     Err(LedgerError::TooFewEntries)
     /// ));
+    ///
+    /// // Equal minor units in two currencies is not a balanced transaction.
+    /// // XAF is short 100 and EUR is over by 100; the error names the first
+    /// // of the two `Currency::ALL` lists.
+    /// let mixed = Transaction {
+    ///     entries: vec![
+    ///         leg(AccountKind::PayerClearing, Direction::Debit, 100),
+    ///         Entry {
+    ///             account: AccountKind::merchant_payable("acme"),
+    ///             direction: Direction::Credit,
+    ///             amount: Money::new(100, Currency::Eur).expect("non-negative"),
+    ///         },
+    ///     ],
+    /// };
+    /// assert!(matches!(
+    ///     mixed.validate(),
+    ///     Err(LedgerError::Unbalanced {
+    ///         currency: Currency::Xaf,
+    ///         debits: 100,
+    ///         credits: 0
+    ///     })
+    /// ));
     /// ```
     pub fn validate(&self) -> Result<(), LedgerError> {
         if self.entries.len() < 2 {
             return Err(LedgerError::TooFewEntries);
         }
-        let mut debits: i64 = 0;
-        let mut credits: i64 = 0;
-        for e in &self.entries {
-            match e.direction {
-                Direction::Debit => debits = debits.saturating_add(e.amount.minor()),
-                Direction::Credit => credits = credits.saturating_add(e.amount.minor()),
+        // Over `Currency::ALL` rather than over the currencies the entries
+        // happen to carry: a currency with no legs sums to 0 = 0 and is
+        // balanced, the iteration order is fixed by the constant so the
+        // reported currency is deterministic, and a currency added to that
+        // constant is checked here without anyone remembering to.
+        for currency in Currency::ALL {
+            let mut debits: i64 = 0;
+            let mut credits: i64 = 0;
+            for e in self
+                .entries
+                .iter()
+                .filter(|e| e.amount.currency() == currency)
+            {
+                match e.direction {
+                    Direction::Debit => debits = debits.saturating_add(e.amount.minor()),
+                    Direction::Credit => credits = credits.saturating_add(e.amount.minor()),
+                }
+            }
+            if debits != credits {
+                return Err(LedgerError::Unbalanced {
+                    currency,
+                    debits,
+                    credits,
+                });
             }
         }
-        if debits == credits {
-            Ok(())
-        } else {
-            Err(LedgerError::Unbalanced { debits, credits })
-        }
+        Ok(())
     }
 }
 
@@ -522,6 +587,111 @@ mod tests {
             entries: vec![entry(AccountKind::PayerClearing, Direction::Debit, 1)],
         };
         assert!(matches!(tx.validate(), Err(LedgerError::TooFewEntries)));
+    }
+
+    /// Invariant 1 is per currency: 100 XAF out against 100 EUR in is not a
+    /// balanced transaction, however equal the two integers are.
+    ///
+    /// Until 2026-09-15 this passed, and `vpay_db::ledger::post_in_tx` — the
+    /// first writer either ledger table has ever had — committed both legs.
+    /// `a_mixed_currency_ledger_posting_is_refused_and_writes_nothing` in
+    /// `postgres_smoke.rs` is the same claim against a real database.
+    #[test]
+    fn a_mixed_currency_transaction_does_not_balance() {
+        let eur = Money::new(100, Currency::Eur).expect("non-negative");
+        let tx = Transaction {
+            entries: vec![
+                entry(
+                    AccountKind::merchant_payable("merchant_1"),
+                    Direction::Debit,
+                    100,
+                ),
+                Entry {
+                    account: AccountKind::PayerClearing,
+                    direction: Direction::Credit,
+                    amount: eur,
+                },
+            ],
+        };
+        assert!(matches!(
+            tx.validate(),
+            Err(LedgerError::Unbalanced {
+                currency: Currency::Xaf,
+                debits: 100,
+                credits: 0
+            })
+        ));
+    }
+
+    /// The other half of "per currency": a transaction carrying two
+    /// currencies is valid when **each** book balances on its own, so the fix
+    /// above rejects mismatched legs rather than rejecting the presence of a
+    /// second currency.
+    #[test]
+    fn each_currency_balances_on_its_own_book() {
+        let eur = |n| Money::new(n, Currency::Eur).expect("non-negative");
+        let tx = Transaction {
+            entries: vec![
+                entry(AccountKind::PayerClearing, Direction::Debit, 5_000),
+                entry(
+                    AccountKind::merchant_payable("merchant_1"),
+                    Direction::Credit,
+                    5_000,
+                ),
+                Entry {
+                    account: AccountKind::PayerClearing,
+                    direction: Direction::Debit,
+                    amount: eur(700),
+                },
+                Entry {
+                    account: AccountKind::merchant_payable("merchant_1"),
+                    direction: Direction::Credit,
+                    amount: eur(700),
+                },
+            ],
+        };
+        assert!(tx.validate().is_ok());
+    }
+
+    /// The imbalance is reported against the currency it is in, not against
+    /// the first one `Currency::ALL` lists — a transaction whose XAF book is
+    /// square and whose EUR book is short names EUR.
+    #[test]
+    fn the_unbalanced_error_names_the_currency_that_is_short() {
+        let eur = |n| Money::new(n, Currency::Eur).expect("non-negative");
+        let tx = Transaction {
+            entries: vec![
+                entry(AccountKind::PayerClearing, Direction::Debit, 5_000),
+                entry(
+                    AccountKind::merchant_payable("merchant_1"),
+                    Direction::Credit,
+                    5_000,
+                ),
+                Entry {
+                    account: AccountKind::PayerClearing,
+                    direction: Direction::Debit,
+                    amount: eur(700),
+                },
+                Entry {
+                    account: AccountKind::merchant_payable("merchant_1"),
+                    direction: Direction::Credit,
+                    amount: eur(650),
+                },
+            ],
+        };
+        let error = tx.validate().expect_err("the EUR book is short 50");
+        assert!(matches!(
+            error,
+            LedgerError::Unbalanced {
+                currency: Currency::Eur,
+                debits: 700,
+                credits: 650
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "transaction does not balance in EUR: debits 700, credits 650"
+        );
     }
 
     #[test]
