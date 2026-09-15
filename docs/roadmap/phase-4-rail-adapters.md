@@ -63,8 +63,12 @@ passed, 0 skipped, measured 2026-09-03; `just verify-ignored` pins
   unsigned — so a callback is a hint on both rails and always will be. No rail
   has ever called the route: every body it has parsed was transcribed from
   `docs/flows/adapter-*.md` by this repository's own tests.
-- `mtn_momo::refund` is still a `NotImplemented` token, and `POST /v1/refunds`
-  is unrouted.
+- ~~`mtn_momo::refund` is still a `NotImplemented` token, and~~ **the token
+  was retired on 2026-09-15 (RFC-0003 § 5): `refund` makes MTN's
+  Disbursements `transfer` call. No deployment holds a Disbursements
+  subscription key and nothing in this repository has ever called that
+  product**, so it is WireMock-proven and rail-unproven. `POST /v1/refunds`
+  is still unrouted and nothing inserts a `refunds` row.
 - Orange's duplicate-submit idempotency is an assumption about the rail.
 
 **Unblocks.** A meaningful Phase 3 `confirm` (delivered); Phase 4b/Phase 5

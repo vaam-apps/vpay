@@ -52,9 +52,12 @@ standing permission nobody asked for.
 
 `refunds` has a second, independent blocker worth recording because the brief
 that produced this work assumed otherwise: **there is no refund create to
-move.** `vpay_db::refunds` is two reads and no write, because
-`ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported` on
-Orange (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
+move.** `vpay_db::refunds` is two reads and no write, because nothing in
+this repository inserts a `refunds` row and `POST /v1/refunds` is unrouted.
+(`ProviderAdapter::refund` was the reason given here until 2026-09-15;
+`mtn_momo::refund` now makes MTN's Disbursements `transfer` call, against a
+credential no deployment holds and a product this repository has never
+called, and Orange still answers `Unsupported` — `docs/status.md`.) Both reads are also merchant-scoped through a JOIN
 onto `payment_intents` — the table carries no `merchant_id` of its own, and
 migration 0017 argues why it should not — and a generated read filters
 columns of one table.

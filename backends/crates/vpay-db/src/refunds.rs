@@ -146,10 +146,13 @@ pub struct RefundRow {
 /// The `refunds` reads a consumer of this crate may perform.
 ///
 /// Two reads, and **no create**. A `create` here would be a write path no
-/// shipping code calls — the refund a merchant would create needs
-/// `ProviderAdapter::refund`, which is `NotImplemented` on MTN and
-/// `Unsupported` on Orange — and this repository's rule is that an unbuilt
-/// feature stays visibly unbuilt (`AGENTS.md` rule 2). The one write this
+/// shipping code calls — `POST /v1/refunds` is unrouted and RFC-0003 § 3's
+/// transaction is unwritten — and this repository's rule is that an unbuilt
+/// feature stays visibly unbuilt (`AGENTS.md` rule 2). The rail half stopped
+/// being the reason on 2026-09-15: `mtn_momo::refund` makes MTN's
+/// Disbursements `transfer` call, under a credential no deployment holds and
+/// against a product this repository has never called, and Orange still
+/// answers `Unsupported`. The one write this
 /// module does have, [`settle_in_tx`], is deliberately not on this trait: it
 /// is `pub(crate)` and belongs to [`crate::settlement`]'s transaction, so a
 /// consumer of this crate cannot settle a refund without the invoice update

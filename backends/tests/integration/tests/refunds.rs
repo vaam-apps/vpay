@@ -30,9 +30,12 @@
 //! # Why the rows are written here and not created through `/v1`
 //!
 //! Nothing in this repository creates a refund. `POST /v1/refunds` is
-//! declared and unrouted because it needs `ProviderAdapter::refund`, which is
-//! `NotImplemented` on MTN (refunds are the Disbursements product) and
-//! `Unsupported` on Orange (its Web Payment product documents no refund API).
+//! declared and unrouted because it needs the write path RFC-0003 § 3
+//! describes, which is unwritten. The *rail* half stopped being the reason on
+//! 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer` call,
+//! under a credential no deployment holds and against a product this
+//! repository has never called, while Orange still answers `Unsupported` (its
+//! Web Payment product documents no refund API).
 //! So the rows below are `INSERT`ed by this suite against the real schema,
 //! the way `support::age_the_crash` writes a column no shipping code writes:
 //! **`vpay_db::Refunds` deliberately exposes no `create`**, because a write

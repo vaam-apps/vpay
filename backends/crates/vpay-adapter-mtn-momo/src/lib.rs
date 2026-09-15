@@ -9,9 +9,16 @@
 //! `docs/flows/adapter-mtn-momo.md`; the `mapping` module transcribes its table.
 //! `docs/reference/rails.md` has the three answers this adapter reads against
 //! the grain — a 409 is a success, a 500 is not automatically retryable, a
-//! 404 is not a failure — and why [`Adapter::refund`] is
-//! [`ProviderError::NotImplemented`] rather than
-//! [`ProviderError::Unsupported`].
+//! 404 is not a failure.
+//!
+//! [`Adapter::refund`] is MTN's **Disbursements** `transfer` call as of
+//! 2026-09-15 (RFC-0003 § 5) and is no longer
+//! [`ProviderError::NotImplemented`] — _this paragraph said it was until the
+//! review of that change; it was the adapter's own module header and the
+//! most-read of the stale claims._ **No deployment holds a Disbursements
+//! subscription key and nothing in this repository has ever called that
+//! product**, so the call is WireMock-proven and rail-unproven; the method's
+//! own doc comment and `docs/status.md` are the long form.
 //!
 //! Credentials are never logged and never rendered; see the `token` module.
 

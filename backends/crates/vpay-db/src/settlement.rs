@@ -427,9 +427,20 @@ pub trait Settlement: Send + Sync {
     ///
     /// # There is no rail behind this
     ///
-    /// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported`
-    /// on Orange, and nothing creates the `pending` row this settles, so no
-    /// shipping binary calls this method. It exists because D5 is a decision
+    /// Nothing creates the `pending` row this settles, so no shipping binary
+    /// calls this method. `ProviderAdapter::refund` stopped being the reason
+    /// on 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
+    /// call, against a credential no deployment holds and a product this
+    /// repository has never called, while Orange still answers `Unsupported`.
+    /// What is missing is the writer — RFC-0003 § 3's transaction and the
+    /// `POST /v1/refunds` that would drive it.
+    ///
+    /// **And when that writer is written, an `Ok(Refunded)` must not become
+    /// `refunds.status = 'succeeded'` on its own.** MTN's `transfer` answers
+    /// `202 ACCEPTED`; the port has no refund status read and `Refunded` has
+    /// no status field, so the most an adapter can report is that the rail
+    /// took the instruction (RFC-0003 open question 8). This method is the
+    /// one that would record the lie. It exists because D5 is a decision
     /// about what the database does when a refund lands, and the alternative
     /// was to leave that decision as a sentence in a document with no
     /// statement behind it. `docs/status.md` carries the gap.

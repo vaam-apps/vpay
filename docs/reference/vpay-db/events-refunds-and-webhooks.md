@@ -32,9 +32,12 @@ renderer they and the deliverer must share live in `vpay-api`.
 authoritative read: it is asynchronous and non-terminal (`pending`), the two
 documented refund event types are emitted by nothing, and webhook delivery is
 at-least-once and unordered. **Creating** one is a different question and is
-still unanswered — `ProviderAdapter::refund` is `NotImplemented` on MTN
-(refunds are the Disbursements product) and `Unsupported` on Orange — so
-`Refunds` exposes `get_for_merchant` and nothing else. A `create` here would
+still unanswered — nothing inserts a `refunds` row and RFC-0003 § 3's
+transaction is unwritten — so `Refunds` exposes `get_for_merchant` and
+nothing else. (The rail half was the reason given here until 2026-09-15:
+`mtn_momo::refund` now makes MTN's Disbursements `transfer` call, against a
+credential no deployment holds and a product this repository has never
+called; Orange still answers `Unsupported`.) A `create` here would
 be a write path no shipping code calls, which is a feature this repository
 would be claiming it has.
 

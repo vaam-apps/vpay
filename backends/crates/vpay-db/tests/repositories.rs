@@ -5943,10 +5943,13 @@ async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
 /// Written with a raw `INSERT`, exactly as
 /// `backends/tests/integration/tests/refunds.rs` writes its fixtures and for
 /// the same reason: **nothing in this repository creates a refund.**
-/// `POST /v1/refunds` is unrouted, `ProviderAdapter::refund` is
-/// `NotImplemented` on MTN and `Unsupported` on Orange, and `vpay_db::Refunds`
-/// deliberately exposes no `create` — a write path no shipping code calls is
-/// a feature this repository would be claiming it has (`AGENTS.md` rule 2).
+/// `POST /v1/refunds` is unrouted and `vpay_db::Refunds` deliberately exposes
+/// no `create` — a write path no shipping code calls is a feature this
+/// repository would be claiming it has (`AGENTS.md` rule 2). The *rail* half
+/// is no longer what is missing: `mtn_momo::refund` makes MTN's Disbursements
+/// `transfer` call as of 2026-09-15, under a credential no deployment holds
+/// and against a product this repository has never called, and Orange still
+/// answers `Unsupported`.
 ///
 /// What that costs, stated rather than hidden: the two cases below prove what
 /// the *settlement* does with a refund once one exists. They prove nothing
@@ -6223,10 +6226,13 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
 ///
 /// It is a claim about `vpay_db::settlement`'s refund transaction and about
 /// migration `0042`'s column. It is **not** a claim that a merchant can
-/// refund anything: no rail can (`ProviderAdapter::refund` is
-/// `NotImplemented` on MTN and `Unsupported` on Orange), `POST /v1/refunds`
-/// is unrouted, and the `pending` row below is written by this suite because
-/// nothing else in the repository can write one. `docs/status.md` says so.
+/// refund anything: `POST /v1/refunds` is unrouted, nothing inserts a
+/// `refunds` row, and the `pending` row below is written by this suite
+/// because nothing else in the repository can write one. (`mtn_momo::refund`
+/// has made MTN's Disbursements `transfer` call since 2026-09-15 — against a
+/// credential no deployment holds and a product this repository has never
+/// called — and Orange still answers `Unsupported`.) `docs/status.md` says
+/// so.
 ///
 /// # The three properties
 ///

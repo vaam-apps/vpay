@@ -1477,9 +1477,12 @@ mod tests {
     /// that turns `backends/tests/integration/tests/refunds.rs` from a
     /// `resource_missing` `404` into an `unknown_route` one, a difference no
     /// status code alone would show. Add a `POST /refunds` and it fails too:
-    /// creating a refund needs `ProviderAdapter::refund`, which is
-    /// `NotImplemented` on MTN and `Unsupported` on Orange, so a mounted
-    /// create could only ever invent an answer.
+    /// creating a refund needs the write path RFC-0003 § 3 describes, and
+    /// nothing in this repository inserts a `refunds` row. (`mtn_momo::refund`
+    /// stopped being the blocker on 2026-09-15 — it makes MTN's Disbursements
+    /// `transfer` call, under a credential no deployment holds — and Orange
+    /// Money still answers `Unsupported`.) So a mounted create could only ever
+    /// invent an answer.
     #[test]
     fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
         let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES

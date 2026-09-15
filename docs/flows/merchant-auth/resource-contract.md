@@ -104,9 +104,12 @@ implemented by both SDKs and by no server route: an authenticated call gets
 the honest `404`.
 
 `GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
-unusual pair and a deliberate one (issue #45). Creating a refund needs
-`ProviderAdapter::refund`, which is `NotImplemented` on MTN (refunds are the
-Disbursements product) and `Unsupported` on Orange; **reading** one is the
+unusual pair and a deliberate one (issue #45). Creating a refund needs a
+write path that does not exist — nothing inserts a `refunds` row. (The rail
+half was the reason given here until 2026-09-15: `mtn_momo::refund` now makes
+MTN's Disbursements `transfer` call, against a credential no deployment holds
+and a product this repository has never called; Orange still answers
+`Unsupported`.) **Reading** one is the
 authoritative read `docs/flows/provider-port.md` requires of every money
 movement, and without it a merchant holding a `re_…` has neither a call nor
 an event — `charge.refunded` and `charge.refund.updated` are emitted by

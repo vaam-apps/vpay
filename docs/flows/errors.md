@@ -371,10 +371,17 @@ rail.** `POST …/confirm` calls a real adapter over real HTTP, so:
 exists to call `JobError::decision()`. Every rail response that produced a
 `charge_declined` or a `502` above came from a **WireMock** host, not from
 MTN or Orange — the codes are real, the rails behind them are stubs. And
-`Category::NotImplemented`/`501` is no longer what `confirm` answers: the
-one remaining `NotImplemented` token is `mtn_momo::refund`, on a route
-(`POST /v1/refunds`) that does not exist, so **no `/v1` caller can currently
-provoke a `501` at all**. `vpay-api` runs **165 tests, 165 passed, 0 skipped** as of 2026-09-03
+`Category::NotImplemented`/`501` is no longer what `confirm` answers, and
+since 2026-09-15 there is **no `NotImplemented` token in the workspace at
+all** — `cargo xtask verify-status` prints `0 unimplemented item(s)`, because
+`mtn_momo::refund`, the last one, became MTN's Disbursements `transfer` call
+(RFC-0003 § 5). **Read that as "no unbuilt-work token", not as "everything is
+built":** no deployment holds an MTN Disbursements subscription key, that
+product has never been called from this repository, and `POST /v1/refunds` is
+still unrouted. So **no `/v1` caller can provoke a `501` at all**, which was
+already true when a token existed and is true now for a second reason.
+_(This paragraph said "the one remaining `NotImplemented` token is
+`mtn_momo::refund`" until 2026-09-15.)_ `vpay-api` runs **165 tests, 165 passed, 0 skipped** as of 2026-09-03
 (`cargo nextest run -p vpay-api`, measured).
 
 **Updated 2026-09-03 (Step 7, Phase A): the rail failures carry their
