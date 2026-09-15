@@ -1,15 +1,19 @@
-//! `GET /v1/refunds/{id}`, end to end: the real `vpay_api::router` on a real
-//! socket, over a real Postgres, driven by the real merchant SDK.
+//! `/v1/refunds`, end to end: the real `vpay_api::router` on a real socket,
+//! over a real Postgres, with the real MTN adapter talking HTTP to a real
+//! WireMock — and, for the five read cases, no rail at all.
 //!
-//! Issue #45's decision, and the whole subject of this file: **a refund must
-//! have an authoritative read.** `docs/flows/provider-port.md` calls
-//! `query_status` "the authoritative read"; `docs/flows/webhooks.md` says
-//! delivery is at-least-once and unordered; and `charge.refunded` /
-//! `charge.refund.updated` are documented event types that **nothing emits**
-//! (`docs/status.md`). Without this route a merchant holding a `re_…` in
-//! `pending` has no call and no event that answers what happened to it.
+//! # Two subjects, two harnesses
 //!
-//! The five claims only this file can make:
+//! Cases 1 to 3 are **issue #45's**: a refund must have an authoritative
+//! read. They seed their rows directly and boot a server with one
+//! unreachable rail, so that a change to the create path cannot quietly
+//! change what they measure.
+//!
+//! Cases 4 to 14 are **Wave 3's**: the create, the update, the list and the
+//! cancel, RFC-0003 § 2. They need a rail that answers, so they boot the MTN
+//! stub the conformance suite drives.
+//!
+//! The claims only this file can make:
 //!
 //! 1. a stored refund reads back through the shipping SDK as the ten keys
 //!    `docs/flows/merchant-auth.md` documents — nine since issue #45 and
@@ -25,38 +29,28 @@
 //!    behind it** — the short-circuit is reached, and it answers the same
 //!    `404` (added by review 2026-09-05: this claim was the one nothing
 //!    checked, and deleting the short-circuit passed everything else);
-//! 5. `POST /v1/refunds` is **still** the honest `404`.
+//! 5. a refund created through `/v1` is `pending`, reserved on its intent,
+//!    evented, and instructed to the rail **under its own reference** — the
+//!    silent money bug RFC-0003 open question 7 is about;
+//! 6. a rail that cannot refund fails the refund and gives the reservation
+//!    back; a payee the rail does not know is refused before any transfer;
+//!    and a bad destination is the caller's `400`, never a `502` about a rail
+//!    that was never asked.
 //!
-//! # Why the rows are written here and not created through `/v1`
+//! # What none of it proves
 //!
-//! **`POST /v1/refunds` is still unrouted**, which is the whole of the reason
-//! and is unchanged: the handler is wave 3's. Neither rail answers
-//! `Unsupported`, and neither has ever executed a refund. `mtn_momo::refund`
-//! is written — MTN's Disbursements `transfer`, since 2026-09-15 — but no
-//! deployment holds the Disbursements subscription key and the product has
-//! never been called; `orange_money::refund` is a `NotImplemented` token,
-//! since 2026-09-15, because an Orange refund is an outbound transfer this
-//! repository has no specification for (RFC-0003 § 5).
-//! So a refund cannot come into existence through `/v1` at all, and the rows
-//! below are seeded directly the way `support::age_the_crash` writes a column
-//! no shipping code writes.
+//! **That money has ever come back.** The MTN stub answers the documented
+//! `202 ACCEPTED` of a product **no deployment holds a credential for and
+//! this repository has never called**; `orange_money::refund` is a declared
+//! `NotImplemented` token; and nothing settles a `pending` refund, because
+//! the port has no refund status read (RFC-0003 open question 8). A `201`
+//! from these cases means vpay wrote a refund and instructed a stub.
 //!
-//! **What changed on 2026-09-15, and what it does not change.** This paragraph
-//! said "`vpay_db::Refunds` deliberately exposes no `create`, because a write
-//! path no shipping code calls is a feature this repository would be claiming
-//! it has". RFC-0003 § 3 added `Refunds::create` — the database half of a
-//! refund is a decision with consequences (the over-refund guard, the
-//! reservation, the tenancy join) that the absence of a rail does not
-//! postpone. That writer is exercised against a real Postgres in
-//! `postgres_smoke.rs` and in `vpay-db`'s own suite; **this** suite's subject
-//! is the `/v1` read, its tenancy and its rendering, and it seeds rows
-//! directly so that a change to the create path cannot quietly change what
-//! this file is measuring.
-//!
-//! What that costs, stated rather than hidden: these tests prove the read,
-//! the tenancy and the rendering. They prove **nothing** about how a refund
-//! comes to exist — see `docs/status/verification/2026-09-15-refunds-write-path.md`
-//! for the suite that does.
+//! It also proves nothing about **how an intent becomes `succeeded`**: these
+//! cases write that state and the charge under it directly, exactly as they
+//! seed a `refunds` row, because this file's subject is the refund surface.
+//! `confirm_rails.rs` and `worker_e2e.rs` are the suites that drive the
+//! charge path.
 
 // See `tests/support/mod.rs` for why this allow list mirrors the other
 // integration suites'.
@@ -69,6 +63,7 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
+use testcontainers::GenericImage;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
@@ -768,47 +763,1079 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 
 // ------------------------------------------------------------------ test 4
 
-/// Creating a refund is **still** the honest `404`, and the read did not
-/// quietly bring a write with it.
+/// `POST /v1/refunds` is routed, and creates a real refund against a real
+/// rail stub.
 ///
-/// `POST /v1/refunds` needs a handler, and that handler is wave 3's. It is
-/// **not** blocked on the rails any more: `mtn_momo::refund` makes MTN's
-/// Disbursements `transfer` call as of 2026-09-15, against a credential no
-/// deployment holds and a product this repository has never called, and
-/// `orange_money::refund` answers a `NotImplemented` token, never
-/// `Unsupported`. The route is declared in `docs/flows/merchant-auth.md` and
-/// mounted nowhere, so an authenticated caller gets the nest's
-/// `unknown_route` — a `200` there would mean someone invented a resource.
+/// This case replaced `creating_a_refund_is_still_the_honest_404` on
+/// 2026-09-16, when the handler landed. What that case asserted — that the
+/// route answered the nest's `unknown_route` and that nothing wrote a
+/// `refunds` row — is now false by design; the mounted surface is pinned
+/// instead by `the_refund_resource_is_mounted_for_exactly_five_methods` in
+/// `vpay_api::v1`, which fails if any of the four is removed.
+///
+/// **What a `201` here does and does not mean.** The rail stub answered
+/// MTN's documented `202 ACCEPTED` and nothing else: the port has no refund
+/// status read, so the refund is `pending` and stays `pending`, and no money
+/// has moved in any deployment — no deployment holds a Disbursements
+/// subscription key and the product has never been called. See the module
+/// header.
 #[tokio::test]
-async fn creating_a_refund_is_still_the_honest_404() -> anyhow::Result<()> {
-    let harness = harness().await?;
-    let intent_id = seed_intent(&harness.a()).await?;
+async fn a_refund_is_created_pending_and_the_rail_is_instructed() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
 
-    let response = raw_client()
-        .post(harness.url("/v1/refunds"))
-        .bearer_auth(harness.bearer(CLIENT_A))
-        .header("Idempotency-Key", "a-refund-nobody-can-create")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("payment_intent={intent_id}"))
-        .send()
-        .await
-        .context("POST /v1/refunds")?;
+    let response = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    assert_eq!(response.status, 201, "{:#}", response.body);
 
-    assert_eq!(response.status().as_u16(), 404);
-    let body: Value = response.json().await.context("a JSON body")?;
     assert_eq!(
-        body.pointer("/error/code").and_then(Value::as_str),
-        Some("unknown_route"),
-        "creation is unrouted, not merely empty: {body:#}"
+        response.body.get("status").and_then(Value::as_str),
+        Some("pending"),
+        "an Ok from the rail is an acceptance, never a settlement: {:#}",
+        response.body
+    );
+    assert_eq!(
+        response.body.get("amount").and_then(Value::as_i64),
+        Some(REFUND_AMOUNT)
+    );
+    assert_eq!(
+        response.body.get("payment_intent").and_then(Value::as_str),
+        Some(intent_id.as_str())
+    );
+    // The destination is on no wire object. RFC-0003 rejected carrying a
+    // payee's number anywhere a webhook or a stored response could keep it,
+    // and the ten-key tripwire is the unit-level half of this.
+    let rendered = serde_json::to_string(&response.body)?;
+    assert!(
+        !rendered.contains(PAYEE_CANONICAL) && !rendered.contains(PAYEE),
+        "the payee's number reached the response body: {rendered}"
     );
 
-    // And nothing was written.
-    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
-        .fetch_one(&harness.pool)
-        .await
-        .context("counting refunds")?;
-    assert_eq!(refunds, 0, "no route creates a refund row");
+    let refund_id = response.id();
+
+    // The reservation is on the intent, and `amount_refunded` is not: the
+    // money has not come back, it is promised.
+    let (refunded, pending): (i64, i64) = sqlx::query_as(
+        "SELECT amount_refunded, amount_refund_pending FROM payment_intents WHERE id = $1",
+    )
+    .bind(&intent_id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the intent's counters")?;
+    assert_eq!(refunded, 0, "nothing has settled");
+    assert_eq!(pending, REFUND_AMOUNT, "the amount is reserved");
+
+    // The rail was really asked, under the refund's own reference.
+    let (reference, attempts): (uuid::Uuid, i64) = sqlx::query_as(
+        "SELECT r.provider_reference_id, \
+                (SELECT count(*) FROM provider_requests q \
+                  WHERE q.operation = 'refund' AND q.provider_reference_id = r.provider_reference_id) \
+         FROM refunds r WHERE r.id = $1",
+    )
+    .bind(&refund_id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the refund's reference")?;
+    assert_eq!(attempts, 1, "one recorded refund attempt, before the call");
+    assert_eq!(
+        harness
+            .transfers_with_reference(&reference.to_string())
+            .await?,
+        1,
+        "the rail received one transfer addressed by the refund's own reference"
+    );
 
     harness.shutdown().await;
     Ok(())
+}
+
+// ------------------------------------------------------------------ test 5
+
+/// **Two partial refunds of one charge carry two references, and both reach
+/// the rail.**
+///
+/// The case RFC-0003 open question 7 is about, and the one that would have
+/// caught the silent money bug: `ProviderAdapter::refund` takes one
+/// `ChargeRef`, and if this handler filled it with the **charge's**
+/// reference, MTN would answer the second transfer `409
+/// RESOURCE_ALREADY_EXIST` — which the adapter reads as *accepted*, correctly,
+/// because that is the crash-retry story. The merchant would be told the
+/// second refund happened, the payer would receive nothing, and no error
+/// would appear anywhere.
+///
+/// So the assertion is in three parts, and all three are needed:
+///
+/// 1. the two refunds carry two different `provider_reference_id`s;
+/// 2. neither is the charge's;
+/// 3. the **rail's own journal** shows two transfers, one per reference.
+///
+/// Parts 1 and 2 alone would pass an implementation that minted a reference
+/// and then sent a different one. `the_transfer_is_addressed_by_the_reference_the_core_supplied`
+/// pins the adapter's half of the same claim.
+#[tokio::test]
+async fn two_partial_refunds_of_one_charge_carry_two_references() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    let first = harness.create_refund(&intent_id, Some(2000), PAYEE).await?;
+    assert_eq!(first.status, 201, "{:#}", first.body);
+    let second = harness.create_refund(&intent_id, Some(1500), PAYEE).await?;
+    assert_eq!(second.status, 201, "{:#}", second.body);
+
+    let references: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT provider_reference_id FROM refunds WHERE payment_intent_id = $1 \
+         ORDER BY created_at, id",
+    )
+    .bind(&intent_id)
+    .fetch_all(&harness.pool)
+    .await
+    .context("reading both refunds' references")?;
+    assert_eq!(references.len(), 2);
+    assert_ne!(
+        references[0], references[1],
+        "two refunds of one charge must not share a rail reference"
+    );
+
+    let charge_reference: uuid::Uuid =
+        sqlx::query_scalar("SELECT provider_reference_id FROM charges WHERE payment_intent_id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the charge's reference")?;
+    for reference in &references {
+        assert_ne!(
+            *reference, charge_reference,
+            "a refund must not be addressed by the charge's reference"
+        );
+        assert_eq!(
+            harness.transfers_with_reference(&reference.to_string()).await?,
+            1,
+            "each refund reached the rail under its own reference"
+        );
+    }
+
+    // And both are reserved: 3 500 of 5 000 is promised, none of it settled.
+    let (refunded, pending): (i64, i64) = sqlx::query_as(
+        "SELECT amount_refunded, amount_refund_pending FROM payment_intents WHERE id = $1",
+    )
+    .bind(&intent_id)
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!((refunded, pending), (0, 3500));
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 6
+
+/// The first `charge.refunded` this repository has ever emitted, and its body
+/// is the API's own.
+///
+/// `docs/flows/webhooks.md` listed both refund types with "— nothing" in the
+/// "written by" column from the day the vocabulary was closed. This is the
+/// writer. The event is in the **same transaction** as the row it reports, so
+/// there is no window in which a refund exists and no merchant hears about
+/// it, and its `data.object` is byte-identical to what `GET /v1/refunds/{id}`
+/// answers — one renderer, which is what test 3 asserts for the read.
+#[tokio::test]
+async fn a_created_refund_emits_charge_refunded_with_the_api_body() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    let created = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    assert_eq!(created.status, 201, "{:#}", created.body);
+    let refund_id = created.id();
+
+    let (event_type, payload, livemode): (String, Value, bool) =
+        sqlx::query_as("SELECT type, data, livemode FROM events WHERE object_id = $1")
+            .bind(&refund_id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("the refund's event")?;
+
+    assert_eq!(event_type, "charge.refunded");
+    assert!(!livemode, "the intent's livemode, not a deployment default");
+    assert_eq!(
+        payload, created.body,
+        "the event body and the API response are one renderer"
+    );
+    assert!(
+        !serde_json::to_string(&payload)?.contains(PAYEE_CANONICAL),
+        "a payee's number must never reach a signed, stored, replayed event body"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 7
+
+/// A rail that cannot refund fails the refund, gives the reservation back,
+/// and says so in an event.
+///
+/// `orange_money::refund` is a declared `ProviderError::NotImplemented`
+/// token: an Orange refund is an outbound transfer and this repository has no
+/// specification for one (RFC-0003 § 5). The instruction was therefore never
+/// given, which is what makes releasing the reservation safe — and what makes
+/// releasing it **necessary**: an intent holding a reservation for a refund
+/// that will never happen cannot be refunded again up to its own amount.
+///
+/// No HTTP is attempted, which is why this case needs no Orange stub.
+#[tokio::test]
+async fn an_unbuilt_rail_refund_fails_and_releases_its_reservation() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent_on(AMOUNT, ORANGE_RAIL).await?;
+
+    let response = harness
+        .create_refund_on(&intent_id, Some(REFUND_AMOUNT), PAYEE, ORANGE_RAIL)
+        .await?;
+    assert_eq!(
+        response.status, 501,
+        "an unbuilt rail is `not_implemented`, never a decline and never a success: {:#}",
+        response.body
+    );
+
+    let (status, failure_code): (String, Option<String>) =
+        sqlx::query_as("SELECT status, failure_code FROM refunds WHERE payment_intent_id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await
+            .context("the failed refund")?;
+    assert_eq!(status, "failed");
+    assert_eq!(failure_code.as_deref(), Some("provider_error"));
+
+    let pending: i64 =
+        sqlx::query_scalar("SELECT amount_refund_pending FROM payment_intents WHERE id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await?;
+    assert_eq!(
+        pending, 0,
+        "the reservation of a refund the rail never took must go back"
+    );
+
+    let types: Vec<String> = sqlx::query_scalar(
+        "SELECT type FROM events WHERE object_id LIKE 're\\_%' ORDER BY seq",
+    )
+    .fetch_all(&harness.pool)
+    .await
+    .context("the refund's events")?;
+    assert_eq!(
+        types,
+        vec![
+            "charge.refunded".to_owned(),
+            "charge.refund.updated".to_owned()
+        ],
+        "the merchant is told the refund was created and then that it failed"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 8
+
+/// The destination is refused on the **capability**, and a bad one is the
+/// caller's `400` — never the rail's `502`.
+///
+/// Both halves matter and neither implies the other:
+///
+/// * a `Required` rail with no `destination` is a `400` naming the parameter,
+///   which is what stops `ProviderAdapter::refund` ever being called with the
+///   `None` it is entitled to assume it never sees;
+/// * a payee `parse_destination` refuses is **also** a `400` naming the
+///   parameter. That error is `ProviderError::Malformed`, whose
+///   classification is written for a rail that answered gibberish: forwarded
+///   unchanged it is a `502`, `stripe-should-retry: true`, and the sentence
+///   "The payment rail is temporarily unavailable" — for a typo in the
+///   merchant's own request. `a_malformed_destination_is_classified_as_a_rail_fault`
+///   measures that classification one layer down; this is the case that fails
+///   if a future author `?`s the error instead of translating it.
+#[tokio::test]
+async fn a_missing_or_malformed_destination_is_the_callers_400() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    let missing = harness
+        .post_refund_form(&format!("payment_intent={intent_id}&amount=1000"))
+        .await?;
+    assert_eq!(missing.status, 400, "{:#}", missing.body);
+    assert_eq!(
+        missing.body.pointer("/error/param").and_then(Value::as_str),
+        Some("destination"),
+        "the refusal names the parameter an SDK points a form field at: {:#}",
+        missing.body
+    );
+
+    // A bare national number: `RefundTarget::mobile_money` requires the `+`,
+    // because a market-agnostic crate has no country to attach one to.
+    let malformed = harness
+        .post_refund_form(&format!(
+            "payment_intent={intent_id}&amount=1000&destination[{RAIL}][msisdn]=600000200"
+        ))
+        .await?;
+    assert_eq!(
+        malformed.status, 400,
+        "a merchant's typo is not a rail outage: {:#}",
+        malformed.body
+    );
+    assert_eq!(
+        malformed.body.pointer("/error/param").and_then(Value::as_str),
+        Some("destination")
+    );
+    assert_eq!(
+        malformed.body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error"),
+        "not `api_error`, which is what Category::Rail renders: {:#}",
+        malformed.body
+    );
+    assert!(
+        !serde_json::to_string(&malformed.body)?.contains("600000200"),
+        "a refusal must not echo the number it refused: {:#}",
+        malformed.body
+    );
+
+    // Nothing was written by either refusal: both are decided before the
+    // transaction opens.
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 0);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ test 9
+
+/// A payee the rail has no record of is refused **before** any money is
+/// instructed.
+///
+/// This is the caller issue #47 built `account_holder_name` for. `237600000404`
+/// is `basicuserinfo.json`'s "no record" number and *also* the number
+/// `transfer.json` answers `PAYEE_NOT_FOUND` for — so the two-layer claim is
+/// real: the lookup refuses it first, and the transfer mapping that would
+/// have refused it second is never reached.
+#[tokio::test]
+async fn a_payee_the_rail_does_not_know_is_refused_before_the_transfer() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    let response = harness
+        .create_refund(&intent_id, Some(1000), UNREGISTERED_PAYEE)
+        .await?;
+    assert_eq!(response.status, 400, "{:#}", response.body);
+    assert_eq!(
+        response.body.pointer("/error/param").and_then(Value::as_str),
+        Some("destination")
+    );
+
+    assert_eq!(
+        harness.transfers_total().await?,
+        0,
+        "no transfer may be instructed for a payee the rail has no record of"
+    );
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 0, "and no row is written");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 10
+
+/// An over-refund is refused by the **database**, as `over_refund`, and the
+/// refusal leaves nothing behind.
+///
+/// `no_over_refund` (migration `0003`) is the guard, in the `UPDATE` that
+/// takes the reservation — not a read-then-compare in Rust, which two
+/// concurrent refunds would both pass. The `409`/`over_refund` code is what
+/// tells a merchant to re-send with a smaller amount rather than to stop.
+#[tokio::test]
+async fn refunding_more_than_is_left_is_a_409_over_refund() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    let first = harness.create_refund(&intent_id, Some(4000), PAYEE).await?;
+    assert_eq!(first.status, 201, "{:#}", first.body);
+
+    let second = harness.create_refund(&intent_id, Some(2000), PAYEE).await?;
+    assert_eq!(second.status, 409, "{:#}", second.body);
+    assert_eq!(
+        second.body.pointer("/error/code").and_then(Value::as_str),
+        Some("over_refund"),
+        "distinguishable from `resource_conflict`: {:#}",
+        second.body
+    );
+
+    let (refunds, pending): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM refunds), \
+                (SELECT amount_refund_pending FROM payment_intents WHERE id = $1)",
+    )
+    .bind(&intent_id)
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(refunds, 1, "the refused refund wrote no row");
+    assert_eq!(pending, 4000, "and reserved nothing");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 11
+
+/// The update changes `metadata` and nothing else, and emits
+/// `charge.refund.updated`.
+///
+/// Stripe's contract twice over: the merge is key-wise (a key sent empty is
+/// removed, the rest of the stored map survives), and `metadata` is the only
+/// field the endpoint takes. A merchant who sends `amount` is **told**, not
+/// answered `200` with the original amount — which is the difference between
+/// a merchant discovering the refusal now and discovering it in a settlement
+/// statement.
+#[tokio::test]
+async fn an_update_merges_metadata_and_refuses_everything_else() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+    let created = harness
+        .post_refund_form(&format!(
+            "payment_intent={intent_id}&amount=1000\
+             &destination[{RAIL}][msisdn]={PAYEE}&metadata[order_id]=1234&metadata[ship]=dhl"
+        ))
+        .await?;
+    assert_eq!(created.status, 201, "{:#}", created.body);
+    let refund_id = created.id();
+
+    let updated = harness
+        .post_form(
+            &format!("/v1/refunds/{refund_id}"),
+            "metadata[order_id]=5678&metadata[ship]=",
+        )
+        .await?;
+    assert_eq!(updated.status, 200, "{:#}", updated.body);
+    assert_eq!(
+        updated.body.pointer("/metadata/order_id").and_then(Value::as_str),
+        Some("5678"),
+        "the sent key wins"
+    );
+    assert_eq!(
+        updated.body.pointer("/metadata/ship"),
+        None,
+        "a key sent empty is removed, not set to null: {:#}",
+        updated.body
+    );
+    assert_eq!(
+        updated.body.get("amount").and_then(Value::as_i64),
+        Some(1000),
+        "an update touches no money"
+    );
+
+    let refused = harness
+        .post_form(&format!("/v1/refunds/{refund_id}"), "amount=1")
+        .await?;
+    assert_eq!(refused.status, 400, "{:#}", refused.body);
+    assert_eq!(
+        refused.body.pointer("/error/param").and_then(Value::as_str),
+        Some("amount")
+    );
+
+    let types: Vec<String> =
+        sqlx::query_scalar("SELECT type FROM events WHERE object_id = $1 ORDER BY seq")
+            .bind(&refund_id)
+            .fetch_all(&harness.pool)
+            .await?;
+    assert_eq!(
+        types,
+        vec![
+            "charge.refunded".to_owned(),
+            "charge.refund.updated".to_owned()
+        ],
+        "one event for the create and one for the update, and none for the refusal"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 12
+
+/// A `pending` refund cancels, gives its reservation back, and cannot be
+/// cancelled twice.
+///
+/// The second cancel is a `409` because the statement's `AND status =
+/// 'pending'` refused it — the state machine is the `WHERE` clause, not a
+/// check beside it. Nothing is reversed in the ledger, because a `pending`
+/// refund posted nothing (`docs/flows/ledger.md` § "When refunds post").
+#[tokio::test]
+async fn a_pending_refund_cancels_once_and_gives_its_reservation_back() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+    let created = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    assert_eq!(created.status, 201, "{:#}", created.body);
+    let refund_id = created.id();
+
+    let canceled = harness
+        .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
+        .await?;
+    assert_eq!(canceled.status, 200, "{:#}", canceled.body);
+    assert_eq!(
+        canceled.body.get("status").and_then(Value::as_str),
+        Some("canceled")
+    );
+
+    let pending: i64 =
+        sqlx::query_scalar("SELECT amount_refund_pending FROM payment_intents WHERE id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await?;
+    assert_eq!(pending, 0, "the reservation goes back");
+
+    let again = harness
+        .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
+        .await?;
+    assert_eq!(again.status, 409, "{:#}", again.body);
+
+    let ledger: i64 = sqlx::query_scalar("SELECT count(*) FROM ledger_transactions")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(ledger, 0, "a pending refund posted nothing to reverse");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 13
+
+/// The list is this merchant's, newest first, and the `payment_intent` filter
+/// narrows it without widening the scope it is applied inside.
+///
+/// The tenancy half is the one worth stating: merchant B's refund is absent
+/// from A's list **and** absent from A's list filtered by B's intent id — a
+/// filter that resolved outside the tenant predicate would turn the
+/// collection into an oracle for other merchants' ids.
+#[tokio::test]
+async fn the_list_is_merchant_scoped_and_filterable_by_intent() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+
+    let first_intent = harness.captured_intent(AMOUNT).await?;
+    let second_intent = harness.captured_intent(AMOUNT).await?;
+    let first = harness.create_refund(&first_intent, Some(1000), PAYEE).await?.id();
+    let second = harness.create_refund(&second_intent, Some(1500), PAYEE).await?.id();
+
+    // Merchant B's own refund, written straight to the table: this suite's
+    // subject is A's view of the collection, and seeding B's row is what
+    // `seed_refund` is for.
+    let other_intent = harness.captured_intent_for(MERCHANT_B, AMOUNT).await?;
+    let hidden = seed_refund(&harness.pool, &other_intent, "pending", None).await?;
+
+    let page = harness.get_json("/v1/refunds").await?;
+    let ids: Vec<&str> = page
+        .body
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("a list object")
+        .iter()
+        .filter_map(|object| object.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![second.as_str(), first.as_str()],
+        "newest first, and only this merchant's: {:#}",
+        page.body
+    );
+    assert!(!ids.contains(&hidden.as_str()));
+    assert_eq!(page.body.get("url").and_then(Value::as_str), Some("/v1/refunds"));
+
+    let filtered = harness
+        .get_json(&format!("/v1/refunds?payment_intent={first_intent}"))
+        .await?;
+    let filtered_ids: Vec<&str> = filtered
+        .body
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("a list object")
+        .iter()
+        .filter_map(|object| object.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(filtered_ids, vec![first.as_str()]);
+
+    // Another merchant's intent id is an empty page, not a 404 and not a
+    // window into their refunds.
+    let foreign = harness
+        .get_json(&format!("/v1/refunds?payment_intent={other_intent}"))
+        .await?;
+    assert_eq!(
+        foreign
+            .body
+            .get("data")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "{:#}",
+        foreign.body
+    );
+
+    // A cursor from the wrong vocabulary names its own parameter.
+    let wrong_cursor = harness
+        .get_json(&format!("/v1/refunds?starting_after={first_intent}"))
+        .await?;
+    assert_eq!(wrong_cursor.status, 400, "{:#}", wrong_cursor.body);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 14
+
+/// A replayed `Idempotency-Key` answers the stored response and creates no
+/// second refund.
+///
+/// Unlike a charge — which `one_charge_per_intent` makes unrepeatable at the
+/// database — two refunds of one intent are a legitimate thing a merchant
+/// does, so the key is the **only** thing standing between a retried request
+/// and a second transfer. That makes this case the one that would catch a
+/// handler which released the key on a path that had already instructed the
+/// rail.
+#[tokio::test]
+async fn a_replayed_key_answers_the_stored_refund_and_creates_no_second() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+    let body = format!(
+        "payment_intent={intent_id}&amount=1000&destination[{RAIL}][msisdn]={PAYEE}"
+    );
+    let key = "w3routes-one-refund-only";
+
+    let first = harness.post_refund_form_with_key(&body, key).await?;
+    assert_eq!(first.status, 201, "{:#}", first.body);
+    let second = harness.post_refund_form_with_key(&body, key).await?;
+    assert_eq!(second.status, 201, "{:#}", second.body);
+    assert_eq!(first.body, second.body, "the replay is the stored response");
+
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 1, "a replay must not write a second refund");
+    assert_eq!(
+        harness.transfers_total().await?,
+        1,
+        "and must not instruct a second transfer"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------- the rail harness
+
+/// The payee every refund here nominates — `basicuserinfo.json`'s
+/// registered-holder number, so a reader can look it up in one table.
+const PAYEE: &str = "+237600000200";
+
+/// The same number in the shape the rail is handed, which is what a response
+/// or an event body must never contain.
+const PAYEE_CANONICAL: &str = "237600000200";
+
+/// `basicuserinfo.json`'s "the rail has no record" number, which is also the
+/// number `transfer.json` answers `PAYEE_NOT_FOUND` for.
+const UNREGISTERED_PAYEE: &str = "+237600000404";
+
+/// The rail whose refund is written but has never been called for real.
+const ORANGE_RAIL: &str = "orange_money";
+
+/// One raw `/v1` answer: the status and the parsed body, which is what every
+/// assertion above reads.
+struct Answer {
+    status: u16,
+    body: Value,
+}
+
+impl Answer {
+    fn id(&self) -> String {
+        self.body
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("a created refund has an id")
+            .to_owned()
+    }
+}
+
+/// Postgres, an MTN WireMock, and a server wired to both.
+///
+/// A second harness beside [`Harness`], not a replacement for it: the five
+/// cases above seed their rows directly and deliberately have **no** rail at
+/// all, so that a change to the create path cannot quietly change what they
+/// measure. These cases are the opposite — they are about the create path,
+/// and they need a rail that answers.
+struct RailHarness {
+    _container: ContainerAsync<PostgresImage>,
+    _mtn: ContainerAsync<GenericImage>,
+    mtn_origin: String,
+    server: tokio::task::JoinHandle<()>,
+    pool: PgPool,
+    base_url: String,
+    pem_a: String,
+    signing_key: LoadedSigningKey,
+}
+
+impl RailHarness {
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    fn bearer(&self, client_id: &str) -> String {
+        self.signing_key
+            .token_manager()
+            .issue_client_token_with_extra(
+                client_id,
+                900,
+                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
+                Some(MERCHANT_AUDIENCE.to_owned()),
+                HashMap::new(),
+            )
+            .expect("the server's own signer mints a merchant token")
+    }
+
+    fn a(&self) -> vpay_sdk::Client {
+        vpay_sdk::Client::builder(&self.base_url)
+            .credentials(
+                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
+            )
+            .build()
+            .expect("the SDK client builds")
+    }
+
+    /// An intent that has captured money, on the default rail.
+    ///
+    /// The intent is created through the shipping SDK and then **moved to
+    /// `succeeded` with a charge row written directly**, which is the same
+    /// device `seed_refund` uses and for the same reason: this suite's
+    /// subject is the refund surface, and driving a confirm and a settlement
+    /// to get there would make every case here depend on the charge path's
+    /// stubs. What that costs, stated rather than hidden: nothing in this
+    /// file proves how an intent becomes `succeeded` —
+    /// `backends/tests/integration/tests/confirm_rails.rs` and `worker_e2e.rs`
+    /// are the suites that do.
+    async fn captured_intent(&self, amount: i64) -> anyhow::Result<String> {
+        self.captured_intent_on(amount, RAIL).await
+    }
+
+    async fn captured_intent_on(&self, amount: i64, rail: &str) -> anyhow::Result<String> {
+        let intent = self
+            .a()
+            .payment_intents()
+            .create(create_params(), RequestOptions::new())
+            .await
+            .context("creating the intent a refund comes off")?;
+        self.capture(&intent.id, amount, rail).await?;
+        Ok(intent.id)
+    }
+
+    /// The same, for a merchant whose SDK credential this harness does not
+    /// hold: the row is written whole, because the only thing the tenancy
+    /// cases need is *an intent belonging to someone else*.
+    async fn captured_intent_for(&self, merchant_id: &str, amount: i64) -> anyhow::Result<String> {
+        let id = vpay_core::ids::payment_intent_id();
+        sqlx::query(
+            "INSERT INTO payment_intents \
+                 (id, merchant_id, livemode, amount, amount_received, currency_code, status, \
+                  payment_method_types, metadata, client_secret_suffix) \
+             VALUES ($1, $2, false, $3, $3, 'XAF', 'succeeded', $4, '{}'::jsonb, $5)",
+        )
+        .bind(&id)
+        .bind(merchant_id)
+        .bind(amount)
+        .bind(json!([RAIL]))
+        .bind("x".repeat(32))
+        .execute(&self.pool)
+        .await
+        .context("seeding another merchant's captured intent")?;
+        self.capture(&id, amount, RAIL).await?;
+        Ok(id)
+    }
+
+    /// Moves an intent to `succeeded` and gives it the charge a refund is
+    /// attributed to.
+    async fn capture(&self, intent_id: &str, amount: i64, rail: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE payment_intents SET status = 'succeeded', amount_received = $2 WHERE id = $1",
+        )
+        .bind(intent_id)
+        .bind(amount)
+        .execute(&self.pool)
+        .await
+        .context("marking the intent captured")?;
+
+        sqlx::query(
+            "INSERT INTO charges \
+                 (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
+                  currency_code, payer_ref) \
+             VALUES ($1, $2, $3, $4, 'succeeded', $5, 'XAF', $6)",
+        )
+        .bind(vpay_core::ids::charge_id())
+        .bind(intent_id)
+        .bind(rail)
+        .bind(uuid::Uuid::new_v4())
+        .bind(amount)
+        // The payer's own number, which is not the payee's: a refund that
+        // sent the money back to the payer by accident would pass a test
+        // whose two numbers were the same string.
+        .bind("237600000111")
+        .execute(&self.pool)
+        .await
+        .context("seeding the charge a refund comes off")?;
+        Ok(())
+    }
+
+    async fn create_refund(
+        &self,
+        intent_id: &str,
+        amount: Option<i64>,
+        payee: &str,
+    ) -> anyhow::Result<Answer> {
+        self.create_refund_on(intent_id, amount, payee, RAIL).await
+    }
+
+    async fn create_refund_on(
+        &self,
+        intent_id: &str,
+        amount: Option<i64>,
+        payee: &str,
+        rail: &str,
+    ) -> anyhow::Result<Answer> {
+        let amount = amount.map_or_else(String::new, |amount| format!("&amount={amount}"));
+        self.post_refund_form(&format!(
+            "payment_intent={intent_id}{amount}&destination[{rail}][msisdn]={payee}"
+        ))
+        .await
+    }
+
+    async fn post_refund_form(&self, body: &str) -> anyhow::Result<Answer> {
+        let key = format!("w3routes-{}", uuid::Uuid::new_v4());
+        self.post_refund_form_with_key(body, &key).await
+    }
+
+    async fn post_refund_form_with_key(&self, body: &str, key: &str) -> anyhow::Result<Answer> {
+        self.post("/v1/refunds", body, key).await
+    }
+
+    async fn post_form(&self, path: &str, body: &str) -> anyhow::Result<Answer> {
+        let key = format!("w3routes-{}", uuid::Uuid::new_v4());
+        self.post(path, body, &key).await
+    }
+
+    async fn post(&self, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
+        let response = raw_client()
+            .post(self.url(path))
+            .bearer_auth(self.bearer(CLIENT_A))
+            .header("Idempotency-Key", key)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body.to_owned())
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status().as_u16();
+        let body = response.json().await.context("a JSON body")?;
+        Ok(Answer { status, body })
+    }
+
+    async fn get_json(&self, path: &str) -> anyhow::Result<Answer> {
+        let response = raw_client()
+            .get(self.url(path))
+            .bearer_auth(self.bearer(CLIENT_A))
+            .send()
+            .await
+            .with_context(|| format!("GET {path}"))?;
+        let status = response.status().as_u16();
+        let body = response.json().await.context("a JSON body")?;
+        Ok(Answer { status, body })
+    }
+
+    /// How many transfers the MTN stub recorded under one `X-Reference-Id`.
+    ///
+    /// The rail's own journal is the only witness for what vpay *sent*: the
+    /// database says which reference was minted and the response says the
+    /// refund was accepted, and neither can tell a reference that reached MTN
+    /// from one that was replaced on the way.
+    async fn transfers_with_reference(&self, reference: &str) -> anyhow::Result<usize> {
+        self.transfers(&format!(
+            r#"{{"method":"POST","urlPath":"/disbursement/v1_0/transfer",
+                 "headers":{{"X-Reference-Id":{{"equalTo":"{reference}"}}}}}}"#
+        ))
+        .await
+    }
+
+    async fn transfers_total(&self) -> anyhow::Result<usize> {
+        self.transfers(r#"{"method":"POST","urlPath":"/disbursement/v1_0/transfer"}"#)
+            .await
+    }
+
+    /// The count, dug out of the admin response by hand for the same reason
+    /// `confirm_rails.rs`'s twin does it: the body is `{"count": N, …}`, one
+    /// integer after one key, and a `serde_json` parse here would say "the
+    /// shape changed" where this says "the rail was told the wrong thing".
+    async fn transfers(&self, pattern: &str) -> anyhow::Result<usize> {
+        let text = reqwest::Client::new()
+            .post(format!("{}/__admin/requests/count", self.mtn_origin))
+            .body(pattern.to_owned())
+            .send()
+            .await
+            .context("the MTN stub's admin API answers")?
+            .text()
+            .await
+            .context("the count response is readable")?;
+        let (_, after) = text
+            .split_once("\"count\"")
+            .with_context(|| format!("no count in the admin response: {text}"))?;
+        let digits: String = after
+            .chars()
+            .skip_while(|character| !character.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits
+            .parse()
+            .with_context(|| format!("count is not a number in: {text}"))
+    }
+
+    async fn shutdown(self) {
+        self.server.abort();
+    }
+}
+
+/// The `wiremock/{rail}` root the conformance suite and `compose.yml` both
+/// use — one set of mappings, so a stub this suite drives is the stub the
+/// conformance suite drives.
+fn mappings_dir(rail: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../conformance/wiremock")
+        .join(rail)
+}
+
+/// Two rails, two merchants, one currency, `livemode: false`.
+///
+/// MTN carries **both** products' credentials, and every Disbursements value
+/// differs from its Collections twin — which is the whole point: a
+/// configuration that gave both the same strings could not tell "the refund
+/// path read the Disbursements keys" from "the refund path read whatever was
+/// there", and `transfer.json` matches on the Disbursements bearer and
+/// subscription key for exactly that reason.
+///
+/// Orange is configured at an address nothing listens on, deliberately: its
+/// refund is a declared `NotImplemented` token, so a refund on that rail must
+/// be answered without a socket being opened. A test that passed because a
+/// stub said no would be measuring the stub.
+fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
+    Config {
+        deployment: Deployment {
+            name: "refunds-rails".to_owned(),
+            livemode: false,
+            public_base_url: base_url.to_owned(),
+        },
+        providers: vec![
+            ProviderHost {
+                code: RAIL.to_owned(),
+                enabled: true,
+                host: HostEntry {
+                    url: mtn_url.to_owned(),
+                    label: "mtn-wiremock".to_owned(),
+                },
+                settings: BTreeMap::from([
+                    ("target_environment".to_owned(), "sandbox".to_owned()),
+                    (
+                        "api_user".to_owned(),
+                        "11111111-2222-3333-4444-555555555555".to_owned(),
+                    ),
+                    (
+                        "disbursement_api_user".to_owned(),
+                        "66666666-7777-8888-9999-000000000000".to_owned(),
+                    ),
+                ]),
+                callback_url: None,
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::from([
+                    (
+                        "subscription_key".to_owned(),
+                        "stub-subscription-key".to_owned(),
+                    ),
+                    ("api_key".to_owned(), "stub-api-key".to_owned()),
+                    (
+                        "disbursement_subscription_key".to_owned(),
+                        "stub-disbursement-subscription-key".to_owned(),
+                    ),
+                    (
+                        "disbursement_api_key".to_owned(),
+                        "stub-disbursement-api-key".to_owned(),
+                    ),
+                ]),
+            },
+            ProviderHost {
+                code: ORANGE_RAIL.to_owned(),
+                enabled: true,
+                host: HostEntry {
+                    url: "http://127.0.0.1:1/orange-money-webpay/dev".to_owned(),
+                    label: "unreachable-by-design".to_owned(),
+                },
+                settings: BTreeMap::from([
+                    ("env".to_owned(), "dev".to_owned()),
+                    ("lang".to_owned(), "en".to_owned()),
+                ]),
+                callback_url: None,
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::from([
+                    ("merchant_key".to_owned(), "stub-merchant-key".to_owned()),
+                    ("client_id".to_owned(), "stub-client-id".to_owned()),
+                    ("client_secret".to_owned(), "stub-client-secret".to_owned()),
+                ]),
+            },
+        ],
+        currencies: vec![CurrencyEntry {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }],
+        merchant_clients: vec![
+            merchant_client(CLIENT_A, MERCHANT_A, jwks_a),
+            merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
+        ],
+        webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
+        dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
+    }
+}
+
+async fn rail_harness() -> anyhow::Result<RailHarness> {
+    ensure_crypto_provider_installed();
+
+    let (container, repositories, pool) = migrated_postgres().await?;
+    let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
+        .await
+        .context("the MTN stub container starts")?;
+    let mtn_origin = format!(
+        "http://127.0.0.1:{}",
+        mtn.get_host_port_ipv4(8080)
+            .await
+            .context("the MTN stub's mapped port")?
+    );
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
+
+    let mtn_url = mtn_origin.clone();
+    let served = serve(&repositories, &server_pem, |base_url| {
+        rail_config(base_url, &mtn_url, jwks_a, jwks_b)
+    })
+    .await?;
+
+    Ok(RailHarness {
+        _container: container,
+        _mtn: mtn,
+        mtn_origin,
+        server: served.server,
+        pool,
+        base_url: served.base_url,
+        pem_a,
+        signing_key: served.signing_key,
+    })
 }
