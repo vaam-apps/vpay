@@ -1599,6 +1599,40 @@ mod tests {
         }
     }
 
+    /// The boundary a wave-3 handler has to land on, pinned from this side.
+    ///
+    /// `raw` is the **rail-scoped inner map** — `destination[mtn_momo]` with the
+    /// rail code already stripped. Nothing in the workspace enforces that,
+    /// because nothing calls `parse_destination` outside tests yet: the
+    /// signature takes a `serde_json::Map` either way, so both sides of the
+    /// boundary compile whichever map is handed over. What this case pins is
+    /// the direction the mistake fails in. A handler that forgot to strip the
+    /// code hands over the *outer* map, and this rail answers `Malformed` — a
+    /// refund refused, which an integrator sees — rather than an `Ok`
+    /// carrying a payee nobody nominated.
+    ///
+    /// It is not a substitute for the caller's own test, which wave 3 owes.
+    /// It is what makes "wrong boundary" a safe failure instead of a silent
+    /// one, and it fails if a future key on this rail ever collides with a
+    /// rail code.
+    #[test]
+    fn the_outer_destination_map_is_refused_rather_than_misread() {
+        let outer = json!({ "mtn_momo": { "msisdn": "+237699887766" } });
+        let refused = adapter().parse_destination(outer.as_object().expect("a JSON object"));
+        assert!(
+            matches!(refused, Err(ProviderError::Malformed { .. })),
+            "the un-stripped outer map must be refused, never read as this rail's sub-map: \
+             {refused:?}"
+        );
+        let refused = refused.expect_err("refused just above");
+        for rendered in [format!("{refused}"), format!("{refused:?}")] {
+            assert!(
+                !rendered.contains("699887766"),
+                "a payee's number must not reach an error message: {rendered}"
+            );
+        }
+    }
+
     /// A refusal names the parameter and **never** the number in it.
     ///
     /// This is the single easiest way to leak a payee's phone number:

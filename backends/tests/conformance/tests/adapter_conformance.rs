@@ -1390,10 +1390,31 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
                 matches!(refused, Err(ProviderError::Malformed { .. })),
                 "an empty destination is Malformed, never a silent success: {refused:?}"
             );
-            assert!(
-                !format!("{refused:?}").contains(DOCUMENTATION_MSISDN),
-                "no refusal may echo a payee's number"
+            // A refusal that had the number in scope. Asserting this
+            // against the *empty*-map refusal above would have been
+            // unfalsifiable — the number was never handed in, so no
+            // implementation could have echoed it. Measured on 2026-09-15:
+            // with both adapters appending `{raw:?}` to their message, that
+            // version of this assertion still passed. This key is one no
+            // rail uses, so every adapter refuses and every refusal is one
+            // that held the payee's number a moment earlier.
+            let mut wrong_key = serde_json::Map::new();
+            wrong_key.insert(
+                "not_a_key_any_rail_names".to_owned(),
+                serde_json::Value::String(DOCUMENTATION_MSISDN.to_owned()),
             );
+            let refused = adapter.parse_destination(&wrong_key);
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "a destination under a key no rail names is Malformed: {refused:?}"
+            );
+            let refused = refused.expect_err("refused just above");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                assert!(
+                    !rendered.contains(DOCUMENTATION_MSISDN),
+                    "no refusal may echo a payee's number: {rendered}"
+                );
+            }
         }
         RefundDestination::Origin => {
             // Nothing to parse: money goes back the way it came. The port's

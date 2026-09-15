@@ -1120,10 +1120,38 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// **The error must not carry the number.** A destination is a third
     /// party's phone number, a parse failure is the exact moment an adapter
     /// is tempted to echo its input back, and `ProviderError`'s `context` is
-    /// rendered into logs and into `vpay_api`'s error envelope. Name the key
-    /// that was wrong, never the value that was in it —
-    /// [`RefundTarget`]'s redacting [`Debug`] is undone by one `{input}` in a
-    /// format string.
+    /// rendered into every log line this error reaches. Name the key that was
+    /// wrong, never the value that was in it — [`RefundTarget`]'s redacting
+    /// [`Debug`] is undone by one `{input}` in a format string.
+    ///
+    /// # The caller must translate this error, not forward it
+    ///
+    /// Added on review, 2026-09-15, because the trap is one a handler author
+    /// will not see: `Malformed` is the only honest *variant* available here
+    /// (RFC-0003 open question 5 left inventing one to the first adapter that
+    /// makes a real transfer), but its **classification** is written for a
+    /// rail that answered gibberish, and this is the one call site where no
+    /// rail answered anything. Forwarded to `vpay_api` unchanged it becomes,
+    /// via [`Classify`](vpay_core::Classify):
+    ///
+    /// * [`Category::Rail`](vpay_core::Category::Rail) — HTTP **502**, for a
+    ///   merchant's typo in their own request parameters;
+    /// * the envelope message
+    ///   `"The payment rail is temporarily unavailable. The charge will be
+    ///   retried."` — `public_message` is the category's canned sentence for
+    ///   this variant, so the parameter name an adapter carefully put in
+    ///   `context` reaches the operator's log and **never the integrator**;
+    /// * [`Retry::AfterBackoff`](vpay_core::Retry::AfterBackoff) — an SDK
+    ///   honouring it retries a request that can never succeed;
+    /// * `Severity::Warn` and the code `provider_error`, so a merchant's
+    ///   mistake is counted against the rail's error budget.
+    ///
+    /// So the `POST /v1/refunds` handler RFC-0003 § 2 owes must map this to
+    /// `ApiError::invalid_param("destination", …)` — a 400 naming the
+    /// parameter, which is exactly what the confirm path's `payer_instrument`
+    /// already answers for `payment_method_data`. `a_malformed_destination_is_classified_as_a_rail_fault`
+    /// pins the classification above so this note cannot quietly stop being
+    /// true.
     fn parse_destination(
         &self,
         _raw: &serde_json::Map<String, serde_json::Value>,
@@ -1461,6 +1489,9 @@ mod tests {
         const DISPLAY: bool = false;
         const SERIALIZE: bool = false;
         const DESERIALIZE: bool = false;
+        const DEREF: bool = false;
+        const AS_REF_STR: bool = false;
+        const INTO_STRING: bool = false;
     }
 
     impl<T> ProbeFallback for Probe<T> {}
@@ -1477,6 +1508,18 @@ mod tests {
         const DESERIALIZE: bool = true;
     }
 
+    impl<T: std::ops::Deref> Probe<T> {
+        const DEREF: bool = true;
+    }
+
+    impl<T: AsRef<str>> Probe<T> {
+        const AS_REF_STR: bool = true;
+    }
+
+    impl<T: Into<String>> Probe<T> {
+        const INTO_STRING: bool = true;
+    }
+
     /// The redacting [`Debug`] is the **only** rendering impl on
     /// [`RefundTarget`], and every line here is a way the redaction gets
     /// undone by accident.
@@ -1489,8 +1532,18 @@ mod tests {
     ///   open question 2 and **undecided**.
     /// * A `Deserialize` would make it re-enter from a stored blob, which is
     ///   the same question read backwards.
+    /// * A `Deref`, an `AsRef<str>` or an `Into<String>` renders the number
+    ///   without implementing any of the three above: `destination.to_string()`
+    ///   resolves through an autoderef to `str`, and `format!("{}", &*d)` or
+    ///   `format!("{}", d.as_ref())` needs no `Display` on this type at all.
+    ///   Added 2026-09-15 on review of wave 1b, which measured the gap: with
+    ///   `impl Deref for RefundTarget { type Target = str; }` added,
+    ///   `destination.to_string()` printed `+237699887766` in full while this
+    ///   case passed. Three traits is not a closed set — a `From<RefundTarget>`
+    ///   for some other printable type would still slip past — but these are
+    ///   the routes an ordinary convenience impl actually takes.
     ///
-    /// The probe is self-checking: `String` is asserted to trip all three, so
+    /// The probe is self-checking: `String` is asserted to trip all six, so
     /// a constant that silently stopped detecting anything fails here rather
     /// than passing vacuously.
     ///
@@ -1507,7 +1560,10 @@ mod tests {
             assert!(
                 Probe::<String>::DISPLAY
                     && Probe::<String>::SERIALIZE
-                    && Probe::<String>::DESERIALIZE,
+                    && Probe::<String>::DESERIALIZE
+                    && Probe::<String>::DEREF
+                    && Probe::<String>::AS_REF_STR
+                    && Probe::<String>::INTO_STRING,
                 "the probe must detect impls that do exist, or it proves nothing below"
             );
         }
@@ -1535,6 +1591,78 @@ mod tests {
                  from wherever a Serialize had put it"
             );
         }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DEREF,
+                "a Deref renders the number without a Display on this type: `destination \
+                 .to_string()` autoderefs to the target's, and the redacting Debug never sees it"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::AS_REF_STR,
+                "an AsRef<str> puts the number in `format!(\"{{}}\", destination.as_ref())` and \
+                 into every API that takes one, with no Display on this type"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::INTO_STRING,
+                "an Into<String> hands the number to anything that takes one — a metric label, \
+                 a header, a metadata value — as an ordinary conversion nobody reviews"
+            );
+        }
+    }
+
+    /// What a `parse_destination` refusal becomes if a handler forwards it,
+    /// pinned so that the obligation on wave 3 is machine-checked rather
+    /// than a paragraph.
+    ///
+    /// This asserts a **mismatch**, deliberately. `ProviderError::Malformed`
+    /// is the right variant for a destination this adapter cannot act on —
+    /// the port's error table reasons it out, and RFC-0003 open question 5
+    /// left inventing a new variant to the first adapter that makes a real
+    /// transfer — but every column `Classify` derives from it is written for
+    /// a rail that answered gibberish, and `parse_destination` is the one
+    /// method on this trait where no rail answered anything at all.
+    ///
+    /// So `POST /v1/refunds` must translate it into
+    /// `ApiError::invalid_param("destination", …)`, exactly as the confirm
+    /// path answers for `payment_method_data`. If it forwards it instead, a
+    /// merchant's typo is a 502 telling them the rail is down and to retry.
+    ///
+    /// When that handler exists and does the translation, this case stays
+    /// true — it describes the port, not the handler. If someone reclassifies
+    /// `Malformed` it fails here, next to the reason anybody cared.
+    #[test]
+    fn a_malformed_destination_is_classified_as_a_rail_fault() {
+        use vpay_core::{Category, Classify, Retry};
+
+        let refused = ProviderError::malformed(
+            "mtn_momo: a refund on this rail needs the payee's number".to_owned(),
+        );
+
+        assert_eq!(
+            refused.category(),
+            Category::Rail,
+            "a caller's bad parameter is classified as the rail's fault"
+        );
+        assert_eq!(refused.category().http_status(), 502);
+        assert_eq!(refused.retry(), Retry::AfterBackoff);
+        assert_eq!(refused.code(), "provider_error");
+        assert_eq!(
+            refused.public_message(),
+            Category::Rail.generic_message(),
+            "the parameter name the adapter put in `context` never reaches the integrator"
+        );
+        assert!(
+            !refused.public_message().contains("destination"),
+            "and in particular the envelope does not name the parameter: {}",
+            refused.public_message()
+        );
     }
 
     /// A rail with nowhere to send a refund takes the port's default and says
