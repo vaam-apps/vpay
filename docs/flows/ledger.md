@@ -334,6 +334,47 @@ superseded:
   `vpay_core::ids::ledger_transaction_id`'s own doc rather than taken by the
   branch that wired the first call site.
 
+  **That guard is asserted under concurrency, and "one guard" needs one
+  correction (2026-09-15, money review).**
+  `a_settled_charge_posts_its_capture_in_the_same_transaction` settles twice in
+  sequence, which is not the shape production makes: a poll job and a rail
+  callback reach `apply_succeeded` for one charge at the same moment, neither
+  able to see the other's uncommitted write.
+  `two_settlements_racing_one_charge_post_exactly_one_capture` in
+  `postgres_smoke.rs` is that shape — its two `event_id`s differ on purpose, so
+  `events_pkey` cannot stand in for the charge guard — and it holds: one
+  `Ok(Some(_))`, one `Ok(None)`, one transaction, two legs.
+  The correction is that widening the charge compare-and-swap to
+  `WHERE id = $1` does **not** produce a second capture posting. The loser is
+  refused by `payment_intents::succeed_after_submission`'s
+  `status IN (SETTLEABLE_STATUSES)`, which does not contain `succeeded`, and
+  the transaction aborts. What the widening destroys is the _answer_: the loser
+  gets `DbError::WriteMatchedNoRow` where it should get `Ok(None)`, which a
+  worker retries forever. The charge compare-and-swap is what makes the
+  settlement **idempotent**; the intent guard is what makes it **safe**.
+
+- **A refund settlement is one transaction, and that is asserted again
+  (2026-09-15, money review).** `apply_refund_succeeded` flips the refund,
+  moves both intent counters, touches the invoice and posts two legs; a partial
+  commit of that is a refund a merchant is told succeeded with nothing
+  recording the money leaving, or a ledger permanently short one refund. The
+  claim used to ride on
+  `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused`, whose
+  over-refund aborted the settlement from inside — and moving the guard forward
+  to `Refunds::create` took the provocation away and the rider with it, while
+  the same change made the transaction two statements longer. Measured: split
+  `apply_refund_succeeded` into two commits and every refund and ledger case on
+  that branch still passed, 11 in `vpay-db` and 14 in `postgres_smoke`.
+  `a_refund_settlement_that_cannot_finish_rolls_back_the_flip_the_counters_and_the_posting`
+  provokes migration `0042`'s backstop by hand and asserts the flip, both
+  counters, the ledger and `merchant_payable_balance` are all where they were.
+  Migration `0042`'s ceiling really is unreachable from the write path — it is
+  `amount_paid = amount_due`, and `vpay_api::v1::invoices::intent_for` mints
+  the intent with `amount = invoice.amount_remaining`, so the two ceilings are
+  the same number and the intent's is checked first — but that is a property of
+  how the intent is minted, not a constraint, so the case reaches it
+  deliberately and says so.
+
 **What has NOT moved, and no reading of the above should suggest otherwise:**
 
 - **No ledger row has ever been produced in any deployment.** The call sites
