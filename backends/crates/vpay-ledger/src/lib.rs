@@ -12,10 +12,11 @@
 //! post_in_tx`, which is `pub(crate)` — a consumer of that crate reaches the
 //! business operation and never the raw double entry.
 //!
-//! What has **not** moved: no rail can execute a refund
-//! (`ProviderAdapter::refund` is `NotImplemented` on both), `POST /v1/refunds`
-//! is unrouted until Wave 3, and nothing schedules the nightly assertion of
-//! invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
+//! What has **not** moved: no rail has ever executed a refund —
+//! `mtn_momo::refund` is written and MTN's Disbursements product has never
+//! been called, while `orange_money::refund` is a `NotImplemented` token, and
+//! neither answers `Unsupported` — `POST /v1/refunds` is unrouted until
+//! Wave 3, and nothing schedules the nightly assertion of invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
 //! the gaps.
 //!
 //! ```

@@ -4,11 +4,16 @@
 //!
 //! It is the only observation of a refund there is. `POST /v1/refunds` is
 //! declared in `docs/flows/merchant-auth.md` and routed nowhere, because
-//! creating a refund needs `ProviderAdapter::refund` and neither rail has one
-//! — both answer a `NotImplemented` token, MTN because refunds are the
-//! Disbursements product and Orange since 2026-09-15, when the maintainer
-//! decided an Orange refund is an outbound transfer this repository has no
-//! specification for (RFC-0003 section 5). `charge.refunded` and `charge.refund.updated` are
+//! creating a refund needs the `POST /v1/refunds` handler RFC-0003 § 2 and
+//! § 3 describe, and that handler is unwritten (Wave 3) — `vpay_db::Refunds`
+//! has the `create` half, nothing routes to it. The *rail* half is no longer
+//! the blocker on MTN: `mtn_momo::refund` makes the Disbursements `transfer`
+//! call as of 2026-09-15, though **no deployment holds a Disbursements
+//! subscription key and the product has never been called** (`docs/status.md`).
+//! Orange Money's Web Payment product documents no refund API at all, so
+//! `orange_money::refund` is a declared `NotImplemented` token and not the
+//! port's `Unsupported`: the rail declares `supports_refunds`, so the gap is
+//! vpay's unbuilt work (RFC-0003 § 5). `charge.refunded` and `charge.refund.updated` are
 //! documented event types that **nothing emits** (`docs/status.md`). A
 //! merchant that eventually holds a `re_…` in `pending` therefore has, today,
 //! no call and no event that answers "what happened to it?".
@@ -25,9 +30,10 @@
 //! # What this module deliberately does not do
 //!
 //! No creation, and no events. `POST /v1/refunds` is untouched and still
-//! answers the nest's honest `404`; nothing here writes a `refunds` row, and
-//! `vpay_db::Refunds` exposes no way to. Until a rail can refund, every row
-//! this route can read is one an operator or a test put there.
+//! answers the nest's honest `404`; nothing here writes a `refunds` row.
+//! `vpay_db::Refunds::create` does exist (RFC-0003 § 3), but no route reaches
+//! it, so every row this route can read is still one an operator or a test
+//! put there.
 //!
 //! # One renderer
 //!

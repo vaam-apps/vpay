@@ -61,17 +61,19 @@ they move — are **not** on the trait: they are `pub(crate)` and belong to
 without the invoice update, the intent counters and the ledger posting that go
 with it.
 
-**None of this means vpay can refund anything.** `ProviderAdapter::refund` is
-a declared `NotImplemented` token on **both** rails and `Unsupported` on
-neither: `NotImplemented("mtn_momo::refund")` because refunds are the
-Disbursements product and no deployment holds its subscription key, and —
-since 2026-09-15 — `NotImplemented("orange_money::refund")` because RFC-0003
-§ 5 decided an Orange refund is an outbound transfer this repository has no
-specification for. This section read `Unsupported` on Orange until that date;
-`supports_refunds` is now `true` on both rails, so each token is vpay's
-unbuilt work rather than a fact about a rail. `POST /v1/refunds` is unrouted
-until wave 3, no rail call has ever been made for a refund, and no shipping
-binary reaches any of the four methods. `docs/status.md` says so.
+**None of this means vpay can refund anything.** `ProviderAdapter::refund`
+answers `Unsupported` on neither rail, and neither rail has ever executed a
+refund. `mtn_momo::refund` is **written** — MTN's Disbursements `transfer`,
+since 2026-09-15 (RFC-0003 § 5) — but no deployment holds the Disbursements
+subscription key and that product has never been called from this repository,
+so it is WireMock-proven and rail-unproven. `orange_money::refund` is a
+declared `NotImplemented("orange_money::refund")` token from the same day,
+because RFC-0003 § 5 decided an Orange refund is an outbound transfer this
+repository has no specification for; this section read `Unsupported` on Orange
+until that date. `supports_refunds` is `true` on both rails, so that token is
+vpay's unbuilt work rather than a fact about a rail. `POST /v1/refunds` is
+unrouted until wave 3, no rail call has ever been made for a refund, and no
+shipping binary reaches any of the four methods. `docs/status.md` says so.
 
 **`NewRefund` carries four fewer fields than the table has columns, and that
 is the same rule in a different place.** `currency_code`, `merchant_id` and

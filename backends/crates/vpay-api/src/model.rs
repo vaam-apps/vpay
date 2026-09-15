@@ -1839,7 +1839,8 @@ pub struct InvoiceObject {
     /// total that is not subtracted from it, so a refunded invoice is still
     /// `paid` with [`Self::amount_remaining`] at `0` (D5; migration `0042`).
     ///
-    /// `0` on every invoice in every deployment today: no rail can refund
+    /// `0` on every invoice in every deployment today: `POST /v1/refunds` is
+    /// routed nowhere and no rail has ever executed a refund
     /// (`docs/status.md`). Rendered anyway, and never omitted when zero,
     /// because a key that appears only sometimes is a key a merchant's typed
     /// client has to guess at.

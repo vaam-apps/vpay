@@ -12,7 +12,11 @@
 //! made the refund's read part of the contract — the Refund resource is now
 //! the one on this surface with a read and no create, because reading a
 //! refund and creating one are separate questions and only the second needs
-//! a rail that can refund. `GET /v1/events`'s documented `?type=` filter is
+//! the handler RFC-0003 § 3 describes, which is wave 3's.
+//! (`vpay_db::Refunds::create` exists and nothing routes to it; on the rails,
+//! `mtn_momo::refund` is written and its Disbursements product has never been
+//! called, and `orange_money::refund` is a `NotImplemented` token — neither
+//! answers `Unsupported`.) `GET /v1/events`'s documented `?type=` filter is
 //! deliberately not implemented and is ignored rather than refused; see that
 //! module. This file must never grow a route that returns fabricated data;
 //! a real database check (below) and a real 404 are the opposite of

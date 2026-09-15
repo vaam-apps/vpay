@@ -407,12 +407,21 @@ rails:
   #
   #     grep -o '${[A-Z_]*}' config/application.yml | sort -u
   #
-  # On this branch, 2026-09-03, it is seven: MERCHANT_WEBHOOK_SECRET,
-  # MTN_API_KEY, MTN_API_USER, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID,
-  # ORANGE_CLIENT_SECRET, ORANGE_MERCHANT_KEY. The list grows with the
-  # features that land — MERCHANT_WEBHOOK_SECRET is here because Step 5
-  # (webhooks) has landed on `master` — so treat seven as today's answer,
-  # not as the contract.
+  # On this branch, 2026-09-15, it is ten: MERCHANT_WEBHOOK_SECRET,
+  # MTN_API_KEY, MTN_API_USER, MTN_DISBURSEMENT_API_KEY,
+  # MTN_DISBURSEMENT_API_USER, MTN_DISBURSEMENT_SUBSCRIPTION_KEY,
+  # MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET,
+  # ORANGE_MERCHANT_KEY. The list grows with the features that land —
+  # MERCHANT_WEBHOOK_SECRET because Step 5 (webhooks) landed, and the three
+  # MTN_DISBURSEMENT_* names because RFC-0003 section 5 landed
+  # `mtn_momo::refund` on 2026-09-15 — so treat ten as today's answer, not as
+  # the contract.
+  #
+  # **Upgrading across 2026-09-15 needs the Secret edited first.** The three
+  # Disbursements names may hold EMPTY values — no deployment has been issued
+  # that subscription, and `mtn_momo::refund` answers ProviderError::Config
+  # naming a blank one — but a key that is absent is an unresolved
+  # placeholder, which is exit 78 on both Deployments.
   #
   # `kubectl describe pod` shows env *names* only for an `envFrom.secretRef`,
   # so this does not leak.

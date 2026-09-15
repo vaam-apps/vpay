@@ -61,9 +61,12 @@ reservation on the intent in one transaction, and `cancel` scopes the tenant
 through an `EXISTS` on it — and a generated read or write filters columns of
 one table. Both are hand-written statements with their own `sql_audit` sites
 (`insert_in_tx`, `cancel_in_tx`). What has not changed is that no
-rail can execute a refund — `ProviderAdapter::refund` is `NotImplemented` on
-MTN and, since 2026-09-15 (RFC-0003 § 5), `NotImplemented` on Orange too;
-this sentence read `Unsupported` on Orange until that date (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
+rail has ever executed a refund. `mtn_momo::refund` makes MTN's Disbursements
+`transfer` call as of 2026-09-15, against a credential no deployment holds and
+a product this repository has never called, and — since the same day, RFC-0003
+§ 5 — `orange_money::refund` is a `NotImplemented` token; this sentence read
+`Unsupported` on Orange until that date, and `Unsupported` is now neither
+rail's answer (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
 onto `payment_intents` — the table carries no `merchant_id` of its own, and
 migration 0017 argues why it should not — and a generated read filters
 columns of one table.

@@ -343,15 +343,19 @@ would be a lie about a transition that did not happen.
 
 ### None of this is reachable today
 
-**No vpay rail can refund.** `mtn_momo::refund` is
-`ProviderError::NotImplemented` (refunds are MTN's Disbursements product, for
-which this deployment has never held a credential) and `orange_money::refund`
-is `ProviderError::NotImplemented` too since 2026-09-15 (RFC-0003 § 5: an
-Orange refund is an outbound transfer back to the payee, which Orange makes —
-what is missing is vpay's call, and this repository has no Orange transfer
-specification). _(This read "Orange Money answers `Unsupported` (its Web
-Payment product documents no refund API at all)" until that date; the
-conclusion below did not move, only the reason on one of the two rails.)_
+**No vpay rail has ever refunded anything, and neither answers
+`Unsupported`.** `mtn_momo::refund` is written as of 2026-09-15 (RFC-0003 § 5)
+— MTN's Disbursements `transfer` call — but no deployment has ever held a
+Disbursements credential and that product has never been called from this
+repository, so it answers `ProviderError::Config` wherever it is reached.
+`orange_money::refund` is `ProviderError::NotImplemented` since the same day
+(RFC-0003 § 5: an Orange refund is an outbound transfer back to the payee,
+which Orange makes — what is missing is vpay's call, and this repository has
+no Orange transfer specification). _(This read "Orange Money answers
+`Unsupported` (its Web Payment product documents no refund API at all)" and
+"`mtn_momo::refund` is `ProviderError::NotImplemented`" until that date; the
+conclusion below did not move, only the reasons, and they moved in opposite
+directions on the two rails.)_
 `POST /v1/refunds` is unrouted until wave 3 — [../status.md](../status.md)
 carries all three. So **`amount_refunded` is `0` on every invoice in every
 deployment** and `apply_refund_succeeded` is called by no shipping binary.

@@ -30,12 +30,13 @@
 //! # Why the rows are written here and not created through `/v1`
 //!
 //! **`POST /v1/refunds` is still unrouted**, which is the whole of the reason
-//! and is unchanged: it needs `ProviderAdapter::refund`, which is a
-//! `NotImplemented` token on **both** rails and `Unsupported` on neither — on
-//! MTN because refunds are the Disbursements product and no deployment holds
-//! its subscription key, and on Orange since 2026-09-15 because an Orange
-//! refund is an outbound transfer this repository has no specification for
-//! (RFC-0003 § 5) — and the handler is wave 3's.
+//! and is unchanged: the handler is wave 3's. Neither rail answers
+//! `Unsupported`, and neither has ever executed a refund. `mtn_momo::refund`
+//! is written — MTN's Disbursements `transfer`, since 2026-09-15 — but no
+//! deployment holds the Disbursements subscription key and the product has
+//! never been called; `orange_money::refund` is a `NotImplemented` token,
+//! since 2026-09-15, because an Orange refund is an outbound transfer this
+//! repository has no specification for (RFC-0003 § 5).
 //! So a refund cannot come into existence through `/v1` at all, and the rows
 //! below are seeded directly the way `support::age_the_crash` writes a column
 //! no shipping code writes.
@@ -770,11 +771,14 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 /// Creating a refund is **still** the honest `404`, and the read did not
 /// quietly bring a write with it.
 ///
-/// `POST /v1/refunds` needs `ProviderAdapter::refund`, and both rails answer a
-/// `NotImplemented` token (Orange since 2026-09-15). The route is
-/// declared in `docs/flows/merchant-auth.md` and mounted nowhere, so an
-/// authenticated caller gets the nest's `unknown_route` — a `200` there would
-/// mean someone invented a resource.
+/// `POST /v1/refunds` needs a handler, and that handler is wave 3's. It is
+/// **not** blocked on the rails any more: `mtn_momo::refund` makes MTN's
+/// Disbursements `transfer` call as of 2026-09-15, against a credential no
+/// deployment holds and a product this repository has never called, and
+/// `orange_money::refund` answers a `NotImplemented` token, never
+/// `Unsupported`. The route is declared in `docs/flows/merchant-auth.md` and
+/// mounted nowhere, so an authenticated caller gets the nest's
+/// `unknown_route` — a `200` there would mean someone invented a resource.
 #[tokio::test]
 async fn creating_a_refund_is_still_the_honest_404() -> anyhow::Result<()> {
     let harness = harness().await?;

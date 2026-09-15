@@ -10,12 +10,19 @@
 //! Step 3 built them. A test is ignored in this repo only while the behaviour
 //! it describes is unbuilt (`just verify-ignored` holds the count at zero for
 //! this suite), so a green run here means these assertions were made against a
-//! real container, not skipped. Both rails keep a `NotImplemented` refund
-//! token — `mtn_momo::refund` because Disbursements is a separate product,
-//! `orange_money::refund` since 2026-09-15 because an Orange refund is an
-//! outbound transfer this repository has no specification for (RFC-0003 § 5)
-//! — and [`a_rail_without_the_refund_capability_answers_unsupported`] asserts
-//! exactly that, rather than being ignored for it. See `docs/status.md`.
+//! real container, not skipped. The refund cases are the newest example and
+//! the one worth knowing about. `mtn_momo::refund` kept a `NotImplemented`
+//! token until 2026-09-15, when MTN's Disbursements `transfer` call was
+//! written (RFC-0003 § 5) — so the MTN cases now drive a real call at a real
+//! stub rather than asserting a token. **They prove the adapter, not the
+//! rail**: nothing in this repository has ever called MTN's Disbursements
+//! product and a stub faithful to MTN's documentation but not to MTN would
+//! pass every one. `orange_money::refund` is still a `NotImplemented` token,
+//! since 2026-09-15, because an Orange refund is an outbound transfer this
+//! repository has no specification for (RFC-0003 § 5), and
+//! [`a_rail_without_the_refund_capability_answers_unsupported`] asserts
+//! exactly that — never `Unsupported` — rather than being ignored for it.
+//! See `docs/status.md`.
 //!
 //! The wire-level cases were written *before* the adapters, deliberately: this
 //! file was the specification the MTN and Orange implementers coded against,
@@ -454,6 +461,13 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                         "api_user".to_owned(),
                         "11111111-2222-3333-4444-555555555555".to_owned(),
                     ),
+                    // A different UUID from the Collections one, so a
+                    // Disbursements call that fell back to the charge path's
+                    // API user would mint under the wrong Basic username.
+                    (
+                        "disbursement_api_user".to_owned(),
+                        "66666666-7777-8888-9999-000000000000".to_owned(),
+                    ),
                 ]),
                 credentials: match credentials {
                     Credentials::Valid => BTreeMap::from([
@@ -462,11 +476,41 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                             "stub-subscription-key".to_owned(),
                         ),
                         ("api_key".to_owned(), "stub-api-key".to_owned()),
+                        // The **Disbursements** half. Every value differs
+                        // from its Collections twin on purpose: the stub's
+                        // `transfer` mapping matches on the disbursement
+                        // subscription key and on the bearer minted from
+                        // `/disbursement/token/`, so an adapter that reused
+                        // the charge path's credentials or its cached bearer
+                        // gets a 404 from WireMock rather than a 202. That
+                        // is the only witness this suite has for "the refund
+                        // used a disbursement-scoped token".
+                        //
+                        // No deployment holds these (`docs/status.md`) —
+                        // they are stub values for a stub product, and
+                        // `config/application.yml` carries the keys
+                        // unpopulated.
+                        (
+                            "disbursement_subscription_key".to_owned(),
+                            "stub-disbursement-subscription-key".to_owned(),
+                        ),
+                        (
+                            "disbursement_api_key".to_owned(),
+                            "stub-disbursement-api-key".to_owned(),
+                        ),
                     ]),
                     // The value the MTN mappings answer 401 to.
                     Credentials::Rejected => BTreeMap::from([
                         ("subscription_key".to_owned(), "bad-key".to_owned()),
                         ("api_key".to_owned(), "stub-api-key".to_owned()),
+                        (
+                            "disbursement_subscription_key".to_owned(),
+                            "bad-key".to_owned(),
+                        ),
+                        (
+                            "disbursement_api_key".to_owned(),
+                            "stub-disbursement-api-key".to_owned(),
+                        ),
                     ]),
                 },
                 connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
@@ -722,6 +766,38 @@ fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> String {
                  "bodyPatterns":[{{"matchesJsonPath":
                    {{"expression":"$.notif_url","equalTo":"{callback_url}"}}}}]}}"#
         ),
+    }
+}
+
+/// Where each rail is documented to carry the **payee** on a refund, as a
+/// WireMock request pattern over that rail's refund endpoint — or `None` for
+/// a rail with no refund API.
+///
+/// Rail-specific *data*, one shared body, the line [`callback_url_pattern`]
+/// holds. The pattern pins three things at once, and each of them is a
+/// distinct way to send the money somewhere nobody nominated:
+///
+/// * the **endpoint** — MTN's refund is a different *product*, so a request
+///   at `/collection/…` is the wrong API entirely;
+/// * the **reference** — the refund's own, in `X-Reference-Id`, so a transfer
+///   addressed by a freshly minted id (which a crash would then lose) does
+///   not match;
+/// * the **payee**, at `$.payee.partyId`, in the canonical digits-only shape.
+///   `$.payer.partyId` would not match, and neither would the merchant's
+///   `+`-prefixed spelling.
+///
+/// `None` for Orange because Orange has no refund API at all
+/// ([`claims_refunds`] asserts that separately); the day RFC-0003 § 5's
+/// transfer is written, this is one of the places that has to grow a row.
+fn refund_body_pattern(rail: RailUnderTest, reference: Uuid) -> Option<String> {
+    match rail {
+        RailUnderTest::MtnMomo => Some(format!(
+            r#"{{"method":"POST","urlPath":"/disbursement/v1_0/transfer",
+                 "headers":{{"X-Reference-Id":{{"equalTo":"{reference}"}}}},
+                 "bodyPatterns":[{{"matchesJsonPath":
+                   {{"expression":"$.payee.partyId","equalTo":"{REFUND_PAYEE_CANONICAL}"}}}}]}}"#
+        )),
+        RailUnderTest::OrangeMoney => None,
     }
 }
 
@@ -1475,16 +1551,423 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
     }
 }
 
+/// A refund reference the rail accepts.
+///
+/// Deliberately **not** [`REF_ACCEPTED`]: the refund path's reference is the
+/// refund's own (`Adapter::refund` § "Which reference the transfer carries"),
+/// and a suite that reused the charge's would be modelling the very
+/// confusion RFC-0003 leaves open.
+const REF_REFUND_ACCEPTED: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0d02);
+
+/// The payee a refund is addressed to in the cases below, in the shape a
+/// merchant sends it. Belongs to nobody; it is the account-holder family's
+/// registered-holder number.
+const REFUND_PAYEE: &str = "+237600000200";
+
+/// The same payee in the canonical rail-facing shape
+/// [`RefundTarget::mobile_money`] produces.
+const REFUND_PAYEE_CANONICAL: &str = "237600000200";
+
+/// A payee the rail has no record of. The account-holder family's "no
+/// record" number, reused so one table answers both questions.
+const REFUND_PAYEE_UNREGISTERED: &str = "+237600000404";
+
+/// Whether the rail under test can actually execute a refund — and, when it
+/// cannot, the assertion that it says so in the one way that is honest for
+/// its reason.
+///
+/// [`claims_account_holder_lookup`]'s shape, for the same reason: the wire
+/// cases below must not be *silently* skipped on a rail that cannot refund,
+/// they must **assert** the absence. A rail that builds its refund tomorrow
+/// starts running every one of them without an edit here.
+///
+/// # Three states, not two — and why the third exists
+///
+/// This helper tested one thing until 2026-09-15: `supports_refunds`. That was
+/// enough while the workspace's two rails were "MTN, whose refund was a token"
+/// and "Orange, which declared `supports_refunds: false`". Both halves moved
+/// that day, on two different branches, and the pair they left behind is one
+/// this helper could not express:
+///
+/// | Rail           | `supports_refunds` | `refund`                                 |
+/// | -------------- | ------------------ | ---------------------------------------- |
+/// | `mtn_momo`     | `true`             | written — MTN's Disbursements `transfer` |
+/// | `orange_money` | `true`             | `NotImplemented("orange_money::refund")` |
+///
+/// Orange's flag flipped because RFC-0003 § 5 decided an Orange refund *is* an
+/// outbound transfer — the rail refunds, and `Unsupported` would be a lie
+/// about Orange — while the call itself is unbuilt because this repository has
+/// no Orange transfer specification. So "advertises refunds" stopped implying
+/// "has a refund to exercise", and the wire cases below, which drive a real
+/// call at a real container, would otherwise run against a rail that answers a
+/// token: gating them on the capability alone made
+/// [`a_duplicate_refund_reference_is_accepted_and_never_paid_twice`] fail on
+/// `orange_money` the moment the two branches were brought together.
+///
+/// The third state is **not** a silent skip. A rail that declares the
+/// capability and has not built the call owes a `NotImplemented` token naming
+/// *itself* — never `Unsupported`, which would be a claim about the rail, and
+/// never `Ok`, which would be a refund nobody made. That is asserted here, on
+/// the same rail and through the same container the wire cases use, so the
+/// `orange_money` parameterisation of every case below still proves something.
+/// The behavioural contract as a whole stays in
+/// [`a_rail_without_the_refund_capability_answers_unsupported`].
+async fn claims_refunds(rail: &Rail, destination: Option<&RefundTarget>) -> bool {
+    let charge = rail.charge(REF_ACCEPTED);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination, &rail.config)
+        .await;
+
+    if !rail.adapter.capabilities().supports_refunds {
+        assert!(
+            matches!(outcome, Err(ProviderError::Unsupported)),
+            "{}: a rail with no refund API must answer Unsupported, not NotImplemented and \
+             certainly not Ok: {outcome:?}",
+            rail.adapter.code(),
+        );
+        return false;
+    }
+
+    // Declared, and unbuilt. The token names this rail, for the reason
+    // `a_rail_without_the_refund_capability_answers_unsupported` gives:
+    // `verify-status` compares token strings and cannot tell which adapter
+    // answered one, so a copy-pasted token would keep that gate green while
+    // the status page named the wrong rail's gap.
+    if let Err(ProviderError::NotImplemented(token)) = &outcome {
+        assert_eq!(
+            *token,
+            format!("{}::refund", rail.adapter.code()),
+            "{}: an unbuilt refund declares its own rail",
+            rail.adapter.code(),
+        );
+        return false;
+    }
+
+    // Declared and built. Whatever else the probe answered is the stub's
+    // business and the cases below make their own call; what is refused here
+    // is the one answer a rail advertising refunds must never give.
+    assert!(
+        !matches!(outcome, Err(ProviderError::Unsupported)),
+        "{}: a rail advertising supports_refunds must not answer Unsupported: {outcome:?}",
+        rail.adapter.code(),
+    );
+    true
+}
+
+/// The payee, parsed through the adapter's **own** `parse_destination` rather
+/// than built by this suite.
+///
+/// That is the path a merchant's `destination[<rail_code>]` actually takes,
+/// and it means these cases exercise the wire key the adapter owns as well as
+/// the transfer it produces. `None` on a rail that returns money to the
+/// instrument that paid.
+fn refund_destination(rail: &Rail, msisdn: &str) -> Option<RefundTarget> {
+    match rail.adapter.capabilities().refund_destination {
+        RefundDestination::Required => {
+            let mut raw = serde_json::Map::new();
+            raw.insert(
+                "msisdn".to_owned(),
+                serde_json::Value::String(msisdn.to_owned()),
+            );
+            Some(
+                rail.adapter
+                    .parse_destination(&raw)
+                    .expect("a Required rail parses the documentation payee"),
+            )
+        }
+        RefundDestination::Origin => None,
+    }
+}
+
+/// **The refund wire case.** A rail that refunds is asked to, against a real
+/// container, and answers that it accepted the transfer.
+///
+/// # What an `Ok` here proves that no unit test can
+///
+/// MTN's stub answers `202` on `/disbursement/v1_0/transfer` **only** when
+/// the request carries the bearer minted from `/disbursement/token/` and the
+/// per-product `Ocp-Apim-Subscription-Key`
+/// (`wiremock/mtn/mappings/transfer.json`). Anything else — the Collections
+/// bearer the adapter already has cached from an earlier call in the same
+/// process, the Collections subscription key, a plural path segment — matches
+/// no mapping, WireMock answers 404, and the adapter raises
+/// `ProviderError::Config`. So the `Ok` is the assertion that the refund was
+/// minted and addressed under the *right product*, which is the whole of what
+/// "a separate subscription key and a separately-scoped token" means.
+///
+/// The `submit` before it is not decoration: it puts a **Collections** bearer
+/// in the adapter's cache first, so this case fails if the refund reuses it.
+/// Without that line the adapter's cache is empty and the wrong-scope bug is
+/// unreachable.
+///
+/// # What it does NOT prove
+///
+/// That MTN behaves this way. Nothing in this repository has ever called
+/// MTN's Disbursements product; the stub is a transcription of MTN's
+/// published `Transfer` operation and a stub faithful to the documentation
+/// but not to the rail would pass. `docs/flows/adapter-mtn-momo.md` § "Not
+/// proven" and `docs/status.md` say so in the same words.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    // Warm the charge path's token cache first — see the doc comment. A
+    // refund that reused this bearer would be sending a Collections-scoped
+    // token to a money-out endpoint, and that is the mutation this line
+    // makes reachable.
+    let charge = rail.charge(REF_ACCEPTED);
+    rail.adapter
+        .submit(&charge, &rail.config)
+        .await
+        .expect("the charge path still works");
+
+    let refund_charge = rail.charge(REF_REFUND_ACCEPTED);
+    let refunded = rail
+        .adapter
+        .refund(
+            &refund_charge,
+            refund_charge.amount,
+            destination.as_ref(),
+            &rail.config,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "{}: the rail accepted nothing — a 404 here means the request did not match \
+                 the disbursement-scoped mapping, i.e. the wrong product's credentials or \
+                 the wrong token: {error:?}",
+                rail.adapter.code(),
+            )
+        });
+
+    // Issue #46's distinction, on the one path that could ever fill it.
+    // `None` is "the rail did not report a fee"; `Some(0)` would be "the rail
+    // said it was free". MTN's documented transfer response carries no fee
+    // field, so `None` is the only honest answer and an adapter that
+    // invented a zero would be putting a number in a settlement statement.
+    assert!(
+        refunded.fee.is_none(),
+        "{}: no rail in this workspace reports a refund fee, and an unreported fee is None \
+         and never Some(0): {:?}",
+        rail.adapter.code(),
+        refunded.fee,
+    );
+}
+
+/// The payee the merchant nominated is the payee **on the wire**, and the
+/// charge's payer is not.
+///
+/// Asserted against the stub's own request journal rather than against the
+/// return value, because the return value cannot tell the two apart: a 202 is
+/// a 202 whoever the money was addressed to. This is the case that would
+/// catch a `refund` that reached for `charge.payer_ref` — which on a
+/// third-party refund is a different human — or that sent `payer` instead of
+/// `payee`, or that sent the merchant's `+`-prefixed spelling where the rail
+/// takes digits.
+///
+/// The pattern is rail-specific *data* ([`refund_body_pattern`]), one shared
+/// body, exactly as [`callback_url_pattern`] is.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn the_refund_is_addressed_to_the_payee_the_merchant_nominated(
+    #[case] rail_under_test: RailUnderTest,
+) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    rail.adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await
+        .expect("the rail accepts the transfer");
+
+    let Some(pattern) = refund_body_pattern(rail_under_test, REF_REFUND_ACCEPTED) else {
+        panic!(
+            "{}: a rail that refunds owes this suite a request pattern for its refund body",
+            rail.adapter.code(),
+        );
+    };
+    assert_eq!(
+        requests_matching(&rail, &pattern).await,
+        1,
+        "{}: the refund the rail received did not carry the nominated payee, in the \
+         canonical shape, under the reference the core supplied",
+        rail.adapter.code(),
+    );
+}
+
+/// A payee the rail has no record of is a **decline**, not a transport
+/// failure and not an accepted transfer.
+///
+/// The distinction issue #47's whole account-holder lookup exists around,
+/// reached here from the other end: the rail itself saying "no such party".
+/// Reported as `Rejected` with the rail's own word preserved, so an operator
+/// reading a `failure_raw` sees what MTN said.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted_transfer(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE_UNREGISTERED);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+
+    let Err(ProviderError::Rejected { code, message }) = &outcome else {
+        panic!(
+            "{}: a payee the rail refuses is a decision the rail made, not a transport \
+             failure and emphatically not an accepted transfer: {outcome:?}",
+            rail.adapter.code(),
+        );
+    };
+    assert_eq!(
+        *code,
+        FailureCode::InvalidPayee,
+        "{}: {message}",
+        rail.adapter.code(),
+    );
+    // A refusal must never echo the payee's number, in either spelling —
+    // `ProviderError`'s context is rendered into every log line it reaches.
+    for rendered in [format!("{outcome:?}"), message.clone()] {
+        for spelling in [REFUND_PAYEE_UNREGISTERED, "237600000404"] {
+            assert!(
+                !rendered.contains(spelling),
+                "{}: a refusal carried the payee's number: {rendered}",
+                rail.adapter.code(),
+            );
+        }
+    }
+}
+
+/// A refund reference the rail has already seen is reported as **accepted**,
+/// which is what makes a retry after a crash safe rather than a second
+/// payout.
+///
+/// The money-out twin of `duplicate_submit_reports_submitted_not_an_error`,
+/// and the more dangerous of the two: reporting this as a failure would have
+/// a caller re-instruct a transfer the rail already holds.
+///
+/// See `Adapter::refund` § "Which reference the transfer carries" for the
+/// invariant this rests on — it is safe because the reference is the
+/// *refund's* own, and RFC-0003 records that the core has not yet been
+/// written to guarantee it.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_duplicate_refund_reference_is_accepted_and_never_paid_twice(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_DUPLICATE);
+    let refunded = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+    assert!(
+        refunded.is_ok(),
+        "{}: a reference the rail already holds means the transfer was already instructed; \
+         an error here makes a crash-retry pay the payee twice: {refunded:?}",
+        rail.adapter.code(),
+    );
+}
+
+/// **The privacy case, on the money-out path.** A refund that reaches a real
+/// rail stub puts the payee's number in no log line, in either spelling.
+///
+/// `RefundTarget`'s redacting `Debug` is only half the guarantee: it stops a
+/// `{:?}` and does nothing about a `%destination.msisdn()`, which is one line
+/// and looks helpful. The only witness for "it was not logged" is what was
+/// logged, so this installs a scoped subscriber over the call and greps —
+/// [`an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`]'s
+/// reasoning, applied where the number is a *payee's* rather than a payer's.
+///
+/// Both spellings, because a message that hid the `+` form and printed the
+/// canonical digits would have leaked the number just the same.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_never_puts_the_payees_number_in_a_log_line(#[case] rail: RailUnderTest) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let sink = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    // `set_default`, not `with_default`: the call is async and the guard has
+    // to be held across the `.await`.
+    let guard = tracing::subscriber::set_default(subscriber);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+    drop(guard);
+
+    outcome.expect("the rail accepts the transfer");
+
+    let logged = sink.contents();
+    assert!(
+        !logged.is_empty(),
+        "{}: nothing was captured at all, so every assertion below would pass vacuously — \
+         the adapter logs at least one debug line per rail call",
+        rail.adapter.code(),
+    );
+    for spelling in [REFUND_PAYEE, REFUND_PAYEE_CANONICAL] {
+        assert!(
+            !logged.contains(spelling),
+            "{}: the payee's number reached a log line as `{spelling}`:\n{logged}",
+            rail.adapter.code(),
+        );
+    }
+}
+
 /// The behavioural half of the refund contract, on a configured rail.
 ///
 /// Proves a rail with no refund API answers the permanent
 /// [`ProviderError::Unsupported`] — not `NotImplemented`, because there is
 /// nothing to build — and that a rail which *does* advertise refunds never
 /// answers `Unsupported` and, while its call is unbuilt, names *itself* in
-/// the token it answers instead. Both rails carry such a token —
-/// `mtn_momo::refund` because Disbursements is a separate product,
-/// `orange_money::refund` since 2026-09-15 — and this case is what keeps them
-/// honest, which is why it runs rather than being `#[ignore]`d for them.
+/// the token it answers instead. One rail still carries such a token —
+/// `orange_money::refund`, since 2026-09-15 — and this case is what keeps it
+/// honest, which is why it runs rather than being `#[ignore]`d for it.
 ///
 /// # Which arm runs, and the one that no longer does
 ///
@@ -1511,11 +1994,21 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
 /// verification record cite it by name; renaming it would orphan those
 /// references, including a record that must not be rewritten.
 ///
-/// # What the live arm is worth
+/// # What the live arm is worth, and what it stopped being worth
 ///
 /// It is the assertion that catches this very change half-done: flipping
 /// `supports_refunds` to `true` without overriding `refund` leaves the
 /// adapter answering the port's `Unsupported`, and fails here.
+///
+/// _(Until 2026-09-15 the `mtn_momo` case also kept that rail's
+/// `NotImplemented` token honest while Disbursements was unbuilt. That token
+/// is retired and the call is written, so on MTN what is left here is the
+/// weaker half: whatever a refunding rail answers, it is not "this rail
+/// cannot refund". The *stronger* claim — that the refund reaches a rail and
+/// is accepted — is
+/// [`a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted`],
+/// which is a wire case against a container. On `orange_money` the token arm
+/// above is still the live assertion.)_
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]

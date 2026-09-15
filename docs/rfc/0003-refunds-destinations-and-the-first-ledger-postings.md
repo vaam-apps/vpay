@@ -26,6 +26,13 @@ they are usually collapsed into each other:
    credentials. `orange_money` does not override the port at all and inherits
    `ProviderError::Unsupported`.
 
+   _(Half-closed 2026-09-15 by arm D: `mtn_momo::refund` makes the
+   Disbursements `transfer` call and the token is retired. The second sentence
+   is unchanged — **no deployment holds those credentials and MTN's
+   Disbursements product has never been called from this repository** — so
+   "no rail" remains true of every deployment, for a different reason. See
+   § 5 and `docs/status.md`.)_
+
 Two further facts shape the proposal and are easy to miss:
 
 - **Nothing writes the ledger either — not for refunds, and not for captures.**
@@ -296,23 +303,83 @@ different destinations.
    Wave 3**, where the create handler is written; it is cheap now. Maintainer's
    call.
 
-6. **What does an adapter answer when the core's `Some`-on-`Required`
-   invariant is broken?** Deliberately unsettled by Arm A, on the grounds that
-   a rule no code exercises is how a guess acquires authority. But
-   `ProviderError` has no honest variant for it — `Unsupported` and
-   `NotImplemented` would both be lies about the rail, and `Rejected` /
-   `Malformed` are about the rail's answer. The first adapter to make a real
-   transfer call decides, and this is recorded so it is decided rather than
-   invented under time pressure.
+6. **~~What does an adapter answer when the core's `Some`-on-`Required`
+   invariant is broken?~~ DECIDED 2026-09-15 by `mtn_momo::refund`, the first
+   adapter to make a real transfer call: `ProviderError::Config`.** Not
+   `Rejected`, which blames a rail that was never asked; not `Malformed`,
+   which is about an answer and there is no answer; not `Unsupported` or
+   `NotImplemented`, both lies — about a rail that refunds and about code
+   that exists. `Config`'s description on the port's error-surface table ("a
+   credential, setting or URL this deployment did not supply, or supplied
+   unusably … no retry against the rail can fix it") is the closest true
+   sentence available, and its _classification_ is the behaviour that
+   matters: it stops the poll ladder, it pages, and it never reaches a payer
+   as a decline. The reasoning is on `Adapter::refund`, and
+   `a_refund_with_no_payee_is_refused_before_a_credential_is_read` pins both
+   the variant and the ordering. The question as posed is retained: it was
+   deliberately unsettled by Arm A, on the grounds that a rule no code
+   exercises is how a guess acquires authority.
+
+7. **Which reference does a refund's rail call carry? — OPEN, and it decides
+   whether partial refunds work.** Raised 2026-09-15 by `mtn_momo::refund`,
+   which is the first code that had to answer it.
+
+   `ProviderAdapter::refund` takes one `ChargeRef`, which carries one
+   reference. A refund needs its _own_ rail reference: § 3 step 2 above mints
+   a `provider_reference_id` for the refunds row before any rail call, and
+   `Refunded::ref_extra` is documented as key material for "a reference this
+   side generated before the call". Two references are needed and one is
+   passed.
+
+   The adapter uses the reference it is given, as `X-Reference-Id` and as the
+   body's `externalId`. **That is correct if and only if the `POST
+/v1/refunds` handler hands it the refund's `provider_reference_id`.** If it
+   hands the charge's:
+
+   - a second partial refund reuses a reference MTN has already seen, is
+     answered `409 RESOURCE_ALREADY_EXIST`, and is reported **accepted** —
+     a refund the merchant is told happened and for which no money moved;
+   - the Collections charge and the Disbursements transfer share an id in
+     MTN's own records.
+
+   Mapping the `409` to a success is not the bug and must not be "fixed":
+   under the right invariant it is the whole crash-retry story, and reporting
+   it as a failure would have a caller re-instruct a transfer the rail already
+   holds and pay a payee twice.
+
+   The fix is either a documented precondition on the handler or a second
+   parameter on the port. The second is a breaking change to a trait three
+   arms have just reviewed, so it is not taken unilaterally here — it belongs
+   with Wave 3, which is the code that would satisfy it.
+   `the_transfer_is_addressed_by_the_reference_the_core_supplied` pins what
+   the adapter does so a handler author reads an assertion rather than a
+   paragraph.
+
+8. **A refund's `202` is _accepted_, not _settled_, and the port cannot say
+   so. — OPEN.** Also 2026-09-15. MTN's `transfer` is asynchronous exactly as
+   `requesttopay` is; its outcome is read from
+   `GET /disbursement/v1_0/transfer/{referenceId}`. `Refunded` has no status
+   field and `ProviderAdapter` has no `query_refund_status`, so the most an
+   adapter can report is that the rail took the instruction. § 3's settlement
+   step must not turn an `Ok` into `refunds.status = succeeded`, and a refund
+   poll ladder is unscoped work that this RFC did not anticipate.
+
+   _(On review, 2026-09-15: this was recorded in the MTN adapter, in this RFC
+   and on two status pages, and in none of the three places a handler author
+   actually reads first. It is now on `ProviderAdapter::refund` § "An `Ok` is
+   an *acceptance*", on the `Refunded` type itself, and on
+   `vpay_db::settlement::apply_refund_succeeded` — the method that would
+   record the lie. It stays OPEN: closing it needs a refund poll ladder, which
+   is work and not a doc comment.)_
 
 ## Impact on existing invariants
 
-| Invariant                                                         | Effect                                                                                              |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `no_over_refund` CHECK (migration `0003`)                         | First code path that can reach it; it becomes load-bearing rather than test-only                    |
-| ledger invariant 1 (per transaction, debits = credits)            | First enforcement in a live path; `Transaction::validate()` starts being called                     |
-| ledger invariant 2 (per merchant)                                 | Becomes _computable_ for the first time, once `AccountKind` carries the merchant dimension          |
-| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds)      | First code that maintains the left-hand side on the intent                                          |
-| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one                                                                         |
-| `partial_refunds_imply_refunds` CHECK (migration `0002`)          | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent |
-| `verify-status`                                                   | Gains `orange_money::refund`; `mtn_momo::refund` is retired from the list                           |
+| Invariant                                                         | Effect                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `no_over_refund` CHECK (migration `0003`)                         | First code path that can reach it; it becomes load-bearing rather than test-only                                                                                                                                                      |
+| ledger invariant 1 (per transaction, debits = credits)            | First enforcement in a live path; `Transaction::validate()` starts being called                                                                                                                                                       |
+| ledger invariant 2 (per merchant)                                 | Becomes _computable_ for the first time, once `AccountKind` carries the merchant dimension                                                                                                                                            |
+| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds)      | First code that maintains the left-hand side on the intent                                                                                                                                                                            |
+| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one                                                                                                                                                                                                           |
+| `partial_refunds_imply_refunds` CHECK (migration `0002`)          | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent                                                                                                                                   |
+| `verify-status`                                                   | `mtn_momo::refund` retired 2026-09-15 (arm D). `orange_money::refund` **is** added the same day (§ 5's flip landed: the rail declares `supports_refunds` and the call is unbuilt, which is what a token is for), so the gate prints 1 |

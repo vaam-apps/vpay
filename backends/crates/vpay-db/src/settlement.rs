@@ -625,11 +625,25 @@ pub trait Settlement: Send + Sync {
     ///
     /// # There is still no rail behind this
     ///
-    /// `ProviderAdapter::refund` is `NotImplemented` on both rails
-    /// (RFC-0003 § 5) and `POST /v1/refunds` is unrouted, so no shipping
-    /// binary calls this method today even though
-    /// [`crate::Refunds::create`] can now write the `pending` row it settles.
-    /// `docs/status.md` carries the gap.
+    /// `POST /v1/refunds` is unrouted, so no shipping binary calls this
+    /// method today, even though [`crate::Refunds::create`] can now write the
+    /// `pending` row it settles. The rails stopped being the reason on
+    /// 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
+    /// call — against a credential no deployment holds and a product this
+    /// repository has never called — and `orange_money::refund` is a declared
+    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`. What is
+    /// missing is the caller: the `POST /v1/refunds` handler that would drive
+    /// RFC-0003 § 3's transaction and then this one.
+    ///
+    /// **And when that handler is written, an `Ok(Refunded)` must not become
+    /// `refunds.status = 'succeeded'` on its own.** MTN's `transfer` answers
+    /// `202 ACCEPTED`; the port has no refund status read and `Refunded` has
+    /// no status field, so the most an adapter can report is that the rail
+    /// took the instruction (RFC-0003 open question 8). This method is the
+    /// one that would record the lie. It exists because D5 is a decision
+    /// about what the database does when a refund lands, and the alternative
+    /// was to leave that decision as a sentence in a document with no
+    /// statement behind it. `docs/status.md` carries the gap.
     ///
     /// # Errors
     ///

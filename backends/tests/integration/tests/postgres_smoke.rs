@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 46,
-        "all forty-six migration files under backends/migrations should be recorded as applied \
+        applied, 47,
+        "all forty-seven migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -333,7 +333,25 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          half of it: vpay_core::ids now mints `lt_...`, and \
          vpay_db::settlement's two posting call sites -- the first code in \
          this repository's history to write the ledger from a shipping path \
-         -- take their transaction id from that minter.)"
+         -- take their transaction id from that minter, \
+         and RFC-0003 section 5's 0047, a comment-only migration on 0020's \
+         precedent that corrects two shipped COMMENT ON statements: 0017's \
+         COMMENT ON TABLE refunds, which said nothing writes or reads the \
+         table, and 0042's COMMENT ON COLUMN invoices.amount_refunded, which \
+         said `ProviderAdapter::refund` is NotImplemented on MTN and \
+         Unsupported on Orange. Both had gone false on 2026-09-15, on two \
+         branches and in opposite directions: mtn_momo::refund became MTN's \
+         Disbursements transfer call and orange_money::refund became a \
+         NotImplemented token, while vpay_db::Refunds::create started \
+         inserting the row and apply_refund_succeeded / apply_refund_failed \
+         started maintaining the intent's counters. It changes no data, no \
+         column and no constraint, and it is 0047 rather than 0046 because \
+         0046_ledger-id-length.sql had already taken that number -- it had \
+         never been applied anywhere, so renumbering it and rehashing its \
+         MANIFEST.sha256 line is what the immutability rule permits, since \
+         that rule protects APPLIED migrations. THIS COUNT IS THE TRIPWIRE \
+         FOR EXACTLY THAT COLLISION: two branches each numbering a migration \
+         0046 conflicted in no file, and this assertion is what noticed.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

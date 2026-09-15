@@ -212,8 +212,9 @@ pub struct InvoiceRow {
     ///
     /// `0` on every row in every deployment today: the only statement that
     /// moves it is reached from [`crate::Settlement::apply_refund_succeeded`],
-    /// which no shipping binary calls because no rail can refund
-    /// (`docs/status.md`).
+    /// which no shipping binary calls because `POST /v1/refunds` is routed
+    /// nowhere, so nothing reaches [`crate::Refunds::create`] and no rail has
+    /// ever executed a refund (`docs/status.md`).
     pub amount_refunded: i64,
     /// When the merchant says this is due, or `None`. **Advisory**: nothing
     /// in vpay reads it. See migration `0036`'s column comment.

@@ -2379,6 +2379,22 @@ mod tests {
             ("MTN_SUBSCRIPTION_KEY", "sub-key-test"),
             ("MTN_API_KEY", "api-key-test"),
             ("MTN_API_USER", "11111111-2222-3333-4444-555555555555"),
+            // The **Disbursements** trio (2026-09-15, RFC-0003 § 5). Present
+            // here only so the example file resolves; no deployment holds
+            // these credentials and none of the keys is in
+            // `REQUIRED_RAIL_KEYS`, so an operator who leaves all three unset
+            // still boots — `mtn_momo::refund` is the only call that needs
+            // them and it answers `ProviderError::Config` naming the one that
+            // is missing.
+            (
+                "MTN_DISBURSEMENT_SUBSCRIPTION_KEY",
+                "disbursement-sub-key-test",
+            ),
+            ("MTN_DISBURSEMENT_API_KEY", "disbursement-api-key-test"),
+            (
+                "MTN_DISBURSEMENT_API_USER",
+                "66666666-7777-8888-9999-000000000000",
+            ),
             ("ORANGE_MERCHANT_KEY", "merchant-key-test"),
             ("ORANGE_CLIENT_ID", "client-id-test"),
             ("ORANGE_CLIENT_SECRET", "client-secret-test"),

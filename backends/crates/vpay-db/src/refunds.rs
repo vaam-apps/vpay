@@ -2,20 +2,26 @@
 //! plus `0031_refunds-fee.sql`) — two reads, two merchant-facing writes and
 //! the two settlement writes that belong to somebody else's transaction.
 //!
-//! **This module creates refunds; no rail can execute one.** Since RFC-0003
-//! § 3 [`Refunds::create`] inserts the row and reserves its amount against
-//! the intent in one transaction, and [`Refunds::cancel`] gives that
-//! reservation back — the *database* half of a refund, which the absence of a
-//! rail does not postpone. The rail half is absent and says so:
-//! `mtn_momo::refund` and — since 2026-09-15 (RFC-0003 § 5) —
-//! `orange_money::refund` both answer
-//! `ProviderError::NotImplemented`, neither answers `Unsupported`, and
-//! `supports_refunds` is `true` on both rails, so each token is vpay's
-//! unbuilt work rather than a fact about a rail. The reasons are different:
-//! MTN refunds are the Disbursements product and no deployment holds its
-//! subscription key, while an Orange refund is an outbound **transfer** and
-//! no Orange transfer API is documented in this repository (`docs/status.md`).
-//! `POST /v1/refunds` stays unrouted until Wave 3.
+//! **This module creates refunds; no rail has ever executed one.** Since
+//! RFC-0003 § 3 [`Refunds::create`] inserts the row and reserves its amount
+//! against the intent in one transaction, and [`Refunds::cancel`] gives that
+//! reservation back — the *database* half of a refund, which the state of the
+//! rails does not postpone. The rail half is in two different states, and
+//! neither is `Unsupported`:
+//!
+//! * `mtn_momo::refund` is **written** — since 2026-09-15 it makes MTN's
+//!   Disbursements `transfer` call — but **no deployment holds the
+//!   Disbursements subscription key and the product has never been called**,
+//!   in sandbox or anywhere else, so it answers `ProviderError::Config` where
+//!   the credential is missing and nothing has ever proved it against the
+//!   rail.
+//! * `orange_money::refund` answers `ProviderError::NotImplemented`
+//!   (RFC-0003 § 5, 2026-09-15): an Orange refund is an outbound **transfer**
+//!   and no Orange transfer API is documented in this repository, so the
+//!   token is vpay's unbuilt work rather than a fact about the rail.
+//!
+//! `supports_refunds` is `true` on both rails, and `POST /v1/refunds` stays
+//! unrouted until Wave 3 (`docs/status.md`).
 //!
 //! The other thing this module has is the **authoritative read** a refund has
 //! to have once it exists at all: `docs/flows/provider-port.md` calls
@@ -221,15 +227,17 @@ pub struct NewRefund {
 /// the over-refund guard, the reservation, the tenancy join — which the
 /// absence of a rail does not postpone.
 ///
-/// **It is still true that no rail can execute what this creates.**
-/// `ProviderAdapter::refund` answers `ProviderError::NotImplemented` on both
-/// rails, and on neither is that `Unsupported`: `supports_refunds` is `true`
-/// for `mtn_momo` and — since 2026-09-15, RFC-0003 § 5 — for `orange_money`
-/// too, so both tokens are vpay's unbuilt work rather than a fact about a
-/// rail. The reasons differ: MTN refunds are the Disbursements product and no
-/// deployment holds its subscription key, while an Orange refund is an
-/// outbound transfer and no Orange transfer API is documented in this
-/// repository. `POST /v1/refunds` is unrouted until Wave 3, so nothing in a
+/// **It is still true that no rail has ever executed what this creates**, and
+/// on neither rail is the answer `Unsupported` — `supports_refunds` is `true`
+/// for both. The two rails are in different states. `mtn_momo::refund` is
+/// written: since 2026-09-15 it makes MTN's Disbursements `transfer` call,
+/// but no deployment holds the Disbursements subscription key and the product
+/// has never been called, so it has proved nothing against the rail.
+/// `orange_money::refund` answers `ProviderError::NotImplemented` (RFC-0003
+/// § 5, 2026-09-15) because an Orange refund is an outbound transfer and no
+/// Orange transfer API is documented in this repository, which makes that
+/// token vpay's unbuilt work rather than a fact about the rail.
+/// `POST /v1/refunds` is unrouted until Wave 3, so nothing in a
 /// shipping binary calls this method today and no rail call has ever been
 /// made for a refund. `docs/status.md` says so; this doc says so rather than
 /// letting the method's existence imply otherwise.

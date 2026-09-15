@@ -109,11 +109,13 @@ decision and says what would have to change first.
 
 **A rail that _has_ the API but has not written the call declares `true`
 anyway**, and overrides the port method with its own
-`ProviderError::NotImplemented` token, exactly as `mtn_momo::refund` does and
-as `orange_money::refund` has done since 2026-09-15. `Unsupported` is a claim
-about the _rail_; a token is an admission about _us_, and `verify-status` only
-sees the second one. Both of this workspace's rails are now in that state,
-which is why `docs/status.md`'s list has two entries rather than one.
+`ProviderError::NotImplemented` token, exactly as `orange_money::refund` has
+done since 2026-09-15. `Unsupported` is a claim about the _rail_; a token is an
+admission about _us_, and `verify-status` only sees the second one.
+`mtn_momo::refund` was in that state too until the same day, when its
+Disbursements `transfer` call was written and its token retired — so
+`docs/status.md`'s list has one entry, and a rail leaving that list says
+nothing about whether its written call has ever been made. MTN's has not.
 
 ## Preconditions, per flow shape
 
@@ -328,6 +330,11 @@ destination, and nothing calls it yet.**
   is still its `NotImplemented` token — **no refund got closer to working**;
   what changed is that "does this rail need a payee?" is now a capability the
   core will branch on instead of a rail code (ADR-0002).
+  _(Superseded in part later the same day by wave 2 and RFC-0003 § 5:
+  `mtn_momo::refund` is now MTN's Disbursements `transfer` call and its token
+  is retired. The sentence in bold did not move — no deployment holds a
+  Disbursements credential, that product has never been called, and
+  `POST /v1/refunds` is still unrouted.)_
 - Both rails declare `Required`. On `orange_money` that sits beside
   `supports_refunds: false` on purpose — see the Capabilities section above.
   _(Superseded by wave 2 above on the same day: the flag is `true`, and the
@@ -386,10 +393,13 @@ speak over it to a real HTTP host.**
   `fee: Option<Money>` — what the rail charged us to move the money, in the
   refund's own currency. **No adapter populates it**, and none can: Orange
   had no refund API and `mtn_momo::refund` is still `NotImplemented`.
-  _(Superseded in part on 2026-09-15: Orange's refusal is now its own
-  `NotImplemented("orange_money::refund")` token — see the Capabilities
-  section above. The conclusion did not move; no adapter populates `fee` and
-  none can.)_ `None`
+  _(Superseded in part on 2026-09-15, on both rails: Orange's refusal is now
+  its own `NotImplemented("orange_money::refund")` token — see the
+  Capabilities section above — and `mtn_momo::refund` is written. The
+  conclusion did not move: no adapter populates `fee`. MTN's transfer answers
+  `202 ACCEPTED` with an empty body and no documented fee field, so the
+  adapter reports `None`, asserted by
+  `an_accepted_transfer_reports_no_fee_and_no_key_material`.)_ `None`
   means "the rail did not report a fee" and `Some(zero)` means "the movement
   was free"; an adapter that collapsed the two would put an invented number
   in a merchant's settlement statement. See [../status.md](../status.md).

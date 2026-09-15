@@ -307,9 +307,11 @@ async fn run() -> anyhow::Result<()> {
         "vpay-server implements /healthz, /v1/oauth (token, discovery, jwks), the /v1 \
          authentication boundary and /v1/payment_intents (create, retrieve, list, confirm, \
          cancel). Both rail adapters implement `submit` and `query_status`; the MTN push was \
-         first proven against MTN's real sandbox on 2026-09-15. Refunds are not routed, and \
-         neither rail implements one: both answer a NotImplemented token; every other /v1 \
-         resource answers the honest 404. See docs/status.md"
+         first proven against MTN's real sandbox on 2026-09-15. Refunds are not routed: \
+         nothing calls the `refunds` writer. `mtn_momo::refund` IS written (MTN \
+         Disbursements) but no deployment holds the credential and the product has never \
+         been called; `orange_money::refund` answers a NotImplemented token, not Unsupported. \
+         Every other /v1 resource answers the honest 404. See docs/status.md"
     );
     tracing::info!(addr = %bound, "listening");
 

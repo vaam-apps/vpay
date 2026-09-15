@@ -5974,12 +5974,13 @@ async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
 /// to refuse. Every case below would then be measuring a database vpay cannot
 /// reach.
 ///
-/// **It is still true that no rail can execute this.**
-/// `ProviderAdapter::refund` is a `NotImplemented` token on both rails — MTN
-/// because refunds are the Disbursements product and no deployment holds its
-/// key, Orange since 2026-09-15 because a refund there is an outbound
-/// transfer this repository has no specification for (RFC-0003 § 5) — and
-/// neither answers `Unsupported`. `POST /v1/refunds` is unrouted until
+/// **It is still true that no rail has ever executed this**, and on neither
+/// rail is the answer `Unsupported`. `mtn_momo::refund` is written — MTN's
+/// Disbursements `transfer`, since 2026-09-15 — but no deployment holds the
+/// Disbursements subscription key and the product has never been called.
+/// `orange_money::refund` is a `NotImplemented` token, since 2026-09-15,
+/// because a refund there is an outbound transfer this repository has no
+/// specification for (RFC-0003 § 5). `POST /v1/refunds` is unrouted until
 /// Wave 3, so what these cases prove is what the database does, not that a
 /// merchant can refund anything. `docs/status.md` says so.
 async fn pending_refund(
@@ -6295,10 +6296,12 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
 ///
 /// It is a claim about `vpay_db::settlement`'s refund transaction and about
 /// migration `0042`'s column. It is **not** a claim that a merchant can
-/// refund anything: no rail can (`ProviderAdapter::refund` is
-/// a `NotImplemented` token on both rails), `POST /v1/refunds`
-/// is unrouted, and the `pending` row below is written by this suite because
-/// nothing else in the repository can write one. `docs/status.md` says so.
+/// refund anything: `POST /v1/refunds` is unrouted, so no shipping binary
+/// reaches the writer these cases call, and no rail has ever executed a
+/// refund — `mtn_momo::refund` has made MTN's Disbursements `transfer` call
+/// since 2026-09-15, against a credential no deployment holds and a product
+/// this repository has never called, and `orange_money::refund` is a declared
+/// `NotImplemented` token, not `Unsupported`. `docs/status.md` says so.
 ///
 /// # The three properties
 ///

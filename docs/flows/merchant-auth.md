@@ -289,8 +289,10 @@ exists behind it. Proven by five container-backed cases in
 `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
 `a_refund_id_without_the_re_prefix_is_never_looked_up`,
 `creating_a_refund_is_still_the_honest_404`). **No merchant can create a
-refund**: `POST /v1/refunds` is unrouted until wave 3 and no rail can execute
-one, so the rows those cases read are `INSERT`ed by the suite itself. _(That
+refund**: `POST /v1/refunds` is unrouted until wave 3 and no rail has ever
+executed one — `mtn_momo::refund` is written and its Disbursements product has
+never been called, `orange_money::refund` is a `NotImplemented` token — so the
+rows those cases read are `INSERT`ed by the suite itself. _(That
 last clause read "because `vpay_db::Refunds` exposes one read and no write"
 until 2026-09-15, when RFC-0003 § 3 added `Refunds::create` and
 `Refunds::cancel`. The suite still seeds its own rows, deliberately, so that a
@@ -420,12 +422,16 @@ work does not close them.
   and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
   migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
   never written**: the column is in the repository's projection and the key
-  is on every refund this API renders, and because no rail can supply a fee —
-  `ProviderAdapter::refund` is a `NotImplemented` token on both rails — the
-  value is `null` on every object this repository can produce. _(This read
-  "because nothing writes a refund at all" until 2026-09-15;
-  `vpay_db::Refunds::create` writes the row, and it writes no fee: nothing in
-  this repository has ever had one to write.)_
+  is on every refund this API renders, and because no rail has ever supplied
+  a fee the value is `null` on every object this repository can produce.
+  `orange_money::refund` is a `NotImplemented` token; `mtn_momo::refund` is
+  written, and MTN's `202 ACCEPTED` carries an empty body with no documented
+  fee field, so it reports `None` — and that product has never been called
+  from this repository anyway. _(This read "because nothing writes a refund at
+  all" until 2026-09-15; `vpay_db::Refunds::create` writes the row, and it
+  writes no fee: nothing in this repository has ever had one to write. The
+  clause naming a token on **both** rails was true for part of the same day
+  and is not now.)_
 - **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and

@@ -24,7 +24,8 @@
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use vpay_provider::{ChargeRef, ProviderError};
+use vpay_core::Money;
+use vpay_provider::{ChargeRef, ProviderError, RefundTarget};
 
 /// The `requesttopay` body, per `docs/flows/adapter-mtn-momo.md`.
 ///
@@ -135,6 +136,98 @@ impl Reason {
             Self::Structured { code, message } => match message {
                 Some(message) => format!("{code}: {message}"),
                 None => code.clone(),
+            },
+        }
+    }
+}
+
+/// The Disbursements `transfer` body — the refund, and the only request this
+/// adapter builds that sends money **out**.
+///
+/// # Where this shape comes from, and what has never been checked
+///
+/// MTN's published Disbursement API documents `Transfer` as the mirror image
+/// of Collections' `RequestToPay`: the same five members, with **`payee` in
+/// place of `payer`**. That is the whole of the difference, and it is why
+/// this type is a near-copy of [`RequestToPay`] rather than a shared type
+/// with a renamed field — one struct with a `#[serde(rename)]` chosen at
+/// runtime would put the two products' bodies one boolean apart, and a
+/// `payer` on a transfer is money leaving to the wrong party.
+///
+/// **Nothing in this repository has ever called Disbursements**, and the
+/// portal serves no OpenAPI schema document for that product — a fact
+/// `docs/flows/adapter-mtn-momo.md` already records for the failure
+/// vocabulary ("the Disbursements API publishes none", re-checked
+/// 2026-09-11). So this shape is a transcription of the operation's
+/// documentation and not, as Collections' failure table now is, a comparison
+/// against a retrieved schema. A body faithful to the documentation but not
+/// to the rail would pass every test in this workspace.
+///
+/// `payerMessage` and `payeeNote` are omitted for [`RequestToPay`]'s reason:
+/// MTN documents both, the port carries no merchant-supplied text, and a
+/// constant string would put words nobody chose in front of a payee.
+#[derive(Debug, Serialize)]
+pub(crate) struct Transfer {
+    /// `Money::to_provider_string`, exactly as on the charge path — a decimal
+    /// string, which is MTN's shape on both products.
+    amount: String,
+    currency: &'static str,
+    /// The refund's own rail reference, rendered — the same value the caller
+    /// puts in `X-Reference-Id`, so that MTN's own record and ours agree.
+    ///
+    /// See [`crate::Adapter::refund`] § "Which reference the transfer
+    /// carries" for the invariant the core owes here. It is **not** the
+    /// charge's reference unless the core has handed one in, and the
+    /// difference decides whether a second partial refund is a second
+    /// transfer or a 409.
+    #[serde(rename = "externalId")]
+    external_id: String,
+    payee: Payee,
+}
+
+/// `payee`, not `payer`. The one structural difference between a collection
+/// and a disbursement, and the reason this is a separate struct: a body that
+/// spelled this `payer` would be accepted by nothing, and a body that spelled
+/// the *field inside* wrongly would address the money at nobody.
+#[derive(Debug, Serialize)]
+struct Payee {
+    /// `MSISDN`: a Cameroon disbursement is addressed to a phone number,
+    /// exactly as a collection is.
+    #[serde(rename = "partyIdType")]
+    party_id_type: &'static str,
+    #[serde(rename = "partyId")]
+    party_id: String,
+}
+
+impl Transfer {
+    /// Builds the body from the port's own values.
+    ///
+    /// Infallible, unlike [`RequestToPay::new`]: every value it needs is
+    /// already non-optional by the time it is called. `amount` is a [`Money`]
+    /// the core computed, and the payee is a [`RefundTarget`], which cannot
+    /// be constructed from an unusable number at all — so there is no
+    /// "required field missing" case left for this function to have an
+    /// opinion about, and [`crate::Adapter::refund`] handles the one thing
+    /// that *can* be absent (the destination itself) before it gets here.
+    ///
+    /// `destination.msisdn()` is used as given and neither re-normalised nor
+    /// re-validated: `RefundTarget::mobile_money` is documented as producing
+    /// "what the adapter must spell on its rail" — digits only, no `+`,
+    /// `237600000200` — which is exactly the `partyId` shape this adapter
+    /// already sends on the charge path. A second spelling of the rule here
+    /// is a second thing to keep in step.
+    pub(crate) fn new(reference: Uuid, amount: Money, destination: &RefundTarget) -> Self {
+        Self {
+            amount: amount.to_provider_string(),
+            // The refund amount's own currency, on `RequestToPay::new`'s
+            // reasoning: a disagreement with `ProviderConfig::currency` is a
+            // core bug that must reach the rail as the `INVALID_CURRENCY` it
+            // is rather than being silently rewritten here.
+            currency: amount.currency().code(),
+            external_id: reference.to_string(),
+            payee: Payee {
+                party_id_type: "MSISDN",
+                party_id: destination.msisdn().to_owned(),
             },
         }
     }

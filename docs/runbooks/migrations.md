@@ -24,6 +24,16 @@ only way back is a hand-written `UPDATE` against the migrator's own bookkeeping
 table, which is what the rest of this page is.
 
 To correct an applied migration, write a **new** migration that corrects it.
+`0020_provider-requests-status-code-comment.sql` and
+`0047_refunds-comments-mtn-refund-is-written.sql` are migrations whose whole
+purpose is a `COMMENT ON` — a stale comment that is **in the database** is
+worth one, because an operator reads it in `\d+`.
+
+A stale `--` comment in a migration's own _header_ is the one thing this rule
+cannot reach: it is in no database and no statement addresses it. Record it in
+[`backends/migrations/README.md`](../../backends/migrations/README.md) § Errata
+instead, dated, naming the file and where the current truth is. Three headers
+are listed there as of 2026-09-15.
 
 `backends/migrations/MANIFEST.sha256` and `cargo xtask verify-migrations`
 (`just verify-migrations`, a gate in `just verify` and in CI's `self-checks`

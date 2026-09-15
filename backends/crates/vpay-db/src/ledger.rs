@@ -31,10 +31,12 @@
 //! checkable by reading one file.
 //!
 //! What is still absent, so that the presence of a writer does not imply more
-//! than it should: no rail can execute a refund
-//! (`ProviderAdapter::refund` is `NotImplemented` on both), `POST /v1/refunds`
-//! is unrouted until Wave 3, and nothing schedules the nightly assertion of
-//! invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
+//! than it should: no rail has ever executed a refund — `mtn_momo::refund` is
+//! written and MTN's Disbursements product has never been called, while
+//! `orange_money::refund` is a `NotImplemented` token and neither answers
+//! `Unsupported` — `POST /v1/refunds` is unrouted until Wave 3 so nothing
+//! reaches `crate::Refunds::create`, and nothing schedules the nightly
+//! assertion of invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
 //! the gaps.
 //!
 //! # The transaction id is minted, and what that does and does not buy

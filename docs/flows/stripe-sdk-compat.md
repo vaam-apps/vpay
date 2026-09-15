@@ -223,7 +223,8 @@ predictable consequence of the header, not because anything observed it.
   here drives it through stripe-node's `refunds` resource**, so
   `stripe.refunds.retrieve()` working is untested rather than known, exactly
   as `stripe.events.list()` is below. `stripe.refunds.create()` remains a
-  `404`, and correctly so: no rail can refund.
+  `404`, and correctly so: the `POST /v1/refunds` handler is wave 3's and no
+  rail has ever executed a refund.
 - **`/v1/events` and `/v1/events/{id}` _are_ routed** (Step 5), and their
   bodies are Stripe's `event` shape — but **nothing here drives them through
   stripe-node's `events` resource**, so `stripe.events.list()` working is

@@ -402,9 +402,11 @@ writes: emitting one needs the wire object `vpay-api` shapes, which is the
 caller's to supply, and there is no caller.
 
 **There is still no caller in any shipping path, and that is the honest
-part.** No rail can refund (`ProviderAdapter::refund` is `NotImplemented` on
-both) and `POST /v1/refunds` is unrouted until wave 3, so nothing in
-`vpay-server` reaches this method and every deployment's
+part.** `POST /v1/refunds` is unrouted until wave 3, and no rail has ever
+executed a refund — `mtn_momo::refund` is written but MTN's Disbursements
+product has never been called, `orange_money::refund` is a `NotImplemented`
+token, and neither answers `Unsupported`. So nothing in `vpay-server` reaches
+this method and every deployment's
 `invoices.amount_refunded` is `0`. What changed is the other half of that
 sentence: `Refunds` **does** expose a `create` now, so the `pending` row this
 settles can be produced by vpay rather than only by an operator or a test.

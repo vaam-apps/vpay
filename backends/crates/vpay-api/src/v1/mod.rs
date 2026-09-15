@@ -183,9 +183,10 @@ pub struct V1Route {
 ///
 /// `/v1/refunds` is on that list only for its **`POST`**: `GET
 /// /v1/refunds/{id}` is mounted below (2026-09-05, issue #45) because a
-/// refund must have an authoritative read, while creating one needs a rail
-/// refund neither adapter implements. A resource with a read and no create
-/// is unusual and deliberate; see [`refunds`].
+/// refund must have an authoritative read, while creating one needs the
+/// handler RFC-0003 § 3 describes, which is wave 3's —
+/// `vpay_db::Refunds::create` exists and nothing routes to it. A resource
+/// with a read and no create is unusual and deliberate; see [`refunds`].
 ///
 /// `/v1/events` **was** on that list until 2026-09-03 and is now served
 /// (Step 5): the same renderer the webhook deliverer signs is what it
@@ -260,11 +261,16 @@ pub const V1_ROUTES: &[V1Route] = &[
     },
     // `GET` only. `POST /v1/refunds` is declared in
     // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
-    // refund needs a rail refund, and neither rail has one: both answer a
-    // `NotImplemented` token (Orange since 2026-09-15). Mounting a create that could
-    // only ever answer `501` would put a route in this table that takes no
-    // money back — the read is what issue #45 decided was part of the
-    // contract, and it is the whole of what is mounted.
+    // refund needs the `POST /v1/refunds` handler RFC-0003 § 3 describes, and
+    // nothing routes to `vpay_db::Refunds::create`. The rails stopped being
+    // the blocker on MTN on 2026-09-15 — `mtn_momo::refund` makes MTN's
+    // Disbursements `transfer` call, against a credential no deployment holds
+    // and a product this repository has never called — while
+    // `orange_money::refund` is a declared `NotImplemented` token, not
+    // `Unsupported`. Mounting a create with no handler behind it would put a
+    // route in this table that takes no money back — the read is what issue
+    // #45 decided was part of the contract, and it is the whole of what is
+    // mounted.
     V1Route {
         path: "/refunds/{id}",
         methods: &["GET"],
@@ -1474,9 +1480,12 @@ mod tests {
     /// that turns `backends/tests/integration/tests/refunds.rs` from a
     /// `resource_missing` `404` into an `unknown_route` one, a difference no
     /// status code alone would show. Add a `POST /refunds` and it fails too:
-    /// creating a refund needs `ProviderAdapter::refund`, which is a
-    /// `NotImplemented` token on both rails (Orange since 2026-09-15), so a
-    /// mounted create could only ever invent an answer.
+    /// creating a refund needs the `POST /v1/refunds` handler RFC-0003 § 3
+    /// describes, and nothing routes to `vpay_db::Refunds::create`.
+    /// (`mtn_momo::refund` stopped being the blocker on 2026-09-15 — it makes
+    /// MTN's Disbursements `transfer` call, under a credential no deployment
+    /// holds — while `orange_money::refund` is still a `NotImplemented`
+    /// token.) So a mounted create could only ever invent an answer.
     #[test]
     fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
         let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES

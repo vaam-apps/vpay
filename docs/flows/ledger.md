@@ -381,10 +381,13 @@ superseded:
   are wired and proven against a real Postgres 16 in CI; no deployment has ever
   taken a payment, so every deployment's ledger is empty for the same reason
   every deployment's `charges` table is.
-- **No rail can execute a refund.** `ProviderAdapter::refund` is
-  `NotImplemented` on both rails and `POST /v1/refunds` is unrouted until
-  wave 3, so the write path above is reachable from tests and from nothing
-  else. `../status.md` carries the gap.
+- **No rail has ever executed a refund, and neither answers `Unsupported`.**
+  `mtn_momo::refund` is written — MTN's Disbursements `transfer`, since
+  2026-09-15 — but no deployment holds the Disbursements subscription key and
+  that product has never been called; `orange_money::refund` is a
+  `NotImplemented` token from the same day. `POST /v1/refunds` is unrouted
+  until wave 3, so the write path above is reachable from tests and from
+  nothing else. `../status.md` carries the gap.
 - Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
   Neither are 1, 3 or 4.
 - **The refund posting emits no event.** `charge.refunded` and

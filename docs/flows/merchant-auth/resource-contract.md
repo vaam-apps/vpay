@@ -104,12 +104,15 @@ implemented by both SDKs and by no server route: an authenticated call gets
 the honest `404`.
 
 `GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
-unusual pair and a deliberate one (issue #45). Creating a refund needs
-`ProviderAdapter::refund`, which is a `NotImplemented` token on MTN (refunds
-are the Disbursements product) and — since 2026-09-15, RFC-0003 § 5 — on
-Orange too (an Orange refund is an outbound transfer this repository has no
-specification for; this sentence read `Unsupported` on Orange until that
-date); **reading** one is the
+unusual pair and a deliberate one (issue #45). Creating a refund needs a
+handler, and `POST /v1/refunds` is routed nowhere — `vpay_db::Refunds::create`
+exists (RFC-0003 § 3) and nothing calls it. The rail half is no longer the
+reason on MTN: `mtn_momo::refund` makes MTN's Disbursements `transfer` call
+since 2026-09-15, against a credential no deployment holds and a product this
+repository has never called, while `orange_money::refund` is a
+`NotImplemented` token from the same day (an Orange refund is an outbound
+transfer this repository has no specification for — RFC-0003 § 5; this
+sentence read `Unsupported` on Orange until then). **Reading** one is the
 authoritative read `docs/flows/provider-port.md` requires of every money
 movement, and without it a merchant holding a `re_…` has neither a call nor
 an event — `charge.refunded` and `charge.refund.updated` are emitted by
