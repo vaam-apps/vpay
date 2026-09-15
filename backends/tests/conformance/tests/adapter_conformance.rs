@@ -1294,6 +1294,30 @@ fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
     }
 }
 
+/// Pins the helper above, because nothing else can.
+///
+/// Both rails this workspace carries declare `Required`, so the `Origin` arm
+/// has no caller in this file and the `Required` arm is passed to two
+/// `refund` implementations that ignore their argument - one an unbuilt
+/// `NotImplemented` token, one the port's default. Measured on 2026-09-15:
+/// with the `Required` arm returning `None`, all 54 cases in this suite still
+/// passed. This case is what makes the helper a claim rather than a comment,
+/// and the per-rail half is asserted in
+/// [`a_rail_without_the_refund_capability_answers_unsupported`] against the
+/// adapter's own declaration rather than against this table.
+#[test]
+fn a_destination_is_offered_exactly_when_the_capability_demands_one() {
+    assert!(
+        destination_for(RefundDestination::Required).is_some(),
+        "a Required rail must be handed a payee (RFC-0003 section 1)"
+    );
+    assert!(
+        destination_for(RefundDestination::Origin).is_none(),
+        "an Origin rail returns money to the instrument that paid; offering \
+         it a payee would be asking it to ignore one"
+    );
+}
+
 /// The behavioural half of the refund contract, on a configured rail.
 ///
 /// Proves a rail with no refund API answers the permanent
@@ -1317,6 +1341,16 @@ async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: 
     // gets a payee; an `Origin` rail gets none, because sending one would be
     // a destination the rail was never told about.
     let destination = destination_for(rail.adapter.capabilities().refund_destination);
+    // The invariant the core owes `ProviderAdapter::refund`: a destination is
+    // present exactly when the rail declares `Required`. Asserted against the
+    // adapter's own capability, not against `destination_for`'s table, so an
+    // inverted helper is a failure here rather than an argument two unbuilt
+    // `refund` bodies silently discard.
+    assert_eq!(
+        destination.is_some(),
+        rail.adapter.capabilities().refund_destination == RefundDestination::Required,
+        "a payee is supplied exactly when the capability demands one (RFC-0003 section 1)"
+    );
     let outcome = rail
         .adapter
         .refund(&charge, amount, destination.as_ref(), &rail.config)
