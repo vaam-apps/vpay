@@ -107,6 +107,32 @@ pub const INVOICE_PREFIX: &str = "in_";
 /// same routes and must never be mistaken for one another.
 pub const INVOICE_ITEM_PREFIX: &str = "ii_";
 
+/// The prefix on a ledger transaction id (RFC-0003 § 4).
+///
+/// `lt_`, the spelling `docs/flows/ledger.md` § Status and migration `0045`'s
+/// header both name while recording that no minter existed for it.
+///
+/// # Why an internal id gets a real prefix
+///
+/// Nothing renders a `lt_…`: it is not on `/v1`, not on `/dash/v1` and not a
+/// token claim. That is [`CREDENTIAL_PREFIX`]'s position exactly, and the
+/// answer is the same — it is the row an operator reconciles a merchant's
+/// balance through, and an id with no vocabulary is one that gets filled in
+/// by whichever call site writes it first.
+///
+/// # It is what keeps `vpay_db::ledger`'s derived entry ids distinct
+///
+/// That writer names each leg `{transaction_id}_{index}`, which is ambiguous
+/// for two transaction ids differing only by a `_N` suffix — `x` and `x_0`
+/// both produce `x_0_0`. No id this module mints can be in that relation
+/// with another: every body is exactly [`BODY_CHARS`] characters of
+/// [`ALPHABET`], `_` is not in the alphabet, and a fixed-length body cannot
+/// be a proper prefix of another. `tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`
+/// is that argument as an assertion, and it is the reason both settlement
+/// call sites mint through [`ledger_transaction_id`] rather than composing an
+/// id of their own.
+pub const LEDGER_TRANSACTION_PREFIX: &str = "lt_";
+
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
 /// alphabet.
@@ -388,6 +414,38 @@ pub fn credential_id() -> String {
     new_id(CREDENTIAL_PREFIX)
 }
 
+/// A new ledger transaction id, `lt_…` (RFC-0003 § 4).
+///
+/// # Random, not derived from the charge — and what that does not guarantee
+///
+/// Every other id here is minted before the row it names, and this one is no
+/// different; but a *deterministic* id derived from the charge would have
+/// bought something extra, and it is worth being precise that this does not.
+/// `docs/flows/ledger.md` invariant 4 — "every succeeded charge has exactly
+/// one capture transaction" — is upheld by `vpay_db::Settlement`'s
+/// compare-and-swap on the charge still being live, which is what stops a
+/// settlement running twice at all, and **not** by
+/// `ledger_transactions_pkey`. A random id cannot make the primary key a
+/// second, independent guard of that invariant. Whether the ledger should
+/// grow one (a `kind` column and a partial unique index on `charge_id`; a
+/// bare `UNIQUE (charge_id)` is wrong, because refunds post against the same
+/// charge) is a schema decision left to the maintainer rather than taken by
+/// the branch that wired the first call site.
+///
+/// ```
+/// use vpay_core::ids::{self, LEDGER_TRANSACTION_PREFIX, PAYMENT_INTENT_PREFIX};
+///
+/// let id = ids::ledger_transaction_id();
+/// assert!(ids::is_well_formed(LEDGER_TRANSACTION_PREFIX, &id));
+/// assert_ne!(id, ids::ledger_transaction_id());
+/// // `lt_` is not `pi_`, and the shape check compares whole prefixes.
+/// assert!(!ids::is_well_formed(PAYMENT_INTENT_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn ledger_transaction_id() -> String {
+    new_id(LEDGER_TRANSACTION_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
@@ -534,7 +592,7 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 8] = [
+    const GENERATORS: [Generator; 9] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
@@ -543,6 +601,7 @@ mod tests {
         (customer_id, CUSTOMER_PREFIX),
         (staff_id, STAFF_PREFIX),
         (credential_id, CREDENTIAL_PREFIX),
+        (ledger_transaction_id, LEDGER_TRANSACTION_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than
@@ -648,6 +707,61 @@ mod tests {
         // Not some *other* object's id, which is the near-miss
         // `is_well_formed` exists to refuse.
         assert!(!is_well_formed(STAFF_PREFIX, &backfilled));
+    }
+
+    /// `vpay_db::ledger::post_in_tx` names each leg `{transaction_id}_{index}`,
+    /// which is ambiguous in general — `x_0` and `x` produce the same
+    /// `x_0_0` — and is **not** ambiguous for the ids this module mints.
+    ///
+    /// The whole argument is that a minted body is a fixed 24 characters
+    /// drawn from an alphabet that does not contain `_`, so no minted id can
+    /// be another minted id followed by `_N`. That is why both settlement
+    /// call sites in `vpay_db` mint through [`ledger_transaction_id`] instead
+    /// of composing an id, and this test is what makes it an assertion rather
+    /// than a paragraph: shorten `BODY_CHARS`' guarantee or admit `_` into
+    /// [`ALPHABET`] and the first half fails here.
+    ///
+    /// **What it does not prove**, stated because the distinction is the
+    /// whole of the residual gap: `post_in_tx` accepts any `&str`, so an
+    /// in-crate caller that hand-builds `"lt_x"` and `"lt_x_0"` still
+    /// collides — loudly, on `ledger_entries_pkey`, never silently. Closing
+    /// that at the writer needs a shape check there and an error variant to
+    /// carry the refusal; `docs/flows/ledger.md` § Status records it as open.
+    #[test]
+    fn two_minted_ledger_ids_cannot_derive_the_same_entry_id() {
+        // The property, asserted over real mints rather than argued: no
+        // minted id is another minted id plus a `_`-separated suffix, so
+        // `{id}_{index}` is injective over pairs of them.
+        let ids: Vec<String> = (0..64).map(|_| ledger_transaction_id()).collect();
+        for left in &ids {
+            assert!(
+                !left.contains(&format!("{LEDGER_TRANSACTION_PREFIX}_")),
+                "{left} would already be ambiguous with its own prefix"
+            );
+            for right in &ids {
+                if left == right {
+                    continue;
+                }
+                assert!(
+                    !right.starts_with(&format!("{left}_")),
+                    "{right} is {left} plus a suffix; `{{id}}_{{index}}` is no longer injective"
+                );
+            }
+        }
+
+        // And the two facts that make the argument hold for every future
+        // mint, not only these 64: the separator is outside the alphabet,
+        // and every body is exactly as long as every other.
+        assert!(
+            !ALPHABET.contains(&b'_'),
+            "`_` in the id alphabet would make a minted id able to contain the separator"
+        );
+        let lengths: HashSet<usize> = ids.iter().map(String::len).collect();
+        assert_eq!(
+            lengths,
+            HashSet::from([LEDGER_TRANSACTION_PREFIX.len() + BODY_CHARS]),
+            "a variable-length body would let one minted id be a prefix of another"
+        );
     }
 
     #[test]
