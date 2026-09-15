@@ -40,6 +40,13 @@ uuid.workspace = true
 # output of the real code under test.
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# `a_required_rail_parses_its_own_destination` builds the
+# `destination[<rail_code>]` sub-map the core hands to
+# `ProviderAdapter::parse_destination`, whose parameter is a
+# `serde_json::Map<String, Value>` — naming the type needs the crate. Not a
+# new package in any graph: `vpay-provider` and both adapters already resolve
+# the same workspace pin.
+serde_json.workspace = true
 
 # NOT here, deliberately: the Rust `wiremock` crate. ADR-0006 makes a rail stub
 # a WireMock *container* reached over HTTP; an in-process double would replace

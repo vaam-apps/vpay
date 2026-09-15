@@ -1274,6 +1274,14 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     let _: &vpay_provider::RefExtra = &parsed.ref_extra;
 }
 
+/// A payee's number that belongs to nobody.
+///
+/// One constant rather than a literal per case, because every assertion about
+/// it is a *negative* one — "this string must not appear in an error, a log
+/// line or a metric label" — and a second spelling is a second string those
+/// assertions would not be looking for.
+const DOCUMENTATION_MSISDN: &str = "+237600000200";
+
 /// A destination for whatever the rail under test declares it needs, built
 /// from the capability value alone.
 ///
@@ -1282,11 +1290,11 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
 /// the same rule the production code is held to, and the reason the suite can
 /// be parameterised over both rails at all.
 ///
-/// The number is a documentation MSISDN and belongs to nobody. It is passed
+/// The number is [`DOCUMENTATION_MSISDN`] and belongs to nobody. It is passed
 /// to rails whose `refund` is unbuilt, so nothing is ever sent anywhere.
 fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
     match destination {
-        RefundDestination::Required => Some(RefundTarget::mobile_money("+237600000200")),
+        RefundDestination::Required => Some(RefundTarget::mobile_money(DOCUMENTATION_MSISDN)),
         // Not "no destination handy": an `Origin` rail returns money to the
         // instrument that paid, and offering it a payee would be asking it to
         // ignore one.
@@ -1316,6 +1324,86 @@ fn a_destination_is_offered_exactly_when_the_capability_demands_one() {
         "an Origin rail returns money to the instrument that paid; offering \
          it a payee would be asking it to ignore one"
     );
+}
+
+/// A rail that demands a payee parses one out of its **own** wire shape, and
+/// refuses an empty sub-map.
+///
+/// RFC-0003 open question 4, decided 2026-09-15: the adapter owns the wire
+/// keys, symmetric with `parse_callback`, so that a future non-mobile-money
+/// upstream costs no core change. This case is the cross-rail half of that
+/// contract — each adapter's own suite pins its key and its refusals; what is
+/// asserted here is the property no adapter can assert about itself, that a
+/// rail declaring `Required` has actually *overridden* the port's default
+/// instead of inheriting its `Unsupported`.
+///
+/// No container: parsing a merchant's parameters is pure, and
+/// `parse_destination` is synchronous precisely so it cannot become anything
+/// else.
+///
+/// Both arms assert. Both rails this workspace carries declare `Required`
+/// today, so the `Origin` arm has no case running against it — it is written
+/// as an assertion rather than an early return so that a rail added or
+/// flipped tomorrow is checked rather than silently skipped.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnderTest) {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let adapter: Box<dyn ProviderAdapter> = match rail_under_test {
+        RailUnderTest::MtnMomo => Box::new(vpay_adapter_mtn_momo::Adapter::new(http)),
+        RailUnderTest::OrangeMoney => Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+    };
+
+    // The rail's own wire keys are the adapter's business, so this suite
+    // cannot spell them. It builds the map the *merchant* sends — which is
+    // how the number arrives — and asks the adapter what it makes of it.
+    let mut documented = serde_json::Map::new();
+    documented.insert(
+        "msisdn".to_owned(),
+        serde_json::Value::String(DOCUMENTATION_MSISDN.to_owned()),
+    );
+
+    // The capability, never the code (ADR-0002): the same branch the core
+    // makes before it decides whether to call at all.
+    match adapter.capabilities().refund_destination {
+        RefundDestination::Required => {
+            let parsed = adapter.parse_destination(&documented).unwrap_or_else(|error| {
+                panic!(
+                    "a rail declaring Required must override parse_destination; taking the \
+                     port's default answers {error:?}"
+                )
+            });
+            assert_eq!(
+                parsed.msisdn(),
+                DOCUMENTATION_MSISDN,
+                "the payee the merchant nominated is the payee the adapter carries"
+            );
+
+            // The decisive one. An empty sub-map is what
+            // `destination[<rail_code>]` with nothing under it produces, and
+            // an `Ok` here is a refund addressed to nobody.
+            let refused = adapter.parse_destination(&serde_json::Map::new());
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "an empty destination is Malformed, never a silent success: {refused:?}"
+            );
+            assert!(
+                !format!("{refused:?}").contains(DOCUMENTATION_MSISDN),
+                "no refusal may echo a payee's number"
+            );
+        }
+        RefundDestination::Origin => {
+            // Nothing to parse: money goes back the way it came. The port's
+            // default is the permanent answer, and the core is meant to have
+            // refused the request before this was ever reachable.
+            let refused = adapter.parse_destination(&documented);
+            assert!(
+                matches!(refused, Err(ProviderError::Unsupported)),
+                "an Origin rail has no destination to parse: {refused:?}"
+            );
+        }
+    }
 }
 
 /// The behavioural half of the refund contract, on a configured rail.
