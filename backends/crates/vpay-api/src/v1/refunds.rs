@@ -72,6 +72,23 @@
 //! which payee a refund was sent to. The rail's own records can, addressed by
 //! the `provider_reference_id` this handler mints — which is the reconciliation
 //! key `docs/flows/crash-safety.md` asks for and is on the row.
+//!
+//! **One qualification on "never lands anywhere", added by review
+//! 2026-09-16, because the heading above is stronger than what this code can
+//! promise.** Everything vpay itself writes is listed above and none of it
+//! carries the number. What vpay does not author is the rail's own refusal
+//! text: [`fail_with_event`] stores a [`ProviderError::Rejected`]'s message
+//! in `refunds.failure_raw`, and a rail is free to echo the payee it refused
+//! back in it. Nothing renders that column — [`RefundObject`] is ten keys
+//! and none of them is a failure field — so it reaches no response, no event
+//! body and no webhook; it is a column an operator can read, and the erasure
+//! path does not know about it. It is kept rather than scrubbed because a
+//! refusal reason with the rail's words removed is a refusal reason nobody
+//! can act on, and pattern-matching a third party's text for phone numbers
+//! would be a guess. **It is the only route by which a destination can
+//! outlive the request**, it is bounded at
+//! [`FAILURE_RAW_MAX_CHARS`], and it is recorded here rather than left for
+//! whoever answers RFC-0003 open question 3 to discover.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1721,10 +1738,31 @@ mod tests {
     /// one is a payee nobody will honour, and accepting it silently would
     /// tell a merchant their nomination had been acted on.
     ///
-    /// Delete the `(Origin, Some(_))` arm from [`resolve_destination`] and
-    /// this is the case that fails — measured 2026-09-16, and nothing else
-    /// in the workspace fails with it, because vpay carries no `Origin` rail
-    /// for an integration suite to drive.
+    /// Merge the `(Origin, Some(_))` arm into the one above it —
+    /// `(Origin, _) => Ok(None)`, which accepts the payee and drops it, and
+    /// which compiles — and this is the case that fails. Measured
+    /// 2026-09-16, and **nothing else in the workspace fails with it**,
+    /// because vpay carries no `Origin` rail for an integration or
+    /// conformance suite to drive.
+    ///
+    /// # One fake is the whole guard, deliberately, and the premise is
+    /// pinned elsewhere
+    ///
+    /// Reviewed 2026-09-16 and left as it stands. A fixture `Origin` rail was
+    /// **not** added to `backends/tests/conformance`: an earlier arm refused
+    /// that and ADR-0006 is the reason — that suite parameterises over the
+    /// rails that actually ship, and a rail that ships nowhere would make its
+    /// cases answer questions about a fake. What the review added instead is
+    /// `no_shipping_rail_returns_a_refund_to_the_paying_instrument` in that
+    /// suite, which asserts the fact that makes this test sufficient: every
+    /// adapter in the workspace declares [`RefundDestination::Required`]. The
+    /// day one does not, that case goes red and names the integration
+    /// coverage owed before the premise is allowed to change — which is the
+    /// failure mode a lone fake actually has, since nobody would notice the
+    /// guard had become thin.
+    ///
+    /// The fake itself is test-only and unreachable from any binary
+    /// (`cargo xtask verify-no-mocks`).
     #[test]
     fn an_origin_rail_refuses_a_destination() {
         let error = resolve_destination(
