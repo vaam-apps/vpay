@@ -258,9 +258,9 @@ pub enum DbError {
     /// # Why it fires today only for a writer that does not exist yet
     ///
     /// `vpay_db::Refunds::create` is the only writer of the column and
-    /// derives it from the intent inside the same transaction — [`crate::
-    /// NewRefund`] has no `currency_code` field for a caller to fill — so a
-    /// coherent deployment cannot produce one. That is precisely
+    /// derives it from the intent inside the same transaction —
+    /// [`crate::NewRefund`] has no `currency_code` field for a caller to fill
+    /// — so a coherent deployment cannot produce one. That is precisely
     /// [`Self::UnknownCurrency`]'s standing, and the same reasoning applies:
     /// "unreachable from today's call sites" is a fact about today's call
     /// sites, and `vpay_ledger::Transaction::validate` would not catch the
