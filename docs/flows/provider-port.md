@@ -198,14 +198,34 @@ whether this is a port or just a folder.
   `vpay-provider`, on a stub that overrides nothing. What did not move is the
   configured-rail half: that case reached a real adapter through a real
   container and no adapter is left to reach. A fixture rail inside the
-  conformance suite was rejected — that suite is one body parameterised over
-  the workspace's **real** adapters against real containers (ADR-0006), and a
-  rail invented to keep an arm running is a rail nobody ships.
+  conformance suite was rejected, and the reason is `adapters()` rather than
+  ADR-0006 — _(corrected on review, 2026-09-15: ADR-0006 forbids a double
+  reachable from `vpay-server` or `vpay-worker-bin`, and a dev-only fixture in
+  a `tests/` package is reachable from neither; `verify-no-mocks` walks
+  non-dev edges from the binaries and would not object either)_. The real
+  reason is that `adapters()` is the shipping registry **every** case in that
+  file iterates, so a fixture rail would also have to satisfy the wire-level
+  cases, `adapter_codes_are_unique` and the destination cases — a rail invented
+  to keep one arm running would have to be built out until it was a rail, and
+  it is still one nobody ships.
 - The tripwire `a_refund_on_this_rail_would_need_a_payee` fired as designed and
   its checklist was worked; the checklist is now recorded in the case's own doc
   comment so that a deleted tripwire leaves a trace.
 - Evidence:
-  [verification/2026-09-15-refunds-w2-orange-flip.md](../status/verification/2026-09-15-refunds-w2-orange-flip.md).
+  [verification/2026-09-15-refunds-w2-orange-flip.md](../status/verification/2026-09-15-refunds-w2-orange-flip.md)
+  and its review,
+  [verification/2026-09-15-refunds-w2-orange-review.md](../status/verification/2026-09-15-refunds-w2-orange-review.md).
+- **Review, same day:** `refund_is_refused_when_the_capability_is_absent` was
+  **deleted** from the conformance suite. Its whole body sat behind an
+  `if !supports_refunds` guard no rail entered after this flip, and
+  `every_adapter_declares_coherent_capabilities` — forty lines above it, over
+  every rail, unguarded — holds the same implication, with
+  `partial_refunds_imply_refunds` (`vpay-provider`) and
+  `partial_refunds_without_refunds_is_rejected_by_the_database`
+  (`postgres_smoke.rs`) behind it. No rule was retired; the deleted case was a
+  strict subset of those three. `verify-status` gained a third direction in the
+  same pass, because it compared token *strings* and could not tell which rail
+  carried one.
 
 **Decided and built 2026-09-15: `RefundTarget::mobile_money` canonicalises,
 and refuses.** The constructor is fallible —

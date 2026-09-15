@@ -169,6 +169,24 @@ fn adapters() -> Vec<Box<dyn ProviderAdapter>> {
 /// statement about what the port *declares*, and it is checked for every
 /// adapter in the workspace, so a rail added tomorrow is covered without
 /// touching this file.
+///
+/// # This absorbed `refund_is_refused_when_the_capability_is_absent`
+///
+/// That case asserted the same implication behind an
+/// `if !supports_refunds` guard, and on 2026-09-15 RFC-0003 § 5 flipped
+/// `orange_money` — the workspace's last rail declaring `false` — so its whole
+/// body stopped executing. It was deleted on review the same day rather than
+/// documented in place: a case that runs and asserts nothing is the shape
+/// `CLAUDE.md` names, and this one reached it by drift rather than by intent.
+///
+/// **No rule was retired, which is the only reason deleting it was safe.**
+/// This case holds the same implication unconditionally, on every rail, with
+/// no guard to go dead. `partial_refunds_imply_refunds` in `vpay-provider`
+/// pins that [`Capabilities::is_coherent`] actually refuses the bad pair, so
+/// this cannot pass by the helper being weakened, and
+/// `partial_refunds_without_refunds_is_rejected_by_the_database` in
+/// `postgres_smoke.rs` proves migration `0002`'s CHECK fires on the same
+/// pair. The deleted case was a strict subset of the three.
 #[test]
 fn every_adapter_declares_coherent_capabilities() {
     for a in adapters() {
@@ -191,37 +209,6 @@ fn adapter_codes_are_unique() {
     let before = codes.len();
     codes.dedup();
     assert_eq!(before, codes.len(), "duplicate adapter codes: {codes:?}");
-}
-
-/// The *declaration* half of the refund contract: a rail with no refund API
-/// must not advertise partial refunds either, so the core's capability branch
-/// (ADR-0002) is the only thing that ever has to decide.
-///
-/// The *behavioural* half — that calling `refund` on such a rail answers
-/// `Unsupported` — is
-/// [`a_rail_without_the_refund_capability_answers_unsupported`], which needs a
-/// configured rail and so sits with the wire-level cases.
-///
-/// **No rail in this workspace has entered this loop's body since
-/// 2026-09-15**, when RFC-0003 § 5 flipped `orange_money` to
-/// `supports_refunds: true` and left both rails declaring it. The case is kept
-/// rather than deleted, for the reason the `Origin` arm of
-/// [`a_required_rail_parses_its_own_destination`] is kept: a rail added or
-/// flipped tomorrow is then checked instead of silently skipped. What it must
-/// not be mistaken for is coverage — while no rail declares `false` this
-/// executes nothing. The unconditional form of the same rule,
-/// [`every_adapter_declares_coherent_capabilities`], does run on every rail
-/// and is what actually holds the pair today.
-#[test]
-fn refund_is_refused_when_the_capability_is_absent() {
-    for a in adapters() {
-        if !a.capabilities().supports_refunds {
-            // A rail with no refund API cannot have partial ones either, and
-            // the capability flags are what make the core refuse, with no
-            // rail-specific branch anywhere.
-            assert!(!a.capabilities().supports_partial_refunds);
-        }
-    }
 }
 
 /// Proves `parse_callback` fails closed on a body carrying no identifiers.

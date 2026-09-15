@@ -413,12 +413,35 @@ suite's `Origin` arm — and the property moved to
 `vpay-provider`, which exercises the trait's default body on a stub that
 overrides nothing. The **configured-rail** half of that proof is simply gone
 and cannot be recovered without a rail that has no refund API. A fixture rail
-inside the conformance suite was considered and rejected: that suite is one
-body parameterised over the workspace's real adapters against real containers
-(ADR-0006).
+inside the conformance suite was considered and rejected: `adapters()` is the
+shipping registry every case in that file iterates, so a fixture rail would
+have to satisfy the wire-level cases too, and by the time it did it would be a
+rail — one nobody ships. _(This cited ADR-0006 until review the same day. It
+should not have: that ADR forbids a double reachable from `vpay-server` or
+`vpay-worker-bin`, and a dev-only fixture in a `tests/` package is reachable
+from neither. The conclusion did not move; the reason it rests on did.)_
+
+**The dead conformance case was deleted, not documented in place (review,
+2026-09-15).** `refund_is_refused_when_the_capability_is_absent` asserted
+`supports_partial_refunds ⇒ supports_refunds` behind an `if !supports_refunds`
+guard, and after this flip no rail entered its body. It was removed because
+`every_adapter_declares_coherent_capabilities`, forty lines above it in the
+same file, holds the same implication unconditionally on every rail;
+`partial_refunds_imply_refunds` in `vpay-provider` pins that
+`Capabilities::is_coherent` really refuses the bad pair; and
+`partial_refunds_without_refunds_is_rejected_by_the_database` proves migration
+`0002`'s CHECK fires on it. No rule was retired — the deleted case was a strict
+subset of those three — and that is the only reason deleting it was safe
+rather than a suite made green by subtraction. `a_rail_without_the_refund_capability_answers_unsupported`
+was **kept**: its `if` arm runs on both rails and asserts, so only its `else`
+is unreachable, which is a different thing from a body that is.
 
 Evidence:
-[verification/2026-09-15-refunds-w2-orange-flip.md](verification/2026-09-15-refunds-w2-orange-flip.md).
+[verification/2026-09-15-refunds-w2-orange-flip.md](verification/2026-09-15-refunds-w2-orange-flip.md),
+and the adversarial review of it,
+[verification/2026-09-15-refunds-w2-orange-review.md](verification/2026-09-15-refunds-w2-orange-review.md),
+which swept eleven pages the flip had falsified, gave `verify-status` a third
+direction, and appended two corrections to the record above.
 
 ## Credentials are their own object (2026-09-13, ADR-0019)
 

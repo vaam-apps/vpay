@@ -240,10 +240,25 @@ flip was a declaration and not a design.
 One thing was lost and is not hidden: `orange_money` was this workspace's only
 rail declaring `supports_refunds: false`, so the conformance case
 `a_rail_without_the_refund_capability_answers_unsupported` has no rail left for
-its `Unsupported` arm. The arm was kept rather than deleted, and the property
-moved to `a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported`
-in `vpay-provider`. [provider-port.md](provider-port.md) § Status carries the
-full account.
+its `Unsupported` arm. The arm was kept rather than deleted — its `if` arm runs
+on both rails and asserts — and the property moved to
+`a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported` in
+`vpay-provider`. [provider-port.md](provider-port.md) § Status carries the full
+account.
+
+**Reviewed the same day**
+([verification/2026-09-15-refunds-w2-orange-review.md](../status/verification/2026-09-15-refunds-w2-orange-review.md)).
+Three things moved. Eleven live pages and doc comments still said this rail
+answers `Unsupported` or declares `supports_refunds: false`, and were
+corrected — `verify-links` checks that a link resolves, never that the sentence
+around it is true. `cargo xtask verify-status` gained a **third direction**: it
+compared token *strings* and could not tell which rail carried one, so a
+`mtn_momo::refund` pasted into this adapter went green once the Orange bullet
+was deleted, which is the repair its first error message invites. And a
+*different* conformance case, `refund_is_refused_when_the_capability_is_absent`,
+whose **entire** body sat behind an `if !supports_refunds` guard, was deleted:
+`every_adapter_declares_coherent_capabilities` holds the same implication
+unconditionally on every rail, so no rule was retired.
 
 **Updated 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** Nothing about this

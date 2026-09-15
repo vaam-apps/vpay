@@ -140,6 +140,25 @@ All run on `refunds/w2-orange`, Rust 1.98.0.
 | `cargo xtask verify-links`                                                                  | clean (1 660 links, 364 files)                |
 | `cargo xtask verify-no-mocks`                                                               | clean                                         |
 
+**Two corrections, appended on review 2026-09-15 rather than edited in, because
+this is a dated record of what one tree printed on one day.**
+
+1. The `vpay-db` and `vpay-api` doctest rows above are **transposed**.
+   Re-measured on the same tree: `cargo test --doc -p vpay-db` is **8 passed,
+   0 ignored** and `cargo test --doc -p vpay-api` is **18 passed, 0 ignored**.
+   The total, 26, is right; the two crates are the wrong way round.
+2. The second mutation's result is **wrong**, and the finding under it is right
+   for a reason one step further along. With `NotImplemented("mtn_momo::refund")`
+   in the Orange adapter, `verify-status` does **not** stay green — it fails
+   _"docs/status.md declares these unimplemented items and no shipping code
+   carries them: orange_money::refund"_. It goes green only after the repair
+   that message invites, deleting the Orange bullet, and then it prints **"ok —
+   1 unimplemented item(s)"** with a whole rail's gap gone from the status page.
+   Both halves measured on this tree. The gate was blind; it just failed once
+   first, in a way that pointed at the page instead of at the adapter.
+
+Every other number in the table above was re-measured on review and holds.
+
 That 156 is 66 in `vpay-adapter-orange-money`, 57 in `vpay-tests-conformance`
 and 33 in `vpay-provider`, measured with `cargo nextest list`. The adapter
 crate went 65 → 66: no case was removed (the tripwire was one assertion inside

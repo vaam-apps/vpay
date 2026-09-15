@@ -365,16 +365,30 @@ impl ProviderAdapter for Adapter {
             // property of a transfer product, and this repository has never
             // seen Orange's.
             //
-            // So it is the merchant-visible direction that decides it. With
-            // `false` the core refuses a part-refund on this rail and a
-            // merchant is told no. With `true` it accepts one, and if the
-            // real transfer product turns out to reverse whole payments only,
-            // or to floor at some amount, a capability merchants have already
-            // integrated against has to be *withdrawn*. `false` → `true` is
-            // additive and costs nobody anything; the reverse is a breaking
-            // change made on a guess. Flipping it is part of writing the
-            // transfer call against a real specification, not part of this
-            // declaration.
+            // Which means **neither value is a true statement about Orange**,
+            // and that is the part worth being explicit about: the flag above
+            // is defended as a claim about the rail, and this one cannot be,
+            // because nobody here knows the answer. It is the same modelling
+            // gap `Capabilities::is_coherent` records for `refund_destination`
+            // — a two-valued field with no spelling for "unknown" — and a
+            // different criterion has to break the tie. Saying so is the
+            // difference between a decision and a declaration dressed as one.
+            //
+            // The tie-break is the merchant-visible direction. If the real
+            // transfer product turns out to reverse whole payments only, or to
+            // floor at some amount, then a `true` merchants had already
+            // integrated against has to be *withdrawn*, which is a breaking
+            // change made on a guess. `false` → `true` is additive and costs
+            // nobody anything. Flipping it is part of writing the transfer
+            // call against a real specification, not part of this declaration.
+            //
+            // **No core code reads this today** (2026-09-15), on either rail:
+            // `POST /v1/refunds` is unrouted, and `is_coherent` plus the
+            // `providers` seed write are the only readers in the workspace. An
+            // earlier version of this comment said "the core refuses a
+            // part-refund on this rail and a merchant is told no" — there is
+            // no such refusal, and describing one is how this repository would
+            // start sounding more finished than it is.
             supports_partial_refunds: false,
             delivers_callbacks: true,
             requires_ip_allowlist: false,
