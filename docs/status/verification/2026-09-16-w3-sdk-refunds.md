@@ -320,3 +320,40 @@ could claim it)" — it binds `127.0.0.1:0`, reads the port and drops the
 listener. Its stated reason for tolerating that ("nothing else in this test
 binary binds ports") is what is no longer safe on a host running several Docker
 stacks. It did not fail in any run during this review.
+
+### The cross-arm edits, judged
+
+This arm changed three files it does not own: `backends/apps/vpay-server/src/main.rs`
+(arm F's), and `justfile` + `compose.e2e.yml`.
+
+**`justfile` and `compose.e2e.yml` stay, and conflict with nothing.** Arm F's
+diff against `master` touches `compose.e2e.yml` — it added the very
+`MTN_DISBURSEMENT_*` block this arm edits — but arm G branched off arm F, so
+that edit is already on top of it. Arm F's review branch
+(`review/w3f-contract`) touches neither file, and no other wave-3 arm touches
+either. The `gen-demo-keys` heredoc change is arm G's alone.
+
+**`main.rs` stays too, and it WILL conflict — with `review/w3f-contract`,
+which has already rewritten the same string literal.** Both reviews found the
+same false claim independently and replaced it with different prose; git
+cannot merge two rewrites of one `tracing::warn!` literal. The conflict is one
+hunk and the resolution is mechanical, and it is kept here rather than lifted
+out because a false in-code claim is worse than a conflict, and lifting it
+would make arm G's merged result depend on arm F's review branch also landing.
+
+Whichever side wins that hunk, the result must carry **both** corrections:
+
+- arm F's review names the routes and says refunds ARE routed;
+- arm G's says the same and additionally narrows **"no deployment holds the
+  credential"**, which `review/w3f-contract`'s version still carries and which
+  arm G's own `gen-demo-keys` change makes imprecise.
+
+**One thing that cannot be fixed after the fact.** `review/w3f-contract` adds
+migration `0048_refunds-comments-post-v1-refunds-is-routed.sql`, whose column
+comments say `mtn_momo::refund` runs "against a credential no deployment
+holds". Migration bytes are checksummed into `MANIFEST.sha256`
+(`just verify-migrations`, issue #76), so that sentence is immutable once it
+lands — which is exactly how 0047's now-stale wording became permanent. If arm
+G lands, the e2e/demo stack holds a stub `disbursement_subscription_key`, and
+0048 should say "no **real** MTN credential exists in this project" before it
+is merged, not after. Owner: whoever lands `review/w3f-contract`.
