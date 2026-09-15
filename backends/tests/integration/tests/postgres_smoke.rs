@@ -2910,6 +2910,7 @@ async fn an_unbalanced_ledger_posting_is_refused_and_writes_nothing() -> anyhow:
         matches!(
             refused,
             vpay_db::DbError::Ledger(vpay_ledger::LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
                 debits: 5_000,
                 credits: 4_900
             })
@@ -3177,6 +3178,90 @@ async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()>
             "{account} must be refused by the pair CHECK: {message}"
         );
     }
+
+    Ok(())
+}
+
+/// A posting whose legs are in **different currencies** is refused, and
+/// writes nothing.
+///
+/// `docs/flows/ledger.md` invariant 1 is `SUM(debit) = SUM(credit)` **per
+/// currency**, and 100 XAF debited against 100 EUR credited balances only if
+/// a franc is added to a euro.
+///
+/// **This case is here because RFC-0003 § 4 made the gap reachable.** Before
+/// it, `Transaction::validate()`'s currency-blind sum was a property of a
+/// function that no writer called. `post_ledger_transaction_in_tx` is a `pub`
+/// method on a `pub` trait taking a `vpay_ledger::Transaction` whose
+/// `entries` field is `pub`, so any consumer can hand-build one — exactly as
+/// `an_unbalanced_ledger_posting_is_refused_and_writes_nothing` above does,
+/// and as the call sites that will post captures and refunds are free to.
+/// Nothing in the schema would catch it either: `currency_code` is per row,
+/// and invariant 1 is deliberately not a database constraint.
+#[tokio::test]
+async fn a_mixed_currency_ledger_posting_is_refused_and_writes_nothing() -> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_mixed", "ch_ledger_mixed").await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    // 100 XAF out, 100 EUR in: equal in minor units and in nothing else.
+    let mixed = vpay_ledger::Transaction {
+        entries: vec![
+            vpay_ledger::Entry {
+                account: vpay_ledger::AccountKind::merchant_payable("merchant_1"),
+                direction: vpay_ledger::Direction::Debit,
+                amount: vpay_core::Money::new(100, vpay_core::Currency::Xaf)?,
+            },
+            vpay_ledger::Entry {
+                account: vpay_ledger::AccountKind::PayerClearing,
+                direction: vpay_ledger::Direction::Credit,
+                amount: vpay_core::Money::new(100, vpay_core::Currency::Eur)?,
+            },
+        ],
+    };
+
+    let refused = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.post_ledger_transaction_in_tx("ltx_mixed", "ch_ledger_mixed", &mixed)
+                    .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .expect_err("a franc is not a euro and this posting balances in neither");
+
+    assert!(
+        matches!(
+            refused,
+            vpay_db::DbError::Ledger(vpay_ledger::LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
+                debits: 100,
+                credits: 0
+            })
+        ),
+        "the refusal must name the currency whose book is short — XAF is \
+         debited 100 and credited nothing: {refused:?}"
+    );
+
+    let transactions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    let entries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger entries")?;
+    assert_eq!(
+        (transactions, entries),
+        (0, 0),
+        "a mixed-currency posting must write nothing at all"
+    );
 
     Ok(())
 }
