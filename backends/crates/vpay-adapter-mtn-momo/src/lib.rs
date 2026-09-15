@@ -1563,7 +1563,9 @@ mod tests {
     fn a_blank_destination_is_malformed_and_never_a_silent_none() {
         for blank in ["", " ", "\t", "\n", "   \t  "] {
             let refused = adapter().parse_destination(
-                json!({ "msisdn": blank }).as_object().expect("a JSON object"),
+                json!({ "msisdn": blank })
+                    .as_object()
+                    .expect("a JSON object"),
             );
             assert!(
                 matches!(refused, Err(ProviderError::Malformed { .. })),

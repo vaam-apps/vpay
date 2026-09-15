@@ -1368,12 +1368,14 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
     // makes before it decides whether to call at all.
     match adapter.capabilities().refund_destination {
         RefundDestination::Required => {
-            let parsed = adapter.parse_destination(&documented).unwrap_or_else(|error| {
-                panic!(
-                    "a rail declaring Required must override parse_destination; taking the \
+            let parsed = adapter
+                .parse_destination(&documented)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "a rail declaring Required must override parse_destination; taking the \
                      port's default answers {error:?}"
-                )
-            });
+                    )
+                });
             assert_eq!(
                 parsed.msisdn(),
                 DOCUMENTATION_MSISDN,

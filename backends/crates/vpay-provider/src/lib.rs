@@ -1492,31 +1492,49 @@ mod tests {
     ///
     /// The probe is self-checking: `String` is asserted to trip all three, so
     /// a constant that silently stopped detecting anything fails here rather
-    /// than passing vacuously. That is the mutation this case is built
-    /// around — measured on 2026-09-15 by adding `impl Display for
-    /// RefundTarget`, which turns the first assertion red.
+    /// than passing vacuously.
+    ///
+    /// Every assertion is a `const` block, which is what clippy's
+    /// `assertions_on_constants` asks for and is also the stronger claim: an
+    /// impl added to [`RefundTarget`] stops this crate's test build rather
+    /// than failing at run time, so it cannot be reached by anything, in any
+    /// order, before somebody notices. Measured on 2026-09-15 by adding
+    /// `impl Display for RefundTarget`: `cargo test -p vpay-provider` fails
+    /// to compile, naming the first block below.
     #[test]
     fn a_refund_destination_has_no_impl_but_the_redacting_debug() {
-        assert!(
-            Probe::<String>::DISPLAY && Probe::<String>::SERIALIZE && Probe::<String>::DESERIALIZE,
-            "the probe must detect impls that do exist, or it proves nothing below"
-        );
+        const {
+            assert!(
+                Probe::<String>::DISPLAY
+                    && Probe::<String>::SERIALIZE
+                    && Probe::<String>::DESERIALIZE,
+                "the probe must detect impls that do exist, or it proves nothing below"
+            );
+        }
 
-        assert!(
-            !Probe::<RefundTarget>::DISPLAY,
-            "a Display on RefundTarget prints the number through `%destination` and `{{}}`, \
-             which the redacting Debug cannot intercept"
-        );
-        assert!(
-            !Probe::<RefundTarget>::SERIALIZE,
-            "a Serialize puts a payee's number one derive away from a webhook payload while \
-             RFC-0003 open question 2 (retention) is undecided"
-        );
-        assert!(
-            !Probe::<RefundTarget>::DESERIALIZE,
-            "a Deserialize is the same question read backwards: it lets the number re-enter \
-             from wherever a Serialize had put it"
-        );
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DISPLAY,
+                "a Display on RefundTarget prints the number through `%destination` and `{{}}`, \
+                 which the redacting Debug cannot intercept"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::SERIALIZE,
+                "a Serialize puts a payee's number one derive away from a webhook payload while \
+                 RFC-0003 open question 2 (retention) is undecided"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DESERIALIZE,
+                "a Deserialize is the same question read backwards: it lets the number re-enter \
+                 from wherever a Serialize had put it"
+            );
+        }
     }
 
     /// A rail with nowhere to send a refund takes the port's default and says
