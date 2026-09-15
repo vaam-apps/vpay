@@ -1063,11 +1063,12 @@ pub struct RefundObject {
     ///
     /// # It is `null` on every object this repository can currently produce
     ///
-    /// Not as a placeholder: as the honest answer. Orange's Web Payment
-    /// product documents no refund API at all, and MTN refunds are the
-    /// Disbursements product no deployment here has been issued a credential
-    /// for, so `vpay_provider::Refunded::fee` — the only thing that could
-    /// ever fill this — has no producer. `docs/status.md` names what must
+    /// Not as a placeholder: as the honest answer. Neither rail's `refund` is
+    /// built — MTN's is the Disbursements product no deployment here has been
+    /// issued a credential for, and Orange's is an outbound transfer this
+    /// repository has no specification for (RFC-0003 section 5) — so
+    /// `vpay_provider::Refunded::fee`, the only thing that could ever fill
+    /// this, has no producer. `docs/status.md` names what must
     /// exist before that changes.
     ///
     /// The key is still always present, `null` and all: this module emits

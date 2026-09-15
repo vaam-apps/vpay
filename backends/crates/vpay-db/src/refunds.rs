@@ -2,10 +2,9 @@
 //! plus `0031_refunds-fee.sql`) — one read, and nothing else.
 //!
 //! **This module does not create refunds.** Creating one needs a rail refund,
-//! and neither rail has one:
-//! `mtn_momo::refund` is `ProviderError::NotImplemented` and Orange Money
-//! answers `Unsupported` because its Web Payment product documents no refund
-//! API (`docs/status.md`). `POST /v1/refunds` stays unrouted. What this module
+//! and neither rail has one: `mtn_momo::refund` and — since 2026-09-15 —
+//! `orange_money::refund` are both `ProviderError::NotImplemented`
+//! (`docs/status.md`). `POST /v1/refunds` stays unrouted. What this module
 //! adds is the **authoritative read** a refund has to have once it exists at
 //! all: `docs/flows/provider-port.md` calls `query_status` "the authoritative
 //! read", `docs/flows/webhooks.md` says delivery is at-least-once and
@@ -145,8 +144,8 @@ pub struct RefundRow {
 ///
 /// Two reads, and **no create**. A `create` here would be a write path no
 /// shipping code calls — the refund a merchant would create needs
-/// `ProviderAdapter::refund`, which is `NotImplemented` on MTN and
-/// `Unsupported` on Orange — and this repository's rule is that an unbuilt
+/// `ProviderAdapter::refund`, which is `NotImplemented` on both rails
+/// (Orange since 2026-09-15, RFC-0003 section 5) — and this repository's rule is that an unbuilt
 /// feature stays visibly unbuilt (`AGENTS.md` rule 2). The one write this
 /// module does have, [`settle_in_tx`], is deliberately not on this trait: it
 /// is `pub(crate)` and belongs to [`crate::settlement`]'s transaction, so a

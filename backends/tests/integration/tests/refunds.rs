@@ -31,8 +31,10 @@
 //!
 //! Nothing in this repository creates a refund. `POST /v1/refunds` is
 //! declared and unrouted because it needs `ProviderAdapter::refund`, which is
-//! `NotImplemented` on MTN (refunds are the Disbursements product) and
-//! `Unsupported` on Orange (its Web Payment product documents no refund API).
+//! a `NotImplemented` token on **both** rails — on MTN because refunds are the
+//! Disbursements product, and on Orange since 2026-09-15 because an Orange
+//! refund is an outbound transfer this repository has no specification for
+//! (RFC-0003 section 5).
 //! So the rows below are `INSERT`ed by this suite against the real schema,
 //! the way `support::age_the_crash` writes a column no shipping code writes:
 //! **`vpay_db::Refunds` deliberately exposes no `create`**, because a write
@@ -755,8 +757,8 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 /// Creating a refund is **still** the honest `404`, and the read did not
 /// quietly bring a write with it.
 ///
-/// `POST /v1/refunds` needs `ProviderAdapter::refund`; `mtn_momo::refund` is
-/// `NotImplemented` and Orange Money answers `Unsupported`. The route is
+/// `POST /v1/refunds` needs `ProviderAdapter::refund`, and both rails answer a
+/// `NotImplemented` token (Orange since 2026-09-15). The route is
 /// declared in `docs/flows/merchant-auth.md` and mounted nowhere, so an
 /// authenticated caller gets the nest's `unknown_route` — a `200` there would
 /// mean someone invented a resource.

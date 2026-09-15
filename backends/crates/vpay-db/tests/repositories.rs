@@ -5944,7 +5944,7 @@ async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
 /// `backends/tests/integration/tests/refunds.rs` writes its fixtures and for
 /// the same reason: **nothing in this repository creates a refund.**
 /// `POST /v1/refunds` is unrouted, `ProviderAdapter::refund` is
-/// `NotImplemented` on MTN and `Unsupported` on Orange, and `vpay_db::Refunds`
+/// a `NotImplemented` token on both rails, and `vpay_db::Refunds`
 /// deliberately exposes no `create` — a write path no shipping code calls is
 /// a feature this repository would be claiming it has (`AGENTS.md` rule 2).
 ///
@@ -6224,7 +6224,7 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
 /// It is a claim about `vpay_db::settlement`'s refund transaction and about
 /// migration `0042`'s column. It is **not** a claim that a merchant can
 /// refund anything: no rail can (`ProviderAdapter::refund` is
-/// `NotImplemented` on MTN and `Unsupported` on Orange), `POST /v1/refunds`
+/// a `NotImplemented` token on both rails), `POST /v1/refunds`
 /// is unrouted, and the `pending` row below is written by this suite because
 /// nothing else in the repository can write one. `docs/status.md` says so.
 ///

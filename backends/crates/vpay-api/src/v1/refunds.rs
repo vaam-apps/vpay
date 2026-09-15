@@ -5,9 +5,10 @@
 //! It is the only observation of a refund there is. `POST /v1/refunds` is
 //! declared in `docs/flows/merchant-auth.md` and routed nowhere, because
 //! creating a refund needs `ProviderAdapter::refund` and neither rail has one
-//! (`mtn_momo::refund` is `NotImplemented`; Orange Money's Web Payment
-//! product documents no refund API at all, so the port's default
-//! `Unsupported` stands). `charge.refunded` and `charge.refund.updated` are
+//! — both answer a `NotImplemented` token, MTN because refunds are the
+//! Disbursements product and Orange since 2026-09-15, when the maintainer
+//! decided an Orange refund is an outbound transfer this repository has no
+//! specification for (RFC-0003 section 5). `charge.refunded` and `charge.refund.updated` are
 //! documented event types that **nothing emits** (`docs/status.md`). A
 //! merchant that eventually holds a `re_…` in `pending` therefore has, today,
 //! no call and no event that answers "what happened to it?".

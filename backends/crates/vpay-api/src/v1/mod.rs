@@ -260,8 +260,8 @@ pub const V1_ROUTES: &[V1Route] = &[
     },
     // `GET` only. `POST /v1/refunds` is declared in
     // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
-    // refund needs a rail refund, and `mtn_momo::refund` is `NotImplemented`
-    // while Orange Money answers `Unsupported`. Mounting a create that could
+    // refund needs a rail refund, and neither rail has one: both answer a
+    // `NotImplemented` token (Orange since 2026-09-15). Mounting a create that could
     // only ever answer `501` would put a route in this table that takes no
     // money back — the read is what issue #45 decided was part of the
     // contract, and it is the whole of what is mounted.
@@ -1474,9 +1474,9 @@ mod tests {
     /// that turns `backends/tests/integration/tests/refunds.rs` from a
     /// `resource_missing` `404` into an `unknown_route` one, a difference no
     /// status code alone would show. Add a `POST /refunds` and it fails too:
-    /// creating a refund needs `ProviderAdapter::refund`, which is
-    /// `NotImplemented` on MTN and `Unsupported` on Orange, so a mounted
-    /// create could only ever invent an answer.
+    /// creating a refund needs `ProviderAdapter::refund`, which is a
+    /// `NotImplemented` token on both rails (Orange since 2026-09-15), so a
+    /// mounted create could only ever invent an answer.
     #[test]
     fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
         let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES
