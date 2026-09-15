@@ -314,7 +314,7 @@ RFC-0003 § 4, migration `0045`. Measured against a freshly migrated
 
 **Caveat, stated first because it is easy to read past:** the host had
 **cratestack 0.11.1** on `PATH`, not the pinned 0.12.0. The drift test warns
-about that and does not fail. So both numbers were taken with the *same*
+about that and does not fail. So both numbers were taken with the _same_
 binary: with migration `0045` withdrawn and `model LedgerEntry.merchant_id`
 commented out, 0.11.1 reported `drift detected in 25 table(s)/view(s) (190
 change(s) total)` — **exactly the 0.12.0-measured constant it replaced** — and

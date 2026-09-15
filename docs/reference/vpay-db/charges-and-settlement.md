@@ -170,7 +170,6 @@ the money has moved; an intent without its event means the merchant's webhook
 never fires and nothing retries it, because nothing knows it was missed; an
 event without the rows is a webhook for a payment that did not settle.
 
-
 **Since 2026-09-15 `apply_succeeded` writes a fourth thing: the capture
 posting** (RFC-0003 § 4), in the same transaction, through
 `ledger::post_in_tx`. It is the same argument one step further — a charge that

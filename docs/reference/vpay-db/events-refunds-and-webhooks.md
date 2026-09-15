@@ -38,7 +38,7 @@ This section said, of the write: "**Creating** one is a different question and
 is still unanswered … `Refunds` exposes `get_for_merchant` and nothing else. A
 `create` here would be a write path no shipping code calls, which is a feature
 this repository would be claiming it has." RFC-0003 § 3 answered the question,
-and the reason is that the *database* half of a refund is a decision with
+and the reason is that the _database_ half of a refund is a decision with
 consequences the absence of a rail does not postpone.
 
 `Refunds::create` writes the row **and** increments
@@ -46,7 +46,7 @@ consequences the absence of a rail does not postpone.
 the whole design: migration `0003`'s `no_over_refund` CHECK
 (`amount_refunded + amount_refund_pending <= amount`) is evaluated by Postgres
 against the row it has just locked, so two concurrent refunds serialize and the
-second is refused against the first's *committed* value. There is deliberately
+second is refused against the first's _committed_ value. There is deliberately
 no read-then-compare in Rust anywhere on this path — both callers would read
 the same balance and both pass it. The refusal is `DbError::OverRefund`, its
 own variant rather than the `DbError::Query` an unclassified CHECK violation

@@ -25,16 +25,16 @@ writes.
 concurrent local builds have OOM-killed this host). CI is the gate. What was
 run, and its exact output:
 
-| Command                                                                        | Result                                    |
-| ------------------------------------------------------------------------------ | ----------------------------------------- |
-| `cargo nextest run -p vpay-core -p vpay-ledger`                                | 86 passed, 0 skipped, 0 ignored           |
-| `cargo nextest run -p vpay-db`                                                 | 241 passed, 0 skipped, 0 ignored          |
-| `cargo nextest run -p vpay-tests-integration -E 'binary(postgres_smoke)'`      | 51 passed, 0 skipped, 0 ignored           |
-| `cargo test --doc -p vpay-core -p vpay-ledger -p vpay-db`                      | 57 + 6 + 8 passed, 0 ignored              |
-| `cargo clippy -p vpay-core -p vpay-ledger -p vpay-db --all-targets -D warnings` | clean                                     |
-| `cargo clippy -p vpay-tests-integration --all-targets -D warnings`             | clean                                     |
-| `cargo build --workspace --all-targets`                                        | clean                                     |
-| `cargo +nightly fmt --all --check`                                             | clean                                     |
+| Command                                                                         | Result                           |
+| ------------------------------------------------------------------------------- | -------------------------------- |
+| `cargo nextest run -p vpay-core -p vpay-ledger`                                 | 86 passed, 0 skipped, 0 ignored  |
+| `cargo nextest run -p vpay-db`                                                  | 241 passed, 0 skipped, 0 ignored |
+| `cargo nextest run -p vpay-tests-integration -E 'binary(postgres_smoke)'`       | 51 passed, 0 skipped, 0 ignored  |
+| `cargo test --doc -p vpay-core -p vpay-ledger -p vpay-db`                       | 57 + 6 + 8 passed, 0 ignored     |
+| `cargo clippy -p vpay-core -p vpay-ledger -p vpay-db --all-targets -D warnings` | clean                            |
+| `cargo clippy -p vpay-tests-integration --all-targets -D warnings`              | clean                            |
+| `cargo build --workspace --all-targets`                                         | clean                            |
+| `cargo +nightly fmt --all --check`                                              | clean                            |
 
 **Postgres tests ran; none skipped.** Every count above is a real container
 (`postgres:16-alpine`, `DOCKER_HOST=unix:///run/user/1000/docker.sock`), and
@@ -113,8 +113,8 @@ charge its transaction names, and that no SQL constraint can: the fact is
 three tables away and a row-level CHECK sees one row.
 
 `settlement::post_capture` and `settlement::post_refund` build the
-`AccountKind::MerchantPayable` from the `merchant_id` of the intent row *the
-same transaction* wrote.`apply_succeeded` and `apply_refund_succeeded` take no
+`AccountKind::MerchantPayable` from the `merchant_id` of the intent row _the
+same transaction_ wrote.`apply_succeeded` and `apply_refund_succeeded` take no
 merchant argument at all, so threading a caller's merchant through would be a
 change to those signatures rather than a value someone could quietly pass.
 
@@ -137,7 +137,7 @@ mint through it.
 
 - **`{transaction_id}_{index}` is still not injective in general, and
   `post_in_tx` does not refuse an id that could collide.** `x` and `x_0` both
-  derive `x_0_0`. No pair of *minted* ids can be in that relation — every body
+  derive `x_0_0`. No pair of _minted_ ids can be in that relation — every body
   is exactly 24 characters of an alphabet with no `_`, asserted by
   `vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`
   — and both call sites mint, so the ambiguity is unreachable from the write
@@ -145,7 +145,7 @@ mint through it.
   colliding pair would be refused by `ledger_entries_pkey`, loudly, never
   silently. Closing it at `post_in_tx` needs a shape check there and a
   `DbError` variant to carry the refusal.
-- **No `le_` prefix was added.** Entry ids are *derived*, not minted, and a
+- **No `le_` prefix was added.** Entry ids are _derived_, not minted, and a
   vocabulary entry with no minter behind it would be a claim about code nobody
   has written.
 - **Invariant 4 has one guard, not two.** `apply_succeeded`'s compare-and-swap
@@ -204,7 +204,7 @@ Two of those cases changed meaning, which is stated rather than smoothed over:
 - `two_refunds_settling_concurrently_add_up_and_the_over_refund_still_loses` —
   the first pair (two refunds that fit, settling concurrently) is unchanged and
   still measures that the invoice increment is an expression over the row's own
-  column. The second pair now races at *create*, for the same reason.
+  column. The second pair now races at _create_, for the same reason.
 
 ## Files
 

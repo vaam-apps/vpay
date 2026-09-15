@@ -184,7 +184,7 @@ whose `entries` field is `pub`, so a hand-built mixed-currency posting reached
 `ledger_entries` — measured, by running
 `a_mixed_currency_posting_is_refused_and_writes_nothing` (then in
 `postgres_smoke.rs`, now in `vpay_db::ledger`'s own test module) against the
-code before the fix and watching it commit. It was reachable from *any*
+code before the fix and watching it commit. It was reachable from _any_
 consumer at the time, through a `pub` trait method that no longer exists; it
 is reachable only from inside `vpay-db` now, which narrows who could make the
 mistake and not whether the guard is needed. `validate()` now balances each
@@ -363,21 +363,21 @@ superseded:
   the charge belongs to, and nothing can.** `ledger_entries.merchant_id` is a
   bare `TEXT` with a length CHECK and the pair CHECK; the merchant is three
   tables away (`ledger_entries -> ledger_transactions -> charges ->
-  payment_intents.merchant_id`) and a row-level CHECK sees one row. The
+payment_intents.merchant_id`) and a row-level CHECK sees one row. The
   denormalisation is deliberate — a ledger must not change when an operational
   row does (migration `0045` section "Why a column at all").
 
   **This is a call-site obligation, and since 2026-09-15 it is discharged
   rather than merely stated.** `settlement::post_capture` and
   `settlement::post_refund` build the `AccountKind::MerchantPayable` from the
-  `merchant_id` of the intent row *that same transaction* wrote, and from
+  `merchant_id` of the intent row _that same transaction_ wrote, and from
   nothing a caller passed — `apply_succeeded` and `apply_refund_succeeded`
   take no merchant argument at all, so threading one through would be a change
   to those signatures rather than a value someone could quietly pass.
   `a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller`
   captures and refunds for two merchants in one database and joins **every**
   `merchant_payable` row back through `ledger_transactions -> charges ->
-  payment_intents`, asserting no row disagrees. The balances alone would not
+payment_intents`, asserting no row disagrees. The balances alone would not
   catch a consistent mix-up; the join is what does.
 
 Evidence:
