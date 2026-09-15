@@ -587,10 +587,12 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 `checkout_session_complete` (409), `provider_unavailable` (502),
 `service_unavailable` (503), `checkout_not_configured` (500),
 `internal_error` (500). _(`not_implemented`
-(501) was on this list until 2026-09-03; the one remaining
-`NotImplemented` token is `mtn_momo::refund`, reachable only through
-`POST /v1/refunds`, which is not routed — so no `/v1` caller can provoke a
-`501` today.)_
+(501) was on this list until 2026-09-03. The last `NotImplemented` token,
+`mtn_momo::refund`, was retired on 2026-09-15 when the Disbursements
+`transfer` call was written, so `cargo xtask verify-status` now prints **zero**
+and **no shipping code can produce a `501` at all**. That says nothing about
+whether MTN refunds work — the call has never been made; see
+[../status.md](../status.md).)_
 Every one is derived from a `Category`; see
 [../flows/errors.md](../flows/errors.md). `Category::Conflict` now carries
 three codes rather than its default alone — `invalid_state`,
@@ -675,10 +677,10 @@ stack, and CI runs it.
 
 ### Not served — the honest 404 stands
 
-| Method | Path          | Why                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/v1/refunds` | no rail can refund: `mtn_momo::refund` is `NotImplemented` (refunds are MTN's Disbursements product) and Orange Money answers `Unsupported`. Nothing writes a `refunds` row, and `vpay_db::Refunds` exposes one read and no write. `GET /v1/refunds/{id}` **is** served, and renders the ten-key object — issue #46's `fee` included, `null` on every refund this deployment can produce |
-| GET    | `/v1/balance` | no ledger read path                                                                                                                                                                                                                                                                                                                                                                      |
+| Method | Path          | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/v1/refunds` | nothing writes a `refunds` row: `vpay_db::Refunds` exposes one read and no write, and RFC-0003 § 3's write path is unbuilt. Not a rail gap on MTN since 2026-09-15 — `mtn_momo::refund` makes the Disbursements `transfer` call, but **no deployment holds a Disbursements subscription key and that product has never been called from this repository**. Orange Money answers `Unsupported`. `GET /v1/refunds/{id}` **is** served, and renders the ten-key object — issue #46's `fee` included, `null` on every refund this deployment can produce |
+| GET    | `/v1/balance` | no ledger read path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Both SDKs can call both. Each returns the `404` envelope to an
 authenticated caller, because a `200` would mean someone invented a resource.

@@ -31,9 +31,9 @@ to its Collections twin** — sending Collections' Basic password to the
 Disbursements mint is a 401 that reads as "MTN refused our partner
 credentials", pages, and names nothing that is actually wrong.
 
-| Product       | Subscription key                          | API user                       | API key                    |
-| ------------- | ----------------------------------------- | ------------------------------ | -------------------------- |
-| Collections   | `credentials.subscription_key`             | `settings.api_user`            | `credentials.api_key`       |
+| Product       | Subscription key                            | API user                         | API key                            |
+| ------------- | ------------------------------------------- | -------------------------------- | ---------------------------------- |
+| Collections   | `credentials.subscription_key`              | `settings.api_user`              | `credentials.api_key`              |
 | Disbursements | `credentials.disbursement_subscription_key` | `settings.disbursement_api_user` | `credentials.disbursement_api_key` |
 
 None of the Disbursements keys is in
@@ -71,7 +71,7 @@ not be assumed interchangeable.
 
 The conformance stubs enforce it with `equalToJson` plus a `Content-Type`
 matcher. They matched `{"contains": "client_credentials"}` until 2026-09-15 —
-a pattern the *form* body also satisfies, so the exact regression #177 fixed
+a pattern the _form_ body also satisfies, so the exact regression #177 fixed
 would have gone green. Measured on 2026-09-15 with the adapter posting the
 form spelling: under the old matcher **67 of 67 conformance cases passed**;
 under the tightened one **24 fail**
@@ -101,7 +101,7 @@ and the one that decides who gets the money. `payerMessage` and `payeeNote`
 are documented by MTN and deliberately not sent: the port carries no
 merchant-supplied text, and a constant string would put words nobody chose in
 front of a payee. No `X-Callback-Url` either: the callback route parses a
-*charge* reference, so a Disbursements notification would be refused as
+_charge_ reference, so a Disbursements notification would be refused as
 `Malformed` on every delivery.
 
 `partyId` is the digits-only canonical form
@@ -110,16 +110,16 @@ front of a payee. No `X-Callback-Url` either: the callback route parses a
 the charge path. The adapter neither re-normalises nor re-validates it; the
 constructor is the only way to obtain a `RefundTarget` at all.
 
-| HTTP                        | →                                                                                            |
-| --------------------------- | ---------------------------------------------------------------------------------------------- |
-| `202`                       | `Refunded { ref_extra: {}, fee: None }` — **accepted, not settled**                           |
-| `409 RESOURCE_ALREADY_EXIST` | the same, and that is what makes a crash-retry safe rather than a second payout               |
-| `400`                       | `Rejected`, through the same failure table as the charge path (`PAYEE_NOT_FOUND` → `invalid_payee`) |
-| `401` / `403`               | `Rejected { provider_account_blocked }` — our **Disbursements** credentials, and it pages      |
-| `404`                       | `Config` — the endpoint, most likely a base URL with no Disbursements product behind it        |
-| `500` with a config code    | `Config`, on the charge path's three-code table; otherwise `Transport`                          |
-| any other 5xx               | `Transport`                                                                                    |
-| any 3xx                     | `Malformed` — redirects are never followed, and this body carries the payee's number           |
+| HTTP                         | →                                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `202`                        | `Refunded { ref_extra: {}, fee: None }` — **accepted, not settled**                                 |
+| `409 RESOURCE_ALREADY_EXIST` | the same, and that is what makes a crash-retry safe rather than a second payout                     |
+| `400`                        | `Rejected`, through the same failure table as the charge path (`PAYEE_NOT_FOUND` → `invalid_payee`) |
+| `401` / `403`                | `Rejected { provider_account_blocked }` — our **Disbursements** credentials, and it pages           |
+| `404`                        | `Config` — the endpoint, most likely a base URL with no Disbursements product behind it             |
+| `500` with a config code     | `Config`, on the charge path's three-code table; otherwise `Transport`                              |
+| any other 5xx                | `Transport`                                                                                         |
+| any 3xx                      | `Malformed` — redirects are never followed, and this body carries the payee's number                |
 
 **Three things about this call are unsettled, and are recorded rather than
 decided for a handler that does not exist yet.**

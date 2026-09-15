@@ -1315,12 +1315,7 @@ mod tests {
         // A configuration that WOULD satisfy the credential check, so the
         // only thing this can be failing on is the absent destination.
         let outcome = adapter()
-            .refund(
-                &charge,
-                charge.amount,
-                None,
-                &config_with_disbursements(),
-            )
+            .refund(&charge, charge.amount, None, &config_with_disbursements())
             .await;
 
         let Err(ProviderError::Config(message)) = outcome else {
@@ -1379,10 +1374,16 @@ mod tests {
     /// third-party refund is the wrong human.
     #[test]
     fn the_transfer_is_addressed_to_the_payee_and_never_to_the_payer() {
-        let body = transfer_body(Uuid::from_u128(0x0202), Money::new(5_000, Currency::Eur).expect("non-negative"));
+        let body = transfer_body(
+            Uuid::from_u128(0x0202),
+            Money::new(5_000, Currency::Eur).expect("non-negative"),
+        );
 
         let payee = body.get("payee").expect("the body has a payee");
-        assert_eq!(payee.get("partyIdType").and_then(Value::as_str), Some("MSISDN"));
+        assert_eq!(
+            payee.get("partyIdType").and_then(Value::as_str),
+            Some("MSISDN")
+        );
         assert_eq!(
             payee.get("partyId").and_then(Value::as_str),
             Some(DOCUMENTATION_PAYEE_CANONICAL),
@@ -1411,7 +1412,10 @@ mod tests {
     #[test]
     fn the_transfer_is_addressed_by_the_reference_the_core_supplied() {
         let reference = Uuid::from_u128(0x0de1);
-        let body = transfer_body(reference, Money::new(5_000, Currency::Eur).expect("non-negative"));
+        let body = transfer_body(
+            reference,
+            Money::new(5_000, Currency::Eur).expect("non-negative"),
+        );
         assert_eq!(
             body.get("externalId").and_then(Value::as_str),
             Some(reference.to_string().as_str()),
@@ -1430,7 +1434,10 @@ mod tests {
     fn a_partial_refund_sends_its_own_amount_and_not_the_charges() {
         let charge = charge();
         let partial = Money::new(1_500, Currency::Eur).expect("non-negative");
-        assert_ne!(partial, charge.amount, "the fixture must make this falsifiable");
+        assert_ne!(
+            partial, charge.amount,
+            "the fixture must make this falsifiable"
+        );
 
         let body = transfer_body(charge.reference_id, partial);
         assert_eq!(
@@ -1578,7 +1585,7 @@ mod tests {
             let status = StatusCode::from_u16(code).expect("a real status");
             let outcome = refund_outcome(status, "");
             assert!(
-                !matches!(outcome, Ok(_)),
+                outcome.is_err(),
                 "HTTP {code} must not be read as an accepted transfer: {outcome:?}"
             );
             assert!(
@@ -1779,7 +1786,8 @@ mod tests {
     async fn a_cached_token_is_reused_without_touching_the_rail() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config, Product::Collections).expect("a complete configuration");
+        let credentials = Credentials::from_config(&config, Product::Collections)
+            .expect("a complete configuration");
         *adapter.collections_token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
@@ -1842,7 +1850,8 @@ mod tests {
     async fn a_transport_failures_source_chain_reaches_the_reqwest_error() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
+        let credentials =
+            Credentials::from_config(&config, Product::Collections).expect("complete");
 
         let error = adapter
             .bearer(&config, &credentials)
@@ -1876,7 +1885,8 @@ mod tests {
     async fn an_expired_token_is_not_reused() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
+        let credentials =
+            Credentials::from_config(&config, Product::Collections).expect("complete");
         *adapter.collections_token.write().await = Some(token::cache_entry(
             "cached-token".to_owned(),
             credentials.fingerprint(),
@@ -2140,7 +2150,8 @@ mod tests {
     async fn debugging_the_adapter_does_not_print_the_token() {
         let adapter = adapter();
         let config = config();
-        let credentials = Credentials::from_config(&config, Product::Collections).expect("complete");
+        let credentials =
+            Credentials::from_config(&config, Product::Collections).expect("complete");
         *adapter.collections_token.write().await = Some(token::cache_entry(
             "super-secret-token".to_owned(),
             credentials.fingerprint(),

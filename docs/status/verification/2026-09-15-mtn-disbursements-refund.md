@@ -17,16 +17,16 @@ not about a rail. Nothing on this page should be read as "MTN refunds work".
 `just ci` was **not** run: this arm's brief forbids it (five concurrent local
 builds have OOM-killed this host). CI is the gate. What was run locally:
 
-| Command                                                                  | Result                                       |
-| ------------------------------------------------------------------------ | -------------------------------------------- |
-| `cargo nextest run -p vpay-adapter-mtn-momo`                             | **87 tests, 87 passed, 0 skipped**           |
-| `cargo nextest run -p vpay-tests-conformance` (real containers)          | **67 tests, 67 passed, 0 skipped**           |
-| `cargo nextest run -p vpay-config`                                       | **115 tests, 115 passed, 0 skipped**         |
-| `cargo nextest run -p vpay-provider`                                     | see the run below                            |
-| `cargo clippy -p vpay-adapter-mtn-momo -p vpay-tests-conformance -p vpay-config --all-targets -- -D warnings` | clean |
-| `cargo test --doc -p vpay-adapter-mtn-momo -p vpay-provider`             | see the run below                            |
-| `cargo xtask verify-status`                                              | `ok — 0 unimplemented item(s)`               |
-| `cargo +nightly fmt --all --check`                                       | clean                                        |
+| Command                                                                                                       | Result                               |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `cargo nextest run -p vpay-adapter-mtn-momo`                                                                  | **87 tests, 87 passed, 0 skipped**   |
+| `cargo nextest run -p vpay-tests-conformance` (real containers)                                               | **67 tests, 67 passed, 0 skipped**   |
+| `cargo nextest run -p vpay-config`                                                                            | **115 tests, 115 passed, 0 skipped** |
+| `cargo nextest run -p vpay-provider`                                                                          | see the run below                    |
+| `cargo clippy -p vpay-adapter-mtn-momo -p vpay-tests-conformance -p vpay-config --all-targets -- -D warnings` | clean                                |
+| `cargo test --doc -p vpay-adapter-mtn-momo -p vpay-provider`                                                  | see the run below                    |
+| `cargo xtask verify-status`                                                                                   | `ok — 0 unimplemented item(s)`       |
+| `cargo +nightly fmt --all --check`                                                                            | clean                                |
 
 The conformance suite needs `DOCKER_HOST=unix:///run/user/1000/docker.sock`
 on this host (rootless Docker). **Nothing was skipped**: the suite reports `0
@@ -54,11 +54,11 @@ compile in this workspace**: the root `Cargo.toml` pins reqwest with
 accidental safety net and is worth knowing. The bytes on the wire are
 identical.
 
-| Adapter                   | Token stub matcher                          | Conformance result                                   |
-| ------------------------- | ------------------------------------------- | ---------------------------------------------------- |
-| JSON grant (as shipped)   | `equalToJson` + `Content-Type` (as shipped) | **67 passed, 0 failed**                              |
-| **form-encoded grant**    | `equalToJson` + `Content-Type`              | **43 passed, 24 failed** — every MTN wire case       |
-| **form-encoded grant**    | **old** `{"contains": "client_credentials"}` | **67 passed, 0 failed** — fully green                |
+| Adapter                 | Token stub matcher                           | Conformance result                             |
+| ----------------------- | -------------------------------------------- | ---------------------------------------------- |
+| JSON grant (as shipped) | `equalToJson` + `Content-Type` (as shipped)  | **67 passed, 0 failed**                        |
+| **form-encoded grant**  | `equalToJson` + `Content-Type`               | **43 passed, 24 failed** — every MTN wire case |
+| **form-encoded grant**  | **old** `{"contains": "client_credentials"}` | **67 passed, 0 failed** — fully green          |
 
 The third row is the finding. **With the old matcher, the exact regression PR
 #177 fixed passes this suite green**, and it did so for as long as the matcher
@@ -115,10 +115,23 @@ same source as the adapter, so it cannot disagree with it.
 `docs/flows/adapter-mtn-momo.md` § "Not proven" lists what a first real call
 has to check.
 
+## One stale comment that cannot be corrected, by design
+
+`backends/migrations/0031_refunds-fee.sql`'s header says "`mtn_momo::refund`
+is the one remaining `NotImplemented` token". That is now false. It was
+corrected here and then **reverted**, because `cargo xtask verify-migrations`
+refused it: applied migrations are immutable down to the byte (issue #76), and
+every database that applied the original refuses to boot once the SHA-256
+changes. Writing a new migration to fix a comment would be worse. The file
+stays as it is; `docs/status.md` and
+[../../flows/adapter-mtn-momo.md](../../flows/adapter-mtn-momo.md) are the
+current record, and this paragraph is the pointer for anyone who reads that
+header and believes it.
+
 ## Decisions taken here that a maintainer may want to revisit
 
 1. **RFC-0003 open question 6** (a `Required` rail handed `destination:
-   None`) → `ProviderError::Config`. The RFC delegated this to "the first
+None`) → `ProviderError::Config`. The RFC delegated this to "the first
    adapter to make a real transfer call"; this is it. Reasoning is on
    `Adapter::refund`.
 2. **Which reference the transfer carries.** The port hands `refund` one

@@ -10,10 +10,14 @@
 //! Step 3 built them. A test is ignored in this repo only while the behaviour
 //! it describes is unbuilt (`just verify-ignored` holds the count at zero for
 //! this suite), so a green run here means these assertions were made against a
-//! real container, not skipped. `mtn_momo::refund` keeps its `NotImplemented`
-//! token — Disbursements is a separate product — and
-//! [`a_rail_without_the_refund_capability_answers_unsupported`] asserts exactly
-//! that, rather than being ignored for it. See `docs/status.md`.
+//! real container, not skipped. The refund cases are the newest example and
+//! the one worth knowing about: `mtn_momo::refund` kept a `NotImplemented`
+//! token until 2026-09-15, when MTN's Disbursements `transfer` call was
+//! written (RFC-0003 § 5) — so those cases now drive a real call at a real
+//! stub rather than asserting a token. **They prove the adapter, not the
+//! rail**: nothing in this repository has ever called MTN's Disbursements
+//! product and a stub faithful to MTN's documentation but not to MTN would
+//! pass every one. See `docs/status.md`.
 //!
 //! The wire-level cases were written *before* the adapters, deliberately: this
 //! file was the specification the MTN and Orange implementers coded against,

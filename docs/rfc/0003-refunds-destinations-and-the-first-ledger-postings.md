@@ -312,7 +312,7 @@ different destinations.
    that exists. `Config`'s description on the port's error-surface table ("a
    credential, setting or URL this deployment did not supply, or supplied
    unusably … no retry against the rail can fix it") is the closest true
-   sentence available, and its *classification* is the behaviour that
+   sentence available, and its _classification_ is the behaviour that
    matters: it stops the poll ladder, it pages, and it never reaches a payer
    as a decline. The reasoning is on `Adapter::refund`, and
    `a_refund_with_no_payee_is_refused_before_a_credential_is_read` pins both
@@ -325,7 +325,7 @@ different destinations.
    which is the first code that had to answer it.
 
    `ProviderAdapter::refund` takes one `ChargeRef`, which carries one
-   reference. A refund needs its *own* rail reference: § 3 step 2 above mints
+   reference. A refund needs its _own_ rail reference: § 3 step 2 above mints
    a `provider_reference_id` for the refunds row before any rail call, and
    `Refunded::ref_extra` is documented as key material for "a reference this
    side generated before the call". Two references are needed and one is
@@ -333,7 +333,7 @@ different destinations.
 
    The adapter uses the reference it is given, as `X-Reference-Id` and as the
    body's `externalId`. **That is correct if and only if the `POST
-   /v1/refunds` handler hands it the refund's `provider_reference_id`.** If it
+/v1/refunds` handler hands it the refund's `provider_reference_id`.** If it
    hands the charge's:
 
    - a second partial refund reuses a reference MTN has already seen, is
@@ -355,7 +355,7 @@ different destinations.
    the adapter does so a handler author reads an assertion rather than a
    paragraph.
 
-8. **A refund's `202` is *accepted*, not *settled*, and the port cannot say
+8. **A refund's `202` is _accepted_, not _settled_, and the port cannot say
    so. — OPEN.** Also 2026-09-15. MTN's `transfer` is asynchronous exactly as
    `requesttopay` is; its outcome is read from
    `GET /disbursement/v1_0/transfer/{referenceId}`. `Refunded` has no status
@@ -366,12 +366,12 @@ different destinations.
 
 ## Impact on existing invariants
 
-| Invariant                                                         | Effect                                                                                              |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `no_over_refund` CHECK (migration `0003`)                         | First code path that can reach it; it becomes load-bearing rather than test-only                    |
-| ledger invariant 1 (per transaction, debits = credits)            | First enforcement in a live path; `Transaction::validate()` starts being called                     |
-| ledger invariant 2 (per merchant)                                 | Becomes _computable_ for the first time, once `AccountKind` carries the merchant dimension          |
-| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds)      | First code that maintains the left-hand side on the intent                                          |
-| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one                                                                         |
-| `partial_refunds_imply_refunds` CHECK (migration `0002`)          | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent |
+| Invariant                                                         | Effect                                                                                                                                                    |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `no_over_refund` CHECK (migration `0003`)                         | First code path that can reach it; it becomes load-bearing rather than test-only                                                                          |
+| ledger invariant 1 (per transaction, debits = credits)            | First enforcement in a live path; `Transaction::validate()` starts being called                                                                           |
+| ledger invariant 2 (per merchant)                                 | Becomes _computable_ for the first time, once `AccountKind` carries the merchant dimension                                                                |
+| ledger invariant 3 (`amount_refunded` = Σ succeeded refunds)      | First code that maintains the left-hand side on the intent                                                                                                |
+| ledger invariant 4 (one capture transaction per succeeded charge) | First code that creates one                                                                                                                               |
+| `partial_refunds_imply_refunds` CHECK (migration `0002`)          | Orange flipping to `supports_refunds: true` must not flip `supports_partial_refunds` without intent                                                       |
 | `verify-status`                                                   | `mtn_momo::refund` retired 2026-09-15 (arm D). `orange_money::refund` is **not** added: § 5's flip is unbuilt, so the list is empty and the gate prints 0 |

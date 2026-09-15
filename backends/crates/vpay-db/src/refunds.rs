@@ -1,11 +1,13 @@
 //! The `refunds` repository (`backends/migrations/0017_create-refunds.sql`,
 //! plus `0031_refunds-fee.sql`) — one read, and nothing else.
 //!
-//! **This module does not create refunds.** Creating one needs a rail refund,
-//! and neither rail has one:
-//! `mtn_momo::refund` is `ProviderError::NotImplemented` and Orange Money
-//! answers `Unsupported` because its Web Payment product documents no refund
-//! API (`docs/status.md`). `POST /v1/refunds` stays unrouted. What this module
+//! **This module does not create refunds.** Creating one needs the write path
+//! RFC-0003 § 3 describes, which is unwritten; `POST /v1/refunds` stays
+//! unrouted. The rail half moved on 2026-09-15 without moving this:
+//! `mtn_momo::refund` makes MTN's Disbursements `transfer` call, **no
+//! deployment holds the credential it needs and the product has never been
+//! called**, and Orange Money still answers `Unsupported` because its Web
+//! Payment product documents no refund API (`docs/status.md`). What this module
 //! adds is the **authoritative read** a refund has to have once it exists at
 //! all: `docs/flows/provider-port.md` calls `query_status` "the authoritative
 //! read", `docs/flows/webhooks.md` says delivery is at-least-once and

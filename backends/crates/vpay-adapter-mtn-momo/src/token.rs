@@ -229,7 +229,11 @@ impl<'a> Credentials<'a> {
                 product.subscription_key_setting(),
                 "credentials",
             )?,
-            api_key: required(&config.credentials, product.api_key_setting(), "credentials")?,
+            api_key: required(
+                &config.credentials,
+                product.api_key_setting(),
+                "credentials",
+            )?,
             api_user: required(&config.settings, product.api_user_setting(), "settings")?,
             target_environment: required(&config.settings, "target_environment", "settings")?,
         })
@@ -652,7 +656,10 @@ mod tests {
         let identical = config(
             BTreeMap::from([
                 ("subscription_key".to_owned(), "same".to_owned()),
-                ("disbursement_subscription_key".to_owned(), "same".to_owned()),
+                (
+                    "disbursement_subscription_key".to_owned(),
+                    "same".to_owned(),
+                ),
                 ("api_key".to_owned(), "same".to_owned()),
                 ("disbursement_api_key".to_owned(), "same".to_owned()),
             ]),
@@ -831,7 +838,10 @@ mod tests {
     #[test]
     fn debugging_credentials_does_not_print_them() {
         let config = complete();
-        let rendered = format!("{:?}", Credentials::from_config(&config, Product::Collections).expect("complete"));
+        let rendered = format!(
+            "{:?}",
+            Credentials::from_config(&config, Product::Collections).expect("complete")
+        );
         assert!(!rendered.contains("sh1bboleth"), "{rendered}");
         assert!(!rendered.contains("0pen-sesame"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");

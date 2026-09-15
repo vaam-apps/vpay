@@ -7,7 +7,9 @@
         "method": "POST",
         "urlPath": "/disbursement/v1_0/transfer",
         "headers": {
-          "Authorization": { "equalTo": "Bearer stub-disbursement-access-token" },
+          "Authorization": {
+            "equalTo": "Bearer stub-disbursement-access-token"
+          },
           "Ocp-Apim-Subscription-Key": {
             "equalTo": "stub-disbursement-subscription-key"
           }

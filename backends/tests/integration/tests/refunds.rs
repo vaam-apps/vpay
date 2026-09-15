@@ -755,11 +755,14 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 /// Creating a refund is **still** the honest `404`, and the read did not
 /// quietly bring a write with it.
 ///
-/// `POST /v1/refunds` needs `ProviderAdapter::refund`; `mtn_momo::refund` is
-/// `NotImplemented` and Orange Money answers `Unsupported`. The route is
-/// declared in `docs/flows/merchant-auth.md` and mounted nowhere, so an
-/// authenticated caller gets the nest's `unknown_route` — a `200` there would
-/// mean someone invented a resource.
+/// `POST /v1/refunds` needs a writer, and nothing in this repository inserts
+/// a `refunds` row (RFC-0003 § 3). It is **not** blocked on the rail any
+/// more: `mtn_momo::refund` makes MTN's Disbursements `transfer` call as of
+/// 2026-09-15, against a credential no deployment holds and a product this
+/// repository has never called; Orange Money still answers `Unsupported`.
+/// The route is declared in `docs/flows/merchant-auth.md` and mounted
+/// nowhere, so an authenticated caller gets the nest's `unknown_route` — a
+/// `200` there would mean someone invented a resource.
 #[tokio::test]
 async fn creating_a_refund_is_still_the_honest_404() -> anyhow::Result<()> {
     let harness = harness().await?;

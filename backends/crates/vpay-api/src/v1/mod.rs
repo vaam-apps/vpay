@@ -260,11 +260,14 @@ pub const V1_ROUTES: &[V1Route] = &[
     },
     // `GET` only. `POST /v1/refunds` is declared in
     // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
-    // refund needs a rail refund, and `mtn_momo::refund` is `NotImplemented`
-    // while Orange Money answers `Unsupported`. Mounting a create that could
-    // only ever answer `501` would put a route in this table that takes no
-    // money back — the read is what issue #45 decided was part of the
-    // contract, and it is the whole of what is mounted.
+    // refund needs the write path RFC-0003 § 3 describes, and nothing in this
+    // repository inserts a `refunds` row. `mtn_momo::refund` stopped being the
+    // blocker on 2026-09-15 — it makes MTN's Disbursements `transfer` call,
+    // against a credential no deployment holds and a product this repository
+    // has never called — and Orange Money still answers `Unsupported`.
+    // Mounting a create with no writer behind it would put a route in this
+    // table that takes no money back; the read is what issue #45 decided was
+    // part of the contract, and it is the whole of what is mounted.
     V1Route {
         path: "/refunds/{id}",
         methods: &["GET"],
