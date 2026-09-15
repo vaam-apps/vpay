@@ -198,7 +198,10 @@ that a vpay older than the field still decodes; see
 proves it.
 
 **Every `refund` this deployment could produce carries `fee: null`**, and will
-until a rail reports one. Orange's Web Payment product documents no refund API
+until a rail reports one. `orange_money::refund` is an unbuilt
+`NotImplemented` token — since 2026-09-15 an Orange refund is an outbound
+transfer this repository has no specification for (RFC-0003 § 5); this sentence
+read "Orange's Web Payment product documents no refund API" until that date —
 and MTN refunds are the Disbursements product vpay has never been issued a
 credential for — see [../status.md](../../status.md), which names what has to
 exist before that changes. The same value appears on `charge.refunded` and

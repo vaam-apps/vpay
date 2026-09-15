@@ -122,11 +122,14 @@ pub struct Capabilities {
     /// is true.** On a rail that cannot refund at all the value is inert —
     /// no code path reaches it — and it is still required to be a truthful
     /// statement about the rail's refund product, because that is the field
-    /// the moment `supports_refunds` flips. `orange_money` is exactly that
-    /// case today: it declares [`RefundDestination::Required`] while
-    /// `supports_refunds` is still `false`, because an Orange refund *is* a
-    /// transfer back (RFC-0003 § 5) and the flag is what is behind, not the
-    /// destination.
+    /// the moment `supports_refunds` flips. `orange_money` was exactly that
+    /// case until 2026-09-15: it declared [`RefundDestination::Required`]
+    /// while `supports_refunds` was still `false`, because an Orange refund
+    /// *is* a transfer back and the flag was what was behind, not the
+    /// destination. RFC-0003 § 5 then flipped the flag, `Required` did not
+    /// move, and this value is no longer inert on any rail this workspace
+    /// carries — **both** declare `supports_refunds: true`, so the paragraph
+    /// above now describes a case with no live example rather than one.
     ///
     /// That is also why **no coherence rule pairs with this field** — see
     /// [`Capabilities::is_coherent`], which says why at length.
@@ -156,11 +159,15 @@ impl Capabilities {
     /// [`RefundDestination::Origin`]" — was considered and refused, for three
     /// reasons (RFC-0003 § 1):
     ///
-    /// 1. **It is false on a live rail.** `orange_money` declares `Required`
+    /// 1. **It was false on a live rail.** `orange_money` declared `Required`
     ///    with `supports_refunds: false`: the rail's refunds *are* transfers
     ///    and it is vpay that has not built them. A rule demanding `Origin`
-    ///    there would force the declaration to lie, and would flip back the
-    ///    day `supports_refunds` does.
+    ///    there would have forced the declaration to lie, and would have
+    ///    flipped back the day `supports_refunds` did — which it did, on
+    ///    2026-09-15 (RFC-0003 § 5). This reason has now expired exactly as
+    ///    the paragraph below predicted; it is left in place rather than
+    ///    deleted because it is the evidence that the refusal was not a
+    ///    guess.
     /// 2. **Neither value means anything when refunds are off.** `Origin` is
     ///    no more "the unread value" than `Required` is, so the rule would be
     ///    picking an arbitrary sentinel and calling it coherence.
@@ -170,10 +177,12 @@ impl Capabilities {
     ///    (see the field). A Rust-only "coherence" rule with no database half
     ///    would be a different kind of thing wearing this method's name.
     ///
-    /// Reason 1 has a shelf life and is the weakest of the three: it stops
-    /// being true the day RFC-0003 § 5 flips `orange_money`'s
-    /// `supports_refunds`, and nothing fires on *this* text when it does —
-    /// the tripwire in that adapter's tests fires on the flag. The decision
+    /// Reason 1 had a shelf life and was the weakest of the three: it stopped
+    /// being true on 2026-09-15, when RFC-0003 § 5 flipped `orange_money`'s
+    /// `supports_refunds`. Nothing fired on *this* text when it did — the
+    /// tripwire in that adapter's tests fired on the flag, and this paragraph
+    /// was found stale by review afterwards, which is the cost of a comment
+    /// that predicts its own expiry without a gate behind it. The decision
     /// survives on reasons 2 and 3, which do not depend on what any rail
     /// declares today. Reason 2 in particular is an argument about the
     /// field's **type** rather than about this method: a two-variant enum has
@@ -1565,9 +1574,11 @@ mod tests {
     /// adding the column and the migration first — and then this test is
     /// deleted rather than weakened.
     ///
-    /// `orange_money`'s live declaration is the second row below:
-    /// `Required` with `supports_refunds: false`, which the obvious rule
-    /// would have refused.
+    /// The second row below — `Required` with `supports_refunds: false` — was
+    /// `orange_money`'s live declaration until 2026-09-15, when RFC-0003 § 5
+    /// flipped that flag to `true`. It is the pair the obvious rule would
+    /// have refused, and this case still covers it because the matrix is
+    /// exhaustive over both fields rather than over what any rail ships.
     #[test]
     fn a_refund_destination_is_inert_to_coherence() {
         let base = Capabilities {

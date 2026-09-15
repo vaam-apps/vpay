@@ -944,8 +944,12 @@ pub struct Refund {
     /// declaration costs nothing; it is not what protects the absent case.
     ///
     /// **It is `None` from every vpay deployment today.** Neither rail
-    /// reports a refund fee: Orange has no refund API and MTN refunds are the
-    /// Disbursements product vpay has never called. See `docs/status.md`.
+    /// reports a refund fee: both `refund` implementations are unbuilt
+    /// `NotImplemented` tokens — MTN refunds are the Disbursements product
+    /// vpay has never called, and since 2026-09-15 an Orange refund is an
+    /// outbound transfer this repository has no specification for (RFC-0003
+    /// § 5). This read "Orange has no refund API" until that date. See
+    /// `docs/status.md`.
     #[serde(default)]
     pub fee: Option<i64>,
 }

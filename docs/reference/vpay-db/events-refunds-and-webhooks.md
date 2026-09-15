@@ -33,8 +33,11 @@ authoritative read: it is asynchronous and non-terminal (`pending`), the two
 documented refund event types are emitted by nothing, and webhook delivery is
 at-least-once and unordered. **Creating** one is a different question and is
 still unanswered — `ProviderAdapter::refund` is `NotImplemented` on MTN
-(refunds are the Disbursements product) and `Unsupported` on Orange — so
-`Refunds` exposes `get_for_merchant` and nothing else. A `create` here would
+(refunds are the Disbursements product) and, since 2026-09-15, `NotImplemented`
+on Orange too (RFC-0003 § 5 decided an Orange refund is an outbound transfer
+this repository has no specification for; this sentence read `Unsupported` on
+Orange until that date) — so `Refunds` exposes `get_for_merchant` and nothing
+else. A `create` here would
 be a write path no shipping code calls, which is a feature this repository
 would be claiming it has.
 

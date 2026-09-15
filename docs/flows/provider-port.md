@@ -365,7 +365,11 @@ speak over it to a real HTTP host.**
   `Submitted`.** The new type carries `ref_extra` exactly as before plus
   `fee: Option<Money>` — what the rail charged us to move the money, in the
   refund's own currency. **No adapter populates it**, and none can: Orange
-  has no refund API and `mtn_momo::refund` is still `NotImplemented`. `None`
+  had no refund API and `mtn_momo::refund` is still `NotImplemented`.
+  _(Superseded in part on 2026-09-15: Orange's refusal is now its own
+  `NotImplemented("orange_money::refund")` token — see the Capabilities
+  section above. The conclusion did not move; no adapter populates `fee` and
+  none can.)_ `None`
   means "the rail did not report a fee" and `Some(zero)` means "the movement
   was free"; an adapter that collapsed the two would put an invented number
   in a merchant's settlement statement. See [../status.md](../status.md).

@@ -53,8 +53,10 @@ standing permission nobody asked for.
 `refunds` has a second, independent blocker worth recording because the brief
 that produced this work assumed otherwise: **there is no refund create to
 move.** `vpay_db::refunds` is two reads and no write, because
-`ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported` on
-Orange (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
+`ProviderAdapter::refund` is `NotImplemented` on MTN and, since 2026-09-15
+(RFC-0003 § 5), `NotImplemented` on Orange too — this sentence read
+`Unsupported` on Orange until that date, and the blocker it records did not
+move (`docs/status.md`). Both reads are also merchant-scoped through a JOIN
 onto `payment_intents` — the table carries no `merchant_id` of its own, and
 migration 0017 argues why it should not — and a generated read filters
 columns of one table.

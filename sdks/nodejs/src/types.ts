@@ -159,9 +159,12 @@ export interface Refund {
    * `refund.fee || 0` are both the bug.
    *
    * **It is `null` from every vpay deployment today.** Neither rail reports a
-   * refund fee — Orange has no refund API and MTN refunds are the
-   * Disbursements product vpay has never called — so nothing populates it.
-   * See `docs/status.md`.
+   * refund fee: both `refund` implementations are unbuilt
+   * `NotImplemented` tokens — MTN refunds are the Disbursements product vpay
+   * has never called, and since 2026-09-15 an Orange refund is an outbound
+   * transfer this repository has no specification for (RFC-0003 section 5).
+   * So nothing populates it. (This read "Orange has no refund API" until that
+   * date.) See `docs/status.md`.
    */
   fee?: number | null;
 }

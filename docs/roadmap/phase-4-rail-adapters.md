@@ -16,9 +16,13 @@ recovery had landed._
 with real HTTP calls, passing the shared conformance suite. _(Eight, in the
 original wording. `mtn_momo::refund` stays — MTN refunds are the
 Disbursements product, with a subscription key and token scope no deployment
-holds — and `orange_money::refund` left the list without being built,
-because Orange documents no refund API and the adapter now inherits the
-port's permanent `Unsupported` default. See `docs/status.md`.)_
+holds — and `orange_money::refund` left the list on 2026-09-03 without being
+built, because Orange documented no refund API and the adapter inherited the
+port's permanent `Unsupported` default. **It came back on 2026-09-15**: the
+maintainer decided an Orange refund _is_ an outbound transfer (RFC-0003 § 5),
+so `supports_refunds` is `true`, the adapter overrides `refund` with its own
+`NotImplemented("orange_money::refund")`, and this Goal's count is again
+**two** tokens left rather than one. See `docs/status.md`.)_
 
 **Status.** Done, against WireMock. Capabilities ✅; `submit`,
 `query_status` and `parse_callback` ✅ on both rails against a real
