@@ -643,9 +643,11 @@ impl ProviderAdapter for Adapter {
     ///
     /// # Why this is built while `refund` is a token
     ///
-    /// Nothing calls this today: `refund` is
-    /// `NotImplemented("orange_money::refund")` and `POST /v1/refunds` is
-    /// unrouted. It is built anyway, because the two answer different
+    /// `POST /v1/refunds` calls this since 2026-09-16 and then answers the
+    /// merchant the token below, which is the shape this paragraph predicted:
+    /// the destination is parsed, the refund row is written, and the transfer
+    /// is the thing that does not exist. It was built ahead of a caller
+    /// because the two answer different
     /// questions and only one of them needs Orange's transfer
     /// specification. *Who* a refund is addressed to is vpay's own
     /// merchant-facing parameter (RFC-0003 § 1) and is fully known — it is

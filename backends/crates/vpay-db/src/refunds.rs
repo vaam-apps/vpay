@@ -20,8 +20,12 @@
 //!   and no Orange transfer API is documented in this repository, so the
 //!   token is vpay's unbuilt work rather than a fact about the rail.
 //!
-//! `supports_refunds` is `true` on both rails, and `POST /v1/refunds` stays
-//! unrouted until Wave 3 (`docs/status.md`).
+//! `supports_refunds` is `true` on both rails, and ~~`POST /v1/refunds` stays
+//! unrouted until Wave 3~~ — **it is routed since 2026-09-16 (RFC-0003 § 2),
+//! so this module's writes are reachable by a merchant.** What has not
+//! changed is anything about the rails, and one thing got a name: **nothing
+//! settles a `pending` refund**, because the port has no refund status read
+//! (RFC-0003 open question 8). `docs/status.md`.
 //!
 //! The other thing this module has is the **authoritative read** a refund has
 //! to have once it exists at all: `docs/flows/provider-port.md` calls
@@ -44,12 +48,17 @@
 //! counters and the ledger posting that go with it. The same is true of the
 //! ledger write itself: it is not reachable from outside this crate either.
 //!
-//! What that costs, stated rather than hidden: **no rail call has ever been
-//! made for a refund.** Nothing in a shipping binary calls
-//! [`Refunds::create`] — `POST /v1/refunds` is not routed — so no rail can
-//! produce the `pending` row [`settle_in_tx`] settles, nothing in
-//! `vpay-server` reaches it, and every deployment's `refunds` table is empty
-//! but for rows an operator or a test put there. `docs/status.md` says so.
+//! What that costs, stated rather than hidden, and **re-stated 2026-09-16**:
+//! `vpay_api::v1::refunds` is now the caller, so [`Refunds::create`]'s
+//! statements — through [`create_in_tx`], which is the shape that lets the
+//! handler commit `charge.refunded` beside them — do run in a shipping
+//! binary, and a rail *is* instructed. **What still has no caller at all is
+//! the settlement half**: nothing moves a refund out of `pending`, because
+//! the port has no refund status read and there is no refund poll ladder, so
+//! [`settle_in_tx`] is reached by nothing a merchant can cause. And **no rail
+//! has ever returned money**: MTN's Disbursements product has never been
+//! called and no deployment holds its credential, and Orange's transfer is a
+//! declared `NotImplemented` token. `docs/status.md` says so.
 //! The seam exists because D5's and RFC-0003's decisions are about what the
 //! *database* does when a refund lands, and a decision with no statement
 //! behind it is a sentence in a document.
@@ -269,10 +278,15 @@ pub struct RefundListPage {
 /// § 5, 2026-09-15) because an Orange refund is an outbound transfer and no
 /// Orange transfer API is documented in this repository, which makes that
 /// token vpay's unbuilt work rather than a fact about the rail.
-/// `POST /v1/refunds` is unrouted until Wave 3, so nothing in a
+/// ~~`POST /v1/refunds` is unrouted until Wave 3, so nothing in a
 /// shipping binary calls this method today and no rail call has ever been
-/// made for a refund. `docs/status.md` says so; this doc says so rather than
-/// letting the method's existence imply otherwise.
+/// made for a refund.~~ **Routed since 2026-09-16 (RFC-0003 § 2):
+/// `vpay_api::v1::refunds` reaches these statements through
+/// [`crate::TxRepositories::create_refund_in_tx`], which is the same
+/// sequence in a transaction it also writes `charge.refunded` into. A rail
+/// is instructed; no rail has returned money.** `docs/status.md` says so;
+/// this doc says so rather than letting the method's existence imply
+/// otherwise.
 ///
 /// # Which writes are on this trait and which are not
 ///

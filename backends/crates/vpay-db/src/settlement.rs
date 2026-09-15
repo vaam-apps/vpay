@@ -617,25 +617,31 @@ pub trait Settlement: Send + Sync {
     /// `invoice.paid` is **not** re-emitted (D5) — the invoice is still
     /// `paid` and telling a merchant a second time that a bill was settled
     /// because part of it came back would be a lie about a transition that
-    /// did not happen. `charge.refunded` and `charge.refund.updated` are
-    /// documented types this repository still emits nothing for
-    /// (`docs/status.md`), and this method does not change that: emitting one
-    /// needs the wire object `vpay-api` shapes, which is the caller's to
-    /// supply, and there is no caller until Wave 3.
+    /// did not happen. ~~`charge.refunded` and `charge.refund.updated` are
+    /// documented types this repository still emits nothing for~~ — **both
+    /// have been emitted by `vpay_api::v1::refunds` since 2026-09-16
+    /// (RFC-0003 § 2), and this method still emits neither.** The reason is
+    /// unchanged and is the reason it was written down: emitting one needs
+    /// the wire object `vpay-api` shapes, which is the caller's to supply.
+    /// A caller that settles a refund through here owes the merchant a
+    /// `charge.refund.updated`, and this method's signature is what would
+    /// have to carry it — as `erase_customer_in_tx`'s does.
     ///
-    /// # There is still no rail behind this
+    /// # Nothing reaches this method, and the reason changed on 2026-09-16
     ///
-    /// `POST /v1/refunds` is unrouted, so no shipping binary calls this
-    /// method today, even though [`crate::Refunds::create`] can now write the
-    /// `pending` row it settles. The rails stopped being the reason on
+    /// ~~`POST /v1/refunds` is unrouted, so no shipping binary calls this
+    /// method today~~ — the route is mounted now, and it still does not call
+    /// this method, because **an `Ok` from a rail is an acceptance and not a
+    /// settlement** (below). What reaches it is nothing at all: there is no
+    /// refund poll ladder, so no code path in this repository moves a refund
+    /// out of `pending`. The rails stopped being the reason on
     /// 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
     /// call — against a credential no deployment holds and a product this
     /// repository has never called — and `orange_money::refund` is a declared
-    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`. What is
-    /// missing is the caller: the `POST /v1/refunds` handler that would drive
-    /// RFC-0003 § 3's transaction and then this one.
+    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`.
     ///
-    /// **And when that handler is written, an `Ok(Refunded)` must not become
+    /// **And when that handler was written it did not, which is why nothing
+    /// calls this: an `Ok(Refunded)` must not become
     /// `refunds.status = 'succeeded'` on its own.** MTN's `transfer` answers
     /// `202 ACCEPTED`; the port has no refund status read and `Refunded` has
     /// no status field, so the most an adapter can report is that the rail

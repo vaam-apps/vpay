@@ -5980,9 +5980,11 @@ async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
 /// Disbursements subscription key and the product has never been called.
 /// `orange_money::refund` is a `NotImplemented` token, since 2026-09-15,
 /// because a refund there is an outbound transfer this repository has no
-/// specification for (RFC-0003 § 5). `POST /v1/refunds` is unrouted until
-/// Wave 3, so what these cases prove is what the database does, not that a
-/// merchant can refund anything. `docs/status.md` says so.
+/// specification for (RFC-0003 § 5). ~~`POST /v1/refunds` is unrouted until
+/// Wave 3~~ — **routed since 2026-09-16, which changes who can reach these
+/// statements and changes nothing about the rails** — so what these cases
+/// prove is still what the database does, not that a merchant can be given
+/// their money back. `docs/status.md` says so.
 async fn pending_refund(
     repositories: &dyn Repositories,
     id: &str,
@@ -6296,8 +6298,9 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
 ///
 /// It is a claim about `vpay_db::settlement`'s refund transaction and about
 /// migration `0042`'s column. It is **not** a claim that a merchant can
-/// refund anything: `POST /v1/refunds` is unrouted, so no shipping binary
-/// reaches the writer these cases call, and no rail has ever executed a
+/// refund anything: nothing settles a `pending` refund — the port has no
+/// refund status read, so `POST /v1/refunds` (routed since 2026-09-16) never
+/// reaches the settlement these cases call — and no rail has ever executed a
 /// refund — `mtn_momo::refund` has made MTN's Disbursements `transfer` call
 /// since 2026-09-15, against a credential no deployment holds and a product
 /// this repository has never called, and `orange_money::refund` is a declared

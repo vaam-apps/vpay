@@ -34,7 +34,8 @@
 //! than it should: no rail has ever executed a refund — `mtn_momo::refund` is
 //! written and MTN's Disbursements product has never been called, while
 //! `orange_money::refund` is a `NotImplemented` token and neither answers
-//! `Unsupported` — `POST /v1/refunds` is unrouted until Wave 3 so nothing
+//! `Unsupported` — and although `POST /v1/refunds` has been routed since
+//! 2026-09-16 it settles nothing, so nothing
 //! reaches `crate::Refunds::create`, and nothing schedules the nightly
 //! assertion of invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
 //! the gaps.
