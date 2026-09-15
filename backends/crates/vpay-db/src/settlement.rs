@@ -781,6 +781,68 @@ pub trait Settlement: Send + Sync {
     ) -> Result<Vec<String>, DbError>;
 }
 
+/// Fails one `pending` refund and releases its reservation, **inside the
+/// caller's transaction**.
+///
+/// The whole of what [`Settlement::apply_refund_failed`] does; that method is
+/// now this function plus a transaction. Extracted on 2026-09-16 for
+/// `POST /v1/refunds`, which has to write `charge.refund.updated` in the same
+/// commit — an event apart from the transition it reports is either a webhook
+/// for something that did not happen or a transition no merchant hears about
+/// (`docs/flows/webhooks.md`). One implementation, two entry points: a second
+/// copy of "fail the row and give the reservation back" is how the refund and
+/// the intent's counters stop agreeing.
+///
+/// `Ok(None)` means the refund was not `pending` — already settled, already
+/// failed, or no such row — and nothing has been written, so the caller may
+/// abandon its transaction. Nothing is rolled back here; the transaction is
+/// not this function's.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the refund was
+/// `pending` but the intent carried no matching reservation — a broken
+/// invariant, which pages. [`DbError::Query`] if any statement fails,
+/// including a `code` outside `refunds_failure_code_enum_check`'s vocabulary.
+pub(crate) async fn fail_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    refund_id: &str,
+    code: &str,
+    raw: &str,
+    now: OffsetDateTime,
+) -> Result<Option<crate::refunds::SettledRefund>, DbError> {
+    let Some(refund) = crate::refunds::fail_in_tx(&mut *conn, refund_id, code, raw, now).await?
+    else {
+        return Ok(None);
+    };
+
+    // The reservation goes back and nothing else moves. `amount_refunded`
+    // is untouched, the invoice is untouched, and **no ledger row is
+    // written** — there is none to reverse, which
+    // `docs/flows/ledger.md` § "When refunds post" names as the reason
+    // the reservation column exists at all.
+    let intent =
+        payment_intents::release_refund_in_tx(&mut *conn, &refund.payment_intent_id, refund.amount)
+            .await?
+            .ok_or_else(|| DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                key: refund.payment_intent_id.clone(),
+            })?;
+
+    tracing::info!(
+        refund_id = %refund.id,
+        payment_intent_id = %intent.id,
+        amount = refund.amount,
+        failure_code = %code,
+        amount_refunded = intent.amount_refunded,
+        amount_refund_pending = intent.amount_refund_pending,
+        "a refund failed at the rail; its reservation was released and nothing was posted, \
+         pending this transaction's commit"
+    );
+
+    Ok(Some(refund))
+}
+
 #[async_trait::async_trait]
 impl Settlement for crate::repository::PgRepositories {
     async fn apply_succeeded(
@@ -995,39 +1057,12 @@ impl Settlement for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let Some(refund) = crate::refunds::fail_in_tx(&mut tx, refund_id, code, raw, now).await?
-        else {
+        let Some(refund) = fail_refund_in_tx(&mut tx, refund_id, code, raw, now).await? else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);
         };
 
-        // The reservation goes back and nothing else moves. `amount_refunded`
-        // is untouched, the invoice is untouched, and **no ledger row is
-        // written** — there is none to reverse, which
-        // `docs/flows/ledger.md` § "When refunds post" names as the reason
-        // the reservation column exists at all.
-        let intent = payment_intents::release_refund_in_tx(
-            &mut tx,
-            &refund.payment_intent_id,
-            refund.amount,
-        )
-        .await?
-        .ok_or_else(|| DbError::WriteMatchedNoRow {
-            table: "payment_intents",
-            key: refund.payment_intent_id.clone(),
-        })?;
-
         tx.commit().await.map_err(DbError::Query)?;
-
-        tracing::info!(
-            refund_id = %refund.id,
-            payment_intent_id = %intent.id,
-            amount = refund.amount,
-            failure_code = %code,
-            amount_refunded = intent.amount_refunded,
-            amount_refund_pending = intent.amount_refund_pending,
-            "a refund failed at the rail; its reservation was released and nothing was posted"
-        );
 
         Ok(Some(refund))
     }

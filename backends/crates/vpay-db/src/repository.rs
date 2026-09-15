@@ -559,6 +559,107 @@ pub trait TxRepositories: Send {
     ///
     /// [`DbError::Query`].
     async fn mark_fanned_out_in_tx(&mut self, event_id: &str) -> Result<bool, DbError>;
+
+    /// `refunds` + `payment_intents`: reserves the amount and inserts the
+    /// `pending` row, RFC-0003 § 3.
+    ///
+    /// Transactional, and that is the only shape `POST /v1/refunds` can use,
+    /// because `charge.refunded` is written beside it — `docs/flows/webhooks.md`'s
+    /// standing rule. [`crate::Refunds::create`] is the same statements with a
+    /// transaction of their own, for a caller with no event to write.
+    ///
+    /// `Ok(None)` folds "not yours", "no such intent" and "that intent never
+    /// captured anything" into one answer, exactly as the pooled method does;
+    /// nothing has been written, so the caller abandons.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::OverRefund`] when `no_over_refund` refuses the reservation
+    /// — a `409`, never a retry — [`DbError::UniqueViolation`] on a replayed
+    /// `re_…`, [`DbError::Query`] otherwise.
+    async fn create_refund_in_tx(
+        &mut self,
+        merchant_id: &str,
+        new: &crate::NewRefund,
+    ) -> Result<Option<crate::RefundRow>, DbError>;
+
+    /// `refunds` + `payment_intents`: cancels a `pending` refund and releases
+    /// its reservation.
+    ///
+    /// [`TxRepositories::create_refund_in_tx`]'s twin, transactional for its
+    /// reason: `charge.refund.updated` commits with it.
+    ///
+    /// `Ok(None)` means not yours, no such refund, or no longer `pending`.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::WriteMatchedNoRow`] on `payment_intents` for a `pending`
+    /// refund whose reservation is missing — a broken invariant, which pages;
+    /// [`DbError::Query`] otherwise.
+    async fn cancel_refund_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::RefundRow>, DbError>;
+
+    /// `refunds`: reads one refund of this merchant's and **holds its row
+    /// lock** for the rest of the transaction.
+    ///
+    /// The first half of `POST /v1/refunds/{id}`, whose `metadata` merge is a
+    /// read-modify-write — [`TxRepositories::lock_customer_for_update`]'s
+    /// situation, and the lock is here for the window that one measured.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`].
+    async fn lock_refund_for_update(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::RefundRow>, DbError>;
+
+    /// `refunds`: writes the merged `metadata`, merchant-scoped in the
+    /// statement.
+    ///
+    /// `Ok(None)` means this merchant has no such refund — which, after
+    /// [`TxRepositories::lock_refund_for_update`] found one in the same
+    /// transaction, cannot happen; the guard stays in the write, because that
+    /// is where a tenancy filter belongs.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`], including `metadata_is_object`.
+    async fn update_refund_metadata_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        metadata: &serde_json::Value,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::RefundRow>, DbError>;
+
+    /// `refunds` + `payment_intents`: fails a `pending` refund the rail never
+    /// took, and releases its reservation.
+    ///
+    /// The transactional half of [`crate::Settlement::apply_refund_failed`],
+    /// which is now this plus a transaction. `POST /v1/refunds` needs it in a
+    /// transaction of its own because `charge.refund.updated` is written
+    /// beside it, and because the reservation must not outlive a refund the
+    /// rail refused — an intent carrying a reservation for a refund that
+    /// failed cannot be refunded again up to its own amount.
+    ///
+    /// `Ok(None)` means the refund was no longer `pending`.
+    ///
+    /// # Errors
+    ///
+    /// As [`crate::Settlement::apply_refund_failed`].
+    async fn fail_refund_in_tx(
+        &mut self,
+        refund_id: &str,
+        code: &str,
+        raw: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::SettledRefund>, DbError>;
 }
 
 #[async_trait]
@@ -724,6 +825,51 @@ impl TxRepositories for PendingTransaction {
     async fn mark_fanned_out_in_tx(&mut self, event_id: &str) -> Result<bool, DbError> {
         let (cs, tx) = self.cratestack_tx();
         crate::webhook_deliveries::mark_fanned_out_in_tx(cs, tx, event_id).await
+    }
+
+    async fn create_refund_in_tx(
+        &mut self,
+        merchant_id: &str,
+        new: &crate::NewRefund,
+    ) -> Result<Option<crate::RefundRow>, DbError> {
+        crate::refunds::create_in_tx(self.conn(), merchant_id, new).await
+    }
+
+    async fn cancel_refund_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::RefundRow>, DbError> {
+        crate::refunds::cancel_and_release_in_tx(self.conn(), merchant_id, id, now).await
+    }
+
+    async fn lock_refund_for_update(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+    ) -> Result<Option<crate::RefundRow>, DbError> {
+        crate::refunds::lock_for_update(self.conn(), merchant_id, id).await
+    }
+
+    async fn update_refund_metadata_in_tx(
+        &mut self,
+        merchant_id: &str,
+        id: &str,
+        metadata: &serde_json::Value,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::RefundRow>, DbError> {
+        crate::refunds::update_metadata_in_tx(self.conn(), merchant_id, id, metadata, now).await
+    }
+
+    async fn fail_refund_in_tx(
+        &mut self,
+        refund_id: &str,
+        code: &str,
+        raw: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<crate::SettledRefund>, DbError> {
+        crate::settlement::fail_refund_in_tx(self.conn(), refund_id, code, raw, now).await
     }
 }
 

@@ -216,6 +216,38 @@ pub struct NewRefund {
     pub provider_reference_id: uuid::Uuid,
 }
 
+/// One page request for [`Refunds::list_page`].
+///
+/// # Why the cursor is not a `seq`
+///
+/// `refunds` has no `seq` column — unlike `payment_intents`, `customers` and
+/// `invoices`, whose list pages carry one — so the order this page walks is
+/// `(created_at, id)` and a cursor is resolved to that pair by a correlated
+/// sub-select on the public `re_…` id. The id is the tie-break and it is
+/// load-bearing rather than decorative: two refunds of one intent written in
+/// the same transaction share a timestamp, and a cursor over a non-unique
+/// key skips or repeats rows at a page boundary. [`Refunds::list_for_intent`]
+/// already orders the same way, for the same reason.
+///
+/// Cursors are public ids, never row positions, exactly as
+/// [`crate::CustomerListPage`]'s are.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefundListPage {
+    /// How many rows the caller wants. `vpay-api` applies the product limits.
+    pub limit: i64,
+    /// Return refunds strictly *older* than this `re_…`.
+    pub starting_after: Option<String>,
+    /// Return refunds strictly *newer* than this `re_…` — scans ascending
+    /// and is reversed in Rust, so `data` is newest-first either way.
+    pub ending_before: Option<String>,
+    /// Only this intent's refunds. A `pi_…`, **not** validated for
+    /// existence: an unknown intent yields an empty page, exactly as an
+    /// unknown `customer` does on `GET /v1/invoices`, because answering
+    /// `404` would make the filter an existence oracle for another
+    /// merchant's ids.
+    pub payment_intent: Option<String>,
+}
+
 /// The `refunds` writes and reads a consumer of this crate may perform.
 ///
 /// # What [`Refunds::create`] changed, and what it did not
@@ -356,6 +388,27 @@ pub trait Refunds: Send + Sync {
         merchant_id: &str,
         payment_intent_id: &str,
     ) -> Result<Vec<RefundRow>, DbError>;
+
+    /// One page of this merchant's refunds, newest first, plus whether more
+    /// exist beyond it — `GET /v1/refunds` (RFC-0003 § 2).
+    ///
+    /// Distinct from [`Refunds::list_for_intent`] and not a generalisation of
+    /// it: that one is an operator's *timeline* of one intent, ascending and
+    /// unbounded because the number of refunds of one intent is bounded by
+    /// its amount. This one is a merchant-facing **page** over a table that
+    /// grows with traffic, so it is descending, limited, and cursored — and
+    /// the `payment_intent` filter is a filter, never a second scope: it is
+    /// applied in the same `WHERE` as the tenant predicate, so it can only
+    /// ever narrow.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if the read fails.
+    async fn list_page(
+        &self,
+        merchant_id: &str,
+        page: &RefundListPage,
+    ) -> Result<(Vec<RefundRow>, bool), DbError>;
 }
 
 /// The `refunds` columns [`settle_in_tx`] needs to finish the transaction it
@@ -575,6 +628,223 @@ async fn cancel_in_tx(
         .map_err(crate::error::classify_write)
 }
 
+/// Reserves the refund's amount against the intent and inserts the `pending`
+/// row, **inside the caller's transaction** — RFC-0003 § 3 steps 1 to 3.
+///
+/// `Ok(None)` is the same fold [`Refunds::create`] documents: this merchant
+/// has no such `succeeded` intent. Nothing has been written when it is
+/// returned, so the caller may abandon its transaction; this function does
+/// not roll anything back, because the transaction is not its own.
+///
+/// # Why this is `pub(crate)` and reached two ways
+///
+/// [`Refunds::create`] wraps it in a transaction of its own, and
+/// [`crate::TxRepositories::create_refund_in_tx`] hands it one `vpay-api`
+/// already holds — because `charge.refunded` is written beside it, and
+/// `docs/flows/webhooks.md`'s standing rule is that an event commits with the
+/// transition it reports or not at all. Two entry points, one statement
+/// sequence: a second implementation is how the reservation and the row stop
+/// agreeing.
+///
+/// # Errors
+///
+/// [`DbError::OverRefund`], [`DbError::UniqueViolation`] and
+/// [`DbError::Query`], exactly as [`Refunds::create`] lists them.
+pub(crate) async fn create_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    new: &NewRefund,
+) -> Result<Option<RefundRow>, DbError> {
+    // The reservation comes **first**, and the ordering is deliberate.
+    // It is the statement that can be refused by `no_over_refund`, and a
+    // refusal aborts the transaction — so doing it before the insert
+    // means the refused case has written nothing anyone would have to
+    // reason about. It is also the statement that locks the intent row,
+    // which is what makes two concurrent creates serialize rather than
+    // interleave.
+    //
+    // It is merchant-scoped in SQL. A handler cannot forget to filter,
+    // and another tenant's intent is indistinguishable from a missing
+    // one — this module's standing rule.
+    let Some(intent) = crate::payment_intents::reserve_refund_in_tx(
+        &mut *conn,
+        merchant_id,
+        &new.payment_intent_id,
+        new.amount,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    // Both derived from the intent this transaction has just locked, and
+    // neither from anything the caller passed: the currency because
+    // `docs/flows/money.md` says a refund's currency is the intent's
+    // carried verbatim, and the charge because it is the row a rail
+    // movement — and, when this refund settles, a ledger posting — hangs
+    // off. `None` is storable (migration `0017` made the column
+    // nullable) and, for a `succeeded` intent, unreachable.
+    let charge_id = crate::charges::id_for_intent_in_tx(&mut *conn, &intent.id).await?;
+
+    let row = insert_in_tx(&mut *conn, new, &intent.currency_code, charge_id.as_deref()).await?;
+
+    // Logged here rather than after a commit this function does not own, and
+    // worded for what is true at this point: the statements have landed and
+    // the transaction has not committed. The line used to sit after
+    // `tx.commit()` and claim the same thing; leaving it there would have
+    // meant either two log lines for one operation or none at all for the
+    // caller that commits an event beside it.
+    tracing::info!(
+        refund_id = %row.id,
+        payment_intent_id = %row.payment_intent_id,
+        amount = row.amount,
+        currency_code = %row.currency_code,
+        amount_refund_pending = intent.amount_refund_pending,
+        "a refund was written and its amount reserved against the intent, pending this \
+         transaction's commit"
+    );
+
+    Ok(Some(row))
+}
+
+/// Moves one `pending` refund to `canceled` for this merchant and gives its
+/// reservation back, **inside the caller's transaction** (RFC-0003 § 2).
+///
+/// [`create_in_tx`]'s twin, reached the same two ways and for the same
+/// reason: `charge.refund.updated` is written beside it by `vpay-api`, and
+/// [`Refunds::cancel`] wraps it for callers with no event to write.
+///
+/// `Ok(None)` folds "not yours", "no such refund" and "no longer pending"
+/// into one answer — see [`cancel_in_tx`], which is the statement that
+/// decides it.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the refund was
+/// `pending` but the intent carried no matching reservation — a broken
+/// invariant, which pages. [`DbError::Query`] if any statement fails.
+pub(crate) async fn cancel_and_release_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    now: OffsetDateTime,
+) -> Result<Option<RefundRow>, DbError> {
+    let Some(row) = cancel_in_tx(&mut *conn, merchant_id, id, now).await? else {
+        return Ok(None);
+    };
+
+    // The reservation goes back. `Ok(None)` here is not a lost race — the
+    // compare-and-swap above has already matched a `pending` refund, and
+    // a `pending` refund whose amount is not reserved on its intent is an
+    // invariant this crate is supposed to maintain — so it pages rather
+    // than being reported as a merchant's problem, and the whole
+    // transaction rolls back so the refund stays cancellable.
+    crate::payment_intents::release_refund_in_tx(&mut *conn, &row.payment_intent_id, row.amount)
+        .await?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: row.payment_intent_id.clone(),
+        })?;
+
+    tracing::info!(
+        refund_id = %row.id,
+        payment_intent_id = %row.payment_intent_id,
+        amount = row.amount,
+        "a pending refund was canceled and its reservation released; nothing was posted, so \
+         nothing was reversed"
+    );
+
+    Ok(Some(row))
+}
+
+/// Reads one refund of this merchant's and **holds its row lock** for the
+/// rest of the transaction.
+///
+/// The first half of `POST /v1/refunds/{id}`, whose `metadata` merge is a
+/// read-modify-write over the stored map — `crate::customers`' `lock_for_update`
+/// situation exactly, and the lock is here for the same measured reason: a
+/// pooled read leaves a window in which two concurrent updates each adding
+/// one key lose one of them, and the `charge.refund.updated` the merchant
+/// then receives describes a state the database does not hold.
+///
+/// `FOR UPDATE OF r` and not a bare `FOR UPDATE`: the join onto
+/// `payment_intents` is the tenancy predicate, and locking the intent row
+/// here would make a settlement touching that intent's counters wait behind
+/// a merchant's metadata edit.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+pub(crate) async fn lock_for_update(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+) -> Result<Option<RefundRow>, DbError> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id \
+         WHERE p.merchant_id = $1 AND r.id = $2 \
+         FOR UPDATE OF r"
+    );
+
+    sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(DbError::Query)
+}
+
+/// Replaces a refund's `metadata`, merchant-scoped in the statement, inside
+/// the caller's transaction.
+///
+/// The merge is the caller's: Stripe's contract is key-wise, so the value
+/// written is a function of the stored one and the merge has to happen
+/// between [`lock_for_update`] and this statement. What is written here is
+/// the whole map.
+///
+/// # Why there is no status guard, when every other write in this module has
+/// one
+///
+/// `metadata` is the merchant's own annotation and says nothing about where
+/// the money is. Stripe lets a refund's metadata be updated in any state, and
+/// a guard here would take a merchant's ability to label a refund away at the
+/// exact moment it becomes interesting — when it failed. The tenancy
+/// predicate stays, because that is a different question.
+///
+/// # Errors
+///
+/// [`DbError::Query`], including `metadata_is_object` for a value that is not
+/// a JSON object, which `vpay-api` refuses first with a `400` naming the
+/// parameter.
+pub(crate) async fn update_metadata_in_tx(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    id: &str,
+    metadata: &serde_json::Value,
+    now: OffsetDateTime,
+) -> Result<Option<RefundRow>, DbError> {
+    // `EXISTS` rather than `UPDATE ... FROM`, for `cancel_in_tx`'s reason:
+    // the only relation this statement may write is the refund.
+    let sql = format!(
+        "UPDATE refunds AS r \
+         SET metadata = $3, updated_at = $4 \
+         WHERE r.id = $2 \
+           AND EXISTS (SELECT 1 FROM payment_intents p \
+                       WHERE p.id = r.payment_intent_id AND p.merchant_id = $1) \
+         RETURNING {COLUMNS}"
+    );
+
+    sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
+        .bind(id)
+        .bind(metadata)
+        .bind(now)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(crate::error::classify_write)
+}
+
 #[async_trait::async_trait]
 impl Refunds for crate::repository::PgRepositories {
     async fn create(
@@ -584,25 +854,7 @@ impl Refunds for crate::repository::PgRepositories {
     ) -> Result<Option<RefundRow>, DbError> {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
 
-        // The reservation comes **first**, and the ordering is deliberate.
-        // It is the statement that can be refused by `no_over_refund`, and a
-        // refusal aborts the transaction — so doing it before the insert
-        // means the refused case has written nothing anyone would have to
-        // reason about. It is also the statement that locks the intent row,
-        // which is what makes two concurrent creates serialize rather than
-        // interleave.
-        //
-        // It is merchant-scoped in SQL. A handler cannot forget to filter,
-        // and another tenant's intent is indistinguishable from a missing
-        // one — this module's standing rule.
-        let Some(intent) = crate::payment_intents::reserve_refund_in_tx(
-            &mut tx,
-            merchant_id,
-            &new.payment_intent_id,
-            new.amount,
-        )
-        .await?
-        else {
+        let Some(row) = create_in_tx(&mut tx, merchant_id, new).await? else {
             // Nothing was written, so the transaction is closed explicitly
             // rather than dropped: the connection returns to the pool
             // without waiting for a background rollback. Same reason
@@ -611,27 +863,7 @@ impl Refunds for crate::repository::PgRepositories {
             return Ok(None);
         };
 
-        // Both derived from the intent this transaction has just locked, and
-        // neither from anything the caller passed: the currency because
-        // `docs/flows/money.md` says a refund's currency is the intent's
-        // carried verbatim, and the charge because it is the row a rail
-        // movement — and, when this refund settles, a ledger posting — hangs
-        // off. `None` is storable (migration `0017` made the column
-        // nullable) and, for a `succeeded` intent, unreachable.
-        let charge_id = crate::charges::id_for_intent_in_tx(&mut tx, &intent.id).await?;
-
-        let row = insert_in_tx(&mut tx, new, &intent.currency_code, charge_id.as_deref()).await?;
-
         tx.commit().await.map_err(DbError::Query)?;
-
-        tracing::info!(
-            refund_id = %row.id,
-            payment_intent_id = %row.payment_intent_id,
-            amount = row.amount,
-            currency_code = %row.currency_code,
-            amount_refund_pending = intent.amount_refund_pending,
-            "a refund was created and its amount reserved against the intent"
-        );
 
         Ok(Some(row))
     }
@@ -640,33 +872,12 @@ impl Refunds for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let Some(row) = cancel_in_tx(&mut tx, merchant_id, id, now).await? else {
+        let Some(row) = cancel_and_release_in_tx(&mut tx, merchant_id, id, now).await? else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);
         };
 
-        // The reservation goes back. `Ok(None)` here is not a lost race — the
-        // compare-and-swap above has already matched a `pending` refund, and
-        // a `pending` refund whose amount is not reserved on its intent is an
-        // invariant this crate is supposed to maintain — so it pages rather
-        // than being reported as a merchant's problem, and the whole
-        // transaction rolls back so the refund stays cancellable.
-        crate::payment_intents::release_refund_in_tx(&mut tx, &row.payment_intent_id, row.amount)
-            .await?
-            .ok_or_else(|| DbError::WriteMatchedNoRow {
-                table: "payment_intents",
-                key: row.payment_intent_id.clone(),
-            })?;
-
         tx.commit().await.map_err(DbError::Query)?;
-
-        tracing::info!(
-            refund_id = %row.id,
-            payment_intent_id = %row.payment_intent_id,
-            amount = row.amount,
-            "a pending refund was canceled and its reservation released; nothing was posted, so \
-             nothing was reversed"
-        );
 
         Ok(Some(row))
     }
@@ -721,5 +932,69 @@ impl Refunds for crate::repository::PgRepositories {
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+
+    async fn list_page(
+        &self,
+        merchant_id: &str,
+        page: &RefundListPage,
+    ) -> Result<(Vec<RefundRow>, bool), DbError> {
+        let limit = page.limit.max(1);
+        let backwards = page.ending_before.is_some();
+        let direction = if backwards { "ASC" } else { "DESC" };
+
+        // Every filter is `$n IS NULL OR …`, so the statement is one shape
+        // whatever the caller asked for — `invoices::list_page`'s device, and
+        // the reason `crate::sql_audit` can prove this `format!` interpolates
+        // only constants.
+        //
+        // The cursor comparisons are ROW comparisons on `(created_at, id)`
+        // and not on a `seq`, because `refunds` has none — see
+        // [`RefundListPage`]. Postgres compares the tuple lexicographically,
+        // which is exactly the order the `ORDER BY` below walks, so a page
+        // boundary that falls between two refunds sharing a `created_at`
+        // neither skips a row nor repeats one.
+        //
+        // Both sub-selects carry the tenant predicate themselves. Without it
+        // a cursor naming another merchant's refund would resolve to that
+        // row's position and page this merchant's list from a point they
+        // could not otherwise learn — the filter must never widen the scope
+        // it is applied inside.
+        let sql = format!(
+            "SELECT {COLUMNS} FROM refunds r \
+             JOIN payment_intents p ON p.id = r.payment_intent_id \
+             WHERE p.merchant_id = $1 \
+               AND ($2::TEXT IS NULL \
+                    OR (r.created_at, r.id) < (SELECT c.created_at, c.id FROM refunds c \
+                                               JOIN payment_intents cp \
+                                                 ON cp.id = c.payment_intent_id \
+                                               WHERE c.id = $2 AND cp.merchant_id = $1)) \
+               AND ($3::TEXT IS NULL \
+                    OR (r.created_at, r.id) > (SELECT c.created_at, c.id FROM refunds c \
+                                               JOIN payment_intents cp \
+                                                 ON cp.id = c.payment_intent_id \
+                                               WHERE c.id = $3 AND cp.merchant_id = $1)) \
+               AND ($4::TEXT IS NULL OR r.payment_intent_id = $4) \
+             ORDER BY r.created_at {direction}, r.id {direction} \
+             LIMIT $5"
+        );
+
+        let mut rows = sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
+            .bind(merchant_id)
+            .bind(page.starting_after.as_deref())
+            .bind(page.ending_before.as_deref())
+            .bind(page.payment_intent.as_deref())
+            .bind(limit.saturating_add(1))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(DbError::Query)?;
+
+        let has_more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
+        rows.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        if backwards {
+            rows.reverse();
+        }
+
+        Ok((rows, has_more))
     }
 }
