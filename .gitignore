@@ -9,7 +9,11 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.live.example
 .DS_Store
+# Private keys generated for local live-sandbox testing (`vpay-server
+# --oauth-signing-key-file`, `.e2e/live-merchant/...`). Never commit these.
+secrets/
 # `**/`, not a bare `cypress/…`: a pattern containing a slash is anchored to
 # the directory holding the .gitignore, so `cypress/screenshots/` matched only
 # a top-level one and left `frontends/tests/e2e/cypress/screenshots/` — the

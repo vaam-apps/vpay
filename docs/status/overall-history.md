@@ -108,3 +108,19 @@ itself, and the load-bearing sentence that survived all nine, are still on
 > Headless UI line, and the `justfile`'s `ci` comment) that pass deliberately
 > did not touch. **The load-bearing sentence is unchanged: no HTTP call to a
 > real rail has ever been made.** Do not deploy it._
+>
+> _2026-09-15 (the first real rail call, added to this archive on the same
+> day the banner on [../status.md](../status.md) was narrowed): **the
+> load-bearing sentence above is retired in its turn.** On 2026-09-15 a EUR
+> `mtn_momo` PaymentIntent (`pi_xxd2xj1e914e16c6m63gezag`) was created,
+> confirmed and settled against **MTN's real sandbox**
+> (`https://sandbox.momodeveloper.mtn.com`): the worker's authenticated status
+> query reported the charge paid (`charge_id=ch_djfmqmck853ps9qh845vd825`) and
+> the intent reached `succeeded`. **Its replacement is narrower and still
+> load-bearing: no real payer, no production rail, and no rail other than
+> MTN's sandbox have ever been touched.** The payer number was an
+> MTN-sandbox test MSISDN the sandbox settles automatically — no handset was
+> prompted and no real money moved; Orange's redirect rail has still never
+> been called; no webhook has ever reached a merchant endpoint outside this
+> repository; `mtn_momo::refund` is still `NotImplemented`; and no cluster has
+> ever run vpay. Do not deploy it._

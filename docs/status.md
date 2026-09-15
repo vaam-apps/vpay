@@ -25,32 +25,47 @@ say a rail answers. No payer has ever been prompted on a real handset, no money
 has moved, and no merchant endpoint outside this repository has ever been POSTed
 to.
 
-That banner was narrowed by nine dated addenda rather than replaced — Steps 2,
+> _2026-09-15 (the first real rail call): the sentence above is **retired in
+> its turn.** On 2026-09-15 a EUR `mtn_momo` PaymentIntent
+> (`pi_xxd2xj1e914e16c6m63gezag`) was created, confirmed and settled against
+> **MTN's real sandbox** (`https://sandbox.momodeveloper.mtn.com`): the
+> worker's authenticated status query reported the charge paid and the intent
+> reached `succeeded`. **Its replacement is narrower and still load-bearing:
+> no real payer, no production rail, and no rail other than MTN's sandbox have
+> ever been touched.** The payer number was an MTN-sandbox test MSISDN the
+> sandbox settles automatically — no handset was prompted and no real money
+> moved; Orange's redirect rail has still never been called; no webhook has
+> ever reached a merchant endpoint outside this repository; `mtn_momo::refund`
+> is still `NotImplemented`; and no cluster has ever run vpay. Do not deploy
+> it._
+
+That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a
-specific date. The whole chain, unedited, is in
+specific date, and the live-sandbox test of 2026-09-15 retiring the "no real
+rail" sentence itself. The whole chain, unedited, is in
 [status/overall-history.md](status/overall-history.md); it is worth reading if
 you want to know what was retired and when, because two of those entries retire
-sentences this page no longer makes. **Nothing has been added to it since
-2026-09-07**, and nothing that has landed since has earned an addendum: customer
-erasure and the address object, MTN's failure codes, demo tenancy, `@vpay/ui`,
-Gateway API routing, the first CrateStack `procedure`, and the `/dash/v1` read
-seam and its BFF each moved a row on a page below without narrowing the sentence
-above.
+sentences this page no longer makes. **Nothing had been added to it between
+2026-09-07 and 2026-09-15** — nothing that landed in that window earned an
+addendum: customer erasure and the address object, MTN's failure codes, demo
+tenancy, `@vpay/ui`, Gateway API routing, the first CrateStack `procedure`, and
+the `/dash/v1` read seam and its BFF each moved a row on a page below without
+narrowing the sentence above.
 
 ## Where things stand
 
 Each row links to the page that carries the rows, the evidence and the history.
 Every 🟡 and ⛔ on those pages is there because a test says so.
 
-| Area                                                     | Today                                                                                              | Detail                                                                                                                                            |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Backend** — `/v1`, `/dash/v1`, `/provider`, `/browser` | 🟡 Real routes, real rows, real adapters; every rail call has gone to a stub                       | [status/backend.md](status/backend.md)                                                                                                            |
-| **Adapters** — `mtn_momo`, `orange_money`                | 🟡 Wire calls proven against WireMock, ⛔ never against MTN or Orange                              | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
-| **Frontend** — checkout page, dashboard, demo shop       | 🟡 Built and walked by a real browser against a stub rail                                          | [status/frontend.md](status/frontend.md)                                                                                                          |
-| **Infrastructure** — images, compose, Helm, migrations   | 🟡 Boots in compose and in CI; ⛔ no pod has ever run                                              | [status/infrastructure.md](status/infrastructure.md)                                                                                              |
-| **Data layer** — sqlx, CrateStack, the schema            | 🟡 `schemas/vpay.cstack` compiles into `vpay-db`; the migration/model drift is counted, not closed | [status/cratestack.md](status/cratestack.md), [status/sqlx-and-op-stores.md](status/sqlx-and-op-stores.md)                                        |
-| **Merchant SDKs** — `sdks/rust`, `sdks/nodejs`           | 🟡 Parity is machine-checked in both directions; the gaps are dated and owned                      | [status/merchant-sdks.md](status/merchant-sdks.md), [sdks/parity.md](sdks/parity.md)                                                              |
-| **An MVP**                                               | 🟡 Two of eight conditions met (items 1 and 6); the other six are decided by one sentence          | [status/mvp.md](status/mvp.md)                                                                                                                    |
+| Area                                                     | Today                                                                                                                                         | Detail                                                                                                                                            |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Backend** — `/v1`, `/dash/v1`, `/provider`, `/browser` | 🟡 Real routes, real rows, real adapters; every rail call went to a stub until 2026-09-15, when the MTN push first went to MTN's real sandbox | [status/backend.md](status/backend.md)                                                                                                            |
+| **Adapters** — `mtn_momo`, `orange_money`                | 🟡 Wire calls proven against WireMock; since 2026-09-15 `mtn_momo` proven against MTN's real sandbox, ⛔ `orange_money` never called          | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
+| **Frontend** — checkout page, dashboard, demo shop       | 🟡 Built and walked by a real browser against a stub rail                                                                                     | [status/frontend.md](status/frontend.md)                                                                                                          |
+| **Infrastructure** — images, compose, Helm, migrations   | 🟡 Boots in compose and in CI; ⛔ no pod has ever run                                                                                         | [status/infrastructure.md](status/infrastructure.md)                                                                                              |
+| **Data layer** — sqlx, CrateStack, the schema            | 🟡 `schemas/vpay.cstack` compiles into `vpay-db`; the migration/model drift is counted, not closed                                            | [status/cratestack.md](status/cratestack.md), [status/sqlx-and-op-stores.md](status/sqlx-and-op-stores.md)                                        |
+| **Merchant SDKs** — `sdks/rust`, `sdks/nodejs`           | 🟡 Parity is machine-checked in both directions; the gaps are dated and owned                                                                 | [status/merchant-sdks.md](status/merchant-sdks.md), [sdks/parity.md](sdks/parity.md)                                                              |
+| **An MVP**                                               | 🟡 Two of eight conditions met (items 1 and 6); the other six are decided by one sentence                                                     | [status/mvp.md](status/mvp.md)                                                                                                                    |
 
 ## How this page is checked
 

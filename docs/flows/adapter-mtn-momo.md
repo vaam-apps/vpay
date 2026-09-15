@@ -198,11 +198,11 @@ never treat 500 as blind-retry.
 
 ## Environment values (all just config)
 
-|                      | Sandbox                                 | Cameroon production                              |
-| -------------------- | --------------------------------------- | ------------------------------------------------ |
-| `base_url`           | `https://sandbox.momodeveloper.mtn.com` | `https://proxy.momoapi.mtn.com` — **confirm**    |
-| `target_environment` | `sandbox`                               | `mtncameroon` — **confirm; subsidiary-specific** |
-| `currency`           | **EUR only**                            | XAF                                              |
+|                      | Sandbox                                                        | Cameroon production                              |
+| -------------------- | -------------------------------------------------------------- | ------------------------------------------------ |
+| `base_url`           | `https://sandbox.momodeveloper.mtn.com` ✅ (called 2026-09-15) | `https://proxy.momoapi.mtn.com` — **confirm**    |
+| `target_environment` | `sandbox` ✅ (called 2026-09-15)                               | `mtncameroon` — **confirm; subsidiary-specific** |
+| `currency`           | **EUR only** ✅ (the 2026-09-15 payment was EUR)               | XAF                                              |
 
 ## Status
 
@@ -212,6 +212,19 @@ against a real `wiremock/wiremock` container by the shared conformance suite
 `backends/tests/conformance/wiremock/mtn/mappings/`). The failure table above
 is transcribed into `mapping::FAILURE_REASONS` and every row is asserted, in
 both directions, by a unit test.
+
+**Updated 2026-09-15 (the first real call): `submit`, `query_status` and the
+token mint were exercised against MTN's **real sandbox** and a payment
+settled.** A EUR `mtn_momo` PaymentIntent (`pi_xxd2xj1e914e16c6m63gezag`) was
+created, confirmed and reached `succeeded` through the worker's authenticated
+status query. That run also found and fixed a real bug the WireMock suite
+could not see: the token mint posted **no body** to `POST /collection/token/`,
+and MTN's gateway answered `411 Length Required`; when the grant was then sent
+form-encoded (`grant_type=client_credentials`) the gateway answered a 200
+"Request Rejected" HTML page, so the body must be the **JSON** spelling
+`{"grant_type":"client_credentials"}` with `Content-Type: application/json`.
+The conformance stub now enforces that body
+(`backends/tests/conformance/wiremock/mtn/mappings/token.json`).
 
 **Updated 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** The table went from nine
@@ -337,10 +350,13 @@ inherits three refusals that are not MTN-specific:
 
 ### Not proven
 
-- **Nothing here has ever called MTN.** Every wire assertion in this document
-  is against a `wiremock/wiremock` container. Both **confirm** rows in the
-  environment table above are still unconfirmed, and a mapping faithful to
-  this document but not to MTN would pass.
+- **Until 2026-09-15 nothing here had ever called MTN; one real sandbox call
+  has now been made.** Every wire assertion in this document is against a
+  `wiremock/wiremock` container except the live-sandbox run of 2026-09-15
+  (Status above), which exercised `submit` and `query_status` against
+  `https://sandbox.momodeveloper.mtn.com` and settled a payment. Both
+  **confirm** rows in the environment table above are still unconfirmed, and a
+  mapping faithful to this document but not to MTN would pass.
 - **The 401 → re-mint → retry path is not covered by a test.** The logic is
   there and is bounded at one retry, but no mapping in the conformance suite
   returns 401 from `requesttopay` after a good token, and the adapter's own
@@ -360,18 +376,22 @@ inherits three refusals that are not MTN-specific:
   `backends/tests/integration/tests/provider_callback.rs` POSTs the body
   transcribed above to the URL MTN was handed on the submit, so **a body
   faithful to this document but not to MTN would pass**.
-- **Nothing has ever called MTN, and the new rows do not change that.**
-  `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` and `EXPIRED` are real strings
+- **One real call settled a payment, and none of it exercised the decline
+  vocabulary — so this bullet is unchanged in substance.** `PAYMENT_NOT_APPROVED`,
+  `APPROVAL_REJECTED` and `EXPIRED` are real strings
   from MTN's published enum, and that enum is the declared type of
   `RequestToPayResult.reason` — so the shape and the vocabulary are cited, not
   assumed. What no document can tell us is whether MTN's Cameroon deployment
   ever _emits_ a given one. A stub answering a string MTN may never send
-  proves the mapping row, not the rail.
+  proves the mapping row, not the rail; the 2026-09-15 sandbox payment reached
+  `succeeded` and so proved none of the failure codes against the real rail.
 
   _(This bullet said the enum "is the whole Collection API's and says nothing
   about which operation returns which code" until 2026-09-11; see "Failure
   mapping" for the correction. The conclusion — that only a real call settles
-  this — is unchanged, and is the reason "Real sandbox" is still ⛔.)_
+  this — is unchanged: the one real call so far was a success path, which is
+  why "Real sandbox" remains ⛔ for the failure vocabulary even though a
+  sandbox payment has now settled.)_
 
 - The crate runs **62 tests, 62 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-10; 48 on
