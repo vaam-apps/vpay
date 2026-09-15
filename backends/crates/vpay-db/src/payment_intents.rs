@@ -660,10 +660,20 @@ fn classify_reservation(error: sqlx::Error, payment_intent_id: &str) -> DbError 
 /// `two_concurrent_refunds_race_and_the_database_refuses_the_second` in
 /// `postgres_smoke.rs` is the case that proves the reservation reaches it.
 ///
-/// `Ok(None)` means the intent is not `succeeded` — including "no such
-/// intent" — and is a refusal, never a race: an intent that captured nothing
-/// has nothing to refund. It is deliberately **not** an error, so the caller
-/// can answer a merchant rather than page.
+/// # Merchant-scoped in SQL, unlike the two settlement writes above
+///
+/// This is the one refund statement a *merchant* drives — the others are
+/// driven by a rail's answer about a movement vpay initiated — so it carries
+/// the tenant predicate every merchant-facing query in this module carries. A
+/// handler cannot forget to filter, and "not yours" is indistinguishable from
+/// "no such intent", which is the property that stops the existence of
+/// another tenant's intent leaking out of a refund request.
+///
+/// `Ok(None)` therefore means: not this merchant's, or no such intent, or an
+/// intent that is not `succeeded`. All three are a refusal, never a race —
+/// an intent that captured nothing has nothing to refund — and it is
+/// deliberately not an error, so the caller can answer a merchant rather than
+/// page.
 ///
 /// # Why `pub(crate)`
 ///
@@ -678,18 +688,20 @@ fn classify_reservation(error: sqlx::Error, payment_intent_id: &str) -> DbError 
 /// [`DbError::Query`] if the statement fails for any other reason.
 pub(crate) async fn reserve_refund_in_tx(
     conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
     id: &str,
     amount: i64,
 ) -> Result<Option<PaymentIntentRow>, DbError> {
     let sql = format!(
         "UPDATE payment_intents \
-         SET amount_refund_pending = amount_refund_pending + $2, \
+         SET amount_refund_pending = amount_refund_pending + $3, \
              updated_at = now() \
-         WHERE id = $1 AND status IN ({REFUNDABLE_STATUSES}) \
+         WHERE merchant_id = $1 AND id = $2 AND status IN ({REFUNDABLE_STATUSES}) \
          RETURNING {COLUMNS}"
     );
 
     sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(merchant_id)
         .bind(id)
         .bind(amount)
         .fetch_optional(&mut *conn)

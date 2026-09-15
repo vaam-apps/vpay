@@ -249,6 +249,46 @@ pub struct NewCharge {
 /// [`DbError::UniqueViolation`] on `charges_pkey` for a reused `id`,
 /// [`DbError::ForeignKeyViolation`] for an unknown intent, provider or
 /// currency, and [`DbError::Query`] otherwise.
+/// The id of the one charge an intent has, inside the caller's transaction.
+///
+/// # Why this exists beside [`Charges::get_for_intent`], which reads the same
+/// row
+///
+/// That one runs on the pool, so its answer is a fact from *before* the
+/// caller's transaction and could have changed by the time the caller writes.
+/// This one runs inside the transaction, which is what makes it usable as an
+/// attribution: `crate::refunds::create_in_tx` stamps `refunds.charge_id` with
+/// it, and `crate::settlement::apply_refund_succeeded` names it as the
+/// `ledger_transactions.charge_id` a posting hangs off. A ledger row
+/// attributed to a charge read on a different connection is a ledger row
+/// attributed to a guess.
+///
+/// It returns the id alone rather than a [`ChargeRow`] because both callers
+/// want a foreign key and neither branches on the charge's state — and
+/// selecting `COLUMNS` to throw all but one away is how a row struct starts
+/// being decoded in places that do not need it.
+///
+/// `Ok(None)` means the intent has no charge. For a `succeeded` intent that
+/// cannot happen — the only statement that sets `succeeded` is
+/// `crate::payment_intents::succeed_after_submission`, reached only from
+/// [`crate::settlement`] after a charge compare-and-swap has matched — so a
+/// caller that has already established the intent is `succeeded` treats it as
+/// the broken invariant it would be.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+pub(crate) async fn id_for_intent_in_tx(
+    conn: &mut PgConnection,
+    payment_intent_id: &str,
+) -> Result<Option<String>, DbError> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM charges WHERE payment_intent_id = $1")
+        .bind(payment_intent_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(DbError::Query)
+}
+
 pub(crate) async fn insert_for_intent(
     tx: &mut PgConnection,
     new: &NewCharge,

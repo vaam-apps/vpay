@@ -161,6 +161,33 @@ pub enum DbError {
         key: String,
     },
 
+    /// A `currency_code` stored on a row is not one `vpay_core::Currency`
+    /// models, so the amount beside it cannot be turned into a
+    /// `vpay_core::Money`.
+    ///
+    /// Reachable from exactly one place — [`crate::settlement`], building the
+    /// `Money` a ledger posting's legs carry (RFC-0003 § 4) — and unreachable
+    /// in a coherent deployment. `currencies` is seeded from
+    /// `Currency::ALL` at boot (`config_reconcile`), and an intent cannot be
+    /// created in a code `vpay-api` could not parse, so a row carrying one is
+    /// a database somebody has written to by hand.
+    ///
+    /// `Category::Internal`, therefore: it is not a request a merchant can
+    /// make, no retry changes it, and the settlement that raised it rolls
+    /// back whole rather than posting a leg in a currency vpay cannot add up.
+    /// Choosing `Storage` instead would put "retry, vpay is unavailable" on a
+    /// settlement that will fail identically forever.
+    #[error(
+        "currency {code} is stored on {table} but is not a currency this build models; no ledger \
+         posting can be built for it"
+    )]
+    UnknownCurrency {
+        /// The code as stored. Never a secret — an ISO-4217 code.
+        code: String,
+        /// Which table it was read from, for the operator reading the log.
+        table: &'static str,
+    },
+
     /// A refund would have taken `amount_refunded + amount_refund_pending`
     /// past the intent's `amount` — migration `0003`'s `no_over_refund`
     /// CHECK, refusing the write (RFC-0003 § 3).
@@ -504,10 +531,15 @@ impl vpay_core::Classify for DbError {
             // fixes either: a compare-and-swap this crate's own caller was
             // supposed to have set up matched nothing, or a CHECK that
             // closes a vocabulary has gone.
+            //
+            // A stored currency this build does not model is the third
+            // shape of the same thing — see the variant for why it cannot
+            // arise from anything a merchant sent.
             Self::WriteMatchedNoRow { .. }
             | Self::StaffStatusUnknown { .. }
             | Self::CredentialKindUnknown { .. }
-            | Self::SessionStateUnknown { .. } => Category::Internal,
+            | Self::SessionStateUnknown { .. }
+            | Self::UnknownCurrency { .. } => Category::Internal,
             // Delegated, never re-decided. Named explicitly rather than
             // caught by a wildcard, which is both ADR-0011's rule and what
             // `verify-errors` checks.
@@ -550,6 +582,7 @@ impl vpay_core::Classify for DbError {
             Self::CredentialKindUnknown { .. } => "credential_kind_unknown",
             Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
+            Self::UnknownCurrency { .. } => "unknown_currency",
             Self::Persistence(error) => error.code(),
             // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
             // `database_…` code, deliberately: nothing about the database

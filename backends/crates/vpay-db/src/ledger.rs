@@ -4,38 +4,55 @@
 //! # What exists here, and what does not
 //!
 //! One write, [`post_in_tx`], and one read,
-//! [`Ledger::merchant_payable_balance`]. The write is `pub(crate)` and is
-//! reached from outside this crate only through
-//! [`crate::TxRepositories::post_ledger_transaction_in_tx`], so the only
-//! spelling available to a consumer is one that already holds a transaction.
-//! There is deliberately **no pooled variant**; a `post` that opened its own
-//! transaction would make "the ledger agrees with the charge" a property of
-//! whoever remembered to call it in the right place.
+//! [`Ledger::merchant_payable_balance`]. The write is `pub(crate)` and has no
+//! entry on any public trait at all, so what a consumer of this crate can
+//! name is the business operation — [`crate::Settlement::apply_succeeded`],
+//! [`crate::Settlement::apply_refund_succeeded`] — and never the raw double
+//! entry. There is deliberately **no pooled variant** either; a `post` that
+//! opened its own transaction would make "the ledger agrees with the charge"
+//! a property of whoever remembered to call it in the right place.
 //!
-//! **That is `enqueue_in_tx`'s shape, NOT [`crate::refunds::settle_in_tx`]'s,
-//! and the difference is worth being honest about.** `settle_in_tx` has no
-//! entry on any public trait at all: it is `pub(crate)` and called only by
-//! [`crate::settlement`], so what a consumer of this crate can reach is the
-//! business operation (`Settlement::apply_refund_succeeded`) and never the
-//! raw `UPDATE` — [`crate::refunds::Refunds`]' own doc says that is
-//! deliberate. A method on [`crate::TxRepositories`] is one step wider: any
-//! caller holding a `PendingTransaction` can post an arbitrary balanced
-//! transaction against an arbitrary `charge_id` under an id of its choosing,
-//! with no settlement anywhere near it. The narrower shape is available —
-//! the call sites that will post (`Settlement::apply_succeeded`,
-//! `Settlement::apply_refund_succeeded`) live inside this crate and can call
-//! [`post_in_tx`] directly, which would need no public method at all.
-//! Whether the trait method survives once those call sites land is a
-//! maintainer's call; it is recorded here rather than left as an
-//! unremarked widening.
+//! **That is [`crate::refunds::settle_in_tx`]'s shape exactly, and it was
+//! briefly something wider.** From RFC-0003 § 4's first half until its second
+//! this function was reachable through a `pub` method on
+//! `crate::TxRepositories`, which let any caller holding a
+//! `PendingTransaction` post an arbitrary balanced transaction against an
+//! arbitrary `charge_id` under an id of its choosing, with no settlement
+//! anywhere near it — while that trait's own doc claimed a consumer could not
+//! post without the settlement that justified it. The method is gone;
+//! [`crate::refunds::Refunds`]' doc states the rule both now follow.
 //!
-//! **No shipping code path calls the write yet, and that is not an
-//! oversight.** `Settlement::apply_succeeded` and
-//! `Settlement::apply_refund_succeeded` do not post; wiring them is separate
-//! work, so every deployment's ledger is empty today. `docs/status.md` and
-//! `docs/flows/ledger.md` § Status say so. What this module removes is the
-//! reason they could not: the machinery, the schema and the merchant
-//! dimension.
+//! **Two shipping call sites post, and they are both in
+//! [`crate::settlement`].** [`crate::Settlement::apply_succeeded`] records
+//! the capture in the transaction that settles the charge, and
+//! [`crate::Settlement::apply_refund_succeeded`] records the refund in the
+//! transaction that settles the refund. Those two, and nothing else, which is
+//! what makes every sentence in this module about "the caller's transaction"
+//! checkable by reading one file.
+//!
+//! What is still absent, so that the presence of a writer does not imply more
+//! than it should: no rail can execute a refund
+//! (`ProviderAdapter::refund` is `NotImplemented` on both), `POST /v1/refunds`
+//! is unrouted until Wave 3, and nothing schedules the nightly assertion of
+//! invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
+//! the gaps.
+//!
+//! # The transaction id is minted, and what that does and does not buy
+//!
+//! Both call sites take their `transaction_id` from
+//! `vpay_core::ids::ledger_transaction_id` (`lt_…`), added with migration
+//! `0046`'s `id_length` CHECK on both tables — the two halves of the gap
+//! migration `0045`'s header recorded and left open.
+//!
+//! It makes the derived entry ids below unambiguous (see [`post_in_tx`]), and
+//! it does **not** make `ledger_transactions_pkey` a guard of
+//! `docs/flows/ledger.md` invariant 4. A random id cannot be; what stops a
+//! charge growing a second capture transaction is
+//! [`crate::Settlement::apply_succeeded`]'s compare-and-swap on the charge
+//! still being live, which stops the settlement running twice at all.
+//! `vpay_core::ids::ledger_transaction_id`'s own doc records the schema
+//! change a second, independent guard would need, and that it is a
+//! maintainer's decision rather than this branch's.
 //!
 //! # `Transaction::validate()` is called here, and its failure is an error
 //!
@@ -71,6 +88,19 @@
 //! Deterministic for the same reason, and it also means an entry id says which
 //! transaction it belongs to without a join — which is what an operator
 //! reading a row in isolation actually needs.
+//!
+//! **`{transaction_id}_{index}` is ambiguous in general and unambiguous for
+//! minted ids, and this function does not enforce the difference.** `x` and
+//! `x_0` both derive `x_0_0`; no pair of `lt_…` ids can be in that relation,
+//! because every minted body is exactly 24 characters of an alphabet that
+//! does not contain `_`
+//! (`vpay_core::ids::tests::two_minted_ledger_ids_cannot_derive_the_same_entry_id`).
+//! `transaction_id` is still a bare `&str` here, so an in-crate caller that
+//! hand-built the colliding pair would reach it — and be refused by
+//! `ledger_entries_pkey`, loudly, never silently. Closing it at this function
+//! rather than at its callers needs a shape check here and a `DbError`
+//! variant to carry the refusal; it is recorded in `docs/flows/ledger.md`
+//! § Status as open rather than done quietly.
 
 use async_trait::async_trait;
 use vpay_ledger::{AccountKind, Direction, Transaction};
@@ -174,13 +204,14 @@ pub(crate) async fn post_in_tx(
 /// The `ledger` reads a consumer of this crate may perform.
 ///
 /// One, and it is the one `docs/flows/ledger.md` invariant 2 names. The write
-/// is **not** on this trait, for [`crate::refunds::Refunds`]' reason: it is
-/// `pub(crate)` and belongs to the caller's transaction, so a consumer cannot
-/// post to the ledger through a pooled handle.
+/// is **not** on this trait, and not on any other, for
+/// [`crate::refunds::Refunds`]' reason: it is `pub(crate)` and belongs to
+/// [`crate::settlement`]'s transaction, so a consumer of this crate cannot
+/// post to the ledger without the settlement that justifies the posting.
 ///
-/// It can still post through [`crate::TxRepositories`] without a settlement —
-/// see this module's own docs, which say why that is wider than
-/// `refunds::settle_in_tx` and what the narrower option is.
+/// That sentence was false for as long as
+/// `TxRepositories::post_ledger_transaction_in_tx` existed, which is why the
+/// method does not — see this module's own docs.
 #[async_trait]
 pub trait Ledger: Send + Sync {
     /// `balance(merchant_payable) = Σ credit − Σ debit` for one merchant in
