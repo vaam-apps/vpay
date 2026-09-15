@@ -61,6 +61,42 @@ run, and its exact output:
 | `cargo xtask verify-links`                                                                              | ok — 1 694 links                  |
 | `cargo xtask verify-errors` / `verify-repositories` / `verify-no-mocks` / `verify-serde`                | ok                                |
 
+### Re-run on the contract review's head, 2026-09-16
+
+Branch `review/w3f-contract`. `just ci` was **not** run here either, for the
+same reason. Every row below is the command as run, and every container-backed
+run had `DOCKER_HOST=unix:///run/user/1000/docker.sock` set — a `vpay-db` run
+without it passes with zero cases.
+
+| Command                                                              | Result                                        |
+| -------------------------------------------------------------------- | --------------------------------------------- |
+| `cargo test -p vpay-api --lib`                                       | 385 passed, 0 failed, 0 ignored               |
+| `cargo nextest run -p vpay-db`                                       | 243 passed, 0 skipped                         |
+| `cargo test -p vpay-tests-conformance --test adapter_conformance`    | 67 passed, 0 failed, 0 ignored (was 66)       |
+| `cargo nextest run -p vpay-tests-integration --test refunds`         | 17 passed, 0 skipped (was 16)                 |
+| `cargo nextest run -p vpay-tests-integration --test postgres_smoke`  | 53 passed, 0 skipped                          |
+| `cargo nextest run -p vpay-tests-integration --test account_holders` | 6 passed, 0 skipped                           |
+| `cargo test --doc -p vpay-api -p vpay-db -p vpay-provider`           | 18 + 8 + 12 passed, 0 ignored                 |
+| `cargo clippy --workspace --all-targets -- -D warnings`              | clean                                         |
+| `cargo +nightly fmt --all --check`                                   | clean                                         |
+| `just fmt-check-web`                                                 | clean (whole tree, after formatting 4 files)  |
+| `cargo xtask verify-all`                                             | all ten ok; `verify-migrations` now 48 files  |
+| `just check-schema`                                                  | ok (cratestack 0.11.1 on PATH, pin is 0.12.0) |
+
+Three mutations were run and each was reverted:
+
+| Mutation                                                                                     | What failed                                                                                                                                    |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify_registered_holder` calls `adapter.account_holder_name` directly again (as delivered) | `a_refund_path_lookup_is_counted_and_logged_like_the_routes`, on the counter, and nothing else                                                 |
+| `orange_money` declares `RefundDestination::Origin`                                          | `no_shipping_rail_returns_a_refund_to_the_paying_instrument`, with the message naming what is owed                                             |
+| `p.merchant_id = $1` becomes `$1 = $1` in `vpay_db::refunds::get_for_merchant`               | `the_write_routes_answer_the_same_404_for_a_foreign_refund_as_for_a_missing_one`: a foreign id answers `500` while a missing one answers `404` |
+
+One thing verified against a real database rather than by reading the SQL: all
+48 migrations applied to a `postgres:17-alpine` in order, and
+`obj_description('refunds')`, `col_description('events','type')` and
+`col_description('invoices','amount_refunded')` each read back with `0048`'s
+text.
+
 **Postgres and WireMock tests ran; none skipped.** Every container count above
 is a real `postgres:16-alpine` and, for the eleven new refund cases, a real
 `wiremock/wiremock`, under
@@ -214,7 +250,50 @@ suite's own MTN mappings:
 - the list is merchant-scoped, newest-first, filterable by `payment_intent`,
   and another merchant's intent id is an empty page rather than a `404`;
 - a replayed `Idempotency-Key` answers the stored response and instructs no
-  second transfer.
+  second transfer;
+- **added by review, 2026-09-16** — `POST /v1/refunds/{id}` and
+  `POST /v1/refunds/{id}/cancel` answer another merchant's real refund id and
+  a `re_…` that names nothing with the **same body**, and it is the
+  `resource_missing` envelope rather than the nest's `unknown_route`
+  (`the_write_routes_answer_the_same_404_for_a_foreign_refund_as_for_a_missing_one`).
+  `merchant_b_cannot_read_merchant_as_refund` had proved this for the read
+  only, and the two write routes are where the property is easiest to lose:
+  both read the refund before their write to tell a `404` from a `409`, and
+  `cancel_once` re-reads to render the _status_ that refused it, which is a
+  sentence that would confirm a foreign id exists and say what state it is
+  in. Measured decisive: replacing `p.merchant_id = $1` with `$1 = $1` in
+  `vpay_db::refunds`' `get_for_merchant` makes the foreign id answer `500`
+  while the missing one stays `404`, and the case fails on the difference.
+
+## Two findings from the contract review, 2026-09-16
+
+**The refund path's account-holder lookup was counted and logged by nothing.**
+`verify_registered_holder` called `ProviderAdapter::account_holder_name`
+directly, making it the only caller of that port method outside
+`GET /v1/account_holders`. Two stated properties broke at once:
+`vpay_account_holder_lookups_total` stopped being every lookup vpay makes —
+and [account-holder-lookup.md](../../flows/account-holder-lookup.md) § Status
+asks an operator to alert on a sustained `not_found` rate near 1.0, which
+reads a denominator — while a refund refused for an unregistered payee is
+refused before any row, any `provider_requests` attempt and any rail
+instruction, so it left **no trace in vpay at all**. Both callers now go
+through `v1::account_holders::ask_rail`.
+`a_refund_path_lookup_is_counted_and_logged_like_the_routes` fails on the
+counter when the call is pointed back at the adapter, and nothing else in the
+workspace fails with it.
+
+**Ten claims that `POST /v1/refunds` is unrouted were left standing**, seven
+in tracked files and three in `COMMENT ON` statements live in every database.
+The file ones included this repository's `README.md`, `vpay-api`'s own crate
+header, the boot `warn!` every deployment prints, the `V1_ROUTES` doc comment
+directly above the new entries, and
+[stripe-sdk-compat.md](../../flows/stripe-sdk-compat.md)'s
+"`stripe.refunds.create()` remains a `404`, and correctly so". The database
+ones are corrected by migration `0048` on `0020`/`0047`'s precedent — the
+`refunds` table's, `invoices.amount_refunded`'s and, since both refund event
+types now have a writer, `events.type`'s "eleven of the fifteen". All 48
+migrations were applied to a real Postgres 17 and the three comments read
+back with the new text.
 
 ## What was NOT done, and is recorded rather than left to be discovered
 
@@ -232,6 +311,28 @@ suite's own MTN mappings:
   question reserved for the maintainer. The cost, stated: vpay cannot tell an
   operator which payee a refund was sent to — the rail's records can, keyed by
   the `provider_reference_id` on the row.
+
+  **One qualification the review added**, because "persisted nowhere" is
+  stronger than the code can promise: a `ProviderError::Rejected`'s message
+  is stored in `refunds.failure_raw`, and a rail is free to echo the payee it
+  refused back in it. Nothing renders that column — `RefundObject` is ten
+  keys and none is a failure field — so it reaches no response, no event and
+  no webhook. It is kept rather than scrubbed because a refusal reason with
+  the rail's words removed is one nobody can act on, and pattern-matching a
+  third party's text for phone numbers would be a guess. It is the only route
+  by which a destination can outlive the request, and it is now stated in
+  `vpay_api::v1::refunds`' module header rather than left for whoever answers
+  open question 3 to discover.
+
+- **The `Origin` arm of `resolve_destination` is guarded by one unit test on
+  a hand-written fake, and that was reviewed and kept.** No fixture `Origin`
+  rail was added to the conformance suite — an earlier arm refused that and
+  ADR-0006 is why. What the review added is
+  `no_shipping_rail_returns_a_refund_to_the_paying_instrument`, which asserts
+  the premise that makes one fake adequate: every adapter in the workspace
+  declares `RefundDestination::Required`. Its failure message names the three
+  things owed before the assertion may be relaxed. Measured decisive:
+  flipping `orange_money` to `Origin` fails it.
 - **No refund poll ladder.** RFC-0003 open question 8 is untouched and open.
 - **`refunds.fee` is still written by nothing.** The handler logs a warning if
   an adapter ever reports one.

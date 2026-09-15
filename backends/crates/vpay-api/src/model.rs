@@ -1839,9 +1839,15 @@ pub struct InvoiceObject {
     /// total that is not subtracted from it, so a refunded invoice is still
     /// `paid` with [`Self::amount_remaining`] at `0` (D5; migration `0042`).
     ///
-    /// `0` on every invoice in every deployment today: `POST /v1/refunds` is
-    /// routed nowhere and no rail has ever executed a refund
-    /// (`docs/status.md`). Rendered anyway, and never omitted when zero,
+    /// `0` on every invoice in every deployment today — and the reason
+    /// changed on 2026-09-16 without the fact changing. It was "`POST
+    /// /v1/refunds` is routed nowhere"; the route is mounted now (RFC-0003
+    /// § 2), and the column is still `0` everywhere because the only
+    /// statement that moves it runs in `vpay_db::settlement`'s refund
+    /// transaction and **nothing settles a `pending` refund** — the port has
+    /// no refund status read (RFC-0003 open question 8). No rail has ever
+    /// executed a refund either (`docs/status.md`).
+    /// Rendered anyway, and never omitted when zero,
     /// because a key that appears only sometimes is a key a merchant's typed
     /// client has to guess at.
     pub amount_refunded: i64,

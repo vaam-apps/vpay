@@ -206,6 +206,58 @@ fn every_adapter_declares_coherent_capabilities() {
     }
 }
 
+/// **Every rail this workspace ships declares
+/// [`RefundDestination::Required`] — and this case exists to fail on the day
+/// one does not.**
+///
+/// It asserts a fact, not a rule, and the fact is load-bearing for a test
+/// somewhere else. `vpay_api::v1::refunds::resolve_destination` refuses a
+/// `destination` sent to an `Origin` rail, and merging that arm into the one
+/// above it — `(Origin, _) => Ok(None)`, which accepts the payee and silently
+/// drops it — compiles and fails **exactly one** test in the workspace:
+/// `an_origin_rail_refuses_a_destination`, a unit test driving a hand-written
+/// fake. Measured 2026-09-16 by the arm that wrote it, and re-stated here
+/// because the reason no integration or conformance case can fail with it is
+/// precisely the fact this line pins: there is no `Origin` rail to drive one
+/// with.
+///
+/// So the single unit test is *adequate* while this assertion holds, and
+/// becomes inadequate the moment it stops holding — at which point this case
+/// goes red and says what is owed. That is the whole design:
+///
+/// * a fixture `Origin` rail is **not** added to this suite. An earlier arm
+///   refused that and ADR-0006 is why — this suite parameterises over the
+///   rails that actually ship, and a rail that ships nowhere would make every
+///   case here answer a question about a fake;
+/// * nothing here can make the core's arm *reachable*, so nothing here tries
+///   to. What it can do is refuse to let the premise change quietly.
+///
+/// Added by review, 2026-09-16. `a_destination_is_offered_exactly_when_the_capability_demands_one`
+/// is the neighbouring case that pins this file's own `Origin` branch, and it
+/// has no caller for the same reason.
+#[test]
+fn no_shipping_rail_returns_a_refund_to_the_paying_instrument() {
+    for a in adapters() {
+        assert_eq!(
+            a.capabilities().refund_destination,
+            RefundDestination::Required,
+            "{} now declares RefundDestination::Origin. That is a legitimate thing for a rail \
+             to be — a card or a wallet refunds to the instrument that paid — and it makes an \
+             `Origin` rail drivable end to end for the first time. Three things are owed \
+             before this assertion is relaxed to admit it: (1) an integration case in \
+             backends/tests/integration/tests/refunds.rs that sends `destination` to this \
+             rail through POST /v1/refunds and asserts the 400, because until now \
+             `an_origin_rail_refuses_a_destination` in vpay_api::v1::refunds — a unit test on \
+             a hand-written fake — has been the ONLY thing in this workspace that fails when \
+             that arm is deleted; (2) a case that a refund WITHOUT a destination succeeds on \
+             it, which nothing covers either; (3) docs/rfc/0003-refunds-destinations-and-the-\
+             first-ledger-postings.md section 1 updated, since it says every rail vpay \
+             carries needs a payee. Do not simply widen this assertion.",
+            a.code()
+        );
+    }
+}
+
 /// Proves the code a `ProviderConfig` selects an adapter by is unambiguous.
 /// Two rails sharing one would route a merchant's charges to whichever the
 /// registry happened to insert last, silently and per-deployment.

@@ -183,12 +183,13 @@ pub struct V1Route {
 /// fallback rather than a route that would have to invent a body. See
 /// `docs/status.md`.
 ///
-/// `/v1/refunds` is on that list only for its **`POST`**: `GET
-/// /v1/refunds/{id}` is mounted below (2026-09-05, issue #45) because a
-/// refund must have an authoritative read, while creating one needs the
-/// handler RFC-0003 § 3 describes, which is wave 3's —
-/// `vpay_db::Refunds::create` exists and nothing routes to it. A resource
-/// with a read and no create is unusual and deliberate; see [`refunds`].
+/// `/v1/refunds` **was** on that list for its `POST` until 2026-09-16, when
+/// RFC-0003 § 2 mounted the create, the update, the list and the cancel
+/// beside the read issue #45 shipped on 2026-09-05. The resource with a read
+/// and no create is gone; what the new entries do *not* claim is on the
+/// entries themselves and in [`refunds`]' module header, and the short
+/// version is that no rail has ever returned money and nothing settles a
+/// `pending` refund.
 ///
 /// `/v1/events` **was** on that list until 2026-09-03 and is now served
 /// (Step 5): the same renderer the webhook deliverer signs is what it

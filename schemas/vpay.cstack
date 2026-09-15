@@ -617,11 +617,15 @@ model Refund {
   // through an EXISTS on the same table, and a generated write touches ONE
   // table (the paragraph below is the same argument for the reads).
   //
-  // What did not change is that no rail can execute what `create` writes:
-  // `ProviderAdapter::refund` is a `NotImplemented` token on MTN and, since
-  // 2026-09-15, on Orange too — `Unsupported` on neither, since both rails
-  // declare `supports_refunds` (docs/status.md) — and `POST /v1/refunds` is
-  // routed nowhere.
+  // What did not change is that no rail can execute what `create` writes.
+  // The reasons moved twice. `ProviderAdapter::refund` is a declared
+  // `NotImplemented` token on Orange since 2026-09-15 and, on MTN, is the
+  // Disbursements `transfer` call against a credential no deployment holds —
+  // `Unsupported` on neither, since both rails declare `supports_refunds`
+  // (docs/status.md). And `POST /v1/refunds`, which this comment said was
+  // "routed nowhere", has been routed since 2026-09-16 (RFC-0003 section 2):
+  // a merchant can create a refund, and nothing settles the `pending` row it
+  // writes, because the port has no refund status read.
   //
   // Neither read moves either, and for two independent reasons rather than
   // one: `RefundRow` carries `metadata`, which is `JSONB` and undeclared

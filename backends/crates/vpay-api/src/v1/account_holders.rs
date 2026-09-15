@@ -11,6 +11,26 @@
 //! is this route's flow doc and carries the policy: what may be logged, what
 //! is deliberately not stored, and the one abuse question left open.
 //!
+//! # Since 2026-09-16 the route is not the only caller
+//!
+//! [`crate::v1::refunds`]' create asks the same question about a nominated
+//! payee before it instructs a transfer, which is the in-repo half of the
+//! caller issue #47 describes — it checks that the number is *a registered
+//! account*, and never compares a name, because vpay holds no verified buyer
+//! name to compare against. It goes through [`ask_rail`] rather than the
+//! adapter, so the counter, the masked log line and the three-way answer are
+//! this module's in both places; see that function's doc for what broke when
+//! it did not.
+//!
+//! Two consequences belong here rather than only in the flow doc. The four
+//! rules below now describe **every** lookup vpay makes, not just the
+//! route's. And the reserved decisions further down — no rate limit, no
+//! scope of its own, no audit log — are reserved about *lookups*, not about
+//! a path: a merchant holding [`crate::v1::SCOPE_PAYMENTS_WRITE`] can ask
+//! the same question through `POST /v1/refunds` and read the answer off the
+//! `400`, so a rate limit that covered only this route would not be the
+//! control it reads as.
+//!
 //! # This route is materially different from the rest of `/v1`
 //!
 //! Everything else on this surface is about the merchant's own objects. This
@@ -25,9 +45,12 @@
 //!    `vpay_adapter_mtn_momo::wire::BasicUserInfo`.
 //! 2. **Nothing is persisted** — not the name, not the number, not the fact
 //!    that the question was asked. There is no repository call in this file
-//!    and no migration behind it. That is a decision with a cost, and the
-//!    flow doc records both halves: it also means a merchant enumerating the
-//!    number space leaves no record in vpay.
+//!    and no migration behind it, and none on the refund path's use of
+//!    [`ask_rail`] either: a refund refused for an unregistered payee is
+//!    refused before any row is written, so it too leaves nothing but the
+//!    log line. That is a decision with a cost, and the flow doc records
+//!    both halves: it also means a merchant enumerating the number space
+//!    leaves no record in vpay.
 //! 3. **The log carries a masked number and never a name.** One line, at
 //!    `info`, with [`masked`]'s `+2376••••000` shape and the outcome.
 //!    `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
@@ -206,45 +229,14 @@ pub(crate) async fn retrieve(
             )
         })?;
 
-    let outcome = adapter
-        .account_holder_name(&msisdn, &rail.provider_config())
-        .await;
-
-    // Matched rather than `?`d, so the counter sees the failure too: "a
-    // merchant is asking a rail that is not answering" is precisely the rate
-    // an operator wants, and a `?` here would leave it invisible.
-    let holder = match outcome {
-        Ok(holder) => holder,
-        Err(error) => {
-            count(account_holder_outcome::ERROR);
-            // The masked number and the rail, at `warn` — the log line that
-            // correlates this refusal with the rail's own. The error itself
-            // is rendered by `ApiError::into_response`, at its own severity,
-            // which is where its `Display` and source chain reach the log.
-            tracing::warn!(
-                rail = %rail.code(),
-                msisdn = %masked(&msisdn),
-                "account-holder lookup failed at the rail"
-            );
-            return Err(error.into());
-        }
-    };
-
-    count(if holder.is_some() {
-        account_holder_outcome::FOUND
-    } else {
-        account_holder_outcome::NOT_FOUND
-    });
-
-    // **The number is masked and the name is absent.** `found = true/false`
-    // is the whole of what an operator learns about the answer, which is
-    // enough to read a rate off a log and not enough to rebuild the lookup.
-    tracing::info!(
-        rail = %rail.code(),
-        msisdn = %masked(&msisdn),
-        found = holder.is_some(),
-        "account-holder lookup served"
-    );
+    let holder = ask_rail(
+        adapter.as_ref(),
+        rail.code(),
+        &msisdn,
+        &rail.provider_config(),
+        caller::ROUTE,
+    )
+    .await?;
 
     crate::v1::payment_intents::json_response(
         StatusCode::OK,
@@ -278,6 +270,106 @@ fn unsupported_rail() -> ApiError {
         "This payment method cannot look up an account holder on this deployment. Send a \
          `payment_method_type` whose rail exposes one.",
     )
+}
+
+/// Which code path asked the rail, as a `tracing` field and **never** as a
+/// metric label.
+///
+/// A field rather than a label because a Prometheus label multiplies the
+/// series and `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`
+/// pins this series at one label; the question the counter answers — "how
+/// many lookups did vpay make, and what did they say" — is the same question
+/// whoever asked. The log line is where an operator needs the two apart,
+/// because only one of them is a merchant calling a route.
+pub(crate) mod caller {
+    /// `GET /v1/account_holders`, the merchant's own question.
+    pub(crate) const ROUTE: &str = "v1_account_holders";
+    /// `POST /v1/refunds`, checking a nominated payee is a registered
+    /// account before a transfer is instructed
+    /// (`crate::v1::refunds::verify_registered_holder`).
+    pub(crate) const REFUND_DESTINATION: &str = "v1_refunds_create";
+}
+
+/// Asks the rail who holds a number, and **records that it was asked**.
+///
+/// # Why this is a function and not two copies of four lines
+///
+/// `GET /v1/account_holders` was the only caller of
+/// [`ProviderAdapter::account_holder_name`] until 2026-09-16, when
+/// [`crate::v1::refunds`]' create began checking a nominated payee through
+/// the same port method. That second caller reached the adapter directly and
+/// therefore incremented nothing and logged nothing, which broke two stated
+/// properties at once:
+///
+/// * `vpay_account_holder_lookups_total` stopped being *every* lookup vpay
+///   makes. `docs/flows/account-holder-lookup.md` § Status asks an operator
+///   to alert on a sustained `not_found` rate near 1.0, because that — and
+///   only that — is what a mis-cased `accountHolderIdType` path segment
+///   looks like from outside. A caller missing from the series makes that
+///   alarm read a fraction of the traffic and say nothing about the rest;
+/// * a refund whose payee the rail has no record of is refused **before**
+///   anything is written or instructed, so it leaves no refund row, no
+///   `provider_requests` row and — without this line — no log line either.
+///   That is a lookup of a third party by phone number with no trace in
+///   vpay at all, which is precisely the abuse the flow doc's reserved
+///   rate-limit decision is about.
+///
+/// The masking, the absent name and the single-label counter are this
+/// module's rules 3 and 4, and they now hold for both callers because there
+/// is one place that can break them.
+///
+/// # Errors
+///
+/// Whatever the adapter answered, unchanged and classified by
+/// [`ApiError::from`] — `502` for a rail that could not be reached, never an
+/// `Ok(None)`. Collapsing the two is what the three-way answer exists to
+/// prevent; see this module's flow doc.
+pub(crate) async fn ask_rail(
+    adapter: &dyn ProviderAdapter,
+    rail_code: &str,
+    msisdn: &str,
+    config: &vpay_provider::ProviderConfig,
+    caller: &'static str,
+) -> Result<Option<vpay_provider::AccountHolder>, ApiError> {
+    // Matched rather than `?`d, so the counter sees the failure too: "a
+    // merchant is asking a rail that is not answering" is precisely the rate
+    // an operator wants, and a `?` here would leave it invisible.
+    let holder = match adapter.account_holder_name(msisdn, config).await {
+        Ok(holder) => holder,
+        Err(error) => {
+            count(account_holder_outcome::ERROR);
+            // The masked number and the rail, at `warn` — the log line that
+            // correlates this refusal with the rail's own. The error itself
+            // is rendered by `ApiError::into_response`, at its own severity,
+            // which is where its `Display` and source chain reach the log.
+            tracing::warn!(
+                rail = %rail_code,
+                msisdn = %masked(msisdn),
+                caller,
+                "account-holder lookup failed at the rail"
+            );
+            return Err(error.into());
+        }
+    };
+
+    count(if holder.is_some() {
+        account_holder_outcome::FOUND
+    } else {
+        account_holder_outcome::NOT_FOUND
+    });
+
+    // **The number is masked and the name is absent.** `found = true/false`
+    // is the whole of what an operator learns about the answer, which is
+    // enough to read a rate off a log and not enough to rebuild the lookup.
+    tracing::info!(
+        rail = %rail_code,
+        msisdn = %masked(msisdn),
+        found = holder.is_some(),
+        caller,
+        "account-holder lookup served"
+    );
+
+    Ok(holder)
 }
 
 /// Counts one lookup outcome.

@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 47,
-        "all forty-seven migration files under backends/migrations should be recorded as applied \
+        applied, 48,
+        "all forty-eight migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -351,7 +351,23 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          MANIFEST.sha256 line is what the immutability rule permits, since \
          that rule protects APPLIED migrations. THIS COUNT IS THE TRIPWIRE \
          FOR EXACTLY THAT COLLISION: two branches each numbering a migration \
-         0046 conflicted in no file, and this assertion is what noticed.)"
+         0046 conflicted in no file, and this assertion is what noticed, \
+         and RFC-0003 section 2's 0048, a second comment-only migration on \
+         the same precedent, added by review on 2026-09-16 when the four \
+         /v1 refund routes landed. Three shipped COMMENTs went false with \
+         them: 0047's own COMMENT ON TABLE refunds and COMMENT ON COLUMN \
+         invoices.amount_refunded, both of which said POST /v1/refunds is \
+         routed nowhere so no merchant request can create a row, and 0039's \
+         COMMENT ON COLUMN events.type, which said eleven of the fifteen \
+         event types have a writer and named the two charge.refund types \
+         among the four that do not -- vpay_api::v1::refunds is the first \
+         writer of both, so it is thirteen. It changes no data, no column \
+         and no constraint, and it deliberately does NOT weaken what those \
+         COMMENTs say about money: no rail has ever returned money and \
+         nothing settles a pending refund, which is why \
+         invoices.amount_refunded is still 0 in every deployment -- the \
+         route being mounted changed the reason that column has no \
+         reachable writer, not the fact.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
