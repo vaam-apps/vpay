@@ -30,7 +30,11 @@
 /// its own origin for the first branch to ever fire — mirroring
 /// `OpenCheckoutPopupOptions.completionOrigin`'s default in `popup.ts`,
 /// this only ever accepts a message whose `event.origin` is this page's own
-/// origin, not the checkout page's.
+/// origin, not the checkout page's — and, mirroring `popup.ts`'s own
+/// `event.source !== popup` check, only a message whose `event.source` is
+/// the exact popup [show] opened, not merely some other window sharing
+/// this page's origin (another tab, another popup, an iframe of the
+/// merchant's own).
 ///
 /// **D8's `VpayCheckoutMode` collapses to one behaviour here.** `inApp` and
 /// `externalBrowser` both open the same `window.open` popup — there is no
@@ -138,6 +142,19 @@ final class WebVpayCheckoutPlatform extends VpayCheckoutPlatform {
     void onMessage(web.Event event) {
       final web.MessageEvent messageEvent = event as web.MessageEvent;
       if (messageEvent.origin != web.window.location.origin) {
+        return;
+      }
+      // …and it must be *this* window, not merely something else on the
+      // same origin — the same second check `popup.ts`'s own `onMessage`
+      // makes ("it must be *this* window, not merely something else on the
+      // same origin"): another tab, another popup, an iframe of the
+      // merchant's own can all share this page's origin and still hold a
+      // `postMessage` handle to it. `_popup` is the exact `web.Window` this
+      // call to [show] opened; `messageEvent.source` not being that
+      // reference — including when `_popup` is already `null` because
+      // [_teardown] already ran — rejects the message rather than trusting
+      // it.
+      if (messageEvent.source != _popup) {
         return;
       }
       final Object? data = messageEvent.data?.dartify();

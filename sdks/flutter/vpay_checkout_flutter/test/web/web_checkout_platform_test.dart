@@ -232,6 +232,90 @@ void main() {
       expect(events.single.outcome, CheckoutWindowOutcome.stopUrlReached);
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    test(
+      'ignores a vpay:complete from a different window on the right origin',
+      () async {
+        final WebVpayCheckoutPlatform platform = WebVpayCheckoutPlatform();
+        addTearDown(platform.dismiss);
+
+        final List<CheckoutWindowEvent> events = <CheckoutWindowEvent>[];
+        final StreamSubscription<CheckoutWindowEvent> subscription = platform
+            .windowEvents
+            .listen(events.add);
+        addTearDown(subscription.cancel);
+
+        // The popup show() actually tracks — no message fired yet (no
+        // `session` query parameter).
+        await platform.show(
+          url: _fixtureUri(const <String, String>{}).toString(),
+          stopUrls: const <Never>[],
+          allowInsecureUrl: true,
+          mode: CheckoutWindowMode.inApp,
+        );
+
+        // A SECOND, independent real popup — deliberately NOT the
+        // 'vpay-checkout' named window show() opened — on this SAME origin
+        // (no `host:` override, unlike the different-origin test above)
+        // posting a real, well-formed vpay:complete. Its `event.origin` is
+        // indistinguishable from the legitimate popup's; only `event.source`
+        // (this window's `postMessage` sender identity, which the browser
+        // sets and no page can spoof) tells them apart. This is exactly the
+        // attack the window check exists to stop: another tab, another
+        // popup, or an iframe of the merchant's own, sharing this page's
+        // origin, reporting a payment as finished.
+        final Uri sameOriginOtherWindowUrl = _fixtureUri(const <String, String>{
+          'session': 'cs_same_origin_wrong_window',
+          'status': 'succeeded',
+        });
+        final web.Window? otherWindow = web.window.open(
+          sameOriginOtherWindowUrl.toString(),
+          'same-origin-but-not-the-checkout-popup',
+          'popup=yes',
+        );
+        addTearDown(() => otherWindow?.close());
+
+        // Long enough for the real, same-origin, wrong-window popup to load
+        // and post; short enough to keep the suite fast. If the window check
+        // did not exist (or were satisfied by the origin check alone), this
+        // message would already have resolved the checkout by the time this
+        // returns — see this file's header for how `just test-flutter-web`
+        // proves that failure mode for real, by removing the check.
+        await Future<void>.delayed(const Duration(seconds: 2));
+        expect(
+          events,
+          isEmpty,
+          reason:
+              'a vpay:complete from a different window on the SAME origin '
+              'must NOT resolve the checkout — the origin check alone is not '
+              'enough, because another window on this origin can share it',
+        );
+
+        // NOW the real popup show() itself opened — the named-window trick
+        // — posts the real completion message, proving the platform still
+        // accepts the one window it is actually supposed to.
+        final web.Window? legit = web.window.open('', 'vpay-checkout');
+        legit!.location.href = _fixtureUri(const <String, String>{
+          'session': 'cs_same_origin_right_window',
+          'status': 'succeeded',
+        }).toString();
+
+        await _waitUntil(
+          'the real message from the actual checkout popup to resolve the '
+          'checkout',
+          () => events.isNotEmpty,
+        );
+        expect(
+          events,
+          hasLength(1),
+          reason:
+              'exactly one real event: the ignored wrong-window message must '
+              'not have queued anything that fires later',
+        );
+        expect(events.single.outcome, CheckoutWindowOutcome.stopUrlReached);
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+
     test("the popup's own closed state reports a real dismissal, never a fabricated outcome (the web analogue of design D4)", () async {
       final WebVpayCheckoutPlatform platform = WebVpayCheckoutPlatform();
       addTearDown(platform.dismiss);
