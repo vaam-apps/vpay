@@ -361,9 +361,61 @@ this section used to name are gone**, and `just verify-ignored` now pins
   (`boot_seeds`, which exits `78` for a configured rail with no linked
   adapter); there is no job loop to call `submit` or `query_status`.
 
-Capabilities being real matters more than it sounds: `orange_money` declares
-`supports_refunds: false`, and that flag — not a rail-specific branch — is what
-makes the core refuse a refund on that rail.
+Capabilities being real matters more than it sounds: `orange_money` declared
+`supports_refunds: false`, and that flag — not a rail-specific branch — was
+what made the core refuse a refund on that rail. **Superseded 2026-09-15; see
+the next section, which is about what such a flag is a claim _about_.**
+
+## Orange's refund capability, flipped (2026-09-15, RFC-0003 § 5)
+
+`orange_money` declares `supports_refunds: true`. **Nothing about the rail's
+behaviour changed and no refund got closer to working** — the maintainer
+decided what an Orange refund _is_: an outbound **transfer** back to a payee,
+because a redirect rail has no "back the way it came" (`payer_ref` is `None`
+and vpay never learns who paid). Orange makes transfers, so the rail is not
+what stands in the way, and `ProviderError::Unsupported` — a claim about
+Orange — stopped being true.
+
+What ships:
+
+- `vpay-adapter-orange-money` overrides `refund` with
+  `ProviderError::NotImplemented("orange_money::refund")`. `cargo xtask
+verify-status` reports **2** unimplemented items, both declared in
+  [../status.md](../status.md); it fails in both directions, so the token and
+  the bullet hold each other up.
+- **No Orange transfer wire call.** This repository has no Orange transfer
+  specification, not even reconstructed — the three implemented calls came from
+  Orange Developer's public overview plus community SDKs that agree with each
+  other, and no such source exists for transfers. Item 5 of
+  [../flows/adapter-orange-money.md](../flows/adapter-orange-money.md)'s "To
+  confirm with Orange Cameroun" list is rewritten as the specification request
+  that unblocks it, and it is the only item on that list blocking a shipping
+  token.
+- `supports_partial_refunds` stays `false` **by decision**: the `true` above
+  rests on knowing that an Orange refund is a transfer and on nothing else
+  about Orange transfers — no amount semantics, no minimum, no limit. Turning
+  it on later is additive; withdrawing it after merchants integrate is
+  breaking.
+- `refund_destination` was already `Required` and did not move, and
+  `parse_destination` was already built (wave 1b), which is why this was a
+  declaration rather than a design.
+
+What it cost, stated rather than glossed: `orange_money` was the workspace's
+**only** rail declaring `supports_refunds: false`, so the conformance case
+`a_rail_without_the_refund_capability_answers_unsupported` has no rail left for
+its `Unsupported` arm. The arm was kept, not deleted — a rail added or flipped
+tomorrow is then checked rather than silently skipped, the same pattern as that
+suite's `Origin` arm — and the property moved to
+`a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported` in
+`vpay-provider`, which exercises the trait's default body on a stub that
+overrides nothing. The **configured-rail** half of that proof is simply gone
+and cannot be recovered without a rail that has no refund API. A fixture rail
+inside the conformance suite was considered and rejected: that suite is one
+body parameterised over the workspace's real adapters against real containers
+(ADR-0006).
+
+Evidence:
+[verification/2026-09-15-refunds-w2-orange-flip.md](verification/2026-09-15-refunds-w2-orange-flip.md).
 
 ## Credentials are their own object (2026-09-13, ADR-0019)
 

@@ -35,8 +35,9 @@ to.
 > ever been touched.** The payer number was an MTN-sandbox test MSISDN the
 > sandbox settles automatically — no handset was prompted and no real money
 > moved; Orange's redirect rail has still never been called; no webhook has
-> ever reached a merchant endpoint outside this repository; `mtn_momo::refund`
-> is still `NotImplemented`; and no cluster has ever run vpay. Do not deploy
+> ever reached a merchant endpoint outside this repository; **no rail refunds
+> anything** — `mtn_momo::refund` and, since 2026-09-15, `orange_money::refund`
+> are both `NotImplemented`; and no cluster has ever run vpay. Do not deploy
 > it._
 
 That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
@@ -99,6 +100,12 @@ before this page was written:
 | `verify-migrations`   | an applied migration whose bytes changed                                                                                                                         | 42 files                                     |
 | `verify-docs`         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report                              |
 
+**One of those numbers has moved since.** `verify-status` printed **2**
+unimplemented items on 2026-09-15, not 1: RFC-0003 § 5 gave `orange_money`
+a `refund` token. The column is left at what it printed on 2026-09-11 because
+that is what the sentence above it says it is — a measurement of one tree on
+one day.
+
 **`check-schema` did not run under the version this repository pins**, and the
 recipe says so out loud rather than passing quietly: `justfile`'s
 `cratestack_version` is `0.12.0`, the CrateStack CLI on the authoring machine's
@@ -131,18 +138,24 @@ a doc comment to keep this gate green
 `a_token_in_a_doc_attribute_is_not_a_shipping_claim` and
 `the_lexer_tells_the_four_states_apart` in `xtask`).
 
-**There is exactly one, down from eight on 2026-09-03 (Step 3), and the two
-that left did so for opposite reasons — which is the distinction this list
-exists to keep visible.** Six went because the code was _written_:
+**There are exactly two, down from eight on 2026-09-03 (Step 3), and the list
+has moved in both directions — which is the distinction it exists to keep
+visible.** Six went because the code was _written_:
 `{mtn_momo,orange_money}::{submit, query_status, parse_callback}` are real
-HTTP calls now. `orange_money::refund` went because it was **never unbuilt
-work in the first place** — Orange's Web Payment product documents no refund
-API, so the adapter stops overriding the port and inherits the trait's
-default `ProviderError::Unsupported`: a permanent capability answer the core
-can branch on (`supports_refunds: false`), asserted by the conformance case
-`a_rail_without_the_refund_capability_answers_unsupported`. A rail that will
-never support an operation must not be described with the same token as work
-someone still has to do.
+HTTP calls now.
+
+`orange_money::refund` left and came back, and it is the same token meaning
+two different things. It left on 2026-09-03 because it was **not unbuilt work
+in the first place**: Orange's Web Payment product documents no refund API, so
+the adapter inherited the port's `ProviderError::Unsupported` — a permanent
+capability answer the core branches on. It returned on **2026-09-15**, when
+the maintainer decided what an Orange refund _is_ (RFC-0003 § 5): an outbound
+**transfer** back to a payee. Orange makes transfers, so `supports_refunds` is
+`true` and the refusal stopped being a fact about the rail. What is missing is
+vpay's call, and that is a token. A rail that will never support an operation
+must not be described with the same token as work someone still owes — which
+is also why re-listing it took a decision about Orange rather than a decision
+about this list.
 
 - `mtn_momo::refund` — MTN refunds are a different product (Disbursements)
   with its own subscription key and its own token scope; nothing in
@@ -157,6 +170,27 @@ someone still has to do.
   (`refund_is_not_implemented_and_does_not_pretend`,
   `unimplemented_operations_never_fabricate_success` in the conformance
   suite).
+- `orange_money::refund` — added 2026-09-15 by RFC-0003 § 5. An Orange refund
+  is an outbound **transfer** back to the payee: there is no "back the way it
+  came" on a redirect rail, where `payer_ref` is `None` and vpay never learns
+  who paid, which is why this rail declares
+  `RefundDestination::Required`. **No Orange transfer API is documented in
+  this repository — not even reconstructed.** The three calls the adapter does
+  make were built from Orange Developer's public overview plus community SDKs
+  that agree with each other; for transfers no such source exists here, so an
+  endpoint path and a request body would be _invented_, in the money path, on
+  a rail nobody has ever called. It stays a token until item 5 of
+  [flows/adapter-orange-money.md](flows/adapter-orange-money.md)'s "To confirm
+  with Orange Cameroun" list has an answer.
+  `supports_refunds` is **`true`** — the rail refunds; answering `Unsupported`
+  would now be a lie about Orange rather than an admission about us — while
+  `supports_partial_refunds` stays **`false`**, decided and not merely left
+  over: nothing here knows an Orange transfer's amount semantics, and
+  withdrawing a partial-refund capability a merchant had already integrated
+  against is a breaking change, where adding one later is not.
+  (`refund_is_a_token_about_vpay_not_an_answer_about_orange` in the adapter,
+  `a_rail_without_the_refund_capability_answers_unsupported` in the
+  conformance suite.)
 
 **Declared and unpopulated, beside that token: the refund `fee`.** Added
 2026-09-05 for [issue #46](https://github.com/vaam-apps/vpay/issues/46), which
@@ -202,9 +236,12 @@ Disbursements subscription key and token scope in `config/application.yml` /
 carries a fee — none of the modelled MTN responses in
 `vpay-adapter-mtn-momo/src/wire.rs` has a fee field today, and whether that
 product reports one has never been verified against MTN's sandbox, which this
-repository has never called. For Orange: nothing, ever — the Web Payment
-product documents no refund API, the adapter answers `Unsupported`, and there
-is no refund to charge a fee for. **An adapter must not invent one**: `None`
+repository has never called. For Orange, since 2026-09-15: an Orange transfer
+specification of any kind — this repository has none, so whether that product
+reports a fee is not merely unverified, it is unasked. (This paragraph read
+"For Orange: nothing, ever — the Web Payment product documents no refund API
+… and there is no refund to charge a fee for" until RFC-0003 § 5 decided that
+an Orange refund is a transfer back.) **An adapter must not invent one**: `None`
 is "the rail did not report a fee" and `Some(0)` is "the rail said it was
 free", and collapsing them is the exact defect the issue reports one layer up.
 

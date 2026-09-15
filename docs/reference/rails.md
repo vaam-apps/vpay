@@ -359,10 +359,19 @@ credentials are wrong rather than stale, which pages.
 
 Implements `submit`, `query_status` and `parse_callback` against the three calls
 transcribed in [`adapter-orange-money.md`](../flows/adapter-orange-money.md).
-`refund` is deliberately _not_ overridden: Orange documents no refund API for
-Web Payment, so the port's default `ProviderError::Unsupported` is the
-permanent, correct answer and `Capabilities::supports_refunds` is what the core
-branches on. It is not `NotImplemented`, because there is nothing to build.
+`refund` is overridden with
+`ProviderError::NotImplemented("orange_money::refund")` and listed in
+[`status.md`](../status.md). **No Orange transfer wire call is written**, and
+that is the point: an Orange refund is an outbound transfer back to a payee
+(maintainer's decision, 2026-09-15, RFC-0003 § 5), Orange makes transfers — so
+`Capabilities::supports_refunds` is `true` — and this repository has no Orange
+transfer specification, not even reconstructed. An endpoint and a body would be
+invented in the money path. _(Until 2026-09-15 this read: "`refund` is
+deliberately not overridden: Orange documents no refund API for Web Payment, so
+the port's default `ProviderError::Unsupported` is the permanent, correct
+answer … It is not `NotImplemented`, because there is nothing to build."
+"Nothing to build" was the claim that changed, and not by learning anything new
+about Orange.)_
 
 **Sourcing caveat, and it is the important line on this page.** The flow doc
 this adapter is written from is reconstructed from Orange Developer's public

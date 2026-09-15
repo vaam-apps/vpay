@@ -144,10 +144,13 @@ its own — asserting every entry answers `401` without a token
 
 **`POST /v1/refunds` and `GET /v1/balance` are routed nowhere** and answer the
 honest 404 from the nest's fallback. Creating a refund will keep doing so until
-a rail can refund: `mtn_momo::refund` is `NotImplemented` (MTN refunds are the
-Disbursements product, and no deployment holds those credentials) and
-`orange_money` declares `supports_refunds: false`, which is a permanent
-capability answer rather than unbuilt work. So `GET /v1/refunds/{id}` is a read
+a rail can refund, and **neither can**: `mtn_momo::refund` is `NotImplemented`
+(MTN refunds are the Disbursements product, and no deployment holds those
+credentials) and `orange_money::refund` is `NotImplemented` too since
+2026-09-15 (an Orange refund is an outbound transfer, and this repository has
+no Orange transfer specification to write one against — RFC-0003 § 5). Both
+rails declare `supports_refunds: true`: the gap is vpay's, not the rails'. So
+`GET /v1/refunds/{id}` is a read
 with no writer: **nothing in this repository creates a `refunds` row**, and
 every row its tests read was inserted by the suite itself.
 
