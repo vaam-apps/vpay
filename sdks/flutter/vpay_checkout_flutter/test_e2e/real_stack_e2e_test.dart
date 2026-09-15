@@ -35,6 +35,29 @@
 ///   that outcome is re-checked against the server directly afterwards
 ///   (twice: once more through [BrowserClient], once with no package code at
 ///   all), never trusted from the package's own return value alone.
+/// - **Since 2026-09-15, also proves the MERCHANT learned — not just that
+///   the payer's device believes it succeeded.** Every assertion above this
+///   point, and every other test in this package (82 unit tests, the two
+///   other groups in this file, all three emulator suites), stops at the
+///   payer-side read: `GET /v1/browser/payment_intents/{id}`, which is
+///   exactly the route the plugin's own poll already used. The README's
+///   claim that `VpayCheckoutResult.succeeded` is a UI fact and a merchant's
+///   server must still act on `payment_intent.succeeded` was, until this
+///   group, untested. The success fixture is a REAL order through
+///   `examples/shop`'s own server (`orders.create` — nothing new there); what
+///   is new is that `just test-flutter-e2e` now also captures that order's
+///   id and this file polls `examples/shop`'s `orders.get` — a SEPARATE
+///   process, over HTTP, under no package code — for it to flip to `paid`.
+///   That field is written by exactly one thing in the whole stack:
+///   `examples/shop/src/server/webhook.ts`, after it verifies a real
+///   `vpay-signature` HMAC on a real `POST /api/vpay/webhook` delivery from
+///   `vpay-worker`. This is tier 1 of the three the brief ranked (the shop's
+///   own database, matching `docs/flows/hosted-checkout.md`'s own bar and
+///   `frontends/tests/e2e/cypress/support/shop.ts`'s `readOrder` for
+///   Cypress) — not a webhook-journal read and not the merchant event feed,
+///   because the shop's order row was already the strongest evidence this
+///   deployment can produce and reaching for a second tier once tier 1 holds
+///   would prove nothing further.
 /// - Does **not** prove anything about a real payment rail. This deployment's
 ///   rail is WireMock, exactly as it is for every other test in this
 ///   repository (`docs/status.md`'s banner: no HTTP call to a real rail has
@@ -75,6 +98,8 @@ class _Fixture {
     required this.expiredSessionUrl,
     required this.expiredIntentId,
     required this.expiredIntentClientSecret,
+    required this.shopUrl,
+    required this.successOrderId,
   });
 
   /// vpay's own API origin, e.g. `http://localhost:8080` — what
@@ -101,6 +126,18 @@ class _Fixture {
   /// before expiry precisely so this suite can still use it afterwards to
   /// prove the intent read outlives the session while the confirm does not.
   final String expiredIntentClientSecret;
+
+  /// `examples/shop`'s own origin, e.g. `http://localhost:3001` — a
+  /// DIFFERENT server from [baseUrl] (vpay itself), and the whole point of
+  /// the merchant-side assertion below: it is asked of the merchant, not of
+  /// vpay.
+  final String shopUrl;
+
+  /// The shop's own database id for the order behind [successSessionUrl] —
+  /// what `orders.create` answered when `just test-flutter-e2e` minted it.
+  /// Never touched by anything in this package; used only to ask the shop's
+  /// own `orders.get` whether ITS row says the order is paid.
+  final String successOrderId;
 
   static _Fixture load() {
     final String? path = Platform.environment['VPAY_E2E_FIXTURE_FILE'];
@@ -137,6 +174,8 @@ class _Fixture {
       expiredSessionUrl: field('expiredSessionUrl'),
       expiredIntentId: field('expiredIntentId'),
       expiredIntentClientSecret: field('expiredIntentClientSecret'),
+      shopUrl: field('shopUrl'),
+      successOrderId: field('successOrderId'),
     );
   }
 }
@@ -216,6 +255,90 @@ Future<http.Response> _rawConfirm(
     headers: const {'Content-Type': 'application/x-www-form-urlencoded'},
     body: body,
   );
+}
+
+/// `GET {shopUrl}/api/trpc/orders.get?input=...` — the shop's OWN read of
+/// its OWN database, exactly as its return page polls it and exactly as
+/// `frontends/tests/e2e/cypress/support/shop.ts`'s `readOrder` does for
+/// Cypress. No batching, no transformer, and — the whole point — no package
+/// code: this is a bare HTTP GET against `examples/shop`, a server this
+/// package has never heard of and never sent a byte to anywhere else in this
+/// file.
+Future<String> _readShopOrderStatus(
+  http.Client client, {
+  required String shopUrl,
+  required String orderId,
+}) async {
+  final Uri uri = Uri.parse('$shopUrl/api/trpc/orders.get').replace(
+    queryParameters: {
+      'input': jsonEncode(<String, String>{'id': orderId}),
+    },
+  );
+  final http.Response response = await client.get(uri);
+  if (response.statusCode != 200) {
+    fail(
+      "the shop's own orders.get answered HTTP ${response.statusCode} for "
+      'order $orderId: ${response.body}',
+    );
+  }
+  final Object? decoded = jsonDecode(response.body);
+  if (decoded is! Map) {
+    fail(
+      "the shop's orders.get did not answer a JSON object: ${response.body}",
+    );
+  }
+  final Map<String, Object?> body = decoded.cast();
+  final Object? result = body['result'];
+  if (result is! Map) {
+    fail('the shop\'s orders.get answered no "result": ${response.body}');
+  }
+  final Map<String, Object?> resultMap = result.cast();
+  final Object? data = resultMap['data'];
+  if (data is! Map) {
+    fail('the shop\'s orders.get answered no "result.data": ${response.body}');
+  }
+  final Map<String, Object?> orderMap = data.cast();
+  final Object? status = orderMap['status'];
+  if (status is! String) {
+    fail('the shop\'s orders.get answered no "status": ${response.body}');
+  }
+  return status;
+}
+
+/// Polls [_readShopOrderStatus] until it reaches [expected] or [timeout]
+/// elapses. The wait exists for one real thing, not for network jitter:
+/// `vpay-worker`'s fan-out is a timed job loop, not a callback this test can
+/// hook, and the delivery it is waiting for is the same delivery
+/// `examples/shop/src/server/webhook.ts` verifies before writing anything.
+Future<String> _waitForShopOrderStatus(
+  http.Client client, {
+  required String shopUrl,
+  required String orderId,
+  required String expected,
+  Duration timeout = const Duration(seconds: 60),
+  Duration interval = const Duration(seconds: 2),
+}) async {
+  final DateTime deadline = DateTime.now().add(timeout);
+  String last = 'unpaid';
+  while (true) {
+    last = await _readShopOrderStatus(
+      client,
+      shopUrl: shopUrl,
+      orderId: orderId,
+    );
+    if (last == expected) {
+      return last;
+    }
+    if (DateTime.now().isAfter(deadline)) {
+      fail(
+        "the shop's own order $orderId stayed '$last' for "
+        "${timeout.inSeconds}s; expected '$expected' — the merchant never "
+        'independently learned this payment happened, even though the '
+        "payer's own poll did",
+      );
+    }
+    await Future<void>.delayed(interval);
+  }
 }
 
 void main() {
@@ -341,8 +464,43 @@ void main() {
           '[real_stack_e2e] raw HTTP confirms it too: pi '
           '${ready.paymentIntentId} is succeeded on the server',
         );
+
+        // 5. THE MERCHANT'S OWN EVIDENCE — a SECOND, INDEPENDENT observer.
+        //    Everything above this line, in this test and in every other
+        //    test this package has, is a payer-side read: the plugin's own
+        //    poll, then the same route read twice more. This step asks a
+        //    DIFFERENT process — examples/shop, over HTTP, under no package
+        //    code — whether ITS OWN database says the order is paid. That
+        //    field is written by exactly one thing in the stack:
+        //    examples/shop/src/server/webhook.ts, and only after it verifies
+        //    a real vpay-signature HMAC on a real POST /api/vpay/webhook
+        //    delivery from vpay-worker. If this assertion passes, the
+        //    README's claim — that VpayCheckoutResult.succeeded is a UI fact
+        //    and a merchant's own server must still act on
+        //    payment_intent.succeeded — is proven, not merely stated.
+        final String shopStatus = await _waitForShopOrderStatus(
+          httpClient,
+          shopUrl: fixture.shopUrl,
+          orderId: fixture.successOrderId,
+          expected: 'paid',
+        );
+        expect(
+          shopStatus,
+          'paid',
+          reason:
+              "examples/shop's own orders.get for order "
+              '${fixture.successOrderId} did not reach paid',
+        );
+        stdout.writeln(
+          '[real_stack_e2e] MERCHANT-SIDE EVIDENCE: examples/shop order '
+          '${fixture.successOrderId} is paid in the SHOP\'S OWN database — '
+          'written only by its webhook handler after a real, '
+          'signature-verified payment_intent.succeeded delivery for pi '
+          '${ready.paymentIntentId}. The merchant, not just the payer\'s '
+          'device, learned this payment happened.',
+        );
       },
-      timeout: const Timeout(Duration(minutes: 2)),
+      timeout: const Timeout(Duration(minutes: 3)),
     );
   });
 
