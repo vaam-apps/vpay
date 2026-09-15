@@ -61,12 +61,24 @@ providers:
       # (docs/flows/adapter-mtn-momo.md, "Credential hierarchy").
       #
       # **No deployment holds these**, which is why they are NOT in
-      # `vpay_config::config::REQUIRED_RAIL_KEYS` and why an unset variable
-      # here is not a boot failure: requiring them would stop every existing
-      # deployment from starting in order to enable a call none of them can
-      # make. `mtn_momo::refund` answers `ProviderError::Config` naming the
-      # first one that is missing, which is a refund that fails loudly rather
-      # than a charge path that will not boot.
+      # `vpay_config::config::REQUIRED_RAIL_KEYS`: an *empty* value is a
+      # value, so an operator who sets all three to the empty string boots
+      # normally and `mtn_momo::refund` answers `ProviderError::Config`
+      # naming the first blank one — a refund that fails loudly rather than a
+      # charge path that will not boot.
+      #
+      # **An UNSET variable is a different thing and it IS a boot failure.**
+      # This comment claimed the opposite until 2026-09-15 (review of arm D)
+      # and it was wrong: `REQUIRED_RAIL_KEYS` is checked on the merged
+      # document, but `${VAR}` resolution happens first and
+      # `vpay_config::config::resolve_string` has no default syntax — an
+      # unset name is `ConfigError::UnresolvedPlaceholder`, exit 78, on both
+      # binaries. Adding these three lines therefore added three names every
+      # environment that loads THIS file must define (empty is fine):
+      # `.env.example` carries them, `deploy/helm/vpay`'s rails secret needs
+      # them, and `the_repositorys_own_configuration_passes_the_adapter_join`
+      # failed until it set them. The authoritative list is always
+      # `grep -o '${[A-Z_]*}' config/application.yml`.
       #
       # All three, with no fallback to the Collections values: sending
       # Collections' Basic password to the Disbursements token mint is a 401

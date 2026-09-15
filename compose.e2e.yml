@@ -67,12 +67,19 @@ services:
       # which is what a refund on this rail is. Same exit-78 rule as the
       # three above, and set on the worker below for the same reason.
       #
-      # These match `wiremock/mtn/mappings/transfer.json`, which answers 202
-      # ONLY for this subscription key and for a bearer minted from
-      # /disbursement/token/ — so a stack whose refund path reached for the
-      # Collections credentials would get a 404 from the stub rather than a
-      # silent success. `just demo-walk` does not refund and nothing routes
-      # POST /v1/refunds, so nothing in this stack calls it today.
+      # They are set because the BASE `config/application.yml` references
+      # them and an unresolved `${VAR}` is exit 78 on both binaries — not
+      # because a refund works here. Corrected 2026-09-15 on review: this
+      # comment claimed the values "match wiremock/mtn/mappings/transfer.json"
+      # and they do NOT. That stub answers 202 only for the exact key
+      # `stub-disbursement-subscription-key`, which is what the conformance
+      # suite configures; this stack prefixes every stub credential with
+      # `wiremock-`, so a transfer from here matches no mapping and WireMock
+      # answers 404, which `mtn_momo::refund` reports as
+      # `ProviderError::Config`. Nothing exercises that path: `just
+      # demo-walk` does not refund and POST /v1/refunds is unrouted. Making
+      # the values agree would be a change worth making the day a refund walk
+      # exists, and a misleading tidy-up before then.
       MTN_DISBURSEMENT_SUBSCRIPTION_KEY: wiremock-stub-disbursement-subscription-key
       MTN_DISBURSEMENT_API_KEY: wiremock-stub-disbursement-api-key
       MTN_DISBURSEMENT_API_USER: 66666666-7777-8888-9999-000000000000

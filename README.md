@@ -387,7 +387,14 @@ the database. In a real deployment it is a Kubernetes Secret and
 # an unresolved one is a fatal, named startup error — not an empty string.
 export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev \
        MTN_API_USER=11111111-2222-3333-4444-555555555555 \
+       MTN_DISBURSEMENT_SUBSCRIPTION_KEY= MTN_DISBURSEMENT_API_KEY= \
+       MTN_DISBURSEMENT_API_USER= \
        ORANGE_MERCHANT_KEY=dev ORANGE_CLIENT_ID=dev ORANGE_CLIENT_SECRET=dev
+# The three MTN_DISBURSEMENT_* names were added on 2026-09-15 with
+# `mtn_momo::refund` (RFC-0003 section 5). Empty is the right value: no
+# deployment holds a Disbursements subscription key, and `refund` answers
+# ProviderError::Config naming the blank one. They must still be *set* —
+# unset is an unresolved placeholder, which is the fatal error above.
 
 # flags win over env vars
 cargo run -p vpay-server -- \
