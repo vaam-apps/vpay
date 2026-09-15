@@ -10,6 +10,7 @@ is recorded as an ADR and the RFC is marked resolved.
 | -------------------------------------------------- | ---------------------------------- | ------------ |
 | [0001](0001-settlement-and-payouts.md)             | Settlement and payouts             | Draft        |
 | [0002](0002-gdpr-policy-and-operator-decisions.md) | GDPR policy and operator decisions | Under review |
+| [0003](0003-refunds-destinations-and-the-first-ledger-postings.md) | Refunds, refund destinations, and the first ledger postings | Draft |
 
 ## Template
 
