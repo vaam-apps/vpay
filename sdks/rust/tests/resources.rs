@@ -1228,10 +1228,7 @@ fn an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_er
 fn the_two_refund_event_types_are_known_and_their_payload_decodes_as_a_refund() {
     for (wire, expected) in [
         ("charge.refunded", KnownEventType::ChargeRefunded),
-        (
-            "charge.refund.updated",
-            KnownEventType::ChargeRefundUpdated,
-        ),
+        ("charge.refund.updated", KnownEventType::ChargeRefundUpdated),
     ] {
         assert_eq!(KnownEventType::from_wire(wire), Some(expected), "{wire}");
 

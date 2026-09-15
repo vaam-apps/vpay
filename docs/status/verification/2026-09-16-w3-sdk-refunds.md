@@ -161,6 +161,21 @@ creating, updating, listing and cancelling refunds through the very process
 that printed it**. The replacement names the five routes and keeps every true
 half — no refund has ever moved money, and nothing settles a pending one.
 
+## One pre-existing flake, named rather than left to be rediscovered
+
+`a_refused_connection_to_the_token_endpoint_is_a_transport_error`
+(`sdks/rust/tests/errors.rs`) failed once during this arm's final gate run and
+passed five consecutive re-runs immediately after. It is **not this arm's**:
+nothing here touches that file, and the test's own comment says why it is
+racy — it binds an ephemeral port, reads its number, drops the listener, and
+then expects the connection to that port to be refused. On a host running
+several Docker stacks and several agents, something else can claim the port
+inside that window and the SDK gets a connection instead of a refusal. This
+page records it because `docs/status/merchant-sdks.md` already carries a
+similar note about `a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`
+on the same host, and two independent flakes in one binary are worth one line
+somebody can find.
+
 ## Mutation testing
 
 Each mutation was applied to shipping source, the suite run, and the source
