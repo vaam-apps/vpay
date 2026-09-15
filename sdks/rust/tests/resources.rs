@@ -1209,6 +1209,66 @@ fn an_unknown_event_type_is_none_rather_than_a_failure_and_the_wrong_accessor_er
     );
 }
 
+/// The two refund event types, and the refund their payload decodes as.
+///
+/// Both have been in this SDK's vocabulary since before anything wrote them —
+/// `docs/flows/webhooks.md` carried them with "— nothing" in the *written by*
+/// column. **`vpay_api::v1::refunds` is the first writer of either**, as of
+/// 2026-09-16, so this is the first time the decode is a claim about
+/// deliverable bytes rather than a forward declaration.
+///
+/// The negative half is the point: a merchant's Stripe-shaped handler
+/// branches on the type, and an accessor that answered something plausible
+/// for the wrong shape would hand them a `PaymentIntent`-shaped read of a
+/// refund. `charge.refunded` says "this charge has a refund against it" and
+/// `charge.refund.updated` says "a refund that already existed changed" —
+/// Stripe's own split, and both carry the same `refund` object in
+/// `data.object`.
+#[test]
+fn the_two_refund_event_types_are_known_and_their_payload_decodes_as_a_refund() {
+    for (wire, expected) in [
+        ("charge.refunded", KnownEventType::ChargeRefunded),
+        (
+            "charge.refund.updated",
+            KnownEventType::ChargeRefundUpdated,
+        ),
+    ] {
+        assert_eq!(KnownEventType::from_wire(wire), Some(expected), "{wire}");
+
+        let event: vpay_sdk::Event = serde_json::from_value(json!({
+            "id": "evt_1",
+            "object": "event",
+            "type": wire,
+            "created": 1_753_401_600,
+            "livemode": false,
+            "data": { "object": refund_json() },
+        }))
+        .unwrap();
+
+        let refund = event
+            .refund()
+            .unwrap_or_else(|error| panic!("{wire} must decode as a refund: {error}"));
+        assert_eq!(refund.id, "re_1");
+        // The state every refund this repository can produce is in, because
+        // nothing settles one. Read off the event body rather than assumed.
+        assert_eq!(refund.status, RefundStatus::Pending);
+        assert_eq!(refund.fee, None);
+
+        assert!(
+            event.payment_intent().is_err(),
+            "{wire}: asking for the wrong shape must fail rather than answer something \
+             plausible"
+        );
+        // The payee is on no event body. RFC-0003 rejected carrying it in
+        // `metadata` precisely because metadata is inside every signed
+        // webhook vpay delivers, so a `destination` appearing here would be
+        // the leak that decision exists to prevent.
+        let raw = serde_json::to_string(&event.data.object).unwrap();
+        assert!(!raw.contains("destination"), "{wire}: {raw}");
+        assert!(!raw.contains("msisdn"), "{wire}: {raw}");
+    }
+}
+
 #[tokio::test]
 async fn list_events_filters_by_type_and_keeps_data_object_as_raw_json() {
     let (server, client) = fixture().await;
