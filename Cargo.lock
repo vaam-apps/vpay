@@ -4834,6 +4834,7 @@ name = "vpay-tests-conformance"
 version = "0.1.0"
 dependencies = [
  "rstest",
+ "serde_json",
  "testcontainers",
  "tokio",
  "tracing",

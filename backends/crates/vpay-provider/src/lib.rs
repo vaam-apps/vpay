@@ -243,34 +243,32 @@ pub struct Submitted {
 
 /// Where a [`RefundDestination::Required`] rail must send the money.
 ///
-/// # Opaque to the core once it exists — but the core is what builds one
+/// # Opaque to the core, and built by the adapter
 ///
-/// After construction the core's entire business with one of these is
-/// **presence**: it checks that a refund on a `Required` rail carries one and
-/// that a refund on an `Origin` rail does not, and hands it through
-/// untouched. The adapter reads the interior and renders it onto its own
-/// wire. A core code path that branched on what is inside would have put the
-/// rail's shape back in the core, which is what ADR-0002 exists to prevent.
+/// The core never constructs one and never reads one. Its entire business
+/// with a destination is **presence**: it checks that a refund on a
+/// `Required` rail carries one and that a refund on an `Origin` rail does
+/// not, hands the uninterpreted `destination[<rail_code>]` sub-map to
+/// [`ProviderAdapter::parse_destination`], and passes the result through
+/// untouched to [`ProviderAdapter::refund`]. A core code path that branched
+/// on what is inside would have put the rail's shape back in the core, which
+/// is what ADR-0002 exists to prevent.
 ///
-/// The analogy with [`RefExtra`] stops one step short of that, and the gap is
-/// worth naming because it is where the *next* shape gets decided.
+/// This *was* the core's job, and RFC-0003 open question 4 decided against it
+/// on 2026-09-15 — the reasoning is worth keeping because it is what the next
+/// shape will be argued from. The analogy with [`RefExtra`] is the frame:
 /// `RefExtra` is untyped and travels adapter → core → adapter, so a rail with
 /// new key material costs no change to this crate and none to the core. A
-/// destination travels merchant → core → adapter, so something has to turn
-/// `destination[<rail_code>][…]` into one of these, and today that something
-/// is the core: [`mobile_money`](RefundTarget::mobile_money) is called from
-/// `vpay_api`. A non-mobile-money upstream therefore costs a **core** change
-/// — not a rail-code branch, so ADR-0002 still holds, but a core that has
-/// learned a second set of wire keys.
+/// destination travels merchant → core → adapter, so *something* has to turn
+/// `destination[<rail_code>][…]` into one of these. Had that something been
+/// the core, ADR-0002 would still have held — no rail-code branch — but a
+/// bank-account upstream would then have cost a **core** change, because the
+/// core would have learned a second set of wire keys. Putting it on the
+/// adapter, symmetric with [`ProviderAdapter::parse_callback`], is what makes
+/// a second destination shape genuinely zero-core-change.
 ///
-/// The alternative, if that is judged wrong, is the symmetry
-/// [`ProviderAdapter::parse_callback`] already has: the adapter parses its
-/// own wire shape into the port's type and the core hands over an
-/// uninterpreted sub-map, which would make a second destination shape
-/// genuinely zero-core-change. That is **not decided here.** It is RFC-0003
-/// open question 3, it belongs with whoever has the upstream that needs it,
-/// and RFC-0003 § 2's `POST /v1/refunds` is the first code that has to build
-/// one of these and so the first place the cost is real.
+/// What is *not* decided is the shape itself: that is RFC-0003 open question
+/// 3, and it belongs with whoever has the upstream that needs it.
 ///
 /// # Why one shape, and no bank-account variant
 ///
@@ -320,23 +318,150 @@ impl std::fmt::Debug for RefundTarget {
     }
 }
 
+/// Why a string was refused as a payee's MSISDN.
+///
+/// # Every variant is a unit variant, and that is the design
+///
+/// An error about a phone number is the single easiest place to leak one:
+/// the offending value is right there in scope, and `ProviderError`'s
+/// `context` — which this ends up inside — is rendered into every log line it
+/// reaches. A variant carrying the input would make that leak a `#[derive]`
+/// away. There is nothing here to carry it, so no rendering of this type can
+/// print a number, and `an_invalid_msisdn_never_names_the_number_it_refused`
+/// holds that shut.
+///
+/// The cost is that an integrator is told *which rule* their number broke and
+/// not *what they sent*. That is the right trade for a third party's phone
+/// number, and it is the same trade [`RefundTarget`]'s redacting [`Debug`]
+/// already makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum InvalidMsisdn {
+    /// No leading `+`. See [`RefundTarget::mobile_money`] § "Why the `+` is
+    /// required": this crate has no country to attach to a bare national
+    /// number, and guessing one sends money to a different country's
+    /// subscriber.
+    #[error("a refund destination must be a full international number written with its `+`")]
+    NotInternational,
+    /// Something that is neither a digit, the leading `+`, nor one of the
+    /// separators a caller may type.
+    #[error("a refund destination must contain only digits, separators and a leading `+`")]
+    NotADigitString,
+    /// Outside E.164's 15-digit ceiling, or below the floor that catches a
+    /// truncated number.
+    #[error("a refund destination must be between 8 and 15 digits long")]
+    WrongLength,
+    /// `+0…`. No E.164 country code begins with zero, so this is a national
+    /// trunk prefix that survived a merchant's `+` being prepended.
+    #[error("a refund destination must not begin with a national trunk prefix, `0`")]
+    TrunkPrefix,
+}
+
+/// E.164's ceiling: fifteen digits including the country code (ITU-T E.164,
+/// § 6.2). A sixteenth digit is not a number anywhere.
+const E164_MAX_DIGITS: usize = 15;
+
+/// A floor, not a validity oracle. Eight digits is the shortest number in
+/// service internationally, so this catches a truncated or half-pasted value
+/// and nothing subtler — no digit-count rule can catch a single-digit typo,
+/// which is why `account_holder_name` exists on the rails that have it.
+const E164_MIN_DIGITS: usize = 8;
+
+/// Bounds the input before it is walked, on
+/// `vpay_api::v1::account_holders::canonical_msisdn`'s reasoning and with its
+/// number: past this, a caller is not mistyping a phone number.
+const MAX_MSISDN_INPUT_CHARS: usize = 32;
+
 impl RefundTarget {
-    /// Builds the mobile-money destination: a payee's MSISDN.
+    /// Builds the mobile-money destination: a payee's MSISDN, canonicalised.
     ///
-    /// Infallible, on [`AccountHolder::new`]'s terms — the caller supplies a
-    /// number it has **already canonicalised**. The port cannot do that
-    /// itself: the server-side MSISDN rule lives in `vpay_api`, which depends
-    /// on this crate, and a second copy of a validation rule is how the two
-    /// spellings drift apart.
+    /// # Fallible on purpose, and the asymmetry that makes it so
+    ///
+    /// Maintainer's decision, 2026-09-15. Until then this was infallible on
+    /// [`AccountHolder::new`]'s terms and both adapters applied the *confirm*
+    /// path's rule — `payer_instrument` accepts any non-whitespace string and
+    /// hands it to the rail. Those two cases are not symmetric. A mistyped
+    /// **payer** number fails the charge and the money never moves. A
+    /// mistyped **payee** number sends real money to whoever actually owns
+    /// that number, and it does not come back.
+    ///
+    /// So the rule lives here, next to the type it guards, and the
+    /// canonicaliser is private: the only way to obtain a [`RefundTarget`] is
+    /// through this constructor, so no adapter can construct an invalid one
+    /// and none has to re-spell the rule.
+    ///
+    /// # What is accepted, and the shape it comes out in
+    ///
+    /// A leading `+`, ASCII digits, and the separator set a caller actually
+    /// types — ASCII space, tab, hyphen, dot, parentheses, and the two spaces
+    /// a phone keypad or a French locale inserts. So `+237 6 00 00 02 00`,
+    /// `+237-600-000-200` and `+237600000200` are one destination.
+    ///
+    /// What comes out is **digits only, no `+`**: `237600000200`. That is not
+    /// E.164's own rendering, and it is deliberate —
+    /// [`msisdn`](RefundTarget::msisdn) is documented as "what the adapter
+    /// must spell on its rail", `payer.partyId` is `237600000000` in
+    /// `vpay-adapter-mtn-momo` and in every conformance mapping, and
+    /// `vpay_api::v1::account_holders::canonical_msisdn` already produces that
+    /// same twelve-digit form for a payer. One spelling in the workspace.
+    ///
+    /// # Why the `+` is required, when `canonical_msisdn` does not require one
+    ///
+    /// Because that function knows it is in Cameroon and this crate does not.
+    /// `canonical_msisdn` accepts a bare `6XXXXXXXX` and prefixes `237`,
+    /// which is correct there and unavailable here: `vpay-provider` carries no
+    /// `CM_COUNTRY_CODE` and must not acquire one, because a market-agnostic
+    /// crate that hardcodes one market is how the *next* rail's country gets
+    /// silently assumed. Read as an international number instead,
+    /// `600000200` is nine digits beginning with country code `6` — a real
+    /// prefix, belonging to Malaysia — so accepting it would not be lenient,
+    /// it would be a different payee in a different country.
+    ///
+    /// Requiring the `+` makes the merchant say which. The cost is a real
+    /// asymmetry to state plainly: `GET /v1/account_holders` accepts
+    /// `600000200` and a refund destination does not. It is asymmetric in the
+    /// safe direction — a lookup that guesses wrong returns the wrong name, a
+    /// transfer that guesses wrong sends the money — and it is the reason the
+    /// Cameroon-specific rule stayed in `vpay-api` rather than moving down
+    /// here. `docs/status/backend.md` records it.
     ///
     /// Named for the shape rather than `new` so that a future non-mobile-money
     /// destination is a sibling constructor, not a silent change of meaning to
     /// this one.
-    #[must_use]
-    pub fn mobile_money(msisdn: impl Into<String>) -> Self {
-        Self {
-            msisdn: msisdn.into(),
-        }
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidMsisdn`], whose every variant is a unit variant so that no
+    /// refusal can carry the number it refused.
+    ///
+    /// ```
+    /// use vpay_provider::{InvalidMsisdn, RefundTarget};
+    ///
+    /// // The three spellings a merchant types are one destination, and the
+    /// // rail-facing form has no `+`.
+    /// for spelling in ["+237600000200", "+237 6 00 00 02 00", "+237-600-000-200"] {
+    ///     let destination = RefundTarget::mobile_money(spelling)?;
+    ///     assert_eq!(destination.msisdn(), "237600000200");
+    /// }
+    ///
+    /// // A bare national number is ambiguous to a crate with no country.
+    /// assert_eq!(
+    ///     RefundTarget::mobile_money("600000200"),
+    ///     Err(InvalidMsisdn::NotInternational)
+    /// );
+    /// assert_eq!(
+    ///     RefundTarget::mobile_money("not a phone number"),
+    ///     Err(InvalidMsisdn::NotInternational)
+    /// );
+    /// // And no refusal names what it refused.
+    /// let refused = RefundTarget::mobile_money("+23760000020x").unwrap_err();
+    /// assert!(!format!("{refused}").contains("23760000020"));
+    /// # Ok::<(), InvalidMsisdn>(())
+    /// ```
+    pub fn mobile_money(msisdn: impl AsRef<str>) -> Result<Self, InvalidMsisdn> {
+        Ok(Self {
+            msisdn: canonical_msisdn(msisdn.as_ref())?,
+        })
     }
 
     /// The payee's MSISDN, as the adapter must spell it on its rail.
@@ -350,8 +475,9 @@ impl RefundTarget {
     /// ```
     /// use vpay_provider::RefundTarget;
     ///
-    /// let destination = RefundTarget::mobile_money("+237600000000");
-    /// assert_eq!(destination.msisdn(), "+237600000000");
+    /// let destination = RefundTarget::mobile_money("+237600000000")?;
+    /// // Canonical, and in the shape a rail's `partyId` takes: no `+`.
+    /// assert_eq!(destination.msisdn(), "237600000000");
     /// // Debug redacts: a `{:?}` of a destination — or of anything holding
     /// // one, such as the `Option` the port passes it in — never prints it.
     /// assert_eq!(
@@ -359,11 +485,64 @@ impl RefundTarget {
     ///     r#"RefundTarget { msisdn: "[redacted]" }"#
     /// );
     /// assert!(!format!("{:?}", Some(&destination)).contains("237600000000"));
+    /// # Ok::<(), vpay_provider::InvalidMsisdn>(())
     /// ```
     #[must_use]
     pub fn msisdn(&self) -> &str {
         &self.msisdn
     }
+}
+
+/// E.164 in, `237600000200` out — the whole rule
+/// [`RefundTarget::mobile_money`] enforces, and private so that it is the
+/// only way in.
+///
+/// Deliberately **not** a port of
+/// `vpay_api::v1::account_holders::canonical_msisdn`, though it shares that
+/// function's separator set and input bound on purpose: sharing the
+/// *specification* is what keeps a merchant's three spellings resolving the
+/// same way on both surfaces, while sharing the *code* would have meant
+/// moving `CM_COUNTRY_CODE` into a market-agnostic crate. The one behavioural
+/// difference is the one that decision is about, and it is stated on the
+/// constructor: no bare national form here, because there is no country to
+/// attach it to.
+fn canonical_msisdn(input: &str) -> Result<String, InvalidMsisdn> {
+    /// Separators a caller may send, matching
+    /// `vpay_api::v1::account_holders::canonical_msisdn`'s set and the
+    /// checkout page's: ASCII space, tab, hyphen, dot, parentheses, and the
+    /// two spaces a phone keypad or a French locale inserts (U+00A0, U+202F).
+    /// Written as escapes because a literal one is invisible in a diff.
+    const SEPARATORS: [char; 8] = [' ', '\t', '-', '.', '(', ')', '\u{00a0}', '\u{202f}'];
+
+    let trimmed = input.trim();
+    if trimmed.chars().count() > MAX_MSISDN_INPUT_CHARS {
+        return Err(InvalidMsisdn::WrongLength);
+    }
+    let Some(rest) = trimmed.strip_prefix('+') else {
+        return Err(InvalidMsisdn::NotInternational);
+    };
+
+    let mut digits = String::with_capacity(E164_MAX_DIGITS);
+    for character in rest.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if SEPARATORS.contains(&character) {
+            // Dropped.
+        } else {
+            // A letter, a second `+`, punctuation: not a phone number. The
+            // hex steering numbers the WireMock mappings key on
+            // (`237600000f01`) are refused here for exactly this reason.
+            return Err(InvalidMsisdn::NotADigitString);
+        }
+    }
+
+    if digits.len() < E164_MIN_DIGITS || digits.len() > E164_MAX_DIGITS {
+        return Err(InvalidMsisdn::WrongLength);
+    }
+    if digits.starts_with('0') {
+        return Err(InvalidMsisdn::TrunkPrefix);
+    }
+    Ok(digits)
 }
 
 /// What a rail answered when asked to return money.
@@ -918,20 +1097,26 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `refund` | `account_holder_name` | what it means |
-/// |---|:-:|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Also an unknown fate, never a decline |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. On `parse_destination` alone it is not the rail at all but the *merchant's* parameters, which is the same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
+/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+///
+/// The two blank columns are as load-bearing as the ticks. `parse_callback`
+/// and `parse_destination` are the only pure functions in the table: neither
+/// opens a socket, neither reads a credential, and neither relays anything a
+/// rail decided — so `Config`, `Rejected` and `Transport` are not merely
+/// unused there, they would be untrue.
 ///
 /// There is deliberately **no** `ProviderError::retryable()`: retry policy is
 /// [`Classify::retry`](vpay_core::Classify::retry) and a second oracle beside
 /// it is what ADR-0011 exists to prevent.
 ///
-/// # Why `#[async_trait]`, and why `parse_callback` is not async
+/// # Why `#[async_trait]`, and why the two `parse_*` methods are not async
 ///
 /// A trait with a native `async fn` is not dyn-safe, and this port is *only*
 /// ever used as `Box<dyn ProviderAdapter>` — which is what keeps
@@ -942,7 +1127,10 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// `parse_callback` stays synchronous so that it *cannot* make a network
 /// call: a callback is a hint, and an adapter that could fetch something
 /// while "parsing" one could smuggle a status out of an unauthenticated
-/// request (`docs/flows/reconciler.md`).
+/// request (`docs/flows/reconciler.md`). `parse_destination` is synchronous
+/// on the same terms — it reads a merchant's parameters, and an adapter that
+/// could call a rail while "parsing" them would turn one refund request into
+/// an unbounded number of outbound calls.
 #[async_trait]
 pub trait ProviderAdapter: Debug + Send + Sync {
     /// Stable code, equal to the `payment_method_types` value.
@@ -1011,6 +1199,121 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// is not parseable, or that names no charge this deployment could have
     /// generated, must be refused rather than attributed to something.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError>;
+
+    /// Turns this rail's own `destination[<rail_code>][…]` sub-map into a
+    /// [`RefundTarget`].
+    ///
+    /// The symmetry with [`parse_callback`](ProviderAdapter::parse_callback)
+    /// is the whole point. There, an adapter turns *its* wire shape into a
+    /// port type and the core never learns the rail's field names; here the
+    /// values travel the other way — merchant → core → adapter — and the
+    /// same rule applies. That is what makes a future non-mobile-money
+    /// upstream a zero-core-change addition rather than a core that has
+    /// learned a second set of wire keys. RFC-0003 open question 4, decided
+    /// 2026-09-15.
+    ///
+    /// # What `raw` is, and what the core has already done to it
+    ///
+    /// `raw` is the **rail-scoped inner map**: the value of
+    /// `destination[<rail_code>]`, with the rail code already stripped. That
+    /// outer key is vpay's own envelope — it is a [`code`](ProviderAdapter::code),
+    /// which is core knowledge by definition, and it is spelled the same way
+    /// on the confirm path's `payment_method_data[<code>]` — so a
+    /// `destination` naming no rail, or naming one as something that is not
+    /// an object, is the core's refusal and never reaches here. Everything
+    /// *inside* is the rail's, and an implementation of this method is the
+    /// only code in the workspace entitled to know those names.
+    ///
+    /// The core has also already checked
+    /// [`Capabilities::refund_destination`], so this is called on a
+    /// [`Required`](RefundDestination::Required) rail and not on an
+    /// [`Origin`](RefundDestination::Origin) one (ADR-0002: the capability,
+    /// never the code).
+    ///
+    /// Synchronous for `parse_callback`'s reason: parsing caller-supplied
+    /// values must not be able to reach the network.
+    ///
+    /// # What an [`Origin`](RefundDestination::Origin) rail answers, and why
+    /// there is a default at all
+    ///
+    /// [`ProviderError::Unsupported`], by taking this default and writing
+    /// nothing — exactly as such a rail already does for
+    /// [`refund`](ProviderAdapter::refund) and
+    /// [`account_holder_name`](ProviderAdapter::account_holder_name), and for
+    /// their reason: "this rail has no such API, permanently", a fact the
+    /// core branched on before it could call. A rail that returns money to
+    /// the instrument that paid has no destination to parse at all, so there
+    /// is no body it could honestly be made to write.
+    ///
+    /// `parse_callback` has no default because every rail has a callback
+    /// shape: leaving it abstract costs an adapter nothing it did not already
+    /// owe. A destination shape is conditional on a capability, so a required
+    /// method here would make every `Origin` rail hand-write the same
+    /// `Err(ProviderError::Unsupported)` — and give it the opportunity to
+    /// write `Ok` of an invented payee instead, which is the failure this
+    /// default removes rather than documents.
+    ///
+    /// A `Required` rail that takes the default is a bug in *that adapter*
+    /// and not a fact about the rail. `a_required_rail_parses_its_own_destination`
+    /// in `backends/tests/conformance` is what refuses it, on the adapter's
+    /// own declaration rather than on a table in the test.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`] for a sub-map missing this rail's key, or
+    /// carrying it as something unusable — an empty map included. It is never
+    /// an `Ok` with no payee: a refund that reached the rail with a silently
+    /// dropped destination is money sent somewhere nobody nominated.
+    ///
+    /// In practice nothing else, on `parse_callback`'s reasoning: this
+    /// touches no network, holds no credential and reads no configuration, so
+    /// there is no transport to fail and no rail decision to relay.
+    /// [`ProviderError::Unsupported`] is the default above, and
+    /// [`ProviderError::NotImplemented`] is open to a `Required` rail whose
+    /// parser is unbuilt on every other method's terms — no adapter in this
+    /// workspace raises one.
+    ///
+    /// **The error must not carry the number.** A destination is a third
+    /// party's phone number, a parse failure is the exact moment an adapter
+    /// is tempted to echo its input back, and `ProviderError`'s `context` is
+    /// rendered into every log line this error reaches. Name the key that was
+    /// wrong, never the value that was in it — [`RefundTarget`]'s redacting
+    /// [`Debug`] is undone by one `{input}` in a format string.
+    ///
+    /// # The caller must translate this error, not forward it
+    ///
+    /// Added on review, 2026-09-15, because the trap is one a handler author
+    /// will not see: `Malformed` is the only honest *variant* available here
+    /// (RFC-0003 open question 5 left inventing one to the first adapter that
+    /// makes a real transfer), but its **classification** is written for a
+    /// rail that answered gibberish, and this is the one call site where no
+    /// rail answered anything. Forwarded to `vpay_api` unchanged it becomes,
+    /// via [`Classify`](vpay_core::Classify):
+    ///
+    /// * [`Category::Rail`](vpay_core::Category::Rail) — HTTP **502**, for a
+    ///   merchant's typo in their own request parameters;
+    /// * the envelope message
+    ///   `"The payment rail is temporarily unavailable. The charge will be
+    ///   retried."` — `public_message` is the category's canned sentence for
+    ///   this variant, so the parameter name an adapter carefully put in
+    ///   `context` reaches the operator's log and **never the integrator**;
+    /// * [`Retry::AfterBackoff`](vpay_core::Retry::AfterBackoff) — an SDK
+    ///   honouring it retries a request that can never succeed;
+    /// * `Severity::Warn` and the code `provider_error`, so a merchant's
+    ///   mistake is counted against the rail's error budget.
+    ///
+    /// So the `POST /v1/refunds` handler RFC-0003 § 2 owes must map this to
+    /// `ApiError::invalid_param("destination", …)` — a 400 naming the
+    /// parameter, which is exactly what the confirm path's `payer_instrument`
+    /// already answers for `payment_method_data`. `a_malformed_destination_is_classified_as_a_rail_fault`
+    /// pins the classification above so this note cannot quietly stop being
+    /// true.
+    fn parse_destination(
+        &self,
+        _raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
 
     /// Returns part or all of a settled charge.
     ///
@@ -1316,8 +1619,10 @@ mod tests {
     /// this ground and the replacement must not reintroduce it.
     #[test]
     fn a_refund_destination_never_prints_the_payees_number() {
-        let destination = RefundTarget::mobile_money("+237600000200");
-        assert_eq!(destination.msisdn(), "+237600000200");
+        let destination =
+            RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN");
+        // Canonical: the `+` a merchant must send is not what a rail is told.
+        assert_eq!(destination.msisdn(), "237600000200");
 
         for rendered in [
             format!("{destination:?}"),
@@ -1326,6 +1631,358 @@ mod tests {
         ] {
             assert!(!rendered.contains("237600000200"), "{rendered}");
             assert!(rendered.contains("[redacted]"), "{rendered}");
+        }
+    }
+
+    /// One payee, every spelling a merchant types, one string on the rail.
+    ///
+    /// The separator set is deliberately the same as
+    /// `vpay_api::v1::account_holders::canonical_msisdn`'s and the checkout
+    /// page's, so a number a payer enters on the page is a number a merchant
+    /// can name as a payee. What the three surfaces share is the
+    /// specification, not the code — see `canonical_msisdn` in this crate for
+    /// why sharing the code would have meant moving `CM_COUNTRY_CODE` into a
+    /// market-agnostic crate.
+    #[test]
+    fn every_spelling_of_one_payee_canonicalises_to_one_string() {
+        for spelling in [
+            "+237600000200",
+            "  +237600000200  ",
+            "+237 600 000 200",
+            "+237-600-000-200",
+            "+237.600.000.200",
+            "+(237)600000200",
+            "+237\u{00a0}600\u{202f}000\u{00a0}200",
+        ] {
+            let parsed = RefundTarget::mobile_money(spelling)
+                .unwrap_or_else(|error| panic!("{spelling:?} must parse: {error}"));
+            assert_eq!(parsed.msisdn(), "237600000200", "{spelling:?}");
+        }
+    }
+
+    /// What is refused, and with which reason.
+    ///
+    /// The bare national form is the one worth staring at. `600000200` is
+    /// what `GET /v1/account_holders` accepts — correctly, because it knows
+    /// it is in Cameroon — and read as an international number it is nine
+    /// digits under country code `6`, which is Malaysia. Accepting it here
+    /// would not be leniency, it would be a different subscriber in a
+    /// different country receiving a refund.
+    #[test]
+    fn a_number_that_is_not_an_unambiguous_payee_is_refused() {
+        for (input, expected) in [
+            // No `+`: this crate has no country to attach.
+            ("600000200", InvalidMsisdn::NotInternational),
+            ("237600000200", InvalidMsisdn::NotInternational),
+            ("", InvalidMsisdn::NotInternational),
+            ("   ", InvalidMsisdn::NotInternational),
+            ("not a phone number", InvalidMsisdn::NotInternational),
+            // Past the `+`, anything that is not a digit or a separator.
+            ("+237600000f01", InvalidMsisdn::NotADigitString),
+            ("++237600000200", InvalidMsisdn::NotADigitString),
+            ("+237600000200x", InvalidMsisdn::NotADigitString),
+            ("+٢٣٧٦٠٠٠٠٠٢٠٠", InvalidMsisdn::NotADigitString),
+            // E.164's ceiling and a floor against a truncated paste.
+            ("+2376000002001234", InvalidMsisdn::WrongLength),
+            ("+2376000", InvalidMsisdn::WrongLength),
+            ("+", InvalidMsisdn::WrongLength),
+            // A national trunk prefix that survived someone's `+`.
+            ("+0600000200", InvalidMsisdn::TrunkPrefix),
+        ] {
+            assert_eq!(
+                RefundTarget::mobile_money(input),
+                Err(expected),
+                "{input:?} must be refused as {expected:?}"
+            );
+        }
+    }
+
+    /// A refusal names the rule and can never name the number.
+    ///
+    /// Not "does not today" — [`InvalidMsisdn`]'s variants are unit variants,
+    /// so there is structurally nothing for a number to be carried in. This
+    /// case is what would fail if one ever grew a field, which is the moment
+    /// `ProviderError`'s `context` — and every log line it reaches — would
+    /// start carrying a third party's phone number.
+    #[test]
+    fn an_invalid_msisdn_never_names_the_number_it_refused() {
+        for input in [
+            "600000200",
+            "+237600000f01",
+            "+2376000002001234",
+            "+0600000200",
+        ] {
+            let refused = RefundTarget::mobile_money(input).expect_err("refused");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                assert!(
+                    !rendered.contains(input),
+                    "{input:?} reached a refusal's message: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("600000"),
+                    "nor did any run of its digits: {rendered}"
+                );
+            }
+        }
+    }
+
+    /// Compile-time probe for "does `T` implement this trait?".
+    ///
+    /// An inherent associated constant takes priority over a trait one, and
+    /// an inherent `impl` whose bound is unsatisfied is not a candidate at
+    /// all — so each constant below is `true` exactly when the corresponding
+    /// `impl` exists. The alternative, a negative trait bound, is not stable
+    /// Rust, and the alternative to *that* is a comment nobody checks.
+    struct Probe<T>(std::marker::PhantomData<T>);
+
+    trait ProbeFallback {
+        const DISPLAY: bool = false;
+        const SERIALIZE: bool = false;
+        const DESERIALIZE: bool = false;
+        const DEREF: bool = false;
+        const AS_REF_STR: bool = false;
+        const INTO_STRING: bool = false;
+    }
+
+    impl<T> ProbeFallback for Probe<T> {}
+
+    impl<T: std::fmt::Display> Probe<T> {
+        const DISPLAY: bool = true;
+    }
+
+    impl<T: Serialize> Probe<T> {
+        const SERIALIZE: bool = true;
+    }
+
+    impl<T: serde::de::DeserializeOwned> Probe<T> {
+        const DESERIALIZE: bool = true;
+    }
+
+    impl<T: std::ops::Deref> Probe<T> {
+        const DEREF: bool = true;
+    }
+
+    impl<T: AsRef<str>> Probe<T> {
+        const AS_REF_STR: bool = true;
+    }
+
+    impl<T: Into<String>> Probe<T> {
+        const INTO_STRING: bool = true;
+    }
+
+    /// The redacting [`Debug`] is the **only** rendering impl on
+    /// [`RefundTarget`], and every line here is a way the redaction gets
+    /// undone by accident.
+    ///
+    /// * A `Display` would be printed by `tracing::info!(%destination)`, a
+    ///   `{}` in a `format!`, and by `ApiError`'s own `Display` chain — none
+    ///   of which the `Debug` impl above intercepts.
+    /// * A `Serialize` would put the number one derive away from a webhook
+    ///   payload and from a persisted column, while its retention is RFC-0003
+    ///   open question 2 and **undecided**.
+    /// * A `Deserialize` would make it re-enter from a stored blob, which is
+    ///   the same question read backwards.
+    /// * A `Deref`, an `AsRef<str>` or an `Into<String>` renders the number
+    ///   without implementing any of the three above: `destination.to_string()`
+    ///   resolves through an autoderef to `str`, and `format!("{}", &*d)` or
+    ///   `format!("{}", d.as_ref())` needs no `Display` on this type at all.
+    ///   Added 2026-09-15 on review of wave 1b, which measured the gap: with
+    ///   `impl Deref for RefundTarget { type Target = str; }` added,
+    ///   `destination.to_string()` printed `+237699887766` in full while this
+    ///   case passed. Three traits is not a closed set — a `From<RefundTarget>`
+    ///   for some other printable type would still slip past — but these are
+    ///   the routes an ordinary convenience impl actually takes.
+    ///
+    /// The probe is self-checking: `String` is asserted to trip all six, so
+    /// a constant that silently stopped detecting anything fails here rather
+    /// than passing vacuously.
+    ///
+    /// Every assertion is a `const` block, which is what clippy's
+    /// `assertions_on_constants` asks for and is also the stronger claim: an
+    /// impl added to [`RefundTarget`] stops this crate's test build rather
+    /// than failing at run time, so it cannot be reached by anything, in any
+    /// order, before somebody notices. Measured on 2026-09-15 by adding
+    /// `impl Display for RefundTarget`: `cargo test -p vpay-provider` fails
+    /// to compile, naming the first block below.
+    #[test]
+    fn a_refund_destination_has_no_impl_but_the_redacting_debug() {
+        const {
+            assert!(
+                Probe::<String>::DISPLAY
+                    && Probe::<String>::SERIALIZE
+                    && Probe::<String>::DESERIALIZE
+                    && Probe::<String>::DEREF
+                    && Probe::<String>::AS_REF_STR
+                    && Probe::<String>::INTO_STRING,
+                "the probe must detect impls that do exist, or it proves nothing below"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DISPLAY,
+                "a Display on RefundTarget prints the number through `%destination` and `{{}}`, \
+                 which the redacting Debug cannot intercept"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::SERIALIZE,
+                "a Serialize puts a payee's number one derive away from a webhook payload while \
+                 RFC-0003 open question 2 (retention) is undecided"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DESERIALIZE,
+                "a Deserialize is the same question read backwards: it lets the number re-enter \
+                 from wherever a Serialize had put it"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::DEREF,
+                "a Deref renders the number without a Display on this type: `destination \
+                 .to_string()` autoderefs to the target's, and the redacting Debug never sees it"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::AS_REF_STR,
+                "an AsRef<str> puts the number in `format!(\"{{}}\", destination.as_ref())` and \
+                 into every API that takes one, with no Display on this type"
+            );
+        }
+
+        const {
+            assert!(
+                !Probe::<RefundTarget>::INTO_STRING,
+                "an Into<String> hands the number to anything that takes one — a metric label, \
+                 a header, a metadata value — as an ordinary conversion nobody reviews"
+            );
+        }
+    }
+
+    /// What a `parse_destination` refusal becomes if a handler forwards it,
+    /// pinned so that the obligation on wave 3 is machine-checked rather
+    /// than a paragraph.
+    ///
+    /// This asserts a **mismatch**, deliberately. `ProviderError::Malformed`
+    /// is the right variant for a destination this adapter cannot act on —
+    /// the port's error table reasons it out, and RFC-0003 open question 5
+    /// left inventing a new variant to the first adapter that makes a real
+    /// transfer — but every column `Classify` derives from it is written for
+    /// a rail that answered gibberish, and `parse_destination` is the one
+    /// method on this trait where no rail answered anything at all.
+    ///
+    /// So `POST /v1/refunds` must translate it into
+    /// `ApiError::invalid_param("destination", …)`, exactly as the confirm
+    /// path answers for `payment_method_data`. If it forwards it instead, a
+    /// merchant's typo is a 502 telling them the rail is down and to retry.
+    ///
+    /// When that handler exists and does the translation, this case stays
+    /// true — it describes the port, not the handler. If someone reclassifies
+    /// `Malformed` it fails here, next to the reason anybody cared.
+    #[test]
+    fn a_malformed_destination_is_classified_as_a_rail_fault() {
+        use vpay_core::{Category, Classify, Retry};
+
+        let refused = ProviderError::malformed(
+            "mtn_momo: a refund on this rail needs the payee's number".to_owned(),
+        );
+
+        assert_eq!(
+            refused.category(),
+            Category::Rail,
+            "a caller's bad parameter is classified as the rail's fault"
+        );
+        assert_eq!(refused.category().http_status(), 502);
+        assert_eq!(refused.retry(), Retry::AfterBackoff);
+        assert_eq!(refused.code(), "provider_error");
+        assert_eq!(
+            refused.public_message(),
+            Category::Rail.generic_message(),
+            "the parameter name the adapter put in `context` never reaches the integrator"
+        );
+        assert!(
+            !refused.public_message().contains("destination"),
+            "and in particular the envelope does not name the parameter: {}",
+            refused.public_message()
+        );
+    }
+
+    /// A rail with nowhere to send a refund takes the port's default and says
+    /// so permanently.
+    ///
+    /// `Unsupported` and not `NotImplemented`: there is nothing to build. An
+    /// [`Origin`](RefundDestination::Origin) rail returns money to the
+    /// instrument that paid, the core has already refused a request carrying
+    /// a `destination` on the capability alone (ADR-0002), and this is what
+    /// the adapter answers if that invariant is ever broken.
+    ///
+    /// The stub is deliberately as empty as the trait allows — it overrides
+    /// nothing optional — because what is under test is the *default body*,
+    /// which only an adapter that writes nothing can exercise.
+    #[test]
+    fn an_origin_rail_takes_the_default_and_answers_unsupported() {
+        #[derive(Debug)]
+        struct OriginRail;
+
+        #[async_trait]
+        impl ProviderAdapter for OriginRail {
+            fn code(&self) -> &'static str {
+                "origin_rail"
+            }
+
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    flow: ProviderFlow::Push,
+                    supports_refunds: true,
+                    supports_partial_refunds: false,
+                    delivers_callbacks: false,
+                    requires_ip_allowlist: false,
+                    supports_account_holder_lookup: false,
+                    refund_destination: RefundDestination::Origin,
+                }
+            }
+
+            async fn submit(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<Submitted, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::submit"))
+            }
+
+            async fn query_status(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<ChargeStatus, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::query_status"))
+            }
+
+            fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+                Err(ProviderError::NotImplemented("origin_rail::parse_callback"))
+            }
+        }
+
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "msisdn".to_owned(),
+            serde_json::Value::String("+237600000200".to_owned()),
+        );
+
+        for map in [serde_json::Map::new(), raw] {
+            let refused = OriginRail.parse_destination(&map);
+            assert!(
+                matches!(refused, Err(ProviderError::Unsupported)),
+                "an Origin rail has no destination to parse and says so permanently: {refused:?}"
+            );
         }
     }
 }

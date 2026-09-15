@@ -108,6 +108,71 @@ witness is a stub; ⛔ means not built.
 | `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | ⛔ `NotImplemented("mtn_momo::refund")`         |
 | `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called | 🟡 parsed, routed, never received; `notif_token` unverified | ✅ `Unsupported` — permanent, capability-driven |
 
+**Each rail parses its own refund destination (2026-09-15, RFC-0003 open
+question 4).** Both adapters implement `ProviderAdapter::parse_destination`,
+turning the `destination[<rail_code>]` sub-map the core hands over into a
+`RefundTarget`. It is not a wire call and is absent from the table above on
+purpose: it opens no socket, and the conformance case that covers it
+(`a_required_rail_parses_its_own_destination`) starts no container. The
+refund columns are unchanged — `mtn_momo::refund` is still its
+`NotImplemented` token and `orange_money` still answers the port's permanent
+`Unsupported` — so **no refund is any closer to working**. What moved is that
+a future bank-account upstream now costs no change in the core.
+
+**Owed by wave 3: a `parse_destination` refusal must be translated, not
+forwarded** (recorded on review, 2026-09-15). `ProviderError::Malformed` is the
+honest variant for a destination an adapter cannot act on, but every column
+`vpay_core::Classify` derives from it is written for a rail that answered
+gibberish, and `parse_destination` is the one port method where no rail
+answered anything. Forwarded unchanged out of `POST /v1/refunds` it is HTTP
+**502**, code `provider_error`, `Retry::AfterBackoff`, `Severity::Warn` and the
+envelope sentence _"The payment rail is temporarily unavailable. The charge
+will be retried."_ — for a merchant's typo, counted against the rail's error
+budget, with a retry promise vpay cannot keep. The parameter name both adapters
+put in the error `context` reaches the operator's log and never the integrator,
+because `public_message` for this variant is the category's canned sentence.
+The handler must answer `ApiError::invalid_param("destination", …)` instead,
+exactly as the confirm path answers for `payment_method_data`.
+`a_malformed_destination_is_classified_as_a_rail_fault` in `vpay-provider` pins
+the classification so this note cannot quietly stop being true.
+
+**Where the one MSISDN rule lives — decided by the maintainer on 2026-09-15,
+and built.** This paragraph recorded an open question until that date; the
+question was whether a refund destination should be held to the _confirm_
+path's rule (`payer_instrument`: present, a JSON string, not whitespace-only,
+passed to the rail as written) or to something stricter. **The decision: a
+payee is not a payer.** A mistyped payer number fails a charge and the money
+never moves; a mistyped payee number sends real money to whoever owns that
+number and it does not come back. So `RefundTarget::mobile_money` is now
+fallible — `Result<RefundTarget, InvalidMsisdn>` — and canonicalises, with the
+rule private to `vpay-provider` and adjacent to the type it guards, so an
+adapter cannot construct an invalid destination and none holds a second
+spelling.
+
+`vpay_api::v1::account_holders::canonical_msisdn` was **not** moved and not
+copied. It hardcodes `CM_COUNTRY_CODE`, and a market-agnostic crate that learns
+one market is how the next rail's country gets silently assumed; what crossed
+the boundary is the _specification_ — the same separator set, the same 32-char
+input bound, and the same digits-only `237600000200` output a rail's `partyId`
+takes — not the code. The one behavioural difference is the decision's own
+consequence and is worth stating in full: **`vpay-provider` requires a full
+international number written with its `+`.** `canonical_msisdn` accepts a bare
+`6XXXXXXXX` and prefixes `237`, which is correct where it knows the country;
+here there is no country, and read as an international number `600000200` is
+nine digits under country code `6`, which is Malaysia. So a merchant may send
+`600000200` to `GET /v1/account_holders` and be answered, and send the same
+string as `destination[<rail_code>][msisdn]` and be refused. That asymmetry is
+real, it runs in the safe direction — a lookup that guesses wrong returns the
+wrong name, a transfer that guesses wrong sends the money — and it is here so
+nobody has to rediscover it from a support ticket.
+
+Both adapters surface a refused number as `ProviderError::Malformed`, on the
+same terms as a missing key: no network was touched and no rail decided
+anything. Every variant of `InvalidMsisdn` is a **unit** variant, so a refusal
+has structurally nowhere to carry the number it refused — which is what
+`an_invalid_msisdn_never_names_the_number_it_refused` holds shut, and why an
+integrator is told which rule they broke rather than what they sent.
+
 **Failure mapping, re-grounded 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** ✅ in the wire-call
 column above has never meant the _mapping tables_ were faithful to the rails
