@@ -2801,10 +2801,14 @@ async fn a_balanced_ledger_posting_satisfies_invariant_1_in_the_database() -> an
     // Invariant 1, as an aggregate over the sibling rows — the shape no
     // row-level CHECK can express, which is why `docs/flows/ledger.md`
     // commits to enforcing it in `Transaction::validate()` instead.
+    // `::BIGINT` on both: Postgres's `SUM(bigint)` is `NUMERIC`, so decoding
+    // either into an `i64` without the cast is a run-time type mismatch
+    // rather than a compile error — which is how this assertion failed the
+    // first time it was run.
     let (debits, credits): (i64, i64) = sqlx::query_as(
         "SELECT \
-             COALESCE(SUM(amount) FILTER (WHERE direction = 'debit'), 0), \
-             COALESCE(SUM(amount) FILTER (WHERE direction = 'credit'), 0) \
+             COALESCE(SUM(amount) FILTER (WHERE direction = 'debit'), 0)::BIGINT, \
+             COALESCE(SUM(amount) FILTER (WHERE direction = 'credit'), 0)::BIGINT \
          FROM ledger_entries WHERE transaction_id = 'ltx_balanced'",
     )
     .fetch_one(&pool)
@@ -3661,7 +3665,36 @@ async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()>
 /// The number is read off a freshly migrated database, never derived by adding
 /// two branches' deltas — and the twelve-line breakdown above was read off the
 /// report, not predicted from the DDL.
-const EXPECTED_DRIFT_CHANGES: u32 = 190;
+///
+/// **190 -> 192 on 2026-09-15 (migration 0045, RFC-0003 § 4)**, measured
+/// against a freshly migrated Postgres 16 with `cratestack migrate baseline
+/// --strict`. `ledger_entries` goes 6 -> 8 and nothing else moves at all;
+/// `EXPECTED_DRIFTED_RELATIONS` does not move either, because that table was
+/// already on the list. The +2 is:
+///
+///   * `ledger_entries_merchant_id_length` — one hand-named, **single**-column
+///     CHECK, the class that has cost every modelled table in this schema a
+///     line each since `currencies`. Declaring `@length` with `@db_enforce` on
+///     `model LedgerEntry.merchant_id` would emit a drop-and-add PAIR against
+///     it (exp17 §1a), which is worse rather than better.
+///   * `ledger_entries_merchant_payable_idx` — one index. Partial, so
+///     `@@index([...])` could not express it even if the grammar had a
+///     spelling for it: it is `WHERE account = 'merchant_payable'`.
+///
+/// **What cost nothing is the part to read**, and it is the same lesson
+/// `customers`' nine address columns taught. The `merchant_id` column itself
+/// contributes **zero** — no `column … exists in the live database but is not
+/// declared`, no `type differs`, no `default value differs` — because `model
+/// LedgerEntry` declares it in the same commit and migration 0045 gave it no
+/// DB `DEFAULT`. And `ledger_entries_merchant_id_iff_merchant_payable`, the
+/// pair CHECK that is the *load-bearing* half of the migration, contributes
+/// nothing in either direction because it is multi-column, exactly like the
+/// twenty before it. That is why
+/// `a_merchant_payable_entry_must_name_its_merchant` and
+/// `a_pooled_account_entry_must_not_name_a_merchant` write the two rows it
+/// refuses: **the drift report is not the guard for that constraint and never
+/// can be.**
+const EXPECTED_DRIFT_CHANGES: u32 = 192;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -4281,6 +4314,20 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // could ever notice going missing.
             ("invoices", "refunded_at_most_paid"),
             ("jobs", "lock_is_paired"),
+            // RFC-0003 § 4's pair rule, migration `0045`:
+            // `(account = 'merchant_payable') = (merchant_id IS NOT NULL)`.
+            // It is `vpay_ledger::AccountKind`'s sum type expressed in SQL —
+            // exactly one of the three accounts is tenant-scoped — and it is
+            // the *load-bearing* half of that migration, because it is what
+            // stops a nullable `merchant_id` from being a hole in invariant 2.
+            // Multi-column, so this report cannot see it in either direction,
+            // which is why `a_merchant_payable_entry_must_name_its_merchant`
+            // and `a_pooled_account_entry_must_not_name_a_merchant` write both
+            // rows it refuses instead of trusting a line here.
+            (
+                "ledger_entries",
+                "ledger_entries_merchant_id_iff_merchant_payable",
+            ),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),
             ("payment_intents", "lpe_paired"),

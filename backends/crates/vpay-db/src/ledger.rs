@@ -212,8 +212,16 @@ impl Ledger for crate::repository::PgRepositories {
         // The predicate is exactly `ledger_entries_merchant_payable_idx`'s
         // (migration `0045`) — `account = 'merchant_payable'` partial, keyed
         // on `(merchant_id, currency_code)`.
+        //
+        // `::BIGINT` because Postgres's `SUM(bigint)` is `NUMERIC`, which
+        // sqlx refuses to decode into an `i64` — a run-time failure the type
+        // system cannot catch here, and one this crate's container tests
+        // caught rather than reasoned about. The cast cannot lose anything:
+        // every `amount` is bounded by `amount_non_negative` and the sum of
+        // one merchant's postings in one currency is an amount of money.
         let balance: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount ELSE -amount END), 0) \
+            "SELECT COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount ELSE -amount END), 0)\
+             ::BIGINT \
              FROM ledger_entries \
              WHERE account = 'merchant_payable' AND merchant_id = $1 AND currency_code = $2",
         )
