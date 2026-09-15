@@ -5,11 +5,18 @@
 //! merchant received. See `docs/flows/ledger.md`.
 //!
 //! STATUS: types, the balancing invariant and the per-merchant dimension are
-//! implemented and tested here. **Nothing in a shipping binary posts a
-//! transaction yet**: `vpay_db::TxRepositories::post_ledger_transaction_in_tx`
-//! is the writer (RFC-0003 § 4), and wiring it into
-//! `Settlement::apply_succeeded` / `apply_refund_succeeded` is a separate
-//! piece of work — see `docs/status.md` and `docs/flows/ledger.md` § Status.
+//! implemented and tested here, and **two shipping call sites post**
+//! (RFC-0003 §§ 3-4): `vpay_db::Settlement::apply_succeeded` records the
+//! capture in the transaction that settles the charge, and
+//! `apply_refund_succeeded` the refund. The writer is `vpay_db::ledger::
+//! post_in_tx`, which is `pub(crate)` — a consumer of that crate reaches the
+//! business operation and never the raw double entry.
+//!
+//! What has **not** moved: no rail can execute a refund
+//! (`ProviderAdapter::refund` is `NotImplemented` on both), `POST /v1/refunds`
+//! is unrouted until Wave 3, and nothing schedules the nightly assertion of
+//! invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
+//! the gaps.
 //!
 //! ```
 //! use vpay_core::{Currency, Money};
@@ -349,17 +356,23 @@ impl Transaction {
     /// leg from one [`Money`], and `capture` rejects a fee in another
     /// currency).
     ///
-    /// RFC-0003 § 4 ended that. `vpay_db::ledger::post_in_tx` — reached
-    /// through the `pub` `TxRepositories::post_ledger_transaction_in_tx` —
-    /// takes a [`Transaction`] whose `entries` field is `pub`, so a caller
+    /// RFC-0003 § 4 ended that. `vpay_db::ledger::post_in_tx` takes a
+    /// [`Transaction`] whose `entries` field is `pub`, so a caller
     /// hand-building one is both possible and the idiom the tests around it
-    /// already use. The database would not have caught it either:
+    /// already use — and while that writer was briefly reachable from outside
+    /// `vpay-db` through a `pub` trait method, *any* consumer could have.
+    /// It is `pub(crate)` now, so the callers are the two settlement call
+    /// sites, and neither can build a mixed-currency posting; the guard is
+    /// what keeps that true of whatever is written next. The database would
+    /// not have caught it either:
     /// `ledger_entries.currency_code` is per row, and invariant 1 is
     /// deliberately not a database constraint, so this function is the only
     /// guard there is. It is now the guard the invariant actually describes;
-    /// `a_mixed_currency_ledger_posting_is_refused_and_writes_nothing` in
-    /// `postgres_smoke.rs` is the case that proves it, and that case commits
-    /// two mismatched legs to Postgres if this loop goes back to one sum.
+    /// `a_mixed_currency_posting_is_refused_and_writes_nothing` in
+    /// `vpay_db::ledger`'s own test module is the case that proves it, and
+    /// that case commits two mismatched legs to Postgres if this loop goes
+    /// back to one sum. It moved out of `postgres_smoke.rs` when the writer
+    /// stopped being reachable from outside `vpay-db`.
     ///
     /// # Errors
     /// [`LedgerError::TooFewEntries`] for fewer than two legs,

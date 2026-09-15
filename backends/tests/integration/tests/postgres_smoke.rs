@@ -3006,8 +3006,8 @@ async fn creating_a_refund_reserves_its_amount_against_the_intent() -> anyhow::R
         &new_refund("re_create", "pi_create", 2_000),
     )
     .await
-        .context("creating a refund against a succeeded intent must commit")?
-        .context("the intent is this merchant's and is succeeded, so the create must find it")?;
+    .context("creating a refund against a succeeded intent must commit")?
+    .context("the intent is this merchant's and is succeeded, so the create must find it")?;
 
     assert_eq!(refund.status, "pending");
     assert_eq!(refund.amount, 2_000);
@@ -3118,7 +3118,8 @@ async fn two_concurrent_refunds_race_and_the_database_refuses_the_second() -> an
 
     let outcomes = [first, second];
     let committed = outcomes.iter().filter(|r| r.is_ok()).count();
-    let refused: Vec<&vpay_db::DbError> = outcomes.iter().filter_map(|r| r.as_ref().err()).collect();
+    let refused: Vec<&vpay_db::DbError> =
+        outcomes.iter().filter_map(|r| r.as_ref().err()).collect();
 
     assert_eq!(
         committed, 1,
@@ -3127,7 +3128,9 @@ async fn two_concurrent_refunds_race_and_the_database_refuses_the_second() -> an
     );
     assert_eq!(refused.len(), 1, "{outcomes:?}");
 
-    let refusal = refused.first().context("exactly one refusal, asserted above")?;
+    let refusal = refused
+        .first()
+        .context("exactly one refusal, asserted above")?;
     assert!(
         matches!(refusal, vpay_db::DbError::OverRefund { payment_intent_id, .. }
             if payment_intent_id == "pi_race"),
@@ -3196,7 +3199,7 @@ async fn a_succeeded_refund_moves_both_counters_and_posts_a_balanced_transaction
         &new_refund("re_settled", "pi_settled", 2_000),
     )
     .await?
-        .context("the refund is created")?;
+    .context("the refund is created")?;
 
     let (refund, invoice) = repositories
         .apply_refund_succeeded("re_settled")
@@ -3307,11 +3310,15 @@ async fn a_failed_refund_releases_the_reservation_and_posts_nothing() -> anyhow:
         &new_refund("re_failed", "pi_failed", 2_000),
     )
     .await?
-        .context("the refund is created")?;
+    .context("the refund is created")?;
     assert_eq!(refund_figures(&pool, "pi_failed").await?, (5_000, 0, 2_000));
 
     let failed = repositories
-        .apply_refund_failed("re_failed", "payee_account_blocked", "the payee wallet is blocked")
+        .apply_refund_failed(
+            "re_failed",
+            "payee_account_blocked",
+            "the payee wallet is blocked",
+        )
         .await
         .context("failing a pending refund must commit")?
         .context("the refund was pending, so it must move")?;
@@ -3373,8 +3380,8 @@ async fn a_failed_refund_releases_the_reservation_and_posts_nothing() -> anyhow:
 /// every refund that *succeeded*, passes a two-partial version of this case
 /// and fails this one.
 #[tokio::test]
-async fn amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials()
--> anyhow::Result<()> {
+async fn amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials() -> anyhow::Result<()>
+{
     let (_container, pool, url) = migrated_postgres_with_url().await?;
     seed_currencies(&pool).await?;
     seed_providers(&pool).await?;
@@ -3393,14 +3400,22 @@ async fn amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials()
     .await?;
 
     for (id, amount) in [("re_p1", 1_200_i64), ("re_p2", 800), ("re_p3", 500)] {
-        vpay_db::Refunds::create(&*repositories, "merchant_1", &new_refund(id, "pi_partials", amount))
-            .await?
-            .with_context(|| format!("creating {id}"))?;
+        vpay_db::Refunds::create(
+            &*repositories,
+            "merchant_1",
+            &new_refund(id, "pi_partials", amount),
+        )
+        .await?
+        .with_context(|| format!("creating {id}"))?;
     }
     repositories.apply_refund_succeeded("re_p1").await?;
     repositories.apply_refund_succeeded("re_p2").await?;
     repositories
-        .apply_refund_failed("re_p3", "payee_account_blocked", "the payee wallet is blocked")
+        .apply_refund_failed(
+            "re_p3",
+            "payee_account_blocked",
+            "the payee wallet is blocked",
+        )
         .await?;
 
     let (amount, refunded, pending) = refund_figures(&pool, "pi_partials").await?;
@@ -3474,9 +3489,13 @@ async fn a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller
     capture_through_the_settlement(&pool, &repositories, "merchant_2", "pi_a2", "ch_a2", 20_000)
         .await?;
 
-    vpay_db::Refunds::create(&*repositories, "merchant_1", &new_refund("re_a1", "pi_a1", 2_000))
-        .await?
-        .context("merchant 1's refund")?;
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_a1", "pi_a1", 2_000),
+    )
+    .await?
+    .context("merchant 1's refund")?;
     repositories.apply_refund_succeeded("re_a1").await?;
 
     // Every merchant_payable row, joined back to the merchant its charge's
@@ -3502,11 +3521,12 @@ async fn a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller
 
     // And there is at least one row to have got wrong — an empty ledger would
     // satisfy the assertion above vacuously.
-    let payable_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries WHERE account = 'merchant_payable'")
-            .fetch_one(&pool)
-            .await
-            .context("counting merchant_payable rows")?;
+    let payable_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ledger_entries WHERE account = 'merchant_payable'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("counting merchant_payable rows")?;
     assert_eq!(
         payable_rows, 3,
         "two captures and one refund, each with one merchant_payable leg"
@@ -3565,7 +3585,7 @@ async fn a_refund_against_another_merchants_intent_is_refused_and_reserves_nothi
         &new_refund("re_tenant", "pi_tenant", 1_000),
     )
     .await
-        .context("the read must not error; it must answer None")?;
+    .context("the read must not error; it must answer None")?;
     assert!(
         refused.is_none(),
         "another tenant's intent must be indistinguishable from a missing one"
@@ -3626,7 +3646,7 @@ async fn canceling_a_pending_refund_releases_its_reservation() -> anyhow::Result
         &new_refund("re_cancel", "pi_cancel", 5_000),
     )
     .await?
-        .context("reserving the whole capture")?;
+    .context("reserving the whole capture")?;
     assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
 
     // Another merchant cannot cancel it, and the failed attempt releases
@@ -3677,7 +3697,7 @@ async fn canceling_a_pending_refund_releases_its_reservation() -> anyhow::Result
         &new_refund("re_after", "pi_cancel", 5_000),
     )
     .await?
-        .context("the whole capture must be refundable again after the cancellation")?;
+    .context("the whole capture must be refundable again after the cancellation")?;
     assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
 
     Ok(())

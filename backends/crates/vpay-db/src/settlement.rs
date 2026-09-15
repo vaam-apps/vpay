@@ -932,16 +932,13 @@ impl Settlement for crate::repository::PgRepositories {
         // out of `pending` has already matched, so a missing reservation is a
         // broken invariant, and it pages rather than being reported as a
         // merchant's problem.
-        let intent = payment_intents::settle_refund_in_tx(
-            &mut tx,
-            &refund.payment_intent_id,
-            refund.amount,
-        )
-        .await?
-        .ok_or_else(|| DbError::WriteMatchedNoRow {
-            table: "payment_intents",
-            key: refund.payment_intent_id.clone(),
-        })?;
+        let intent =
+            payment_intents::settle_refund_in_tx(&mut tx, &refund.payment_intent_id, refund.amount)
+                .await?
+                .ok_or_else(|| DbError::WriteMatchedNoRow {
+                    table: "payment_intents",
+                    key: refund.payment_intent_id.clone(),
+                })?;
 
         // The invoice, if the refunded intent was paying one. `Ok(None)` is
         // the normal answer and is not an error: most intents have no invoice

@@ -6000,7 +6000,14 @@ async fn succeeded_charge(
     charge_id: &str,
     event_suffix: &str,
 ) -> anyhow::Result<()> {
-    live_charge(repositories, intent_id, charge_id, "processing", "submitted").await?;
+    live_charge(
+        repositories,
+        intent_id,
+        charge_id,
+        "processing",
+        "submitted",
+    )
+    .await?;
     let settled = repositories
         .apply_succeeded(
             charge_id,
