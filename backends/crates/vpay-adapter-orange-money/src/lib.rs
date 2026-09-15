@@ -1001,32 +1001,66 @@ mod tests {
         assert!(adapter().capabilities().is_coherent());
     }
 
-    /// The declaration RFC-0003 § 5's `supports_refunds` flip will land on
-    /// top of: an Orange refund is a transfer to a payee, so the core must
-    /// demand a destination the moment refunds are switched on, and must
-    /// demand it on this value rather than on the string `"orange_money"`
-    /// (ADR-0002).
+    /// An Orange refund is addressed or it is nowhere, and the core must
+    /// learn that from this value rather than from the string
+    /// `"orange_money"` (ADR-0002).
     ///
-    /// Asserted while `supports_refunds` is still `false` on purpose — that
-    /// pair is exactly what a mistaken coherence rule would have refused, and
-    /// this is where a reader finds out it is intentional.
+    /// This case carried a second assertion, `!supports_refunds`, written as
+    /// a **tripwire** whose failure message was the checklist of prose that
+    /// had to move with the flag. RFC-0003 § 5 flipped the flag on
+    /// 2026-09-15, the tripwire fired as designed, and its checklist was
+    /// worked: `Adapter::new`'s doctest at the top of this file, the
+    /// `supports_refunds` row and the paragraph under it in
+    /// `docs/flows/provider-port.md`, and `docs/status.md`'s
+    /// `NotImplemented` list, which gained `orange_money::refund`. The line
+    /// is gone because what it claimed stopped being true; the checklist is
+    /// restated here because a tripwire deleted without a trace is
+    /// indistinguishable from one deleted to go green.
     ///
-    /// The second assertion is therefore a **tripwire**, and its message is
-    /// the checklist: it is meant to fail when § 5 is implemented, because
-    /// what moves with the flag is prose in three other places that no
-    /// compiler and no other test checks.
+    /// What guards the pair now is
+    /// [`refund_is_a_token_about_vpay_not_an_answer_about_orange`] below.
     #[test]
     fn a_refund_on_this_rail_would_need_a_payee() {
         let capabilities = adapter().capabilities();
         assert_eq!(capabilities.refund_destination, RefundDestination::Required);
+    }
+
+    /// The flip's other half, and the one that can rot silently.
+    ///
+    /// `supports_refunds: true` with an un-overridden `refund` answers the
+    /// port's `Unsupported` — a rail declaring it refunds and then denying
+    /// the operation exists, which is the likeliest way to leave this change
+    /// half-done. It is invisible to the compiler and to `verify-status`
+    /// alike, because the token that should be counted would simply not be
+    /// there.
+    ///
+    /// The exact token string is asserted, not merely the variant:
+    /// `docs/status.md` declares it verbatim and `cargo xtask verify-status`
+    /// fails in both directions on a mismatch, so a typo here breaks a build
+    /// somewhere else and this is where it is legible.
+    #[tokio::test]
+    async fn refund_is_a_token_about_vpay_not_an_answer_about_orange() {
+        let charge = charge(None, Money::new(5_000, Currency::Xaf).expect("non-negative"));
+        let outcome = adapter()
+            .refund(
+                &charge,
+                charge.amount,
+                Some(&RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN")),
+                &config(),
+            )
+            .await;
         assert!(
-            !capabilities.supports_refunds,
-            "vpay has not built Orange refunds. Implementing RFC-0003 § 5 is expected to fail \
-             this assertion: drop this one line — not the `refund_destination` assertion \
-             above it — and in the same commit correct the claims no compiler checks. They \
-             are `Adapter::new`'s doctest at the top of this file, the `supports_refunds` row \
-             and the paragraph under it in docs/flows/provider-port.md, and the NotImplemented \
-             list in docs/status.md, which gains `orange_money::refund`."
+            matches!(
+                outcome,
+                Err(ProviderError::NotImplemented("orange_money::refund"))
+            ),
+            "a rail declaring supports_refunds owes a token, not Unsupported: {outcome:?}"
+        );
+        assert!(
+            adapter().capabilities().supports_refunds,
+            "the token above is only the honest answer while the rail is declared able to \
+             refund; were this flag ever to go back to false, `refund` would have to go back \
+             to the port's Unsupported in the same commit"
         );
     }
 

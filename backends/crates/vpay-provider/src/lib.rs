@@ -1985,6 +1985,115 @@ mod tests {
             );
         }
     }
+
+    /// `refund`'s default body: a rail with no refund API answers
+    /// `Unsupported`, and never `NotImplemented`.
+    ///
+    /// # Why this is here rather than only in the conformance suite
+    ///
+    /// It used to be only there.
+    /// `a_rail_without_the_refund_capability_answers_unsupported` ran this
+    /// property against a *configured* rail, and it ran it on
+    /// `orange_money`'s parameterisation, because Orange was the workspace's
+    /// one rail declaring `supports_refunds: false`.
+    ///
+    /// On 2026-09-15 RFC-0003 § 5 flipped that flag: an Orange refund is an
+    /// outbound transfer, so the rail can refund and it is vpay that has not
+    /// built the call. Both rails this workspace carries now declare `true`,
+    /// and that conformance case's `false` arm has no rail left to run on.
+    /// The arm was kept — written as an assertion so a rail added or flipped
+    /// tomorrow is checked rather than silently skipped — but a kept arm that
+    /// executes on nothing asserts nothing, so the property moved here, to
+    /// the crate that owns the default it is about.
+    ///
+    /// What this case does **not** recover, stated rather than glossed: the
+    /// conformance version proved it through a real adapter against a real
+    /// container. This proves the trait's default body. Those are the same
+    /// sentence only while no shipping adapter overrides `refund` with
+    /// something that answers `Unsupported` anyway, which no adapter does and
+    /// none may — `verify-status` would see the missing token.
+    ///
+    /// The stub overrides nothing optional, for the same reason
+    /// [`an_origin_rail_takes_the_default_and_answers_unsupported`]'s does:
+    /// only an adapter that writes nothing can exercise a default body.
+    #[tokio::test]
+    async fn a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported() {
+        #[derive(Debug)]
+        struct NoRefundApiRail;
+
+        #[async_trait]
+        impl ProviderAdapter for NoRefundApiRail {
+            fn code(&self) -> &'static str {
+                "no_refund_api_rail"
+            }
+
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    flow: ProviderFlow::Push,
+                    // The declaration under test: the rail has no refund
+                    // product at all, which is a permanent fact about it.
+                    supports_refunds: false,
+                    supports_partial_refunds: false,
+                    delivers_callbacks: false,
+                    requires_ip_allowlist: false,
+                    supports_account_holder_lookup: false,
+                    refund_destination: RefundDestination::Origin,
+                }
+            }
+
+            async fn submit(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<Submitted, ProviderError> {
+                Err(ProviderError::NotImplemented("no_refund_api_rail::submit"))
+            }
+
+            async fn query_status(
+                &self,
+                _charge: &ChargeRef,
+                _config: &ProviderConfig,
+            ) -> Result<ChargeStatus, ProviderError> {
+                Err(ProviderError::NotImplemented(
+                    "no_refund_api_rail::query_status",
+                ))
+            }
+
+            fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+                Err(ProviderError::NotImplemented(
+                    "no_refund_api_rail::parse_callback",
+                ))
+            }
+        }
+
+        let charge = ChargeRef {
+            reference_id: Uuid::from_u128(0x5eed),
+            amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("non-negative"),
+            payer_ref: None,
+            ref_extra: BTreeMap::new(),
+            return_url: None,
+        };
+        let config = ProviderConfig {
+            base_url: "http://rail.example".to_owned(),
+            callback_url: "http://vpay.example/cb".to_owned(),
+            currency: vpay_core::Currency::Xaf,
+            settings: BTreeMap::new(),
+            credentials: BTreeMap::new(),
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        };
+
+        // `None`, because this rail declares `Origin`: the core would be
+        // handing it a payee it was never told about otherwise.
+        let outcome = NoRefundApiRail
+            .refund(&charge, charge.amount, None, &config)
+            .await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Unsupported)),
+            "a rail with no refund API says so permanently; a NotImplemented token here would \
+             claim someone owes a call nobody can write: {outcome:?}"
+        );
+    }
 }
 
 #[cfg(test)]

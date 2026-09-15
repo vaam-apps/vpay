@@ -10,10 +10,12 @@
 //! Step 3 built them. A test is ignored in this repo only while the behaviour
 //! it describes is unbuilt (`just verify-ignored` holds the count at zero for
 //! this suite), so a green run here means these assertions were made against a
-//! real container, not skipped. `mtn_momo::refund` keeps its `NotImplemented`
-//! token — Disbursements is a separate product — and
-//! [`a_rail_without_the_refund_capability_answers_unsupported`] asserts exactly
-//! that, rather than being ignored for it. See `docs/status.md`.
+//! real container, not skipped. Both rails keep a `NotImplemented` refund
+//! token — `mtn_momo::refund` because Disbursements is a separate product,
+//! `orange_money::refund` since 2026-09-15 because an Orange refund is an
+//! outbound transfer this repository has no specification for (RFC-0003 § 5)
+//! — and [`a_rail_without_the_refund_capability_answers_unsupported`] asserts
+//! exactly that, rather than being ignored for it. See `docs/status.md`.
 //!
 //! The wire-level cases were written *before* the adapters, deliberately: this
 //! file was the specification the MTN and Orange implementers coded against,
@@ -199,12 +201,24 @@ fn adapter_codes_are_unique() {
 /// `Unsupported` — is
 /// [`a_rail_without_the_refund_capability_answers_unsupported`], which needs a
 /// configured rail and so sits with the wire-level cases.
+///
+/// **No rail in this workspace has entered this loop's body since
+/// 2026-09-15**, when RFC-0003 § 5 flipped `orange_money` to
+/// `supports_refunds: true` and left both rails declaring it. The case is kept
+/// rather than deleted, for the reason the `Origin` arm of
+/// [`a_required_rail_parses_its_own_destination`] is kept: a rail added or
+/// flipped tomorrow is then checked instead of silently skipped. What it must
+/// not be mistaken for is coverage — while no rail declares `false` this
+/// executes nothing. The unconditional form of the same rule,
+/// [`every_adapter_declares_coherent_capabilities`], does run on every rail
+/// and is what actually holds the pair today.
 #[test]
 fn refund_is_refused_when_the_capability_is_absent() {
     for a in adapters() {
         if !a.capabilities().supports_refunds {
-            // Orange has no refund API; the capability flag is what makes the
-            // core refuse, with no rail-specific branch anywhere.
+            // A rail with no refund API cannot have partial ones either, and
+            // the capability flags are what make the core refuse, with no
+            // rail-specific branch anywhere.
             assert!(!a.capabilities().supports_partial_refunds);
         }
     }
@@ -1320,8 +1334,8 @@ fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
 ///
 /// Both rails this workspace carries declare `Required`, so the `Origin` arm
 /// has no caller in this file and the `Required` arm is passed to two
-/// `refund` implementations that ignore their argument - one an unbuilt
-/// `NotImplemented` token, one the port's default. Measured on 2026-09-15:
+/// `refund` implementations that ignore their argument — both of them unbuilt
+/// `NotImplemented` tokens since RFC-0003 § 5. Measured on 2026-09-15:
 /// with the `Required` arm returning `None`, all 54 cases in this suite still
 /// passed. This case is what makes the helper a claim rather than a comment,
 /// and the per-rail half is asserted in
@@ -1479,10 +1493,42 @@ fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnder
 /// Proves a rail with no refund API answers the permanent
 /// [`ProviderError::Unsupported`] — not `NotImplemented`, because there is
 /// nothing to build — and that a rail which *does* advertise refunds never
-/// answers `Unsupported`. `mtn_momo::refund` is still an unbuilt
-/// `NotImplemented` token (Disbursements is a separate product, see
-/// `docs/status.md`); this case is what keeps that token honest, which is why
-/// it runs rather than being `#[ignore]`d for it.
+/// answers `Unsupported` and, while its call is unbuilt, names *itself* in
+/// the token it answers instead. Both rails carry such a token —
+/// `mtn_momo::refund` because Disbursements is a separate product,
+/// `orange_money::refund` since 2026-09-15 — and this case is what keeps them
+/// honest, which is why it runs rather than being `#[ignore]`d for them.
+///
+/// # Which arm runs, and the one that no longer does
+///
+/// Until 2026-09-15 the `Unsupported` arm ran on `orange_money`, the
+/// workspace's one rail declaring `supports_refunds: false`. RFC-0003 § 5
+/// flipped that flag — an Orange refund is an outbound transfer, so the rail
+/// can refund and it is vpay that has not built the call — and **no rail in
+/// this workspace now declares the capability off**. That arm still asserts;
+/// it simply has nothing to assert against, exactly like the `Origin` arm of
+/// [`a_required_rail_parses_its_own_destination`], and it is kept for the
+/// same reason: a rail added or flipped tomorrow is checked rather than
+/// silently skipped.
+///
+/// Deleting it would have made this suite green while retiring a rule nobody
+/// decided to retire. Keeping it is not the same as still proving it, so the
+/// property it exercised — the port's `refund` default is `Unsupported` —
+/// moved to `a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported`
+/// in `vpay-provider`, on a stub that overrides nothing. What that unit test
+/// cannot recover is the *configured-rail* half: this case reached a real
+/// adapter through a real container, and no adapter is left to reach.
+///
+/// The name still says `without_the_refund_capability`, which now describes
+/// the arm that does not run. It is kept because five pages and two dated
+/// verification records cite it by name; renaming it would orphan those
+/// references, including records that must not be rewritten.
+///
+/// # What the live arm is worth
+///
+/// It is the assertion that catches this very change half-done: flipping
+/// `supports_refunds` to `true` without overriding `refund` leaves the
+/// adapter answering the port's `Unsupported`, and fails here.
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
@@ -1517,8 +1563,20 @@ async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: 
         // unsupported — whatever else it answers while the call is unbuilt.
         assert!(
             !matches!(outcome, Err(ProviderError::Unsupported)),
-            "a rail advertising supports_refunds must not answer Unsupported"
+            "a rail advertising supports_refunds must not answer Unsupported: {outcome:?}"
         );
+        // And when what it answers is a token, the token names *this* rail.
+        // `verify-status` matches `docs/status.md`'s bullets against these
+        // strings verbatim and cannot tell which rail a token came from, so
+        // a copy-pasted `mtn_momo::refund` in the Orange adapter would keep
+        // that gate green while the status page named the wrong rail's gap.
+        if let Err(ProviderError::NotImplemented(token)) = &outcome {
+            assert!(
+                token.starts_with(&format!("{}::", rail.adapter.code())),
+                "an unbuilt refund declares its own rail: {} answered {token:?}",
+                rail.adapter.code()
+            );
+        }
     } else {
         // `Unsupported`, not `NotImplemented`: there is nothing to build. The
         // rail has no refund API, the capability says so, and the core is
