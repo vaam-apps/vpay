@@ -343,6 +343,42 @@ analyze-flutter: _flutter-preflight
 test-flutter: _flutter-preflight
     cd {{ flutter_plugin_dir }} && flutter test
 
+# The ONLY recipe that runs `web_checkout_platform.dart` at all — until this
+# landed, the web platform (`window.open`, the origin-pinned `vpay:complete`
+# listener, the `popup.closed` poll) had never been executed, only compiled
+# (`docs/sdks/parity.md`'s Flutter table row). `test/web/` is `@TestOn
+# ('chrome')`, so a bare `flutter test` excludes it entirely (proven: `flutter
+# test` still reports "82 passed, 0 skipped" with those files present — this
+# is neither a pass nor a skip, it is not in the run at all) and only
+# `flutter test --platform chrome` — this recipe, never `just test-flutter`
+# — compiles and runs them, in a REAL Google Chrome. Read
+# `test/web/web_checkout_platform_test.dart`'s own header before citing a ✅
+# off this recipe: it is a browser-executed unit test against a fixture page
+# this suite serves itself, never a run against vpay's actual hosted
+# checkout page — that header explains the structural reason (an origin
+# mismatch between this dev server and `examples/shop`) a true end-to-end
+# popup run was attempted and could not be made to work here.
+#
+# THE DECISIVE PROPERTY: refuses LOUDLY, never a skip, the moment no Chrome
+# is reachable — a green run that silently never opened a browser would be
+# worse than no test at all. `CHROME_EXECUTABLE` overrides which binary;
+# unset, `flutter_tools` itself looks for `google-chrome` on PATH, so this
+# recipe's own preflight check mirrors that default rather than inventing a
+# different one.
+test-flutter-web: _flutter-preflight
+    #!/usr/bin/env bash
+    set -euo pipefail
+    chrome="${CHROME_EXECUTABLE:-google-chrome}"
+    if ! command -v "$chrome" >/dev/null 2>&1; then
+        echo "test-flutter-web: FAIL — no Chrome reachable ('$chrome' is not on PATH)." >&2
+        echo "test-flutter-web: this is a REAL browser suite and refuses to fake one." >&2
+        echo "test-flutter-web: install Google Chrome, or set CHROME_EXECUTABLE to point at it." >&2
+        exit 1
+    fi
+    echo "test-flutter-web: using $chrome"
+    cd {{ flutter_plugin_dir }}
+    CHROME_EXECUTABLE="$chrome" flutter test --platform chrome test/web
+
 # The plugin's Dart core against a REAL, RUNNING vpay stack — Lane D,
 # `docs/plans/2026-09-14-flutter-e2e-real-stack.md`. No `MockClient` anywhere
 # in the path: `sdks/flutter/vpay_checkout_flutter/test_e2e/

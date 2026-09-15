@@ -1,0 +1,71 @@
+<!--
+  A REAL page, served over REAL HTTP by `flutter test --platform chrome`'s
+  own asset server — not a JS string this suite hands to a fake DOM. It
+  stands in for the merchant's own success_url/cancel_url page
+  `web_checkout_platform.dart`'s own doc comment describes: the one that
+  runs INSIDE the popup once the payer's checkout finishes, and calls
+  `window.opener.postMessage` — the Dart-package analogue of
+  `examples/shop/src/components/popup-return-notifier.tsx`, which calls
+  `@vaam-apps/vpay-stripe-js`'s `notifyCheckoutOpener` for the very same
+  reason.
+
+  `.htm`, not `.html`, on purpose: `flutter test --platform chrome`'s own
+  dev server (`flutter_tools/lib/src/test/flutter_web_platform.dart`,
+  `_wrapperHandler`) intercepts EVERY `*.html` request, unconditionally,
+  before it ever reaches the directory handler that would serve this file,
+  and answers with its own synthetic test-bootstrap page instead — so a
+  fixture named `return.html` is silently replaced by Flutter's own HTML and
+  never reached at all (measured: `window.opener.postMessage` never
+  arrived, and fetching `return.html` back returned a page titled after a
+  `return.dart` test that does not exist). `.htm` is not special-cased by
+  that handler and falls through to the plain static-file handler behind
+  it, which serves this file's real bytes with a real `text/html` content
+  type — confirmed by fetching it back and reading `content-type`.
+
+  Query parameters, read by the inline script below:
+  - `session` — required to post anything at all, mirroring
+    `PopupReturnNotifier`'s own `sessionId === null` no-op path. Absent,
+    this page does nothing (used by the "just prove the popup navigated
+    here" test, which does not want a message fired).
+  - `status`  — carried in the message and otherwise never inspected by
+    this fixture; `WebVpayCheckoutPlatform` does not read it either (design
+    doc D1 — see the test file this fixture serves).
+  - `messageType` — defaults to `vpay:complete`; overridable so a suite
+    could prove a DIFFERENT type is ignored, though no test here needs
+    that.
+
+  Always posts to `'*'`, deliberately, unlike the real
+  `notifyCheckoutOpener` (which pins a real `targetOrigin`): the security
+  property under test is what the RECEIVER (`WebVpayCheckoutPlatform`'s
+  `message` listener) accepts, keyed off `event.origin` — the sender's own,
+  browser-enforced origin, which `postMessage`'s `targetOrigin` argument
+  does not affect. Using `'*'` here keeps this fixture usable unmodified
+  from both the same-origin and the different-origin (`127.0.0.1` host
+  alias) test cases.
+-->
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>vpay_checkout_flutter web test fixture — return page</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var session = params.get('session');
+        if (session === null) {
+          return;
+        }
+        var status = params.get('status') || '';
+        var messageType = params.get('messageType') || 'vpay:complete';
+        if (window.opener) {
+          window.opener.postMessage(
+            { type: messageType, session: session, status: status },
+            '*'
+          );
+        }
+      })();
+    </script>
+  </body>
+</html>
