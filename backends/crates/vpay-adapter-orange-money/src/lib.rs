@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vpay_core::{FailureCode, ProviderFlow};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, RefundDestination, Submitted,
+    ProviderError, RefExtra, RefundDestination, RefundTarget, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -579,10 +579,80 @@ impl ProviderAdapter for Adapter {
         })
     }
 
+    /// `destination[orange_money][msisdn]` — the payee a refund on this rail
+    /// would be transferred to.
+    ///
+    /// # Why this exists on a rail whose `refund` does not
+    ///
+    /// `supports_refunds` is `false` here and `refund` is the port's
+    /// permanent `Unsupported`, so nothing calls this today. It is written
+    /// anyway, and the distinction is the same one `capabilities` already
+    /// draws: the *destination* is a fact about the rail's product — an
+    /// Orange refund is an outbound transfer to a payee, which is why
+    /// [`RefundDestination::Required`] is declared — while the missing
+    /// `refund` is a fact about this repository. Leaving `parse_destination`
+    /// to the port's default would have this adapter answer
+    /// [`ProviderError::Unsupported`] to a question about the payee, i.e.
+    /// claim Orange returns money to the instrument that paid, which is false
+    /// on a redirect rail where `payer_ref` is `None` and vpay never learns
+    /// who paid.
+    ///
+    /// Nothing here is an invention about Orange's API. The key parsed is
+    /// vpay's own merchant-facing parameter (RFC-0003 § 1); how an Orange
+    /// transfer body would render it is unknown and stays unwritten, which is
+    /// exactly why `refund` is still the default.
+    ///
+    /// # What is refused
+    ///
+    /// A missing key, a non-string value, and a string that is empty or all
+    /// whitespace, each [`ProviderError::Malformed`]. Empty is absent, for
+    /// the reason [`credential`] gives: a blank value is a lost one, not a
+    /// choice, and must fail where a missing one does rather than travel as
+    /// `""`.
+    ///
+    /// A string that is not a phone number is **not** refused — the rule is
+    /// the confirm path's, not `vpay_api`'s stricter E.164 canonicaliser,
+    /// which an adapter crate cannot name and must not re-spell. See
+    /// [`vpay_provider::RefundTarget::mobile_money`].
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`], and nothing else — this reaches no
+    /// network. The message names the parameter and **never** its value: a
+    /// payee's number in an error string would undo `RefundTarget`'s
+    /// redacting `Debug`.
+    fn parse_destination(
+        &self,
+        raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        let msisdn = raw
+            .get(DESTINATION_MSISDN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|msisdn| !msisdn.is_empty())
+            .ok_or_else(|| {
+                ProviderError::malformed(format!(
+                    "orange_money: a refund on this rail needs the payee's number, sent as a \
+                     non-empty string in `destination[orange_money][{DESTINATION_MSISDN_KEY}]`"
+                ))
+            })?;
+        Ok(RefundTarget::mobile_money(msisdn))
+    }
+
     // `refund` is deliberately not overridden: the port's default is
     // `Err(ProviderError::Unsupported)`, which is the permanent answer for a
-    // rail with no refund API. See the module doc.
+    // rail with no refund API. See the module doc. `parse_destination`
+    // *is* overridden, immediately above, and that comment says why the two
+    // differ.
 }
+
+/// The one key this rail names inside `destination[orange_money]`, and the
+/// only place in this crate that spells it.
+///
+/// vpay's **merchant-facing** parameter (RFC-0003 § 1), not a field of
+/// Orange's API — there is no documented Orange transfer body in this
+/// repository to have taken a name from.
+const DESTINATION_MSISDN_KEY: &str = "msisdn";
 
 /// `{base}/{path}`, tolerating a configured trailing slash.
 fn endpoint(base: &str, path: &str) -> String {

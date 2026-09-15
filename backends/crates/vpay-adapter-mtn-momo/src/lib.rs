@@ -38,6 +38,15 @@ use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEAD
 /// charge.
 const REFERENCE_ID_HEADER: HeaderName = HeaderName::from_static("x-reference-id");
 
+/// The one key this rail names inside `destination[mtn_momo]`, and the only
+/// place in the workspace that spells it.
+///
+/// It is vpay's **merchant-facing** parameter (RFC-0003 § 1), not a field of
+/// MTN's API: what Disbursements calls the payee is `payee.partyId`, rendered
+/// by whoever builds the `transfer` body, and the two are free to differ
+/// precisely because this adapter is the only thing that sees both.
+const DESTINATION_MSISDN_KEY: &str = "msisdn";
+
 /// Per-request, and its host must match the `providerCallbackHost` registered
 /// with the API user — a mismatch is one of the 500s
 /// `mapping::CONFIGURATION_CODES` catches.
@@ -682,6 +691,65 @@ impl ProviderAdapter for Adapter {
             // smuggled in from an unauthenticated request.
             ref_extra: RefExtra::new(),
         })
+    }
+
+    /// `destination[mtn_momo][msisdn]` — the payee a Disbursements `transfer`
+    /// would be addressed to.
+    ///
+    /// The core hands over the sub-map under this rail's code and nothing
+    /// else; [`ProviderAdapter::parse_destination`] is the contract and
+    /// RFC-0003 open question 4 (decided 2026-09-15) is the reason this
+    /// function is here rather than in `vpay_api`.
+    ///
+    /// # What is refused, and what is deliberately not
+    ///
+    /// A missing key, a key whose value is not a JSON **string**, and a
+    /// string that is empty or all whitespace are each
+    /// [`ProviderError::Malformed`]. A number is refused rather than coerced:
+    /// a leading `+` and a leading `0` do not survive one, so a JSON number
+    /// here is a value that has already lost information, and the form
+    /// encoding a merchant actually posts never produces one.
+    ///
+    /// What is **not** refused is a string that is not a phone number. The
+    /// rule applied is the confirm path's — present, a string, not
+    /// whitespace-only, exactly what `payer_instrument` demands of a payer's
+    /// `payment_method_data[mtn_momo][msisdn]` — and not `vpay_api`'s
+    /// stricter E.164 canonicaliser, which is `pub(crate)` there and which
+    /// this crate must not acquire a second spelling of. See
+    /// [`RefundTarget::mobile_money`], which names the gap and where it gets
+    /// closed.
+    ///
+    /// The accepted value **is** trimmed, which is one deliberate deviation
+    /// from `payer_instrument`: that function tests `trim().is_empty()` and
+    /// then stores the untrimmed string, so `" 237600000200"` reaches the
+    /// rail with its space. Here the trimmed string is what
+    /// [`RefundTarget`] carries, because a payee is interpolated into a
+    /// Disbursements body rather than compared to anything of ours, and
+    /// leading whitespace in it is never intentional.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Malformed`], and nothing else — this reaches no
+    /// network. **The message never contains the value**: it names the
+    /// parameter, which is what an integrator needs, and a payee's phone
+    /// number in an error string would undo [`RefundTarget`]'s redacting
+    /// [`Debug`] one format argument at a time.
+    fn parse_destination(
+        &self,
+        raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        let msisdn = raw
+            .get(DESTINATION_MSISDN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|msisdn| !msisdn.is_empty())
+            .ok_or_else(|| {
+                ProviderError::malformed(format!(
+                    "mtn_momo: a refund on this rail needs the payee's number, sent as a \
+                     non-empty string in `destination[mtn_momo][{DESTINATION_MSISDN_KEY}]`"
+                ))
+            })?;
+        Ok(RefundTarget::mobile_money(msisdn))
     }
 
     /// Not built, and honestly so.

@@ -43,6 +43,10 @@
 //! `parse_callback` is **not** counted: it parses bytes that have already
 //! arrived, touches no rail, and cannot fail slowly. Including it would put
 //! a pure function into a series an operator reads as rail traffic.
+//! `parse_destination` is not counted for the same reason, and is forwarded
+//! for a reason of its own — it is the one port method whose *default* body
+//! is a refusal, so a decorator that forgot to forward it would compile and
+//! would answer `Unsupported` for every rail. See the method.
 
 use std::time::Instant;
 
@@ -166,6 +170,31 @@ impl ProviderAdapter for Measured {
     /// Forwarded unmeasured — see the module header.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         self.inner.parse_callback(body)
+    }
+
+    /// Forwarded unmeasured, and — the part that matters here — forwarded at
+    /// all.
+    ///
+    /// [`ProviderAdapter::parse_destination`] has a default body answering
+    /// [`ProviderError::Unsupported`], which is right for an
+    /// [`Origin`](crate::RefundDestination::Origin) rail and catastrophic for
+    /// a decorator: `Measured` wraps every adapter this workspace resolves
+    /// (`vpay_api::v1::boot::adapters_by_code` is the single funnel), so an
+    /// omitted forward here would not fail to compile — it would make every
+    /// refund on every rail answer "this rail has no such API" in production
+    /// while each adapter's own unit tests, which hold the adapter unwrapped,
+    /// stayed green. `a_defaulted_method_is_not_silently_answered_by_the_wrapper`
+    /// is what catches it.
+    ///
+    /// Unmeasured for [`parse_callback`](Measured::parse_callback)'s reason:
+    /// it parses values that have already arrived, touches no rail, and
+    /// cannot fail slowly. And nothing is derived from the parsed
+    /// [`RefundTarget`] for a label — see `refund` below.
+    fn parse_destination(
+        &self,
+        raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        self.inner.parse_destination(raw)
     }
 
     /// Forwarded with the destination untouched: this decorator counts and
