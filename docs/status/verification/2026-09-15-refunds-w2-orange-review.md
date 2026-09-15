@@ -19,19 +19,19 @@ falsifies sentences, not links. Eleven live pages and doc comments still said
 Orange answers `ProviderError::Unsupported`, or declares
 `supports_refunds: false`:
 
-| Page                                             | The claim that had stopped being true                               |
-| ------------------------------------------------ | ------------------------------------------------------------------- |
-| `docs/api/README.md`                             | the `POST /v1/refunds` "not served" row: "Orange Money answers `Unsupported`" |
-| `docs/reference/vpay-db/events-refunds-and-webhooks.md` | "`Unsupported` on Orange"                                     |
-| `docs/reference/vpay-db/cratestack-money-tables.md`     | the `refunds` table's second blocker                          |
-| `docs/flows/invoices.md`                         | "Orange Money answers `Unsupported` (its Web Payment product documents no refund API at all)" |
-| `docs/flows/merchant-auth/resource-contract.md`  | why every refund `fee` is `null`                                    |
-| `docs/flows/provider-port.md`                    | the dated 2026-09-05 `fee` entry — annotated, not rewritten         |
-| `docs/roadmap/phase-4-rail-adapters.md`          | "`orange_money::refund` left the list"; it came back, and the Goal's count is two again |
-| `docs/status/backend.md`                         | the rail table's Refunds column, plus two paragraphs                |
-| `backends/crates/vpay-provider/src/lib.rs`       | three doc comments, including `is_coherent`'s reason 1 and the paragraph that **predicted its own expiry** and then outlived it unnoticed |
-| `sdks/nodejs/src/types.ts`                       | the refund `fee` doc: "Orange has no refund API"                    |
-| `sdks/rust/src/model.rs`                         | the same sentence                                                   |
+| Page                                                    | The claim that had stopped being true                                                                                                     |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/api/README.md`                                    | the `POST /v1/refunds` "not served" row: "Orange Money answers `Unsupported`"                                                             |
+| `docs/reference/vpay-db/events-refunds-and-webhooks.md` | "`Unsupported` on Orange"                                                                                                                 |
+| `docs/reference/vpay-db/cratestack-money-tables.md`     | the `refunds` table's second blocker                                                                                                      |
+| `docs/flows/invoices.md`                                | "Orange Money answers `Unsupported` (its Web Payment product documents no refund API at all)"                                             |
+| `docs/flows/merchant-auth/resource-contract.md`         | why every refund `fee` is `null`                                                                                                          |
+| `docs/flows/provider-port.md`                           | the dated 2026-09-05 `fee` entry — annotated, not rewritten                                                                               |
+| `docs/roadmap/phase-4-rail-adapters.md`                 | "`orange_money::refund` left the list"; it came back, and the Goal's count is two again                                                   |
+| `docs/status/backend.md`                                | the rail table's Refunds column, plus two paragraphs                                                                                      |
+| `backends/crates/vpay-provider/src/lib.rs`              | three doc comments, including `is_coherent`'s reason 1 and the paragraph that **predicted its own expiry** and then outlived it unnoticed |
+| `sdks/nodejs/src/types.ts`                              | the refund `fee` doc: "Orange has no refund API"                                                                                          |
+| `sdks/rust/src/model.rs`                                | the same sentence                                                                                                                         |
 
 Each carries the sentence it replaced. Deliberately **not** changed:
 `docs/plans/`, `docs/adr/`, `docs/status/verification/` and RFC-0003's own
@@ -49,10 +49,10 @@ The gate compares two **sets of token strings** and knows nothing about where
 a token is written, so an adapter answering another rail's token satisfies
 both directions. Measured on this tree, in two steps:
 
-| Step                                                                                    | `cargo xtask verify-status`                                                       |
-| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Orange's `refund` answers `NotImplemented("mtn_momo::refund")`                           | **fails**: "docs/status.md declares these unimplemented items and no shipping code carries them: orange_money::refund" |
-| …and then the repair that message invites — delete the Orange bullet                     | **"ok — 1 unimplemented item(s)"**                                                 |
+| Step                                                                 | `cargo xtask verify-status`                                                                                            |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Orange's `refund` answers `NotImplemented("mtn_momo::refund")`       | **fails**: "docs/status.md declares these unimplemented items and no shipping code carries them: orange_money::refund" |
+| …and then the repair that message invites — delete the Orange bullet | **"ok — 1 unimplemented item(s)"**                                                                                     |
 
 At that point a whole rail's gap has left `docs/status.md` with a green build,
 and the adapter blames MTN for it.
@@ -122,7 +122,7 @@ neither, and `verify-no-mocks` walks non-dev edges from the binaries and would
 not have objected.
 
 **The conclusion stands on its other reason, which is the real one:**
-`adapters()` is the shipping registry that *every* case in that file iterates,
+`adapters()` is the shipping registry that _every_ case in that file iterates,
 so a fixture rail would also have to satisfy the wire-level cases,
 `adapter_codes_are_unique` and the destination cases — by the time it did, it
 would be a rail, and one nobody ships. Both live pages now say that; the dated
@@ -140,7 +140,7 @@ comment:
   a true claim about Orange**, because nobody here knows the amount semantics —
   the same modelling gap `Capabilities::is_coherent` already records for
   `refund_destination`, a two-valued field with no spelling for "unknown" — and
-  blast radius is the tie-break *after* admitting that, not instead of it.
+  blast radius is the tie-break _after_ admitting that, not instead of it.
 - The comment said "the core refuses a part-refund on this rail and a merchant
   is told no". **There is no such refusal.** `POST /v1/refunds` is unrouted, and
   `is_coherent` plus the `providers` seed write are the only readers of the flag
@@ -154,22 +154,22 @@ merchants have integrated against is breaking, adding one is not.
 
 All on `review/w2-orange`, Rust 1.98.0, `DOCKER_HOST=unix:///run/user/1000/docker.sock`.
 
-| Command                                                                                          | Result                                    |
-| ------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `cargo nextest run -p vpay-adapter-orange-money -p vpay-provider -p vpay-tests-conformance -p xtask` | **405 run, 405 passed, 0 skipped, 0 ignored** |
-| `cargo nextest run -p vpay-tests-conformance` (containers, alone)                                 | 56 run, 56 passed, **0 skipped**           |
-| `cargo nextest run -p vpay-adapter-orange-money`                                                  | 66 run, 66 passed, 0 skipped               |
-| `cargo nextest run -p vpay-provider`                                                              | 33 (of the 99 with the adapter), 0 skipped |
-| `cargo nextest run -p xtask`                                                                      | 250 run, 250 passed, 0 skipped             |
-| `cargo test --doc -p vpay-adapter-orange-money`                                                   | 1 passed, 0 ignored                        |
-| `cargo test --doc -p vpay-provider`                                                               | 12 passed, 0 ignored                       |
-| `cargo test --doc -p vpay-db`                                                                     | **8** passed, 0 ignored                    |
-| `cargo test --doc -p vpay-api`                                                                    | **18** passed, 0 ignored                   |
-| `cargo clippy -p vpay-adapter-orange-money -p vpay-provider -p vpay-tests-conformance -p xtask --all-targets --all-features -- -D warnings` | clean |
-| `cargo fmt --all -- --check`                                                                      | clean                                      |
-| `cargo xtask verify-status`                                                                       | **2 unimplemented item(s)**, both declared |
-| `cargo xtask verify-links`                                                                        | 1 660 links, 364 files                     |
-| `cargo xtask verify-no-mocks`                                                                     | clean                                      |
+| Command                                                                                                                                     | Result                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `cargo nextest run -p vpay-adapter-orange-money -p vpay-provider -p vpay-tests-conformance -p xtask`                                        | **405 run, 405 passed, 0 skipped, 0 ignored** |
+| `cargo nextest run -p vpay-tests-conformance` (containers, alone)                                                                           | 56 run, 56 passed, **0 skipped**              |
+| `cargo nextest run -p vpay-adapter-orange-money`                                                                                            | 66 run, 66 passed, 0 skipped                  |
+| `cargo nextest run -p vpay-provider`                                                                                                        | 33 (of the 99 with the adapter), 0 skipped    |
+| `cargo nextest run -p xtask`                                                                                                                | 250 run, 250 passed, 0 skipped                |
+| `cargo test --doc -p vpay-adapter-orange-money`                                                                                             | 1 passed, 0 ignored                           |
+| `cargo test --doc -p vpay-provider`                                                                                                         | 12 passed, 0 ignored                          |
+| `cargo test --doc -p vpay-db`                                                                                                               | **8** passed, 0 ignored                       |
+| `cargo test --doc -p vpay-api`                                                                                                              | **18** passed, 0 ignored                      |
+| `cargo clippy -p vpay-adapter-orange-money -p vpay-provider -p vpay-tests-conformance -p xtask --all-targets --all-features -- -D warnings` | clean                                         |
+| `cargo fmt --all -- --check`                                                                                                                | clean                                         |
+| `cargo xtask verify-status`                                                                                                                 | **2 unimplemented item(s)**, both declared    |
+| `cargo xtask verify-links`                                                                                                                  | 1 660 links, 364 files                        |
+| `cargo xtask verify-no-mocks`                                                                                                               | clean                                         |
 
 The conformance suite went 57 → 56 with the deleted case. Nothing was skipped
 and nothing is `#[ignore]`d: the containers really started, which is the only
@@ -186,12 +186,12 @@ In particular the two SDK sources touched here are comment-only changes that
 Each applied to the shipping source, the named command run, the source
 restored with `git checkout`.
 
-| Mutation                                                              | Caught by                                                                                                                                                                                                       |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Orange's `refund` answers `Err(ProviderError::Unsupported)`           | `refund_is_a_token_about_vpay_not_an_answer_about_orange` **fails**; `a_rail_without_the_refund_capability_answers_unsupported::case_2_orange_money` **fails**; `verify-status` **fails** (declared, not carried) |
-| Orange's `refund` answers `NotImplemented("mtn_momo::refund")`        | conformance **fails** on the own-rail assertion; `verify-status` **fails** on the declared-not-carried direction                                                                                                 |
-| …and the Orange bullet then deleted from `docs/status.md`             | **before this review: `verify-status` printed "ok — 1 unimplemented item(s)"**. After: fails, naming the token, the file carrying it and the crate that owns the prefix                                          |
-| The new third direction deleted from `verify_status`                  | `a_token_naming_another_rail_is_refused_however_well_the_page_matches` **fails**                                                                                                                                 |
+| Mutation                                                       | Caught by                                                                                                                                                                                                         |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Orange's `refund` answers `Err(ProviderError::Unsupported)`    | `refund_is_a_token_about_vpay_not_an_answer_about_orange` **fails**; `a_rail_without_the_refund_capability_answers_unsupported::case_2_orange_money` **fails**; `verify-status` **fails** (declared, not carried) |
+| Orange's `refund` answers `NotImplemented("mtn_momo::refund")` | conformance **fails** on the own-rail assertion; `verify-status` **fails** on the declared-not-carried direction                                                                                                  |
+| …and the Orange bullet then deleted from `docs/status.md`      | **before this review: `verify-status` printed "ok — 1 unimplemented item(s)"**. After: fails, naming the token, the file carrying it and the crate that owns the prefix                                           |
+| The new third direction deleted from `verify_status`           | `a_token_naming_another_rail_is_refused_however_well_the_page_matches` **fails**                                                                                                                                  |
 
 ## What this review did not settle
 

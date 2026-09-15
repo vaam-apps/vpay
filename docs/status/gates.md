@@ -46,8 +46,8 @@ dependency rule would ever object to it; what it defeats is the property
 fails at boot rather than at the first payment.
 AGENTS.md's claim that `verify-status` "fails in both directions" is,
 as of this pass, true — and **since 2026-09-15 there is a third direction**,
-added on review of the Orange refund flip. The two directions compare *sets of
-token strings*; neither knows which file a token was written in, so an adapter
+added on review of the Orange refund flip. The two directions compare _sets of
+token strings_; neither knows which file a token was written in, so an adapter
 answering another rail's token satisfied both. Measured on the flip's own tree
 before the rule existed: with `NotImplemented("orange_money::refund")` in the
 Orange adapter replaced by `NotImplemented("mtn_momo::refund")` — the adapters'

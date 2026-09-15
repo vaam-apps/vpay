@@ -252,10 +252,10 @@ Three things moved. Eleven live pages and doc comments still said this rail
 answers `Unsupported` or declares `supports_refunds: false`, and were
 corrected — `verify-links` checks that a link resolves, never that the sentence
 around it is true. `cargo xtask verify-status` gained a **third direction**: it
-compared token *strings* and could not tell which rail carried one, so a
+compared token _strings_ and could not tell which rail carried one, so a
 `mtn_momo::refund` pasted into this adapter went green once the Orange bullet
 was deleted, which is the repair its first error message invites. And a
-*different* conformance case, `refund_is_refused_when_the_capability_is_absent`,
+_different_ conformance case, `refund_is_refused_when_the_capability_is_absent`,
 whose **entire** body sat behind an `if !supports_refunds` guard, was deleted:
 `every_adapter_declares_coherent_capabilities` holds the same implication
 unconditionally on every rail, so no rule was retired.

@@ -366,6 +366,53 @@ pub enum InvalidMsisdn {
     TrunkPrefix,
 }
 
+/// Every variant is the caller's own input being wrong, which is
+/// [`Category::InvalidRequest`] and nothing else: no rail was contacted, no
+/// credential was read, no state was consulted. Written out rather than
+/// wildcarded — a wildcard would hand a future variant the *caller's fault*
+/// verdict, and the point of `#[non_exhaustive]` here is that the next
+/// variant may not deserve it.
+///
+/// [`Category::InvalidRequest`]: vpay_core::Category::InvalidRequest
+impl vpay_core::Classify for InvalidMsisdn {
+    fn category(&self) -> vpay_core::Category {
+        match self {
+            Self::NotInternational
+            | Self::NotADigitString
+            | Self::WrongLength
+            | Self::TrunkPrefix => vpay_core::Category::InvalidRequest,
+        }
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NotInternational => "destination_not_international",
+            Self::NotADigitString => "destination_not_a_digit_string",
+            Self::WrongLength => "destination_wrong_length",
+            Self::TrunkPrefix => "destination_trunk_prefix",
+        }
+    }
+
+    fn retry(&self) -> vpay_core::Retry {
+        // Never. The same number will break the same rule forever; only the
+        // caller sending a different one resolves this.
+        vpay_core::Retry::Never
+    }
+
+    fn severity(&self) -> vpay_core::Severity {
+        // A merchant's typo is not an operator's problem.
+        vpay_core::Severity::Info
+    }
+
+    fn public_message(&self) -> String {
+        // The rule, never the number. `Display` is written to name which rule
+        // broke and never to echo the input, which is the same trade
+        // `RefundTarget`'s redacting `Debug` makes — so this is safe to
+        // return verbatim, and an integrator finally learns what to fix.
+        self.to_string()
+    }
+}
+
 /// E.164's ceiling: fifteen digits including the country code (ITU-T E.164,
 /// § 6.2). A sixteenth digit is not a number anywhere.
 const E164_MAX_DIGITS: usize = 15;

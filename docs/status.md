@@ -87,7 +87,7 @@ before this page was written:
 | Gate                  | What it refuses                                                                                                                                                  | Last printed                                 |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | `verify-no-mocks`     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                     |
-| `verify-status`       | an undeclared — or a stale — `NotImplemented` token, or one that names a rail other than the adapter carrying it                                                  | 1 unimplemented item                         |
+| `verify-status`       | an undeclared — or a stale — `NotImplemented` token, or one that names a rail other than the adapter carrying it                                                 | 1 unimplemented item                         |
 | `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 19 error types, 16 `#[from]` variants        |
 | `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability                                                                                                     | 550 proving tests, 35 dated gaps, 32 methods |
 | `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | 1 600 links in 352 files                     |
@@ -107,7 +107,7 @@ that is what the sentence above it says it is — a measurement of one tree on
 one day.
 
 **And `verify-status` gained a third direction the same day, on review.** It
-compared *sets of token strings* and knew nothing about where a token was
+compared _sets of token strings_ and knew nothing about where a token was
 written, so an adapter answering another rail's token was invisible to it.
 Measured before the rule existed: with `NotImplemented("orange_money::refund")`
 in the Orange adapter replaced by `NotImplemented("mtn_momo::refund")`, the
@@ -115,7 +115,7 @@ gate first failed the docs→code way — inviting the wrong repair, "delete the
 bullet" — and with the bullet then deleted it printed **"ok — 1 unimplemented
 item(s)"**, with a whole rail's gap gone from this page and an adapter blaming
 MTN for it. A token whose prefix names a rail this workspace ships an adapter
-for must now be carried by *that* adapter's crate; prefixes that name no rail
+for must now be carried by _that_ adapter's crate; prefixes that name no rail
 are unconstrained, because this repository has no convention saying where such
 a token may live. `a_token_naming_another_rail_is_refused_however_well_the_page_matches`
 in `.xtask` pins it, in both directions.

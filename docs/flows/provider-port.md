@@ -224,7 +224,7 @@ whether this is a port or just a folder.
   `partial_refunds_without_refunds_is_rejected_by_the_database`
   (`postgres_smoke.rs`) behind it. No rule was retired; the deleted case was a
   strict subset of those three. `verify-status` gained a third direction in the
-  same pass, because it compared token *strings* and could not tell which rail
+  same pass, because it compared token _strings_ and could not tell which rail
   carried one.
 
 **Decided and built 2026-09-15: `RefundTarget::mobile_money` canonicalises,
