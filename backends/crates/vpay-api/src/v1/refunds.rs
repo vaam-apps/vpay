@@ -86,8 +86,8 @@ use uuid::Uuid;
 
 use vpay_core::{Currency, Money, ids};
 use vpay_db::{
-    ChargeRow, NewRefund, PaymentIntents, RefundListPage, RefundRow,
-    Refunds, Repositories, ResponseSubject, TxOutcome, UnitOfWork as _,
+    ChargeRow, NewRefund, PaymentIntents, RefundListPage, RefundRow, Refunds, Repositories,
+    ResponseSubject, TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{
     ChargeRef, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
@@ -244,14 +244,7 @@ pub(crate) async fn create(
     // Safe because the check is a function of the body and of rows this
     // request does not touch: a genuine replay, whose body is byte for byte
     // the accepted one, can never be shadowed by it.
-    let target = resolve_target(
-        repositories.as_ref(),
-        &config,
-        &adapters,
-        &scope,
-        &params,
-    )
-    .await?;
+    let target = resolve_target(repositories.as_ref(), &config, &adapters, &scope, &params).await?;
 
     let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
@@ -449,8 +442,7 @@ async fn resolve_target<'a>(
     )?;
 
     if let Some(destination) = destination.as_ref() {
-        verify_registered_holder(adapter.as_ref(), destination, &rail.provider_config())
-            .await?;
+        verify_registered_holder(adapter.as_ref(), destination, &rail.provider_config()).await?;
     }
 
     let reason = validated_reason(params.reason.as_deref())?;
@@ -508,10 +500,7 @@ fn resolve_amount(
 
     if amount <= 0 {
         return Err(ApiError::Conflict {
-            message: format!(
-                "Payment intent {} has nothing left to refund.",
-                intent.id
-            ),
+            message: format!("Payment intent {} has nothing left to refund.", intent.id),
         });
     }
 
@@ -762,8 +751,8 @@ async fn refund_at_rail(
 ) -> Result<Refunded, ProviderError> {
     let currency = Currency::from_code(&row.currency_code)
         .map_err(|error| ProviderError::Config(error.to_string()))?;
-    let amount =
-        Money::new(row.amount, currency).map_err(|error| ProviderError::Config(error.to_string()))?;
+    let amount = Money::new(row.amount, currency)
+        .map_err(|error| ProviderError::Config(error.to_string()))?;
 
     let charge_ref = ChargeRef {
         // The REFUND's reference. See this function's docs.
@@ -902,7 +891,9 @@ async fn finish_refund(
                 .await?;
             fail_with_event(repositories, scope, target, &row, *code, message).await?;
         }
-        ProviderError::NotImplemented(_) | ProviderError::Unsupported | ProviderError::Config(_) => {
+        ProviderError::NotImplemented(_)
+        | ProviderError::Unsupported
+        | ProviderError::Config(_) => {
             repositories
                 .record_response(attempt, None, Some(error_kind(&error)))
                 .await?;
@@ -970,12 +961,7 @@ async fn fail_with_event(
             let refund_id = refund_id.clone();
             Box::pin(async move {
                 let failed = tx
-                    .fail_refund_in_tx(
-                        &refund_id,
-                        code.as_str(),
-                        &raw,
-                        OffsetDateTime::now_utc(),
-                    )
+                    .fail_refund_in_tx(&refund_id, code.as_str(), &raw, OffsetDateTime::now_utc())
                     .await?;
                 if failed.is_none() {
                     // Not `pending` any more: something else settled it
@@ -1130,8 +1116,7 @@ async fn update_once(
                     return Ok::<_, ApiError>(TxOutcome::Abandon(None));
                 };
 
-                let merged =
-                    crate::v1::invoices::merged_metadata(&locked.metadata, &sent)?;
+                let merged = crate::v1::invoices::merged_metadata(&locked.metadata, &sent)?;
                 let written = tx
                     .update_refund_metadata_in_tx(
                         scope.merchant_id(),
@@ -1300,7 +1285,8 @@ pub(crate) async fn list(
         payment_intent,
     };
 
-    let (rows, has_more) = Refunds::list_page(repositories.as_ref(), scope.merchant_id(), &page).await?;
+    let (rows, has_more) =
+        Refunds::list_page(repositories.as_ref(), scope.merchant_id(), &page).await?;
     let data = rows
         .iter()
         .map(RefundObject::try_from)
@@ -1457,7 +1443,7 @@ fn bounded(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use vpay_core::{Classify as _, ProviderFlow};
-    use vpay_provider::{AccountHolder, Capabilities, CallbackRef, ChargeStatus, ProviderConfig};
+    use vpay_provider::{AccountHolder, CallbackRef, Capabilities, ChargeStatus, ProviderConfig};
 
     /// The documentation payee every case here nominates — `basicuserinfo`'s
     /// registered-holder number, reused so the one number in these tests is
@@ -1693,8 +1679,13 @@ mod tests {
     /// to rely on: a `Required` rail is never called with `None`.
     #[test]
     fn a_required_rail_refuses_a_refund_with_no_destination() {
-        let error = resolve_destination(&required(), "required_rail", None, RefundDestination::Required)
-            .expect_err("a Required rail needs a payee");
+        let error = resolve_destination(
+            &required(),
+            "required_rail",
+            None,
+            RefundDestination::Required,
+        )
+        .expect_err("a Required rail needs a payee");
         assert_eq!(param_of(&error), DESTINATION_PARAM);
     }
 
@@ -1860,8 +1851,12 @@ mod tests {
     /// An `amount` that is not a whole number names `amount`, not `body`.
     #[test]
     fn a_non_numeric_amount_names_its_own_parameter() {
-        let error = resolve_amount(Some("25.00"), &intent(5000, 0, 0), required().capabilities())
-            .expect_err("minor units are integers");
+        let error = resolve_amount(
+            Some("25.00"),
+            &intent(5000, 0, 0),
+            required().capabilities(),
+        )
+        .expect_err("minor units are integers");
         assert_eq!(param_of(&error), "amount");
     }
 
@@ -1996,10 +1991,7 @@ mod tests {
         let error = validated_reason(Some(&"x".repeat(REASON_MAX_CHARS + 1)))
             .expect_err("the column bounds this");
         assert_eq!(param_of(&error), "reason");
-        assert_eq!(
-            validated_reason(Some("  ")).expect("blank is absent"),
-            None
-        );
+        assert_eq!(validated_reason(Some("  ")).expect("blank is absent"), None);
     }
 
     /// The two event types are the documented Stripe spellings, and both are

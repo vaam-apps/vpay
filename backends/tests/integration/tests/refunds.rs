@@ -784,7 +784,9 @@ async fn a_refund_is_created_pending_and_the_rail_is_instructed() -> anyhow::Res
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
 
-    let response = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    let response = harness
+        .create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE)
+        .await?;
     assert_eq!(response.status, 201, "{:#}", response.body);
 
     assert_eq!(
@@ -889,25 +891,30 @@ async fn two_partial_refunds_of_one_charge_carry_two_references() -> anyhow::Res
     .fetch_all(&harness.pool)
     .await
     .context("reading both refunds' references")?;
-    assert_eq!(references.len(), 2);
+    let [first_reference, second_reference] = references.as_slice() else {
+        panic!("two refunds were created, so there are two references: {references:?}");
+    };
     assert_ne!(
-        references[0], references[1],
+        first_reference, second_reference,
         "two refunds of one charge must not share a rail reference"
     );
 
-    let charge_reference: uuid::Uuid =
-        sqlx::query_scalar("SELECT provider_reference_id FROM charges WHERE payment_intent_id = $1")
-            .bind(&intent_id)
-            .fetch_one(&harness.pool)
-            .await
-            .context("reading the charge's reference")?;
+    let charge_reference: uuid::Uuid = sqlx::query_scalar(
+        "SELECT provider_reference_id FROM charges WHERE payment_intent_id = $1",
+    )
+    .bind(&intent_id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the charge's reference")?;
     for reference in &references {
         assert_ne!(
             *reference, charge_reference,
             "a refund must not be addressed by the charge's reference"
         );
         assert_eq!(
-            harness.transfers_with_reference(&reference.to_string()).await?,
+            harness
+                .transfers_with_reference(&reference.to_string())
+                .await?,
             1,
             "each refund reached the rail under its own reference"
         );
@@ -942,7 +949,9 @@ async fn a_created_refund_emits_charge_refunded_with_the_api_body() -> anyhow::R
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
 
-    let created = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    let created = harness
+        .create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE)
+        .await?;
     assert_eq!(created.status, 201, "{:#}", created.body);
     let refund_id = created.id();
 
@@ -1018,12 +1027,11 @@ async fn an_unbuilt_rail_refund_fails_and_releases_its_reservation() -> anyhow::
         "the reservation of a refund the rail never took must go back"
     );
 
-    let types: Vec<String> = sqlx::query_scalar(
-        "SELECT type FROM events WHERE object_id LIKE 're\\_%' ORDER BY seq",
-    )
-    .fetch_all(&harness.pool)
-    .await
-    .context("the refund's events")?;
+    let types: Vec<String> =
+        sqlx::query_scalar("SELECT type FROM events WHERE object_id LIKE 're\\_%' ORDER BY seq")
+            .fetch_all(&harness.pool)
+            .await
+            .context("the refund's events")?;
     assert_eq!(
         types,
         vec![
@@ -1084,11 +1092,17 @@ async fn a_missing_or_malformed_destination_is_the_callers_400() -> anyhow::Resu
         malformed.body
     );
     assert_eq!(
-        malformed.body.pointer("/error/param").and_then(Value::as_str),
+        malformed
+            .body
+            .pointer("/error/param")
+            .and_then(Value::as_str),
         Some("destination")
     );
     assert_eq!(
-        malformed.body.pointer("/error/type").and_then(Value::as_str),
+        malformed
+            .body
+            .pointer("/error/type")
+            .and_then(Value::as_str),
         Some("invalid_request_error"),
         "not `api_error`, which is what Category::Rail renders: {:#}",
         malformed.body
@@ -1130,7 +1144,10 @@ async fn a_payee_the_rail_does_not_know_is_refused_before_the_transfer() -> anyh
         .await?;
     assert_eq!(response.status, 400, "{:#}", response.body);
     assert_eq!(
-        response.body.pointer("/error/param").and_then(Value::as_str),
+        response
+            .body
+            .pointer("/error/param")
+            .and_then(Value::as_str),
         Some("destination")
     );
 
@@ -1220,7 +1237,10 @@ async fn an_update_merges_metadata_and_refuses_everything_else() -> anyhow::Resu
         .await?;
     assert_eq!(updated.status, 200, "{:#}", updated.body);
     assert_eq!(
-        updated.body.pointer("/metadata/order_id").and_then(Value::as_str),
+        updated
+            .body
+            .pointer("/metadata/order_id")
+            .and_then(Value::as_str),
         Some("5678"),
         "the sent key wins"
     );
@@ -1276,7 +1296,9 @@ async fn an_update_merges_metadata_and_refuses_everything_else() -> anyhow::Resu
 async fn a_pending_refund_cancels_once_and_gives_its_reservation_back() -> anyhow::Result<()> {
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
-    let created = harness.create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE).await?;
+    let created = harness
+        .create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE)
+        .await?;
     assert_eq!(created.status, 201, "{:#}", created.body);
     let refund_id = created.id();
 
@@ -1325,8 +1347,14 @@ async fn the_list_is_merchant_scoped_and_filterable_by_intent() -> anyhow::Resul
 
     let first_intent = harness.captured_intent(AMOUNT).await?;
     let second_intent = harness.captured_intent(AMOUNT).await?;
-    let first = harness.create_refund(&first_intent, Some(1000), PAYEE).await?.id();
-    let second = harness.create_refund(&second_intent, Some(1500), PAYEE).await?.id();
+    let first = harness
+        .create_refund(&first_intent, Some(1000), PAYEE)
+        .await?
+        .id();
+    let second = harness
+        .create_refund(&second_intent, Some(1500), PAYEE)
+        .await?
+        .id();
 
     // Merchant B's own refund, written straight to the table: this suite's
     // subject is A's view of the collection, and seeding B's row is what
@@ -1350,7 +1378,10 @@ async fn the_list_is_merchant_scoped_and_filterable_by_intent() -> anyhow::Resul
         page.body
     );
     assert!(!ids.contains(&hidden.as_str()));
-    assert_eq!(page.body.get("url").and_then(Value::as_str), Some("/v1/refunds"));
+    assert_eq!(
+        page.body.get("url").and_then(Value::as_str),
+        Some("/v1/refunds")
+    );
 
     let filtered = harness
         .get_json(&format!("/v1/refunds?payment_intent={first_intent}"))
@@ -1406,9 +1437,8 @@ async fn the_list_is_merchant_scoped_and_filterable_by_intent() -> anyhow::Resul
 async fn a_replayed_key_answers_the_stored_refund_and_creates_no_second() -> anyhow::Result<()> {
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
-    let body = format!(
-        "payment_intent={intent_id}&amount=1000&destination[{RAIL}][msisdn]={PAYEE}"
-    );
+    let body =
+        format!("payment_intent={intent_id}&amount=1000&destination[{RAIL}][msisdn]={PAYEE}");
     let key = "w3routes-one-refund-only";
 
     let first = harness.post_refund_form_with_key(&body, key).await?;
