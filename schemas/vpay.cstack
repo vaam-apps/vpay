@@ -786,9 +786,19 @@ model CheckoutSession {
 // started") — unlike provider_requests/webhooks/jobs above, there is real,
 // tested Rust code this half of the file mirrors, which is the line this
 // rewrite draws between "design sketch of a tested type" and "invented
-// shape for a concept nobody has written a struct for yet". No migration or
-// SQLx query in this repo writes to either table below; this is the
-// intended persistence shape, not evidence persistence exists.
+// shape for a concept nobody has written a struct for yet".
+//
+// **One SQLx query in this repo now writes both tables** —
+// `vpay_db::ledger::post_in_tx`, reached through
+// `TxRepositories::post_ledger_transaction_in_tx` (RFC-0003 § 4). This
+// paragraph said "No migration or SQLx query in this repo writes to either
+// table below" until then, and the half of that sentence which is still true
+// is the half worth keeping: **no shipping code path calls that writer**.
+// `Settlement::apply_succeeded` and `apply_refund_succeeded` do not post, so
+// every deployment's ledger is empty and this is still the intended
+// persistence shape rather than evidence a ledger is being kept. Neither
+// model is queried THROUGH CrateStack either; the writer is raw sqlx, for the
+// reason `model LedgerEntry.account` is a native enum.
 
 model LedgerTransaction {
   id Cuid @id @default(dbgenerated())
@@ -805,8 +815,16 @@ model LedgerTransaction {
   // LedgerEntry row sharing a transaction_id. Expressing it at the database
   // layer needs a trigger (not something .cstack generates) or, as today,
   // application enforcement — exactly what
-  // vpay_ledger::Transaction::validate() already does, tested by
+  // vpay_ledger::Transaction::validate() does, tested by
   // a_capture_with_a_fee_balances / an_unbalanced_transaction_is_rejected.
+  //
+  // The "per currency" clause of that sentence was NOT enforced until
+  // 2026-09-15: validate() summed minor units across every leg whatever
+  // currency it was in, so this comment overstated it for as long as no
+  // code wrote either table. It balances each currency on its own book now
+  // (a_mixed_currency_transaction_does_not_balance), which matters because
+  // vpay_db::ledger::post_in_tx is the first writer and this function is
+  // the only guard between it and a posting in two currencies.
 }
 
 model LedgerEntry {
@@ -818,16 +836,33 @@ model LedgerEntry {
   amount Int @range(min: 0) @db_enforce
   currency_code String
   currency Currency @relation(fields: [currency_code], references: [code])
-
-  // GAP — vpay_ledger::AccountKind has exactly 3 variants (MerchantPayable,
-  // PayerClearing, PlatformFeeRevenue) with no per-merchant dimension, and
-  // this table mirrors that Rust type exactly. But docs/flows/ledger.md
-  // invariant 2 is "per merchant: balance(merchant_payable) = Σ captures −
-  // Σ fees − Σ refunds" — a query this table cannot answer as modeled,
-  // because nothing here says *which* merchant a merchant_payable posting
-  // belongs to. That is a real gap in the Rust type this schema mirrors,
-  // not something to paper over by adding a merchant_id column the Rust
-  // side doesn't have.
+  // THE GAP THAT USED TO BE HERE IS CLOSED (RFC-0003 § 4, migration 0045).
+  // It read, in full:
+  //
+  //     GAP — vpay_ledger::AccountKind has exactly 3 variants
+  //     (MerchantPayable, PayerClearing, PlatformFeeRevenue) with no
+  //     per-merchant dimension ... That is a real gap in the Rust type this
+  //     schema mirrors, not something to paper over by adding a merchant_id
+  //     column the Rust side doesn't have.
+  //
+  // The Rust side has the dimension now:
+  // `AccountKind::MerchantPayable { merchant_id: String }`, with nothing on
+  // the other two variants. So this column is a mirror of a Rust field, which
+  // is the condition that note set, rather than the paper-over it refused.
+  //
+  // Nullable, because two of the three accounts have no merchant. What makes
+  // that not a hole is `ledger_entries_merchant_id_iff_merchant_payable`, a
+  // CHECK this file cannot express: it is MULTI-COLUMN
+  // (`(account = 'merchant_payable') = (merchant_id IS NOT NULL)`), and
+  // `cratestack migrate baseline` skips every multi-column CHECK in both
+  // directions — the same blindness the five `invoices` CHECKs have, and the
+  // reason `postgres_smoke.rs` writes both rows it refuses.
+  //
+  // No `@length` either, and that is deliberate rather than an oversight: the
+  // live `ledger_entries_merchant_id_length` is hand-named, and `@db_enforce`
+  // on a declared `@length` would emit a drop-and-add PAIR against it
+  // (exp17 §1a) — the trade every hand-named CHECK in this file already takes.
+  merchant_id String?
 }
 
 // --- operations ----------------------------------------------------------
