@@ -1285,22 +1285,37 @@ async fn an_update_merges_metadata_and_refuses_everything_else() -> anyhow::Resu
 
 // ----------------------------------------------------------------- test 12
 
-/// A `pending` refund cancels, gives its reservation back, and cannot be
-/// cancelled twice.
+/// A `pending` refund **no rail was ever given** cancels, gives its
+/// reservation back, and cannot be cancelled twice.
 ///
 /// The second cancel is a `409` because the statement's `AND status =
 /// 'pending'` refused it — the state machine is the `WHERE` clause, not a
 /// check beside it. Nothing is reversed in the ledger, because a `pending`
 /// refund posted nothing (`docs/flows/ledger.md` § "When refunds post").
+///
+/// # Why this case no longer creates its refund through `POST /v1/refunds`
+///
+/// Because that route hands the refund to a rail, and since 2026-09-16 such a
+/// refund is deliberately **not** cancellable — see
+/// `a_refund_the_rail_has_already_been_instructed_is_not_cancelable`, which is
+/// the money case this one used to contradict. Until then this case created
+/// its refund through the route, cancelled it while MTN's journal held its
+/// transfer, and asserted the `200`: it pinned the double-payout bug as the
+/// contract.
+///
+/// The state it builds instead is the one remaining state a cancel is honest
+/// in, and it is not invented — it is `docs/flows/crash-safety.md`'s first
+/// recovery row ("no `provider_requests` row: crashed before the POST"),
+/// written directly exactly as `worker_recovery.rs` writes a charge's three.
+/// Aged ninety seconds for the same reason that suite ages its fixtures: a
+/// row written a millisecond ago is indistinguishable from a create that is
+/// still running, and the statement refuses it.
 #[tokio::test]
 async fn a_pending_refund_cancels_once_and_gives_its_reservation_back() -> anyhow::Result<()> {
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent(AMOUNT).await?;
-    let created = harness
-        .create_refund(&intent_id, Some(REFUND_AMOUNT), PAYEE)
-        .await?;
-    assert_eq!(created.status, 201, "{:#}", created.body);
-    let refund_id = created.id();
+    let refund_id = harness.seed_crashed_create(&intent_id, REFUND_AMOUNT).await?;
+    harness.age_past_the_cancel_window(&refund_id).await?;
 
     let canceled = harness
         .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
@@ -1327,6 +1342,175 @@ async fn a_pending_refund_cancels_once_and_gives_its_reservation_back() -> anyho
         .fetch_one(&harness.pool)
         .await?;
     assert_eq!(ledger, 0, "a pending refund posted nothing to reverse");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- test 12b
+
+/// **A refund the rail has already been given cannot be canceled, and that is
+/// what stops a second transfer.**
+///
+/// The money case. `POST /v1/refunds` writes its `provider_requests` row
+/// before the transfer and nothing settles a refund (RFC-0003 open question
+/// 8), so every refund this route creates sits `pending` for ever with its
+/// instruction already accepted by MTN. A cancel of such a refund writes
+/// `canceled` — a promise that no money will move — and gives back the
+/// reservation `no_over_refund` is computed from.
+///
+/// Measured 2026-09-16 with the guard removed, which is also the mutation
+/// that must make this case fail: a 5 000 charge, one full refund accepted by
+/// the rail, `POST /v1/refunds/{id}/cancel` answering **200 `canceled`**,
+/// the reservation back to 0, and a second full refund accepted — **two**
+/// 5 000 transfers on WireMock's own journal against one 5 000 charge, with
+/// no error anywhere and the merchant told the first refund had been called
+/// off.
+///
+/// The decisive assertion is the last one, and it is the rail's journal
+/// rather than the database: the `409`, the held reservation and the
+/// still-`pending` row would all pass an implementation that refused the
+/// cancel and then let the second refund through some other way.
+#[tokio::test]
+async fn a_refund_the_rail_has_already_been_instructed_is_not_cancelable() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+
+    // The whole charge, so the only thing that can refuse a second refund is
+    // the reservation this one holds.
+    let created = harness.create_refund(&intent_id, None, PAYEE).await?;
+    assert_eq!(created.status, 201, "{:#}", created.body);
+    let refund_id = created.id();
+    assert_eq!(
+        harness.transfers_total().await?,
+        1,
+        "the rail was given the instruction, which is the premise of this case"
+    );
+
+    // **Aged past the cancel window, and the case is not decisive without
+    // it.** A refund created a moment ago is also refused by the "the create
+    // may still be running" predicate, so with this line missing the
+    // rail-instructed predicate can be deleted outright and all 18 cases stay
+    // green — measured 2026-09-16, and the diagnosis even reported the same
+    // sentence, because it reads "instructed" before "too young". Aged, the
+    // only predicate left that can refuse this refund is the one this case
+    // is named after.
+    harness.age_past_the_cancel_window(&refund_id).await?;
+
+    let canceled = harness
+        .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
+        .await?;
+    assert_eq!(
+        canceled.status, 409,
+        "a refund whose transfer is with the rail must not be cancelable: {:#}",
+        canceled.body
+    );
+    assert!(
+        canceled
+            .body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("already been given to the payment rail")),
+        "the refusal must say why, so a merchant reconciles instead of retrying: {:#}",
+        canceled.body
+    );
+
+    // The row and the reservation are exactly as they were.
+    let status: String = sqlx::query_scalar("SELECT status FROM refunds WHERE id = $1")
+        .bind(&refund_id)
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(status, "pending", "the refusal wrote nothing");
+    let (refunded, pending): (i64, i64) = sqlx::query_as(
+        "SELECT amount_refunded, amount_refund_pending FROM payment_intents WHERE id = $1",
+    )
+    .bind(&intent_id)
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(
+        (refunded, pending),
+        (0, AMOUNT),
+        "the reservation is still held, which is what refuses the second refund"
+    );
+
+    // And no `charge.refund.updated` was emitted for a transition that did
+    // not happen: the create's `charge.refunded` is the only event there is.
+    let events: Vec<String> = sqlx::query_scalar("SELECT type FROM events WHERE object_id = $1")
+        .bind(&refund_id)
+        .fetch_all(&harness.pool)
+        .await?;
+    assert_eq!(events, vec!["charge.refunded".to_owned()]);
+
+    // The merchant tries again anyway. This is the sequence that pays a payee
+    // twice, and the reservation is what stops it.
+    let second = harness.create_refund(&intent_id, None, PAYEE).await?;
+    assert_eq!(
+        second.status, 409,
+        "the whole charge is already reserved by the pending refund: {:#}",
+        second.body
+    );
+    assert_eq!(
+        harness.transfers_total().await?,
+        1,
+        "one refund instructed, one transfer at the rail — a second here is a payee paid twice"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- test 12c
+
+/// A refund young enough that its create may still be running is not canceled
+/// either.
+///
+/// The attempt row is committed by a statement of its own, after the
+/// transaction that writes the refund, so there is a window in which a
+/// committed `pending` refund carries no attempt row and is nonetheless about
+/// to be sent to a rail. Cancel it in that window and the transfer goes out
+/// against a `canceled` refund whose reservation has been handed back — the
+/// same double payout by a narrower door.
+///
+/// `docs/flows/crash-safety.md`'s own answer to the identical ambiguity on a
+/// `submitting` charge, applied here: younger than the window, nothing on
+/// disk distinguishes a create that crashed from one that is still going, so
+/// the answer is wait rather than act. The fixture is the crashed-create
+/// state **unaged**, which is exactly how `worker_recovery.rs`'s fourth and
+/// fifth cases are built.
+#[tokio::test]
+async fn a_refund_whose_create_may_still_be_running_is_not_canceled_yet() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent(AMOUNT).await?;
+    let refund_id = harness.seed_crashed_create(&intent_id, REFUND_AMOUNT).await?;
+
+    let canceled = harness
+        .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
+        .await?;
+    assert_eq!(canceled.status, 409, "{:#}", canceled.body);
+    assert!(
+        canceled
+            .body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("may still be on its way")),
+        "{:#}",
+        canceled.body
+    );
+
+    let pending: i64 =
+        sqlx::query_scalar("SELECT amount_refund_pending FROM payment_intents WHERE id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await?;
+    assert_eq!(pending, REFUND_AMOUNT, "nothing was released");
+
+    // Aged past the window, the same request is the `200` the case above
+    // asserts — so what this pins is the window and not a second refusal.
+    harness.age_past_the_cancel_window(&refund_id).await?;
+    let later = harness
+        .post_form(&format!("/v1/refunds/{refund_id}/cancel"), "")
+        .await?;
+    assert_eq!(later.status, 200, "{:#}", later.body);
 
     harness.shutdown().await;
     Ok(())
@@ -1696,6 +1880,77 @@ impl RailHarness {
         .execute(&self.pool)
         .await
         .context("seeding the charge a refund comes off")?;
+        Ok(())
+    }
+
+    /// The state a create leaves when it dies between committing the refund
+    /// and recording the attempt it is about to make: a `pending` refund with
+    /// its amount reserved, a `provider_reference_id` of its own, and **no
+    /// `provider_requests` row**.
+    ///
+    /// `docs/flows/crash-safety.md`'s first recovery row, for a refund. It is
+    /// written directly rather than caused, exactly as `worker_recovery.rs`
+    /// writes a charge's three kill points, and for that suite's stated
+    /// reason: the moment being staged is the one *before* any network call,
+    /// so there is nothing for a signal to land during.
+    ///
+    /// The reservation is taken by the same `UPDATE` shape the create path
+    /// uses, so `no_over_refund` governs this row as it governs a real one —
+    /// a fixture that skipped it would be a refund the intent does not know
+    /// about, which is not the state under test.
+    async fn seed_crashed_create(&self, intent_id: &str, amount: i64) -> anyhow::Result<String> {
+        let id = vpay_core::ids::refund_id();
+        sqlx::query(
+            "UPDATE payment_intents \
+             SET amount_refund_pending = amount_refund_pending + $2 WHERE id = $1",
+        )
+        .bind(intent_id)
+        .bind(amount)
+        .execute(&self.pool)
+        .await
+        .context("reserving the crashed create's amount")?;
+
+        sqlx::query(
+            "INSERT INTO refunds \
+                 (id, payment_intent_id, charge_id, amount, currency_code, status, metadata, \
+                  provider_reference_id) \
+             VALUES ($1, $2, (SELECT id FROM charges WHERE payment_intent_id = $2), $3, 'XAF', \
+                     'pending', '{}'::jsonb, $4)",
+        )
+        .bind(&id)
+        .bind(intent_id)
+        .bind(amount)
+        .bind(uuid::Uuid::new_v4())
+        .execute(&self.pool)
+        .await
+        .context("seeding the refund a crashed create left behind")?;
+        Ok(id)
+    }
+
+    /// Moves a seeded refund ninety seconds into the past.
+    ///
+    /// `worker_recovery.rs`'s `support::age_the_crash`, spelled for this
+    /// table: the cancel statement refuses a refund younger than its window,
+    /// because a young refund with no attempt row is indistinguishable from a
+    /// create that is still running.
+    ///
+    /// Every case that is about some *other* cancel predicate must age its
+    /// refund first, or it measures this window instead of the rule it names.
+    /// Measured 2026-09-16: with
+    /// `a_refund_the_rail_has_already_been_instructed_is_not_cancelable`
+    /// leaving its refund young, deleting the rail-instructed predicate
+    /// altogether left all 18 cases green — the age predicate was answering
+    /// the same `409` and even the same message, because the diagnosis reads
+    /// "instructed" before "too young".
+    async fn age_past_the_cancel_window(&self, refund_id: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE refunds SET created_at = now() - interval '90 seconds' \
+             WHERE id = $1 AND status = 'pending'",
+        )
+        .bind(refund_id)
+        .execute(&self.pool)
+        .await
+        .context("aging the crashed create")?;
         Ok(())
     }
 

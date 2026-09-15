@@ -333,12 +333,19 @@ pub trait Refunds: Send + Sync {
         new: &NewRefund,
     ) -> Result<Option<RefundRow>, DbError>;
 
-    /// Cancels a refund that is still `pending` and gives its reservation
-    /// back, in one transaction (RFC-0003 § 2).
+    /// Cancels a refund that is still `pending` **and that no rail has been
+    /// instructed for**, and gives its reservation back, in one transaction
+    /// (RFC-0003 § 2).
     ///
     /// Returns the canceled row, or `Ok(None)` for a refund that is not this
-    /// merchant's or is no longer `pending` — the same fold
-    /// [`Refunds::create`] makes, and for the same reason.
+    /// merchant's, is no longer `pending`, or is one of the two
+    /// [`CancelRefusal`]s that mean a transfer may already be on its way —
+    /// the same fold [`Refunds::create`] makes, and for the same reason.
+    /// [`cancel_in_tx`] is where the second half of that rule lives and why.
+    /// A caller that needs to tell the refusals apart — every merchant-facing
+    /// one does — goes through
+    /// [`crate::TxRepositories::cancel_refund_in_tx`], which answers a
+    /// [`CancelOutcome`].
     ///
     /// # Nothing is reversed, because nothing was posted
     ///
@@ -607,9 +614,49 @@ async fn insert_in_tx(
 /// scope is the same join through `payment_intents`, because `refunds` still
 /// carries no `merchant_id` of its own.
 ///
-/// `Ok(None)` folds "not yours", "no such refund" and "no longer pending"
-/// into one answer, which is what stops a caller learning that another
-/// tenant's refund exists.
+/// `Ok(None)` folds "not yours", "no such refund", "no longer pending" and
+/// both halves of [`CancelRefusal`] into one answer, which is what stops a
+/// caller learning that another tenant's refund exists.
+/// [`diagnose_cancel_refusal`] tells them apart afterwards, and is a
+/// *diagnosis of a refusal that has already happened* rather than the thing
+/// that decides the write.
+///
+/// # A refund the rail has already been given is **not** cancellable
+///
+/// `NOT EXISTS (… provider_requests … operation = 'refund')` is the second
+/// half of the state machine and is in the `WHERE` clause for the first
+/// half's reason. `provider_requests` is written **before** the transfer is
+/// sent (`crate::provider_requests`, `docs/flows/crash-safety.md`), so a row
+/// under this refund's own `provider_reference_id` is the durable record that
+/// a rail may already be moving money. Cancelling such a refund would write
+/// `canceled` — a promise that no money will move — release the reservation
+/// that `no_over_refund` is computed from, and leave the merchant free to
+/// refund the same amount again. Measured on 2026-09-16 before this predicate
+/// existed: one 5 000 charge, a full refund accepted by MTN, a `200 canceled`,
+/// and a second full refund that put **two** transfers of 5 000 on the rail's
+/// journal. `a_refund_the_rail_has_already_been_instructed_is_not_cancelable`
+/// is the case, and deleting this predicate is what makes it fail.
+///
+/// This is the same asymmetry `vpay_api::v1::refunds::finish_refund` already
+/// draws for a rail error — release only where the rail provably never took
+/// the instruction — applied to the one path that had not been given it.
+///
+/// # And neither is one whose create may still be running
+///
+/// The attempt row is committed by a statement of its own, *after* the
+/// transaction that writes the refund. So there is a window — between that
+/// commit and that insert — in which a committed `pending` refund carries no
+/// attempt row and is nonetheless about to be sent to a rail. The age
+/// predicate is what closes it, and it is
+/// `docs/flows/crash-safety.md`'s own answer to the identical ambiguity on a
+/// `submitting` charge ("Charge younger than 60 s — a confirm may still be
+/// running — **Wait**"): younger than the window, nothing on disk
+/// distinguishes a create that crashed from one that is still going.
+///
+/// `now()` rather than the `$3` this statement stamps `updated_at` with,
+/// because that page requires the age to be measured by Postgres at both
+/// ends — a window computed from the caller's clock is a window a fast host
+/// does not have.
 ///
 /// # Errors
 ///
@@ -630,6 +677,10 @@ async fn cancel_in_tx(
          WHERE r.id = $2 AND r.status = 'pending' \
            AND EXISTS (SELECT 1 FROM payment_intents p \
                        WHERE p.id = r.payment_intent_id AND p.merchant_id = $1) \
+           AND NOT EXISTS (SELECT 1 FROM provider_requests q \
+                           WHERE q.provider_reference_id = r.provider_reference_id \
+                             AND q.operation = 'refund') \
+           AND r.created_at < now() - make_interval(secs => $4) \
          RETURNING {COLUMNS}"
     );
 
@@ -637,9 +688,107 @@ async fn cancel_in_tx(
         .bind(merchant_id)
         .bind(refund_id)
         .bind(now)
+        .bind(CREATE_IN_FLIGHT_WINDOW_SECONDS)
         .fetch_optional(&mut *conn)
         .await
         .map_err(crate::error::classify_write)
+}
+
+/// How old a `pending` refund with no attempt row must be before its missing
+/// attempt row may be read as "the create never reached the rail", in
+/// seconds.
+///
+/// Sixty, which is `docs/flows/crash-safety.md`'s `not_found_window` for a
+/// `submitting` charge, transcribed rather than shared: that constant lives
+/// in `vpay_worker::RecoveryPolicy`, which this crate does not and should not
+/// depend on. The number is the same because the ambiguity is the same one —
+/// a row that a live operation and a crashed one both leave behind — and not
+/// because anything reads it from there.
+const CREATE_IN_FLIGHT_WINDOW_SECONDS: f64 = 60.0;
+
+/// Why a cancel did not fire.
+///
+/// The statement folds every refusal into "no row", for the tenancy reason
+/// [`cancel_in_tx`] gives. This is the read that tells them apart **after**
+/// the fact, so the merchant gets a sentence they can act on instead of one
+/// `409` that means four different things. It never decides a write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelRefusal {
+    /// This merchant has no such refund — a missing id and another tenant's
+    /// id, folded, exactly as [`Refunds::get_for_merchant`] folds them.
+    NoSuchRefund,
+    /// It exists and is not `pending`; the status it is in, for the message.
+    NotPending(String),
+    /// It is `pending` and vpay has already handed a rail the instruction to
+    /// move this money. See [`cancel_in_tx`].
+    RailInstructed,
+    /// It is `pending`, no instruction is recorded, and it is young enough
+    /// that the create which would record one may still be running.
+    CreateMayStillBeRunning,
+}
+
+/// A cancel's two outcomes.
+///
+/// An enum rather than `Option<RefundRow>` because the refusals are not one
+/// answer: `404`, `409 not pending`, and `409 the rail already has it` are
+/// three different things for a merchant to do next, and the third is the one
+/// this type exists for.
+#[derive(Debug)]
+pub enum CancelOutcome {
+    /// It fired; the row as the database now holds it.
+    Canceled(Box<RefundRow>),
+    /// It did not, and why.
+    Refused(CancelRefusal),
+}
+
+/// Reads why [`cancel_in_tx`] matched no row, inside the same transaction.
+///
+/// Inside it on purpose: a diagnosis read on a pooled connection could see a
+/// state later than the one the statement refused, and would then explain a
+/// refusal that did not happen.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+async fn diagnose_cancel_refusal(
+    conn: &mut sqlx::PgConnection,
+    merchant_id: &str,
+    refund_id: &str,
+) -> Result<CancelRefusal, DbError> {
+    let found: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT r.status, \
+                EXISTS (SELECT 1 FROM provider_requests q \
+                        WHERE q.provider_reference_id = r.provider_reference_id \
+                          AND q.operation = 'refund'), \
+                r.created_at < now() - make_interval(secs => $3) \
+         FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id \
+         WHERE r.id = $2 AND p.merchant_id = $1",
+    )
+    .bind(merchant_id)
+    .bind(refund_id)
+    .bind(CREATE_IN_FLIGHT_WINDOW_SECONDS)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(DbError::Query)?;
+
+    let Some((status, instructed, old_enough)) = found else {
+        return Ok(CancelRefusal::NoSuchRefund);
+    };
+    if status != "pending" {
+        return Ok(CancelRefusal::NotPending(status));
+    }
+    if instructed {
+        return Ok(CancelRefusal::RailInstructed);
+    }
+    if !old_enough {
+        return Ok(CancelRefusal::CreateMayStillBeRunning);
+    }
+    // Every predicate the statement carries now holds, so the refusal was a
+    // race this transaction can no longer see: something moved the row
+    // between the `UPDATE` and this read. `NotPending` is the honest answer —
+    // it is what was true at the moment of the refusal.
+    Ok(CancelRefusal::NotPending(status))
 }
 
 /// Reserves the refund's amount against the intent and inserts the `pending`
@@ -742,9 +891,10 @@ pub(crate) async fn cancel_and_release_in_tx(
     merchant_id: &str,
     id: &str,
     now: OffsetDateTime,
-) -> Result<Option<RefundRow>, DbError> {
+) -> Result<CancelOutcome, DbError> {
     let Some(row) = cancel_in_tx(&mut *conn, merchant_id, id, now).await? else {
-        return Ok(None);
+        let refusal = diagnose_cancel_refusal(&mut *conn, merchant_id, id).await?;
+        return Ok(CancelOutcome::Refused(refusal));
     };
 
     // The reservation goes back. `Ok(None)` here is not a lost race — the
@@ -768,7 +918,7 @@ pub(crate) async fn cancel_and_release_in_tx(
          nothing was reversed"
     );
 
-    Ok(Some(row))
+    Ok(CancelOutcome::Canceled(Box::new(row)))
 }
 
 /// Reads one refund of this merchant's and **holds its row lock** for the
@@ -886,14 +1036,16 @@ impl Refunds for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let now = OffsetDateTime::now_utc();
 
-        let Some(row) = cancel_and_release_in_tx(&mut tx, merchant_id, id, now).await? else {
+        let CancelOutcome::Canceled(row) = cancel_and_release_in_tx(&mut tx, merchant_id, id, now)
+            .await?
+        else {
             tx.rollback().await.map_err(DbError::Query)?;
             return Ok(None);
         };
 
         tx.commit().await.map_err(DbError::Query)?;
 
-        Ok(Some(row))
+        Ok(Some(*row))
     }
 
     async fn get_for_merchant(

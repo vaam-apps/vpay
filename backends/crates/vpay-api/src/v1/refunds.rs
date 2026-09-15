@@ -86,8 +86,8 @@ use uuid::Uuid;
 
 use vpay_core::{Currency, Money, ids};
 use vpay_db::{
-    ChargeRow, NewRefund, PaymentIntents, RefundListPage, RefundRow, Refunds, Repositories,
-    ResponseSubject, TxOutcome, UnitOfWork as _,
+    CancelOutcome, CancelRefusal, ChargeRow, NewRefund, PaymentIntents, RefundListPage, RefundRow,
+    Refunds, Repositories, ResponseSubject, TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{
     ChargeRef, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
@@ -1184,10 +1184,38 @@ async fn update_once(
 /// *diagnosis* — it is what tells a `404` from a `409` — and never what
 /// decides the write.
 ///
+/// # A refund the rail already has is **not** cancellable, and that is the
+/// money rule
+///
+/// The same statement carries `NOT EXISTS (… provider_requests … 'refund')`,
+/// so a refund whose transfer has been handed to a rail is refused. Without
+/// it, `canceled` is a promise vpay cannot keep: nothing settles a refund
+/// (RFC-0003 open question 8), so **every** refund this route creates sits
+/// `pending` forever with its transfer already accepted, and a cancel would
+/// release the reservation `no_over_refund` is computed from and let the
+/// merchant refund the same money again. Measured 2026-09-16 before the
+/// predicate existed: a 5 000 charge, one full refund MTN accepted, a `200
+/// canceled`, and a second full refund — **two** 5 000 transfers on the
+/// rail's own journal. `vpay_db::refunds::cancel_in_tx` carries the rule;
+/// `a_refund_the_rail_has_already_been_instructed_is_not_cancelable` is the
+/// case.
+///
+/// What that costs, stated rather than hidden: **no refund this route creates
+/// is cancellable.** The attempt row is written before the rail call, so by
+/// the time a merchant holds the `re_…` there is one. The route's remaining
+/// subject is the refund whose create died between committing the row and
+/// recording the attempt — `docs/flows/crash-safety.md`'s "no
+/// `provider_requests` row: crashed before the POST" — and a merchant with a
+/// stuck `pending` refund reconciles it against the rail by its
+/// `provider_reference_id` rather than cancelling it. That is worse for a
+/// merchant than a `200` and it is the only true answer available until a
+/// refund poll ladder exists.
+///
 /// # Errors
 ///
 /// `404` for a refund this merchant has none of; `409` for one that is no
-/// longer `pending`; everything the claim can answer.
+/// longer `pending`, one a rail has already been given, and one whose create
+/// may still be running; everything the claim can answer.
 pub(crate) async fn cancel(
     State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
@@ -1225,47 +1253,34 @@ async fn cancel_once(
         .ok_or_else(|| not_found(id))?;
     let intent = owning_intent(repositories, scope, &row).await?;
 
-    let canceled: TxOutcome<Option<RefundRow>> = repositories
+    let canceled: TxOutcome<Result<RefundRow, CancelRefusal>> = repositories
         .transaction(|tx| {
             Box::pin(async move {
-                let Some(canceled) = tx
+                let canceled = match tx
                     .cancel_refund_in_tx(scope.merchant_id(), id, OffsetDateTime::now_utc())
                     .await?
-                else {
-                    return Ok::<_, ApiError>(TxOutcome::Abandon(None));
+                {
+                    CancelOutcome::Canceled(row) => *row,
+                    // The refusal was diagnosed inside this transaction, so
+                    // it describes the state the statement actually refused
+                    // rather than one a later pooled read might find. Nothing
+                    // is written and no event is emitted.
+                    CancelOutcome::Refused(refusal) => {
+                        return Ok::<_, ApiError>(TxOutcome::Abandon(Err(refusal)));
+                    }
                 };
 
                 tx.insert_in_tx(&refund_event(EVENT_REFUND_UPDATED, &intent, &canceled)?)
                     .await?;
 
-                Ok::<_, ApiError>(TxOutcome::Commit(Some(canceled)))
+                Ok::<_, ApiError>(TxOutcome::Commit(Ok(canceled)))
             })
         })
         .await?;
 
-    let Some(canceled) = canceled.into_inner() else {
-        // The read at the top found the refund and found it this merchant's,
-        // so the statement's only other guard is the one that refused: it is
-        // no longer `pending`. **Re-read to say which status**, rather than
-        // naming the one the first read saw — in the race this message is
-        // about, the first read saw `pending` and printing it would produce
-        // "can only be canceled while `pending`; this one is `pending`",
-        // which is the one sentence a merchant cannot act on. A row that has
-        // vanished between the two is the `404` the second read gives.
-        //
-        // This read is a *diagnosis of a refusal that has already happened*
-        // and is never what decides the write — `vpay_db::Invoices::update_draft`'s
-        // rule, and the reason the guard is in the statement.
-        let now = lookup(repositories, scope.merchant_id(), id)
-            .await?
-            .ok_or_else(|| not_found(id))?;
-        return Err(ApiError::Conflict {
-            message: format!(
-                "A refund can only be canceled while its status is `pending`; this one is \
-                 `{}`.",
-                now.status
-            ),
-        });
+    let canceled = match canceled.into_inner() {
+        Ok(canceled) => canceled,
+        Err(refusal) => return Err(cancel_refused(id, &refusal)),
     };
 
     json_response(StatusCode::OK, &RefundObject::try_from(&canceled)?)
@@ -1446,6 +1461,45 @@ fn refund_event(
         object_id: row.id.clone(),
         data,
     })
+}
+
+/// The merchant's answer for each way a cancel can be refused.
+///
+/// One function so the four refusals cannot be spelled differently by a
+/// future caller, and so the two that are the money guard say what a merchant
+/// should do instead of cancelling — which is the whole value of telling them
+/// apart at all.
+///
+/// [`vpay_db::CancelRefusal::RailInstructed`]'s sentence does **not** say the
+/// refund succeeded, because vpay does not know that: `Refunded` carries no
+/// status and there is no refund status read (RFC-0003 open question 8). It
+/// says the instruction is with the rail, which is the strongest true claim,
+/// and it names the reference an operator reconciles by — the one on the
+/// object the merchant already holds.
+fn cancel_refused(id: &str, refusal: &CancelRefusal) -> ApiError {
+    match refusal {
+        CancelRefusal::NoSuchRefund => not_found(id),
+        CancelRefusal::NotPending(status) => ApiError::Conflict {
+            message: format!(
+                "A refund can only be canceled while its status is `pending`; this one is \
+                 `{status}`."
+            ),
+        },
+        CancelRefusal::RailInstructed => ApiError::Conflict {
+            message:
+                "This refund has already been given to the payment rail, so it cannot be \
+                 canceled: canceling it would promise that no money will move when it may \
+                 already have. Reconcile it with the rail against the refund's \
+                 `provider_reference_id`."
+                    .to_owned(),
+        },
+        CancelRefusal::CreateMayStillBeRunning => ApiError::Conflict {
+            message:
+                "This refund was created moments ago and may still be on its way to the \
+                 payment rail, so it cannot be canceled yet. Retrieve it again in a minute."
+                    .to_owned(),
+        },
+    }
 }
 
 /// The one `404` this module produces, so the envelope cannot be built two

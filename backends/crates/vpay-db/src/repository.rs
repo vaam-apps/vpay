@@ -583,13 +583,19 @@ pub trait TxRepositories: Send {
         new: &crate::NewRefund,
     ) -> Result<Option<crate::RefundRow>, DbError>;
 
-    /// `refunds` + `payment_intents`: cancels a `pending` refund and releases
-    /// its reservation.
+    /// `refunds` + `payment_intents`: cancels a `pending` refund **no rail
+    /// has been instructed for** and releases its reservation.
     ///
     /// [`TxRepositories::create_refund_in_tx`]'s twin, transactional for its
     /// reason: `charge.refund.updated` commits with it.
     ///
-    /// `Ok(None)` means not yours, no such refund, or no longer `pending`.
+    /// [`crate::CancelOutcome::Refused`] carries which of the four refusals
+    /// fired, read inside the same transaction. Two of them —
+    /// [`crate::CancelRefusal::RailInstructed`] and
+    /// [`crate::CancelRefusal::CreateMayStillBeRunning`] — are the money
+    /// guard: cancelling a refund a rail may already be paying writes a
+    /// promise vpay cannot keep and hands the reservation back, which is a
+    /// double payout. `crate::refunds::cancel_in_tx` carries the measurement.
     ///
     /// # Errors
     ///
@@ -601,7 +607,7 @@ pub trait TxRepositories: Send {
         merchant_id: &str,
         id: &str,
         now: time::OffsetDateTime,
-    ) -> Result<Option<crate::RefundRow>, DbError>;
+    ) -> Result<crate::CancelOutcome, DbError>;
 
     /// `refunds`: reads one refund of this merchant's and **holds its row
     /// lock** for the rest of the transaction.
@@ -840,7 +846,7 @@ impl TxRepositories for PendingTransaction {
         merchant_id: &str,
         id: &str,
         now: time::OffsetDateTime,
-    ) -> Result<Option<crate::RefundRow>, DbError> {
+    ) -> Result<crate::CancelOutcome, DbError> {
         crate::refunds::cancel_and_release_in_tx(self.conn(), merchant_id, id, now).await
     }
 
