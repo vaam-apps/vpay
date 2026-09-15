@@ -42,28 +42,42 @@ ignore it.
 ## Capabilities
 
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
-`requires_ip_allowlist`, `supports_account_holder_lookup`.
+`requires_ip_allowlist`, `supports_account_holder_lookup`,
+`refund_destination`.
 
-| Capability                       | `mtn_momo` | `orange_money` | What the core does with it                                                                                                                                        |
-| -------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flow`                           | `Push`     | `Redirect`     | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url`                                                 |
-| `supports_refunds`               | `true`     | `false`        | refuses a refund on a rail with no refund API, with no rail-specific branch                                                                                       |
-| `supports_partial_refunds`       | `true`     | `false`        | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too                                                                                    |
-| `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                           |
-| `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                             |
-| `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47) |
+| Capability                       | `mtn_momo` | `orange_money` | What the core does with it                                                                                                                                                                                                            |
+| -------------------------------- | ---------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flow`                           | `Push`     | `Redirect`     | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url`                                                                                                                     |
+| `supports_refunds`               | `true`     | `false`        | refuses a refund on a rail with no refund API, with no rail-specific branch                                                                                                                                                           |
+| `supports_partial_refunds`       | `true`     | `false`        | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too                                                                                                                                                        |
+| `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                                                                                               |
+| `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                                                                                                 |
+| `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47)                                                                     |
+| `refund_destination`             | `Required` | `Required`     | whether a refund needs an explicit payee. **Declared only; no core code reads it yet** — the `POST /v1/refunds` that will is Wave 3 of [RFC-0003](../rfc/0003-refunds-destinations-and-the-first-ledger-postings.md) and is not built |
 
 `orange_money` declares `supports_refunds: false`, and that flag — not a
 rail-specific branch — is what makes the core refuse a refund on that rail. The
 capability system earns its keep on day one.
 
-**The last row is the newest and the only one that is not persisted.** The
-five above it are columns on `providers` (migration `0002`), seeded at boot
-from the adapter's own declaration;
-`supports_account_holder_lookup` has no column and no `ProviderSeed` field,
-because nothing reads a capability _out of_ that table — `vpay_api` resolves
-an adapter in-process and asks it — so a column would be a second copy of an
-answer the linked code already owns. The flow doc records the decision.
+**The last two rows are the newest and the only ones that are not
+persisted.** The five above them are columns on `providers` (migration
+`0002`), seeded at boot from the adapter's own declaration;
+`supports_account_holder_lookup` and `refund_destination` have no column and
+no `ProviderSeed` field, because nothing reads a capability _out of_ that
+table — `vpay_api` resolves an adapter in-process and asks it — so a column
+would be a second copy of an answer the linked code already owns. The flow
+doc records the decision.
+
+`refund_destination` is also the only capability with **no coherence rule**,
+and that is deliberate rather than an omission. `orange_money` declares
+`Required` while `supports_refunds` is still `false` — the rail's refunds are
+outbound transfers, and it is vpay that has not built them (RFC-0003 § 5) — so
+the obvious rule "a rail that cannot refund declares `Origin`" would force a
+live declaration to lie. And there is nothing to mirror a Rust-only rule with:
+`Capabilities::is_coherent` is one half of a pair whose other half is a CHECK
+on `providers`, which this field has no column in.
+`a_refund_destination_is_inert_to_coherence` in `vpay-provider` pins the
+decision and says what would have to change first.
 
 **A rail that _has_ the API but has not written the call declares `true`
 anyway**, and overrides the port method with its own
@@ -127,6 +141,46 @@ means making this pass — not writing a new suite.** That is the real test of
 whether this is a port or just a folder.
 
 ## Status
+
+**Updated 2026-09-15 (RFC-0003 wave 1): the port can express a refund
+destination, and nothing calls it yet.**
+
+- `Capabilities` gained `refund_destination: RefundDestination`
+  (`Origin` | `Required`), and `ProviderAdapter::refund` gained
+  `destination: Option<&RefundTarget>` between `amount` and `config`. The
+  default body is still `ProviderError::Unsupported` and `mtn_momo::refund`
+  is still its `NotImplemented` token — **no refund got closer to working**;
+  what changed is that "does this rail need a payee?" is now a capability the
+  core will branch on instead of a rail code (ADR-0002).
+- Both rails declare `Required`. On `orange_money` that sits beside
+  `supports_refunds: false` on purpose — see the Capabilities section above.
+- `RefundTarget` carries a canonical MSISDN, keeps it private behind
+  `msisdn()`, and its `Debug` renders `[redacted]`: a payee's number is the
+  data RFC-0003 refused to put in `metadata`, and its retention is that
+  RFC's open question 2, undecided.
+- **Not built by this change:** `POST /v1/refunds` (wave 3), any MTN
+  Disbursements call (RFC-0003 § 5), any Orange transfer call, any ledger
+  posting. The core does not yet check a destination against this capability,
+  because there is no core path that creates a refund at all.
+- **Three claims on this page are time-limited, and only one of them has a
+  test.** `orange_money`'s `false` in the `supports_refunds` row, and the
+  paragraph under the table that reads that `false` as the capability system
+  earning its keep, both stop being true when RFC-0003 § 5 flips the flag; the
+  `refund_destination` row's "no core code reads it yet" stops being true when
+  § 2's `POST /v1/refunds` lands. The one guard is
+  `a_refund_on_this_rail_would_need_a_payee` in `vpay-adapter-orange-money`,
+  whose failure message names this page. Nothing guards the third — the arm
+  that builds the route has to come back here.
+- **The destination is proven to survive the decorator.** `Measured` is what
+  `vpay_api::v1::boot::adapters_by_code` wraps every shipping adapter in, and
+  until the correctness review of the same day nothing observed what it
+  forwarded: dropping the destination there left 199 tests green, because no
+  adapter reads the argument yet.
+  `the_destination_reaches_the_inner_adapter_and_never_a_metric` is what fails
+  now, and it also asserts the payee's number reaches no metric label. The
+  conformance suite asserts the other half — a payee is supplied exactly when
+  the rail declares `Required`, read off the adapter's own capability. See
+  [verification/2026-09-15-refunds-w1-provider-port.md](../status/verification/2026-09-15-refunds-w1-provider-port.md).
 
 **Updated 2026-09-06 (review of exp20): "Adding a rail" steps 2 and 3 above
 were both wrong about where a rail is written down.** Step 2 said `INSERT INTO

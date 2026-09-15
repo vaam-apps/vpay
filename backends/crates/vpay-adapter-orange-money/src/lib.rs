@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vpay_core::{FailureCode, ProviderFlow};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, Submitted,
+    ProviderError, RefExtra, RefundDestination, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -97,8 +97,11 @@ impl Adapter {
     /// // returns a hosted-page URL and a `pay_token` the core must commit
     /// // before that URL reaches anyone.
     /// assert_eq!(adapter.capabilities().flow, ProviderFlow::Redirect);
-    /// // Orange documents no refund API for Web Payment, so the port's
-    /// // default `Unsupported` is the permanent, correct answer.
+    /// // Still `false`, but no longer because the rail cannot: the
+    /// // maintainer decided on 2026-09-15 that an Orange refund *is* an
+    /// // outbound transfer, so this flag is now a statement about what vpay
+    /// // has built, and RFC-0003 § 5 says what it owes before it moves.
+    /// // `capabilities()` below carries the whole account.
     /// assert!(!adapter.capabilities().supports_refunds);
     /// ```
     #[must_use]
@@ -340,6 +343,23 @@ impl ProviderAdapter for Adapter {
             // `docs/flows/adapter-orange-money.md`'s "to confirm" list, not
             // in a `true` nobody can honour (issue #47).
             supports_account_holder_lookup: false,
+            // `Required`, while `supports_refunds` immediately above is still
+            // `false`, and the two are not in conflict. An Orange refund *is*
+            // an outbound transfer to a payee — there is no "back the way it
+            // came" on a redirect rail where `payer_ref` is `None` and vpay
+            // never learns who paid — so `Required` is the truth about the
+            // rail's refund product. `supports_refunds: false` is the truth
+            // about *this repository*: no Orange transfer API is documented
+            // here, not even reconstructed, so writing one would be inventing
+            // an endpoint in the money path (RFC-0003 § 5, maintainer
+            // decision of 2026-09-15).
+            //
+            // The value is inert until that flag flips, and it is declared
+            // truthfully now so that the flip is one line about refunds and
+            // not also a new guess about destinations.
+            // `Capabilities::is_coherent` records why this pair is
+            // deliberately not a coherence violation.
+            refund_destination: RefundDestination::Required,
         }
     }
 
@@ -813,6 +833,35 @@ mod tests {
     #[test]
     fn capabilities_are_coherent() {
         assert!(adapter().capabilities().is_coherent());
+    }
+
+    /// The declaration RFC-0003 § 5's `supports_refunds` flip will land on
+    /// top of: an Orange refund is a transfer to a payee, so the core must
+    /// demand a destination the moment refunds are switched on, and must
+    /// demand it on this value rather than on the string `"orange_money"`
+    /// (ADR-0002).
+    ///
+    /// Asserted while `supports_refunds` is still `false` on purpose — that
+    /// pair is exactly what a mistaken coherence rule would have refused, and
+    /// this is where a reader finds out it is intentional.
+    ///
+    /// The second assertion is therefore a **tripwire**, and its message is
+    /// the checklist: it is meant to fail when § 5 is implemented, because
+    /// what moves with the flag is prose in three other places that no
+    /// compiler and no other test checks.
+    #[test]
+    fn a_refund_on_this_rail_would_need_a_payee() {
+        let capabilities = adapter().capabilities();
+        assert_eq!(capabilities.refund_destination, RefundDestination::Required);
+        assert!(
+            !capabilities.supports_refunds,
+            "vpay has not built Orange refunds. Implementing RFC-0003 § 5 is expected to fail \
+             this assertion: drop this one line — not the `refund_destination` assertion \
+             above it — and in the same commit correct the claims no compiler checks. They \
+             are `Adapter::new`'s doctest at the top of this file, the `supports_refunds` row \
+             and the paragraph under it in docs/flows/provider-port.md, and the NotImplemented \
+             list in docs/status.md, which gains `orange_money::refund`."
+        );
     }
 
     #[test]

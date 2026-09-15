@@ -137,6 +137,7 @@ use uuid::Uuid;
 use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError,
+    RefundDestination, RefundTarget,
 };
 use vpay_testkit::containers::start_wiremock;
 
@@ -1273,6 +1274,50 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     let _: &vpay_provider::RefExtra = &parsed.ref_extra;
 }
 
+/// A destination for whatever the rail under test declares it needs, built
+/// from the capability value alone.
+///
+/// This is the branch the core makes (RFC-0003 § 1), written once here so
+/// that no case in this file has to know which rail wants a payee — which is
+/// the same rule the production code is held to, and the reason the suite can
+/// be parameterised over both rails at all.
+///
+/// The number is a documentation MSISDN and belongs to nobody. It is passed
+/// to rails whose `refund` is unbuilt, so nothing is ever sent anywhere.
+fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
+    match destination {
+        RefundDestination::Required => Some(RefundTarget::mobile_money("+237600000200")),
+        // Not "no destination handy": an `Origin` rail returns money to the
+        // instrument that paid, and offering it a payee would be asking it to
+        // ignore one.
+        RefundDestination::Origin => None,
+    }
+}
+
+/// Pins the helper above, because nothing else can.
+///
+/// Both rails this workspace carries declare `Required`, so the `Origin` arm
+/// has no caller in this file and the `Required` arm is passed to two
+/// `refund` implementations that ignore their argument - one an unbuilt
+/// `NotImplemented` token, one the port's default. Measured on 2026-09-15:
+/// with the `Required` arm returning `None`, all 54 cases in this suite still
+/// passed. This case is what makes the helper a claim rather than a comment,
+/// and the per-rail half is asserted in
+/// [`a_rail_without_the_refund_capability_answers_unsupported`] against the
+/// adapter's own declaration rather than against this table.
+#[test]
+fn a_destination_is_offered_exactly_when_the_capability_demands_one() {
+    assert!(
+        destination_for(RefundDestination::Required).is_some(),
+        "a Required rail must be handed a payee (RFC-0003 section 1)"
+    );
+    assert!(
+        destination_for(RefundDestination::Origin).is_none(),
+        "an Origin rail returns money to the instrument that paid; offering \
+         it a payee would be asking it to ignore one"
+    );
+}
+
 /// The behavioural half of the refund contract, on a configured rail.
 ///
 /// Proves a rail with no refund API answers the permanent
@@ -1291,7 +1336,25 @@ async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: 
     let charge = rail.charge(REF_ACCEPTED);
     let amount = charge.amount;
 
-    let outcome = rail.adapter.refund(&charge, amount, &rail.config).await;
+    // The destination is chosen from the rail's *capability*, never from its
+    // code (ADR-0002) — the same branch the core will make. A `Required` rail
+    // gets a payee; an `Origin` rail gets none, because sending one would be
+    // a destination the rail was never told about.
+    let destination = destination_for(rail.adapter.capabilities().refund_destination);
+    // The invariant the core owes `ProviderAdapter::refund`: a destination is
+    // present exactly when the rail declares `Required`. Asserted against the
+    // adapter's own capability, not against `destination_for`'s table, so an
+    // inverted helper is a failure here rather than an argument two unbuilt
+    // `refund` bodies silently discard.
+    assert_eq!(
+        destination.is_some(),
+        rail.adapter.capabilities().refund_destination == RefundDestination::Required,
+        "a payee is supplied exactly when the capability demands one (RFC-0003 section 1)"
+    );
+    let outcome = rail
+        .adapter
+        .refund(&charge, amount, destination.as_ref(), &rail.config)
+        .await;
 
     if rail.adapter.capabilities().supports_refunds {
         // A rail that *can* refund must not claim the operation is

@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, Refunded, Submitted,
+    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 use crate::token::{Credentials, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -540,6 +540,19 @@ impl ProviderAdapter for Adapter {
             // contradicting spelling of the one thing that constant exists
             // to keep in a single place.
             supports_account_holder_lookup: true,
+            // MTN returns money through **Disbursements** `transfer`, which
+            // is addressed to a payee's MSISDN — there is no "send it back
+            // the way it came" on this rail, because the collection and the
+            // disbursement are different products with different
+            // subscription keys. So the core must demand a destination
+            // (RFC-0003 § 1), and it does so on this value rather than on
+            // the string `"mtn_momo"` (ADR-0002).
+            //
+            // A claim about the rail, not about this code: `refund` below is
+            // still an unbuilt `NotImplemented` token, and this declaration
+            // is what the merchant-facing validation will be derived from
+            // either way.
+            refund_destination: RefundDestination::Required,
         }
     }
 
@@ -681,6 +694,12 @@ impl ProviderAdapter for Adapter {
     /// support refunds; it is we who have not built them. Answering
     /// [`ProviderError::Unsupported`] instead would be a lie about the rail.
     ///
+    /// `destination` is the payee that `transfer` would be addressed to, and
+    /// is `Some` here because this rail declares
+    /// [`RefundDestination::Required`]. It is ignored rather than read: there
+    /// is no call to put it in, and reading it would be the first half of a
+    /// pretence. See the port's `refund` for who guarantees it is `Some`.
+    ///
     /// # Errors
     ///
     /// Always [`ProviderError::NotImplemented`] — listed in `docs/status.md`,
@@ -689,6 +708,7 @@ impl ProviderAdapter for Adapter {
         &self,
         _charge: &ChargeRef,
         _amount: Money,
+        _destination: Option<&RefundTarget>,
         _config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
         Err(ProviderError::NotImplemented("mtn_momo::refund"))
@@ -824,7 +844,14 @@ mod tests {
     #[tokio::test]
     async fn refund_is_not_implemented_and_does_not_pretend() {
         let charge = charge();
-        let outcome = adapter().refund(&charge, charge.amount, &config()).await;
+        let outcome = adapter()
+            .refund(
+                &charge,
+                charge.amount,
+                Some(&RefundTarget::mobile_money("+237600000200")),
+                &config(),
+            )
+            .await;
         assert!(matches!(
             outcome,
             Err(ProviderError::NotImplemented("mtn_momo::refund"))
@@ -1309,6 +1336,19 @@ mod tests {
         assert!(
             query.ends_with("/237%3Fx%3D1/basicuserinfo"),
             "a `?` must not truncate the path: {query}"
+        );
+    }
+
+    /// MTN returns money by **disbursing** it to a number, so a refund here
+    /// can never be "back the way it came". The core is what refuses a
+    /// refund with no payee, and it does that on this value — which is why a
+    /// change to it is a change to what `POST /v1/refunds` accepts, and why
+    /// it is asserted rather than left to a reader of the struct literal.
+    #[test]
+    fn a_refund_on_this_rail_needs_a_payee() {
+        assert_eq!(
+            adapter().capabilities().refund_destination,
+            RefundDestination::Required
         );
     }
 

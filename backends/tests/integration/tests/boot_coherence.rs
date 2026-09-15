@@ -49,7 +49,7 @@ use vpay_core::error::{Category, Classify as _};
 use vpay_core::{Money, ProviderFlow};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, Refunded, Submitted,
+    ProviderError, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 mod support;
@@ -82,6 +82,11 @@ impl ProviderAdapter for IncoherentRail {
             delivers_callbacks: false,
             requires_ip_allowlist: false,
             supports_account_holder_lookup: false,
+            // A test-binary fixture, reachable from no shipping process: the
+            // value is inert here (this rail refuses every refund) and
+            // `Origin` is the shape that needs no payee, so the fixture asks
+            // the port for nothing it does not have.
+            refund_destination: RefundDestination::Origin,
         }
     }
 
@@ -109,6 +114,7 @@ impl ProviderAdapter for IncoherentRail {
         &self,
         _charge: &ChargeRef,
         _amount: Money,
+        _destination: Option<&RefundTarget>,
         _config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
         Err(ProviderError::Unsupported)
