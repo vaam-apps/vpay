@@ -538,10 +538,12 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                         // is the only witness this suite has for "the refund
                         // used a disbursement-scoped token".
                         //
-                        // No deployment holds these (`docs/status.md`) —
-                        // they are stub values for a stub product, and
-                        // `config/application.yml` carries the keys
-                        // unpopulated.
+                        // No deployment holds a REAL Disbursements
+                        // credential (`docs/status.md`) — these are stub
+                        // values for a stub product, `config/application.yml`
+                        // carries the keys unpopulated, and the only other
+                        // place they are populated at all is the e2e/demo
+                        // stack, with stubs of its own aimed at WireMock.
                         (
                             "disbursement_subscription_key".to_owned(),
                             "stub-disbursement-subscription-key".to_owned(),

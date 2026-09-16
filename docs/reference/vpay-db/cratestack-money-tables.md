@@ -62,8 +62,9 @@ through an `EXISTS` on it — and a generated read or write filters columns of
 one table. Both are hand-written statements with their own `sql_audit` sites
 (`insert_in_tx`, `cancel_in_tx`). What has not changed is that no
 rail has ever executed a refund. `mtn_momo::refund` makes MTN's Disbursements
-`transfer` call as of 2026-09-15, against a credential no deployment holds and
-a product this repository has never called, and — since the same day, RFC-0003
+`transfer` call as of 2026-09-15, against a product this repository has never
+called and under no REAL MTN Disbursements credential (the e2e/demo stack's is
+a stub aimed at a WireMock container), and — since the same day, RFC-0003
 § 5 — `orange_money::refund` is a `NotImplemented` token; this sentence read
 `Unsupported` on Orange until that date, and `Unsupported` is now neither
 rail's answer (`docs/status.md`). Both reads are also merchant-scoped through a JOIN

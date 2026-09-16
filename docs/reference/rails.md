@@ -358,11 +358,16 @@ flight. (`no_record_of_a_reference_is_not_a_failure`.)
 separately-scoped token minted from `POST /disbursement/token/` — and the
 `NotImplemented("mtn_momo::refund")` token is retired.
 
-**No deployment of this system holds those credentials, and nothing in this
-repository has ever called MTN's Disbursements product**, in sandbox or
-anywhere else. `config/application.yml` carries the three keys unpopulated;
-`refund` answers `ProviderError::Config` naming the first one missing, and
-`POST /v1/refunds` is unrouted, so no caller can reach it regardless.
+**No REAL MTN Disbursements credential exists in this project, and nothing in
+this repository has ever called MTN's Disbursements product**, in sandbox or
+anywhere else. `config/application.yml` carries the three keys unpopulated and
+`refund` answers `ProviderError::Config` naming the first one missing.
+_(Corrected 2026-09-16: this read "No deployment of this system holds those
+credentials" and "`POST /v1/refunds` is unrouted, so no caller can reach it
+regardless". The e2e/demo stack holds stub values aimed at a WireMock
+container, and all five refund routes are mounted — RFC-0003 § 2 — so a caller
+does reach `refund`, and on a deployment with no credential what it reaches is
+that `ProviderError::Config`.)_
 `supports_refunds` stays `true` for the reason it always did: the rail
 refunds, and `Unsupported` would be a lie about MTN. See
 [`adapter-mtn-momo.md`](../flows/adapter-mtn-momo.md) § "The transfer call"

@@ -272,8 +272,9 @@ pub const V1_ROUTES: &[V1Route] = &[
     // refund, reserve its amount, refuse an over-refund, emit the first
     // `charge.refunded` this repository has ever emitted, and instruct the
     // rail. They do not mean a payer has ever received money:
-    // `mtn_momo::refund` is WireMock-proven and rail-unproven against a
-    // Disbursements credential no deployment holds, `orange_money::refund`
+    // `mtn_momo::refund` is WireMock-proven and rail-unproven, and no REAL
+    // MTN Disbursements credential exists in this project — the e2e/demo
+    // stack's is a stub aimed at WireMock; `orange_money::refund`
     // is a declared `NotImplemented` token, and nothing settles a `pending`
     // refund because the port has no refund status read (RFC-0003 open
     // question 8). `docs/status.md` carries all three, and

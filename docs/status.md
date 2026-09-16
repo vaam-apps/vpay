@@ -311,8 +311,11 @@ went seven to ten; `.env.example`, `compose.e2e.yml`, `deploy/helm/vpay` and
 arm's branch until the three names were set. So the honest summary is: the call
 exists, ~~no caller can reach it (`POST /v1/refunds` is still unrouted)~~
 **— corrected 2026-09-16: `POST /v1/refunds` is mounted (RFC-0003 § 2), so a
-caller can reach it —** and what it answers on every deployment there is, is
-"this deployment has no Disbursements credential".
+caller can reach it —** and what it answers on every deployment holding no
+credential is "this deployment has no Disbursements credential". The one
+exception is the e2e/demo stack, whose stub key reaches a WireMock `202`: that
+is a proof about the wire, and MTN's Disbursements product has still never been
+called.
 
 What _is_ proven, against a real `wiremock/wiremock` container, is
 seven conformance cases and thirteen unit tests — that the transfer is
@@ -400,16 +403,18 @@ What was still missing after RFC-0003 § 3 was everything between that writer
 and a merchant: ~~no `POST /v1/refunds` (it is declared in the wire contract,
 mounted nowhere, and is wave 3's)~~, no adapter that has ever executed a
 refund — `mtn_momo::refund` is written but its Disbursements product has never
-been called and no deployment holds its key, `orange_money::refund` is a
+been called and no REAL credential for it exists in this project, `orange_money::refund` is a
 `NotImplemented` token, neither answers `Unsupported`, and **no rail call has
 ever been made for a refund against a real rail** — and ~~no writer for
 `charge.refunded` / `charge.refund.updated`~~, both of which are in the
 `type_is_a_documented_event` vocabulary.
 
 **What is still missing, as of 2026-09-16, and it is the whole of what stands
-between these routes and a working refund:** no deployment holds the
-Disbursements credential, so on MTN a refund reaches
-`ProviderError::Config`; Orange's transfer is unbuilt, so on Orange a refund
+between these routes and a working refund:** no REAL MTN Disbursements
+credential exists in this project, so on MTN a refund reaches
+`ProviderError::Config` on every stack but the e2e/demo one, whose stub key is
+aimed at a `wiremock/wiremock` container and whose `202` proves the wire and
+nothing about money; Orange's transfer is unbuilt, so on Orange a refund
 is created and immediately `failed` with its reservation released; and
 **nothing settles a `pending` refund** — the port has no refund status read
 and there is no refund poll ladder (RFC-0003 open question 8, open). A refund

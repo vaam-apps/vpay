@@ -16,8 +16,9 @@
 //! **What did not change with it is the only thing a reader should take from
 //! the word "implemented" here:** no rail has ever returned money —
 //! `mtn_momo::refund` makes MTN's Disbursements `transfer` call against a
-//! credential no deployment holds and a product this repository has never
-//! called, `orange_money::refund` is a declared `NotImplemented` token, and
+//! product this repository has never called, under no REAL MTN Disbursements
+//! credential — the only subscription key anywhere in this project is the
+//! stub the e2e/demo stack points at a `wiremock/wiremock` container — `orange_money::refund` is a declared `NotImplemented` token, and
 //! **nothing settles a `pending` refund** because the port has no refund
 //! status read (RFC-0003 open question 8). A `201` from `POST /v1/refunds`
 //! says a refund was written and a rail was instructed; the object's

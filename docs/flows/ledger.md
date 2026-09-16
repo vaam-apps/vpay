@@ -439,10 +439,14 @@ superseded:
   every deployment's `charges` table is.
 - **No rail has ever executed a refund, and neither answers `Unsupported`.**
   `mtn_momo::refund` is written — MTN's Disbursements `transfer`, since
-  2026-09-15 — but no deployment holds the Disbursements subscription key and
-  that product has never been called; `orange_money::refund` is a
-  `NotImplemented` token from the same day. `POST /v1/refunds` is unrouted
-  until wave 3, so the write path above is reachable from tests and from
+  2026-09-15 — but no REAL MTN Disbursements credential exists in this project
+  (the e2e/demo stack's is a stub aimed at a WireMock container) and that
+  product has never been called; `orange_money::refund` is a `NotImplemented`
+  token from the same day. ~~`POST /v1/refunds` is unrouted until wave 3~~ —
+  **corrected 2026-09-16: all five refund routes are mounted (RFC-0003 § 2),
+  so the write path above is reachable from `/v1` too. What this bullet is
+  about did not move: no rail has ever executed a refund, and nothing settles
+  a `pending` one.** The write path above was reachable from tests and from
   nothing else. `../status.md` carries the gap.
 - Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
   Neither are 1, 3 or 4.

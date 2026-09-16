@@ -689,7 +689,13 @@ stack, and CI runs it.
 together with `POST /v1/refunds/{id}`, `GET /v1/refunds` and
 `POST /v1/refunds/{id}/cancel`, which are now served. The entry it left
 behind is kept verbatim below, because what it says about the **rails** is
-still true and is the thing a reader of a newly-served route most needs:
+still true and is the thing a reader of a newly-served route most needs. One
+clause in it has since been narrowed and is quoted here unedited: "no
+deployment holds a Disbursements subscription key" became imprecise on
+2026-09-16, when the e2e/demo stack was given a stub one aimed at a WireMock
+container so the SDKs' live refund suites could run. No **real** MTN
+Disbursements credential exists in this project, and that product has still
+never been called:
 
 > | POST | `/v1/refunds` | nothing routes to a writer: `vpay_db::Refunds` gained `create` and `cancel` on 2026-09-15 (RFC-0003 § 3, this column read "exposes one read and no write" until then), and nothing in a shipping binary calls either, because this method is the only way in and it is not routed. Neither rail answers `Unsupported`, and neither has ever executed a refund: `mtn_momo::refund` makes MTN's Disbursements `transfer` call since 2026-09-15, but **no deployment holds a Disbursements subscription key and that product has never been called from this repository**, while `orange_money::refund` is a `NotImplemented` token since the same day (an Orange refund is an outbound transfer and this repository has no Orange transfer specification — RFC-0003 § 5; this column said Orange answered `Unsupported` until that date). `GET /v1/refunds/{id}` **is** served, and renders the ten-key object — issue #46's `fee` included, `null` on every refund this deployment can produce
 
@@ -699,9 +705,11 @@ reserved its amount against the intent, emitted `charge.refunded` and
 instructed the rail. It does **not** say money moved. The refund is `pending`
 and **nothing in this repository settles it** — the port has no refund status
 read, so there is no refund poll ladder (RFC-0003 open question 8) — no
-deployment holds the MTN Disbursements credential a transfer needs, and on
-Orange the call is a declared `NotImplemented` token, which fails the refund
-and gives its reservation back.
+**real** MTN Disbursements credential exists in this project, so on every
+deployment but the e2e/demo stack (whose stub is aimed at a WireMock container)
+a transfer reaches `ProviderError::Config`, and on Orange the call is a
+declared `NotImplemented` token, which fails the refund, gives its reservation
+back and answers the merchant `501`.
 
 The one row left, `GET /v1/balance`, is callable by both SDKs and returns the
 `404` envelope to an authenticated caller, because a `200` would mean someone

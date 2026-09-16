@@ -332,9 +332,11 @@ destination, and nothing calls it yet.**
   core will branch on instead of a rail code (ADR-0002).
   _(Superseded in part later the same day by wave 2 and RFC-0003 § 5:
   `mtn_momo::refund` is now MTN's Disbursements `transfer` call and its token
-  is retired. The sentence in bold did not move — no deployment holds a
-  Disbursements credential, that product has never been called, and
-  `POST /v1/refunds` is still unrouted.)_
+  is retired. The sentence in bold did not move — no REAL MTN Disbursements
+  credential exists in this project, and that product has never been called.
+  `POST /v1/refunds` **is** routed since 2026-09-16 (RFC-0003 § 2); this note
+  said it was still unrouted, and "no refund got closer to working" survives
+  that anyway, because nothing settles a `pending` refund.)_
 - Both rails declare `Required`. On `orange_money` that sits beside
   `supports_refunds: false` on purpose — see the Capabilities section above.
   _(Superseded by wave 2 above on the same day: the flag is `true`, and the

@@ -203,8 +203,10 @@ impl<'a> Credentials<'a> {
     /// mint and get a 401 that reads as "MTN refused our partner
     /// credentials", pages, and names nothing that is actually wrong. Three
     /// explicit keys cost an operator three lines of YAML, once, and no
-    /// deployment holds them yet (`docs/status.md`) — so there is nobody to
-    /// inconvenience and the cheap moment to be strict is now.
+    /// deployment holds a REAL set of them (`docs/status.md`; the e2e/demo
+    /// stack's are stubs pointed at a `wiremock/wiremock` container) — so
+    /// there is nobody to inconvenience and the cheap moment to be strict is
+    /// now.
     ///
     /// Whether MTN's sandbox in fact issues one API user for both products is
     /// **unverified** — nothing in this repository has ever called

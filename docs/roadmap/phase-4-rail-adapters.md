@@ -16,7 +16,8 @@ recovery had landed._
 with real HTTP calls, passing the shared conformance suite. _(Eight, in the
 original wording. `mtn_momo::refund` stayed out of that seven — MTN refunds
 are the Disbursements product, with a subscription key and token scope no
-deployment holds — and `orange_money::refund` left the list on 2026-09-03
+deployment holds a real one of — and `orange_money::refund` left the list on
+2026-09-03
 without being built, because Orange documented no refund API and the adapter
 inherited the port's permanent `Unsupported` default. Both moved on
 **2026-09-15**, in opposite directions. Orange's came back: the maintainer
@@ -72,12 +73,15 @@ passed, 0 skipped, measured 2026-09-03; `just verify-ignored` pins
   `docs/flows/adapter-*.md` by this repository's own tests.
 - ~~`mtn_momo::refund` is still a `NotImplemented` token, and~~ **the token
   was retired on 2026-09-15 (RFC-0003 § 5): `refund` makes MTN's
-  Disbursements `transfer` call. No deployment holds a Disbursements
-  subscription key and nothing in this repository has ever called that
-  product**, so it is WireMock-proven and rail-unproven. `POST /v1/refunds`
-  is still unrouted, so nothing in a shipping binary reaches
-  `vpay_db::Refunds::create` and no refund can be created through `/v1` at
-  all. `orange_money::refund` became a `NotImplemented` token the same day
+  Disbursements `transfer` call. No REAL MTN Disbursements credential exists
+  in this project — the e2e/demo stack's is a stub aimed at a WireMock
+  container — and nothing in this repository has ever called that product**,
+  so it is WireMock-proven and rail-unproven. ~~`POST /v1/refunds` is still
+  unrouted, so nothing in a shipping binary reaches `vpay_db::Refunds::create`
+  and no refund can be created through `/v1` at all.~~ **Corrected 2026-09-16:
+  all five refund routes are mounted (RFC-0003 § 2), `vpay_api::v1::refunds`
+  reaches `Refunds::create`, and a refund CAN be created through `/v1`. It is
+  `pending` when it is created and nothing settles it.** `orange_money::refund` became a `NotImplemented` token the same day
   (RFC-0003 § 5).
 - Orange's duplicate-submit idempotency is an assumption about the rail.
 

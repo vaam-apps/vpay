@@ -28,10 +28,15 @@ they are usually collapsed into each other:
 
    _(Half-closed 2026-09-15 by arm D: `mtn_momo::refund` makes the
    Disbursements `transfer` call and the token is retired. The second sentence
-   is unchanged — **no deployment holds those credentials and MTN's
-   Disbursements product has never been called from this repository** — so
-   "no rail" remains true of every deployment, for a different reason. See
-   § 5 and `docs/status.md`.)_
+   is unchanged in substance — **no REAL MTN Disbursements credential exists
+   in this project and MTN's Disbursements product has never been called from
+   this repository** — so "no rail" remains true of every deployment, for a
+   different reason. See § 5 and `docs/status.md`. Narrowed 2026-09-16: the
+   e2e/demo stack holds a **stub** Disbursements subscription key aimed at a
+   `wiremock/wiremock` container, so "no deployment holds those credentials"
+   is the wrong sentence and "no real credential exists" is the right one.
+   Gap 1 closed the same day — all five refund routes are mounted, § 2 — and
+   gap 2 closed on 2026-09-15 with `Refunds::create`.)_
 
 Two further facts shape the proposal and are easy to miss:
 
@@ -196,10 +201,13 @@ adapter is written against MTN's published Disbursements API and proven against
 WireMock exactly as `submit` was, plus the `ProviderConfig` and
 `config/application.yml` keys to carry a disbursement credential.
 
-**It will not have been called.** No deployment holds a Disbursements
-subscription key, so `mtn_momo::refund` will be WireMock-proven and
+**It will not have been called.** No real Disbursements subscription key will
+exist in this project, so `mtn_momo::refund` will be WireMock-proven and
 rail-unproven, and `docs/status.md` must say precisely that — the same posture
-`submit` held until 2026-09-15.
+`submit` held until 2026-09-15. _(As built, and still true on 2026-09-16. This
+paragraph said "No deployment holds a Disbursements subscription key"; the
+e2e/demo stack was given a **stub** one that day, aimed at the same WireMock
+container, so the SDKs' live refund suites could run at all.)_
 
 **Orange — the model changes, the wire calls do not exist.** Per the
 maintainer's decision of 2026-09-15, an Orange refund _is_ a transfer back, so

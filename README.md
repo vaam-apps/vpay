@@ -159,9 +159,11 @@ port has no refund status read and there is no refund poll ladder (RFC-0003
 open question 8, open). The _rail_ half moved on 2026-09-15 and is in two
 states, **neither of them `Unsupported`**:
 `mtn_momo::refund` makes MTN's Disbursements `transfer` call (RFC-0003 § 5) —
-but **no deployment holds a Disbursements subscription key and MTN's
+but **no REAL MTN Disbursements credential exists in this project and MTN's
 Disbursements product has never been called from this repository**, so it is
-WireMock-proven and rail-unproven — while `orange_money::refund` is a declared
+WireMock-proven and rail-unproven — the only subscription key anywhere is the
+stub the e2e/demo stack points at a WireMock container, which is what the SDKs'
+live refund suites drive — while `orange_money::refund` is a declared
 `NotImplemented` token, because an Orange refund is an outbound transfer this
 repository has no specification to write one against. Both rails declare
 `supports_refunds: true`: that gap is vpay's, not the rails'.
@@ -403,9 +405,11 @@ export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev \
        MTN_DISBURSEMENT_API_USER= \
        ORANGE_MERCHANT_KEY=dev ORANGE_CLIENT_ID=dev ORANGE_CLIENT_SECRET=dev
 # The three MTN_DISBURSEMENT_* names were added on 2026-09-15 with
-# `mtn_momo::refund` (RFC-0003 section 5). Empty is the right value: no
-# deployment holds a Disbursements subscription key, and `refund` answers
-# ProviderError::Config naming the blank one. They must still be *set* —
+# `mtn_momo::refund` (RFC-0003 section 5). Empty is the right value here: no
+# REAL MTN Disbursements credential exists in this project, and `refund`
+# answers ProviderError::Config naming the blank one. (The e2e/demo stack sets
+# stub values instead, aimed at a wiremock container -- `just gen-demo-keys`.)
+# They must still be *set* —
 # unset is an unresolved placeholder, which is the fatal error above.
 
 # flags win over env vars

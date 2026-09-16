@@ -15,10 +15,14 @@
 //! 2026-09-15 (RFC-0003 § 5) and is no longer
 //! [`ProviderError::NotImplemented`] — _this paragraph said it was until the
 //! review of that change; it was the adapter's own module header and the
-//! most-read of the stale claims._ **No deployment holds a Disbursements
-//! subscription key and nothing in this repository has ever called that
+//! most-read of the stale claims._ **No REAL MTN Disbursements credential
+//! exists in this project and nothing in this repository has ever called that
 //! product**, so the call is WireMock-proven and rail-unproven; the method's
-//! own doc comment and `docs/status.md` are the long form.
+//! own doc comment and `docs/status.md` are the long form. _Narrowed again on
+//! 2026-09-16: this said "no deployment holds a Disbursements subscription
+//! key", and the e2e/demo stack holds a stub one, pointed at a
+//! `wiremock/wiremock` container, so the SDKs' live refund suites can reach
+//! the `202` at all._
 //!
 //! Credentials are never logged and never rendered; see the `token` module.
 

@@ -2381,7 +2381,8 @@ mod tests {
             ("MTN_API_USER", "11111111-2222-3333-4444-555555555555"),
             // The **Disbursements** trio (2026-09-15, RFC-0003 § 5). Present
             // here only so the example file resolves; no deployment holds
-            // these credentials and none of the keys is in
+            // REAL ones (the e2e/demo stack's three are stubs aimed at a
+            // `wiremock/wiremock` container) and none of the keys is in
             // `REQUIRED_RAIL_KEYS`, so an operator who leaves all three unset
             // still boots — `mtn_momo::refund` is the only call that needs
             // them and it answers `ProviderError::Config` naming the one that

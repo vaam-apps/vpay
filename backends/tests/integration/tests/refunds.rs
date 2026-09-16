@@ -40,8 +40,8 @@
 //! # What none of it proves
 //!
 //! **That money has ever come back.** The MTN stub answers the documented
-//! `202 ACCEPTED` of a product **no deployment holds a credential for and
-//! this repository has never called**; `orange_money::refund` is a declared
+//! `202 ACCEPTED` of a product **no REAL credential for exists in this
+//! project and this repository has never called**; `orange_money::refund` is a declared
 //! `NotImplemented` token; and nothing settles a `pending` refund, because
 //! the port has no refund status read (RFC-0003 open question 8). A `201`
 //! from these cases means vpay wrote a refund and instructed a stub.
@@ -776,8 +776,9 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 /// **What a `201` here does and does not mean.** The rail stub answered
 /// MTN's documented `202 ACCEPTED` and nothing else: the port has no refund
 /// status read, so the refund is `pending` and stays `pending`, and no money
-/// has moved in any deployment — no deployment holds a Disbursements
-/// subscription key and the product has never been called. See the module
+/// has moved in any deployment — no REAL MTN Disbursements credential exists
+/// in this project (the e2e/demo stack's subscription key is a stub aimed at
+/// WireMock) and the product has never been called. See the module
 /// header.
 #[tokio::test]
 async fn a_refund_is_created_pending_and_the_rail_is_instructed() -> anyhow::Result<()> {

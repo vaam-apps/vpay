@@ -109,8 +109,10 @@ served since 2026-09-16** (RFC-0003 § 2): the create, the metadata update, the
 list and the cancel. The paragraph that stood here said creating a refund
 needed a handler and that `POST /v1/refunds` was routed nowhere; that handler
 is what changed, and **nothing about the rails did**. `mtn_momo::refund` makes
-MTN's Disbursements `transfer` call against a credential no deployment holds,
-for a product this repository has never called; `orange_money::refund` is a
+MTN's Disbursements `transfer` call for a product this repository has never
+called, under no REAL MTN Disbursements credential — the only subscription key
+anywhere in this project is the stub the e2e/demo stack points at a WireMock
+container; `orange_money::refund` is a
 `NotImplemented` token (an Orange refund is an outbound transfer this
 repository has no specification for — RFC-0003 § 5); and **nothing settles a
 `pending` refund**, because the port has no refund status read (RFC-0003 open

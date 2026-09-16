@@ -5976,8 +5976,9 @@ async fn refund_status(pool: &PgPool, id: &str) -> anyhow::Result<String> {
 ///
 /// **It is still true that no rail has ever executed this**, and on neither
 /// rail is the answer `Unsupported`. `mtn_momo::refund` is written — MTN's
-/// Disbursements `transfer`, since 2026-09-15 — but no deployment holds the
-/// Disbursements subscription key and the product has never been called.
+/// Disbursements `transfer`, since 2026-09-15 — but no REAL MTN
+/// Disbursements credential exists in this project (the e2e/demo stack's is a
+/// WireMock stub) and the product has never been called.
 /// `orange_money::refund` is a `NotImplemented` token, since 2026-09-15,
 /// because a refund there is an outbound transfer this repository has no
 /// specification for (RFC-0003 § 5). ~~`POST /v1/refunds` is unrouted until
@@ -6302,8 +6303,9 @@ async fn apply_succeeded_pays_the_invoice_the_intent_was_for() -> anyhow::Result
 /// refund status read, so `POST /v1/refunds` (routed since 2026-09-16) never
 /// reaches the settlement these cases call — and no rail has ever executed a
 /// refund — `mtn_momo::refund` has made MTN's Disbursements `transfer` call
-/// since 2026-09-15, against a credential no deployment holds and a product
-/// this repository has never called, and `orange_money::refund` is a declared
+/// since 2026-09-15, against a product this repository has never called and
+/// under no REAL MTN Disbursements credential (the e2e/demo stack's is a
+/// WireMock stub), and `orange_money::refund` is a declared
 /// `NotImplemented` token, not `Unsupported`. `docs/status.md` says so.
 ///
 /// # The three properties

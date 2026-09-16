@@ -416,14 +416,22 @@ nominated in `destination[mtn_momo][msisdn]`. The `NotImplemented` token is
 retired, `verify-status` prints zero items, and **none of that is the claim
 "MTN refunds work".**
 
-**No deployment of this system holds a Disbursements subscription key**, and
+**No REAL MTN Disbursements credential exists in this project**, and
 **nothing in this repository has ever called MTN's Disbursements product** —
 not in production, not against the sandbox, not once.
 `config/application.yml` carries `disbursement_subscription_key`,
-`disbursement_api_key` and `disbursement_api_user`; every deployment leaves
-them empty, and `refund` answers `ProviderError::Config` naming the first one
-that is missing. `POST /v1/refunds` is still unrouted, so no caller can reach
-it either way. `supports_refunds` stays `true` for the reason it always did:
+`disbursement_api_key` and `disbursement_api_user` and leaves them empty, so
+`refund` answers `ProviderError::Config` naming the first one that is missing.
+
+_(Corrected 2026-09-16, twice over. This read "**No deployment of this system
+holds a Disbursements subscription key**" and "every deployment leaves them
+empty": the e2e/demo stack now sets all three to stub values aimed at a
+`wiremock/wiremock` container — `just gen-demo-keys`, `compose.e2e.yml` — so
+the SDKs' live refund suites can reach the documented `202` at all. It also
+read "`POST /v1/refunds` is still unrouted, so no caller can reach it either
+way", and all five refund routes have been mounted since 2026-09-16 (RFC-0003
+§ 2) — a caller **can** reach it, and on a stack with no credential what it
+reaches is that `ProviderError::Config`.)_ `supports_refunds` stays `true` for the reason it always did:
 the _rail_ refunds, and answering `Unsupported` would be a lie about MTN.
 
 See "The transfer call" above for the wire and "Not proven" below for what a

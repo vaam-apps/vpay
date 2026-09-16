@@ -450,10 +450,14 @@ work does not close them.
   `/v1/events` and `/v1/events/{id}` have been served since Step 5
   (2026-09-03) and `events` is read by `vpay_db::Events`; `GET
 /v1/refunds/{id}` is served as of issue #45 and `refunds` is read by
-  `vpay_db::Refunds`. **Nothing writes either table from `/v1`**, and that is
-  the part that is still true: `POST /v1/refunds` is unrouted, `GET
-/v1/balance` is unrouted, and events are written only by the settlement
-  and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
+  `vpay_db::Refunds`. ~~**Nothing writes either table from `/v1`**, and that
+  is the part that is still true: `POST /v1/refunds` is unrouted~~ —
+  **corrected 2026-09-16 (wave 3): `POST /v1/refunds` is mounted with the
+  other four refund routes (RFC-0003 § 2), and `vpay_api::v1::refunds` writes
+  both tables from `/v1` — the `refunds` row and `charge.refunded` in one
+  transaction. It still does not mean money moved.** `GET
+/v1/balance` is unrouted, and events are otherwise written only by the
+  settlement and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
   migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
   never written**: the column is in the repository's projection and the key
   is on every refund this API renders, and because no rail has ever supplied

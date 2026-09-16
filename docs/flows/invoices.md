@@ -356,9 +356,14 @@ no Orange transfer specification). _(This read "Orange Money answers
 "`mtn_momo::refund` is `ProviderError::NotImplemented`" until that date; the
 conclusion below did not move, only the reasons, and they moved in opposite
 directions on the two rails.)_
-`POST /v1/refunds` is unrouted until wave 3 — [../status.md](../status.md)
-carries all three. So **`amount_refunded` is `0` on every invoice in every
-deployment** and `apply_refund_succeeded` is called by no shipping binary.
+~~`POST /v1/refunds` is unrouted until wave 3~~ — **corrected 2026-09-16:
+wave 3 mounted all five refund routes (RFC-0003 § 2)** —
+[../status.md](../status.md) carries all three. **`amount_refunded` is still
+`0` on every invoice in every deployment** and `apply_refund_succeeded` is
+still called by no shipping binary, and the route is not what changes that:
+nothing settles a `pending` refund, because the port has no refund status read
+and there is no refund poll ladder (RFC-0003 open question 8). The route being
+mounted changed the reason that column has no reachable writer, not the fact.
 _(This paragraph also read "`vpay_db::Refunds` exposes no `create`" until
 2026-09-15, when RFC-0003 § 3 added `Refunds::create` and `Refunds::cancel`;
 the conclusion did not move, because no rail and no route can reach them.)_

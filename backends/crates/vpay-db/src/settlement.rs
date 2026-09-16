@@ -685,8 +685,10 @@ pub trait Settlement: Send + Sync {
     /// refund poll ladder, so no code path in this repository moves a refund
     /// out of `pending`. The rails stopped being the reason on
     /// 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
-    /// call — against a credential no deployment holds and a product this
-    /// repository has never called — and `orange_money::refund` is a declared
+    /// call — against a product this repository has never called and under
+    /// no REAL MTN Disbursements credential, the only subscription key
+    /// anywhere in this project being the e2e/demo stack's WireMock stub —
+    /// and `orange_money::refund` is a declared
     /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`.
     ///
     /// **And when that handler was written it did not, which is why nothing

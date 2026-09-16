@@ -10,8 +10,9 @@
 //! neither is `Unsupported`:
 //!
 //! * `mtn_momo::refund` is **written** — since 2026-09-15 it makes MTN's
-//!   Disbursements `transfer` call — but **no deployment holds the
-//!   Disbursements subscription key and the product has never been called**,
+//!   Disbursements `transfer` call — but **no REAL MTN Disbursements
+//!   credential exists in this project (the e2e/demo stack's subscription key
+//!   is a stub aimed at WireMock) and the product has never been called**,
 //!   in sandbox or anywhere else, so it answers `ProviderError::Config` where
 //!   the credential is missing and nothing has ever proved it against the
 //!   rail.
@@ -57,7 +58,8 @@
 //! the port has no refund status read and there is no refund poll ladder, so
 //! [`settle_in_tx`] is reached by nothing a merchant can cause. And **no rail
 //! has ever returned money**: MTN's Disbursements product has never been
-//! called and no deployment holds its credential, and Orange's transfer is a
+//! called and no REAL credential for it exists in this project, and Orange's
+//! transfer is a
 //! declared `NotImplemented` token. `docs/status.md` says so.
 //! The seam exists because D5's and RFC-0003's decisions are about what the
 //! *database* does when a refund lands, and a decision with no statement
@@ -272,8 +274,9 @@ pub struct RefundListPage {
 /// on neither rail is the answer `Unsupported` — `supports_refunds` is `true`
 /// for both. The two rails are in different states. `mtn_momo::refund` is
 /// written: since 2026-09-15 it makes MTN's Disbursements `transfer` call,
-/// but no deployment holds the Disbursements subscription key and the product
-/// has never been called, so it has proved nothing against the rail.
+/// but no REAL MTN Disbursements credential exists in this project — the
+/// e2e/demo stack's subscription key is a stub aimed at WireMock — and the
+/// product has never been called, so it has proved nothing against the rail.
 /// `orange_money::refund` answers `ProviderError::NotImplemented` (RFC-0003
 /// § 5, 2026-09-15) because an Orange refund is an outbound transfer and no
 /// Orange transfer API is documented in this repository, which makes that

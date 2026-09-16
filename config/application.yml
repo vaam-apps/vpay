@@ -60,7 +60,9 @@ providers:
       # subscription key, a separately scoped token and a `transfer` call
       # (docs/flows/adapter-mtn-momo.md, "Credential hierarchy").
       #
-      # **No deployment holds these**, which is why they are NOT in
+      # **No deployment holds a REAL set of these** — the e2e/demo stack's
+      # three are stubs aimed at a wiremock container, and nothing else
+      # populates them at all — which is why they are NOT in
       # `vpay_config::config::REQUIRED_RAIL_KEYS`: an *empty* value is a
       # value, so an operator who sets all three to the empty string boots
       # normally and `mtn_momo::refund` answers `ProviderError::Config`

@@ -53,8 +53,10 @@ invoices.amount_refunded`, following `0020`'s precedent.
 routed since **2026-09-16** (RFC-0003 § 2) — this paragraph said it was routed
 nowhere, and that "no refund can be created through `/v1` at all", until then.
 A refund can be created now; what still has not happened is that **no rail has
-ever returned money** (no deployment holds an MTN Disbursements subscription
-key and nothing in this repository has ever called that product;
+ever returned money** (no REAL MTN Disbursements credential exists in this
+project — the only subscription key anywhere is the e2e/demo stack's stub,
+pointed at a WireMock container — and nothing in this repository has ever
+called that product;
 `orange_money::refund` is still a declared token) and **nothing settles a
 `pending` refund**, because the port has no refund status read. `docs/status.md`
 and `docs/flows/adapter-mtn-momo.md` are the current record for all three rows.

@@ -379,11 +379,23 @@ left the list because it became MTN's Disbursements `transfer` call, and
 `orange_money::refund` joined it because RFC-0003 § 5 decided an Orange refund
 is an outbound transfer vpay has not built (the port's `Unsupported` was the
 answer until then). **Read a retired token as "no unbuilt-work token", not as
-"everything is built":** no deployment holds an MTN Disbursements subscription
-key, that product has never been called from this repository, and
-`POST /v1/refunds` is still unrouted. So **no `/v1` caller can provoke a `501`
-at all**, which was already true when MTN's token existed and is true now for
-a second reason.
+"everything is built":** no REAL MTN Disbursements credential exists in this
+project — the e2e/demo stack's is a stub aimed at a WireMock container — and
+that product has never been called from this repository.
+
+**Corrected 2026-09-16, and this half was a claim about the wire.** This
+paragraph ended "`POST /v1/refunds` is still unrouted. So **no `/v1` caller can
+provoke a `501` at all**, which was already true when MTN's token existed and
+is true now for a second reason." Both halves are false now. All five refund
+routes are mounted (RFC-0003 § 2), and a `POST /v1/refunds` against an
+`orange_money` charge answers **`501`**: `orange_money::refund` is the
+workspace's one remaining `NotImplemented` token, and `vpay_api::v1::refunds`
+fails the refund, releases its reservation and hands the merchant the token's
+own category. Measured, not reasoned about —
+`an_unbuilt_rail_refund_fails_and_releases_its_reservation` in
+`backends/tests/integration/tests/refunds.rs` asserts the `501`, the `failed`
+status, the `provider_error` failure code and the released reservation. A
+`501` from `/v1` is reachable by a merchant for the first time.
 _(This paragraph said "the one remaining `NotImplemented` token is
 `mtn_momo::refund`" until 2026-09-15.)_ `vpay-api` runs **165 tests, 165 passed, 0 skipped** as of 2026-09-03
 (`cargo nextest run -p vpay-api`, measured).
