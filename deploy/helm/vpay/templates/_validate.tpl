@@ -60,12 +60,16 @@ project.
 The list of names is NOT owned by this chart. It is whatever
 `config/application.yml` references in **the image you are deploying** —
 `grep -o '\${[A-Z_]*}' config/application.yml` on that revision — and it grows
-as features land. The seven below are the list as of 2026-09-03, now that
-Step 5 (webhooks) has landed `MERCHANT_WEBHOOK_SECRET` on `master`, and they
-are an example, not a contract.
+as features land. The ten below are the list as of 2026-09-15 — Step 5
+(webhooks) landed `MERCHANT_WEBHOOK_SECRET`, and RFC-0003 section 5 landed the
+three `MTN_DISBURSEMENT_*` names with `mtn_momo::refund` — and they are an
+example, not a contract. The Disbursements three may be EMPTY values (no
+deployment holds a REAL subscription for that product; the e2e/demo stack's
+values are stubs aimed at a wiremock container) but they must be PRESENT:
+empty is a value, unset is exit 78.
 */}}
 {{- if empty .Values.rails.existingSecret -}}
-{{- fail "vpay chart guard \"rails-secret\": rails.existingSecret must name a Secret carrying every credential the image's baked config/application.yml references as ${VAR} — one key per placeholder, and an unresolved one is exit 78 on both Deployments (they run one image, `vpay-server`, the worker with `args: [worker]`). The chart does not own that list and cannot check it: read it off the revision you are deploying with `grep -o '${[A-Z_]*}' config/application.yml`. On this branch, 2026-09-03, it is MERCHANT_WEBHOOK_SECRET, MTN_API_KEY, MTN_API_USER, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET and ORANGE_MERCHANT_KEY; a later image needs more." -}}
+{{- fail "vpay chart guard \"rails-secret\": rails.existingSecret must name a Secret carrying every credential the image's baked config/application.yml references as ${VAR} — one key per placeholder, and an unresolved one is exit 78 on both Deployments (they run one image, `vpay-server`, the worker with `args: [worker]`). The chart does not own that list and cannot check it: read it off the revision you are deploying with `grep -o '${[A-Z_]*}' config/application.yml`. On this branch, 2026-09-15, it is MERCHANT_WEBHOOK_SECRET, MTN_API_KEY, MTN_API_USER, MTN_DISBURSEMENT_API_KEY, MTN_DISBURSEMENT_API_USER, MTN_DISBURSEMENT_SUBSCRIPTION_KEY, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET and ORANGE_MERCHANT_KEY — the three MTN_DISBURSEMENT_* names are new on 2026-09-15 and an existing rails Secret that lacks them stops both Deployments booting; a later image needs more." -}}
 {{- end -}}
 
 {{/* ---------------------------------------------------------------- 5 */}}

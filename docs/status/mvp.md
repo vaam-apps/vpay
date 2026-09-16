@@ -6,6 +6,21 @@ _It still says "above" and "below" where it once pointed at another part of the 
 
 ## What would have to be true to call this "an MVP"
 
+_**No item moved on 2026-09-16, and the refunds work is why that is worth
+saying.** Wave 3 of RFC-0003 mounted five `/v1` refund routes, gave both
+merchant SDKs a refund surface and emitted `charge.refunded` for the first
+time. None of it touches this list: item 2 is decided by "no real rail has
+ever been called", and **no rail has ever executed a refund** — MTN's
+Disbursements product has never been called from this repository and no REAL
+credential for it exists here, `orange_money::refund` is a `NotImplemented`
+token, and **nothing settles a `pending` refund** (there is no refund poll
+ladder, RFC-0003 open question 8). One clause below went stale and is
+corrected here rather than in place, per this page's rule: item 2's
+"`mtn_momo::refund` remains `NotImplemented`" has been false since
+2026-09-15, when the Disbursements `transfer` call was written — which
+retired a token and moved nothing else, `../status.md` § "`mtn_momo::refund`
+is written, WireMock-proven and **rail-unproven**" being the long version._
+
 _Re-answered item by item on 2026-09-04 (Step 8, the production gate). **No
 item moved to met.** Four moved *within* themselves — item 2's callback clause,
 item 3's crash-test clause, item 4's confirm race and item 5's SSRF residual —

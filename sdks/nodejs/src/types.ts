@@ -159,9 +159,15 @@ export interface Refund {
    * `refund.fee || 0` are both the bug.
    *
    * **It is `null` from every vpay deployment today.** Neither rail reports a
-   * refund fee — Orange has no refund API and MTN refunds are the
-   * Disbursements product vpay has never called — so nothing populates it.
-   * See `docs/status.md`.
+   * refund fee. `orange_money::refund` is an unbuilt `NotImplemented` token —
+   * since 2026-09-15 an Orange refund is an outbound transfer this repository
+   * has no specification for (RFC-0003 section 5). `mtn_momo::refund` is
+   * written, the Disbursements `transfer` call, and reports no fee either:
+   * MTN answers `202 ACCEPTED` with an empty body and documents no fee field,
+   * and vpay has never called that product. So nothing populates it. (This
+   * read "Orange has no refund API" until 2026-09-15, and "both `refund`
+   * implementations are unbuilt tokens" until MTN's was written the same
+   * day.) See `docs/status.md`.
    */
   fee?: number | null;
 }
@@ -1157,13 +1163,164 @@ export type ListCheckoutSessionsParams = {
   payment_intent?: string | undefined;
 };
 
+/**
+ * Where a refund's money goes, on a rail that cannot send it back the way it
+ * came.
+ *
+ * # The rail's code is the outer key, and that is the whole point
+ *
+ * On the wire this is `destination[<payment_method_type>][…]` — a
+ * rail-agnostic container with a rail-specific interior, exactly as
+ * `payment_method_data[<payment_method_type>][…]` is on the confirm path. The
+ * server strips the outer key and hands the interior to that rail's own
+ * adapter, which is the only thing that knows what a payee looks like there.
+ * An SDK that flattened this, or that wrote one rail's code into the body
+ * whatever rail the charge was on, would be deciding a rail's payee shape
+ * from the client.
+ *
+ * The container is built for you: give the rail and the number, and
+ * `refunds.create` writes `destination[<rail>][msisdn]`.
+ *
+ * # Which rail, and why you do not choose it
+ *
+ * A refund goes back on the rail the charge was made on. The server reads
+ * that off the charge and refuses a `destination` naming any other rail with
+ * a `400` naming `destination`, so `payment_method_type` here must be the one
+ * the intent was confirmed on — not a preference.
+ *
+ * # The `+` is required, and this SDK does not add it for you
+ *
+ * The server canonicalises the number and **refuses one that does not start
+ * with `+`**: `"+237600000200"` is a payee and the bare national
+ * `"600000200"` is a `400` naming `destination`. That is not the rule
+ * `GET /v1/account_holders` applies — that route knows it is in Cameroon and
+ * the refund path deliberately does not, because read as an international
+ * number `600000200` names a different country. It is asymmetric in the safe
+ * direction: a lookup that guesses wrong returns the wrong name, a transfer
+ * that guesses wrong sends the money.
+ *
+ * This SDK sends the string it is given, unchanged: it does not add a `+`,
+ * strip one, or rewrite the number into any other form, for the reason
+ * {@link RetrieveAccountHolderParams} gives about validating numbers locally
+ * — the rule is the server's and it may widen it. Separators a caller types
+ * (`"+237 600 000 200"`, `"+237-600-000-200"`) are accepted by the server and
+ * are not this type's business either.
+ *
+ * # Do not log it
+ *
+ * The payee is a third party and the number is their personal data. vpay's
+ * own handler logs it masked and never raw, and renders it in no response and
+ * in no webhook body.
+ *
+ * A single-member union rather than an object type, so that a destination
+ * which is not a phone number is a sibling member — discriminated on `kind`
+ * rather than on the rail, because the rail is a *value* here and not a
+ * shape.
+ */
+export type RefundDestination = {
+  /**
+   * The shape of this payee. `"mobile_money"` is the only one today; it is
+   * present so that a future non-phone destination narrows rather than
+   * widening this one.
+   */
+  kind: "mobile_money";
+  /** The rail the charge was made on — its code becomes the outer key. */
+  payment_method_type: PaymentMethodType;
+  /**
+   * The payee's number, **in international form, starting with `+`**. Sent as
+   * `destination[<payment_method_type>][msisdn]`.
+   */
+  msisdn: string;
+};
+
+/**
+ * `POST /v1/refunds` request fields.
+ *
+ * # No refund this creates has ever moved money
+ *
+ * The route is real and so is every refusal it makes, but nothing on the
+ * other side of it pays anybody: `orange_money`'s refund is a declared
+ * `NotImplemented` token, `mtn_momo`'s is MTN's Disbursements `transfer`
+ * which is WireMock-proven and for which **no real MTN credential exists in
+ * this project** — the only `disbursement_subscription_key` anywhere is the
+ * stub the e2e/demo stack points at a WireMock container, and the product has
+ * never been called —
+ * and **nothing settles a `pending` refund** — there is no refund poll
+ * ladder, so a refund this creates stays `"pending"` until an operator moves
+ * it. `docs/status.md` carries all three. Do not read a `200` here as money
+ * on its way back.
+ */
 export interface CreateRefundParams {
   payment_intent: string;
-  /** Integer minor units. Omit for a full refund. */
+  /**
+   * Integer minor units. Omit for a full refund — `amount=` and no `amount`
+   * are different requests, and only the second means "all of it".
+   *
+   * A rail that refunds in full only refuses a partial amount with a `400`
+   * naming `amount`, and it measures "in full" against the intent's own
+   * amount rather than against what is left.
+   */
   amount?: number | undefined;
   reason?: string | undefined;
+  /**
+   * The payee, on a rail that cannot return money to the instrument that
+   * paid. See {@link RefundDestination}.
+   *
+   * Optional because the port allows a rail that refunds to the instrument
+   * that paid, and such a rail refuses a `destination` with a `400`.
+   * **Neither rail vpay carries today is one**: `mtn_momo` and `orange_money`
+   * both declare that a refund needs a payee, so a create with no
+   * `destination` is a `400` naming `destination` against every deployment
+   * this repository can build.
+   */
+  destination?: RefundDestination | undefined;
   metadata?: Record<string, string> | undefined;
 }
+
+/**
+ * `POST /v1/refunds/{id}` request fields — **metadata, and nothing else**.
+ *
+ * There is no `amount`, no `reason`, no `payment_intent` and no `destination`
+ * here, and their absence is this type saying what the server says: all four
+ * are refused with a `400` naming the parameter once a refund exists. A
+ * refund whose amount or payee is wrong is cancelled while it is still
+ * `"pending"` and created again.
+ *
+ * # The merge is key-wise, and an empty value deletes a key
+ *
+ * Stripe's rule, which vpay follows: the map sent here is merged into the
+ * stored one key by key — keys not mentioned are left alone — and a key sent
+ * with an **empty string** value is removed. Sending no `metadata` at all is
+ * a no-op read: the refund comes back unchanged and **no event is written**.
+ */
+export interface UpdateRefundParams {
+  /** The keys to set, and the keys to delete (an empty value deletes). */
+  metadata?: Record<string, string> | undefined;
+}
+
+/**
+ * `GET /v1/refunds` query parameters.
+ *
+ * Written flat rather than as `ListParams & { … }` for the same
+ * index-signature reason as {@link ListParams}.
+ */
+export type ListRefundsParams = {
+  limit?: number | undefined;
+  /** Cursor: refunds after this `re_…`. */
+  starting_after?: string | undefined;
+  /** Cursor: refunds before this `re_…`. */
+  ending_before?: string | undefined;
+  /**
+   * Only refunds against this `pi_…`.
+   *
+   * Held to the PaymentIntent id shape by the server, which answers `400`
+   * naming `payment_intent` for anything else — a `re_…` sent here is the
+   * easy mistake, since both ids are on the refund object. An id of the right
+   * shape that names nothing, or another merchant's intent, is an **empty
+   * page** and not a `404`.
+   */
+  payment_intent?: string | undefined;
+};
 
 /**
  * Written flat rather than as `ListParams & { … }` for the same

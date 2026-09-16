@@ -142,14 +142,31 @@ its own — asserting every entry answers `401` without a token
 (`every_registered_v1_path_answers_401_without_a_token`,
 `backends/tests/integration/tests/payment_intents.rs`).
 
-**`POST /v1/refunds` and `GET /v1/balance` are routed nowhere** and answer the
-honest 404 from the nest's fallback. Creating a refund will keep doing so until
-a rail can refund: `mtn_momo::refund` is `NotImplemented` (MTN refunds are the
-Disbursements product, and no deployment holds those credentials) and
-`orange_money` declares `supports_refunds: false`, which is a permanent
-capability answer rather than unbuilt work. So `GET /v1/refunds/{id}` is a read
-with no writer: **nothing in this repository creates a `refunds` row**, and
-every row its tests read was inserted by the suite itself.
+**`GET /v1/balance` is routed nowhere** and answers the honest 404 from the
+nest's fallback. `POST /v1/refunds` was beside it in that sentence until
+2026-09-16, when RFC-0003 § 2 mounted the create, the update, the list and
+the cancel alongside the read — so a merchant can now create a refund, and
+the database half it reaches has been there since 2026-09-15:
+`vpay_db::Refunds::create` inserts the row and reserves its amount against
+the intent in one transaction (RFC-0003 § 3), exercised against a real
+Postgres.
+
+**A `201` from that route does not mean money came back**, and nothing in
+this repository can make it mean that yet. The refund is written as
+`pending`, `charge.refunded` is emitted in the same transaction, the rail is
+instructed — and **nothing settles a `pending` refund**, because the provider
+port has no refund status read and there is no refund poll ladder (RFC-0003
+open question 8, open). The _rail_ half moved on 2026-09-15 and is in two
+states, **neither of them `Unsupported`**:
+`mtn_momo::refund` makes MTN's Disbursements `transfer` call (RFC-0003 § 5) —
+but **no REAL MTN Disbursements credential exists in this project and MTN's
+Disbursements product has never been called from this repository**, so it is
+WireMock-proven and rail-unproven — the only subscription key anywhere is the
+stub the e2e/demo stack points at a WireMock container, which is what the SDKs'
+live refund suites drive — while `orange_money::refund` is a declared
+`NotImplemented` token, because an Orange refund is an outbound transfer this
+repository has no specification to write one against. Both rails declare
+`supports_refunds: true`: that gap is vpay's, not the rails'.
 
 Two other surfaces exist: `/v1/browser`, which a payer's own page calls with a
 publishable key and an intent's `client_secret` instead of a bearer token
@@ -384,7 +401,16 @@ the database. In a real deployment it is a Kubernetes Secret and
 # an unresolved one is a fatal, named startup error — not an empty string.
 export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev \
        MTN_API_USER=11111111-2222-3333-4444-555555555555 \
+       MTN_DISBURSEMENT_SUBSCRIPTION_KEY= MTN_DISBURSEMENT_API_KEY= \
+       MTN_DISBURSEMENT_API_USER= \
        ORANGE_MERCHANT_KEY=dev ORANGE_CLIENT_ID=dev ORANGE_CLIENT_SECRET=dev
+# The three MTN_DISBURSEMENT_* names were added on 2026-09-15 with
+# `mtn_momo::refund` (RFC-0003 section 5). Empty is the right value here: no
+# REAL MTN Disbursements credential exists in this project, and `refund`
+# answers ProviderError::Config naming the blank one. (The e2e/demo stack sets
+# stub values instead, aimed at a wiremock container -- `just gen-demo-keys`.)
+# They must still be *set* —
+# unset is an unresolved placeholder, which is the fatal error above.
 
 # flags win over env vars
 cargo run -p vpay-server -- \

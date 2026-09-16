@@ -599,8 +599,12 @@ fn verify_status(root: &Path) -> Result<(), String> {
         .map_err(|e| format!("docs/status.md: {e} (the status page is mandatory)"))?;
     let declared = declared_tokens(&status)?;
 
+    let backends = root.join("backends");
+    let rails = adapter_rail_codes(&backends);
+
     let mut found = BTreeSet::new();
-    for src in rust_sources(&root.join("backends")) {
+    let mut carried_by: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    for src in rust_sources(&backends) {
         // A token in an integration test is a fixture, not a shipping claim.
         if src.components().any(|c| c.as_os_str() == "tests") {
             continue;
@@ -612,7 +616,13 @@ fn verify_status(root: &Path) -> Result<(), String> {
         // it exists to prevent. `searchable` drops comments and `#[cfg(test)]`
         // items first, so neither a doc comment quoting a token nor a unit
         // test constructing one counts as shipping code.
-        found.extend(scan_not_implemented(&searchable(&text)));
+        for token in scan_not_implemented(&searchable(&text)) {
+            carried_by
+                .entry(token.clone())
+                .or_default()
+                .insert(src.clone());
+            found.insert(token);
+        }
     }
 
     let mut problems = Vec::new();
@@ -641,6 +651,16 @@ fn verify_status(root: &Path) -> Result<(), String> {
             unbuilt.join("\n  - ")
         ));
     }
+    let strays = foreign_rail_tokens(root, &rails, &carried_by);
+    if !strays.is_empty() {
+        problems.push(format!(
+            "these unimplemented items name one rail and are carried by another crate\n  \
+             (a copy-paste between adapters, which the two directions above cannot see \
+             because\n  they compare token *strings* and neither knows where a token \
+             lives):\n  - {}",
+            strays.join("\n  - ")
+        ));
+    }
 
     if !problems.is_empty() {
         return Err(problems.join("\n"));
@@ -652,6 +672,104 @@ fn verify_status(root: &Path) -> Result<(), String> {
         found.len()
     );
     Ok(())
+}
+
+/// Every rail code this workspace ships an adapter for, mapped to the crate
+/// directory that owns it.
+///
+/// Derived from the directory name — `vpay-adapter-orange-money` →
+/// `orange_money` — because `xtask` cannot call `ProviderAdapter::code()`: it
+/// is a text tool that must not link the workspace it checks. The two have
+/// never disagreed, and `adapter_codes_are_unique` in the conformance suite is
+/// what would notice if a rail's `code()` stopped matching its crate.
+///
+/// Returns an empty map when there is no `crates/` directory, which is what
+/// the unit tests' temporary trees look like; [`foreign_rail_tokens`] then
+/// constrains nothing, exactly as it should on a tree with no adapters.
+fn adapter_rail_codes(backends: &Path) -> BTreeMap<String, PathBuf> {
+    const ADAPTER_PREFIX: &str = "vpay-adapter-";
+
+    let mut out = BTreeMap::new();
+    let Ok(entries) = fs::read_dir(backends.join("crates")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(rail) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(ADAPTER_PREFIX))
+        else {
+            continue;
+        };
+        out.insert(rail.replace('-', "_"), path);
+    }
+    out
+}
+
+/// Tokens whose prefix names a rail that does not own the file they are
+/// written in.
+///
+/// # The hole this closes, measured
+///
+/// `verify_status`'s two directions compare *sets of strings*. Neither knows
+/// which file a token came from, so an adapter answering another rail's token
+/// is invisible to both as long as the pair of sets still matches. Measured
+/// on 2026-09-15, on the tree that flipped `orange_money` to
+/// `supports_refunds: true`: with `NotImplemented("orange_money::refund")` in
+/// the Orange adapter replaced by `NotImplemented("mtn_momo::refund")` — a
+/// plausible copy-paste, since the adapters' `refund` bodies are one line
+/// apart — the gate first failed with *"docs/status.md declares
+/// `orange_money::refund` and no shipping code carries it"*. That message
+/// invites exactly the wrong repair: delete the bullet. With the bullet then
+/// deleted, `cargo xtask verify-status` printed **"ok — 1 unimplemented
+/// item(s)"**, with a whole rail's gap gone from the status page and an
+/// adapter blaming MTN for it.
+///
+/// `a_rail_without_the_refund_capability_answers_unsupported` in the
+/// conformance suite also catches that mutation, and was written for it. It is
+/// not a substitute: it covers `refund` on the two configured rails, it needs
+/// Docker, and it is not what `AGENTS.md` points at when it says every token
+/// must appear in `docs/status.md`. This check covers every token on every
+/// rail and runs in `just verify`.
+///
+/// # What it deliberately does not constrain
+///
+/// Only prefixes that *are* a shipping rail code are checked. A token named
+/// `worker::poll` or `ledger::post` is unconstrained, because this repository
+/// has no convention saying where such a token may live and inventing one in a
+/// gate would be a rule about characters rather than about a rail. The
+/// spelling it does rely on — `<rail>::<fn>`, `AGENTS.md` § 2 — is the one
+/// both tokens in the tree already use.
+fn foreign_rail_tokens(
+    root: &Path,
+    rails: &BTreeMap<String, PathBuf>,
+    carried_by: &BTreeMap<String, BTreeSet<PathBuf>>,
+) -> Vec<String> {
+    let show = |p: &Path| p.strip_prefix(root).unwrap_or(p).display().to_string();
+
+    let mut out = Vec::new();
+    for (token, sources) in carried_by {
+        let Some((rail, _)) = token.split_once("::") else {
+            continue;
+        };
+        let Some(owner) = rails.get(rail) else {
+            continue;
+        };
+        for src in sources {
+            if !src.starts_with(owner) {
+                out.push(format!(
+                    "`{token}` is carried by {} — a `{rail}::…` token belongs to {}",
+                    show(src),
+                    show(owner)
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// The tokens listed under [`STATUS_TOKEN_HEADING`], one per `- \`token\`` bullet.
@@ -8548,6 +8666,53 @@ vpay-testkit = { path = \"x\" }
         verify_status(root).expect("a page that matches the code passes");
     }
 
+    /// The third direction: a token that names one rail and lives in another
+    /// adapter, with a status page that matches the code exactly.
+    ///
+    /// This is the configuration
+    /// [`verify_status_reports_both_directions_from_the_gate_itself`] cannot
+    /// see and, until 2026-09-15, neither could the gate. Both string sets
+    /// agree — `rail_a::refund` is carried and declared — so the two
+    /// directions above are satisfied while `rail_b`'s adapter is the crate
+    /// carrying it and `rail_b` has no gap on the page at all. Measured on the
+    /// real tree before the rule existed: `verify-status` printed *"ok — 1
+    /// unimplemented item(s)"*.
+    ///
+    /// The second half is the one that keeps the rule from being a rule about
+    /// characters: the same token in its *own* adapter passes, so this cannot
+    /// be satisfied by refusing every rail-prefixed token.
+    #[test]
+    fn a_token_naming_another_rail_is_refused_however_well_the_page_matches() {
+        let dir = TempDir::new("verify-status-rails");
+        let root = dir.path();
+        let a = root.join("backends/crates/vpay-adapter-rail-a/src");
+        let b = root.join("backends/crates/vpay-adapter-rail-b/src");
+        fs::create_dir_all(&a).expect("the temp tree is creatable");
+        fs::create_dir_all(&b).expect("the temp tree is creatable");
+        fs::create_dir_all(root.join("docs")).expect("the temp tree is creatable");
+        fs::write(
+            root.join("docs/status.md"),
+            format!("{STATUS_TOKEN_HEADING}\n\n- `rail_a::refund`\n"),
+        )
+        .expect("the status page is writable");
+
+        let body = "fn f() { Err(ProviderError::NotImplemented(\"rail_a::refund\")) }\n";
+        fs::write(b.join("lib.rs"), body).expect("the source file is writable");
+        let error = verify_status(root).expect_err("rail_b may not answer rail_a's token");
+        assert!(
+            error.contains("name one rail and are carried by another crate")
+                && error.contains("rail_a::refund")
+                && error.contains("vpay-adapter-rail-b"),
+            "the message must name the token and the crate that stole it: {error}"
+        );
+
+        // The same token, in the adapter whose code it names, is the ordinary
+        // case and must pass.
+        fs::remove_file(b.join("lib.rs")).expect("the temp tree is writable");
+        fs::write(a.join("lib.rs"), body).expect("the source file is writable");
+        verify_status(root).expect("a rail declaring its own gap is the whole point");
+    }
+
     /// A token inside a `#[cfg(test)]` module is a fixture and declares
     /// nothing — `vpay-worker`'s error tests build one to assert how it
     /// classifies. Counting it would force `docs/status.md` to advertise a
@@ -10429,8 +10594,16 @@ export class HolderResource {
             "payment_intents.create",
             "payment_intents.list",
             "payment_intents.retrieve",
+            // Wave 3 of RFC-0003, 2026-09-16. Three methods, both SDKs, in one
+            // PR: `refunds.update`, `refunds.list` and `refunds.cancel` landed
+            // beside the routes they call. So this list moves for the ordinary
+            // reason — a capability landed in both columns — and not for the
+            // alarming one, an enumerator going quiet.
+            "refunds.cancel",
             "refunds.create",
+            "refunds.list",
             "refunds.retrieve",
+            "refunds.update",
         ];
         for column in ["sdks/rust", "sdks/nodejs"] {
             let raw: BTreeSet<String> = sdk_methods(&root, column)

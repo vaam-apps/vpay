@@ -522,6 +522,32 @@ async fn stored_attempt(
     Ok((row.0, row.1, row.2.is_some()))
 }
 
+/// How many seconds until the charge's `poll_charge` job is claimable —
+/// negative once it already is.
+///
+/// Measured by **Postgres**, on the same statement that reads the row: the
+/// value under test is `jobs.run_at`, which Postgres wrote from its own
+/// `now()`, and a comparison against this host's clock would be a comparison
+/// between two clocks. `docs/reference/vpay-worker.md` §"Both ages are
+/// measured by one clock" is the same rule for the same reason, one crate
+/// over.
+///
+/// The `dedupe_key` is spelled out rather than imported because that is
+/// exactly the contract being checked: `vpay_api`'s `poll_dedupe_key`, the
+/// callback route and `vpay_worker::jobs::poll_dedupe_key` must all produce
+/// this one string, and a test that asked one of them would not notice if
+/// they stopped agreeing.
+async fn poll_job_due_in_seconds(pool: &PgPool, charge_id: &str) -> anyhow::Result<f64> {
+    sqlx::query_scalar::<_, f64>(
+        "SELECT EXTRACT(EPOCH FROM (run_at - now()))::DOUBLE PRECISION \
+         FROM jobs WHERE kind = 'poll_charge' AND dedupe_key = $1",
+    )
+    .bind(format!("poll:{charge_id}"))
+    .fetch_one(pool)
+    .await
+    .context("reading the run_at of the poll job the confirm enqueued")
+}
+
 /// The `last_payment_error_{code,message}` column pair a decline stamped on
 /// the intent.
 ///
@@ -670,6 +696,28 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
         Some(serde_json::json!({})),
         "MTN returns no key material; an empty document says the rail answered, where NULL \
          would be indistinguishable from a charge that was never submitted"
+    );
+
+    // **And the worker may ask the rail about it now.** The charge is
+    // `submitted` and settleable the instant this response exists, so the
+    // one thing that must not be true of its poll job is that it is
+    // scheduled for later.
+    //
+    // This is the assertion that fails if `persist_submitted`'s
+    // `pull_forward_in_tx` is deleted: `insert_charge` commits the job at
+    // `now() + POLL_AFTER_CONFIRM_GRACE` (so that a worker cannot claim it
+    // while this very confirm still holds the charge in `submitting`), and
+    // the compare-and-swap above is what makes it runnable again. Without
+    // that write a settled-in-milliseconds payment waits out the grace, and
+    // a worker that claimed the job during the confirm waits out the whole
+    // sixty-second recovery window — measured on 2026-09-16 at 56 s of dead
+    // time per payment, against a real stack, from
+    // `sdks/rust/tests/live_refunds.rs`.
+    let due_in = poll_job_due_in_seconds(&harness.pool, &charge.id).await?;
+    assert!(
+        due_in <= 0.0,
+        "the confirm is finished with this charge, so its poll job must be claimable now; \
+         it is {due_in}s away"
     );
 
     let (status_code, error_kind, answered) = stored_attempt(&harness.pool, &charge.id).await?;
@@ -2091,6 +2139,28 @@ async fn an_unreachable_rail_leaves_the_charge_where_recovery_expects_it() -> an
     );
     assert_eq!(status_code, None);
     assert_eq!(error_kind.as_deref(), Some("provider_unavailable"));
+
+    // **The grace, on the one path that leaves it in place.** This confirm
+    // never reached `persist_submitted`, so nothing pulled the poll job
+    // forward and it is still where `insert_charge` put it: a
+    // `POLL_AFTER_CONFIRM_GRACE` out, not claimable now. Committing it at
+    // `now()` — which is what this path did until 2026-09-16 — is what let a
+    // busy worker claim a charge's poll job *inside* the confirm that was
+    // creating it, see a `submitting` row it cannot tell from a crash, and
+    // park it for the rest of the recovery window without asking the rail
+    // anything.
+    //
+    // A ceiling and a floor, because both halves are a claim: nothing sooner
+    // (the race is open again) and nothing later (a genuinely crashed
+    // confirm must still be looked at inside `RecoveryPolicy`'s window). The
+    // floor is generous about the seconds this test itself spent between the
+    // enqueue and this read.
+    let due_in = poll_job_due_in_seconds(&harness.pool, &charge.id).await?;
+    assert!(
+        due_in > 5.0 && due_in <= 20.0,
+        "a confirm that never reached the rail must leave its poll job a grace away, not \
+         claimable while another confirm could still be running; it is {due_in}s away"
+    );
 
     let after = client
         .payment_intents()

@@ -938,8 +938,148 @@ impl UpdateInvoiceItemParams {
     }
 }
 
+/// Where a refund's money goes, on a rail that cannot send it back the way it
+/// came.
+///
+/// # The rail's code is the outer key, and that is the whole point
+///
+/// On the wire this is `destination[<payment_method_type>][…]` — a
+/// rail-agnostic container with a rail-specific interior, exactly as
+/// `payment_method_data[<payment_method_type>][…]` is on the confirm path.
+/// The server strips the outer key and hands the interior to that rail's own
+/// adapter, which is the only thing that knows what a payee looks like there.
+/// An SDK that flattened this, or that wrote one rail's code into the body
+/// whatever rail the charge was on, would be deciding a rail's payee shape
+/// from the client.
+///
+/// # Which rail, and why you do not choose it
+///
+/// A refund goes back on the rail the charge was made on. The server reads
+/// that off the charge and refuses a `destination` naming any other rail with
+/// a `400` naming `destination`, so the value here must be the
+/// [`PaymentMethodType`] the intent was confirmed on — not a preference.
+///
+/// # Only rails that need one take one
+///
+/// A rail that returns money to the instrument that paid takes **no**
+/// `destination` and answers `400` if sent one. Both rails vpay carries today
+/// need one, because a mobile-money refund is an outbound transfer to a
+/// number. See [`RefundsResource::create`].
+///
+/// # The `+` is required, and this SDK does not add it for you
+///
+/// The server canonicalises the number and **refuses one that does not start
+/// with `+`**: `+237600000200` is a payee and the bare national `600000200`
+/// is a `400` naming `destination`. That is not the rule
+/// `GET /v1/account_holders` applies — that route knows it is in Cameroon and
+/// the refund path deliberately does not, because read as an international
+/// number `600000200` names a different country. It is asymmetric in the safe
+/// direction: a lookup that guesses wrong returns the wrong name, a transfer
+/// that guesses wrong sends the money.
+///
+/// This SDK sends the string it is given, unchanged: it does not add a `+`,
+/// strip one, or rewrite the number into any other form, for the reason
+/// [`RetrieveAccountHolderParams`] gives about validating numbers locally —
+/// the rule is the server's and it may widen it. Separators a caller types
+/// (`+237 600 000 200`, `+237-600-000-200`) are accepted by the server and
+/// are not this type's business either.
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefundDestination {
+    /// A mobile-money payee: the rail to pay on, and the number to pay.
+    ///
+    /// Named for the *shape* rather than for either rail, so that a
+    /// destination which is not a phone number is a sibling variant rather
+    /// than a silent change of meaning to this one.
+    MobileMoney {
+        /// The rail the charge was made on — its code is the outer key.
+        payment_method_type: PaymentMethodType,
+        /// The payee's number, **in international form, starting with `+`**.
+        /// Sent as `destination[<payment_method_type>][msisdn]`.
+        msisdn: String,
+    },
+}
+
+impl RefundDestination {
+    /// A mobile-money payee on `payment_method_type`.
+    #[must_use]
+    pub fn mobile_money(payment_method_type: PaymentMethodType, msisdn: impl Into<String>) -> Self {
+        RefundDestination::MobileMoney {
+            payment_method_type,
+            msisdn: msisdn.into(),
+        }
+    }
+
+    /// The rail this destination is on.
+    #[must_use]
+    pub fn payment_method_type(&self) -> PaymentMethodType {
+        match self {
+            RefundDestination::MobileMoney {
+                payment_method_type,
+                ..
+            } => *payment_method_type,
+        }
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        match self {
+            RefundDestination::MobileMoney {
+                payment_method_type,
+                msisdn,
+            } => FormValue::Object(vec![(
+                payment_method_type.as_wire_str().to_string(),
+                FormValue::Object(vec![(
+                    "msisdn".to_string(),
+                    FormValue::from(msisdn.as_str()),
+                )]),
+            )]),
+        }
+    }
+}
+
+/// Renders the rail and **not** the number.
+///
+/// Hand-written for [`crate::PaymentIntent`]'s `client_secret` reason: the
+/// payee is a third party, their number is personal data this merchant holds
+/// on their behalf, and a structured logger prints `{:?}` of whatever it is
+/// handed. vpay's own handler logs this value masked and never raw; an SDK
+/// that printed it in full would put it in the merchant's logs instead, which
+/// is the same leak one hop earlier.
+///
+/// "The payee is on `mtn_momo`" is what a merchant debugging a `400` needs
+/// from a log line. The number they already have.
+impl std::fmt::Debug for RefundDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefundDestination::MobileMoney {
+                payment_method_type,
+                ..
+            } => f
+                .debug_struct("RefundDestination::MobileMoney")
+                .field("payment_method_type", payment_method_type)
+                .field("msisdn", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
 /// `POST /v1/refunds` request fields.
-#[derive(Debug, Clone, Default)]
+///
+/// # No refund this creates has ever moved money
+///
+/// The route is real and so is every refusal it makes, but nothing on the
+/// other side of it pays anybody: `orange_money`'s refund is a declared
+/// `NotImplemented` token, `mtn_momo`'s is MTN's Disbursements `transfer`
+/// which is WireMock-proven and for which **no real MTN credential exists in
+/// this project** — the only `disbursement_subscription_key` anywhere is the
+/// stub the e2e/demo stack points at a WireMock container, and the product
+/// has never been called —
+/// and **nothing settles a `pending` refund** — there is no refund poll
+/// ladder, so a refund this creates stays
+/// [`Pending`](crate::RefundStatus::Pending) until an operator moves it.
+/// `docs/status.md` carries all three. Do not read a `200` here as money on
+/// its way back.
+#[derive(Clone, Default)]
 pub struct CreateRefundParams {
     /// The `pi_…` to refund.
     pub payment_intent: String,
@@ -950,11 +1090,41 @@ pub struct CreateRefundParams {
     /// [`CreatePaymentIntentParams::amount`]: non-negative and at most
     /// `2^53-1`, or [`RefundsResource::create`] returns
     /// [`crate::Error::InvalidParams`] without sending anything.
+    ///
+    /// A rail that refunds in full only refuses a partial amount with a
+    /// `400` naming `amount`, and it measures "in full" against the intent's
+    /// own amount rather than against what is left.
     pub amount: Option<i64>,
     /// Merchant-supplied reason, echoed back on the refund object.
     pub reason: Option<String>,
+    /// The payee, on a rail that cannot return money to the instrument that
+    /// paid. See [`RefundDestination`], and [`RefundsResource::create`] for
+    /// which rails need one.
+    pub destination: Option<RefundDestination>,
     /// Merchant-owned key/value pairs, encoded as `metadata[key]=value`.
     pub metadata: BTreeMap<String, String>,
+}
+
+/// Redacts [`destination`](CreateRefundParams::destination) by delegating to
+/// its own `Debug`, and is hand-written so that a future `#[derive(Debug)]`
+/// here cannot quietly re-derive the field.
+///
+/// The derive would in fact still be safe today, because
+/// [`RefundDestination`]'s own `Debug` is the redacting one. It is written
+/// out anyway for the reason `vpay_api::v1::refunds::CreateParams` gives
+/// about the same field: the guarantee is worth an impl a test can name, and
+/// this is what `a_create_refund_params_debug_output_never_contains_the_payees_number`
+/// pins.
+impl std::fmt::Debug for CreateRefundParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateRefundParams")
+            .field("payment_intent", &self.payment_intent)
+            .field("amount", &self.amount)
+            .field("reason", &self.reason)
+            .field("destination", &self.destination)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 impl CreateRefundParams {
@@ -966,7 +1136,83 @@ impl CreateRefundParams {
             ),
             ("amount".to_string(), FormValue::from(self.amount)),
             ("reason".to_string(), FormValue::from(self.reason.clone())),
+            (
+                "destination".to_string(),
+                self.destination
+                    .as_ref()
+                    .map_or(FormValue::Skip, RefundDestination::to_form),
+            ),
             ("metadata".to_string(), metadata_form(&self.metadata)),
+        ])
+    }
+}
+
+/// `POST /v1/refunds/{id}` request fields — **metadata, and nothing else**.
+///
+/// There is no `amount`, no `reason`, no `payment_intent` and no
+/// `destination` here, and their absence is this type saying what the server
+/// says: all four are refused with a `400` naming the parameter once a refund
+/// exists. A refund whose amount or payee is wrong is
+/// [cancelled](RefundsResource::cancel) while it is still
+/// [`Pending`](crate::RefundStatus::Pending) and created again.
+///
+/// # The merge is key-wise, and an empty value deletes a key
+///
+/// Stripe's rule, which vpay follows: the map sent here is merged into the
+/// stored one key by key — keys not mentioned are left alone — and a key sent
+/// with an **empty string** value is removed. Sending an empty map is a
+/// no-op read: the refund comes back unchanged and **no event is written**.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateRefundParams {
+    /// The keys to set, and the keys to delete (an empty value deletes).
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl UpdateRefundParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![(
+            "metadata".to_string(),
+            metadata_form(&self.metadata),
+        )])
+    }
+}
+
+/// `GET /v1/refunds` query parameters. All optional; an unset field is
+/// omitted from the query string entirely.
+#[derive(Debug, Clone, Default)]
+pub struct ListRefundsParams {
+    /// Page size. The server's own default and ceiling apply when unset.
+    pub limit: Option<u32>,
+    /// Cursor: return refunds *after* this `re_…` (the next page).
+    pub starting_after: Option<String>,
+    /// Cursor: return refunds *before* this `re_…` (the previous page).
+    pub ending_before: Option<String>,
+    /// Only refunds against this `pi_…`.
+    ///
+    /// Held to the PaymentIntent id shape by the server, which answers a
+    /// `400` naming `payment_intent` for anything else — a `re_…` sent here
+    /// is the easy mistake, since both ids are on the refund object. An id
+    /// of the right shape that names nothing, or another merchant's intent,
+    /// is an **empty page** and not a `404`.
+    pub payment_intent: Option<String>,
+}
+
+impl ListRefundsParams {
+    pub(crate) fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            ("limit".to_string(), FormValue::from(self.limit)),
+            (
+                "starting_after".to_string(),
+                FormValue::from(self.starting_after.clone()),
+            ),
+            (
+                "ending_before".to_string(),
+                FormValue::from(self.ending_before.clone()),
+            ),
+            (
+                "payment_intent".to_string(),
+                FormValue::from(self.payment_intent.clone()),
+            ),
         ])
     }
 }
@@ -1688,10 +1934,30 @@ pub struct RefundsResource<'a> {
 impl RefundsResource<'_> {
     /// `POST /v1/refunds`.
     ///
+    /// # The `destination` is not optional in practice
+    ///
+    /// It is an `Option` because the port allows a rail that refunds to the
+    /// instrument that paid, and such a rail refuses a `destination` with a
+    /// `400`. **Neither rail vpay carries today is one**: `mtn_momo` and
+    /// `orange_money` both declare that a refund needs a payee, because on
+    /// both of them it is an outbound transfer. A
+    /// [`CreateRefundParams`] with no [`destination`](CreateRefundParams::destination)
+    /// is therefore a `400` naming `destination` against every deployment
+    /// this repository can build.
+    ///
+    /// # What a `200` here does and does not mean
+    ///
+    /// It means a refund row exists, its amount is reserved against the
+    /// intent, and `charge.refunded` has been written. It does **not** mean
+    /// the payee has been paid: see [`CreateRefundParams`].
+    ///
     /// # Errors
     /// [`crate::Error::InvalidParams`] if `amount` is present and negative or
     /// beyond `2^53-1`, before any request is sent; otherwise see
-    /// [`enum@crate::Error`].
+    /// [`enum@crate::Error`] — in particular a `400` naming `destination` for
+    /// a payee this rail will not take, a `400` naming `amount` for a partial
+    /// refund on a rail that has no partials, and a `409` for an intent with
+    /// nothing left to refund.
     pub async fn create(
         &self,
         params: CreateRefundParams,
@@ -1701,6 +1967,70 @@ impl RefundsResource<'_> {
             check_amount(amount, "amount")?;
         }
         post(self.client, "/refunds", params.to_form(), opts).await
+    }
+
+    /// `POST /v1/refunds/{id}` — the **metadata** update, and nothing else.
+    ///
+    /// See [`UpdateRefundParams`]: the other four fields of a refund are
+    /// fixed once it exists, the merge is key-wise, and an empty value
+    /// deletes a key. A refund whose metadata actually changes emits
+    /// `charge.refund.updated`; one sent an empty map is read back unchanged
+    /// and emits nothing.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`] — a `404` for a refund this merchant has
+    /// none of, and a `400` naming the parameter for anything but
+    /// `metadata`, which this params type has no way to send.
+    pub async fn update(
+        &self,
+        id: &str,
+        params: UpdateRefundParams,
+        opts: RequestOptions,
+    ) -> Result<Refund, crate::Error> {
+        post(
+            self.client,
+            &format!("/refunds/{}", path_segment(id)),
+            params.to_form(),
+            opts,
+        )
+        .await
+    }
+
+    /// `GET /v1/refunds` — this merchant's refunds, newest first.
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`].
+    pub async fn list(&self, params: ListRefundsParams) -> Result<List<Refund>, crate::Error> {
+        get(self.client, "/refunds", query_string(&params.to_form())).await
+    }
+
+    /// `POST /v1/refunds/{id}/cancel` — **while it is still pending**. No
+    /// request fields.
+    ///
+    /// The reservation this refund holds against its intent is released and
+    /// `charge.refund.updated` is written. The state machine is the server's
+    /// `WHERE` clause, not a check this SDK makes: a refund that settles
+    /// between your read and this call is refused with a `409` naming the
+    /// status that refused it. Reading the refund first to decide whether to
+    /// call is a race; call, and read the refusal.
+    ///
+    /// # Nothing here reaches a rail
+    ///
+    /// A cancel is a vpay-side release. No rail is told to stop anything,
+    /// because no rail was ever told to start: see [`CreateRefundParams`].
+    ///
+    /// # Errors
+    /// See [`enum@crate::Error`] — a `404` for a refund this merchant has
+    /// none of, and a `409` for one that is no longer
+    /// [`Pending`](crate::RefundStatus::Pending).
+    pub async fn cancel(&self, id: &str, opts: RequestOptions) -> Result<Refund, crate::Error> {
+        post(
+            self.client,
+            &format!("/refunds/{}/cancel", path_segment(id)),
+            FormValue::Object(vec![]),
+            opts,
+        )
+        .await
     }
 
     /// `GET /v1/refunds/{id}`.

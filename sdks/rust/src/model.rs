@@ -944,8 +944,15 @@ pub struct Refund {
     /// declaration costs nothing; it is not what protects the absent case.
     ///
     /// **It is `None` from every vpay deployment today.** Neither rail
-    /// reports a refund fee: Orange has no refund API and MTN refunds are the
-    /// Disbursements product vpay has never called. See `docs/status.md`.
+    /// reports a refund fee. `orange_money::refund` is an unbuilt
+    /// `NotImplemented` token — since 2026-09-15 an Orange refund is an
+    /// outbound transfer this repository has no specification for (RFC-0003
+    /// § 5). `mtn_momo::refund` is written, the Disbursements `transfer`
+    /// call, and reports no fee either: MTN answers `202 ACCEPTED` with an
+    /// empty body and documents no fee field, and vpay has never called that
+    /// product. This read "Orange has no refund API" until 2026-09-15, and
+    /// "both `refund` implementations are unbuilt tokens" until MTN's was
+    /// written the same day. See `docs/status.md`.
     #[serde(default)]
     pub fee: Option<i64>,
 }

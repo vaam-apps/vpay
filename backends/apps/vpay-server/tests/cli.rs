@@ -544,6 +544,17 @@ fn the_repositorys_own_configuration_passes_the_adapter_join() {
         .env("MTN_SUBSCRIPTION_KEY", "not-a-real-key")
         .env("MTN_API_KEY", "not-a-real-key")
         .env("MTN_API_USER", "not-a-real-uuid")
+        // Added 2026-09-15 (RFC-0003 § 5, arm D), and this test is what
+        // caught it: `config/application.yml` grew three MTN **Disbursements**
+        // placeholders for `mtn_momo::refund`. `resolve_string` has no
+        // default syntax, so an unset one is
+        // `ConfigError::UnresolvedPlaceholder` — exit 78 at boot, before the
+        // join and before the signing key. Every name this file resolves is
+        // one an operator must also set; the list is `grep -o '${[A-Z_]*}'
+        // config/application.yml` and it is ten, not seven.
+        .env("MTN_DISBURSEMENT_SUBSCRIPTION_KEY", "not-a-real-key")
+        .env("MTN_DISBURSEMENT_API_KEY", "not-a-real-key")
+        .env("MTN_DISBURSEMENT_API_USER", "not-a-real-uuid")
         .env("ORANGE_MERCHANT_KEY", "not-a-real-key")
         .env("ORANGE_CLIENT_ID", "not-a-real-client")
         .env("ORANGE_CLIENT_SECRET", "not-a-real-secret")

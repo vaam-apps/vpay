@@ -14,11 +14,19 @@ recovery had landed._
 
 **Goal.** Seven of the eight `ProviderError::NotImplemented` tokens replaced
 with real HTTP calls, passing the shared conformance suite. _(Eight, in the
-original wording. `mtn_momo::refund` stays — MTN refunds are the
-Disbursements product, with a subscription key and token scope no deployment
-holds — and `orange_money::refund` left the list without being built,
-because Orange documents no refund API and the adapter now inherits the
-port's permanent `Unsupported` default. See `docs/status.md`.)_
+original wording. `mtn_momo::refund` stayed out of that seven — MTN refunds
+are the Disbursements product, with a subscription key and token scope no
+deployment holds a real one of — and `orange_money::refund` left the list on
+2026-09-03
+without being built, because Orange documented no refund API and the adapter
+inherited the port's permanent `Unsupported` default. Both moved on
+**2026-09-15**, in opposite directions. Orange's came back: the maintainer
+decided an Orange refund *is* an outbound transfer (RFC-0003 § 5), so
+`supports_refunds` is `true` and the adapter overrides `refund` with its own
+`NotImplemented("orange_money::refund")`. MTN's went, because the Disbursements
+`transfer` call was written — which is a fact about a token and not about a
+rail: that product has never been called from this repository. One token is
+left. See `docs/status.md`.)_
 
 **Status.** Done, against WireMock. Capabilities ✅; `submit`,
 `query_status` and `parse_callback` ✅ on both rails against a real
@@ -63,8 +71,18 @@ passed, 0 skipped, measured 2026-09-03; `just verify-ignored` pins
   unsigned — so a callback is a hint on both rails and always will be. No rail
   has ever called the route: every body it has parsed was transcribed from
   `docs/flows/adapter-*.md` by this repository's own tests.
-- `mtn_momo::refund` is still a `NotImplemented` token, and `POST /v1/refunds`
-  is unrouted.
+- ~~`mtn_momo::refund` is still a `NotImplemented` token, and~~ **the token
+  was retired on 2026-09-15 (RFC-0003 § 5): `refund` makes MTN's
+  Disbursements `transfer` call. No REAL MTN Disbursements credential exists
+  in this project — the e2e/demo stack's is a stub aimed at a WireMock
+  container — and nothing in this repository has ever called that product**,
+  so it is WireMock-proven and rail-unproven. ~~`POST /v1/refunds` is still
+  unrouted, so nothing in a shipping binary reaches `vpay_db::Refunds::create`
+  and no refund can be created through `/v1` at all.~~ **Corrected 2026-09-16:
+  all five refund routes are mounted (RFC-0003 § 2), `vpay_api::v1::refunds`
+  reaches `Refunds::create`, and a refund CAN be created through `/v1`. It is
+  `pending` when it is created and nothing settles it.** `orange_money::refund` became a `NotImplemented` token the same day
+  (RFC-0003 § 5).
 - Orange's duplicate-submit idempotency is an assumption about the rail.
 
 **Unblocks.** A meaningful Phase 3 `confirm` (delivered); Phase 4b/Phase 5

@@ -63,7 +63,37 @@ in your summary.
    section stayed on the overview in all six. In `webhooks.md` and
    `dashboard.md` it is a summary plus an index — add your evidence to the
    page it points at, not to the index.
-4. In your summary to the user, state explicitly what you did **not** do.
+4. **Achieve docs↔skills parity.** A feature lands in three places or it has
+   not landed: the code, the docs, and the agent skills in
+   [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills). If your
+   change adds or removes a `docs/flows/` page, mounts or unmounts a route,
+   retires a `NotImplemented` token, adds or changes a gate, bumps a toolchain
+   pin, or moves a path a skill cites, the matching skill changes in the same
+   piece of work — a PR against `vpay-skills`, linked from yours. Its
+   `tools/verify-coverage.mjs` fails in both directions and its CI runs daily
+   against this repository's `master`, so the gap surfaces there as a red
+   build; do not leave it to. § "Why this rule exists" below.
+5. In your summary to the user, state explicitly what you did **not** do.
+
+## Why this rule exists
+
+A status page that lags is worse than none, because people trust it. **A skill
+that lags is worse still, because an agent does not merely trust it — it acts
+on it, at machine speed, in every session that loads it.** The skills are how
+the next agent learns that a stub rail is a WireMock host rather than a linked
+implementation, that callbacks are hints, and that `refunds` has a table and no
+writer. A skill describing a designed-but-unbuilt feature in the present tense
+is this repository's cardinal sin with a force multiplier attached.
+
+The skills are installed, not cloned:
+
+```bash
+npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
+```
+
+`vpay` is the orientation skill and routes to the rest. This repository
+dogfoods them: they install into `.agents/skills/` and pin in
+`skills-lock.json`, the same mechanism `vaam-ui` already uses.
 
 ## Verifying rather than assuming
 

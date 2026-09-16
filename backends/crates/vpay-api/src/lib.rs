@@ -3,16 +3,28 @@
 //! STATUS: `/healthz`, the `/v1/oauth` merchant OP ([`op`]), the
 //! authentication boundary in front of `/v1`, `/v1/payment_intents`
 //! ([`v1::payment_intents`]), `/v1/events` ([`v1::events`], read-only, since
-//! Step 5), `GET /v1/refunds/{id}` ([`v1::refunds`], read-only, since
-//! 2026-09-05) and the Stripe-shaped 404 envelope are implemented. The two
-//! `/v1` **methods** an SDK can name and vpay does not serve are
-//! `POST /v1/refunds` and `GET /v1/balance`: they are routed nowhere and
-//! answer the honest 404 from the nest's fallback. This paragraph said "the
-//! two `/v1` **resources** … `/v1/refunds` and `/v1/balance`" until issue #45
-//! made the refund's read part of the contract — the Refund resource is now
-//! the one on this surface with a read and no create, because reading a
-//! refund and creating one are separate questions and only the second needs
-//! a rail that can refund. `GET /v1/events`'s documented `?type=` filter is
+//! Step 5), `/v1/refunds` ([`v1::refunds`] — the read since 2026-09-05, the
+//! create, update, list and cancel since 2026-09-16) and the Stripe-shaped
+//! 404 envelope are implemented. The one `/v1` **method** an SDK can name
+//! and vpay does not serve is `GET /v1/balance`: it is routed nowhere and
+//! answers the honest 404 from the nest's fallback.
+//!
+//! This paragraph said "the two `/v1` **resources** … `/v1/refunds` and
+//! `/v1/balance`" until issue #45 made the refund's read part of the
+//! contract, and then "the two `/v1` **methods** … `POST /v1/refunds` and
+//! `GET /v1/balance`" until RFC-0003 § 2 mounted the create on 2026-09-16.
+//! **What did not change with it is the only thing a reader should take from
+//! the word "implemented" here:** no rail has ever returned money —
+//! `mtn_momo::refund` makes MTN's Disbursements `transfer` call against a
+//! product this repository has never called, under no REAL MTN Disbursements
+//! credential — the only subscription key anywhere in this project is the
+//! stub the e2e/demo stack points at a `wiremock/wiremock` container — `orange_money::refund` is a declared `NotImplemented` token, and
+//! **nothing settles a `pending` refund** because the port has no refund
+//! status read (RFC-0003 open question 8). A `201` from `POST /v1/refunds`
+//! says a refund was written and a rail was instructed; the object's
+//! `status` says the rest. See [`v1::refunds`]' module header.
+//!
+//! `GET /v1/events`'s documented `?type=` filter is
 //! deliberately not implemented and is ignored rather than refused; see that
 //! module. This file must never grow a route that returns fabricated data;
 //! a real database check (below) and a real 404 are the opposite of

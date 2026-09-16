@@ -1,16 +1,43 @@
-//! The OAuth token MTN's Collections API wants on every call, and this
+//! The OAuth tokens MTN's two **products** want on every call, and this
 //! rail's half of the cache that keeps one request from becoming two.
 //!
-//! `POST /collection/token/` mints a bearer from HTTP Basic credentials
+//! `POST /{product}/token/` mints a bearer from HTTP Basic credentials
 //! (`api_user:api_key`), a subscription key, and a **JSON** OAuth2 body of
 //! `{"grant_type":"client_credentials"}`. The body is load-bearing and so is
 //! its content type: MTN's API gateway answers `411 Length Required` to a
 //! bodyless POST and a 200 "Request Rejected" HTML page to the same grant
-//! sent form-encoded — both measured on the real sandbox on 2026-09-15. The
-//! cache entry itself is
+//! sent form-encoded — both measured on the real sandbox on 2026-09-15, on
+//! Collections. The cache entry itself is
 //! [`vpay_provider::token::CachedToken`]; what is MTN's alone is
 //! [`REFRESH_MARGIN`], [`ASSUMED_LIFETIME`] (MTN may omit `expires_in`), and
 //! the fields [`Credentials::fingerprint`] hashes.
+//!
+//! # Two products, two subscription keys, two token scopes
+//!
+//! `docs/flows/adapter-mtn-momo.md` § "Credential hierarchy" has had this
+//! since Step 3 and nothing acted on it until Disbursements was built
+//! (2026-09-15): the subscription key is **per product**, and Collections and
+//! Disbursements have **separate tokens**. [`Product`] is what makes that a
+//! value rather than a convention — it selects the configuration keys, the
+//! token path and, deliberately, a *distinct* [`Credentials::fingerprint`],
+//! so a bearer minted for one product can never be served to a call on the
+//! other even if a deployment configures both with the same three strings.
+//!
+//! **Two mechanisms hold that shut, not one, and the review of 2026-09-15
+//! corrected which is which.** The primary one is structural and lives in
+//! `crate::Adapter`: there are two named cache fields, `crate::Adapter::slot`
+//! is a match on the product, and both the read and the write go through it,
+//! so a Collections entry cannot be in the slot a `transfer` reads. The
+//! fingerprint's product discriminator is **defence in depth** for the day
+//! someone collapses those two fields into one slot or a map — the design
+//! that was considered and rejected. This module's doc said the fingerprint
+//! was "the only thing standing between a copy-pasted sandbox configuration
+//! and a Collections-scoped bearer on the money-**out** path"; measured, it
+//! is not, and each mechanism now has its own test
+//! (`a_collections_bearer_is_never_served_to_a_disbursement` here,
+//! `a_products_bearer_is_stored_where_only_that_product_can_read_it` in
+//! `crate`). Removing either one alone leaves the other 87 tests in this
+//! crate and all 67 conformance cases green.
 //!
 //! `docs/reference/rails.md` has the rest: why the cache is keyed by a
 //! credential digest at all, why the margin is per-rail rather than shared,
@@ -70,23 +97,122 @@ const CLIENT_CREDENTIALS_JSON: &str = r#"{"grant_type":"client_credentials"}"#;
 /// rail never has to guess what a bare string body is.
 const APPLICATION_JSON: &str = "application/json";
 
+/// Which MTN **product** a call belongs to.
+///
+/// MTN sells Collections (money in) and Disbursements (money out) as separate
+/// API products with separate subscription keys, separate token endpoints and
+/// separate token scopes — `docs/flows/adapter-mtn-momo.md` § "Credential
+/// hierarchy" calls confusing the three credential kinds "the most common
+/// onboarding bug", and this type is what keeps the product half of that
+/// distinction out of the call sites.
+///
+/// A two-variant enum rather than a `&str` parameter so that adding a third
+/// product (Remittance) is a compiler error at every match rather than a
+/// string nobody grepped for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Product {
+    /// `requesttopay`, the status read and `basicuserinfo` — everything the
+    /// charge path does.
+    Collections,
+    /// `transfer` — the refund path, and the only thing on this rail that
+    /// sends money *out*.
+    Disbursements,
+}
+
+impl Product {
+    /// The first path segment of every URL under this product — which is how
+    /// [`mint`] builds the token endpoint (`/collection/token/`,
+    /// `/disbursement/token/`) and how `crate::TRANSFER_PATH` is spelled.
+    ///
+    /// **Singular, both of them**, and neither matches the product's English
+    /// name. MTN spells the Collections base path `collection` and the
+    /// Disbursements one `disbursement`; a plural in either is a 404 from the
+    /// gateway.
+    ///
+    /// Also the product discriminator in [`Credentials::fingerprint`]. Two
+    /// jobs for one string is deliberate: the fingerprint has to differ per
+    /// product and the value that already does is the one MTN itself uses to
+    /// tell them apart.
+    pub(crate) const fn path_segment(self) -> &'static str {
+        match self {
+            Self::Collections => "collection",
+            Self::Disbursements => "disbursement",
+        }
+    }
+
+    /// `credentials.<this>` — the per-product `Ocp-Apim-Subscription-Key`.
+    const fn subscription_key_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "subscription_key",
+            Self::Disbursements => "disbursement_subscription_key",
+        }
+    }
+
+    /// `credentials.<this>` — the Basic-auth password of this product's token
+    /// mint.
+    const fn api_key_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "api_key",
+            Self::Disbursements => "disbursement_api_key",
+        }
+    }
+
+    /// `settings.<this>` — the Basic-auth username (a UUID) of this product's
+    /// token mint.
+    const fn api_user_setting(self) -> &'static str {
+        match self {
+            Self::Collections => "api_user",
+            Self::Disbursements => "disbursement_api_user",
+        }
+    }
+}
+
 /// The credentials and non-secret settings one MTN call needs, borrowed from
 /// a [`ProviderConfig`] rather than copied, so no secret is duplicated into a
 /// second allocation that outlives the call.
 pub(crate) struct Credentials<'a> {
-    /// `credentials.subscription_key` — the Collections product key.
+    /// Which product these belong to. Part of [`Credentials::fingerprint`],
+    /// and the reason a Collections bearer cannot be served to a `transfer`.
+    product: Product,
+    /// This product's `Ocp-Apim-Subscription-Key`.
     subscription_key: &'a str,
-    /// `credentials.api_key` — the Basic-auth password for the token call.
+    /// This product's Basic-auth password for the token call.
     api_key: &'a str,
-    /// `settings.api_user` — a UUID, and the Basic-auth username. Not a
-    /// secret, which is why it lives in `settings`.
+    /// A UUID, and the Basic-auth username. Not a secret, which is why it
+    /// lives in `settings`.
     api_user: &'a str,
-    /// `settings.target_environment`.
+    /// `settings.target_environment`. The one value the two products share:
+    /// it names the MTN *environment* (`sandbox`, `mtncameroon`), not the
+    /// product, and a deployment cannot be in two environments at once.
     target_environment: &'a str,
 }
 
 impl<'a> Credentials<'a> {
-    /// Reads the four values this adapter needs out of a `ProviderConfig`.
+    /// Reads the four values one product's calls need out of a
+    /// `ProviderConfig`.
+    ///
+    /// # No fallback from Disbursements to Collections, deliberately
+    ///
+    /// A missing `disbursement_api_key` does **not** fall back to `api_key`,
+    /// and the same for the API user. The convenience is real — an MTN
+    /// sandbox account may well end up with one API user across both product
+    /// subscriptions — and it is refused anyway, because the failure it
+    /// creates is silent and lands on the money-**out** path: a deployment
+    /// that configures a Disbursements subscription key and forgets the rest
+    /// would send Collections' Basic credentials to the Disbursements token
+    /// mint and get a 401 that reads as "MTN refused our partner
+    /// credentials", pages, and names nothing that is actually wrong. Three
+    /// explicit keys cost an operator three lines of YAML, once, and no
+    /// deployment holds a REAL set of them (`docs/status.md`; the e2e/demo
+    /// stack's are stubs pointed at a `wiremock/wiremock` container) — so
+    /// there is nobody to inconvenience and the cheap moment to be strict is
+    /// now.
+    ///
+    /// Whether MTN's sandbox in fact issues one API user for both products is
+    /// **unverified** — nothing in this repository has ever called
+    /// Disbursements. `docs/flows/adapter-mtn-momo.md` records it as a thing
+    /// to check on the first real call, and the answer is one `unwrap_or`
+    /// away in either direction.
     ///
     /// # Errors
     ///
@@ -94,7 +220,10 @@ impl<'a> Credentials<'a> {
     /// credential is a deployment mistake, not a rail failure and certainly
     /// not a decline: `Category::Configuration` is what stops it being
     /// retried against a rail that will keep saying no.
-    pub(crate) fn from_config(config: &'a ProviderConfig) -> Result<Self, ProviderError> {
+    pub(crate) fn from_config(
+        config: &'a ProviderConfig,
+        product: Product,
+    ) -> Result<Self, ProviderError> {
         fn required<'m>(
             map: &'m std::collections::BTreeMap<String, String>,
             key: &str,
@@ -109,22 +238,73 @@ impl<'a> Credentials<'a> {
         }
 
         Ok(Self {
-            subscription_key: required(&config.credentials, "subscription_key", "credentials")?,
-            api_key: required(&config.credentials, "api_key", "credentials")?,
-            api_user: required(&config.settings, "api_user", "settings")?,
+            product,
+            subscription_key: required(
+                &config.credentials,
+                product.subscription_key_setting(),
+                "credentials",
+            )?,
+            api_key: required(
+                &config.credentials,
+                product.api_key_setting(),
+                "credentials",
+            )?,
+            api_user: required(&config.settings, product.api_user_setting(), "settings")?,
             target_environment: required(&config.settings, "target_environment", "settings")?,
         })
     }
 
-    /// The cache key: a digest of the credentials that mint a token.
+    /// The cache key: a digest of the credentials that mint a token, **and of
+    /// the product whose scope the token carries**.
     ///
     /// `api_key` is hashed in **because** it is the token's password, not
     /// despite it — leaving it out meant a deployment that rotated only the
     /// API key kept serving calls with the bearer minted from the old one
     /// until it aged out. `docs/reference/rails.md` records the tenancy
     /// argument for the other fields and why a digest is safe to hold.
+    ///
+    /// The product is hashed in for a reason the other three cannot cover.
+    /// The two tokens are minted from *different endpoints* and are scoped to
+    /// different products, but nothing forces their credentials to differ: an
+    /// operator setting up a sandbox may legitimately paste one API user, one
+    /// API key and — by mistake — one subscription key into both halves of
+    /// the configuration. Without this field those two `Credentials` values
+    /// fingerprint identically, and any cache that keyed on the fingerprint
+    /// alone would hand a Collections-scoped bearer to a Disbursements
+    /// `transfer` — a wrong-scope token on the only call this rail has that
+    /// sends money out.
+    ///
+    /// **This is defence in depth and not the primary guard, which is what
+    /// the review of 2026-09-15 corrected.** Today the primary guard is
+    /// structural: `crate::Adapter` holds two named cache fields and
+    /// `crate::Adapter::slot` matches on the product, so a Collections entry
+    /// is never in the slot a `transfer` reads whatever this function
+    /// returns. This paragraph claimed the fingerprint was the only thing
+    /// standing in the way; measured, removing `self.product.path_segment()`
+    /// below fails exactly one test in this crate
+    /// (`a_collections_bearer_is_never_served_to_a_disbursement`) and leaves
+    /// all 67 conformance cases green, because the two slots still keep the
+    /// bearers apart. It stays because the map-or-single-slot design is the
+    /// one this adapter nearly took, and on that design it *would* be the
+    /// only guard.
+    ///
+    /// **Neither mechanism is reachable from the conformance suite**, and
+    /// that is worth knowing before trusting a green run on this point: that
+    /// suite configures a different subscription key and API key per product,
+    /// so its fingerprints differ with or without this field and the
+    /// copy-pasted-configuration case it exists for is never constructed.
+    /// The two unit tests are the whole of the evidence.
     pub(crate) fn fingerprint(&self) -> [u8; 32] {
-        vpay_provider::token::fingerprint(&[self.subscription_key, self.api_key, self.api_user])
+        vpay_provider::token::fingerprint(&[
+            self.product.path_segment(),
+            self.subscription_key,
+            self.api_key,
+            self.api_user,
+        ])
+    }
+
+    pub(crate) const fn product(&self) -> Product {
+        self.product
     }
 
     pub(crate) const fn target_environment(&self) -> &'a str {
@@ -156,6 +336,7 @@ impl<'a> Credentials<'a> {
 impl fmt::Debug for Credentials<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
+            .field("product", &self.product)
             .field("api_user", &self.api_user)
             .field("target_environment", &self.target_environment)
             .field("subscription_key", &"<redacted>")
@@ -233,9 +414,17 @@ impl ExpiresIn {
     }
 }
 
-/// Mints a fresh bearer token. Always a network call — the cache lives in
-/// [`crate::Adapter`], which is the only thing that can decide whether one is
-/// needed.
+/// Mints a fresh bearer token for `credentials`' own product. Always a
+/// network call — the cache lives in [`crate::Adapter`], which is the only
+/// thing that can decide whether one is needed.
+///
+/// The URL is derived from [`Credentials::product`] and never passed in, so
+/// there is no call site that can ask the Disbursements mint for a
+/// Collections token or the other way round. The grant body and its content
+/// type are the same on both endpoints — **assumed**, not measured: PR #177
+/// established the JSON spelling against Collections on MTN's real sandbox on
+/// 2026-09-15, and nothing has ever called the Disbursements mint. See
+/// `docs/flows/adapter-mtn-momo.md` § "Not proven".
 ///
 /// # Errors
 ///
@@ -251,7 +440,11 @@ pub(crate) async fn mint(
     config: &ProviderConfig,
     credentials: &Credentials<'_>,
 ) -> Result<CachedToken, ProviderError> {
-    let url = format!("{}/collection/token/", crate::base_url(config));
+    let url = format!(
+        "{}/{}/token/",
+        crate::base_url(config),
+        credentials.product.path_segment()
+    );
     // Recorded before the call, not after: a token's life starts when MTN
     // mints it, and counting from the response would credit the token with
     // however long the round trip took.
@@ -285,7 +478,11 @@ pub(crate) async fn mint(
                 "mtn_momo: token response is not the documented shape: {e}"
             ))
         })?;
-        tracing::debug!(rail = "mtn_momo", "minted a collections access token");
+        tracing::debug!(
+            rail = "mtn_momo",
+            product = credentials.product.path_segment(),
+            "minted an access token"
+        );
         return Ok(cache_entry(
             parsed.access_token,
             credentials.fingerprint(),
@@ -360,7 +557,7 @@ mod tests {
         for key in ["subscription_key", "api_key"] {
             let mut cfg = complete();
             cfg.credentials.remove(key);
-            match Credentials::from_config(&cfg) {
+            match Credentials::from_config(&cfg, Product::Collections) {
                 Err(ProviderError::Config(message)) => {
                     assert!(message.contains(key), "{message}");
                     assert!(
@@ -375,7 +572,7 @@ mod tests {
             let mut cfg = complete();
             cfg.settings.remove(key);
             assert!(matches!(
-                Credentials::from_config(&cfg),
+                Credentials::from_config(&cfg, Product::Collections),
                 Err(ProviderError::Config(_))
             ));
         }
@@ -390,7 +587,7 @@ mod tests {
         cfg.credentials
             .insert("api_key".to_owned(), "   ".to_owned());
         assert!(matches!(
-            Credentials::from_config(&cfg),
+            Credentials::from_config(&cfg, Product::Collections),
             Err(ProviderError::Config(_))
         ));
     }
@@ -409,16 +606,16 @@ mod tests {
         d.credentials
             .insert("api_key".to_owned(), "r0tated".to_owned());
 
-        let fa = Credentials::from_config(&a)
+        let fa = Credentials::from_config(&a, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fb = Credentials::from_config(&b)
+        let fb = Credentials::from_config(&b, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fc = Credentials::from_config(&c)
+        let fc = Credentials::from_config(&c, Product::Collections)
             .expect("complete")
             .fingerprint();
-        let fd = Credentials::from_config(&d)
+        let fd = Credentials::from_config(&d, Product::Collections)
             .expect("complete")
             .fingerprint();
 
@@ -431,7 +628,7 @@ mod tests {
         );
         assert_eq!(
             fa,
-            Credentials::from_config(&complete())
+            Credentials::from_config(&complete(), Product::Collections)
                 .expect("complete")
                 .fingerprint(),
             "the same credentials must reuse their token"
@@ -463,13 +660,106 @@ mod tests {
             ]),
         );
         assert_ne!(
-            Credentials::from_config(&left)
+            Credentials::from_config(&left, Product::Collections)
                 .expect("complete")
                 .fingerprint(),
-            Credentials::from_config(&right)
+            Credentials::from_config(&right, Product::Collections)
                 .expect("complete")
                 .fingerprint()
         );
+    }
+
+    /// **The token-scope test**, and the reason [`Product`] is in the
+    /// fingerprint at all.
+    ///
+    /// Two products' credentials configured with *identical* strings — which
+    /// is what an operator setting up a sandbox plausibly produces, and what
+    /// a copy-paste of three YAML lines certainly produces — must still
+    /// fingerprint differently, because the two bearers are minted from
+    /// different endpoints and carry different scopes. Without the product
+    /// discriminator these two values collide, the single cache lookup
+    /// succeeds, and a Collections-scoped bearer is sent on the
+    /// Disbursements `transfer` — a wrong-scope token on the only call this
+    /// rail has that sends money out.
+    ///
+    /// Delete `self.product.path_segment()` from `Credentials::fingerprint`
+    /// and this is the test that fails. Nothing else in this crate does:
+    /// every other configuration in this file differs in a value as well as
+    /// in a product.
+    #[test]
+    fn a_collections_bearer_is_never_served_to_a_disbursement() {
+        let identical = config(
+            BTreeMap::from([
+                ("subscription_key".to_owned(), "same".to_owned()),
+                (
+                    "disbursement_subscription_key".to_owned(),
+                    "same".to_owned(),
+                ),
+                ("api_key".to_owned(), "same".to_owned()),
+                ("disbursement_api_key".to_owned(), "same".to_owned()),
+            ]),
+            BTreeMap::from([
+                ("api_user".to_owned(), "same".to_owned()),
+                ("disbursement_api_user".to_owned(), "same".to_owned()),
+                ("target_environment".to_owned(), "sandbox".to_owned()),
+            ]),
+        );
+
+        let collections = Credentials::from_config(&identical, Product::Collections)
+            .expect("complete")
+            .fingerprint();
+        let disbursements = Credentials::from_config(&identical, Product::Disbursements)
+            .expect("complete")
+            .fingerprint();
+
+        assert_ne!(
+            collections, disbursements,
+            "two products' tokens are separately scoped; identical credentials must not make \
+             one cache entry serve both"
+        );
+    }
+
+    /// The Disbursements half of `a_missing_credential_names_the_key_and_never_the_value`,
+    /// and the half that says there is **no fallback**: a configuration
+    /// complete for Collections is not a configuration for Disbursements, and
+    /// the error names the disbursement key rather than silently borrowing
+    /// the Collections one.
+    #[test]
+    fn a_collections_configuration_is_not_a_disbursements_one() {
+        let collections_only = complete();
+        for key in [
+            "disbursement_subscription_key",
+            "disbursement_api_key",
+            "disbursement_api_user",
+        ] {
+            match Credentials::from_config(&collections_only, Product::Disbursements) {
+                Err(ProviderError::Config(message)) => {
+                    // The first missing key is the one named, so this loop
+                    // asserts the message is about *a* disbursement key; the
+                    // per-key naming is `refund`'s own test in `lib.rs`.
+                    assert!(
+                        message.contains("disbursement_"),
+                        "{key}: a Collections value must not satisfy a Disbursements key: \
+                         {message}"
+                    );
+                    assert!(
+                        !message.contains("sh1bboleth") && !message.contains("0pen-sesame"),
+                        "the value leaked: {message}"
+                    );
+                }
+                other => panic!("expected a Config error naming a disbursement key, got {other:?}"),
+            }
+        }
+    }
+
+    /// The two token endpoints, spelled once each. Both are **singular**, and
+    /// neither matches the product's English name — a plural in either is a
+    /// 404 from MTN's gateway, and there is no test anywhere else that would
+    /// notice.
+    #[test]
+    fn each_product_has_its_own_token_path_segment() {
+        assert_eq!(Product::Collections.path_segment(), "collection");
+        assert_eq!(Product::Disbursements.path_segment(), "disbursement");
     }
 
     /// A fingerprint no `Credentials` in this file produces, for the tests
@@ -583,7 +873,10 @@ mod tests {
     #[test]
     fn debugging_credentials_does_not_print_them() {
         let config = complete();
-        let rendered = format!("{:?}", Credentials::from_config(&config).expect("complete"));
+        let rendered = format!(
+            "{:?}",
+            Credentials::from_config(&config, Product::Collections).expect("complete")
+        );
         assert!(!rendered.contains("sh1bboleth"), "{rendered}");
         assert!(!rendered.contains("0pen-sesame"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");

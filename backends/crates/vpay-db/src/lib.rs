@@ -44,6 +44,14 @@ pub mod events;
 pub mod idempotency;
 pub mod invoices;
 pub mod jobs;
+// `ledger_transactions` / `ledger_entries` (migrations 0005 and 0045), and
+// the first writer either table has ever had — RFC-0003 § 4. Its own module
+// rather than functions on `settlement`, although its one write only ever
+// runs inside a settlement's transaction: the ledger is a second model of
+// the same money, not a column of the charge, and the argument for why
+// invariant 1 is enforced in Rust rather than in SQL needs a home that is
+// not the file the settlement statements live in.
+pub mod ledger;
 // `pub` for the same reason the repository modules are, plus one of its own:
 // a test that wants to prove a writer actually takes its lock has to be able
 // to *hold* that lock from outside (see
@@ -141,6 +149,7 @@ pub use invoices::{
     NewInvoice, NewInvoiceItem,
 };
 pub use jobs::{JobRow, Jobs};
+pub use ledger::Ledger;
 pub use migrations::Migrations;
 pub use payment_intents::{
     IntentFilter, ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents,
@@ -155,7 +164,9 @@ pub use persistence::PersistenceError;
 pub use pool::{MAX_CONNECTIONS, connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
 pub use rate_limits::RateLimits;
-pub use refunds::{RefundRow, Refunds, SettledRefund};
+pub use refunds::{
+    CancelOutcome, CancelRefusal, NewRefund, RefundListPage, RefundRow, Refunds, SettledRefund,
+};
 pub use repository::{
     PendingTransaction, Repositories, TransactionSource, TxFuture, TxOutcome, TxRepositories,
     UnitOfWork,

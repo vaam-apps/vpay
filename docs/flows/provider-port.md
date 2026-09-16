@@ -10,13 +10,14 @@ wire.
 
 `backends/crates/vpay-provider/src/lib.rs`
 
-| Method               | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `async submit`       | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge                                                                                                                                                                                                                                                                                          |
-| `async query_status` | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `parse_callback`     | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request                                                                                                                                                                                                                                                                                                                                           |
-| `async refund`       | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail _does_ refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it |
-| `capabilities`       | Static declaration the core reads instead of special-casing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Method               | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `async submit`       | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `async query_status` | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `parse_callback`     | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `parse_destination`  | Optional; the adapter's own `destination[<rail_code>][…]` sub-map → `RefundTarget`. Symmetric with `parse_callback`, and synchronous for the same reason — it reads a merchant's parameters and must not be able to call a rail. The core strips the rail code (its own envelope) and interprets nothing inside. The trait's **default** is `ProviderError::Unsupported`, which is the honest permanent answer for a rail declaring `RefundDestination::Origin`: it has no destination to parse. A `Required` rail overrides it, and `a_required_rail_parses_its_own_destination` in the conformance suite fails if one does not. A missing key, a non-string value or a blank one is `Malformed`, and the message names the parameter and never the number in it (RFC-0003 open question 4, decided 2026-09-15) |
+| `async refund`       | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail _does_ refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it                                                                                                                                                                                                                                     |
+| `capabilities`       | Static declaration the core reads instead of special-casing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 The three network methods are `async`, via `#[async_trait]` rather than a
 native `async fn`: a trait with a native `async fn` is not dyn-safe, and this
@@ -42,34 +43,96 @@ ignore it.
 ## Capabilities
 
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
-`requires_ip_allowlist`, `supports_account_holder_lookup`.
+`requires_ip_allowlist`, `supports_account_holder_lookup`,
+`refund_destination`.
 
-| Capability                       | `mtn_momo` | `orange_money` | What the core does with it                                                                                                                                        |
-| -------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `flow`                           | `Push`     | `Redirect`     | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url`                                                 |
-| `supports_refunds`               | `true`     | `false`        | refuses a refund on a rail with no refund API, with no rail-specific branch                                                                                       |
-| `supports_partial_refunds`       | `true`     | `false`        | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too                                                                                    |
-| `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                           |
-| `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                             |
-| `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47) |
+| Capability                       | `mtn_momo` | `orange_money` | What the core does with it                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flow`                           | `Push`     | `Redirect`     | decides whether a confirm needs a `payer_ref` or a `return_url`, and whether `submit` may answer a `redirect_url`                                                                                                                                                                                                                                                                               |
+| `supports_refunds`               | `true`     | `true`         | refuses a refund on a rail with no refund API, with no rail-specific branch. **No rail in this workspace declares it `false` since 2026-09-15** — see the paragraph below                                                                                                                                                                                                                       |
+| `supports_partial_refunds`       | `true`     | `false`        | implies `supports_refunds`; a CHECK constraint in migration `0002` says so too. Orange's `false` is now a _decision_ rather than an implication — see below                                                                                                                                                                                                                                     |
+| `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                                                                                                                                                                                                                                                         |
+| `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                                                                                                                                                                                                                                                           |
+| `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47)                                                                                                                                                                                                                               |
+| `refund_destination`             | `Required` | `Required`     | whether a refund needs an explicit payee. **Read by the core since 2026-09-16**, when wave 3 of [RFC-0003](../rfc/0003-refunds-destinations-and-the-first-ledger-postings.md) mounted `POST /v1/refunds`: `vpay_api::v1::refunds::resolve_target` branches on this and on no rail code (ADR-0002). _(This cell read "Declared only; no core code reads it yet … and is not built" until then.)_ |
 
-`orange_money` declares `supports_refunds: false`, and that flag — not a
-rail-specific branch — is what makes the core refuse a refund on that rail. The
-capability system earns its keep on day one.
+**`orange_money` declared `supports_refunds: false` until 2026-09-15**, and
+that flag — not a rail-specific branch — was what made the core refuse a refund
+on that rail. It was this page's example of the capability system earning its
+keep on day one, and it is now the example of what such a flag is a claim
+_about_. The maintainer decided (RFC-0003 § 5) that an Orange refund **is** an
+outbound transfer back to a payee. Orange makes transfers, so the rail can
+refund, and answering `Unsupported` would have been a lie about Orange rather
+than an admission about vpay. The flag is `true`; `orange_money::refund` is a
+declared `NotImplemented` token; and **no rail in this workspace declares
+`supports_refunds: false` any more**, which costs the conformance case
+`a_rail_without_the_refund_capability_answers_unsupported` the arm it used to
+run on. That arm is kept and the property it proved moved to
+`a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported` in
+`vpay-provider`; the case's own doc comment is the full account.
 
-**The last row is the newest and the only one that is not persisted.** The
-five above it are columns on `providers` (migration `0002`), seeded at boot
-from the adapter's own declaration;
-`supports_account_holder_lookup` has no column and no `ProviderSeed` field,
-because nothing reads a capability _out of_ that table — `vpay_api` resolves
-an adapter in-process and asks it — so a column would be a second copy of an
-answer the linked code already owns. The flow doc records the decision.
+**`orange_money`'s `supports_partial_refunds` stays `false`, and it is a
+decision.** `partial_refunds_imply_refunds` (migration `0002`) and
+`Capabilities::is_coherent` both permit `true` now, and permitted is not
+decided. The `true` above rests on one known thing — that an Orange refund is
+a transfer — and nothing else about Orange transfers is known here: no
+endpoint, no body, no amount semantics, no minimum, no limit. "Any amount up
+to the charge" is a property of a transfer product this repository has never
+seen. The merchant-visible direction settles it: `false` refuses a part-refund
+and says so, while a `true` that later turns out to be wrong has to be
+_withdrawn_ from merchants who integrated against it. `false` → `true` is
+additive; the reverse is a breaking change made on a guess. Flipping it
+belongs to whoever writes the transfer call against a real specification.
+
+**`mtn_momo`'s `supports_partial_refunds: true` has never been examined, and
+this sentence is the whole of the record.** It has been `true` since the
+capability existed, from a time when `mtn_momo::refund` was a
+`NotImplemented` token and the flag could not be acted on. It is now acted on:
+`vpay_api::v1::refunds` refuses a part-refund on a rail that declares `false`,
+so this flag decides what a merchant may ask MTN for. It is defensible —
+Disbursements is a documented transfer product and a transfer takes an amount
+— but it rests on the same kind of reading of a product this repository has
+never called that Orange's `false` was written to avoid, and **nobody has
+checked whether MTN's Disbursements product accepts an amount below the
+original collection, or what it does with one.** Orange's flag got a paragraph
+of justification on review; MTN's got none, and the asymmetry is the finding
+rather than the answer. **Left `true` deliberately and not silently:** changing
+it is the breaking direction (`true` → `false` withdraws a capability a
+merchant may have integrated against), so it is a maintainer's call and not a
+seam-owner's. Recorded 2026-09-16, undecided.
+
+**The last two rows are the newest and the only ones that are not
+persisted.** The five above them are columns on `providers` (migration
+`0002`), seeded at boot from the adapter's own declaration;
+`supports_account_holder_lookup` and `refund_destination` have no column and
+no `ProviderSeed` field, because nothing reads a capability _out of_ that
+table — `vpay_api` resolves an adapter in-process and asks it — so a column
+would be a second copy of an answer the linked code already owns. The flow
+doc records the decision.
+
+`refund_destination` is also the only capability with **no coherence rule**,
+and that is deliberate rather than an omission. `orange_money` declared
+`Required` while `supports_refunds` was still `false` — the rail's refunds are
+outbound transfers, and it was vpay that had not built them (RFC-0003 § 5) — so
+the obvious rule "a rail that cannot refund declares `Origin`" would have
+forced a live declaration to lie. The flip of 2026-09-15 removed that
+particular pair from the workspace but not the reason: the next rail to be
+added can reach the same state, and a rule written to be true only of today's
+two rails is not a rule. And there is nothing to mirror a Rust-only rule with:
+`Capabilities::is_coherent` is one half of a pair whose other half is a CHECK
+on `providers`, which this field has no column in.
+`a_refund_destination_is_inert_to_coherence` in `vpay-provider` pins the
+decision and says what would have to change first.
 
 **A rail that _has_ the API but has not written the call declares `true`
 anyway**, and overrides the port method with its own
-`ProviderError::NotImplemented` token, exactly as `mtn_momo::refund` does.
-`Unsupported` is a claim about the _rail_; a token is an admission about
-_us_, and `verify-status` only sees the second one.
+`ProviderError::NotImplemented` token, exactly as `orange_money::refund` has
+done since 2026-09-15. `Unsupported` is a claim about the _rail_; a token is an
+admission about _us_, and `verify-status` only sees the second one.
+`mtn_momo::refund` was in that state too until the same day, when its
+Disbursements `transfer` call was written and its token retired — so
+`docs/status.md`'s list has one entry, and a rail leaving that list says
+nothing about whether its written call has ever been made. MTN's has not.
 
 ## Preconditions, per flow shape
 
@@ -128,6 +191,246 @@ whether this is a port or just a folder.
 
 ## Status
 
+**Updated 2026-09-16 (RFC-0003 § 2, wave 3): the port's `refund` has a
+shipping caller for the first time, and no rail has executed one.** This
+section had no entry for the day the routes landed; the three below it each
+end with a "not built by this change" list that wave 3 is what moved.
+
+- **`ProviderAdapter::refund` is called from `vpay_api::v1::refunds::create`.**
+  Until 2026-09-16 the only callers were tests and the conformance suite. What
+  a call answers has not changed: on `mtn_momo` it is a real Disbursements
+  `transfer`, WireMock-proven and **rail-unproven** — MTN's Disbursements
+  product has never been called from this repository and no REAL credential
+  for it exists in this project — and on `orange_money` it is the
+  `NotImplemented("orange_money::refund")` token, which the handler turns into
+  a `failed` refund with its reservation released and a `501`. **Neither rail
+  answers `Unsupported`, and no rail has ever refunded anything.**
+- **`refund_destination` is read by core code**, which is what the
+  Capabilities table said was missing: `resolve_target` branches on the
+  capability and on no rail code (ADR-0002), and
+  `an_origin_rail_refuses_a_destination` is the only case in `vpay-api` that
+  fails when the branch is deleted — this workspace carries no `Origin` rail
+  for an integration suite to drive, so that one unit case is the whole guard.
+- **`parse_destination` has a caller, and the wave-1b obligation on it was
+  discharged.** The rail code is stripped before the adapter sees the map, and
+  a refusal is translated to `ApiError::invalid_param("destination", …)`
+  rather than forwarded — a `ProviderError::Malformed` would otherwise have
+  classified to `Category::Rail` and told a merchant their own typo was a rail
+  outage.
+- **Not moved by wave 3, and it is the whole of what is left:** nothing settles
+  a `pending` refund. The port has **no refund status read** — there is no
+  `query_refund_status` on this trait — so there is no refund poll ladder to
+  build one out of (RFC-0003 open question 8, open). Every refund these routes
+  create stays `pending`, and `invoices.amount_refunded` therefore never moves
+  in any deployment.
+- Evidence:
+  [verification/2026-09-16-w3-refund-routes.md](../status/verification/2026-09-16-w3-refund-routes.md),
+  [verification/2026-09-16-w3-merge.md](../status/verification/2026-09-16-w3-merge.md)
+  and [verification/2026-09-16-w3-seam.md](../status/verification/2026-09-16-w3-seam.md).
+
+**Updated 2026-09-15 (RFC-0003 § 5, wave 2): `orange_money` declares
+`supports_refunds: true`, and no rail in this workspace declares it `false`.**
+
+- Nothing about Orange's behaviour changed and **no refund got closer to
+  working**. What changed is what the refusal _means_: the maintainer decided
+  an Orange refund **is** an outbound transfer back to a payee, so the rail can
+  refund and it is vpay that has not built the call. The adapter overrides the
+  port with `ProviderError::NotImplemented("orange_money::refund")`;
+  `verify-status` counted two tokens for the rest of that day. _(It prints
+  **1** again, and has since later on 2026-09-15: a different branch retired
+  `NotImplemented("mtn_momo::refund")` by writing the Disbursements
+  `transfer`. This bullet said "now, not one" until 2026-09-16.)_
+- **No Orange transfer wire call was written, deliberately.** No Orange
+  transfer API is documented in this repository, not even reconstructed, so an
+  endpoint and a body would be invented in the money path. Item 5 of
+  [adapter-orange-money.md](adapter-orange-money.md)'s "To confirm with Orange
+  Cameroun" list is what unblocks it.
+- `supports_partial_refunds` stays `false` **as a decision**, not as a leftover
+  — the Capabilities section above argues it.
+- **The cost, stated because it is the only thing this change took away.**
+  `a_rail_without_the_refund_capability_answers_unsupported` ran its
+  `Unsupported` arm on Orange, the workspace's one rail declaring the
+  capability off. There is no such rail now. The arm was **kept** — a rail
+  added or flipped tomorrow is checked rather than silently skipped, the same
+  pattern as that suite's `Origin` arm — and the property moved to
+  `a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported` in
+  `vpay-provider`, on a stub that overrides nothing. What did not move is the
+  configured-rail half: that case reached a real adapter through a real
+  container and no adapter is left to reach. A fixture rail inside the
+  conformance suite was rejected, and the reason is `adapters()` rather than
+  ADR-0006 — _(corrected on review, 2026-09-15: ADR-0006 forbids a double
+  reachable from `vpay-server` or `vpay-worker-bin`, and a dev-only fixture in
+  a `tests/` package is reachable from neither; `verify-no-mocks` walks
+  non-dev edges from the binaries and would not object either)_. The real
+  reason is that `adapters()` is the shipping registry **every** case in that
+  file iterates, so a fixture rail would also have to satisfy the wire-level
+  cases, `adapter_codes_are_unique` and the destination cases — a rail invented
+  to keep one arm running would have to be built out until it was a rail, and
+  it is still one nobody ships.
+- The tripwire `a_refund_on_this_rail_would_need_a_payee` fired as designed and
+  its checklist was worked; the checklist is now recorded in the case's own doc
+  comment so that a deleted tripwire leaves a trace.
+- Evidence:
+  [verification/2026-09-15-refunds-w2-orange-flip.md](../status/verification/2026-09-15-refunds-w2-orange-flip.md)
+  and its review,
+  [verification/2026-09-15-refunds-w2-orange-review.md](../status/verification/2026-09-15-refunds-w2-orange-review.md).
+- **Review, same day:** `refund_is_refused_when_the_capability_is_absent` was
+  **deleted** from the conformance suite. Its whole body sat behind an
+  `if !supports_refunds` guard no rail entered after this flip, and
+  `every_adapter_declares_coherent_capabilities` — forty lines above it, over
+  every rail, unguarded — holds the same implication, with
+  `partial_refunds_imply_refunds` (`vpay-provider`) and
+  `partial_refunds_without_refunds_is_rejected_by_the_database`
+  (`postgres_smoke.rs`) behind it. No rule was retired; the deleted case was a
+  strict subset of those three. `verify-status` gained a third direction in the
+  same pass, because it compared token _strings_ and could not tell which rail
+  carried one.
+
+**Decided and built 2026-09-15: `RefundTarget::mobile_money` canonicalises,
+and refuses.** The constructor is fallible —
+`Result<RefundTarget, InvalidMsisdn>` — and the rule lives in `vpay-provider`,
+next to the type it guards and private to it, so no adapter can construct an
+invalid destination and none re-spells the rule. The asymmetry that decides it:
+a mistyped **payer** number fails a charge, a mistyped **payee** number sends
+real money to whoever owns that number and it does not come back. The arm had
+applied the confirm path's rule (`payer_instrument`: any non-whitespace string,
+passed on as written) on the grounds of symmetry with a payer, and those two
+cases are not symmetric.
+
+What that costs, stated rather than buried: **`vpay-provider` requires a full
+international number with its `+`**, because a market-agnostic crate has no
+country to attach to a bare national form and must not acquire one —
+`CM_COUNTRY_CODE` stays in `vpay-api`. So `600000200` is accepted by
+`GET /v1/account_holders`, which knows it is in Cameroon, and **refused** as a
+refund destination. Read as an international number it is country code `6`,
+which is Malaysia; accepting it would be a different subscriber in a different
+country receiving the money. The asymmetry runs in the safe direction and is
+recorded in [status/backend.md](../status/backend.md). What is shared with
+`canonical_msisdn` is the _specification_ — the separator set, the input bound,
+and the digits-only `237600000200` output a rail's `partyId` takes — and not the
+code, which is what would have moved the market rule down a crate.
+`InvalidMsisdn`'s variants are all **unit** variants, so a refusal structurally
+cannot carry the number it refused.
+
+**Reviewed 2026-09-15 (adversarial review of wave 1b).** Every number the arm
+reported reproduced exactly — 216 run / 216 passed / 0 skipped / 0 ignored
+against real containers, 13 doctests, clippy and fmt clean. Three holes its own
+tests could not see were closed, and one obligation on wave 3 was recorded:
+
+- **A forwarded `parse_destination` refusal is a 502, and wave 3 must not
+  forward it.** `ProviderError::Malformed` is the honest variant, but
+  `Classify` derives `Category::Rail` from it — so a merchant's typo in
+  `destination[<rail_code>][msisdn]` becomes HTTP 502, `Retry::AfterBackoff`,
+  and the envelope sentence "The payment rail is temporarily unavailable. The
+  charge will be retried.", while the parameter name the adapter put in
+  `context` reaches only the log. `POST /v1/refunds` must translate it to
+  `ApiError::invalid_param("destination", …)`, as `payer_instrument` already
+  answers for `payment_method_data`.
+  `a_malformed_destination_is_classified_as_a_rail_fault` pins the
+  classification.
+- **The `raw` boundary now fails safe, and only that.** Nothing connects the
+  two sides of "the rail-scoped inner map" until wave 3 writes the caller;
+  `the_outer_destination_map_is_refused_rather_than_misread` pins that handing
+  over the _un-stripped_ map is `Malformed`, never an `Ok` carrying a payee
+  nobody nominated.
+- **The impl probe covers three more leak routes.** Measured: with
+  `impl Deref for RefundTarget { type Target = str; }`, `to_string()` printed
+  the number in full while the case passed. `Deref`, `AsRef<str>` and
+  `Into<String>` now have constants of their own.
+- **The conformance no-echo assertion was unfalsifiable** — it ran against the
+  empty-map refusal, which never held a number — and now refuses a map that
+  carries one.
+- Evidence:
+  [verification/2026-09-15-refunds-w1b-parse-destination-review.md](../status/verification/2026-09-15-refunds-w1b-parse-destination-review.md).
+
+**Updated 2026-09-15 (RFC-0003 wave 1b): the adapter parses the destination,
+not the core.**
+
+- `ProviderAdapter::parse_destination` — a `&serde_json::Map<String, Value>`
+  in, a `Result<RefundTarget, ProviderError>` out — implements RFC-0003 open
+  question 4, which the maintainer decided on 2026-09-15. Wave 1 had assumed the core
+  would build a `RefundTarget` out of `destination[<rail_code>][msisdn]` the
+  way the confirm path reads `payment_method_data[<code>]["msisdn"]`; the
+  decision went the other way, so that a bank-account upstream costs **no**
+  core change rather than a core that has learned a second set of wire keys.
+  Both shapes satisfy ADR-0002; neither adds a rail-code branch.
+- The default body is `ProviderError::Unsupported` — the honest permanent
+  answer for an `Origin` rail, which has no destination to parse at all, and
+  the same shape `refund` and `account_holder_name` already have. Both rails
+  vpay carries declare `Required` and both override it.
+- **`Measured` forwards it.** That is the dangerous half of a defaulted
+  method: a missing forward compiles, leaves every adapter's own tests green
+  because they hold the adapter unwrapped, and answers "this rail has no such
+  API" for every refund in production, because
+  `vpay_api::v1::boot::adapters_by_code` wraps every shipping adapter.
+  `a_defaulted_method_is_not_silently_answered_by_the_wrapper` fails if the
+  forward is deleted.
+- ~~**MSISDN validation did not move and was not copied — a named gap.**~~
+  **Decided by the maintainer on 2026-09-15 and closed the same day** (see the
+  next section). The arm was right to leave it rather than guess, and right
+  about the reasoning; the decision went the other way from the rule it had
+  applied.
+- **Not built by this change:** still no `POST /v1/refunds` (wave 3), no core
+  code reading `refund_destination`, no MTN Disbursements call, no Orange
+  transfer, no ledger posting. Nothing calls `parse_destination` outside
+  tests.
+- Evidence:
+  [verification/2026-09-15-refunds-w1b-parse-destination.md](../status/verification/2026-09-15-refunds-w1b-parse-destination.md).
+
+**Updated 2026-09-15 (RFC-0003 wave 1): the port can express a refund
+destination, and nothing calls it yet.**
+
+- `Capabilities` gained `refund_destination: RefundDestination`
+  (`Origin` | `Required`), and `ProviderAdapter::refund` gained
+  `destination: Option<&RefundTarget>` between `amount` and `config`. The
+  default body is still `ProviderError::Unsupported` and `mtn_momo::refund`
+  is still its `NotImplemented` token — **no refund got closer to working**;
+  what changed is that "does this rail need a payee?" is now a capability the
+  core will branch on instead of a rail code (ADR-0002).
+  _(Superseded in part later the same day by wave 2 and RFC-0003 § 5:
+  `mtn_momo::refund` is now MTN's Disbursements `transfer` call and its token
+  is retired. The sentence in bold did not move — no REAL MTN Disbursements
+  credential exists in this project, and that product has never been called.
+  `POST /v1/refunds` **is** routed since 2026-09-16 (RFC-0003 § 2); this note
+  said it was still unrouted, and "no refund got closer to working" survives
+  that anyway, because nothing settles a `pending` refund.)_
+- Both rails declare `Required`. On `orange_money` that sits beside
+  `supports_refunds: false` on purpose — see the Capabilities section above.
+  _(Superseded by wave 2 above on the same day: the flag is `true`, and the
+  pair is no longer the interesting one. `Required` did not move.)_
+- `RefundTarget` carries a canonical MSISDN, keeps it private behind
+  `msisdn()`, and its `Debug` renders `[redacted]`: a payee's number is the
+  data RFC-0003 refused to put in `metadata`, and its retention is that
+  RFC's open question 2, undecided. _(Superseded in part by wave 1b above:
+  "canonical" is weaker than it sounds — see the MSISDN gap there. Wave 1
+  also expected `vpay_api` to construct one; the adapter does.)_
+- **Not built by this change:** `POST /v1/refunds` (wave 3), any MTN
+  Disbursements call (RFC-0003 § 5), any Orange transfer call, any ledger
+  posting. The core does not yet check a destination against this capability,
+  because there is no core path that creates a refund at all.
+- **Three claims on this page are time-limited, and only one of them has a
+  test.** `orange_money`'s `false` in the `supports_refunds` row, and the
+  paragraph under the table that reads that `false` as the capability system
+  earning its keep, both stop being true when RFC-0003 § 5 flips the flag; the
+  `refund_destination` row's "no core code reads it yet" stops being true when
+  § 2's `POST /v1/refunds` lands. The one guard is
+  `a_refund_on_this_rail_would_need_a_payee` in `vpay-adapter-orange-money`,
+  whose failure message names this page. Nothing guards the third — the arm
+  that builds the route has to come back here. _(Two of the three came due the
+  same day: wave 2 above flipped the flag, the tripwire fired, and the row and
+  the paragraph were rewritten with it. The third — "no core code reads it
+  yet" — is still standing and still unguarded.)_
+- **The destination is proven to survive the decorator.** `Measured` is what
+  `vpay_api::v1::boot::adapters_by_code` wraps every shipping adapter in, and
+  until the correctness review of the same day nothing observed what it
+  forwarded: dropping the destination there left 199 tests green, because no
+  adapter reads the argument yet.
+  `the_destination_reaches_the_inner_adapter_and_never_a_metric` is what fails
+  now, and it also asserts the payee's number reaches no metric label. The
+  conformance suite asserts the other half — a payee is supplied exactly when
+  the rail declares `Required`, read off the adapter's own capability. See
+  [verification/2026-09-15-refunds-w1-provider-port.md](../status/verification/2026-09-15-refunds-w1-provider-port.md).
+
 **Updated 2026-09-06 (review of exp20): "Adding a rail" steps 2 and 3 above
 were both wrong about where a rail is written down.** Step 2 said `INSERT INTO
 providers`; `ConfigReconcile::reconcile` is the only writer of that table and
@@ -148,7 +451,14 @@ speak over it to a real HTTP host.**
   `Submitted`.** The new type carries `ref_extra` exactly as before plus
   `fee: Option<Money>` — what the rail charged us to move the money, in the
   refund's own currency. **No adapter populates it**, and none can: Orange
-  has no refund API and `mtn_momo::refund` is still `NotImplemented`. `None`
+  had no refund API and `mtn_momo::refund` is still `NotImplemented`.
+  _(Superseded in part on 2026-09-15, on both rails: Orange's refusal is now
+  its own `NotImplemented("orange_money::refund")` token — see the
+  Capabilities section above — and `mtn_momo::refund` is written. The
+  conclusion did not move: no adapter populates `fee`. MTN's transfer answers
+  `202 ACCEPTED` with an empty body and no documented fee field, so the
+  adapter reports `None`, asserted by
+  `an_accepted_transfer_reports_no_fee_and_no_key_material`.)_ `None`
   means "the rail did not report a fee" and `Some(zero)` means "the movement
   was free"; an adapter that collapsed the two would put an invented number
   in a merchant's settlement statement. See [../status.md](../status.md).

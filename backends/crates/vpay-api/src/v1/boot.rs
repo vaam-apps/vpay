@@ -389,7 +389,7 @@ mod tests {
     use vpay_core::Money;
     use vpay_provider::{
         CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig, ProviderError,
-        Refunded, Submitted,
+        RefundDestination, RefundTarget, Refunded, Submitted,
     };
 
     use super::*;
@@ -433,6 +433,11 @@ mod tests {
             delivers_callbacks: true,
             requires_ip_allowlist: false,
             supports_account_holder_lookup: false,
+            // A `#[cfg(test)]` fixture: the value is inert here (this rail
+            // refuses every refund) and `Origin` is the shape that needs no
+            // payee, so the fixture asks the port for nothing it does not
+            // have.
+            refund_destination: RefundDestination::Origin,
         }
     }
 
@@ -470,6 +475,7 @@ mod tests {
             &self,
             _charge: &ChargeRef,
             _amount: Money,
+            _destination: Option<&RefundTarget>,
             _config: &ProviderConfig,
         ) -> Result<Refunded, ProviderError> {
             Err(ProviderError::Unsupported)

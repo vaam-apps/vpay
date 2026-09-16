@@ -288,9 +288,56 @@ exists behind it. Proven by five container-backed cases in
 `merchant_b_cannot_read_merchant_as_refund`,
 `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
 `a_refund_id_without_the_re_prefix_is_never_looked_up`,
-`creating_a_refund_is_still_the_honest_404`). **Nothing creates a refund**:
-the rows those cases read are `INSERT`ed by the suite, because
-`vpay_db::Refunds` exposes one read and no write.
+~~`creating_a_refund_is_still_the_honest_404`~~). ~~**No merchant can create a
+refund**: `POST /v1/refunds` is unrouted until wave 3~~ **— both corrected
+2026-09-16 (wave 3). A merchant can create a refund**: all five refund routes
+are mounted (RFC-0003 § 2), and the fifth case above was **renamed** when the
+handler landed — it is `a_refund_is_created_pending_and_the_rail_is_instructed`
+now, and it asserts a `201` and a `pending` row where its predecessor asserted
+the nest's `unknown_route`. The four read cases are unchanged and still seed
+their own rows deliberately, so that a change to the create path cannot quietly
+change what they measure. **What did not move is the sentence this paragraph
+exists for:** no rail has ever executed a refund — `mtn_momo::refund` is
+written and MTN's Disbursements product has never been called, no REAL
+credential for it exists in this project, and `orange_money::refund` is a
+`NotImplemented` token — and **nothing settles a `pending` refund** (there is
+no refund poll ladder, RFC-0003 open question 8). _(That clause read "because
+`vpay_db::Refunds` exposes one read and no write" until 2026-09-15, when
+RFC-0003 § 3 added `Refunds::create` and `Refunds::cancel`.)_
+
+**Corrected 2026-09-16 (wave 3).** Two claims in the paragraph above are now
+false and are left standing rather than rewritten: ~~"`POST /v1/refunds` is
+unrouted until wave 3"~~ and ~~"nothing reachable over `/v1` writes a
+refund"~~. Wave 3 arrived. Arm F mounted `POST /v1/refunds`,
+`GET /v1/refunds`, `POST /v1/refunds/{id}` and
+`POST /v1/refunds/{id}/cancel`, and arm G put all four plus the existing
+retrieve in **both** merchant SDKs, with the `destination` a
+`RefundDestination::Required` rail needs:
+
+    POST /v1/refunds
+      payment_intent=pi_...
+      amount=2000                          # omit for a full refund
+      destination[mtn_momo][msisdn]=%2B237600000200
+
+The rail's own code is the outer key — the same envelope
+`payment_method_data[<rail_code>]` uses on the confirm path — and the payee
+must be **international, starting with `+`**: `RefundTarget::mobile_money`
+refuses the bare national form because `vpay-provider` is not
+Cameroon-specific, which is a rule `GET /v1/account_holders` deliberately does
+**not** apply. Neither SDK canonicalises the number.
+
+**What is still true, and is the sentence that matters:** no refund has ever
+moved money. `orange_money::refund` is a `NotImplemented` token,
+`mtn_momo::refund` is MTN's Disbursements `transfer` and that product has
+never been called from this repository, and **nothing settles a `pending`
+refund** — there is no refund poll ladder (RFC-0003 open question 8).
+
+Both SDKs now drive a **real** `vpay-server` over a socket for this surface —
+`sdks/rust/tests/live_refunds.rs` (behind the `live-stack` feature) and
+`sdks/nodejs/src/refunds.live.test.ts` (its own vitest project), both run by
+`just sdk-live`, both failing rather than skipping with no stack. The run, and
+the demo-stack misconfiguration it found, are in
+[docs/status/verification/2026-09-16-w3-sdk-refunds.md](../status/verification/2026-09-16-w3-sdk-refunds.md).
 
 **Evidence for the Step 2 half, run on this machine on 2026-09-03 with a
 working rootless Docker daemon:** `cargo nextest run -p vpay-db -p
@@ -409,15 +456,26 @@ work does not close them.
   `/v1/events` and `/v1/events/{id}` have been served since Step 5
   (2026-09-03) and `events` is read by `vpay_db::Events`; `GET
 /v1/refunds/{id}` is served as of issue #45 and `refunds` is read by
-  `vpay_db::Refunds`. **Nothing writes either table from `/v1`**, and that is
-  the part that is still true: `POST /v1/refunds` is unrouted, `GET
-/v1/balance` is unrouted, and events are written only by the settlement
-  and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
+  `vpay_db::Refunds`. ~~**Nothing writes either table from `/v1`**, and that
+  is the part that is still true: `POST /v1/refunds` is unrouted~~ —
+  **corrected 2026-09-16 (wave 3): `POST /v1/refunds` is mounted with the
+  other four refund routes (RFC-0003 § 2), and `vpay_api::v1::refunds` writes
+  both tables from `/v1` — the `refunds` row and `charge.refunded` in one
+  transaction. It still does not mean money moved.** `GET
+/v1/balance` is unrouted, and events are otherwise written only by the
+  settlement and expiry transactions inside `vpay-db`. The `refund` object's `fee` —
   migration `0031`, `vpay_api::model::RefundObject::fee` — is **read but
   never written**: the column is in the repository's projection and the key
-  is on every refund this API renders, and because nothing writes a refund at
-  all — and no adapter can supply a fee — the value is `null` on every object
-  this repository can produce.
+  is on every refund this API renders, and because no rail has ever supplied
+  a fee the value is `null` on every object this repository can produce.
+  `orange_money::refund` is a `NotImplemented` token; `mtn_momo::refund` is
+  written, and MTN's `202 ACCEPTED` carries an empty body with no documented
+  fee field, so it reports `None` — and that product has never been called
+  from this repository anyway. _(This read "because nothing writes a refund at
+  all" until 2026-09-15; `vpay_db::Refunds::create` writes the row, and it
+  writes no fee: nothing in this repository has ever had one to write. The
+  clause naming a token on **both** rails was true for part of the same day
+  and is not now.)_
 - **No scheduled idempotency sweep.** See the Idempotency section above.
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and

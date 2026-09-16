@@ -20,6 +20,11 @@ vpay-core.workspace = true
 vpay-api.workspace = true
 vpay-config.workspace = true
 vpay-db.workspace = true
+# `postgres_smoke.rs`' migration-0045 cases build the `Transaction` the
+# shipping ledger writer takes and recompute `balance(merchant_payable)`
+# independently of the SQL under test. Not a test double: these are the same
+# types `vpay-db` persists and `vpay-api` classifies errors from.
+vpay-ledger.workspace = true
 vpay-provider.workspace = true
 # `tests/worker_{recovery,e2e}.rs` and `tests/webhooks.rs`: the crate under
 # test. These suites are the *only* proof that any handler works —

@@ -4724,6 +4724,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vpay-core",
+ "vpay-ledger",
  "vpay-testkit",
 ]
 
@@ -4833,6 +4834,7 @@ name = "vpay-tests-conformance"
 version = "0.1.0"
 dependencies = [
  "rstest",
+ "serde_json",
  "testcontainers",
  "tokio",
  "tracing",
@@ -4880,6 +4882,7 @@ dependencies = [
  "vpay-config",
  "vpay-core",
  "vpay-db",
+ "vpay-ledger",
  "vpay-provider",
  "vpay-sdk",
  "vpay-testkit",

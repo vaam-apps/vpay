@@ -21,6 +21,8 @@
 
 use std::sync::LazyLock;
 
+use vpay_sdk::payment_intents::PaymentMethodType;
+use vpay_sdk::refunds::{CreateRefundParams, RefundDestination};
 use vpay_sdk::{CheckoutSession, Client, Credentials, PaymentIntent};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -205,4 +207,52 @@ fn a_rejected_private_key_does_not_echo_the_key_into_the_error() {
         !rendered.contains("not-a-key"),
         "the supplied key material was echoed: {rendered}"
     );
+}
+
+/// A refund's payee is a **third party's** phone number, and the merchant is
+/// holding it on their behalf.
+///
+/// vpay's own handler logs it masked and never raw, renders it in no response
+/// and in no event body, and keeps no column for it — RFC-0003 rejected
+/// carrying it in `metadata` precisely because metadata is inside every
+/// signed webhook. An SDK whose params struct printed it in full would put
+/// the same number in the *merchant's* logs one hop earlier, which is the
+/// same leak with a different owner.
+///
+/// Both types are named, because either one is enough to lose it: the
+/// destination alone, and the params struct that carries it.
+#[test]
+fn a_create_refund_params_debug_output_never_contains_the_payees_number() {
+    let msisdn = "+237600000200";
+    let destination = RefundDestination::mobile_money(PaymentMethodType::MtnMomo, msisdn);
+    let params = CreateRefundParams {
+        payment_intent: "pi_1".to_string(),
+        amount: Some(2500),
+        destination: Some(destination.clone()),
+        ..Default::default()
+    };
+
+    for rendered in [
+        format!("{destination:?}"),
+        format!("{destination:#?}"),
+        format!("{params:?}"),
+        format!("{params:#?}"),
+    ] {
+        assert!(
+            !rendered.contains(msisdn),
+            "the payee's number leaked: {rendered}"
+        );
+        // Not merely absent — absent *and* replaced by something that says
+        // so, so an operator reading the line knows a value was withheld
+        // rather than never supplied.
+        assert!(rendered.contains("[redacted]"), "{rendered}");
+        // The number without its `+` must not survive either: a `Debug` that
+        // printed the digits would be no better for the person they identify.
+        assert!(!rendered.contains("237600000200"), "{rendered}");
+        // Still useful: the rail is what a merchant debugging a 400 needs.
+        assert!(
+            rendered.contains("mtn_momo") || rendered.contains("MtnMomo"),
+            "{rendered}"
+        );
+    }
 }

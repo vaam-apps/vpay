@@ -10,10 +10,19 @@
 //! Step 3 built them. A test is ignored in this repo only while the behaviour
 //! it describes is unbuilt (`just verify-ignored` holds the count at zero for
 //! this suite), so a green run here means these assertions were made against a
-//! real container, not skipped. `mtn_momo::refund` keeps its `NotImplemented`
-//! token — Disbursements is a separate product — and
-//! [`a_rail_without_the_refund_capability_answers_unsupported`] asserts exactly
-//! that, rather than being ignored for it. See `docs/status.md`.
+//! real container, not skipped. The refund cases are the newest example and
+//! the one worth knowing about. `mtn_momo::refund` kept a `NotImplemented`
+//! token until 2026-09-15, when MTN's Disbursements `transfer` call was
+//! written (RFC-0003 § 5) — so the MTN cases now drive a real call at a real
+//! stub rather than asserting a token. **They prove the adapter, not the
+//! rail**: nothing in this repository has ever called MTN's Disbursements
+//! product and a stub faithful to MTN's documentation but not to MTN would
+//! pass every one. `orange_money::refund` is still a `NotImplemented` token,
+//! since 2026-09-15, because an Orange refund is an outbound transfer this
+//! repository has no specification for (RFC-0003 § 5), and
+//! [`a_rail_without_the_refund_capability_answers_unsupported`] asserts
+//! exactly that — never `Unsupported` — rather than being ignored for it.
+//! See `docs/status.md`.
 //!
 //! The wire-level cases were written *before* the adapters, deliberately: this
 //! file was the specification the MTN and Orange implementers coded against,
@@ -137,6 +146,7 @@ use uuid::Uuid;
 use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError,
+    RefundDestination, RefundTarget,
 };
 use vpay_testkit::containers::start_wiremock;
 
@@ -166,6 +176,24 @@ fn adapters() -> Vec<Box<dyn ProviderAdapter>> {
 /// statement about what the port *declares*, and it is checked for every
 /// adapter in the workspace, so a rail added tomorrow is covered without
 /// touching this file.
+///
+/// # This absorbed `refund_is_refused_when_the_capability_is_absent`
+///
+/// That case asserted the same implication behind an
+/// `if !supports_refunds` guard, and on 2026-09-15 RFC-0003 § 5 flipped
+/// `orange_money` — the workspace's last rail declaring `false` — so its whole
+/// body stopped executing. It was deleted on review the same day rather than
+/// documented in place: a case that runs and asserts nothing is the shape
+/// `CLAUDE.md` names, and this one reached it by drift rather than by intent.
+///
+/// **No rule was retired, which is the only reason deleting it was safe.**
+/// This case holds the same implication unconditionally, on every rail, with
+/// no guard to go dead. `partial_refunds_imply_refunds` in `vpay-provider`
+/// pins that [`Capabilities::is_coherent`] actually refuses the bad pair, so
+/// this cannot pass by the helper being weakened, and
+/// `partial_refunds_without_refunds_is_rejected_by_the_database` in
+/// `postgres_smoke.rs` proves migration `0002`'s CHECK fires on the same
+/// pair. The deleted case was a strict subset of the three.
 #[test]
 fn every_adapter_declares_coherent_capabilities() {
     for a in adapters() {
@@ -173,6 +201,58 @@ fn every_adapter_declares_coherent_capabilities() {
         assert!(
             c.is_coherent(),
             "{}: partial refunds without refunds",
+            a.code()
+        );
+    }
+}
+
+/// **Every rail this workspace ships declares
+/// [`RefundDestination::Required`] — and this case exists to fail on the day
+/// one does not.**
+///
+/// It asserts a fact, not a rule, and the fact is load-bearing for a test
+/// somewhere else. `vpay_api::v1::refunds::resolve_destination` refuses a
+/// `destination` sent to an `Origin` rail, and merging that arm into the one
+/// above it — `(Origin, _) => Ok(None)`, which accepts the payee and silently
+/// drops it — compiles and fails **exactly one** test in the workspace:
+/// `an_origin_rail_refuses_a_destination`, a unit test driving a hand-written
+/// fake. Measured 2026-09-16 by the arm that wrote it, and re-stated here
+/// because the reason no integration or conformance case can fail with it is
+/// precisely the fact this line pins: there is no `Origin` rail to drive one
+/// with.
+///
+/// So the single unit test is *adequate* while this assertion holds, and
+/// becomes inadequate the moment it stops holding — at which point this case
+/// goes red and says what is owed. That is the whole design:
+///
+/// * a fixture `Origin` rail is **not** added to this suite. An earlier arm
+///   refused that and ADR-0006 is why — this suite parameterises over the
+///   rails that actually ship, and a rail that ships nowhere would make every
+///   case here answer a question about a fake;
+/// * nothing here can make the core's arm *reachable*, so nothing here tries
+///   to. What it can do is refuse to let the premise change quietly.
+///
+/// Added by review, 2026-09-16. `a_destination_is_offered_exactly_when_the_capability_demands_one`
+/// is the neighbouring case that pins this file's own `Origin` branch, and it
+/// has no caller for the same reason.
+#[test]
+fn no_shipping_rail_returns_a_refund_to_the_paying_instrument() {
+    for a in adapters() {
+        assert_eq!(
+            a.capabilities().refund_destination,
+            RefundDestination::Required,
+            "{} now declares RefundDestination::Origin. That is a legitimate thing for a rail \
+             to be — a card or a wallet refunds to the instrument that paid — and it makes an \
+             `Origin` rail drivable end to end for the first time. Three things are owed \
+             before this assertion is relaxed to admit it: (1) an integration case in \
+             backends/tests/integration/tests/refunds.rs that sends `destination` to this \
+             rail through POST /v1/refunds and asserts the 400, because until now \
+             `an_origin_rail_refuses_a_destination` in vpay_api::v1::refunds — a unit test on \
+             a hand-written fake — has been the ONLY thing in this workspace that fails when \
+             that arm is deleted; (2) a case that a refund WITHOUT a destination succeeds on \
+             it, which nothing covers either; (3) docs/rfc/0003-refunds-destinations-and-the-\
+             first-ledger-postings.md section 1 updated, since it says every rail vpay \
+             carries needs a payee. Do not simply widen this assertion.",
             a.code()
         );
     }
@@ -188,25 +268,6 @@ fn adapter_codes_are_unique() {
     let before = codes.len();
     codes.dedup();
     assert_eq!(before, codes.len(), "duplicate adapter codes: {codes:?}");
-}
-
-/// The *declaration* half of the refund contract: a rail with no refund API
-/// must not advertise partial refunds either, so the core's capability branch
-/// (ADR-0002) is the only thing that ever has to decide.
-///
-/// The *behavioural* half — that calling `refund` on such a rail answers
-/// `Unsupported` — is
-/// [`a_rail_without_the_refund_capability_answers_unsupported`], which needs a
-/// configured rail and so sits with the wire-level cases.
-#[test]
-fn refund_is_refused_when_the_capability_is_absent() {
-    for a in adapters() {
-        if !a.capabilities().supports_refunds {
-            // Orange has no refund API; the capability flag is what makes the
-            // core refuse, with no rail-specific branch anywhere.
-            assert!(!a.capabilities().supports_partial_refunds);
-        }
-    }
 }
 
 /// Proves `parse_callback` fails closed on a body carrying no identifiers.
@@ -452,6 +513,13 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                         "api_user".to_owned(),
                         "11111111-2222-3333-4444-555555555555".to_owned(),
                     ),
+                    // A different UUID from the Collections one, so a
+                    // Disbursements call that fell back to the charge path's
+                    // API user would mint under the wrong Basic username.
+                    (
+                        "disbursement_api_user".to_owned(),
+                        "66666666-7777-8888-9999-000000000000".to_owned(),
+                    ),
                 ]),
                 credentials: match credentials {
                     Credentials::Valid => BTreeMap::from([
@@ -460,11 +528,43 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                             "stub-subscription-key".to_owned(),
                         ),
                         ("api_key".to_owned(), "stub-api-key".to_owned()),
+                        // The **Disbursements** half. Every value differs
+                        // from its Collections twin on purpose: the stub's
+                        // `transfer` mapping matches on the disbursement
+                        // subscription key and on the bearer minted from
+                        // `/disbursement/token/`, so an adapter that reused
+                        // the charge path's credentials or its cached bearer
+                        // gets a 404 from WireMock rather than a 202. That
+                        // is the only witness this suite has for "the refund
+                        // used a disbursement-scoped token".
+                        //
+                        // No deployment holds a REAL Disbursements
+                        // credential (`docs/status.md`) — these are stub
+                        // values for a stub product, `config/application.yml`
+                        // carries the keys unpopulated, and the only other
+                        // place they are populated at all is the e2e/demo
+                        // stack, with stubs of its own aimed at WireMock.
+                        (
+                            "disbursement_subscription_key".to_owned(),
+                            "stub-disbursement-subscription-key".to_owned(),
+                        ),
+                        (
+                            "disbursement_api_key".to_owned(),
+                            "stub-disbursement-api-key".to_owned(),
+                        ),
                     ]),
                     // The value the MTN mappings answer 401 to.
                     Credentials::Rejected => BTreeMap::from([
                         ("subscription_key".to_owned(), "bad-key".to_owned()),
                         ("api_key".to_owned(), "stub-api-key".to_owned()),
+                        (
+                            "disbursement_subscription_key".to_owned(),
+                            "bad-key".to_owned(),
+                        ),
+                        (
+                            "disbursement_api_key".to_owned(),
+                            "stub-disbursement-api-key".to_owned(),
+                        ),
                     ]),
                 },
                 connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
@@ -720,6 +820,38 @@ fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> String {
                  "bodyPatterns":[{{"matchesJsonPath":
                    {{"expression":"$.notif_url","equalTo":"{callback_url}"}}}}]}}"#
         ),
+    }
+}
+
+/// Where each rail is documented to carry the **payee** on a refund, as a
+/// WireMock request pattern over that rail's refund endpoint — or `None` for
+/// a rail with no refund API.
+///
+/// Rail-specific *data*, one shared body, the line [`callback_url_pattern`]
+/// holds. The pattern pins three things at once, and each of them is a
+/// distinct way to send the money somewhere nobody nominated:
+///
+/// * the **endpoint** — MTN's refund is a different *product*, so a request
+///   at `/collection/…` is the wrong API entirely;
+/// * the **reference** — the refund's own, in `X-Reference-Id`, so a transfer
+///   addressed by a freshly minted id (which a crash would then lose) does
+///   not match;
+/// * the **payee**, at `$.payee.partyId`, in the canonical digits-only shape.
+///   `$.payer.partyId` would not match, and neither would the merchant's
+///   `+`-prefixed spelling.
+///
+/// `None` for Orange because Orange has no refund API at all
+/// ([`claims_refunds`] asserts that separately); the day RFC-0003 § 5's
+/// transfer is written, this is one of the places that has to grow a row.
+fn refund_body_pattern(rail: RailUnderTest, reference: Uuid) -> Option<String> {
+    match rail {
+        RailUnderTest::MtnMomo => Some(format!(
+            r#"{{"method":"POST","urlPath":"/disbursement/v1_0/transfer",
+                 "headers":{{"X-Reference-Id":{{"equalTo":"{reference}"}}}},
+                 "bodyPatterns":[{{"matchesJsonPath":
+                   {{"expression":"$.payee.partyId","equalTo":"{REFUND_PAYEE_CANONICAL}"}}}}]}}"#
+        )),
+        RailUnderTest::OrangeMoney => None,
     }
 }
 
@@ -1273,15 +1405,664 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     let _: &vpay_provider::RefExtra = &parsed.ref_extra;
 }
 
+/// A payee's number that belongs to nobody, as a merchant sends it.
+///
+/// One constant rather than a literal per case, because every assertion about
+/// it is a *negative* one — "this string must not appear in an error, a log
+/// line or a metric label" — and a second spelling is a second string those
+/// assertions would not be looking for.
+const DOCUMENTATION_MSISDN: &str = "+237600000200";
+
+/// The same payee as [`DOCUMENTATION_MSISDN`], in the shape the rail is
+/// given: `RefundTarget::mobile_money` canonicalises to digits only, no `+`,
+/// matching the `partyId` both adapters already send on the charge path.
+///
+/// Two constants because the boundary between them is what the maintainer
+/// decided on 2026-09-15, and a test that used one string for both would not
+/// notice if the canonicalisation stopped happening. The negative assertions
+/// below check **both**: a redaction that hid the `+` form and printed the
+/// digits would have leaked the number just the same.
+const DOCUMENTATION_MSISDN_CANONICAL: &str = "237600000200";
+
+/// A destination for whatever the rail under test declares it needs, built
+/// from the capability value alone.
+///
+/// This is the branch the core makes (RFC-0003 § 1), written once here so
+/// that no case in this file has to know which rail wants a payee — which is
+/// the same rule the production code is held to, and the reason the suite can
+/// be parameterised over both rails at all.
+///
+/// The number is [`DOCUMENTATION_MSISDN`] and belongs to nobody. It is passed
+/// to rails whose `refund` is unbuilt, so nothing is ever sent anywhere.
+fn destination_for(destination: RefundDestination) -> Option<RefundTarget> {
+    match destination {
+        RefundDestination::Required => Some(
+            RefundTarget::mobile_money(DOCUMENTATION_MSISDN)
+                .expect("the documentation MSISDN is a valid payee"),
+        ),
+        // Not "no destination handy": an `Origin` rail returns money to the
+        // instrument that paid, and offering it a payee would be asking it to
+        // ignore one.
+        RefundDestination::Origin => None,
+    }
+}
+
+/// Pins the helper above, because nothing else can.
+///
+/// Both rails this workspace carries declare `Required`, so the `Origin` arm
+/// has no caller in this file and the `Required` arm is passed to two
+/// `refund` implementations that ignore their argument — both of them unbuilt
+/// `NotImplemented` tokens since RFC-0003 § 5. Measured on 2026-09-15:
+/// with the `Required` arm returning `None`, all 54 cases in this suite still
+/// passed. This case is what makes the helper a claim rather than a comment,
+/// and the per-rail half is asserted in
+/// [`a_rail_without_the_refund_capability_answers_unsupported`] against the
+/// adapter's own declaration rather than against this table.
+#[test]
+fn a_destination_is_offered_exactly_when_the_capability_demands_one() {
+    assert!(
+        destination_for(RefundDestination::Required).is_some(),
+        "a Required rail must be handed a payee (RFC-0003 section 1)"
+    );
+    assert!(
+        destination_for(RefundDestination::Origin).is_none(),
+        "an Origin rail returns money to the instrument that paid; offering \
+         it a payee would be asking it to ignore one"
+    );
+}
+
+/// A rail that demands a payee parses one out of its **own** wire shape, and
+/// refuses an empty sub-map.
+///
+/// RFC-0003 open question 4, decided 2026-09-15: the adapter owns the wire
+/// keys, symmetric with `parse_callback`, so that a future non-mobile-money
+/// upstream costs no core change. This case is the cross-rail half of that
+/// contract — each adapter's own suite pins its key and its refusals; what is
+/// asserted here is the property no adapter can assert about itself, that a
+/// rail declaring `Required` has actually *overridden* the port's default
+/// instead of inheriting its `Unsupported`.
+///
+/// No container: parsing a merchant's parameters is pure, and
+/// `parse_destination` is synchronous precisely so it cannot become anything
+/// else.
+///
+/// Both arms assert. Both rails this workspace carries declare `Required`
+/// today, so the `Origin` arm has no case running against it — it is written
+/// as an assertion rather than an early return so that a rail added or
+/// flipped tomorrow is checked rather than silently skipped.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnderTest) {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let adapter: Box<dyn ProviderAdapter> = match rail_under_test {
+        RailUnderTest::MtnMomo => Box::new(vpay_adapter_mtn_momo::Adapter::new(http)),
+        RailUnderTest::OrangeMoney => Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+    };
+
+    // The rail's own wire keys are the adapter's business, so this suite
+    // cannot spell them. It builds the map the *merchant* sends — which is
+    // how the number arrives — and asks the adapter what it makes of it.
+    let mut documented = serde_json::Map::new();
+    documented.insert(
+        "msisdn".to_owned(),
+        serde_json::Value::String(DOCUMENTATION_MSISDN.to_owned()),
+    );
+
+    // The capability, never the code (ADR-0002): the same branch the core
+    // makes before it decides whether to call at all.
+    match adapter.capabilities().refund_destination {
+        RefundDestination::Required => {
+            let parsed = adapter
+                .parse_destination(&documented)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "a rail declaring Required must override parse_destination; taking the \
+                     port's default answers {error:?}"
+                    )
+                });
+            assert_eq!(
+                parsed.msisdn(),
+                DOCUMENTATION_MSISDN_CANONICAL,
+                "the payee the merchant nominated is the payee the adapter carries, in the \
+                 canonical shape the rail is given"
+            );
+
+            // A well-formed string that is not a usable payee. Every rail
+            // refuses it, and none of them decides that for itself: the
+            // refusal comes from `RefundTarget::mobile_money`, which is the
+            // whole point of the constructor being fallible (maintainer's
+            // decision, 2026-09-15). The bare national form is the case that
+            // matters — `GET /v1/account_holders` accepts it, because it
+            // knows it is in Cameroon, and a market-agnostic crate with no
+            // country must not guess one for money going out.
+            for not_a_payee in ["600000200", "not a phone number", "+0600000200", "+1234567"] {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "msisdn".to_owned(),
+                    serde_json::Value::String(not_a_payee.to_owned()),
+                );
+                let refused = adapter.parse_destination(&map);
+                assert!(
+                    matches!(refused, Err(ProviderError::Malformed { .. })),
+                    "{not_a_payee:?} is not a payee any rail may be given: {refused:?}"
+                );
+                let refused = refused.expect_err("refused just above");
+                for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                    assert!(
+                        !rendered.contains(not_a_payee),
+                        "a refusal must name the rule, never the number: {rendered}"
+                    );
+                }
+            }
+
+            // The decisive one. An empty sub-map is what
+            // `destination[<rail_code>]` with nothing under it produces, and
+            // an `Ok` here is a refund addressed to nobody.
+            let refused = adapter.parse_destination(&serde_json::Map::new());
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "an empty destination is Malformed, never a silent success: {refused:?}"
+            );
+            // A refusal that had the number in scope. Asserting this
+            // against the *empty*-map refusal above would have been
+            // unfalsifiable — the number was never handed in, so no
+            // implementation could have echoed it. Measured on 2026-09-15:
+            // with both adapters appending `{raw:?}` to their message, that
+            // version of this assertion still passed. This key is one no
+            // rail uses, so every adapter refuses and every refusal is one
+            // that held the payee's number a moment earlier.
+            let mut wrong_key = serde_json::Map::new();
+            wrong_key.insert(
+                "not_a_key_any_rail_names".to_owned(),
+                serde_json::Value::String(DOCUMENTATION_MSISDN.to_owned()),
+            );
+            let refused = adapter.parse_destination(&wrong_key);
+            assert!(
+                matches!(refused, Err(ProviderError::Malformed { .. })),
+                "a destination under a key no rail names is Malformed: {refused:?}"
+            );
+            let refused = refused.expect_err("refused just above");
+            for rendered in [format!("{refused}"), format!("{refused:?}")] {
+                for spelling in [DOCUMENTATION_MSISDN, DOCUMENTATION_MSISDN_CANONICAL] {
+                    assert!(
+                        !rendered.contains(spelling),
+                        "no refusal may echo a payee's number, in either spelling: {rendered}"
+                    );
+                }
+            }
+        }
+        RefundDestination::Origin => {
+            // Nothing to parse: money goes back the way it came. The port's
+            // default is the permanent answer, and the core is meant to have
+            // refused the request before this was ever reachable.
+            let refused = adapter.parse_destination(&documented);
+            assert!(
+                matches!(refused, Err(ProviderError::Unsupported)),
+                "an Origin rail has no destination to parse: {refused:?}"
+            );
+        }
+    }
+}
+
+/// A refund reference the rail accepts.
+///
+/// Deliberately **not** [`REF_ACCEPTED`]: the refund path's reference is the
+/// refund's own (`Adapter::refund` § "Which reference the transfer carries"),
+/// and a suite that reused the charge's would be modelling the very
+/// confusion RFC-0003 leaves open.
+const REF_REFUND_ACCEPTED: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0d02);
+
+/// The payee a refund is addressed to in the cases below, in the shape a
+/// merchant sends it. Belongs to nobody; it is the account-holder family's
+/// registered-holder number.
+const REFUND_PAYEE: &str = "+237600000200";
+
+/// The same payee in the canonical rail-facing shape
+/// [`RefundTarget::mobile_money`] produces.
+const REFUND_PAYEE_CANONICAL: &str = "237600000200";
+
+/// A payee the rail has no record of. The account-holder family's "no
+/// record" number, reused so one table answers both questions.
+const REFUND_PAYEE_UNREGISTERED: &str = "+237600000404";
+
+/// Whether the rail under test can actually execute a refund — and, when it
+/// cannot, the assertion that it says so in the one way that is honest for
+/// its reason.
+///
+/// [`claims_account_holder_lookup`]'s shape, for the same reason: the wire
+/// cases below must not be *silently* skipped on a rail that cannot refund,
+/// they must **assert** the absence. A rail that builds its refund tomorrow
+/// starts running every one of them without an edit here.
+///
+/// # Three states, not two — and why the third exists
+///
+/// This helper tested one thing until 2026-09-15: `supports_refunds`. That was
+/// enough while the workspace's two rails were "MTN, whose refund was a token"
+/// and "Orange, which declared `supports_refunds: false`". Both halves moved
+/// that day, on two different branches, and the pair they left behind is one
+/// this helper could not express:
+///
+/// | Rail           | `supports_refunds` | `refund`                                 |
+/// | -------------- | ------------------ | ---------------------------------------- |
+/// | `mtn_momo`     | `true`             | written — MTN's Disbursements `transfer` |
+/// | `orange_money` | `true`             | `NotImplemented("orange_money::refund")` |
+///
+/// Orange's flag flipped because RFC-0003 § 5 decided an Orange refund *is* an
+/// outbound transfer — the rail refunds, and `Unsupported` would be a lie
+/// about Orange — while the call itself is unbuilt because this repository has
+/// no Orange transfer specification. So "advertises refunds" stopped implying
+/// "has a refund to exercise", and the wire cases below, which drive a real
+/// call at a real container, would otherwise run against a rail that answers a
+/// token: gating them on the capability alone made
+/// [`a_duplicate_refund_reference_is_accepted_and_never_paid_twice`] fail on
+/// `orange_money` the moment the two branches were brought together.
+///
+/// The third state is **not** a silent skip. A rail that declares the
+/// capability and has not built the call owes a `NotImplemented` token naming
+/// *itself* — never `Unsupported`, which would be a claim about the rail, and
+/// never `Ok`, which would be a refund nobody made. That is asserted here, on
+/// the same rail and through the same container the wire cases use, so the
+/// `orange_money` parameterisation of every case below still proves something.
+/// The behavioural contract as a whole stays in
+/// [`a_rail_without_the_refund_capability_answers_unsupported`].
+async fn claims_refunds(rail: &Rail, destination: Option<&RefundTarget>) -> bool {
+    let charge = rail.charge(REF_ACCEPTED);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination, &rail.config)
+        .await;
+
+    if !rail.adapter.capabilities().supports_refunds {
+        assert!(
+            matches!(outcome, Err(ProviderError::Unsupported)),
+            "{}: a rail with no refund API must answer Unsupported, not NotImplemented and \
+             certainly not Ok: {outcome:?}",
+            rail.adapter.code(),
+        );
+        return false;
+    }
+
+    // Declared, and unbuilt. The token names this rail, for the reason
+    // `a_rail_without_the_refund_capability_answers_unsupported` gives:
+    // `verify-status` compares token strings and cannot tell which adapter
+    // answered one, so a copy-pasted token would keep that gate green while
+    // the status page named the wrong rail's gap.
+    if let Err(ProviderError::NotImplemented(token)) = &outcome {
+        assert_eq!(
+            *token,
+            format!("{}::refund", rail.adapter.code()),
+            "{}: an unbuilt refund declares its own rail",
+            rail.adapter.code(),
+        );
+        return false;
+    }
+
+    // Declared and built. Whatever else the probe answered is the stub's
+    // business and the cases below make their own call; what is refused here
+    // is the one answer a rail advertising refunds must never give.
+    assert!(
+        !matches!(outcome, Err(ProviderError::Unsupported)),
+        "{}: a rail advertising supports_refunds must not answer Unsupported: {outcome:?}",
+        rail.adapter.code(),
+    );
+    true
+}
+
+/// The payee, parsed through the adapter's **own** `parse_destination` rather
+/// than built by this suite.
+///
+/// That is the path a merchant's `destination[<rail_code>]` actually takes,
+/// and it means these cases exercise the wire key the adapter owns as well as
+/// the transfer it produces. `None` on a rail that returns money to the
+/// instrument that paid.
+fn refund_destination(rail: &Rail, msisdn: &str) -> Option<RefundTarget> {
+    match rail.adapter.capabilities().refund_destination {
+        RefundDestination::Required => {
+            let mut raw = serde_json::Map::new();
+            raw.insert(
+                "msisdn".to_owned(),
+                serde_json::Value::String(msisdn.to_owned()),
+            );
+            Some(
+                rail.adapter
+                    .parse_destination(&raw)
+                    .expect("a Required rail parses the documentation payee"),
+            )
+        }
+        RefundDestination::Origin => None,
+    }
+}
+
+/// **The refund wire case.** A rail that refunds is asked to, against a real
+/// container, and answers that it accepted the transfer.
+///
+/// # What an `Ok` here proves that no unit test can
+///
+/// MTN's stub answers `202` on `/disbursement/v1_0/transfer` **only** when
+/// the request carries the bearer minted from `/disbursement/token/` and the
+/// per-product `Ocp-Apim-Subscription-Key`
+/// (`wiremock/mtn/mappings/transfer.json`). Anything else — the Collections
+/// bearer the adapter already has cached from an earlier call in the same
+/// process, the Collections subscription key, a plural path segment — matches
+/// no mapping, WireMock answers 404, and the adapter raises
+/// `ProviderError::Config`. So the `Ok` is the assertion that the refund was
+/// minted and addressed under the *right product*, which is the whole of what
+/// "a separate subscription key and a separately-scoped token" means.
+///
+/// The `submit` before it is not decoration: it puts a **Collections** bearer
+/// in the adapter's cache first, so this case fails if the refund reuses it.
+/// Without that line the adapter's cache is empty and the wrong-scope bug is
+/// unreachable.
+///
+/// # What it does NOT prove
+///
+/// That MTN behaves this way. Nothing in this repository has ever called
+/// MTN's Disbursements product; the stub is a transcription of MTN's
+/// published `Transfer` operation and a stub faithful to the documentation
+/// but not to the rail would pass. `docs/flows/adapter-mtn-momo.md` § "Not
+/// proven" and `docs/status.md` say so in the same words.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    // Warm the charge path's token cache first — see the doc comment. A
+    // refund that reused this bearer would be sending a Collections-scoped
+    // token to a money-out endpoint, and that is the mutation this line
+    // makes reachable.
+    let charge = rail.charge(REF_ACCEPTED);
+    rail.adapter
+        .submit(&charge, &rail.config)
+        .await
+        .expect("the charge path still works");
+
+    let refund_charge = rail.charge(REF_REFUND_ACCEPTED);
+    let refunded = rail
+        .adapter
+        .refund(
+            &refund_charge,
+            refund_charge.amount,
+            destination.as_ref(),
+            &rail.config,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "{}: the rail accepted nothing — a 404 here means the request did not match \
+                 the disbursement-scoped mapping, i.e. the wrong product's credentials or \
+                 the wrong token: {error:?}",
+                rail.adapter.code(),
+            )
+        });
+
+    // Issue #46's distinction, on the one path that could ever fill it.
+    // `None` is "the rail did not report a fee"; `Some(0)` would be "the rail
+    // said it was free". MTN's documented transfer response carries no fee
+    // field, so `None` is the only honest answer and an adapter that
+    // invented a zero would be putting a number in a settlement statement.
+    assert!(
+        refunded.fee.is_none(),
+        "{}: no rail in this workspace reports a refund fee, and an unreported fee is None \
+         and never Some(0): {:?}",
+        rail.adapter.code(),
+        refunded.fee,
+    );
+}
+
+/// The payee the merchant nominated is the payee **on the wire**, and the
+/// charge's payer is not.
+///
+/// Asserted against the stub's own request journal rather than against the
+/// return value, because the return value cannot tell the two apart: a 202 is
+/// a 202 whoever the money was addressed to. This is the case that would
+/// catch a `refund` that reached for `charge.payer_ref` — which on a
+/// third-party refund is a different human — or that sent `payer` instead of
+/// `payee`, or that sent the merchant's `+`-prefixed spelling where the rail
+/// takes digits.
+///
+/// The pattern is rail-specific *data* ([`refund_body_pattern`]), one shared
+/// body, exactly as [`callback_url_pattern`] is.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn the_refund_is_addressed_to_the_payee_the_merchant_nominated(
+    #[case] rail_under_test: RailUnderTest,
+) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    rail.adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await
+        .expect("the rail accepts the transfer");
+
+    let Some(pattern) = refund_body_pattern(rail_under_test, REF_REFUND_ACCEPTED) else {
+        panic!(
+            "{}: a rail that refunds owes this suite a request pattern for its refund body",
+            rail.adapter.code(),
+        );
+    };
+    assert_eq!(
+        requests_matching(&rail, &pattern).await,
+        1,
+        "{}: the refund the rail received did not carry the nominated payee, in the \
+         canonical shape, under the reference the core supplied",
+        rail.adapter.code(),
+    );
+}
+
+/// A payee the rail has no record of is a **decline**, not a transport
+/// failure and not an accepted transfer.
+///
+/// The distinction issue #47's whole account-holder lookup exists around,
+/// reached here from the other end: the rail itself saying "no such party".
+/// Reported as `Rejected` with the rail's own word preserved, so an operator
+/// reading a `failure_raw` sees what MTN said.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted_transfer(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE_UNREGISTERED);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+
+    let Err(ProviderError::Rejected { code, message }) = &outcome else {
+        panic!(
+            "{}: a payee the rail refuses is a decision the rail made, not a transport \
+             failure and emphatically not an accepted transfer: {outcome:?}",
+            rail.adapter.code(),
+        );
+    };
+    assert_eq!(
+        *code,
+        FailureCode::InvalidPayee,
+        "{}: {message}",
+        rail.adapter.code(),
+    );
+    // A refusal must never echo the payee's number, in either spelling —
+    // `ProviderError`'s context is rendered into every log line it reaches.
+    for rendered in [format!("{outcome:?}"), message.clone()] {
+        for spelling in [REFUND_PAYEE_UNREGISTERED, "237600000404"] {
+            assert!(
+                !rendered.contains(spelling),
+                "{}: a refusal carried the payee's number: {rendered}",
+                rail.adapter.code(),
+            );
+        }
+    }
+}
+
+/// A refund reference the rail has already seen is reported as **accepted**,
+/// which is what makes a retry after a crash safe rather than a second
+/// payout.
+///
+/// The money-out twin of `duplicate_submit_reports_submitted_not_an_error`,
+/// and the more dangerous of the two: reporting this as a failure would have
+/// a caller re-instruct a transfer the rail already holds.
+///
+/// See `Adapter::refund` § "Which reference the transfer carries" for the
+/// invariant this rests on — it is safe because the reference is the
+/// *refund's* own, and RFC-0003 records that the core has not yet been
+/// written to guarantee it.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_duplicate_refund_reference_is_accepted_and_never_paid_twice(
+    #[case] rail: RailUnderTest,
+) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let charge = rail.charge(REF_DUPLICATE);
+    let refunded = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+    assert!(
+        refunded.is_ok(),
+        "{}: a reference the rail already holds means the transfer was already instructed; \
+         an error here makes a crash-retry pay the payee twice: {refunded:?}",
+        rail.adapter.code(),
+    );
+}
+
+/// **The privacy case, on the money-out path.** A refund that reaches a real
+/// rail stub puts the payee's number in no log line, in either spelling.
+///
+/// `RefundTarget`'s redacting `Debug` is only half the guarantee: it stops a
+/// `{:?}` and does nothing about a `%destination.msisdn()`, which is one line
+/// and looks helpful. The only witness for "it was not logged" is what was
+/// logged, so this installs a scoped subscriber over the call and greps —
+/// [`an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`]'s
+/// reasoning, applied where the number is a *payee's* rather than a payer's.
+///
+/// Both spellings, because a message that hid the `+` form and printed the
+/// canonical digits would have leaked the number just the same.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[tokio::test]
+async fn a_refund_never_puts_the_payees_number_in_a_log_line(#[case] rail: RailUnderTest) {
+    let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
+    let destination = refund_destination(&rail, REFUND_PAYEE);
+    if !claims_refunds(&rail, destination.as_ref()).await {
+        return;
+    }
+
+    let sink = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+
+    let charge = rail.charge(REF_REFUND_ACCEPTED);
+    // `set_default`, not `with_default`: the call is async and the guard has
+    // to be held across the `.await`.
+    let guard = tracing::subscriber::set_default(subscriber);
+    let outcome = rail
+        .adapter
+        .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
+        .await;
+    drop(guard);
+
+    outcome.expect("the rail accepts the transfer");
+
+    let logged = sink.contents();
+    assert!(
+        !logged.is_empty(),
+        "{}: nothing was captured at all, so every assertion below would pass vacuously — \
+         the adapter logs at least one debug line per rail call",
+        rail.adapter.code(),
+    );
+    for spelling in [REFUND_PAYEE, REFUND_PAYEE_CANONICAL] {
+        assert!(
+            !logged.contains(spelling),
+            "{}: the payee's number reached a log line as `{spelling}`:\n{logged}",
+            rail.adapter.code(),
+        );
+    }
+}
+
 /// The behavioural half of the refund contract, on a configured rail.
 ///
 /// Proves a rail with no refund API answers the permanent
 /// [`ProviderError::Unsupported`] — not `NotImplemented`, because there is
 /// nothing to build — and that a rail which *does* advertise refunds never
-/// answers `Unsupported`. `mtn_momo::refund` is still an unbuilt
-/// `NotImplemented` token (Disbursements is a separate product, see
-/// `docs/status.md`); this case is what keeps that token honest, which is why
-/// it runs rather than being `#[ignore]`d for it.
+/// answers `Unsupported` and, while its call is unbuilt, names *itself* in
+/// the token it answers instead. One rail still carries such a token —
+/// `orange_money::refund`, since 2026-09-15 — and this case is what keeps it
+/// honest, which is why it runs rather than being `#[ignore]`d for it.
+///
+/// # Which arm runs, and the one that no longer does
+///
+/// Until 2026-09-15 the `Unsupported` arm ran on `orange_money`, the
+/// workspace's one rail declaring `supports_refunds: false`. RFC-0003 § 5
+/// flipped that flag — an Orange refund is an outbound transfer, so the rail
+/// can refund and it is vpay that has not built the call — and **no rail in
+/// this workspace now declares the capability off**. That arm still asserts;
+/// it simply has nothing to assert against, exactly like the `Origin` arm of
+/// [`a_required_rail_parses_its_own_destination`], and it is kept for the
+/// same reason: a rail added or flipped tomorrow is checked rather than
+/// silently skipped.
+///
+/// Deleting it would have made this suite green while retiring a rule nobody
+/// decided to retire. Keeping it is not the same as still proving it, so the
+/// property it exercised — the port's `refund` default is `Unsupported` —
+/// moved to `a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported`
+/// in `vpay-provider`, on a stub that overrides nothing. What that unit test
+/// cannot recover is the *configured-rail* half: this case reached a real
+/// adapter through a real container, and no adapter is left to reach.
+///
+/// The name still says `without_the_refund_capability`, which now describes
+/// the arm that does not run. It is kept because three live pages and a dated
+/// verification record cite it by name; renaming it would orphan those
+/// references, including a record that must not be rewritten.
+///
+/// # What the live arm is worth, and what it stopped being worth
+///
+/// It is the assertion that catches this very change half-done: flipping
+/// `supports_refunds` to `true` without overriding `refund` leaves the
+/// adapter answering the port's `Unsupported`, and fails here.
+///
+/// _(Until 2026-09-15 the `mtn_momo` case also kept that rail's
+/// `NotImplemented` token honest while Disbursements was unbuilt. That token
+/// is retired and the call is written, so on MTN what is left here is the
+/// weaker half: whatever a refunding rail answers, it is not "this rail
+/// cannot refund". The *stronger* claim — that the refund reaches a rail and
+/// is accepted — is
+/// [`a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted`],
+/// which is a wire case against a container. On `orange_money` the token arm
+/// above is still the live assertion.)_
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
@@ -1291,15 +2072,45 @@ async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: 
     let charge = rail.charge(REF_ACCEPTED);
     let amount = charge.amount;
 
-    let outcome = rail.adapter.refund(&charge, amount, &rail.config).await;
+    // The destination is chosen from the rail's *capability*, never from its
+    // code (ADR-0002) — the same branch the core will make. A `Required` rail
+    // gets a payee; an `Origin` rail gets none, because sending one would be
+    // a destination the rail was never told about.
+    let destination = destination_for(rail.adapter.capabilities().refund_destination);
+    // The invariant the core owes `ProviderAdapter::refund`: a destination is
+    // present exactly when the rail declares `Required`. Asserted against the
+    // adapter's own capability, not against `destination_for`'s table, so an
+    // inverted helper is a failure here rather than an argument two unbuilt
+    // `refund` bodies silently discard.
+    assert_eq!(
+        destination.is_some(),
+        rail.adapter.capabilities().refund_destination == RefundDestination::Required,
+        "a payee is supplied exactly when the capability demands one (RFC-0003 section 1)"
+    );
+    let outcome = rail
+        .adapter
+        .refund(&charge, amount, destination.as_ref(), &rail.config)
+        .await;
 
     if rail.adapter.capabilities().supports_refunds {
         // A rail that *can* refund must not claim the operation is
         // unsupported — whatever else it answers while the call is unbuilt.
         assert!(
             !matches!(outcome, Err(ProviderError::Unsupported)),
-            "a rail advertising supports_refunds must not answer Unsupported"
+            "a rail advertising supports_refunds must not answer Unsupported: {outcome:?}"
         );
+        // And when what it answers is a token, the token names *this* rail.
+        // `verify-status` matches `docs/status.md`'s bullets against these
+        // strings verbatim and cannot tell which rail a token came from, so
+        // a copy-pasted `mtn_momo::refund` in the Orange adapter would keep
+        // that gate green while the status page named the wrong rail's gap.
+        if let Err(ProviderError::NotImplemented(token)) = &outcome {
+            assert!(
+                token.starts_with(&format!("{}::", rail.adapter.code())),
+                "an unbuilt refund declares its own rail: {} answered {token:?}",
+                rail.adapter.code()
+            );
+        }
     } else {
         // `Unsupported`, not `NotImplemented`: there is nothing to build. The
         // rail has no refund API, the capability says so, and the core is

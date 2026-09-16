@@ -305,3 +305,113 @@ packages, 0 skipped.
 
 Review transcript, including what the draft claimed without measuring, in
 [plans/exp25-cratestack-012-notes/opus-review.md](../plans/exp25-cratestack-012-notes/opus-review.md).
+
+## 2026-09-15 — `model LedgerEntry` gains `merchant_id`, and drift goes 190 → 192
+
+RFC-0003 § 4, migration `0045`. Measured against a freshly migrated
+`postgres:16-alpine` with `cratestack migrate baseline --strict` on the branch
+`refunds/w1-ledger`, not predicted from the DDL.
+
+**Caveat, stated first because it is easy to read past:** the host had
+**cratestack 0.11.1** on `PATH`, not the pinned 0.12.0. The drift test warns
+about that and does not fail. So both numbers were taken with the _same_
+binary: with migration `0045` withdrawn and `model LedgerEntry.merchant_id`
+commented out, 0.11.1 reported `drift detected in 25 table(s)/view(s) (190
+change(s) total)` — **exactly the 0.12.0-measured constant it replaced** — and
+with both restored, 192. The delta is +2 under one binary and the two releases
+agree on the absolute number for this schema, which is what this page's
+2026-09-07 entry already argued from file identity. CI runs 0.12.0; if it
+disagrees, CI is the evidence.
+
+```
+drift detected in 25 table(s)/view(s) (192 change(s) total)
+19 column(s) have a Postgres type cratestack could not confidently map
+```
+
+`EXPECTED_DRIFTED_RELATIONS` (25) and `EXPECTED_UNMAPPABLE_COLUMNS` (19) did
+not move — `ledger_entries` was already a declared-and-differing relation, so
+a line arrived and no table did. `EXPECTED_DRIFT_CHANGES` moved 190 → 192 and
+its own doc comment in `backends/tests/integration/tests/postgres_smoke.rs`
+carries the per-line account. In short, `ledger_entries` goes 6 → 8:
+
+- `ledger_entries_merchant_id_length` — one hand-named **single**-column
+  CHECK, the class that has cost every modelled table here a line each since
+  `currencies`. `@db_enforce` on a declared `@length` would emit a drop-and-add
+  **pair** against it (exp17 §1a), which is worse rather than better.
+- `ledger_entries_merchant_payable_idx` — one index, and **partial**
+  (`WHERE account = 'merchant_payable'`), so `@@index([...])` could not express
+  it even if the grammar had a spelling for a partial index.
+
+**What cost nothing is the part worth reading**, and it is `customers`' 2026-09-10
+lesson repeated: the `merchant_id` **column itself** contributes zero — no
+`column … exists in the live database but is not declared`, no `type differs`,
+no `default value differs` — because `model LedgerEntry` declares it in the
+same commit and the migration gave it no DB `DEFAULT`. That is the condition
+migration `0034` established and the reason adding to a modelled table is
+cheap.
+
+And `ledger_entries_merchant_id_iff_merchant_payable` — the pair CHECK that is
+the **load-bearing** half of the migration, `vpay_ledger::AccountKind`'s sum
+type written in SQL — contributes **nothing in either direction**, like the
+twenty multi-column CHECKs before it, because
+`introspect/postgres/constraints.rs` filters `array_length(c.conkey, 1) = 1`.
+It is in the `multi_column_checks_the_report_cannot_see` list beside them, and
+`a_merchant_payable_entry_must_name_its_merchant` /
+`a_pooled_account_entry_must_not_name_a_merchant` write the two rows it
+refuses. **The drift report is not the guard for that constraint and never can
+be.**
+
+Nothing on either ledger model is queried **through** CrateStack; the new
+writer (`vpay_db::ledger::post_in_tx`) is raw sqlx, because `account` and
+`direction` are the last two native Postgres enums in this schema and
+CrateStack's generated row decoders read an enum column with
+`try_get::<String>()`.
+
+Gate evidence for the whole change:
+[verification/2026-09-15-ledger-merchant-dimension.md](verification/2026-09-15-ledger-merchant-dimension.md).
+`just ci` was **not** run locally for it (see that page for why); CI is the
+gate.
+
+## 2026-09-15 — migration `0046` bounds the two ledger ids, and drift goes 192 → 194
+
+RFC-0003 § 3, wave 2, on the branch `refunds/w2-writepath`. Measured the same
+way and on the same host as the entry above, with the same caveat and the same
+force: **cratestack 0.11.1 on `PATH`, not the pinned 0.12.0**, the drift test
+warning about it and not failing. The report read
+
+```
+drift detected in 25 table(s)/view(s) (194 change(s) total)
+```
+
+so `EXPECTED_DRIFTED_RELATIONS` (25) does not move either — both ledger tables
+were already declared-and-differing relations. CI runs 0.12.0; if it disagrees,
+CI is the evidence and the constant is what moves.
+
+The +2 is the +2 migration `0045`'s own header **predicted** when it declined
+to add these two CHECKs, and the prediction is the interesting part: it argued
+from shape that `ledger_transactions.id_length` and `ledger_entries.id_length`
+would cost one line each, being hand-named single-column CHECKs — the class
+that has cost every table in this schema a line apiece since `currencies` —
+and said so while refusing to move the constant without a measurement. The
+measurement agrees.
+
+Neither `model LedgerTransaction` nor `model LedgerEntry` was touched. A
+declared `@length` with `@db_enforce` on either `id` would emit a drop-and-add
+**pair** against a hand-named CHECK (exp17 §1a), which is the trade this page
+has refused six times.
+
+**The +2 is not the evidence that either CHECK fires, and the conventions
+review added the evidence that is.** A count is satisfied by any two
+single-column CHECKs anywhere in the schema, so a later branch that dropped
+one of these and added an unrelated one would leave it at 194 with nothing
+noticing. `an_over_long_ledger_id_is_refused_by_the_database` in
+`postgres_smoke.rs` writes a 65-character id into each table, asserts
+`constraint() == Some("id_length")` on both refusals, admits 64 to show the
+bound is inclusive, and writes the 66-character id a hand-built 64-character
+transaction id would derive — the case migration `0046`'s own header
+predicted. Measured to fail (`rows_affected: 1` on the first INSERT) with
+`ALTER TABLE ledger_transactions DROP CONSTRAINT id_length` applied first.
+
+Gate evidence:
+[verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md).
+`just ci` was **not** run locally for it either; CI is the gate.

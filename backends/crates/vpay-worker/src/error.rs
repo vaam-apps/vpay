@@ -469,6 +469,7 @@ mod tests {
             Case {
                 name: "Ledger(Unbalanced) — the money path's own invariant broke: pages",
                 error: JobError::Ledger(LedgerError::Unbalanced {
+                    currency: vpay_core::Currency::Xaf,
                     debits: 5_000,
                     credits: 4_900,
                 }),

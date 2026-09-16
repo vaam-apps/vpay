@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 44,
-        "all forty-four migration files under backends/migrations should be recorded as applied \
+        applied, 48,
+        "all forty-eight migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -310,7 +310,64 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          declared and two are implemented; `material` is nullable because \
          a federated identity is NOT a secret -- an oidc row holds (iss, \
          sub), which is public -- and a per-kind CHECK is what keeps that \
-         nullability from being a hole.)"
+         nullability from being a hole, \
+         and RFC-0003 section 4's 0045, which gives ledger_entries the \
+         merchant dimension `vpay_ledger::AccountKind` grew in the same \
+         commit. This is the SECOND HALF of a change, not a schema patch: \
+         0005's own GAP note refused a merchant_id column precisely because \
+         the Rust type had no field behind it, and `AccountKind:: \
+         MerchantPayable {{ merchant_id }}` is that field. The column is \
+         NULLABLE because two of the three accounts -- payer_clearing and \
+         platform_fee_revenue -- are vpay's own and pooled across every \
+         tenant, and what stops the nullability being a hole is \
+         ledger_entries_merchant_id_iff_merchant_payable, a MULTI-COLUMN \
+         CHECK the drift report cannot see in either direction, which is \
+         why a_merchant_payable_entry_must_name_its_merchant and \
+         a_pooled_account_entry_must_not_name_a_merchant below write both \
+         rows it refuses, \
+         and RFC-0003 section 3's 0046, which bounds the two caller-supplied \
+         ledger ids -- `CHECK (char_length(id) BETWEEN 1 AND 64)` on \
+         ledger_transactions and ledger_entries, the only caller-named id \
+         columns in this schema that had none. It closes the gap 0045's own \
+         header named and left open, in the commit that closes the other \
+         half of it: vpay_core::ids now mints `lt_...`, and \
+         vpay_db::settlement's two posting call sites -- the first code in \
+         this repository's history to write the ledger from a shipping path \
+         -- take their transaction id from that minter, \
+         and RFC-0003 section 5's 0047, a comment-only migration on 0020's \
+         precedent that corrects two shipped COMMENT ON statements: 0017's \
+         COMMENT ON TABLE refunds, which said nothing writes or reads the \
+         table, and 0042's COMMENT ON COLUMN invoices.amount_refunded, which \
+         said `ProviderAdapter::refund` is NotImplemented on MTN and \
+         Unsupported on Orange. Both had gone false on 2026-09-15, on two \
+         branches and in opposite directions: mtn_momo::refund became MTN's \
+         Disbursements transfer call and orange_money::refund became a \
+         NotImplemented token, while vpay_db::Refunds::create started \
+         inserting the row and apply_refund_succeeded / apply_refund_failed \
+         started maintaining the intent's counters. It changes no data, no \
+         column and no constraint, and it is 0047 rather than 0046 because \
+         0046_ledger-id-length.sql had already taken that number -- it had \
+         never been applied anywhere, so renumbering it and rehashing its \
+         MANIFEST.sha256 line is what the immutability rule permits, since \
+         that rule protects APPLIED migrations. THIS COUNT IS THE TRIPWIRE \
+         FOR EXACTLY THAT COLLISION: two branches each numbering a migration \
+         0046 conflicted in no file, and this assertion is what noticed, \
+         and RFC-0003 section 2's 0048, a second comment-only migration on \
+         the same precedent, added by review on 2026-09-16 when the four \
+         /v1 refund routes landed. Three shipped COMMENTs went false with \
+         them: 0047's own COMMENT ON TABLE refunds and COMMENT ON COLUMN \
+         invoices.amount_refunded, both of which said POST /v1/refunds is \
+         routed nowhere so no merchant request can create a row, and 0039's \
+         COMMENT ON COLUMN events.type, which said eleven of the fifteen \
+         event types have a writer and named the two charge.refund types \
+         among the four that do not -- vpay_api::v1::refunds is the first \
+         writer of both, so it is thirteen. It changes no data, no column \
+         and no constraint, and it deliberately does NOT weaken what those \
+         COMMENTs say about money: no rail has ever returned money and \
+         nothing settles a pending refund, which is why \
+         invoices.amount_refunded is still 0 in every deployment -- the \
+         route being mounted changed the reason that column has no \
+         reachable writer, not the fact.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2712,6 +2769,1552 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
     Ok(())
 }
 
+// ------------------------------- migration 0045 (the ledger's merchant) ----
+//
+// RFC-0003 § 4, and what is left here after § 3 wired the call sites. The two
+// cases below write the two rows `ledger_entries_merchant_id_iff_merchant_
+// payable` refuses, in hand-written SQL, because that is the only way to reach
+// the constraint: it is multi-column, so `cratestack migrate baseline` cannot
+// see it in either direction, and no writer in this repository can produce
+// either row — `AccountKind` is a sum type and has no way to carry the two
+// shapes the CHECK rejects. A case driven through the writer would pass
+// whether or not the constraint existed.
+//
+// **The cases that drove the raw writer are no longer in this file, and that
+// is not a deletion.** `vpay_db::ledger::post_in_tx` is `pub(crate)` and
+// reachable from outside `vpay-db` through nothing at all since the call sites
+// landed — the `pub` `TxRepositories::post_ledger_transaction_in_tx` that made
+// it reachable is gone, because it let any consumer post an arbitrary
+// transaction with no settlement near it. The seven cases that need the raw
+// writer (a balanced capture read back out of Postgres, an unbalanced
+// posting, a mixed-currency one, two merchants' balances, a replayed id, the
+// entry ids derived for three prefix-sharing transaction ids, and the
+// swallowed duplicate) moved into that module's own `#[cfg(test)]` block with
+// it. (This said "six" and listed six, omitting the entry-id case, until the
+// conventions review counted the module.)
+// What is here instead is the other half and the better half: the
+// postings the SHIPPING PATH makes, driven through
+// `Settlement::apply_succeeded` and `apply_refund_succeeded` — see § "the
+// refunds write path" below.
+
+/// Builds the `charges` row a ledger transaction's foreign key needs.
+///
+/// A helper rather than a copy per case because every case below needs the
+/// same four rows, and a case that seeded them differently would be measuring
+/// a different database.
+async fn seed_charge_for_ledger(
+    pool: &PgPool,
+    intent_id: &str,
+    charge_id: &str,
+) -> anyhow::Result<()> {
+    seed_currencies(pool).await?;
+    seed_providers(pool).await?;
+    insert_payment_intent(pool, intent_id, 5_000, 0, 0)
+        .await
+        .context("seeding the payment intent")?;
+    insert_charge(pool, charge_id, intent_id)
+        .await
+        .context("seeding the charge")?;
+    Ok(())
+}
+
+/// `ledger_entries_merchant_id_iff_merchant_payable`, the SQL half of
+/// `AccountKind`'s sum type (migration 0045), refuses a `merchant_payable`
+/// posting with no merchant.
+///
+/// Hand-written SQL rather than the repository, deliberately: the subject is
+/// what *the database* refuses, and the writer cannot produce this row —
+/// `AccountKind::MerchantPayable` has no way to carry no merchant. A case
+/// driven through the writer would pass whether or not the CHECK existed. The
+/// constraint is multi-column, so `cratestack migrate baseline` cannot see it
+/// in either direction and this case is the only thing that says it fires.
+#[tokio::test]
+async fn a_merchant_payable_entry_must_name_its_merchant() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_check", "ch_ledger_check").await?;
+    sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ('ltx_check', $1)")
+        .bind("ch_ledger_check")
+        .execute(&pool)
+        .await
+        .context("seeding the parent transaction")?;
+
+    let error = sqlx::query(
+        "INSERT INTO ledger_entries \
+             (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+         VALUES ('le_no_merchant', 'ltx_check', 'merchant_payable', 'credit', 100, 'XAF', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("a merchant_payable posting with no merchant must be refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("ledger_entries_merchant_id_iff_merchant_payable"),
+        "the refusal must come from the pair CHECK rather than from anything else: {message}"
+    );
+
+    Ok(())
+}
+
+/// The other direction of the same CHECK: a pooled account may not name a
+/// merchant.
+///
+/// `payer_clearing` and `platform_fee_revenue` are vpay's own accounts, shared
+/// across every tenant, and a merchant id on one of them would make
+/// `balance(payer_clearing)` answerable per merchant — a number that means
+/// nothing, and that invariant 2 would then have two candidate readings of.
+#[tokio::test]
+async fn a_pooled_account_entry_must_not_name_a_merchant() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_pooled", "ch_ledger_pooled").await?;
+    sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ('ltx_pooled', $1)")
+        .bind("ch_ledger_pooled")
+        .execute(&pool)
+        .await
+        .context("seeding the parent transaction")?;
+
+    for account in ["payer_clearing", "platform_fee_revenue"] {
+        let error = sqlx::query(
+            "INSERT INTO ledger_entries \
+                 (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+             VALUES ($1, 'ltx_pooled', $2::account_kind, 'debit', 100, 'XAF', 'merchant_1')",
+        )
+        .bind(format!("le_pooled_{account}"))
+        .bind(account)
+        .execute(&pool)
+        .await
+        .expect_err("a pooled account carrying a merchant must be refused");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("ledger_entries_merchant_id_iff_merchant_payable"),
+            "{account} must be refused by the pair CHECK: {message}"
+        );
+    }
+
+    Ok(())
+}
+
+// ------------------------------- migration 0046 (the ledger ids' bound) ----
+
+/// `id_length` on **both** ledger tables (migration 0046) refuses an id past
+/// 64 characters, by name.
+///
+/// # Why this exists when `EXPECTED_DRIFT_CHANGES` already moved 192 -> 194
+///
+/// Added by the conventions review of RFC-0003 § 3. The +2 on that constant
+/// is evidence that two single-column CHECKs appeared somewhere in the
+/// schema; it is **not** evidence that these two appeared, and it is not
+/// evidence that either fires. A later branch that dropped one of them and
+/// added an unrelated single-column CHECK would leave the count at 194 and
+/// nothing would notice. CLAUDE.md's rule is the one being followed here:
+/// changed the schema, so apply it to a real Postgres and prove the
+/// constraint fires.
+///
+/// Hand-written SQL for `a_merchant_payable_entry_must_name_its_merchant`'s
+/// reason, one step stronger: no writer in this repository can produce either
+/// row. `ledger_transactions.id` comes from `vpay_core::ids::
+/// ledger_transaction_id`, which is 27 characters by construction, and
+/// `ledger_entries.id` is derived from it by `vpay_db::ledger::entry_id` and
+/// is 29 or 30. A case driven through the writer would pass whether or not
+/// the CHECKs existed.
+///
+/// The entry row is written under a **legal** transaction id, so the refusal
+/// can only be the entry's own `id_length` — a 65-character parent would have
+/// failed one statement earlier and proved the wrong table's constraint.
+#[tokio::test]
+async fn an_over_long_ledger_id_is_refused_by_the_database() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+    seed_charge_for_ledger(&pool, "pi_ledger_length", "ch_ledger_length").await?;
+
+    // 65 characters: one past the bound, which is the only length that tells
+    // "the CHECK is there" from "the CHECK is there and off by one".
+    let too_long = "l".repeat(65);
+    let error = sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ($1, $2)")
+        .bind(&too_long)
+        .bind("ch_ledger_length")
+        .execute(&pool)
+        .await
+        .expect_err("a 65-character ledger transaction id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "the refusal must come from migration 0046's CHECK on ledger_transactions: {error}"
+    );
+
+    // And 64 is admitted, so the bound is inclusive the way every other
+    // `id_length` in this schema is. This row is also the legal parent the
+    // entry below needs.
+    let at_the_bound = "l".repeat(64);
+    sqlx::query("INSERT INTO ledger_transactions (id, charge_id) VALUES ($1, $2)")
+        .bind(&at_the_bound)
+        .bind("ch_ledger_length")
+        .execute(&pool)
+        .await
+        .context("64 characters is inside the bound and must be admitted")?;
+
+    let error = sqlx::query(
+        "INSERT INTO ledger_entries \
+             (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+         VALUES ($1, $2, 'payer_clearing', 'debit', 100, 'XAF', NULL)",
+    )
+    .bind(&too_long)
+    .bind(&at_the_bound)
+    .execute(&pool)
+    .await
+    .expect_err("a 65-character ledger entry id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "the refusal must come from migration 0046's CHECK on ledger_entries: {error}"
+    );
+
+    // The shape migration 0046's header calls out: a caller that hand-built a
+    // 64-character transaction id would derive a 66-character entry id and be
+    // refused *here*, which is the outcome that header says is correct. This
+    // is that sentence as an assertion rather than as a prediction.
+    let derived = format!("{at_the_bound}_0");
+    assert_eq!(derived.chars().count(), 66);
+    let error = sqlx::query(
+        "INSERT INTO ledger_entries \
+             (id, transaction_id, account, direction, amount, currency_code, merchant_id) \
+         VALUES ($1, $2, 'payer_clearing', 'debit', 100, 'XAF', NULL)",
+    )
+    .bind(&derived)
+    .bind(&at_the_bound)
+    .execute(&pool)
+    .await
+    .expect_err("the entry id derived from a 64-character transaction id must be refused");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("id_length"),
+        "a derived id past the bound must be refused by the same CHECK: {error}"
+    );
+
+    Ok(())
+}
+
+// -------------------------------------- RFC-0003 § 3: the refunds write ----
+//
+// The first code in this repository's history that writes a `refunds` row,
+// moves the intent's refund counters, or posts to the ledger from a shipping
+// path. Everything in this section drives `vpay_db`'s public seam — `Refunds`
+// and `Settlement` through `vpay_db::connect` — and never a hand-written
+// statement, because the subject is what the write path does and not what the
+// schema permits.
+//
+// The two things each case is watching for, stated once here:
+//
+//   * the over-refund guard has to be the UPDATE, so that two concurrent
+//     refunds serialize at the database. `docs/flows/ledger.md` § "When
+//     refunds post" is explicit, and
+//     `two_concurrent_refunds_race_and_the_database_refuses_the_second` is
+//     the case; delete the `amount_refund_pending` increment from
+//     `payment_intents::reserve_refund_in_tx` and it must fail.
+//   * a ledger posting's merchant has to come from the intent, because no
+//     constraint can check it — the merchant is three tables away and a CHECK
+//     sees one row (migration 0045, `docs/flows/ledger.md` § Status).
+//     `a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller`
+//     is the case.
+
+/// Seeds a `succeeded` intent with a settled charge and a capture posting, by
+/// driving the real settlement — not by writing the rows.
+///
+/// Every refund case below needs money to have been captured first, and
+/// `Settlement::apply_succeeded` is the only thing in this repository that can
+/// legitimately produce that state. Seeding it with `UPDATE payment_intents
+/// SET status = 'succeeded'` would also make every assertion about
+/// `amount_received` and about the capture posting vacuous.
+///
+/// Returns the intent id, the charge id and the amount captured.
+async fn capture_through_the_settlement(
+    pool: &PgPool,
+    repositories: &std::sync::Arc<dyn vpay_db::Repositories>,
+    merchant_id: &str,
+    intent_id: &str,
+    charge_id: &str,
+    amount: i64,
+) -> anyhow::Result<()> {
+    insert_payment_intent(pool, intent_id, amount, 0, 0)
+        .await
+        .context("seeding the payment intent")?;
+    if merchant_id != "merchant_1" {
+        sqlx::query("UPDATE payment_intents SET merchant_id = $2 WHERE id = $1")
+            .bind(intent_id)
+            .bind(merchant_id)
+            .execute(pool)
+            .await
+            .context("moving the intent onto its own tenant")?;
+    }
+    insert_charge(pool, charge_id, intent_id)
+        .await
+        .context("seeding the charge")?;
+    // `amount = amount_received` is what `succeed_after_submission` writes, so
+    // the charge has to be for the whole of it or the ledger and the intent
+    // would disagree about what was captured.
+    sqlx::query("UPDATE charges SET amount = $2 WHERE id = $1")
+        .bind(charge_id)
+        .bind(amount)
+        .execute(pool)
+        .await
+        .context("matching the charge amount to the intent's")?;
+
+    let settled = repositories
+        .apply_succeeded(
+            charge_id,
+            None,
+            &format!("evt_{}", charge_id.replace(['_'], "")),
+            &serde_json::json!({}),
+            None,
+        )
+        .await
+        .context("the settlement must commit")?;
+    anyhow::ensure!(settled.is_some(), "the charge was live, so it must settle");
+
+    Ok(())
+}
+
+/// Builds the `NewRefund` a merchant's `POST /v1/refunds` will hand to
+/// `Refunds::create` once Wave 3 routes it.
+///
+/// `provider_reference_id` is minted here rather than defaulted, because the
+/// column is nullable and the crash-safety rule is the opposite of the
+/// column's: the reference exists *before* any rail call, so a process that
+/// dies mid-call leaves something to reconcile by
+/// (`docs/flows/crash-safety.md`).
+fn new_refund(id: &str, intent_id: &str, amount: i64) -> vpay_db::NewRefund {
+    vpay_db::NewRefund {
+        id: id.to_owned(),
+        payment_intent_id: intent_id.to_owned(),
+        amount,
+        reason: Some("requested_by_customer".to_owned()),
+        metadata: serde_json::json!({}),
+        provider_reference_id: Uuid::new_v4(),
+    }
+}
+
+/// The intent's three refund figures, as stored.
+async fn refund_figures(pool: &PgPool, intent_id: &str) -> anyhow::Result<(i64, i64, i64)> {
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT amount, amount_refunded, amount_refund_pending FROM payment_intents WHERE id = $1",
+    )
+    .bind(intent_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the intent's refund figures")?;
+    Ok(row)
+}
+
+/// `Refunds::create` writes the row **and** the reservation in one
+/// transaction, and the reservation is what the over-refund CHECK reads.
+///
+/// The first `refunds` INSERT this repository has ever issued from Rust
+/// (migration `0017`'s own comment: "NOT WRITTEN OR READ BY ANY CODE IN THIS
+/// REPOSITORY"), so this case is also where the columns that writer fills are
+/// checked against the table for the first time.
+///
+/// **`currency_code` and `charge_id` are asserted against the intent's own**,
+/// not against a value this test passed, because `NewRefund` carries neither:
+/// a caller that could pass a currency could refund 2 000 EUR against a
+/// 5 000 XAF capture and the schema would store it happily.
+#[tokio::test]
+async fn creating_a_refund_reserves_its_amount_against_the_intent() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_create",
+        "ch_create",
+        5_000,
+    )
+    .await?;
+
+    let refund = vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_create", "pi_create", 2_000),
+    )
+    .await
+    .context("creating a refund against a succeeded intent must commit")?
+    .context("the intent is this merchant's and is succeeded, so the create must find it")?;
+
+    assert_eq!(refund.status, "pending");
+    assert_eq!(refund.amount, 2_000);
+    assert_eq!(
+        refund.currency_code, "XAF",
+        "the currency is the intent's, carried verbatim (docs/flows/money.md) — `NewRefund` has \
+         no currency field for a caller to disagree with it"
+    );
+    assert_eq!(
+        refund.fee, None,
+        "no rail reports a refund fee to this repository, and the writer must not invent a zero \
+         (issue #46)"
+    );
+
+    // The reservation, which is the half that is not visible on the object.
+    assert_eq!(
+        refund_figures(&pool, "pi_create").await?,
+        (5_000, 0, 2_000),
+        "amount_refund_pending must carry the reservation and amount_refunded must not move — a \
+         pending refund has returned no money"
+    );
+
+    // The charge, derived from the intent inside the same transaction rather
+    // than supplied.
+    let charge_id: Option<String> =
+        sqlx::query_scalar("SELECT charge_id FROM refunds WHERE id = 're_create'")
+            .fetch_one(&pool)
+            .await
+            .context("reading the refund's charge")?;
+    assert_eq!(
+        charge_id.as_deref(),
+        Some("ch_create"),
+        "the refund must name the intent's own charge; it is the row a rail movement and a ledger \
+         posting both hang off"
+    );
+
+    // And nothing has been posted: a pending refund moves no money.
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "exactly one — the capture. Creating a refund posts nothing, which is why the reservation \
+         column exists (docs/flows/ledger.md § 'When refunds post')"
+    );
+
+    Ok(())
+}
+
+/// **The decisive case.** Two refunds of 3 000 against a 5 000 capture, issued
+/// concurrently, and the second is refused **by the database** rather than by
+/// a comparison in Rust.
+///
+/// # Why concurrency is the whole point
+///
+/// A read-then-check in the application passes this: both callers read
+/// `amount_refunded = 0, amount_refund_pending = 0`, both compute `3 000 <=
+/// 5 000`, and both write. `docs/flows/ledger.md` § "When refunds post" is
+/// explicit that the guard must be the `UPDATE` itself, so that the second
+/// writer blocks on the row lock MVCC already takes, re-evaluates
+/// `no_over_refund` against the first writer's committed value, and fails.
+///
+/// # The mutation this case exists for
+///
+/// Delete `amount_refund_pending = amount_refund_pending + $3` from
+/// `vpay_db::payment_intents::reserve_refund_in_tx` and this test must fail:
+/// with nothing incrementing the column, the CHECK has nothing to refuse and
+/// both refunds commit. That mutation was run on 2026-09-15 — see
+/// `docs/status/verification/2026-09-15-refunds-write-path.md`.
+///
+/// # Why the two halves are asserted separately
+///
+/// "One of them failed" is not enough: a run where both failed, or where the
+/// second failed for a connection error, would satisfy it. So the case
+/// asserts exactly one success, the *kind* of the failure
+/// (`DbError::OverRefund`, which is `409`/never-retry rather than the `503`
+/// a `Query` would give a merchant), and the stored figures afterwards.
+#[tokio::test]
+async fn two_concurrent_refunds_race_and_the_database_refuses_the_second() -> anyhow::Result<()> {
+    use vpay_core::Classify as _;
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_race",
+        "ch_race",
+        5_000,
+    )
+    .await?;
+
+    // 3 000 + 3 000 > 5 000, so exactly one of these may win. They are issued
+    // on two connections out of the same pool and joined together, which is
+    // what makes them race rather than queue.
+    let a = new_refund("re_race_a", "pi_race", 3_000);
+    let b = new_refund("re_race_b", "pi_race", 3_000);
+    let first = vpay_db::Refunds::create(&*repositories, "merchant_1", &a);
+    let second = vpay_db::Refunds::create(&*repositories, "merchant_1", &b);
+    let (first, second) = tokio::join!(first, second);
+
+    let outcomes = [first, second];
+    let committed = outcomes.iter().filter(|r| r.is_ok()).count();
+    let refused: Vec<&vpay_db::DbError> =
+        outcomes.iter().filter_map(|r| r.as_ref().err()).collect();
+
+    assert_eq!(
+        committed, 1,
+        "exactly one of two concurrent 3 000 refunds against a 5 000 capture may commit; got \
+         {outcomes:?}"
+    );
+    assert_eq!(refused.len(), 1, "{outcomes:?}");
+
+    let refusal = refused
+        .first()
+        .context("exactly one refusal, asserted above")?;
+    assert!(
+        matches!(refusal, vpay_db::DbError::OverRefund { payment_intent_id, .. }
+            if payment_intent_id == "pi_race"),
+        "the loser must be refused by no_over_refund and reported as an over-refund, not as a \
+         storage failure: {refusal:?}"
+    );
+    // The classification is load-bearing and is the half a `matches!` alone
+    // would not catch: `DbError::Query` (what an unclassified CHECK violation
+    // becomes) is `Category::Storage`, i.e. `503` "retry" — on a refund, an
+    // instruction to re-send a request that can never succeed.
+    assert_eq!(refusal.category().http_status(), 409);
+    assert_eq!(refusal.retry(), vpay_core::Retry::Never);
+    assert_eq!(refusal.code(), "over_refund");
+
+    // And the database is consistent with exactly one winner: 3 000 reserved,
+    // nothing refunded yet, and one refund row.
+    assert_eq!(
+        refund_figures(&pool, "pi_race").await?,
+        (5_000, 0, 3_000),
+        "a second reservation must not have landed — 6 000 pending against a 5 000 capture is the \
+         state no_over_refund exists to make unreachable"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refunds")
+        .fetch_one(&pool)
+        .await
+        .context("counting refunds")?;
+    assert_eq!(
+        rows, 1,
+        "the losing transaction must roll back whole: its `refunds` row must not survive its \
+         failed reservation"
+    );
+
+    Ok(())
+}
+
+/// A settled refund moves both intent counters, posts two balanced legs, and
+/// leaves `amount_refunded + amount_refund_pending` where the CHECK expects
+/// it.
+///
+/// This is the gap RFC-0003 § 3 names in its opening: before it,
+/// `apply_refund_succeeded` flipped the refund row and updated the *invoice*,
+/// so the intent's `amount_refunded` never moved and invariant 3 had no code
+/// maintaining its left-hand side.
+#[tokio::test]
+async fn a_succeeded_refund_moves_both_counters_and_posts_a_balanced_transaction()
+-> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_settled",
+        "ch_settled",
+        5_000,
+    )
+    .await?;
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_settled", "pi_settled", 2_000),
+    )
+    .await?
+    .context("the refund is created")?;
+
+    let (refund, invoice) = repositories
+        .apply_refund_succeeded("re_settled")
+        .await
+        .context("settling a pending refund must commit")?
+        .context("the refund was pending, so it must settle")?;
+    assert_eq!(refund.amount, 2_000);
+    assert!(
+        invoice.is_none(),
+        "this intent pays no invoice, which is the normal case"
+    );
+
+    assert_eq!(
+        refund_figures(&pool, "pi_settled").await?,
+        (5_000, 2_000, 0),
+        "the reservation is consumed and amount_refunded grows by the same amount; the pair must \
+         move together or no_over_refund sees a sum that is briefly wrong"
+    );
+
+    // Two ledger transactions now: the capture and the refund. The refund's
+    // legs are the two `docs/flows/ledger.md` § Postings tabulates — merchant
+    // debited, payer clearing credited — and there is no fee leg, because
+    // issue #46's decision is that a refund fee posts nothing.
+    let legs: Vec<(String, String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT e.account::TEXT, e.direction::TEXT, e.amount, e.merchant_id \
+         FROM ledger_entries e JOIN ledger_transactions t ON t.id = e.transaction_id \
+         WHERE e.amount = 2000 ORDER BY e.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("reading the refund's legs back")?;
+    assert_eq!(
+        legs,
+        vec![
+            (
+                "merchant_payable".to_owned(),
+                "debit".to_owned(),
+                2_000,
+                Some("merchant_1".to_owned())
+            ),
+            (
+                "payer_clearing".to_owned(),
+                "credit".to_owned(),
+                2_000,
+                None
+            ),
+        ],
+        "two legs, never three: the rail's refund fee is reported on the object and posted to no \
+         account (issue #46)"
+    );
+
+    // Invariant 2, through the SQL implementation: 5 000 captured (no
+    // platform fee exists in this schema, so the capture is two legs) less
+    // 2 000 refunded.
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        3_000,
+        "balance(merchant_payable) = Σ captures − Σ fees − Σ refunds"
+    );
+
+    // Invariant 1 over every row either posting wrote, read back out of
+    // Postgres.
+    let (debits, credits): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(amount) FILTER (WHERE direction = 'debit'), 0)::BIGINT, \
+                COALESCE(SUM(amount) FILTER (WHERE direction = 'credit'), 0)::BIGINT \
+         FROM ledger_entries",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("summing every leg")?;
+    assert_eq!((debits, credits), (7_000, 7_000));
+
+    Ok(())
+}
+
+/// A refund whose `currency_code` is not its intent's is **refused**, and the
+/// whole settlement rolls back.
+///
+/// # What the schema does not stop, and why that matters
+///
+/// `refunds.currency_code` is a real column whose only constraint is the
+/// foreign key onto `currencies` (migration `0017`). Nothing ties it to the
+/// intent's; the two agree today only because `vpay_db::Refunds::create` is
+/// the sole writer and derives it from the intent. Before 2026-09-16,
+/// `settlement::post_refund` built its ledger legs from the *intent's*
+/// currency because `SettledRefund` carried none — so a second writer would
+/// have rendered `EUR` on the refund object and posted `XAF` legs, and
+/// `vpay_ledger::Transaction::validate` would not have said a word: it
+/// balances each currency on its own book, and every leg in the same wrong
+/// currency balances perfectly.
+///
+/// That "no caller can reach it" reasoning is exactly what produced the
+/// mixed-currency ledger defect earlier on this branch, where it was true
+/// right up until the same branch added the writer.
+///
+/// # Why refusal, and not simply posting in the refund's own currency
+///
+/// By the time the posting is built, `apply_refund_succeeded` has already
+/// added the refund's `amount` to `payment_intents.amount_refunded` and to
+/// `invoices.amount_refunded`, both denominated in the intent's currency and
+/// neither looking at a currency at all. On a mismatch there is therefore no
+/// correct posting to make in *either* code — so the settlement aborts whole
+/// and the refund stays `pending` for a human. This case is what pins that.
+///
+/// # This test is a second writer of `refunds`, deliberately
+///
+/// The row is inserted with hand-written SQL because `vpay_db::NewRefund` has
+/// no `currency_code` field to diverge with — see its docs, which is the same
+/// reason a merchant cannot cause this error. The reservation is set by hand
+/// for the same reason: `Refunds::create` writes the row and the reservation
+/// in one transaction and would have written a currency that agrees.
+#[tokio::test]
+async fn a_refund_whose_currency_disagrees_with_its_intent_is_refused_and_posts_nothing()
+-> anyhow::Result<()> {
+    use vpay_core::Classify as _;
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_mixed",
+        "ch_mixed",
+        5_000,
+    )
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
+         VALUES ('re_mixed', 'pi_mixed', 2000, 'EUR', 'pending', '{}'::jsonb)",
+    )
+    .execute(&pool)
+    .await
+    .context("the divergent writer inserts a EUR refund against an XAF intent")?;
+    sqlx::query("UPDATE payment_intents SET amount_refund_pending = 2000 WHERE id = 'pi_mixed'")
+        .execute(&pool)
+        .await
+        .context("the reservation Refunds::create would have taken")?;
+
+    // The premise, asserted rather than assumed: the database really did
+    // accept a refund in a currency that is not its intent's. If a future
+    // migration ties the two together with a constraint, this insert starts
+    // failing above and the rest of this case becomes moot — which is the
+    // outcome we would want, and it should be visible rather than silent.
+    let codes: (String, String) = sqlx::query_as(
+        "SELECT r.currency_code, p.currency_code FROM refunds r \
+         JOIN payment_intents p ON p.id = r.payment_intent_id WHERE r.id = 're_mixed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("reading the two currency codes back")?;
+    assert_eq!(
+        (codes.0.as_str(), codes.1.as_str()),
+        ("EUR", "XAF"),
+        "the premise of this test is that nothing in the schema stops the two from diverging"
+    );
+
+    let legs_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting the capture's legs")?;
+
+    let error = repositories
+        .apply_refund_succeeded("re_mixed")
+        .await
+        .expect_err("a refund denominated in a currency that is not its intent's must be refused");
+
+    assert!(
+        matches!(
+            &error,
+            vpay_db::DbError::RefundCurrencyMismatch {
+                refund_id,
+                refund_currency,
+                payment_intent_id,
+                intent_currency,
+            } if refund_id == "re_mixed"
+                && refund_currency == "EUR"
+                && payment_intent_id == "pi_mixed"
+                && intent_currency == "XAF"
+        ),
+        "the refusal must name both codes and both objects, and the refund's must be read off \
+         the refund row rather than off the intent: {error:?}"
+    );
+
+    // Internal, not Conflict or InvalidRequest. `NewRefund` has no
+    // `currency_code` field, so no request a merchant can send produces this;
+    // blaming the caller with a `409` would point an operator at the only
+    // party who could not have caused it, and `Storage`'s "retry" would have
+    // the worker re-run a settlement that fails identically forever.
+    assert_eq!(error.category(), vpay_core::Category::Internal);
+    assert_eq!(error.code(), "refund_currency_mismatch");
+
+    // Nothing was posted — not two legs in the wrong currency, and not a
+    // compensating pair that nets to zero. Both would satisfy invariant 1.
+    let legs_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting legs after the refusal")?;
+    assert_eq!(
+        legs_after, legs_before,
+        "the refused settlement must post no ledger entry at all"
+    );
+    let eur_legs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries WHERE currency_code = 'EUR'")
+            .fetch_one(&pool)
+            .await
+            .context("looking for a leg in the refund's currency")?;
+    assert_eq!(
+        eur_legs, 0,
+        "a EUR leg would be a merchant_payable balance going negative in a currency nothing was \
+         ever captured in"
+    );
+
+    // And the rest of the transaction rolled back with it: the refund is
+    // still `pending`, so the poll job will see it again, and both intent
+    // counters are exactly where the reservation left them.
+    let status: String = sqlx::query_scalar("SELECT status FROM refunds WHERE id = 're_mixed'")
+        .fetch_one(&pool)
+        .await
+        .context("reading the refund's status back")?;
+    assert_eq!(
+        status, "pending",
+        "the compare-and-swap out of `pending` must roll back with the posting it could not make"
+    );
+    assert_eq!(
+        refund_figures(&pool, "pi_mixed").await?,
+        (5_000, 0, 2_000),
+        "`amount_refunded` must not have absorbed 2 000 EUR into an XAF total, and the \
+         reservation must still be held"
+    );
+
+    Ok(())
+}
+
+/// A failed refund releases the reservation, leaves `amount_refunded` alone,
+/// and **posts nothing**.
+///
+/// The last clause is the one worth a test: `docs/flows/ledger.md` § "When
+/// refunds post" says a failure needs no reversal entry *because nothing was
+/// posted*, and that sentence is only true if the failure path really does
+/// write no ledger row. A compensating pair of legs that netted to zero would
+/// satisfy invariants 1 and 2 and still be wrong — a ledger claiming money
+/// moved twice when it never moved at all.
+#[tokio::test]
+async fn a_failed_refund_releases_the_reservation_and_posts_nothing() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_failed",
+        "ch_failed",
+        5_000,
+    )
+    .await?;
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_failed", "pi_failed", 2_000),
+    )
+    .await?
+    .context("the refund is created")?;
+    assert_eq!(refund_figures(&pool, "pi_failed").await?, (5_000, 0, 2_000));
+
+    let failed = repositories
+        .apply_refund_failed(
+            "re_failed",
+            "payee_account_blocked",
+            "the payee wallet is blocked",
+        )
+        .await
+        .context("failing a pending refund must commit")?
+        .context("the refund was pending, so it must move")?;
+    assert_eq!(failed.amount, 2_000);
+
+    assert_eq!(
+        refund_figures(&pool, "pi_failed").await?,
+        (5_000, 0, 0),
+        "the reservation goes back and amount_refunded does not move — a failed refund is not a \
+         succeeded one, which is what keeps invariant 3 true"
+    );
+
+    let (status, code, raw): (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT status, failure_code, failure_raw FROM refunds WHERE id = $1")
+            .bind("re_failed")
+            .fetch_one(&pool)
+            .await
+            .context("reading the failed refund back")?;
+    assert_eq!(status, "failed");
+    assert_eq!(code.as_deref(), Some("payee_account_blocked"));
+    assert_eq!(raw.as_deref(), Some("the payee wallet is blocked"));
+
+    // The capture, and nothing else. This is the assertion the section header
+    // calls out: a failure posts NOTHING, not a pair of legs that cancel.
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "exactly one — the capture. A failed refund writes no ledger row at all"
+    );
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        5_000,
+        "the merchant is owed the whole capture again"
+    );
+
+    // And the refund can be settled no second time: its compare-and-swap out
+    // of `pending` has already fired.
+    assert!(
+        repositories
+            .apply_refund_succeeded("re_failed")
+            .await?
+            .is_none(),
+        "a failed refund is not pending, so settling it must write nothing and answer Ok(None)"
+    );
+
+    Ok(())
+}
+
+/// `docs/flows/ledger.md` invariant 3 — `amount_refunded` equals the sum of
+/// succeeded refunds for that intent — after two partials and one failure.
+///
+/// The failure is in the sequence on purpose: an implementation that
+/// maintained `amount_refunded` by adding every refund it saw, rather than
+/// every refund that *succeeded*, passes a two-partial version of this case
+/// and fails this one.
+#[tokio::test]
+async fn amount_refunded_is_the_sum_of_succeeded_refunds_after_two_partials() -> anyhow::Result<()>
+{
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_partials",
+        "ch_partials",
+        5_000,
+    )
+    .await?;
+
+    for (id, amount) in [("re_p1", 1_200_i64), ("re_p2", 800), ("re_p3", 500)] {
+        vpay_db::Refunds::create(
+            &*repositories,
+            "merchant_1",
+            &new_refund(id, "pi_partials", amount),
+        )
+        .await?
+        .with_context(|| format!("creating {id}"))?;
+    }
+    repositories.apply_refund_succeeded("re_p1").await?;
+    repositories.apply_refund_succeeded("re_p2").await?;
+    repositories
+        .apply_refund_failed(
+            "re_p3",
+            "payee_account_blocked",
+            "the payee wallet is blocked",
+        )
+        .await?;
+
+    let (amount, refunded, pending) = refund_figures(&pool, "pi_partials").await?;
+
+    // The right-hand side of invariant 3, computed from the refund rows
+    // rather than from the counter under test.
+    let succeeded: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0)::BIGINT FROM refunds \
+         WHERE payment_intent_id = $1 AND status = 'succeeded'",
+    )
+    .bind("pi_partials")
+    .fetch_one(&pool)
+    .await
+    .context("summing the succeeded refunds")?;
+
+    assert_eq!(
+        refunded, succeeded,
+        "invariant 3: amount_refunded must equal Σ succeeded refunds, and the 500 that failed \
+         must be in neither"
+    );
+    assert_eq!((amount, refunded, pending), (5_000, 2_000, 0));
+
+    // And the ledger agrees: two refund postings, not three.
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        3_000
+    );
+
+    Ok(())
+}
+
+/// A ledger posting is attributed to the merchant the **intent** names, and
+/// there is no way for a caller to say otherwise.
+///
+/// # Why this needs a test at all
+///
+/// `ledger_entries.merchant_id` is denormalised, and migration `0045` states
+/// the cost in its own header: nothing constrains it to agree with the
+/// merchant of the charge its transaction names. No SQL constraint can — the
+/// fact is three tables away and a row-level CHECK sees one row — and
+/// `ledger::post_in_tx` does not check either; it binds whatever the
+/// `AccountKind::MerchantPayable` was built with. `docs/flows/ledger.md`
+/// § Status calls it a **call-site obligation**, and this case is the only
+/// thing that discharges it.
+///
+/// # Why it would fail if a caller-supplied merchant were threaded through
+///
+/// Two merchants are captured and refunded in the same database, and the
+/// assertions are cross-merchant: merchant 2's balance must be its own
+/// capture untouched by merchant 1's refund, and *every* `merchant_payable`
+/// row must name the merchant of the intent behind its charge — checked by a
+/// join back through `ledger_transactions -> charges -> payment_intents`,
+/// which is the derivation the column exists to avoid depending on. A
+/// `Settlement` that took a merchant id from its caller would let merchant
+/// 1's settlement credit merchant 2, and that join is what catches it; the
+/// balances alone would not, because a consistent mix-up moves both numbers.
+#[tokio::test]
+async fn a_posting_is_attributed_to_the_intents_own_merchant_and_not_to_a_caller()
+-> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(&pool, &repositories, "merchant_1", "pi_a1", "ch_a1", 5_000)
+        .await?;
+    capture_through_the_settlement(&pool, &repositories, "merchant_2", "pi_a2", "ch_a2", 20_000)
+        .await?;
+
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_a1", "pi_a1", 2_000),
+    )
+    .await?
+    .context("merchant 1's refund")?;
+    repositories.apply_refund_succeeded("re_a1").await?;
+
+    // Every merchant_payable row, joined back to the merchant its charge's
+    // intent names. A row where the two disagree is the defect; there must be
+    // none.
+    let mismatches: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT e.id, e.merchant_id, p.merchant_id \
+         FROM ledger_entries e \
+         JOIN ledger_transactions t ON t.id = e.transaction_id \
+         JOIN charges c ON c.id = t.charge_id \
+         JOIN payment_intents p ON p.id = c.payment_intent_id \
+         WHERE e.account = 'merchant_payable' AND e.merchant_id IS DISTINCT FROM p.merchant_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("joining every posting back to the merchant of its charge's intent")?;
+    assert!(
+        mismatches.is_empty(),
+        "a merchant_payable posting is attributed to a merchant the charge does not belong to. \
+         No constraint can catch this (migration 0045); the call site is the only guarantor, and \
+         it must derive the merchant from the intent it settled: {mismatches:?}"
+    );
+
+    // And there is at least one row to have got wrong — an empty ledger would
+    // satisfy the assertion above vacuously.
+    let payable_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ledger_entries WHERE account = 'merchant_payable'",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("counting merchant_payable rows")?;
+    assert_eq!(
+        payable_rows, 3,
+        "two captures and one refund, each with one merchant_payable leg"
+    );
+
+    // The balances, which is the number a mix-up would move.
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        3_000
+    );
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_2", "XAF")
+            .await?,
+        20_000,
+        "merchant 2 was never refunded; merchant 1's refund is not merchant 2's"
+    );
+
+    Ok(())
+}
+
+/// A refund request for another merchant's intent is indistinguishable from a
+/// request for an intent that does not exist — and neither reserves anything.
+///
+/// `Refunds::create` is merchant-scoped in SQL
+/// (`payment_intents::reserve_refund_in_tx`'s `WHERE merchant_id = $1`), for
+/// the reason this module's reads are: a caller that never learns the intent
+/// exists cannot leak that it does. Asserting the *reservation* as well as
+/// the answer is what makes this more than a `None` check — a scope applied
+/// after the increment would answer `None` and still have moved the column.
+#[tokio::test]
+async fn a_refund_against_another_merchants_intent_is_refused_and_reserves_nothing()
+-> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_tenant",
+        "ch_tenant",
+        5_000,
+    )
+    .await?;
+
+    let refused = vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_2",
+        &new_refund("re_tenant", "pi_tenant", 1_000),
+    )
+    .await
+    .context("the read must not error; it must answer None")?;
+    assert!(
+        refused.is_none(),
+        "another tenant's intent must be indistinguishable from a missing one"
+    );
+
+    // An intent that does not exist at all answers identically.
+    assert!(
+        vpay_db::Refunds::create(
+            &*repositories,
+            "merchant_1",
+            &new_refund("re_ghost", "pi_nonexistent", 1_000),
+        )
+        .await?
+        .is_none()
+    );
+
+    assert_eq!(
+        refund_figures(&pool, "pi_tenant").await?,
+        (5_000, 0, 0),
+        "a refused create must leave the intent exactly as it found it"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refunds")
+        .fetch_one(&pool)
+        .await
+        .context("counting refunds")?;
+    assert_eq!(rows, 0);
+
+    Ok(())
+}
+
+/// Cancelling a `pending` refund releases its reservation, posts nothing and
+/// frees the amount for a later refund.
+///
+/// The last clause is what makes the release real rather than cosmetic: after
+/// the cancellation the intent must accept a fresh refund for the *whole*
+/// capture, which it could not if the reservation were still held.
+///
+/// # The premise this case has to build, since 2026-09-16
+///
+/// `cancel_in_tx` refuses a refund younger than `vpay-db`'s private
+/// `CREATE_IN_FLIGHT_WINDOW_SECONDS` (60 s), because a young
+/// `pending` refund with no `provider_requests` row is indistinguishable from
+/// a create that is still running and may be about to instruct a rail. A
+/// refund created and cancelled in the same breath — which is what this case
+/// did until the merge of wave 3 — therefore answers `Ok(None)`, and the
+/// subject below is never reached.
+///
+/// So the refund is aged past that window first, exactly as the route-level
+/// twin does (`a_pending_refund_cancels_once_and_gives_its_reservation_back`
+/// in `refunds.rs`, via its harness's `age_past_the_cancel_window`). Nothing
+/// below is weakened by it; the opposite, in fact — the `merchant_2` refusal
+/// underneath is only about tenancy once the age predicate can no longer be
+/// the thing refusing it.
+#[tokio::test]
+async fn canceling_a_pending_refund_releases_its_reservation() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_cancel",
+        "ch_cancel",
+        5_000,
+    )
+    .await?;
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_cancel", "pi_cancel", 5_000),
+    )
+    .await?
+    .context("reserving the whole capture")?;
+    assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
+
+    // Past the in-flight window — see this case's docs. Ninety seconds, the
+    // same figure `refunds.rs`'s harness uses, against a sixty-second window
+    // measured by Postgres's own `now()` at both ends.
+    sqlx::query(
+        "UPDATE refunds SET created_at = now() - interval '90 seconds' \
+         WHERE id = $1 AND status = 'pending'",
+    )
+    .bind("re_cancel")
+    .execute(&pool)
+    .await
+    .context("aging the refund past the cancel window")?;
+
+    // Another merchant cannot cancel it, and the failed attempt releases
+    // nothing.
+    assert!(
+        vpay_db::Refunds::cancel(&*repositories, "merchant_2", "re_cancel")
+            .await?
+            .is_none(),
+        "the cancel is merchant-scoped in SQL, exactly as the create is"
+    );
+    assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
+
+    let canceled = vpay_db::Refunds::cancel(&*repositories, "merchant_1", "re_cancel")
+        .await
+        .context("cancelling a pending refund must commit")?
+        .context("the refund is this merchant's and is pending")?;
+    assert_eq!(canceled.status, "canceled");
+
+    assert_eq!(
+        refund_figures(&pool, "pi_cancel").await?,
+        (5_000, 0, 0),
+        "the reservation goes back and amount_refunded does not move"
+    );
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "exactly one — the capture. Nothing was posted for the refund, so there is nothing to \
+         reverse"
+    );
+
+    // Cancelling twice is `Ok(None)` and does not release a second time,
+    // which would drive `amount_refund_pending` negative if the decrement
+    // were not a compare-and-swap.
+    assert!(
+        vpay_db::Refunds::cancel(&*repositories, "merchant_1", "re_cancel")
+            .await?
+            .is_none()
+    );
+    assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 0));
+
+    // And the released amount is genuinely available again.
+    vpay_db::Refunds::create(
+        &*repositories,
+        "merchant_1",
+        &new_refund("re_after", "pi_cancel", 5_000),
+    )
+    .await?
+    .context("the whole capture must be refundable again after the cancellation")?;
+    assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
+
+    Ok(())
+}
+
+/// The capture posting `Settlement::apply_succeeded` now makes, and the fact
+/// that it is **two legs and not three**.
+///
+/// `docs/flows/ledger.md` § Postings tabulates a three-leg capture when a
+/// platform fee is charged. vpay charges none: no column in this schema holds
+/// a capture-time platform fee and no configuration computes one, so the
+/// shipping path passes `None` and posts two legs. That is a fact about the
+/// repository rather than a simplification, and asserting it here is what
+/// stops a future fee model landing silently — a third leg appears and this
+/// case says so.
+///
+/// It also pins the direction convention: the payer's clearing account is
+/// *debited* the gross and the merchant *credited*, so
+/// `balance(merchant_payable) = Σ credit − Σ debit` is positive for money the
+/// merchant received.
+#[tokio::test]
+async fn a_settled_charge_posts_its_capture_in_the_same_transaction() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    capture_through_the_settlement(
+        &pool,
+        &repositories,
+        "merchant_1",
+        "pi_capture",
+        "ch_capture",
+        5_000,
+    )
+    .await?;
+
+    let legs: Vec<(String, String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT account::TEXT, direction::TEXT, amount, merchant_id FROM ledger_entries \
+         ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .context("reading the capture's legs")?;
+    assert_eq!(
+        legs,
+        vec![
+            ("payer_clearing".to_owned(), "debit".to_owned(), 5_000, None),
+            (
+                "merchant_payable".to_owned(),
+                "credit".to_owned(),
+                5_000,
+                Some("merchant_1".to_owned())
+            ),
+        ],
+        "two legs, because nothing in this schema holds a capture-time platform fee. A third leg \
+         here means a fee model landed and docs/flows/ledger.md invariant 2 needs re-reading"
+    );
+
+    // The transaction is attributed to the charge that was settled, and its
+    // id is a minted `lt_…` rather than anything composed at the call site.
+    let (transaction_id, charge_id): (String, String) =
+        sqlx::query_as("SELECT id, charge_id FROM ledger_transactions")
+            .fetch_one(&pool)
+            .await
+            .context("reading the capture transaction")?;
+    assert_eq!(charge_id, "ch_capture");
+    assert!(
+        vpay_core::ids::is_well_formed(vpay_core::ids::LEDGER_TRANSACTION_PREFIX, &transaction_id),
+        "the id must come from the minter: it is what makes `{{transaction_id}}_{{index}}` \
+         unambiguous across two transactions (see vpay_core::ids). Got {transaction_id}"
+    );
+
+    // Settling the same charge again writes nothing — the compare-and-swap on
+    // the charge is what keeps invariant 4 ("exactly one capture transaction
+    // per succeeded charge") true, and it is the only thing that does, since
+    // a minted id cannot be a second guard.
+    assert!(
+        repositories
+            .apply_succeeded(
+                "ch_capture",
+                None,
+                "evt_second_attempt",
+                &serde_json::json!({}),
+                None
+            )
+            .await?
+            .is_none(),
+        "the charge is no longer live"
+    );
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "invariant 4: exactly one capture transaction for this charge"
+    );
+
+    Ok(())
+}
+
+/// Invariant 4 under **concurrency**: two settlements racing the same charge
+/// post exactly one capture, and the loser writes nothing at all.
+///
+/// # Why the sequential case is not enough
+///
+/// `a_settled_charge_posts_its_capture_in_the_same_transaction` settles twice
+/// in sequence, which proves the compare-and-swap refuses a charge that is
+/// *already* `succeeded`. That is not the shape production produces. A poll
+/// job and a rail callback can reach `apply_succeeded` for the same charge at
+/// the same moment, with neither able to see the other's uncommitted write,
+/// and `docs/flows/ledger.md` § Status states that the charge
+/// compare-and-swap is the **only** guard there is — the transaction id is
+/// minted, so `ledger_transactions_pkey` cannot be a second one. A guard that
+/// held only when the two calls were ordered would leave the invariant
+/// resting on nothing at the one moment it is asked to hold.
+///
+/// # The two event ids are deliberately different
+///
+/// A shared `event_id` would make `events_pkey` refuse the loser, and the
+/// case would pass with the charge guard doing nothing. Distinct ids remove
+/// that accidental second guard, so the only thing standing between this
+/// database and two capture postings for one 5 000 XAF charge is
+/// `WHERE id = $1 AND state IN (…)` re-evaluating against the winner's
+/// committed row.
+///
+/// # The mutation it exists for
+///
+/// Widen that `WHERE` to `WHERE id = $1` and this case must fail: both
+/// settlements commit, the ledger holds two captures, and
+/// `merchant_payable_balance` answers 10 000 for a 5 000 capture.
+#[tokio::test]
+async fn two_settlements_racing_one_charge_post_exactly_one_capture() -> anyhow::Result<()> {
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    insert_payment_intent(&pool, "pi_double", 5_000, 0, 0).await?;
+    insert_charge(&pool, "ch_double", "pi_double").await?;
+
+    let data = serde_json::json!({});
+    let left = repositories.apply_succeeded("ch_double", None, "evt_double_left", &data, None);
+    let right = repositories.apply_succeeded("ch_double", None, "evt_double_right", &data, None);
+    let (left, right) = tokio::join!(left, right);
+
+    let settled =
+        usize::from(matches!(&left, Ok(Some(_)))) + usize::from(matches!(&right, Ok(Some(_))));
+    assert_eq!(
+        settled, 1,
+        "exactly one of two racing settlements may take the charge terminal: {left:?} {right:?}"
+    );
+    let refused = usize::from(matches!(&left, Ok(None))) + usize::from(matches!(&right, Ok(None)));
+    assert_eq!(
+        refused, 1,
+        "the loser's answer must be Ok(None) — 'already settled, nothing written' — and not a \
+         failure a worker would retry: {left:?} {right:?}"
+    );
+
+    // Invariant 4, in the database: one capture transaction for this charge.
+    let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger transactions")?;
+    assert_eq!(
+        postings, 1,
+        "invariant 4 under concurrency: exactly one capture transaction per succeeded charge"
+    );
+    let legs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_entries")
+        .fetch_one(&pool)
+        .await
+        .context("counting ledger entries")?;
+    assert_eq!(legs, 2, "two legs, and the loser contributed none");
+
+    // The number a double posting would move, asserted on its own: a ledger
+    // with two captures balances per transaction and still tells the merchant
+    // it is owed twice what was taken.
+    assert_eq!(
+        repositories
+            .merchant_payable_balance("merchant_1", "XAF")
+            .await?,
+        5_000,
+        "balance(merchant_payable) must be the one capture, not two"
+    );
+
+    // And the loser wrote nothing else either: one event, not two.
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .context("counting events")?;
+    assert_eq!(
+        events, 1,
+        "the loser's event id is its own, so a second row here would mean its whole transaction \
+         committed"
+    );
+
+    Ok(())
+}
+
+/// The idempotency trap, through the **real** `UnitOfWork` seam: a caller that
+/// swallows a `UniqueViolation` and commits anyway is handed
+/// `TxOutcome::Commit` while everything it wrote is discarded.
+///
+/// `vpay_db::ledger`'s own test module measures this for a duplicate ledger
+/// posting; this one measures it for a duplicate `event_id`, which is a write
+/// a consumer of this crate can actually reach. The point of having both is
+/// that **it is a property of every write in `vpay-db`**, not of the ledger:
+/// Postgres aborts a transaction at the first failed statement and turns the
+/// following `COMMIT` into a `ROLLBACK` without raising, so
+/// `UnitOfWork::transaction`'s `pending.commit()` returns `Ok` and the closure's
+/// answer comes back as a commit.
+///
+/// It is pinned here because "catch the duplicate and carry on — it was
+/// already written" is the natural reading of an idempotency key, and it is
+/// the one reading that must not be taken inside the transaction that raised
+/// it. A settlement that may run twice has to abandon and re-read, or take a
+/// `SAVEPOINT`.
+#[tokio::test]
+async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_transaction()
+-> anyhow::Result<()> {
+    use vpay_db::{TxOutcome, UnitOfWork as _};
+
+    let (_container, pool, url) = migrated_postgres_with_url().await?;
+    seed_currencies(&pool).await?;
+    seed_providers(&pool).await?;
+    insert_payment_intent(&pool, "pi_swallow", 5_000, 0, 0).await?;
+
+    let repositories = vpay_db::connect(&url)
+        .await
+        .context("the repositories connect to the container")?;
+
+    let event = |id: &str| vpay_db::NewEvent {
+        id: id.to_owned(),
+        merchant_id: "merchant_1".to_owned(),
+        livemode: false,
+        event_type: "payment_intent.succeeded".to_owned(),
+        object_id: "pi_swallow".to_owned(),
+        data: serde_json::json!({}),
+    };
+
+    let outcome = repositories
+        .transaction(move |tx| {
+            Box::pin(async move {
+                // A good write.
+                tx.insert_in_tx(&event("evt_swallow_first")).await?;
+                // ... and a duplicate, swallowed the way an "already written,
+                // that is fine" branch would.
+                let duplicate = tx.insert_in_tx(&event("evt_swallow_first")).await;
+                assert!(
+                    matches!(duplicate, Err(vpay_db::DbError::UniqueViolation { .. })),
+                    "{duplicate:?}"
+                );
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .context("committing an aborted transaction does not report an error")?;
+
+    assert!(
+        matches!(outcome, TxOutcome::Commit(())),
+        "the caller is told it committed"
+    );
+
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .context("counting events")?;
+    assert_eq!(
+        events, 0,
+        "... and nothing was written, including the row that succeeded. A duplicate must not be \
+         swallowed inside the transaction that raised it."
+    );
+
+    Ok(())
+}
+
 // -------------------------------------------- schemas/vpay.cstack drift ----
 //
 // Everything below measures one thing: how far `schemas/vpay.cstack` is from
@@ -3196,7 +4799,73 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
 /// The number is read off a freshly migrated database, never derived by adding
 /// two branches' deltas — and the twelve-line breakdown above was read off the
 /// report, not predicted from the DDL.
-const EXPECTED_DRIFT_CHANGES: u32 = 190;
+///
+/// **190 -> 192 on 2026-09-15 (migration 0045, RFC-0003 § 4)**, measured
+/// against a freshly migrated Postgres 16 with `cratestack migrate baseline
+/// --strict`.
+///
+/// **Measured on cratestack 0.11.1, not on the pinned 0.12.0, and the
+/// difference was controlled for rather than waved at.** The host this ran on
+/// had 0.11.1 on `PATH`; the test warns about that and does not fail, so the
+/// warning is easy to read past. Both numbers were therefore taken with the
+/// *same* binary: with migration 0045 withdrawn and `model LedgerEntry`'s
+/// `merchant_id` commented out, 0.11.1 reported `drift detected in 25
+/// table(s)/view(s) (190 change(s) total)` — **exactly the 0.12.0-measured
+/// constant it replaced** — and with both restored it reported 192. So the
+/// delta is +2 under one binary, and the two releases agree on the absolute
+/// number for this schema, which is what the 2026-09-07 note above already
+/// argued from file identity. If CI (which has 0.12.0) ever disagrees, CI is
+/// the evidence and this constant is what must move.
+///
+/// `ledger_entries` goes 6 -> 8 and nothing else moves at all;
+/// `EXPECTED_DRIFTED_RELATIONS` does not move either, because that table was
+/// already on the list. The +2 is:
+///
+///   * `ledger_entries_merchant_id_length` — one hand-named, **single**-column
+///     CHECK, the class that has cost every modelled table in this schema a
+///     line each since `currencies`. Declaring `@length` with `@db_enforce` on
+///     `model LedgerEntry.merchant_id` would emit a drop-and-add PAIR against
+///     it (exp17 §1a), which is worse rather than better.
+///   * `ledger_entries_merchant_payable_idx` — one index. Partial, so
+///     `@@index([...])` could not express it even if the grammar had a
+///     spelling for it: it is `WHERE account = 'merchant_payable'`.
+///
+/// **What cost nothing is the part to read**, and it is the same lesson
+/// `customers`' nine address columns taught. The `merchant_id` column itself
+/// contributes **zero** — no `column … exists in the live database but is not
+/// declared`, no `type differs`, no `default value differs` — because `model
+/// LedgerEntry` declares it in the same commit and migration 0045 gave it no
+/// DB `DEFAULT`. And `ledger_entries_merchant_id_iff_merchant_payable`, the
+/// pair CHECK that is the *load-bearing* half of the migration, contributes
+/// nothing in either direction because it is multi-column, exactly like the
+/// twenty before it. That is why
+/// `a_merchant_payable_entry_must_name_its_merchant` and
+/// `a_pooled_account_entry_must_not_name_a_merchant` write the two rows it
+/// refuses: **the drift report is not the guard for that constraint and never
+/// can be.**
+///
+/// **192 -> 194 on 2026-09-15 (migration 0046, RFC-0003 § 3)**, and the +2 is
+/// the +2 migration 0045's own header predicted when it declined to add these
+/// two CHECKs — `ledger_transactions.id_length` and `ledger_entries.id_length`,
+/// one hand-named single-column CHECK each, which is the class that has cost
+/// every table in this schema a line apiece since `currencies`.
+/// `EXPECTED_DRIFTED_RELATIONS` does not move: both tables were already on it.
+///
+/// **Measured on 2026-09-15, and measured OFF-PIN — on `cratestack-cli`
+/// 0.11.1, not the 0.12.0 this repository pins.** The report read
+/// `drift detected in 25 table(s)/view(s) (194 change(s) total)`, and
+/// `EXPECTED_DRIFTED_RELATIONS` is unmoved at 25.
+///
+/// That is the same limitation the 190 -> 192 note above records and for the
+/// same reason: the host has 0.11.1 on `PATH`, and `cargo install`ing 0.12.0
+/// into a shared `~/.cargo/bin` while other agents are working on this
+/// machine is not a thing this branch will do. It is weaker evidence than the
+/// on-pin measurement the constant deserves, and the mitigation is the one
+/// 0045 used — the *delta* was taken with a single binary, so the two
+/// releases' agreement on the absolute number for this schema is inherited
+/// rather than re-argued. **If CI (which has 0.12.0) disagrees, CI is the
+/// evidence and this constant is what must move.**
+const EXPECTED_DRIFT_CHANGES: u32 = 194;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -3271,6 +4940,14 @@ const EXPECTED_DRIFT_CHANGES: u32 = 190;
 /// lost a line, not its place — so the pair says what neither constant could
 /// alone: one relation arrived, and every line that arrived with it landed on
 /// that relation.
+/// **Still 25 after migration 0045 (2026-09-15, RFC-0003 § 4):**
+/// `ledger_entries` was already on this list as a declared-and-differing
+/// relation and stays exactly one entry on it, so `EXPECTED_DRIFT_CHANGES`'
+/// +2 means what it says — two lines arrived and no relation did. Read that
+/// pair with the caveat `EXPECTED_DRIFT_CHANGES`' own note states at length:
+/// the run it comes from was taken at cratestack **0.11.1**, not the pinned
+/// 0.12.0, controlled by re-measuring the withdrawn change with the same
+/// binary. CI runs 0.12.0 and is the evidence if it disagrees.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
@@ -3353,6 +5030,12 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 /// `EXPECTED_DRIFT_CHANGES` saying nothing at all about it. `material`,
 /// `issuer` and `subject` are `TEXT`; `counter` is `BIGINT` and not `INT`,
 /// because `int4` is one of the six `map_scalar` does not map.
+/// **Still 19 after migration 0045 (2026-09-15, RFC-0003 § 4):**
+/// `ledger_entries.merchant_id` is `TEXT`, which `map_scalar` maps outright,
+/// so it is *compared* rather than excluded — which is what lets
+/// `EXPECTED_DRIFT_CHANGES` say the new column itself drifted by zero rather
+/// than say nothing at all about it. Same 0.11.1-not-0.12.0 caveat as the two
+/// constants above; see `EXPECTED_DRIFT_CHANGES`' note.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -3816,6 +5499,20 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // could ever notice going missing.
             ("invoices", "refunded_at_most_paid"),
             ("jobs", "lock_is_paired"),
+            // RFC-0003 § 4's pair rule, migration `0045`:
+            // `(account = 'merchant_payable') = (merchant_id IS NOT NULL)`.
+            // It is `vpay_ledger::AccountKind`'s sum type expressed in SQL —
+            // exactly one of the three accounts is tenant-scoped — and it is
+            // the *load-bearing* half of that migration, because it is what
+            // stops a nullable `merchant_id` from being a hole in invariant 2.
+            // Multi-column, so this report cannot see it in either direction,
+            // which is why `a_merchant_payable_entry_must_name_its_merchant`
+            // and `a_pooled_account_entry_must_not_name_a_merchant` write both
+            // rows it refuses instead of trusting a line here.
+            (
+                "ledger_entries",
+                "ledger_entries_merchant_id_iff_merchant_payable",
+            ),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),
             ("payment_intents", "lpe_paired"),
@@ -3851,11 +5548,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
          and the drift count below cannot"
     );
 
-    // None of the eighteen reaches the report. (This line and the one below
-    // said "eleven" until 2026-09-10; the list had grown to seventeen by then
-    // and the counts had not been re-read. Corrected here rather than left,
-    // because a comment that miscounts the list beside it is the one a reader
-    // trusts instead of counting.)
+    // None of the twenty-six reaches the report. (This line and the one below
+    // said "eleven" until 2026-09-10, and "eighteen" until 2026-09-15; the
+    // list was twenty-five entries long when migration 0045 added the
+    // twenty-sixth, so the correction of 2026-09-10 had itself gone stale by
+    // seven. Counted, not estimated. The lesson the 2026-09-10 note drew
+    // stands and is now twice-earned: a comment that miscounts the list
+    // beside it is the one a reader trusts instead of counting, and nothing
+    // in this file fails when it drifts — only a reader does.)
     //
     // Matched as the shape the report renders a CHECK in — ``CHECK `name` ``,
     // from `cratestack-cli` 0.12.0's `src/migrate/drift_report.rs::describe`,
@@ -3881,11 +5581,15 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         );
     }
 
-    // Three of the eighteen sit on tables the schema *does* model, so their absence
-    // is not the table being skipped: a single-column CHECK on each of those
-    // very tables is reported, and pinning both lines is what separates "the
-    // tool cannot see cross-column CHECKs" from "the tool said nothing about
-    // `providers` or `payment_intents` at all".
+    // Many of the twenty-six sit on tables the schema *does* model, so their
+    // absence is not the table being skipped. Two of those tables are pinned
+    // below: a single-column CHECK on each of `providers` and
+    // `payment_intents` IS reported, which is what separates "the tool cannot
+    // see cross-column CHECKs" from "the tool said nothing about `providers`
+    // or `payment_intents` at all". (This said "Three of the eighteen" until
+    // 2026-09-15 and had been at odds with the two-element loop below it and
+    // with the list above it for longer than that; the loop is the thing that
+    // runs, so the prose was moved onto it rather than the other way round.)
     //
     // Why this matters beyond the `@@check` ask: a future `--strict` run that
     // exits 0 would say nothing whatever about the over-refund guard or the

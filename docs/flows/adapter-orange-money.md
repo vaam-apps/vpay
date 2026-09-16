@@ -1,6 +1,7 @@
 # Adapter: Orange Money Cameroun
 
-**Flow: redirect.** `supports_refunds: false`.
+**Flow: redirect.** `supports_refunds: true` since 2026-09-15 — the rail can
+refund, vpay has not built it. `supports_partial_refunds: false`.
 
 > **Sourcing caveat.** Orange's full technical specification sits behind Orange
 > Partner and a signed merchant agreement. What follows is reconstructed from
@@ -109,13 +110,47 @@ across both rails.
 If Orange turns out to document sub-reasons for `FAILED` at onboarding, they
 become rows in `STATUS_TABLE` and nothing else changes — that is item 9 below.
 
-## Why refunds are off
+## Why refunds are unbuilt
 
-No refund API is documented for Web Payment. `supports_refunds: false` means the
-core refuses `POST /v1/refunds` on this rail with a Stripe-shaped 400, and **no
-core code special-cases Orange to produce that**. If refunds turn out to be
-available under a different agreement, it is a config flag and an adapter
-method, not a core change.
+_This section was headed "Why refunds are off" and said: "No refund API is
+documented for Web Payment. `supports_refunds: false` means the core refuses
+`POST /v1/refunds` on this rail with a Stripe-shaped 400, and **no core code
+special-cases Orange to produce that**." That was a claim about **Orange**, and
+on 2026-09-15 the maintainer decided it was the wrong claim (RFC-0003 § 5). It
+is kept here verbatim because it is what this page told readers for twelve
+days._
+
+**An Orange refund is an outbound transfer back to the payee.** There is no
+"back the way it came" on a redirect rail: the payer authenticates with Orange,
+`payer_ref` is `None`, and vpay never learns who paid. So a refund here is
+_addressed_ — which is why this adapter declares
+`RefundDestination::Required` and implements `parse_destination` — or it is
+nowhere.
+
+Orange makes transfers. The rail is therefore not the thing standing in the
+way, and `supports_refunds` is **`true`**. What stands in the way is that
+**this repository has no Orange transfer specification of any kind — not even
+reconstructed.** The sourcing caveat at the top of this page applies to the
+three calls that _are_ implemented: they came from Orange Developer's public
+overview plus several community SDKs that agree with each other. For transfers
+there is no such source here. Writing one would mean inventing an endpoint path
+and a request body, in the money path, on a rail nobody has ever called — the
+failure mode [CLAUDE.md](../../CLAUDE.md) names first.
+
+So `refund` is a declared token,
+`ProviderError::NotImplemented("orange_money::refund")`, listed in
+[../status.md](../status.md) where `cargo xtask verify-status` tracks it in
+both directions. `Unsupported` would say "Orange has no refund API" and that is
+no longer what anyone believes. **Item 5 below is what unblocks it** — an
+answer from Orange Cameroun, not more reading.
+
+`supports_partial_refunds` stays **`false`**, and that is a decision rather
+than a leftover. The `true` above rests on one known thing, that an Orange
+refund is a transfer; nothing else about Orange transfers is known here — no
+amount semantics, no minimum, no per-transfer limit. Declaring `false` refuses
+a merchant's part-refund and tells them so; declaring `true` and being wrong
+means **withdrawing** a capability merchants have integrated against, which is
+breaking, where turning it on later is not.
 
 ## To confirm with Orange Cameroun
 
@@ -125,7 +160,19 @@ method, not a core change.
 3. Production `{env}` path segment and host for Cameroon.
 4. Whether `transactionstatus` stays queryable indefinitely, or ages out. If it
    ages out, the 24-hour escalation carries more weight here than on MTN.
-5. Refund/disbursement availability.
+5. **The transfer product: which one, on what endpoint, with what request body,
+   under which credential, and with what amount rules** (rewritten 2026-09-15).
+   This item used to read "Refund/disbursement availability", which was a
+   question about whether Orange refunds at all. RFC-0003 § 5 settled that —
+   an Orange refund is a transfer back — so what is open is the _specification_,
+   and it is now **the one item that blocks a shipping token**:
+   `orange_money::refund` stays `NotImplemented` until this is answered. It is
+   not answerable from anything in this repository, which is the whole point of
+   leaving it here rather than guessing. Two sub-answers matter beyond the wire
+   shape: whether a transfer may carry an arbitrary amount (which is what
+   `supports_partial_refunds` waits on) and whether it reports a fee (which is
+   what `Refunded::fee` waits on — `None` and `Some(0)` must not be collapsed,
+   [issue #46](https://github.com/vaam-apps/vpay/issues/46)).
 6. Pass-through settlement, or forced aggregation (a regulatory question).
 7. Transaction and daily limits for XAF.
 8. **Whether Orange exposes an account-holder name lookup at all, and under
@@ -173,11 +220,61 @@ method, not a core change.
 ## Status
 
 All three wire calls are implemented in `vpay-adapter-orange-money`
-(`submit`, `query_status`, `parse_callback`). `refund` is **not** implemented
-and never will be on this rail: the adapter does not override the port's
-default, so it answers `ProviderError::Unsupported` — a permanent capability
-answer, not unbuilt work. There is no `orange_money::*` `NotImplemented` token
-left. See [../status.md](../status.md).
+(`submit`, `query_status`, `parse_callback`). `refund` is **not** implemented,
+and since 2026-09-15 it says so in the form that admits it: the adapter
+overrides the port with `ProviderError::NotImplemented("orange_money::refund")`,
+the one `orange_money::*` token in the tree, declared in
+[../status.md](../status.md). _(This paragraph read "`refund` is **not**
+implemented and never will be on this rail … There is no `orange_money::*`
+`NotImplemented` token left" until RFC-0003 § 5. "Never will be" was the part
+that turned out to be a decision nobody had made.)_
+
+**Updated 2026-09-16 (RFC-0003 § 2, wave 3): the token is reachable by a
+merchant for the first time, and that is the only thing that moved.** Until
+2026-09-16 `orange_money::refund` could be provoked only by a test —
+`POST /v1/refunds` was mounted nowhere. It is mounted now, so a merchant with
+an `orange_money` charge gets a **`501`**: `vpay_api::v1::refunds` writes the
+`pending` row, calls this adapter, takes the token, moves the refund to
+`failed`, releases the reservation it took on the intent and emits
+`charge.refund.updated`. `an_unbuilt_rail_refund_fails_and_releases_its_reservation`
+in `backends/tests/integration/tests/refunds.rs` asserts the `501`, the
+`failed` status, the `provider_error` failure code and the released
+reservation — and, per [errors.md](errors.md), it is the **first** `501` any
+`/v1` caller in this repository's history can provoke. **No Orange transfer
+was written**, nothing about this rail's behaviour changed, item 5 of "To
+confirm with Orange Cameroun" is still what unblocks it, and Orange's rail has
+still never been called for anything.
+
+**Updated 2026-09-15 (RFC-0003 § 5, wave 2).** Nothing about this rail's
+behaviour changed and no refund got closer to working; what changed is what
+the refusal is a claim about. `supports_refunds` is `true`,
+`supports_partial_refunds` is `false` by decision, `refund_destination` was
+already `Required` and did not move. `parse_destination` did not move either —
+it was built in wave 1b while the flag was still `false`, which is why the
+flip was a declaration and not a design.
+
+One thing was lost and is not hidden: `orange_money` was this workspace's only
+rail declaring `supports_refunds: false`, so the conformance case
+`a_rail_without_the_refund_capability_answers_unsupported` has no rail left for
+its `Unsupported` arm. The arm was kept rather than deleted — its `if` arm runs
+on both rails and asserts — and the property moved to
+`a_rail_with_no_refund_api_takes_the_default_and_answers_unsupported` in
+`vpay-provider`. [provider-port.md](provider-port.md) § Status carries the full
+account.
+
+**Reviewed the same day**
+([verification/2026-09-15-refunds-w2-orange-review.md](../status/verification/2026-09-15-refunds-w2-orange-review.md)).
+Three things moved. Eleven live pages and doc comments still said this rail
+answers `Unsupported` or declares `supports_refunds: false`, and were
+corrected — `verify-links` checks that a link resolves, never that the sentence
+around it is true. `cargo xtask verify-status` gained a **third direction**: it
+compared token _strings_ and could not tell which rail carried one, so a
+`mtn_momo::refund` pasted into this adapter went green once the Orange bullet
+was deleted, which is the repair its first error message invites. And a
+_different_ conformance case, `refund_is_refused_when_the_capability_is_absent`,
+whose **entire** body sat behind an `if !supports_refunds` guard, was deleted:
+`every_adapter_declares_coherent_capabilities` holds the same implication
+unconditionally on every rail, so no rule was retired.
 
 **Updated 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** Nothing about this

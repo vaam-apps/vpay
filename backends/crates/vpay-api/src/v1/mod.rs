@@ -92,12 +92,14 @@ pub mod invoices;
 // cannot be called from one. Nothing here reaches a database or a rail.
 pub mod paging;
 pub mod payment_intents;
-/// The Refund resource — one route, `GET /v1/refunds/{id}` (issue #45).
+/// The Refund resource — five methods over three paths: the read issue #45
+/// shipped first, and the create, update, list and cancel RFC-0003 § 2 added
+/// on 2026-09-16.
 ///
 /// Its own module for [`payment_intents`]'s reason: one resource, one file,
-/// and the routes below name it. `POST /v1/refunds` is **not** here and is
-/// still unrouted — see the module's own docs for why a read exists before a
-/// create does.
+/// and the routes below name it. Its header is where the rails' state is
+/// written down, and it is the first thing to read before believing a `201`
+/// from the create means money moved.
 pub mod refunds;
 /// Which URL a redirect rail is told to send the payer back to.
 ///
@@ -181,11 +183,13 @@ pub struct V1Route {
 /// fallback rather than a route that would have to invent a body. See
 /// `docs/status.md`.
 ///
-/// `/v1/refunds` is on that list only for its **`POST`**: `GET
-/// /v1/refunds/{id}` is mounted below (2026-09-05, issue #45) because a
-/// refund must have an authoritative read, while creating one needs a rail
-/// refund neither adapter implements. A resource with a read and no create
-/// is unusual and deliberate; see [`refunds`].
+/// `/v1/refunds` **was** on that list for its `POST` until 2026-09-16, when
+/// RFC-0003 § 2 mounted the create, the update, the list and the cancel
+/// beside the read issue #45 shipped on 2026-09-05. The resource with a read
+/// and no create is gone; what the new entries do *not* claim is on the
+/// entries themselves and in [`refunds`]' module header, and the short
+/// version is that no rail has ever returned money and nothing settles a
+/// `pending` refund.
 ///
 /// `/v1/events` **was** on that list until 2026-09-03 and is now served
 /// (Step 5): the same renderer the webhook deliverer signs is what it
@@ -258,17 +262,47 @@ pub const V1_ROUTES: &[V1Route] = &[
         methods: &["POST"],
         mount: || post(checkout_sessions::expire),
     },
-    // `GET` only. `POST /v1/refunds` is declared in
-    // `docs/flows/merchant-auth.md` and deliberately absent here: creating a
-    // refund needs a rail refund, and `mtn_momo::refund` is `NotImplemented`
-    // while Orange Money answers `Unsupported`. Mounting a create that could
-    // only ever answer `501` would put a route in this table that takes no
-    // money back — the read is what issue #45 decided was part of the
-    // contract, and it is the whole of what is mounted.
+    // All four, since 2026-09-16 (RFC-0003 § 2, Wave 3). This entry was
+    // `GET /refunds/{id}` alone from 2026-09-05, because creating a refund
+    // needed the handler RFC-0003 § 3 describes and nothing routed to
+    // `vpay_db::Refunds::create` — the read is what issue #45 decided was
+    // part of the contract, and it was the whole of what was mounted.
+    //
+    // **What being mounted does and does not claim.** These routes write a
+    // refund, reserve its amount, refuse an over-refund, emit the first
+    // `charge.refunded` this repository has ever emitted, and instruct the
+    // rail. They do not mean a payer has ever received money:
+    // `mtn_momo::refund` is WireMock-proven and rail-unproven, and no REAL
+    // MTN Disbursements credential exists in this project — the e2e/demo
+    // stack's is a stub aimed at WireMock; `orange_money::refund`
+    // is a declared `NotImplemented` token, and nothing settles a `pending`
+    // refund because the port has no refund status read (RFC-0003 open
+    // question 8). `docs/status.md` carries all three, and
+    // [`refunds`]' module header is the long version.
+    V1Route {
+        path: "/refunds",
+        methods: &["POST", "GET"],
+        mount: || post(refunds::create).get(refunds::list),
+    },
+    // `POST` is the update — Stripe's spelling, and `metadata` is the only
+    // field it takes. There is no `PATCH` beside it, unlike `/v1/invoices/{id}`:
+    // a refund's amount, reason and destination are fixed at creation, so
+    // "partial update" describes the only update there is and mounting a
+    // second verb would suggest otherwise.
     V1Route {
         path: "/refunds/{id}",
-        methods: &["GET"],
-        mount: || get(refunds::retrieve),
+        methods: &["GET", "POST"],
+        mount: || get(refunds::retrieve).post(refunds::update),
+    },
+    // A `POST`, not a `DELETE`: cancelling a refund is a *transition* that
+    // returns the object and removes nothing, exactly as `cancel` is for a
+    // payment intent and `expire` for a checkout session. It is legal only
+    // while the refund is `pending`, and it is the database's `WHERE` clause
+    // that enforces that, not a check beside it.
+    V1Route {
+        path: "/refunds/{id}/cancel",
+        methods: &["POST"],
+        mount: || post(refunds::cancel),
     },
     V1Route {
         path: "/customers",
@@ -1466,19 +1500,29 @@ mod tests {
         assert!(!resource_config.admits_currency("EUR"));
     }
 
-    /// The Refund resource is mounted for exactly one method, and it is a
-    /// read (issue #45).
+    /// The Refund resource's whole mounted surface, pinned as a literal.
     ///
-    /// Decisive in both directions. Delete the `/refunds/{id}` entry from
-    /// [`V1_ROUTES`] and this fails naming it — which is the same mutation
-    /// that turns `backends/tests/integration/tests/refunds.rs` from a
-    /// `resource_missing` `404` into an `unknown_route` one, a difference no
-    /// status code alone would show. Add a `POST /refunds` and it fails too:
-    /// creating a refund needs `ProviderAdapter::refund`, which is
-    /// `NotImplemented` on MTN and `Unsupported` on Orange, so a mounted
-    /// create could only ever invent an answer.
+    /// **Five methods over three paths since 2026-09-16** (RFC-0003 § 2). It
+    /// said "one method, and it is a read" from issue #45 until Wave 3, and
+    /// the reason it did is worth keeping: a create with no handler behind it
+    /// would have been a route in this table that takes no money back. That
+    /// handler exists now, and the rails' own state is unchanged and is
+    /// stated where a reader will actually meet it — in `v1::refunds`' module
+    /// header, on the [`V1_ROUTES`] entries themselves, and in
+    /// `docs/status.md` — rather than here, where it would be a claim about
+    /// rails in a test about routing.
+    ///
+    /// Decisive in both directions. Delete any entry and this fails naming it
+    /// — deleting `/refunds/{id}` is the same mutation that turns
+    /// `backends/tests/integration/tests/refunds.rs` from a `resource_missing`
+    /// `404` into an `unknown_route` one, a difference no status code alone
+    /// would show. Add a method (a `DELETE` on a refund, a `PATCH` beside the
+    /// update) and it fails too, which is the direction that matters now that
+    /// the resource writes: every route here is walked by
+    /// `every_registered_v1_path_answers_401_without_a_token`, and a route
+    /// that is not in this constant does not exist (issue #159).
     #[test]
-    fn the_refund_resource_is_mounted_for_a_read_and_for_nothing_else() {
+    fn the_refund_resource_is_mounted_for_exactly_five_methods() {
         let refund_routes: Vec<(&str, &[&str])> = V1_ROUTES
             .iter()
             .filter(|route| route.path.starts_with("/refunds"))
@@ -1487,9 +1531,12 @@ mod tests {
 
         assert_eq!(
             refund_routes,
-            vec![("/refunds/{id}", &["GET"][..])],
-            "GET /v1/refunds/{{id}} is served and POST /v1/refunds is not; see \
-             docs/api/README.md's \"Not served\" table"
+            vec![
+                ("/refunds", &["POST", "GET"][..]),
+                ("/refunds/{id}", &["GET", "POST"][..]),
+                ("/refunds/{id}/cancel", &["POST"][..]),
+            ],
+            "the four routes RFC-0003 § 2 documents, plus the read issue #45 shipped first"
         );
     }
 }

@@ -109,6 +109,76 @@ check is never switched off for it. A statement that does not have to be a
 `format!` should not be one — the count above is the budget, and this is what
 spending nothing looks like.
 
+**Re-done 2026-09-15 for RFC-0003 § 3's refunds write path, where the count
+moved 61 → 66 — five additions, no removals.** Three are on
+`payment_intents` and two on `refunds`:
+
+- `payment_intents::reserve_refund_in_tx` —
+  `UPDATE payment_intents SET amount_refund_pending = amount_refund_pending + $3
+… WHERE merchant_id = $1 AND id = $2 AND status IN ({REFUNDABLE_STATUSES})
+RETURNING {COLUMNS}`. Two crate constants; the merchant, the intent and the
+  amount are all bound. `REFUNDABLE_STATUSES` is a new `const … : &str`
+  spelling one status, added for exactly the reason `SETTLEABLE_STATUSES`
+  exists: the list has to appear inside a statement and this crate carries the
+  vocabularies as text.
+- `payment_intents::settle_refund_in_tx` and
+  `payment_intents::release_refund_in_tx` — the same shape, interpolating
+  `COLUMNS` alone, with the guard `amount_refund_pending >= $2` as a **bound**
+  comparison rather than a computed predicate.
+- `refunds::insert_in_tx` — `INSERT INTO refunds AS r (…) VALUES (…)
+RETURNING {COLUMNS}`. The alias is what lets the `RETURNING` list be the
+  module's table-qualified `COLUMNS` verbatim, so the one write and the two
+  reads cannot drift on what a `RefundRow` decodes.
+- `refunds::cancel_in_tx` — `UPDATE refunds AS r SET status = 'canceled' …
+RETURNING {COLUMNS}`, with the tenant predicate an `EXISTS` over bound values.
+  Two more predicates joined it on 2026-09-16 and neither adds an
+  interpolation: a `NOT EXISTS` over `provider_requests` correlated on the
+  row's own `provider_reference_id` — the money guard, see
+  `docs/flows/ledger.md` — and `r.created_at < now() - make_interval(secs =>
+$4)`, whose window is a **bound** `f64` constant rather than an interval
+  spliced into the text.
+
+The increments and decrements are **expressions over the row's own column**,
+exactly as `invoices::add_refund_for_intent_in_tx` is, so no arithmetic result
+is interpolated either — and in the reservation's case that is not a style
+choice but the over-refund guard itself: a total computed in Rust and
+interpolated would be a total read before the row was locked. See
+`docs/flows/ledger.md` § "When refunds post".
+
+The statement that landed beside them and adds **no site**, for
+`refunds::settle_in_tx`'s reason, is `refunds::fail_in_tx`: it needs no
+constant, so it is a plain `&'static str` and the compiler's own check is
+never switched off for it.
+
+**Re-done 2026-09-16 for RFC-0003 § 2's four `/v1` refund routes, where the
+count moved 66 → 69 — three additions, no removals.** All three are on
+`refunds`, and all three are read or written by a handler a merchant can
+reach, which is why each is spelled out:
+
+- `refunds::lock_for_update` — `SELECT {COLUMNS} FROM refunds r JOIN
+payment_intents p … WHERE p.merchant_id = $1 AND r.id = $2 FOR UPDATE OF r`.
+  One crate constant; the tenant and the id are bound. `FOR UPDATE OF r` is a
+  fixed fragment and not a computed one — the alias it names is written in
+  the same string.
+- `refunds::update_metadata_in_tx` — `UPDATE refunds AS r SET metadata = $3,
+updated_at = $4 … RETURNING {COLUMNS}`, with the tenant predicate an
+  `EXISTS` over bound values, exactly as `cancel_in_tx`'s is. The merged
+  metadata is a **bound `JSONB`**, never interpolated: it is a merchant's own
+  map, merged in Rust because Stripe's contract is key-wise, and a map
+  rendered into a statement string is the injection this whole audit exists
+  to refuse.
+- `refunds::list_page` — `SELECT {COLUMNS} … ORDER BY r.created_at
+{direction}, r.id {direction} LIMIT $5`. Two interpolations: the module's
+  `COLUMNS`, and the `direction` exception this audit already names — the
+  same `"ASC"`/`"DESC"` chosen by a `bool` that `customers::list_page` and
+  `invoices::list_page` use, held by `the_direction_exception_is_two_literals`
+  so the allowlist entry cannot become a loophole. The cursors are bound and
+  resolved by correlated sub-selects that **carry the tenant predicate
+  themselves**, which is not a style point: a cursor naming another
+  merchant's refund would otherwise resolve to that row's position.
+
+No new constant was added for any of the three.
+
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is
 already a bind parameter — the `.bind(..)` calls immediately below each

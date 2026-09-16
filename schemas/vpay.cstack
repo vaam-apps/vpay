@@ -173,11 +173,26 @@ enum FailureCode {
 // column with `try_get::<String>()`, so a native enum column fails to decode
 // on every read.
 //
-// `canceled` is in the vocabulary because migration 0017 put it there, not
-// because anything reaches it: nothing in this repository writes a refund at
-// all (`vpay_db::refunds` is two reads and no write, because
-// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported` on
-// Orange). docs/status.md says so.
+// `canceled` was in the vocabulary because migration 0017 put it there and
+// not because anything reached it — this comment read "nothing in this
+// repository writes a refund at all (`vpay_db::refunds` is two reads and no
+// write …)" until 2026-09-15, when RFC-0003 section 3 added
+// `Refunds::create` and `Refunds::cancel`, which reach `pending` and
+// `canceled`, and the settlement, which reaches `succeeded` and `failed`.
+// A MERCHANT reaches `pending`, `failed` and `canceled` since 2026-09-16,
+// when RFC-0003 section 2 mounted the five /v1 refund routes. NOTHING
+// reaches `succeeded`: the port has no refund status read and there is no
+// refund poll ladder (RFC-0003 open question 8), so every refund a merchant
+// creates stays `pending`. `ProviderAdapter::refund` is a `NotImplemented`
+// token on `orange_money` only — `mtn_momo`'s is MTN's Disbursements
+// `transfer`, written on 2026-09-15, WireMock-proven and rail-unproven, with
+// no REAL credential for it anywhere in this project — and `Unsupported` on
+// neither, since both declare `supports_refunds`. docs/status.md says so.
+//
+// (These four lines read "No MERCHANT reaches any of them: `POST /v1/refunds`
+// is unrouted and `ProviderAdapter::refund` is a `NotImplemented` token on
+// both rails" until 2026-09-16. Both halves had gone stale, one on 2026-09-15
+// and one on 2026-09-16.)
 enum RefundStatus {
   pending
   succeeded
@@ -603,11 +618,26 @@ model Charge {
 
 model Refund {
   // New in S5, and the table is the one place in this file where "modelled"
-  // buys the least: `vpay_db::refunds` is TWO READS AND NO WRITE, because
-  // creating a refund needs `ProviderAdapter::refund` and that is
-  // `NotImplemented` on MTN and `Unsupported` on Orange (docs/status.md).
-  // The brief that produced this model asked for "refunds' create/get" to
-  // move; there is no create to move, and saying so is the point.
+  // buys the least. This comment read "`vpay_db::refunds` is TWO READS AND
+  // NO WRITE … there is no create to move" until 2026-09-15, when RFC-0003
+  // section 3 added `Refunds::create` and `Refunds::cancel` — the first
+  // INSERT INTO refunds this repository has ever issued. Nothing moves here
+  // even so: `create` pairs the insert with a reservation on
+  // `payment_intents` in one transaction and `cancel` scopes the tenant
+  // through an EXISTS on the same table, and a generated write touches ONE
+  // table (the paragraph below is the same argument for the reads).
+  //
+  // What did not change is that no rail can execute what `create` writes.
+  // The reasons moved twice. `ProviderAdapter::refund` is a declared
+  // `NotImplemented` token on Orange since 2026-09-15 and, on MTN, is the
+  // Disbursements `transfer` call, against a product never called and under
+  // no REAL MTN Disbursements credential (the e2e/demo stack's is a stub
+  // aimed at WireMock) —
+  // `Unsupported` on neither, since both rails declare `supports_refunds`
+  // (docs/status.md). And `POST /v1/refunds`, which this comment said was
+  // "routed nowhere", has been routed since 2026-09-16 (RFC-0003 section 2):
+  // a merchant can create a refund, and nothing settles the `pending` row it
+  // writes, because the port has no refund status read.
   //
   // Neither read moves either, and for two independent reasons rather than
   // one: `RefundRow` carries `metadata`, which is `JSONB` and undeclared
@@ -786,9 +816,19 @@ model CheckoutSession {
 // started") — unlike provider_requests/webhooks/jobs above, there is real,
 // tested Rust code this half of the file mirrors, which is the line this
 // rewrite draws between "design sketch of a tested type" and "invented
-// shape for a concept nobody has written a struct for yet". No migration or
-// SQLx query in this repo writes to either table below; this is the
-// intended persistence shape, not evidence persistence exists.
+// shape for a concept nobody has written a struct for yet".
+//
+// **One SQLx query in this repo now writes both tables** —
+// `vpay_db::ledger::post_in_tx`, reached through
+// `TxRepositories::post_ledger_transaction_in_tx` (RFC-0003 § 4). This
+// paragraph said "No migration or SQLx query in this repo writes to either
+// table below" until then, and the half of that sentence which is still true
+// is the half worth keeping: **no shipping code path calls that writer**.
+// `Settlement::apply_succeeded` and `apply_refund_succeeded` do not post, so
+// every deployment's ledger is empty and this is still the intended
+// persistence shape rather than evidence a ledger is being kept. Neither
+// model is queried THROUGH CrateStack either; the writer is raw sqlx, for the
+// reason `model LedgerEntry.account` is a native enum.
 
 model LedgerTransaction {
   id Cuid @id @default(dbgenerated())
@@ -805,8 +845,16 @@ model LedgerTransaction {
   // LedgerEntry row sharing a transaction_id. Expressing it at the database
   // layer needs a trigger (not something .cstack generates) or, as today,
   // application enforcement — exactly what
-  // vpay_ledger::Transaction::validate() already does, tested by
+  // vpay_ledger::Transaction::validate() does, tested by
   // a_capture_with_a_fee_balances / an_unbalanced_transaction_is_rejected.
+  //
+  // The "per currency" clause of that sentence was NOT enforced until
+  // 2026-09-15: validate() summed minor units across every leg whatever
+  // currency it was in, so this comment overstated it for as long as no
+  // code wrote either table. It balances each currency on its own book now
+  // (a_mixed_currency_transaction_does_not_balance), which matters because
+  // vpay_db::ledger::post_in_tx is the first writer and this function is
+  // the only guard between it and a posting in two currencies.
 }
 
 model LedgerEntry {
@@ -818,16 +866,33 @@ model LedgerEntry {
   amount Int @range(min: 0) @db_enforce
   currency_code String
   currency Currency @relation(fields: [currency_code], references: [code])
-
-  // GAP — vpay_ledger::AccountKind has exactly 3 variants (MerchantPayable,
-  // PayerClearing, PlatformFeeRevenue) with no per-merchant dimension, and
-  // this table mirrors that Rust type exactly. But docs/flows/ledger.md
-  // invariant 2 is "per merchant: balance(merchant_payable) = Σ captures −
-  // Σ fees − Σ refunds" — a query this table cannot answer as modeled,
-  // because nothing here says *which* merchant a merchant_payable posting
-  // belongs to. That is a real gap in the Rust type this schema mirrors,
-  // not something to paper over by adding a merchant_id column the Rust
-  // side doesn't have.
+  // THE GAP THAT USED TO BE HERE IS CLOSED (RFC-0003 § 4, migration 0045).
+  // It read, in full:
+  //
+  //     GAP — vpay_ledger::AccountKind has exactly 3 variants
+  //     (MerchantPayable, PayerClearing, PlatformFeeRevenue) with no
+  //     per-merchant dimension ... That is a real gap in the Rust type this
+  //     schema mirrors, not something to paper over by adding a merchant_id
+  //     column the Rust side doesn't have.
+  //
+  // The Rust side has the dimension now:
+  // `AccountKind::MerchantPayable { merchant_id: String }`, with nothing on
+  // the other two variants. So this column is a mirror of a Rust field, which
+  // is the condition that note set, rather than the paper-over it refused.
+  //
+  // Nullable, because two of the three accounts have no merchant. What makes
+  // that not a hole is `ledger_entries_merchant_id_iff_merchant_payable`, a
+  // CHECK this file cannot express: it is MULTI-COLUMN
+  // (`(account = 'merchant_payable') = (merchant_id IS NOT NULL)`), and
+  // `cratestack migrate baseline` skips every multi-column CHECK in both
+  // directions — the same blindness the five `invoices` CHECKs have, and the
+  // reason `postgres_smoke.rs` writes both rows it refuses.
+  //
+  // No `@length` either, and that is deliberate rather than an oversight: the
+  // live `ledger_entries_merchant_id_length` is hand-named, and `@db_enforce`
+  // on a declared `@length` would emit a drop-and-add PAIR against it
+  // (exp17 §1a) — the trade every hand-named CHECK in this file already takes.
+  merchant_id String?
 }
 
 // --- operations ----------------------------------------------------------

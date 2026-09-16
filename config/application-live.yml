@@ -52,9 +52,21 @@ providers:
       # The UUID you created via POST /v1_0/apiuser. Identifier, not a secret.
       api_user: ${MTN_API_USER}
     credentials:
-      # Your MTN COLLECTIONS subscription key (vpay's adapter is the
-      # requesttopay / Collections flow). The Disbursements key is for
-      # refunds, which vpay does not implement, so it is not used here.
+      # Your MTN COLLECTIONS subscription key — the requesttopay flow, which
+      # is the charge path and everything this file's runbook exercises.
+      #
+      # **The Disbursements keys are deliberately absent from this file**, and
+      # that is a narrower statement than it used to be. It said "refunds,
+      # which vpay does not implement"; since 2026-09-15 `mtn_momo::refund`
+      # IS implemented (RFC-0003 § 5) and `config/application.yml` carries
+      # `disbursement_subscription_key`, `disbursement_api_key` and
+      # `disbursement_api_user`. They are not here because a `${VAR}` in this
+      # file is exit 78 at boot, nobody running
+      # docs/runbooks/live-sandbox-test.md holds a Disbursements
+      # subscription, and that runbook is a Collections test. Add all three
+      # the day you have the credentials — and note that the refund call has
+      # never been made against MTN, in sandbox or anywhere else
+      # (docs/status.md).
       subscription_key: ${MTN_SUBSCRIPTION_KEY}
       # The API key created via POST /v1_0/apiuser/{uuid}/apikey.
       api_key: ${MTN_API_KEY}
