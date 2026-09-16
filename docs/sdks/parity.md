@@ -532,7 +532,7 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 - **Not that a ✅ row is bug-free.** It claims a named test in that SDK
   fails when the capability breaks. Nothing more.
 - **Not that any gate runs the test a ✅ row names.** `cargo xtask
-  verify-sdk-parity` reads the name and finds it in that SDK's sources; it
+verify-sdk-parity` reads the name and finds it in that SDK's sources; it
   cannot tell whether a job ever executes it. Measured, 2026-09-16: the Rust
   column's `live_refund_lifecycle` and `live_refund_destination_refusals` were
   ✅ on three rows for a full day while `.github/workflows/ci.yml` named only

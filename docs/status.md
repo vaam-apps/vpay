@@ -112,21 +112,21 @@ and what each printed when all twelve were re-run, one invocation each, on
 **2026-09-16** on `@COMMIT@` — this branch's head — with
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`:
 
-| Gate                                                                                  | What it refuses                                                                                                                                                  | Last printed                                 |
-| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `verify-no-mocks`                                                                     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable |
-| `verify-status`                                                                       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item |
-| `verify-errors`                                                                       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 20 error types, 17 `#[from]` variants |
-| `verify-sdk-parity`                                                                   | an SDK capability with no row, or a row naming no capability                                                                                                     | 603 proving tests, 36 dated gaps, 35 methods, 39 rows |
-| `verify-links`                                                                        | a repository link that resolves to no tracked path                                                                                                               | @LINKS@ |
-| `verify-npm-scope`                                                                    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private |
-| `check-schema`                                                                        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 27 declarations; see the note below |
-| `verify-serde`                                                                        | a serialisable type that does not spell the wire convention                                                                                                      | 96 types, 17 exemptions |
-| `verify-repositories`                                                                 | a repository implementation named outside `vpay-db`, or an exported schema                                                                                       | 4 implementations, 83 source files outside |
-| `verify-toolchain`                                                                    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                   | 1.98.0 |
-| `verify-ui`                                                                           | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12) | nothing: silent on success, exit 0 only |
-| `verify-migrations`                                                                   | an applied migration whose bytes changed                                                                                                                         | 48 files |
-| `verify-docs`                                                                         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report |
+| Gate                  | What it refuses                                                                                                                                                  | Last printed                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `verify-no-mocks`     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                              |
+| `verify-status`       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                                  |
+| `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 20 error types, 17 `#[from]` variants                 |
+| `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability                                                                                                     | 603 proving tests, 36 dated gaps, 35 methods, 39 rows |
+| `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | @LINKS@                                               |
+| `verify-npm-scope`    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private                     |
+| `check-schema`        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 27 declarations; see the note below                   |
+| `verify-serde`        | a serialisable type that does not spell the wire convention                                                                                                      | 96 types, 17 exemptions                               |
+| `verify-repositories` | a repository implementation named outside `vpay-db`, or an exported schema                                                                                       | 4 implementations, 83 source files outside            |
+| `verify-toolchain`    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                   | 1.98.0                                                |
+| `verify-ui`           | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12) | nothing: silent on success, exit 0 only               |
+| `verify-migrations`   | an applied migration whose bytes changed                                                                                                                         | 48 files                                              |
+| `verify-docs`         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report                                       |
 
 **One of those numbers moved twice on the same day and came back.**
 `verify-status` printed **2** unimplemented items partway through 2026-09-15,
@@ -455,8 +455,29 @@ unedited — including the runs that failed, the flakes that were kept rather th
 dropped, and the "what this note does _not_ claim" paragraphs, which are the
 half worth reading.
 
-**The most recent entry is 2026-09-11, on `claude/exp57-docs-split`** — the
-documentation split this page is the product of. `just ci` exit 0, exit code
+**The most recent entry is 2026-09-16, and NO `just ci` has ever been run on
+this refunds branch.** Twenty-seven dated pages under
+[status/verification/](status/verification/) carry 2026-09-13 to 2026-09-16,
+and **sixteen** of them are RFC-0003's — its five waves, their adversarial
+reviews, two merges and this seam pass. Every one of the refunds
+pages records the **individual** gates and the **narrow** `cargo nextest`
+invocations for the crates its change touched, because every agent on this
+branch was instructed not to run `just ci` locally (five concurrent local
+builds once OOM-killed the host). **Read that as what it is:** the twelve
+gates have been run on this head, and the full workspace test run, the web
+job and the doctest sweep that `just ci` adds on top of them have been run on
+**no** commit of this branch by anything but GitHub Actions. The gate table
+above says which commit its numbers are from.
+
+_(This paragraph said "The most recent entry is 2026-09-11" until 2026-09-16.
+It had been wrong since 2026-09-13 and was wrong on `master` as well as here
+— `2026-09-13-flutter-lane-b-gate.md` and four more landed under it without
+this sentence moving. It is the kind of claim only a reader who opens the
+directory can falsify, which is why it survived four sweeps.)_
+
+**The last `just ci` note on this page is 2026-09-11, on
+`claude/exp57-docs-split`** — the documentation split this page is the product
+of. `just ci` exit 0, exit code
 read from a file: **1 748 tests run, 1 748 passed, 0 skipped** across 46
 binaries, `test-doc` 113 passed / 1 ignored, twelve gates, `test-web` 1 386.
 It moved no capability; the one non-documentation change is `verify-npm-scope`'s
