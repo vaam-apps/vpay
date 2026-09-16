@@ -162,6 +162,19 @@ run**, of this app or any other in this chart. Evidence on
 [docs/status/infrastructure.md](../status/infrastructure.md) and
 [docs/status/verification/2026-09-16-adr-0022.md](../status/verification/2026-09-16-adr-0022.md).
 
+**Two things the same day's remediation pass changed about that tier, both
+worth knowing before you point anything at it.** The management tier does
+**not** serve `POST /v1/oauth/token`: that endpoint mints the _merchant_
+credential, and it was mounted there until a review found it. The staff
+grant is and always was `/dash/v1/oauth/token`, inside the `dash` nest. And
+if you publish `/dash/v1` through this chart's HTTPRoute while
+`networkPolicy.enabled` is on, you must also name the Gateway's namespace in
+`networkPolicy.managementIngress.namespaceSelector` — otherwise the path is
+published and the CNI drops every request on it, with `helm upgrade` green
+and every object healthy. The `networkpolicy-management-route` guard refuses
+that combination rather than letting it install; whether this tier should
+face a public gateway at all remains ADR-0022's open maintainer decision.
+
 The measurements, the dates and the corrections behind each of those sentences:
 
 - [dashboard/status-built-and-not-built.md](dashboard/status-built-and-not-built.md)

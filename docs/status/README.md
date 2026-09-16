@@ -40,18 +40,28 @@ the order they were measured.
   and conditional `/v1`/`/dash/v1` mounting, the dashboard runner stage's real
   `docker run --read-only --tmpfs /tmp --user 1000:1000` observation and the
   `HOSTNAME`-binding defect it found, and the Helm chart's `-management`
-  Deployment, HPA and `connection-budget` guard (23/23 guards fire,
-  kubeconform validates 49 resources). Carries the review pass's own section:
-  five mutations of the surface gate, four of which the new tests caught and
-  one — `validate_all`'s boot-refusal wiring — which nothing did, plus the
-  fix; the chart's rendered overlay fed to the real `Config::load`; and the
-  `networkpolicy-management-ingress` guard added because an empty
-  `podSelector` matches every pod in the namespace. `just ci`'s final `deny`
-  step fails on `RUSTSEC-2026-0285`, pre-existing and unrelated — no
-  `Cargo.lock` change on this branch, and no `deny.toml` allow added. It is
-  **not** dev-only, as the page first said: `rustls 0.23.43` is in
-  `vpay-server`'s normal graph via `cratestack-pg` and via `reqwest`. Fixing
-  it belongs on its own branch.
+  Deployment, HPA and `connection-budget` guard. Carries the review pass's own
+  section — five mutations of the surface gate, four of which the new tests
+  caught and one (`validate_all`'s boot-refusal wiring) which nothing did —
+  **and then the remediation of two independent adversarial reviews**, whose
+  first finding was a security boundary: `/v1/oauth/token`, the **merchant**
+  credential-minting endpoint, was mounted on a `surfaces: [management]` pod,
+  justified by an ADR section that did not exist. It is business-only now,
+  the discovery pair stays on both tiers, and the mutation that proves the
+  new test is worth having is quoted. Second: the chart could publish
+  `/dash/v1` on a Gateway **and** deny that Gateway at the pod, green the
+  whole way — closed with a `namespaceSelector` an operator could not
+  previously express and a guard that forces the choice, **without** deciding
+  the maintainer's open question of whether the tier faces the public gateway
+  at all. Also: the management tier's metrics were scraped by nothing, the
+  status page's guard count was wrong in three places, `NOTES.txt` printed a
+  topology the release may not have, and `connection-budget` was gated in one
+  direction of two (25 fixtures, 24 guards, kubeconform validates 68
+  resources in 4 renders). `just ci`'s final `deny` step fails on
+  `RUSTSEC-2026-0285`, pre-existing and unrelated — no `Cargo.lock` change on
+  this branch, and no `deny.toml` allow added. It is **not** dev-only, as the
+  page first said: `rustls 0.23.43` is in `vpay-server`'s normal graph via
+  `cratestack-pg` and via `reqwest`. Fixing it belongs on its own branch.
 - [verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md) —
   the first CI run that compiled `--test live_refunds` went red, and what it
   had found was **not** in the SDK: a charge confirmed while the worker's
