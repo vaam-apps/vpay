@@ -339,8 +339,18 @@ exception is the e2e/demo stack, whose stub key reaches a WireMock `202`: that
 is a proof about the wire, and MTN's Disbursements product has still never been
 called.
 
-What _is_ proven, against a real `wiremock/wiremock` container, is
-seven conformance cases and thirteen unit tests — that the transfer is
+What _is_ proven is **seven conformance cases** against a real
+`wiremock/wiremock` container — `a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted`,
+`the_refund_is_addressed_to_the_payee_the_merchant_nominated`,
+`a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted_transfer`,
+`a_duplicate_refund_reference_is_accepted_and_never_paid_twice`,
+`a_refund_never_puts_the_payees_number_in_a_log_line`,
+`a_rail_without_the_refund_capability_answers_unsupported` and
+`a_required_rail_parses_its_own_destination` — beside the unit tests in
+`vpay-adapter-mtn-momo`, which touch **no container at all**: that crate
+declares no dev-dependency and runs in process (88 tests, 88 passed, 0
+ignored, `cargo nextest run -p vpay-adapter-mtn-momo` on 2026-09-16).
+Together they hold that the transfer is
 addressed to the nominated payee and not to the charge's payer, that it
 carries a bearer minted from the Disbursements token endpoint and the
 per-product subscription key (the stub answers 202 for nothing else), that a
@@ -348,6 +358,18 @@ refused payee is a decline and not a transport failure, that a duplicate
 reference is reported as accepted rather than paid twice, that an unreported
 fee stays `None`, and that no refusal and no log line ever carries the
 payee's number.
+
+_(This read "seven conformance cases and thirteen unit tests", both "against a
+real `wiremock/wiremock` container", until 2026-09-16. Two things were wrong.
+The unit tests run against no container, so the sentence credited the stub
+with evidence it never produced. And "thirteen" disagreed with the arm's own
+dated page, which says "Twelve new unit tests in `vpay-adapter-mtn-momo`"
+([status/verification/2026-09-15-mtn-disbursements-refund.md](status/verification/2026-09-15-mtn-disbursements-refund.md)).
+Neither figure is reproducible from the tree: "new" and "about the transfer"
+are groupings nothing records, and what #178 actually added to that crate is
+**24 test functions**, of which 7 are destination parsing rather than the
+transfer. The count here is now one a reader can re-run, which is the only
+kind worth stating.)_
 
 **What the container suite does _not_ prove, stated because the arm's first
 write-up claimed it did**: that a deployment which pasted identical

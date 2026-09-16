@@ -70,13 +70,31 @@ else `403` `forbidden`
 ### Served today
 
 `vpay_api::v1::V1_ROUTES` is the router's source, not a copy of it.
-**Thirty-one methods across twenty paths**, re-counted from `V1_ROUTES` on
-2026-09-07 after S4b mounted `/v1/invoices` (five paths, nine methods) and
-`/v1/invoice_items` (two paths, five methods): eleven across nine after
-Step 9, twelve across ten with issue #47, thirteen across eleven with issue
-#45, eighteen across thirteen with S4a's customers, thirty-one across twenty
-now. Each change was written against a tree without the others, which is why
-this is re-counted rather than incremented.
+**Thirty-seven methods across twenty-three paths**, re-counted from every
+`methods:` field in `V1_ROUTES` on 2026-09-16, after RFC-0003 § 2 mounted the
+refund create, update, list and cancel: `/v1/refunds` and
+`/v1/refunds/{id}/cancel` are new paths, and `/v1/refunds/{id}` — a lone `GET`
+since issue #45 — gained a `POST`. `HEAD` is not counted, because no entry
+lists it, although axum answers it from the same `get(..)` handler and
+`required_scopes` treats it as a read.
+
+The earlier figures are kept as they were recorded at the time and have not
+been re-counted here: eleven across nine after Step 9, twelve across ten with
+issue #47, thirteen across eleven with issue #45, eighteen across thirteen
+with S4a's customers, and S4b's `/v1/invoices` (five paths, nine methods) plus
+`/v1/invoice_items` (two paths, five methods). Each change was written against
+a tree without the others, which is why this is re-counted rather than
+incremented.
+
+_(This said "**thirty-one methods across twenty paths**, re-counted from
+`V1_ROUTES` on 2026-09-07" until 2026-09-16. Two things were wrong with it.
+The refund routes moved the number and nobody re-counted — and the 2026-09-07
+figure was already wrong on the day it was written: running the same count
+over `V1_ROUTES` at that very commit gives thirty-three across twenty-one,
+because Step 9's `GET /v1/checkout/sessions` and
+`POST /v1/checkout/sessions/{id}/expire` had been mounted since 2026-09-04.
+No gate checks a count in this repository, which is why a stated one needs a
+date and a method beside it.)_
 
 `/v1/invoices/{id}` and `/v1/invoice_items/{id}` are the only paths answering
 **four** methods, and the only ones answering `PATCH` — mounted beside `POST`

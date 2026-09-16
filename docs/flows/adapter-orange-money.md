@@ -412,9 +412,16 @@ measured from the _send_, not the answer
 
 - **Nothing here has ever called Orange.** Every wire assertion above is
   against WireMock; a mapping faithful to this document but not to Orange
-  would pass. All **nine** "to confirm" items above still stand — the
+  would pass. All **ten** "to confirm" items above still stand — the
   eighth, Orange's account-holder route, was added on 2026-09-05 with issue
   #47 and is the reason `supports_account_holder_lookup` is `false` for this
   rail rather than unbuilt; the ninth, how long the real hosted page gives a
   payer, was added on 2026-09-10 with issue #58 because the stub now has an
-  answer of its own and nothing must read it as a measurement of Orange.
+  answer of its own and nothing must read it as a measurement of Orange; and
+  the tenth, whether `FAILED` carries a sub-reason, was added the same day
+  with issue #59 and is what decides whether eight failure codes stay
+  unreachable on this rail.
+
+  _(This said "All **nine**" until 2026-09-16 and had been wrong since
+  2026-09-10, when item 10 was added above without the summary being
+  re-counted. Nothing in `just ci` counts a list.)_

@@ -235,8 +235,18 @@ predictable consequence of the header, not because anything observed it.
     rail vpay carries, because a mobile-money refund is an outbound transfer
     and needs a payee (RFC-0003 § 1). Stripe has no such parameter, so
     `stripe.refunds.create({ payment_intent })` is a `400` naming
-    `destination`. Neither merchant SDK carries the field either — a dated
-    gap in [../sdks/parity.md](../sdks/parity.md).
+    `destination`. **Both merchant SDKs carry the field** — `destination` on
+    `CreateRefundParams` in `sdks/rust/src/resources.rs` and on the
+    `CreateRefundParams` in `sdks/nodejs/src/types.ts`, each sending
+    `destination[<rail>][msisdn]` — so a vpay SDK is not where this
+    divergence bites; a Stripe-shaped client is.
+    ~~Neither merchant SDK carries the field either — a dated gap in
+    [../sdks/parity.md](../sdks/parity.md).~~ **— corrected 2026-09-16.** That
+    sentence was written by the seam pass when it was true, and the same day's
+    SDK work made it false; `parity.md`'s `destination` row has been ✅/✅
+    since, and its § "Not that the server offers every capability" retracts
+    the gap in its own words. Two vpay documents contradicting each other on
+    the same field is the failure this line is kept to record.
   - `POST /v1/refunds/{id}` takes `metadata` and nothing else, which **is**
     Stripe's contract. Where vpay diverges is the refusal: Stripe answers an
     unaccepted parameter with `parameter_unknown`, and vpay answers a `400`

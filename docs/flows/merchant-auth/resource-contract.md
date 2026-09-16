@@ -104,9 +104,15 @@ implemented by both SDKs and by no server route: an authenticated call gets
 the honest `404`.
 
 ~~`GET /v1/refunds/{id}` is served and `POST /v1/refunds` is not, which is an
-unusual pair and a deliberate one (issue #45).~~ **All four refund routes are
-served since 2026-09-16** (RFC-0003 § 2): the create, the metadata update, the
-list and the cancel. The paragraph that stood here said creating a refund
+unusual pair and a deliberate one (issue #45).~~ **The four refund routes
+RFC-0003 § 2 added are served since 2026-09-16**: the create, the metadata
+update, the list and the cancel. Beside `GET /v1/refunds/{id}`, served since
+2026-09-05 (issue #45), that is the whole resource — **five methods across
+three paths**, which is what
+`the_refund_resource_is_mounted_for_exactly_five_methods` pins. _(This read
+"All four refund routes are served since 2026-09-16" until 2026-09-16; "all
+four" was the four that were added, and it reads as a total.)_ The paragraph
+that stood here said creating a refund
 needed a handler and that `POST /v1/refunds` was routed nowhere; that handler
 is what changed, and **nothing about the rails did**. `mtn_momo::refund` makes
 MTN's Disbursements `transfer` call for a product this repository has never
