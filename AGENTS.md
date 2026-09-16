@@ -290,6 +290,54 @@ because those are what make the page worth trusting.
 - Why a piece of code is shaped the way it is → `docs/reference/<crate>.md`.
 - A proposal under discussion → an RFC.
 - Something an on-call person must do → a runbook.
+- What an **agent** must know before it changes this repository → a skill in
+  [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills), below.
+
+### Docs↔skills parity
+
+**A feature lands in three places or it has not landed: the code, the docs, and
+the skills.**
+
+The agent skills in [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills)
+are a sixth documentation tier with a different audience. A flow doc describes a
+process to a reader who will decide what to do. A skill briefs an agent that is
+already doing it, and is therefore judged on a different question: not "is this
+accurate and complete" but "would an agent that read only this do the right
+thing on its first attempt". That is why they are a separate repository — a
+briefing that has to clear twelve gates to be corrected is a briefing nobody
+corrects — and why drift between them and this tree is gated rather than
+trusted.
+
+The same reasoning as rule 2. A status page that lags is worse than none,
+because people trust it; a skill that lags is worse still, because an agent does
+not merely trust it — it acts on it, at machine speed, in every session that
+loads it.
+
+Change a skill in the same piece of work when your change:
+
+| The change here                     | The skill there                                          |
+| ----------------------------------- | -------------------------------------------------------- |
+| A new or deleted `docs/flows/` page | Whichever skill claims it in `coverage.json`             |
+| A route mounted or unmounted        | `vpay-merchant-api` or `vpay-dashboard`                  |
+| A `NotImplemented` token retired    | Every skill that described it as unbuilt — grep for it   |
+| A new gate, or one that changed     | `vpay-tooling`; `vpay-troubleshooting` if it fails oddly |
+| A toolchain pin bumped              | `vpay-tooling`                                           |
+| An SDK capability added             | `vpay-sdks`, beside the `docs/sdks/parity.md` row        |
+| A path renamed or moved             | Whatever `verify-coverage` names                         |
+
+`vpay-skills`' `node tools/verify-coverage.mjs <path-to-vpay>` fails in **both**
+directions — a `docs/flows/` page no skill covers, and a path a skill claims
+that no longer exists here — and its CI runs against this repository's `master`
+daily. So a merge that outruns the skills surfaces there as a red build rather
+than as a confidently wrong agent three weeks later. Do not leave it to the
+cron: open the `vpay-skills` PR alongside yours and link them.
+
+This repository dogfoods the skills. They install into `.agents/skills/` and pin
+in `skills-lock.json`, the same mechanism `vaam-ui` already uses:
+
+```bash
+npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
+```
 
 ## Commits and PRs
 
@@ -298,6 +346,9 @@ because those are what make the page worth trusting.
   in the same PR. `docs/status.md` § "Where a new row goes" names the page for
   each kind of change; [docs/README.md](docs/README.md) is the index of the
   whole documentation tree.
+- A PR that changes behaviour an agent has to know about opens its companion PR
+  against [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills) and
+  links the two. See § "Docs↔skills parity" above for which skill.
 - `just ci` must pass locally before review.
 
 ## Before you open a PR
