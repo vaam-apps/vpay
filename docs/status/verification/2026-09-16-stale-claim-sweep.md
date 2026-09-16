@@ -67,10 +67,28 @@ concurrent local builds have OOM-killed this host — so what follows is the
 narrow set for what this change touched, and CI is the gate.
 
 ```
-cargo xtask verify-links     GATE_OUTPUT_LINKS
-cargo xtask verify-status    GATE_OUTPUT_STATUS
-cargo xtask verify-docs      GATE_OUTPUT_DOCS
-cargo check --workspace      GATE_OUTPUT_CHECK
-cargo nextest run -p vpay-adapter-mtn-momo   88 tests run: 88 passed, 0 skipped
-prettier --check .           GATE_OUTPUT_PRETTIER
+cargo xtask verify-links   ok — 1738 repository link(s) in 378 tracked markdown file(s)
+                              resolve to a tracked path
+cargo xtask verify-status  ok — 1 unimplemented item(s), all declared in docs/status.md
+                              and all still in shipping code
+cargo xtask verify-docs    report only, never a gate; ran clean
+cargo check --workspace    Finished `dev` profile in 28.65s, no warnings
+cargo nextest run -p vpay-adapter-mtn-momo
+                           88 tests run: 88 passed, 0 skipped
+prettier --check .         All matched files use Prettier code style!
+                           (prettier 3.9.6, the version package.json pins; this
+                           worktree has no node_modules, so the binary came from the
+                           primary checkout and the config from this tree)
 ```
+
+`cargo doc --no-deps` was run on all four crates whose doc comments changed and
+compared against `origin/master`: `vpay-db` 34 warnings before and after,
+`vpay-provider`/`vpay-adapter-mtn-momo`/`vpay-adapter-orange-money` 14 before
+and after. All are the pre-existing "public documentation links to private
+item" class; one intra-doc link added here was rewritten as plain code so that
+the count would not move.
+
+**Not run:** `just ci`, `cargo clippy --workspace --all-targets`,
+`cargo nextest run` beyond the one crate, and every container-backed suite. No
+Rust code changed — only comments — but that is an argument, not a measurement,
+and CI is what settles it.

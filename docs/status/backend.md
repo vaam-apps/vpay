@@ -86,7 +86,9 @@ instead. The other two are inside entries dated 2026-09-05 and 2026-09-15
 those days; they keep the page's rule and are not rewritten. The sentence to
 know about is the write-path row's ⛔ "no route reaches it" — true when it was
 written on 2026-09-15, answered by the **New 2026-09-16** row directly beneath
-it, and the reason this banner exists rather than a silent edit.
+it, and the reason this banner exists rather than a silent edit. Evidence, and
+the other seven claims the same sweep corrected:
+[verification/2026-09-16-stale-claim-sweep.md](verification/2026-09-16-stale-claim-sweep.md).
 
 ## Backend
 
