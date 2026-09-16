@@ -15,9 +15,17 @@
 //! What has **not** moved: no rail has ever executed a refund —
 //! `mtn_momo::refund` is written and MTN's Disbursements product has never
 //! been called, while `orange_money::refund` is a `NotImplemented` token, and
-//! neither answers `Unsupported` — `POST /v1/refunds` is unrouted until
-//! Wave 3, and nothing schedules the nightly assertion of invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
-//! the gaps.
+//! neither answers `Unsupported`. Nothing schedules the nightly assertion of
+//! invariants 2-4, and **nothing calls `apply_refund_succeeded`** — the port
+//! has no refund status read and there is no refund poll ladder (RFC-0003
+//! open question 8), so the refund posting is reached by no shipping path and
+//! only the capture one is. `docs/status.md` and `docs/flows/ledger.md`
+//! § Status carry the gaps.
+//!
+//! _(This paragraph ended "`POST /v1/refunds` is unrouted until Wave 3" until
+//! 2026-09-16, when wave 3 mounted it. Routing it did not give
+//! `apply_refund_succeeded` a caller: the route creates a `pending` refund
+//! and nothing settles one.)_
 //!
 //! ```
 //! use vpay_core::{Currency, Money};

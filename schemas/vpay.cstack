@@ -179,10 +179,20 @@ enum FailureCode {
 // write …)" until 2026-09-15, when RFC-0003 section 3 added
 // `Refunds::create` and `Refunds::cancel`, which reach `pending` and
 // `canceled`, and the settlement, which reaches `succeeded` and `failed`.
-// No MERCHANT reaches any of them: `POST /v1/refunds` is unrouted and
-// `ProviderAdapter::refund` is a `NotImplemented` token on both rails —
-// `Unsupported` on neither, since both declare `supports_refunds`.
-// docs/status.md says so.
+// A MERCHANT reaches `pending`, `failed` and `canceled` since 2026-09-16,
+// when RFC-0003 section 2 mounted the five /v1 refund routes. NOTHING
+// reaches `succeeded`: the port has no refund status read and there is no
+// refund poll ladder (RFC-0003 open question 8), so every refund a merchant
+// creates stays `pending`. `ProviderAdapter::refund` is a `NotImplemented`
+// token on `orange_money` only — `mtn_momo`'s is MTN's Disbursements
+// `transfer`, written on 2026-09-15, WireMock-proven and rail-unproven, with
+// no REAL credential for it anywhere in this project — and `Unsupported` on
+// neither, since both declare `supports_refunds`. docs/status.md says so.
+//
+// (These four lines read "No MERCHANT reaches any of them: `POST /v1/refunds`
+// is unrouted and `ProviderAdapter::refund` is a `NotImplemented` token on
+// both rails" until 2026-09-16. Both halves had gone stale, one on 2026-09-15
+// and one on 2026-09-16.)
 enum RefundStatus {
   pending
   succeeded
