@@ -957,6 +957,37 @@ networkPolicy:
     #     app.kubernetes.io/name: vpay
     #     app.kubernetes.io/component: dashboard
     podSelector: {}
+    # A SECOND, independent ingress peer, for the case `podSelector` cannot
+    # express: a caller in a DIFFERENT namespace. A bare `podSelector` peer
+    # matches only pods in the policy's own namespace, so with
+    # `route.enabled` on, an HTTPRoute publishing `/dash/v1` and a Gateway
+    # living in its own namespace (the usual arrangement — `traefik`,
+    # `istio-system`, `envoy-gateway-system`), `helm upgrade` is green and
+    # every `/dash/v1` request is dropped by the CNI. That combination is
+    # the "networkpolicy-management-route" guard.
+    #
+    # Matched on `kubernetes.io/metadata.name`, the label the control plane
+    # sets on every namespace since 1.21 — the same shape `-server`'s policy
+    # uses for `ingressControllerNamespace`:
+    #
+    #   namespaceSelector:
+    #     kubernetes.io/metadata.name: traefik
+    #
+    # Rendered as its own `from` peer, NOT combined with `podSelector` into
+    # one: two selectors inside a single peer are ANDed ("pods with these
+    # labels in namespaces with those"), and the gateway's pods do not carry
+    # the dashboard's labels. As separate peers they are ORed, which is what
+    # "the dashboard, AND the gateway namespace" means.
+    #
+    # `{}` renders no such peer at all — an absent peer, not an empty one —
+    # so the default is strictly the `podSelector` rule and nothing wider.
+    #
+    # **Whether the management tier should face the public gateway at all is
+    # not this chart's decision.** ADR-0022 § "Left to the maintainer" item 3
+    # leaves it open and prefers a separate internal Gateway. This value
+    # exists so that an operator who has made that decision can express it;
+    # the guard exists so that nobody makes it by accident.
+    namespaceSelector: {}
   database:
     # Where Postgres is. Set exactly one shape:
     #   cidrs: ["10.0.4.7/32"]            — a managed instance's address

@@ -101,6 +101,25 @@ spec:
         - podSelector:
             matchLabels:
               {{- toYaml $np.managementIngress.podSelector | nindent 14 }}
+        {{- with $np.managementIngress.namespaceSelector }}
+        # A SECOND peer in the same `from` list, not a second selector inside
+        # the peer above — and the difference is the whole point. Two
+        # selectors in ONE peer are ANDed ("pods carrying the dashboard's
+        # labels, in the gateway's namespace"), which matches nothing; two
+        # peers are ORed, which is what "the dashboard, or the gateway
+        # namespace" means.
+        #
+        # Rendered only when set, so the default admits strictly the
+        # `podSelector` rule above and nothing wider. ADR-0022 § "Left to the
+        # maintainer" item 3 does not decide whether the management tier
+        # should face a public gateway; the "networkpolicy-management-route"
+        # guard refuses to let the question go unanswered when `route.enabled`
+        # publishes `/dash/v1`, and this is where the answer "yes, from that
+        # namespace" is written.
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.server.port }}

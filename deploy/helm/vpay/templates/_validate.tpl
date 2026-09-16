@@ -714,4 +714,43 @@ blocked by a chart that renders nothing from it yet.
 {{- end -}}
 {{- end -}}
 
+
+{{/* --------------------------------------------------------------- 24 */}}
+{{/*
+networkpolicy-management-route — the combination in which the chart's two
+ADR-0022 §5 halves contradict each other, and nothing else notices.
+
+With `management.enabled`, `route.enabled` and `networkPolicy.enabled` all
+true, `httproute.yaml` publishes a `/dash/v1` rule whose backend is the
+`-management` Service, and `networkpolicy.yaml` writes a `-management`
+policy whose only traffic-port peer is a bare `podSelector`. A bare
+`podSelector` peer selects pods **in the policy's own namespace**; a Gateway
+lives in its own (`traefik`, `istio-system`, `envoy-gateway-system`). So the
+release publishes `/dash/v1` at the edge and the CNI drops every request
+that arrives on it. `helm upgrade` is green, every object reports healthy,
+and the symptom is found by a member of staff who cannot sign in.
+
+**This guard does not decide whether the management tier should face the
+public gateway.** ADR-0022 § "Left to the maintainer" item 3 leaves that
+open and prefers a separate internal Gateway; a chart that picked one would
+be deciding it. What it refuses is the combination in which the chart has
+been made to claim BOTH answers at once. Either answer clears it:
+
+  - yes, from that namespace — set
+    `networkPolicy.managementIngress.namespaceSelector` to the Gateway's
+    namespace labels, which renders a second, ORed ingress peer;
+  - no — set `route.enabled: false`, or drop the `/dash/v1` publication by
+    turning `management.enabled` off, and reach the tier by whatever
+    internal path the maintainer chose.
+
+Checked only when all three are on, for "networkpolicy-management-ingress"'s
+reason: with any of them off, one of the two contradicting objects is not
+rendered and there is nothing to contradict.
+*/}}
+{{- if and .Values.networkPolicy.enabled .Values.management.enabled .Values.route.enabled -}}
+{{- if empty .Values.networkPolicy.managementIngress.namespaceSelector -}}
+{{- fail "vpay chart guard \"networkpolicy-management-route\": route.enabled, management.enabled and networkPolicy.enabled are all true, but networkPolicy.managementIngress.namespaceSelector is empty. This release publishes an HTTPRoute rule for /dash/v1 whose backend is the -management Service, AND a -management NetworkPolicy whose only traffic-port peer is a bare podSelector — which matches pods in THIS namespace only, and a Gateway runs in its own. helm upgrade would be green, every object healthy, and every /dash/v1 request dropped by the CNI; the symptom is a member of staff who cannot sign in. Whether the management tier should face the public gateway is deliberately NOT this chart's decision (ADR-0022 \"Left to the maintainer\" item 3, which prefers a separate internal Gateway) — but it has to be SOMEBODY's. Either admit the Gateway's namespace, by setting networkPolicy.managementIngress.namespaceSelector to its labels (kubernetes.io/metadata.name: <gateway namespace>), which renders a second, ORed ingress peer beside the podSelector one; or stop publishing the path, by setting route.enabled: false, and reach /dash/v1 by the internal route you chose instead." -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}

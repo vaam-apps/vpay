@@ -550,6 +550,11 @@
             "podSelector": {
               "type": "object",
               "additionalProperties": { "type": "string" }
+            },
+            "namespaceSelector": {
+              "description": "Labels of a namespace whose pods may reach the management tier, rendered as a SECOND ingress peer beside podSelector (ORed, not ANDed). A bare podSelector peer matches only the policy's own namespace, so this is the only way to admit a Gateway that lives elsewhere. Match on kubernetes.io/metadata.name. Empty renders no such peer. See the networkpolicy-management-route guard.",
+              "type": "object",
+              "additionalProperties": { "type": "string" }
             }
           }
         },

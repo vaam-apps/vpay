@@ -1,0 +1,41 @@
+# Violates exactly one guard: "networkpolicy-management-route".
+#
+# The combination in which this chart's two ADR-0022 §5 halves contradict
+# each other: an HTTPRoute publishing `/dash/v1` at a Gateway, and a
+# `-management` NetworkPolicy whose only traffic-port peer is a bare
+# `podSelector` — which matches pods in the policy's own namespace, while
+# the Gateway runs in its own. Both render, `helm upgrade` is green, and the
+# CNI drops every `/dash/v1` request.
+#
+# `managementIngress.podSelector` IS set here, so the earlier
+# "networkpolicy-management-ingress" guard is satisfied and this file
+# violates one guard and not two; `namespaceSelector` is the one left empty.
+# `database.cidrs` and `route.parentRefs`/`route.hostnames` are likewise set
+# only to clear "networkpolicy-database" and "route-attachment".
+#
+# `route.rateLimitedBy` clears "route-rate-limit" the same way: it is the
+# "enforced somewhere this chart cannot see" spelling, which is the cheaper
+# of the two to write in a fixture that is not about rate limiting.
+management:
+  enabled: true
+
+route:
+  enabled: true
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+  hostnames:
+    - api.vpay.example
+  rateLimitedBy: "a WAF in front of the Gateway (fixture value; nothing is enforced here)"
+
+networkPolicy:
+  enabled: true
+  database:
+    cidrs:
+      - 203.0.113.10/32
+  managementIngress:
+    podSelector:
+      app.kubernetes.io/name: vpay
+      app.kubernetes.io/component: dashboard
+    # The empty one — the defect this fixture exercises.
+    namespaceSelector: {}

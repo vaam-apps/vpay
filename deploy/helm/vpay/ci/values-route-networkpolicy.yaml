@@ -1,0 +1,84 @@
+# The combination neither other CI values file reaches: the Gateway API
+# routing half AND the NetworkPolicy half, on together, with the management
+# tier templated.
+#
+# Why it is a fourth file rather than a flag on an existing one. Until
+# 2026-09-16 `ci/values-full.yaml` rendered `networkPolicy` with
+# `management.enabled` but `route.enabled: false`, and `ci/values-route.yaml`
+# rendered the `/dash/v1` HTTPRoute rule with `networkPolicy.enabled` false.
+# So each half was covered and the pair was not — and the pair is where the
+# chart could publish `/dash/v1` on a Gateway while the `-management` policy
+# denied that Gateway at the pod, green the whole way. That is the
+# "networkpolicy-management-route" guard, and this file is the shape which
+# CLEARS it: the guard's own `ci/guards/` fixture is the shape that does not.
+#
+# Rendered with `--api-versions gateway.networking.k8s.io/v1`, like
+# `ci/values-route.yaml`, or `httproute.yaml`'s capability check renders
+# nothing and this file would prove only half of what it claims.
+#
+# It is not an example production configuration. The digest is real-shaped
+# and meaningless, the CIDR is documentation-range (RFC 5737), and the
+# Gateway namespace is a plausible name, not a cluster anybody has.
+
+images:
+  server:
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+config:
+  profile: production
+  createOverlayConfigMap: true
+  overlay: |
+    deployment:
+      name: vpay
+      livemode: true
+      public_base_url: https://api.vpay.example
+
+# ADR-0022. Both objects this file exists to render together depend on it:
+# the HTTPRoute's `/dash/v1` rule and the `-management` NetworkPolicy.
+management:
+  enabled: true
+
+# The dashboard, so `managementIngress.podSelector` below names a workload
+# this release actually templates rather than a hypothetical one.
+dashboard:
+  enabled: true
+  publicOrigin: "https://dash.example"
+
+route:
+  enabled: true
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+      sectionName: websecure
+  hostnames:
+    - api.vpay.example
+  token:
+    filters:
+      - type: ExtensionRef
+        extensionRef:
+          group: traefik.io
+          kind: Middleware
+          name: vpay-token-ratelimit
+
+networkPolicy:
+  enabled: true
+  database:
+    cidrs:
+      - 203.0.113.10/32
+  managementIngress:
+    # Peer 1: the dashboard Deployment, in this namespace.
+    podSelector:
+      app.kubernetes.io/name: vpay
+      app.kubernetes.io/component: dashboard
+    # Peer 2, ORed with the first: the namespace the Gateway named in
+    # `route.parentRefs` above runs in. WITHOUT this the release publishes
+    # `/dash/v1` at that Gateway and the CNI drops every request that
+    # arrives on it — see the "networkpolicy-management-route" guard.
+    #
+    # Setting it here is NOT this chart deciding that the management tier
+    # should face a public gateway; ADR-0022 § "Left to the maintainer"
+    # item 3 leaves that open and prefers a separate internal Gateway. It is
+    # one of the two coherent answers, written down, so that the rendered
+    # shape of that answer is validated by kubeconform.
+    namespaceSelector:
+      kubernetes.io/metadata.name: traefik

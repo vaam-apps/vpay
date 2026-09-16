@@ -2922,16 +2922,27 @@ chart := "deploy/helm/vpay"
 # `just ci`; corrected 2026-09-16. The missing binaries still justify the
 # exclusion; the offline argument no longer does on its own.
 #
-# What it proves: the chart lints, all three value sets render, the twenty-two
-# named guards are exactly the twenty-two on disk and each fires on its own
+# What it proves: the chart lints, all FOUR value sets render, the twenty-four
+# named guards are exactly the twenty-four on disk and each fires on its own
 # values file with a non-zero exit, the default render templates no checkout
 # page and `ci/values-full.yaml`'s does, the Ingress path carries its
 # `limit-rps` annotations and the Gateway API path says what rate-limits its
 # token rule, BOTH mechanisms route the rail callback prefix `/provider`, the
 # HTTPRoute templates render NOTHING without the Gateway API
-# CRDs, and every rendered object validates against the upstream schemas. What
-# it does not prove: anything at all about a cluster. Nothing here has ever
-# been applied to one.
+# CRDs, the `/dash/v1` HTTPRoute rule and the `-management` NetworkPolicy
+# agree with each other when both are rendered, and every rendered object
+# validates against the upstream schemas. What it does not prove: anything at
+# all about a cluster. Nothing here has ever been applied to one.
+#
+# CORRECTED 2026-09-16, in review: this said "three value sets" and
+# "twenty-two named guards" while `expected_guards` below already listed
+# twenty-three and `ci/guards/` already held twenty-three files. The list is
+# the gate — it is compared against the directory on every run — so the count
+# in this sentence was decoration that had gone stale, not a check that had
+# been weakened. It is twenty-four now, and four value sets: `ci/values-
+# route-networkpolicy.yaml` is the fourth, and it exists because the Gateway
+# API half and the NetworkPolicy half were each covered while the COMBINATION
+# of them was not.
 helm-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2943,10 +2954,11 @@ helm-check:
     out="$(mktemp -d)"
     trap 'rm -rf "$out"' EXIT
 
-    echo "==> helm lint (defaults, then ci/values-full.yaml, then ci/values-route.yaml)"
+    echo "==> helm lint (defaults, ci/values-full.yaml, ci/values-route.yaml, ci/values-route-networkpolicy.yaml)"
     helm lint "$chart"
     helm lint "$chart" -f "$chart/ci/values-full.yaml"
     helm lint "$chart" -f "$chart/ci/values-route.yaml"
+    helm lint "$chart" -f "$chart/ci/values-route-networkpolicy.yaml"
 
     echo "==> helm template"
     helm template vpay "$chart" > "$out/default.yaml"
@@ -2959,6 +2971,10 @@ helm-check:
     # everything below would pass over an empty file.
     gwapi="gateway.networking.k8s.io/v1"
     helm template vpay "$chart" -f "$chart/ci/values-route.yaml" --api-versions "$gwapi" > "$out/route.yaml"
+    # The fourth render, and the only one in which the `/dash/v1` HTTPRoute
+    # rule and the `-management` NetworkPolicy are both produced. Same
+    # `--api-versions` for the same reason. See its own file header.
+    helm template vpay "$chart" -f "$chart/ci/values-route-networkpolicy.yaml" --api-versions "$gwapi" > "$out/route-np.yaml"
 
     # Each file under ci/guards/ violates exactly one guard, and the file's
     # basename IS the guard's name. A guard that stops firing — or one whose
@@ -2982,6 +2998,7 @@ helm-check:
         ingress-host
         networkpolicy-database
         networkpolicy-management-ingress
+        networkpolicy-management-route
         observability-port
         overlay-empty
         pdb-minavailable
@@ -3154,13 +3171,38 @@ helm-check:
         || { echo "helm-check: FAIL — the rendered HTTPRoute carries no /provider rule; every MTN MoMo and Orange Money callback would be dropped at the Gateway" >&2; exit 1; }
     echo "    /provider is a rule on the rendered HTTPRoute"
 
+    # The two ADR-0022 §5 halves, in the one render that produces both, and
+    # checked against each other rather than each on its own — which is the
+    # whole reason the fourth values file exists.
+    #
+    # The "networkpolicy-management-route" guard refuses the INCOHERENT
+    # combination (a published /dash/v1 with a -management policy that admits
+    # only this namespace's pods, so the Gateway is denied and every request
+    # is dropped by the CNI while helm reports success). A guard cannot assert
+    # the coherent one: it is an absence of failure plus a presence of two
+    # objects, and `fail` can only refuse. So it is asserted here, over the
+    # rendered YAML, the same way the checkout page's two directions are.
+    echo "==> management tier: the /dash/v1 route and its NetworkPolicy agree"
+    grep -q 'value: /dash/v1' "$out/route-np.yaml" \
+        || { echo "helm-check: FAIL — ci/values-route-networkpolicy.yaml enables management and route but rendered no /dash/v1 HTTPRoute rule" >&2; exit 1; }
+    grep -q '^  name: vpay-management$' "$out/route-np.yaml" \
+        || { echo "helm-check: FAIL — ci/values-route-networkpolicy.yaml rendered no -management object at all" >&2; exit 1; }
+    # The peer that admits the Gateway's namespace. Asserted by its LABEL
+    # value rather than by the key alone: `-server`'s policy and the
+    # monitoring rule both carry `namespaceSelector`, so a grep for the key
+    # would pass on a render in which the management policy had none.
+    np_management="$(helm template vpay "$chart" -f "$chart/ci/values-route-networkpolicy.yaml" --api-versions "$gwapi" --show-only templates/networkpolicy.yaml | awk '/name: vpay-management$/,0')"
+    printf '%s' "$np_management" | grep -q 'kubernetes.io/metadata.name: traefik' \
+        || { echo "helm-check: FAIL — the -management NetworkPolicy does not admit the Gateway's namespace, but the HTTPRoute publishes /dash/v1 at a Gateway in it. Every /dash/v1 request would be dropped by the CNI with every object reporting healthy." >&2; exit 1; }
+    echo "    /dash/v1 is published AND the -management policy admits the Gateway's namespace"
+
     echo "==> kubeconform (downloads schemas — needs network)"
     kubeconform -strict -summary \
         -schema-location default \
         -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{{{.Group}}/{{{{.ResourceKind}}_{{{{.ResourceAPIVersion}}.json' \
-        "$out/default.yaml" "$out/full.yaml" "$out/route.yaml"
+        "$out/default.yaml" "$out/full.yaml" "$out/route.yaml" "$out/route-np.yaml"
 
-    echo "helm-check: ok — lint, 3 renders, $guards guards, rate limit (both paths), rail callback (both paths), kubeconform. No cluster was involved."
+    echo "helm-check: ok — lint, 4 renders, $guards guards, rate limit (both paths), rail callback (both paths), management route/policy coherence, kubeconform. No cluster was involved."
 
 # --------------------------------------------------------------- release ---
 
