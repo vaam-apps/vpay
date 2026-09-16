@@ -37,13 +37,18 @@ the order they were measured.
 
 - [verification/2026-09-16-adr-0022.md](verification/2026-09-16-adr-0022.md) —
   ADR-0022 (surface isolation and independent scaling): `deployment.surfaces`
-  and conditional `/v1`/`/dash/v1` mounting (1838/1838 `nextest`, 114 doctests
-  passed/1 ignored), the dashboard runner stage's real
+  and conditional `/v1`/`/dash/v1` mounting, the dashboard runner stage's real
   `docker run --read-only --tmpfs /tmp --user 1000:1000` observation and the
   `HOSTNAME`-binding defect it found, and the Helm chart's `-management`
-  Deployment, HPA and `connection-budget` guard (22/22 guards fire,
-  kubeconform validates 49 resources). `just ci`'s final `deny` step fails on
-  a pre-existing, unrelated advisory — no `Cargo.lock` change on this branch.
+  Deployment, HPA and `connection-budget` guard (23/23 guards fire,
+  kubeconform validates 49 resources). Carries the review pass's own section:
+  five mutations of the surface gate, four of which the new tests caught and
+  one — `validate_all`'s boot-refusal wiring — which nothing did, plus the
+  fix; the chart's rendered overlay fed to the real `Config::load`; and the
+  `networkpolicy-management-ingress` guard added because an empty
+  `podSelector` matches every pod in the namespace. `just ci`'s final `deny`
+  step fails on a pre-existing, unrelated advisory — no `Cargo.lock` change
+  on this branch.
 - [verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md) —
   the first CI run that compiled `--test live_refunds` went red, and what it
   had found was **not** in the SDK: a charge confirmed while the worker's

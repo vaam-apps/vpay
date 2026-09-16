@@ -939,13 +939,23 @@ networkPolicy:
   # a caller inside the cluster from addressing the management Service
   # directly unless this policy is also on.
   managementIngress:
-    # Read only when `management.enabled` is true. `{}` (match every pod in
-    # this namespace) is almost certainly too wide for a real deployment —
-    # it is the fail-open default so `networkPolicy.enabled: true` does not
-    # also require naming the dashboard's labels before anything starts.
-    # Narrow it to the dashboard's own selector once that Deployment is
-    # running in this namespace, or to whatever else legitimately calls
-    # `/dash/v1`.
+    # Read only when `management.enabled` is true, and REQUIRED once it is
+    # (the "networkpolicy-management-ingress" guard — added 2026-09-16, in
+    # review). `{}` is not a narrow default that an operator can leave alone:
+    # an empty `podSelector` in a NetworkPolicy peer matches **every pod in
+    # this namespace**, so the rendered rule would admit the whole namespace
+    # to `/dash/v1` while reading as though it admits one workload. That is
+    # the same shape the "rails-egress-except" guard refuses one layer over,
+    # and the guard now refuses this one rather than letting it render.
+    #
+    # It stays `{}` here because `networkPolicy.enabled` is false by default
+    # and a chart default cannot know the caller's labels; the guard is what
+    # turns "unset" into an install-time error instead of a silent
+    # default-allow. For the dashboard Deployment this chart templates:
+    #
+    #   podSelector:
+    #     app.kubernetes.io/name: vpay
+    #     app.kubernetes.io/component: dashboard
     podSelector: {}
   database:
     # Where Postgres is. Set exactly one shape:

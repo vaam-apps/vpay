@@ -1,0 +1,17 @@
+# Violates exactly one guard: "networkpolicy-management-ingress".
+#
+# The management tier templated behind a default-deny policy whose ingress
+# rule names nobody — an empty podSelector, which matches every pod in the
+# namespace rather than the one workload the rule reads as admitting
+# (ADR-0022 §5). `database.cidrs` is set only so the earlier
+# "networkpolicy-database" guard is satisfied and this file violates one
+# guard and not two.
+management:
+  enabled: true
+networkPolicy:
+  enabled: true
+  database:
+    cidrs:
+      - 203.0.113.10/32
+  managementIngress:
+    podSelector: {}

@@ -119,12 +119,22 @@ database:
 
 networkPolicy:
   enabled: true
-  # ADR-0022. `{}` (the chart's own default) is deliberately not overridden
-  # here — "everything this chart can render" includes the fail-open
-  # default a first `management.enabled: true` release actually gets, not a
-  # narrowed example an operator would have to reverse-engineer.
+  # ADR-0022 §5. Named, not left at the chart's `{}` default: an EMPTY
+  # podSelector in a NetworkPolicy peer matches every pod in the namespace,
+  # so `{}` renders a rule that admits the whole namespace to /dash/v1 while
+  # reading as though it admits one workload. The
+  # "networkpolicy-management-ingress" guard now refuses that combination
+  # outright (added 2026-09-16, in review — this file previously left it
+  # `{}` on purpose, describing it as the "fail-open default a first
+  # release actually gets"; a fail-open default is the thing to refuse, not
+  # to render in the file that demonstrates the chart).
+  #
+  # The selector below is the dashboard Deployment this same file enables —
+  # the one workload ADR-0022 §5 names as the legitimate caller.
   managementIngress:
-    podSelector: {}
+    podSelector:
+      app.kubernetes.io/name: vpay
+      app.kubernetes.io/component: dashboard
   database:
     # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
     cidrs:

@@ -2981,6 +2981,7 @@ helm-check:
         image-digest-format
         ingress-host
         networkpolicy-database
+        networkpolicy-management-ingress
         observability-port
         overlay-empty
         pdb-minavailable

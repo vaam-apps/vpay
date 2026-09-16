@@ -221,13 +221,23 @@
         "autoscaling": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "minReplicas", "maxReplicas", "targetCPUUtilizationPercentage", "behavior"],
+          "required": [
+            "enabled",
+            "minReplicas",
+            "maxReplicas",
+            "targetCPUUtilizationPercentage",
+            "behavior"
+          ],
           "description": "ADR-0022. Off by default, so no existing release changes behaviour on upgrade. Bounded, once enabled, by the \"connection-budget\" guard in templates/_validate.tpl against database.maxConnections — this schema checks shape only.",
           "properties": {
             "enabled": { "type": "boolean" },
             "minReplicas": { "type": "integer", "minimum": 1 },
             "maxReplicas": { "type": "integer", "minimum": 1 },
-            "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "targetCPUUtilizationPercentage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
             "behavior": {
               "type": "object",
               "additionalProperties": false,

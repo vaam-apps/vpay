@@ -653,10 +653,18 @@ managed Postgres instance is exactly how this becomes a 3am incident, so an
 autoscaling release that never set it is refused by name rather than
 silently checked against a guess.
 
-`management.replicaCount` is counted even when `management.enabled` is
-false — a process that is not templated holds no connection, so this only
-ever matters together with the `enabled` flag, and the arithmetic reads the
-same whether the split exists yet or not.
+`management.replicaCount` is counted ONLY while `management.enabled` is
+true, which is what the `ternary` below spells: a tier this release does not
+template runs no process and holds no connection, and counting its replicas
+anyway would refuse a release over connections nothing will ever open. The
+failure message prints the counted number (0 while disabled), not the raw
+value, so the arithmetic an operator reads back is the arithmetic the guard
+actually did.
+
+_(Corrected 2026-09-16, in review: this paragraph originally claimed the
+opposite — "counted even when `management.enabled` is false" — while the
+code below has always read the `ternary`. The code was right; the prose was
+not.)_
 */}}
 {{- if .Values.server.autoscaling.enabled -}}
 {{- if le (int .Values.database.maxConnections) 0 -}}
@@ -670,6 +678,39 @@ same whether the split exists yet or not.
 {{- if gt $wanted $budget -}}
 {{- fail (printf "vpay chart guard \"connection-budget\": server.autoscaling.maxReplicas (%d) + management.replicaCount (%d, counted only while management.enabled) + worker.replicaCount (%d), times 10 connections each, is %d — more than database.maxConnections (%d) minus database.reservedConnections (%d) = %d. At maxReplicas this release would ask Postgres for more connections than it has, and the failure is not a refused scale-up: it is PgPoolOptions::acquire_timeout firing on whichever path asks next, which on the worker's side is the crash-recovery branch. Lower server.autoscaling.maxReplicas, raise database.maxConnections (if the instance actually has the headroom), or move some load off before raising either." $maxReplicas $management $worker $wanted (int .Values.database.maxConnections) (int .Values.database.reservedConnections) $budget) -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/* --------------------------------------------------------------- 23 */}}
+{{/*
+networkpolicy-management-ingress — ADR-0022 §5 asks the management tier not
+to be reachable from the public gateway, and names "a NetworkPolicy ingress
+rule admitting only the dashboard Deployment" as the concrete form of that.
+`networkpolicy.yaml`'s `-management` policy is that rule, and its entire
+security content is `networkPolicy.managementIngress.podSelector`.
+
+Left at its default (`{}`), that rule renders as
+
+    from:
+      - podSelector:
+          matchLabels: {}
+
+and an EMPTY `podSelector` in a NetworkPolicy peer selects **every pod in
+the policy's namespace** — so the rule an operator reads as "only the
+dashboard" admits the whole namespace to `/dash/v1`. It renders, it
+kubeconforms, and it is a default-allow rule wearing a default-deny one's
+name — exactly the failure the "rails-egress-except" guard above exists to
+refuse one layer over, and the same shape "networkpolicy-database" refuses
+for the egress side.
+
+Only checked when both flags are on: the policy is not rendered otherwise,
+and an operator pre-populating one value before the other should not be
+blocked by a chart that renders nothing from it yet.
+*/}}
+{{- if and .Values.networkPolicy.enabled .Values.management.enabled -}}
+{{- if empty .Values.networkPolicy.managementIngress.podSelector -}}
+{{- fail "vpay chart guard \"networkpolicy-management-ingress\": networkPolicy.enabled and management.enabled are both true but networkPolicy.managementIngress.podSelector is empty. An empty podSelector in a NetworkPolicy peer matches EVERY pod in the namespace, so the rendered -management policy would admit the whole namespace to /dash/v1 while reading like it admits one workload. Name the pods that may reach the management tier — for the dashboard this chart templates, that is app.kubernetes.io/name: vpay with app.kubernetes.io/component: dashboard — or disable networkPolicy." -}}
 {{- end -}}
 {{- end -}}
 
