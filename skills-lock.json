@@ -1,6 +1,90 @@
 {
   "version": 1,
   "skills": {
+    "cratestack": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack/SKILL.md",
+      "computedHash": "a6f62967a62d1b15d603bff6a37df5fe0ece7e99ef4fdcf84b23640a08639118"
+    },
+    "cratestack-cli": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-cli/SKILL.md",
+      "computedHash": "56a0457c70822bbce987ee8ac4ed0f9399267ac5eb69df4a3e884e1cca68d646"
+    },
+    "cratestack-clients": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-clients/SKILL.md",
+      "computedHash": "3ad98a356849f83bc9550ac64ebcc44732cc287802587120d9c01efc5899fd9f"
+    },
+    "cratestack-contributing": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-contributing/SKILL.md",
+      "computedHash": "9436471e48fed7e374c12943674b76b37aa57fe3f7ba9b4417d7afa8901492dc"
+    },
+    "cratestack-data-integrity": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-data-integrity/SKILL.md",
+      "computedHash": "d17769904f7e001d50ca724b1f75ca2e2d2000169cc8cb68886f15297d6cd185"
+    },
+    "cratestack-editor-tooling": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-editor-tooling/SKILL.md",
+      "computedHash": "10985218bff1c87261a5088fa044fae542afd6cdfad95dfaab4eed37867ea788"
+    },
+    "cratestack-embedded": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-embedded/SKILL.md",
+      "computedHash": "2d43922f14b61fba05bb332937d5e3f77824a1bd5020d0ff84e88be8340ca02c"
+    },
+    "cratestack-migrations": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-migrations/SKILL.md",
+      "computedHash": "09b2d4b849adf11728ba52dbda18f73db55272cbcd0220c62f2b124d47ec5ffe"
+    },
+    "cratestack-policy-auth": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-policy-auth/SKILL.md",
+      "computedHash": "cc487b8dd7f55ee62c9124426d07e69c5c5c13b7402f2da92a372f6778d96d87"
+    },
+    "cratestack-rpc": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-rpc/SKILL.md",
+      "computedHash": "646a7c97b417e09b353f98a6709c51e199d58a2241fcce330b480ab1815f6dc6"
+    },
+    "cratestack-schema": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-schema/SKILL.md",
+      "computedHash": "e233999d9901d1df5da9a76e9150b9635289b7fe1bbd82fc262fd57f33b8a84a"
+    },
+    "cratestack-server": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-server/SKILL.md",
+      "computedHash": "a8bfc7129589546170f118e7836bb1c359724146e1b7d54d8e9e41ad619ff3ef"
+    },
+    "cratestack-studio": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-studio/SKILL.md",
+      "computedHash": "0f42263babf92dc76abf6faf5693e16018bdcdfcf37ed3feb516af060c95fc8d"
+    },
+    "cratestack-troubleshooting": {
+      "source": "cratestack/cratestack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cratestack-troubleshooting/SKILL.md",
+      "computedHash": "79530857616152549ce4d7c6027ee7f1f6a4818a2e72cc1de8b5da87a3ef357d"
+    },
     "vaam-ui": {
       "source": "vaam-apps/ui",
       "sourceType": "github",
