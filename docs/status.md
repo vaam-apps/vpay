@@ -109,7 +109,8 @@ nothing.
 
 `just verify` is **twelve gates and one advisory report**. What each one refuses,
 and what each printed when all twelve were re-run, one invocation each, on
-**2026-09-16** on `@COMMIT@` — this branch's head — with
+**2026-09-16** on `888b00c3` — this branch's last commit before this table
+was filled in, exactly as the 2026-09-11 column was — with
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`:
 
 | Gate                  | What it refuses                                                                                                                                                  | Last printed                                          |
@@ -118,7 +119,7 @@ and what each printed when all twelve were re-run, one invocation each, on
 | `verify-status`       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                                  |
 | `verify-errors`       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 20 error types, 17 `#[from]` variants                 |
 | `verify-sdk-parity`   | an SDK capability with no row, or a row naming no capability                                                                                                     | 603 proving tests, 36 dated gaps, 35 methods, 39 rows |
-| `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | @LINKS@                                               |
+| `verify-links`        | a repository link that resolves to no tracked path                                                                                                               | 1 731 links in 375 files                              |
 | `verify-npm-scope`    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private                     |
 | `check-schema`        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 27 declarations; see the note below                   |
 | `verify-serde`        | a serialisable type that does not spell the wire convention                                                                                                      | 96 types, 17 exemptions                               |
@@ -164,7 +165,7 @@ model/enum declarations, datasource present. That is a property of one machine,
 not of this tree, and it is recorded because a gate that ran against a
 different grammar than CI will is a gate whose green means less than it looks.
 
-Those numbers are a measurement of one tree on one day — `@COMMIT@`, 2026-09-16
+Those numbers are a measurement of one tree on one day — `888b00c3`, 2026-09-16
 — not a promise. **They are `just verify`'s gates invoked one at a time, not
 `just verify` itself and not `just ci`**, which this branch's agents were
 instructed not to run; that distinction is the whole of what the twelve-in-a-row
