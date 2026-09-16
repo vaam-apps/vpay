@@ -49,13 +49,21 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
-Two further gates run in CI's `web` job and in neither `just verify` nor
-`just ci`, so a green local run does not predict them: `just audit-web`, and
-`just test-storybook`, which renders every checkout story in a real Chromium
-and fails on an axe accessibility violation. The second is out of `just ci`
-because it needs the network the first time (Playwright fetches a ~115 MB
-Chromium), the same reason `helm-check` is out. Run it before opening a PR
-that touches a checkout screen, a story or the theme.
+One further gate runs in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict it: `just test-storybook`,
+which renders every checkout story in a real Chromium and fails on an axe
+accessibility violation. It is out of `just ci` because it needs the network
+the first time (Playwright fetches a ~115 MB Chromium) and is slow. Run it
+before opening a PR that touches a checkout screen, a story or the theme.
+
+_This paragraph said "two further gates" and named `just audit-web` as the
+other, and had been wrong since 2026-09-11: issue #103 added `audit-web` to
+the `ci` recipe in commit `96ebd20c`, in the same change that lowered it from
+`--audit-level=high` to `--audit-level=moderate`. Corrected 2026-09-16.
+**`just ci` therefore needs the network**, which the `ci` recipe's own comment
+now says out loud — three other recipes justify their exclusion from `just ci`
+on the grounds that it runs offline, and that premise no longer holds on its
+own._
 
 It is the only thing in this repository that returns a colour-contrast
 **verdict** for the screens a payer sees: the jsdom axe suites compute no

@@ -152,9 +152,14 @@ build-storybook:
 # Every checkout AND dashboard story, rendered in a real Chromium, with axe
 # over each one.
 #
-# NOT part of `just ci`, for the same reason `helm-check` is not: it needs a
-# network the first time, for a ~115 MB Playwright Chromium, and `just ci` is
-# expected to pass offline. CI's `web` job runs it.
+# NOT part of `just ci`: it needs a network the first time, for a ~115 MB
+# Playwright Chromium, and it is slow. CI's `web` job runs it.
+#
+# This said "and `just ci` is expected to pass offline", which stopped being
+# true on 2026-09-11 when `audit-web` joined `just ci` (issue #103); corrected
+# 2026-09-16. The size and the wall-clock still justify the exclusion on their
+# own — a 115 MB download is not a 200 ms advisory lookup — but the
+# offline-safe premise no longer does. See the `ci` recipe's comment.
 #
 # WHAT IT PROVES THAT NOTHING ELSE DOES. `just ci` builds neither web app.
 # The jsdom axe suites next to each app's components
@@ -1270,19 +1275,27 @@ deny:
 # over all sixteen of them, which is exactly the "suite goes green while
 # proving nothing" failure CLAUDE.md names.
 #
-# `--audit-level=high` on both: high and critical fail, moderate does not.
-# A deliberate ceiling, not an oversight — a moderate advisory in a
-# transitive dev dependency appears most weeks, and blocking every merge on
-# one trains people to reach for the ignore list, which is the only escape
-# hatch here (`pnpm.auditConfig.ignoreCves` in `package.json`, currently
-# ABSENT — no advisory is being suppressed as of 2026-09-03). A bare
-# `pnpm audit` still reports moderates; this recipe just does not fail on
-# them.
+# `--audit-level=moderate` on both: moderate, high and critical all fail.
 #
-# NOT part of `just ci`, for the reason `helm-check` below is not: it talks
-# to the npm registry's advisory endpoint on every run and cannot work
-# offline at all, and `just ci` is expected to run on a machine with no
-# network. CI runs it on every PR regardless.
+# This paragraph said `--audit-level=high` until 2026-09-16 and had been
+# wrong since 2026-09-11, when issue #103 lowered the ceiling in the same
+# commit (96ebd20c) that added this recipe to `just ci`. It argued FOR the
+# high ceiling — that a moderate in a transitive dev dependency appears most
+# weeks and blocking every merge on one trains people to reach for the
+# ignore list. What settled the argument was a measurement: GHSA-82fw-gwwq-j7x9
+# (moderate, CVSS 5.9, twelve Dependabot alerts) sat on `master` for two days
+# with this recipe green over it. An advisory nothing fails on is an advisory
+# nobody reads.
+#
+# The escape hatch issue #103 asked for alongside the lower ceiling — a
+# documented allowlist with a dated reason per entry — is NOT BUILT.
+# `pnpm.auditConfig.ignoreCves` is absent from `package.json` and no advisory
+# is being suppressed (checked 2026-09-16). Until it exists, an accepted
+# advisory has nowhere to go but this comment, and #103 stays open for it.
+#
+# IS part of `just ci`, since 2026-09-11 — and it is the one thing in `just
+# ci` that needs the network. See the `ci` recipe's own comment: the
+# offline-safe promise the other steps make does not survive this one.
 #
 # A registry outage is not an advisory. On 2026-09-04 the audit endpoint
 # (`/-/npm/v1/security/audits`) timed out or answered 503 for about two hours
@@ -1557,10 +1570,12 @@ migrations_manifest := "backends/migrations/MANIFEST.sha256"
 # the tool; it never prints "skipped" and exits 0. Same rule as
 # `docs-check-citations` without `gh`: a check that downgrades itself reports
 # success for a run in which nothing was checked, in a log indistinguishable
-# from one in which everything passed. This is why `check-schema` is NOT in
-# the offline-safe promise `just ci` makes about the other gates in the same
-# way they are — it needs no network to RUN, but it does need a binary that
-# is not part of this workspace, and `just install-rust` does not install it.
+# from one in which everything passed. `check-schema` needs no network to
+# RUN, but it does need a binary that is not part of this workspace, and
+# `just install-rust` does not install it. (This sentence used to describe
+# "the offline-safe promise `just ci` makes about the other gates"; that
+# promise has not held since `audit-web` joined `just ci` on 2026-09-11 —
+# corrected 2026-09-16. The missing binary is the reason that survives.)
 # That parenthesis used to give a reason — "installing it needs a newer
 # compiler than `rust-toolchain.toml` pins" — and the toolchain bump of
 # 2026-09-05 (1.95.0 -> 1.98.0) retired it: `cargo install cratestack-cli
@@ -2864,12 +2879,22 @@ verify-ignored:
 # point of this comment, because it used to say "everything".
 #
 # Covered: `self-checks` (`verify`), `rust` (`fmt-check`, `clippy`,
-# `test-rust`, `test-doc`, `verify-ignored`), `web` (`lint-web`, `test-web`)
-# and `supply chain` (`deny`). NOT covered, both by design and both needing
-# more than a checkout: `e2e (compose)` — that is `just test-e2e`, which
-# builds images and boots a stack — and `deploy (helm chart)` — that is
-# `just helm-check`, which downloads schemas over HTTPS (see its own comment
-# for why it is out).
+# `test-rust`, `test-doc`, `verify-ignored`), `web` (`lint-web`, `test-web`,
+# `audit-web`) and `supply chain` (`deny`). NOT covered, both by design and
+# both needing more than a checkout: `e2e (compose)` — that is
+# `just test-e2e`, which builds images and boots a stack — and
+# `deploy (helm chart)` — that is `just helm-check`, which downloads schemas
+# over HTTPS (see its own comment for why it is out).
+#
+# `audit-web` was added on 2026-09-11 by issue #103, and this list did not
+# mention it until 2026-09-16. **`just ci` therefore needs the network.**
+# That is a real change to what this recipe promises, and it is worth saying
+# plainly rather than leaving three other comments asserting the opposite:
+# `test-storybook`, `helm-check` and `check-schema` are each excluded from
+# `just ci` on the grounds that it must run offline, and that reason no
+# longer holds on its own. Reconciling the four — restore the promise by
+# taking `audit-web` out, or drop it and revisit the other three — is a
+# maintainer decision this comment does not take.
 #
 # `test-doc` sits between `test-rust` and `verify-ignored` here and in the
 # `rust` job, because nextest runs no doctests and `verify-ignored`'s counts
@@ -2887,9 +2912,15 @@ chart := "deploy/helm/vpay"
 # NOT part of `just ci`, and that is deliberate: `kubeconform` fetches its
 # schemas over HTTPS (the upstream JSON-schema mirror, plus the CRD catalog
 # for ServiceMonitor/PrometheusRule, which no `-schema-location default` can
-# know about). `just ci` is expected to run on a machine with no network, so
-# adding this to it would turn "offline" into "failing". Run it by hand before
-# opening a PR that touches the chart; CI runs it on every PR regardless.
+# know about), and it needs two binaries this workspace does not build.
+# Run it by hand before opening a PR that touches the chart; CI runs it on
+# every PR regardless.
+#
+# The sentence that used to carry this — "`just ci` is expected to run on a
+# machine with no network, so adding this to it would turn offline into
+# failing" — had been wrong since 2026-09-11, when `audit-web` joined
+# `just ci`; corrected 2026-09-16. The missing binaries still justify the
+# exclusion; the offline argument no longer does on its own.
 #
 # What it proves: the chart lints, all three value sets render, the twenty-two
 # named guards are exactly the twenty-two on disk and each fires on its own
