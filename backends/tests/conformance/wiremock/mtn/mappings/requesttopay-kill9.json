@@ -13,7 +13,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000ce9"
+              "equalTo": "237670000909"
             }
           }
         ]
@@ -30,11 +30,18 @@
           "to fix it from a test would be a code path that exists only outside production --",
           "AGENTS.md's first rule). MTN's status query is a GET carrying no body, so the",
           "steering has to happen HERE, on the POST, and be carried forward by scenario state",
-          "-- the same technique, and the same documentation-MSISDN block, as",
-          "requesttopay-scenario.json's `mtn-e2e-poll`.",
+          "-- the same technique as requesttopay-scenario.json's `mtn-e2e-poll`.",
           "",
-          "237600000ce9 continues that file's 0ce0 convention; the trailing 9 names the signal",
-          "worker_kill9.rs sends (SIGKILL).",
+          "Was 237600000ce9 until issue #189: #186's server-side phone validation",
+          "(vpay_api::v1::payer_fields::resolve_payer_fields) refuses the whole",
+          "2376000000xx block -- hex letters or not, it is not a valid number under any",
+          "real Cameroon numbering plan -- so a real confirm with it now gets a 400 before",
+          "this stub is ever asked. 237670000909 is a real, phonenumber-valid CM mobile",
+          "number (prefix 67) that continues the OLD suffix convention in decimal:",
+          "requesttopay-scenario.json's mtn-e2e-poll moved the shared root from ce0 to 900",
+          "for worker_e2e.rs's SETTLING_MSISDN, and 909 varies only the trailing digit from",
+          "that root -- still naming the signal worker_kill9.rs sends (SIGKILL, 9), exactly",
+          "as the trailing 9 in 237600000ce9 did.",
           "",
           "Answers a plain 202 because this mapping exists to MOVE THE SCENARIO, not to change",
           "what a confirm sees: the crash under test is the WORKER's, and up to the point the",
@@ -127,7 +134,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000cf9"
+              "equalTo": "237670000919"
             }
           }
         ]
@@ -152,8 +159,10 @@
           "is something that test can assert did NOT happen.",
           "",
           "Thirty seconds for the same reason as the status mapping above, measured against",
-          "the same 20 s request timeout. 237600000cf9 is the submit-side twin of",
-          "237600000ce9."
+          "the same 20 s request timeout. Was 237600000cf9, the submit-side twin of",
+          "237600000ce9, until issue #189 (see the status mapping's own why for the full",
+          "story); 237670000919 is 237670000909's submit-side twin the same way, keeping",
+          "the trailing 9 for SIGKILL and varying only the middle digit."
         ]
       }
     }

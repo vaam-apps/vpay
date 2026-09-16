@@ -57,7 +57,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "matches": "237600000(ce0|100)"
+              "matches": "237600000(ce0|100)|237670000900"
             }
           }
         ]
@@ -113,7 +113,20 @@
           "the reachability claim two mappings below -- 'no conformance case sends that",
           "MSISDN' -- no longer true for `237600000100` and had to be corrected there.",
           "The full steering table, both families, is in",
-          "`docs/plans/step9-notes/lane-2b.md`."
+          "`docs/plans/step9-notes/lane-2b.md`.",
+          "",
+          "A THIRD ALTERNATIVE, added for issue #189 (2026-09-16): `237670000900` is a",
+          "real, `phonenumber`-valid CM mobile number. #186 landed server-side phone",
+          "validation (`vpay_api::v1::payer_fields::resolve_payer_fields`) after both",
+          "families above were written, and it refuses the whole `2376000000xx` block --",
+          "hex letters or not -- before a real confirm ever reaches this stub. Neither",
+          "existing family is touched: `examples/merchant-demo` and the conformance case",
+          "named two paragraphs up drive the MTN adapter or an unvalidated demo path",
+          "directly, not the validating API route, so `237600000ce0`/`237600000100` still",
+          "reach this mapping exactly as before. `worker_e2e.rs`'s `SETTLING_MSISDN` is the",
+          "only caller of the new alternative -- see its own doc for why a real confirm now",
+          "needs a real number, and for the decimal suffix convention (`900`, echoed by",
+          "`worker_kill9.rs`'s `909`/`919`/`915`) that replaces the old hex one for it."
         ]
       }
     },

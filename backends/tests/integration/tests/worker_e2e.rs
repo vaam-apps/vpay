@@ -29,8 +29,18 @@
 //! request body. So [`SETTLING_MSISDN`] enters a WireMock **scenario** on the
 //! POST (`requesttopay-scenario.json`, `mtn-e2e-poll`, priority 5) and the
 //! scenario's state — not the request — decides what the following status
-//! queries answer. The same technique, and the same documentation-MSISDN
-//! block, as the payer-decline mapping `confirm_rails.rs` uses.
+//! queries answer. The same technique as the payer-decline mapping
+//! `confirm_rails.rs` uses.
+//!
+//! [`SETTLING_MSISDN`] is a real, `phonenumber`-valid CM mobile number (see
+//! its own doc for the family this and the `worker_kill9.rs` chaos MSISDNs
+//! share) — not the `2376000000xx` hex-suffixed documentation block
+//! `examples/merchant-demo` and `requesttopay-scenario.json`'s older
+//! `mtn-e2e-poll` entry point still use. That block predates #186's
+//! server-side phone validation and is left exactly as it was
+//! (`confirm_rails.rs`'s `UNKNOWN_PAYER_MSISDN` doc explains why redesigning
+//! it is separate, deferred work); this file's own steering MSISDNs go
+//! through a real confirm and therefore have to validate.
 //!
 //! # The decline case is driven differently, and says so
 //!
@@ -93,9 +103,26 @@ const AMOUNT: i64 = 5000;
 /// `mtn-e2e-poll` scenario on the POST, making the two status queries that
 /// follow answer `PENDING` then `SUCCESSFUL`.
 ///
-/// The same value `examples/merchant-demo` uses, and for the same reason: it
-/// is the only way an end-to-end confirm can reach a settling walk.
-const SETTLING_MSISDN: &str = "237600000ce0";
+/// **Was `"237600000ce0"`** until issue #189: #186's server-side phone
+/// validation (`vpay_api::v1::payer_fields::resolve_payer_fields`) refuses
+/// the whole `2376000000xx` block — hex letters or not, it is not a valid
+/// number under any real Cameroon numbering plan — so a real confirm with it
+/// now gets a `400` before the rail is ever asked, never reaching the walk
+/// this test drives. `237670000900` is a real CM mobile number (region
+/// `CM`, prefix `67`, `phonenumber` resolves it to a valid `Mobile`) that
+/// keeps the OLD suffix convention alive in decimal rather than hex: `900`
+/// is this file's new root (replacing `ce0`), and `worker_kill9.rs`'s three
+/// chaos MSISDNs share the same `237670000` prefix and vary only the last
+/// three digits, exactly as the `ce0`/`ce9`/`cf9`/`c15` family did.
+///
+/// `requesttopay-scenario.json`'s `mtn-e2e-poll` entry mapping now matches
+/// on `237670000900` as well as the old `237600000(ce0|100)` block, which is
+/// left as-is: `examples/merchant-demo` and
+/// `adapter_conformance.rs::a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin`
+/// still steer with it and do not go through the validating API path, so
+/// redesigning that block is the separate, deferred work
+/// `confirm_rails.rs`'s `UNKNOWN_PAYER_MSISDN` doc already describes.
+const SETTLING_MSISDN: &str = "237670000900";
 
 /// A documentation MSISDN nothing stubs, so a confirm with it falls through to
 /// the catch-all 202 and leaves the `mtn-e2e-poll` scenario untouched.
