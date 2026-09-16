@@ -47,8 +47,11 @@ the order they were measured.
   fix; the chart's rendered overlay fed to the real `Config::load`; and the
   `networkpolicy-management-ingress` guard added because an empty
   `podSelector` matches every pod in the namespace. `just ci`'s final `deny`
-  step fails on a pre-existing, unrelated advisory — no `Cargo.lock` change
-  on this branch.
+  step fails on `RUSTSEC-2026-0285`, pre-existing and unrelated — no
+  `Cargo.lock` change on this branch, and no `deny.toml` allow added. It is
+  **not** dev-only, as the page first said: `rustls 0.23.43` is in
+  `vpay-server`'s normal graph via `cratestack-pg` and via `reqwest`. Fixing
+  it belongs on its own branch.
 - [verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md) —
   the first CI run that compiled `--test live_refunds` went red, and what it
   had found was **not** in the SDK: a charge confirmed while the worker's
