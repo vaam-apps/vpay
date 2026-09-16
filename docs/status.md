@@ -114,22 +114,7 @@ before this page was written:
 | Gate                                                                                  | What it refuses                                                                                                                                                  | Last printed                                 |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | `verify-no-mocks`                                                                     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                     |
-| **What has to exist before it is ever anything but `null`.** For MTN, two of          |
-| the three landed on 2026-09-15 and the one that matters did not. The                  |
-| Disbursements keys are in `config/application.yml` (unpopulated in every              |
-| deployment) and `mtn_momo::refund` is written. What is still missing is **a           |
-| real Disbursements response that actually carries a fee**: MTN's documented           |
-| transfer response has no fee field, `vpay_adapter_mtn_momo::wire::Transfer`'s         |
-| 202 carries an empty body, the adapter therefore answers `fee: None`                  |
-| (asserted by `an_accepted_transfer_reports_no_fee_and_no_key_material` and by         |
-| the conformance case), and whether that product reports a fee at all has              |
-| never been verified against MTN — **the Disbursements API has never been              |
-| called from this repository.** For Orange, since 2026-09-15: an Orange                |
-| transfer specification of any kind — this repository has none, so whether that        |
-| product reports a fee is not merely unverified, it is unasked. (This paragraph        |
-| read "For Orange: nothing, ever — the Web Payment product documents no refund         |
-| API … and there is no refund to charge a fee for" until RFC-0003 § 5 decided          |
-| that an Orange refund is a transfer back.) **An adapter must not invent one**: `None` |
+| `verify-status`                                                                       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                         |
 | `verify-errors`                                                                       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 19 error types, 16 `#[from]` variants        |
 | `verify-sdk-parity`                                                                   | an SDK capability with no row, or a row naming no capability                                                                                                     | 550 proving tests, 35 dated gaps, 32 methods |
 | `verify-links`                                                                        | a repository link that resolves to no tracked path                                                                                                               | 1 600 links in 352 files                     |
