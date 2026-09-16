@@ -101,6 +101,66 @@ pre-flight ever ran. That special case is gone.
 Evidence:
 [verification/2026-09-14-flutter-d8-external-browser.md](verification/2026-09-14-flutter-d8-external-browser.md).
 
+## A real installed app never opened the window at all, until 2026-09-16
+
+Every ✅ above for the Android/web window was earned by `example/lib/main.dart`
+compiling and by `example/integration_test/*.dart` suites that called a
+`support/ensure_platform_registered.dart` helper to register the platform
+host **by hand** — the one thing a real app never does. A hand-driven walk
+on a real installed APK (`flutter clean` → `flutter build apk --debug` →
+`adb uninstall` → `adb install` → launch → fill fields → tap "Start
+checkout") threw `UnimplementedError: ... VpayCheckoutPlatform.windowEvents
+has no platform host yet` and never opened `VpayCheckoutActivity`. Root
+cause: the Flutter engine calls `pubspec.yaml`'s `dartPluginClass`-generated
+plugin registrant **before** the app's own `main()`/
+`WidgetsFlutterBinding.ensureInitialized()`/`runApp()` runs, and
+`MethodChannelVpayCheckoutPlatform`'s constructor used to call
+`VpayCheckoutFlutterApi.setUp(this)` eagerly, which touches
+`ServicesBinding.instance` immediately — with no binding yet, that threw
+`Binding has not yet been initialized`, silently swallowed by the engine's
+own generated wrapper.
+
+**A first fix attempt the same day — deferring `VpayCheckoutFlutterApi
+.setUp` out of the constructor into the first call to `show` — was written
+up as done in this section and in the dated verification page below, but
+was never actually applied to `method_channel_checkout_platform.dart`; a
+second pass the same day found the constructor still calling it eagerly and
+the real device still failing exactly as before.** Repeated cold launches
+of the same APK, read through `adb logcat`, then showed the race is real
+but genuinely intermittent: `_PluginRegistrant.register()` sometimes runs
+before `WidgetsFlutterBinding.ensureInitialized()` and sometimes after, so a
+single successful hand-driven walk proves nothing on its own. The fix that
+actually landed has two parts. First, the constructor now catches the
+`FlutterError` `VpayCheckoutFlutterApi.setUp` throws with no binding yet,
+and `show`/`dismiss`/`windowEvents` each retry it — every one of those only
+ever runs after a merchant's own `main()` has, when a binding always
+exists. Second — load-bearing, since the first part alone still depends on
+`dartPluginClass` eventually winning the race — `checkout_platform.dart`'s
+`VpayCheckoutPlatform.instance` getter is now platform-aware on its own,
+via a `dart:io`-vs-web conditional import
+(`native_mobile_host_stub.dart`/`native_mobile_host_io.dart`): the first
+read that finds `UnimplementedVpayCheckoutPlatform` on Android, iOS or
+macOS resolves `MethodChannelVpayCheckoutPlatform` lazily, at a point
+guaranteed to be after the app's own `main()` has run. A
+`defaultTargetPlatform`/`kIsWeb` check was tried first for that and
+rejected: `flutter test` forces `defaultTargetPlatform` to `android`
+whenever `FLUTTER_TEST` is set, which would have silently defeated
+`test/vpay_checkout_test.dart`'s own "no platform host exists yet" case.
+`dartPluginClass` registration winning the race is now purely an
+optimisation, never a requirement. `support/ensure_platform_registered.dart`
+stays deleted; all three `example/integration_test/*.dart` suites rely on
+the same automatic registration a real app depends on, and `just
+test-flutter-emulator` (`VPAY_EMULATOR_SERIAL=emulator-5554`, the
+maintainer's own device) is still exit 0. The regression test,
+`test/method_channel_checkout_platform_registration_test.dart`, is
+unchanged and reproduces the pre-`main()` state; it still fails with
+exactly `Binding has not yet been initialized` against the pre-fix
+constructor (exit 1) and passes against the actual fix (exit 0) — both
+re-measured.
+
+Evidence:
+[verification/2026-09-16-flutter-real-app-registration.md](verification/2026-09-16-flutter-real-app-registration.md).
+
 ## What is still not real
 
 - **No `just ci` gate** (D-M3). `install-flutter`/`analyze-flutter`/
@@ -143,3 +203,7 @@ Evidence:
   the four redaction counts after regeneration, both APK builds and DEX
   counts, and the real headless-emulator run of `VpayCheckoutMode
 .externalBrowser`, exit codes read from files throughout.
+- [verification/2026-09-16-flutter-real-app-registration.md](verification/2026-09-16-flutter-real-app-registration.md)
+  — the real-installed-APK defect, its root cause, the fix, the hand-driven
+  walk's `adb dumpsys`/screenshot evidence, the decisive regression test's
+  both exit codes, and every "do not break" gate rerun on the fix.

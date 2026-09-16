@@ -286,3 +286,28 @@ Evidence:
 [`../status/verification/2026-09-14-flutter-review.md`](../status/verification/2026-09-14-flutter-review.md),
 and the area page
 [`../status/mobile-flutter-plugin.md`](../status/mobile-flutter-plugin.md).
+
+**Corrected 2026-09-16: the Android/web window ✅ above was earned by a path
+no real app takes.** `example/integration_test/*.dart` registered the
+platform host by hand
+(`support/ensure_platform_registered.dart`); `example/lib/main.dart`, the
+only entrypoint a real merchant app uses, relied on `pubspec.yaml`'s
+`dartPluginClass` mechanism alone, which threw and was silently swallowed
+before the app's own `main()` ran, so a real installed APK never opened the
+window. **A first fix attempt the same day — deferring
+`VpayCheckoutFlutterApi.setUp` out of the constructor and into the first
+call to `show` — was written up here as done but never actually landed in
+the source file; a second pass the same day found the constructor still
+eager and the real device still failing.** The fix that actually landed has
+two parts: the constructor now catches the missing-binding error and
+`show`/`dismiss`/`windowEvents` each retry it (the `dartPluginClass` race
+turned out to be genuinely intermittent, not one-directional), and
+`VpayCheckoutPlatform.instance` is now platform-aware on its own — the
+first read that finds no host registered yet on Android/iOS/macOS resolves
+the method-channel implementation lazily, at a point guaranteed to be after
+the app's own `main()` has run, making `dartPluginClass` registration an
+optimisation rather than a requirement. The hand-registration helper stays
+deleted and the suites rely on the same automatic registration a real app
+depends on. Evidence:
+[`../status/verification/2026-09-16-flutter-real-app-registration.md`](../status/verification/2026-09-16-flutter-real-app-registration.md),
+and the area page's own dated section.

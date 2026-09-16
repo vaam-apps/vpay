@@ -58,7 +58,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
-import 'support/ensure_platform_registered.dart';
 import 'support/fixture.dart';
 import 'support/test_js_harness.dart';
 
@@ -100,7 +99,6 @@ void main() {
   final TestJsHarness js = TestJsHarness();
 
   setUpAll(() {
-    ensurePlatformRegistered();
     fixture = EmulatorFixture.load();
   });
 

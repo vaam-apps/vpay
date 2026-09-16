@@ -14,12 +14,27 @@
 /// Registered as the Dart-side default for `android`, `ios` and `macos` in
 /// `pubspec.yaml`'s `flutter: plugin: platforms:` block, via
 /// `dartPluginClass: MethodChannelVpayCheckoutPlatform` — Flutter's own
-/// plugin loader calls [registerWith] for us; nothing else in this package
-/// calls it directly (asserted by `test/method_channel_checkout_platform_test.dart`
-/// only exercising the class itself, not the loader).
+/// plugin loader calls [registerWith] for us. That is now an optimisation,
+/// not the only path here: `checkout_platform.dart`'s `VpayCheckoutPlatform
+/// .instance` getter also constructs this class lazily on Android/iOS/macOS
+/// the first time nothing has registered yet — see that file's doc comment
+/// for why (`dartPluginClass`'s own timing turned out to be racy on a real
+/// installed app).
+///
+/// **The constructor never lets a missing `ServicesBinding` escape as an
+/// exception.** [registerWith] can run before
+/// `WidgetsFlutterBinding.ensureInitialized()` has (the exact real-app
+/// defect `test/method_channel_checkout_platform_registration_test.dart`
+/// guards), so [_trySetUpFlutterApi] catches the [FlutterError] that
+/// `VpayCheckoutFlutterApi.setUp` throws in that state and retries from
+/// every call this class makes into the channel ([show], [dismiss],
+/// [windowEvents]) — each of which only ever runs after a merchant's own
+/// `main()` has, by which point the binding always exists.
 library;
 
 import 'dart:async';
+
+import 'package:flutter/foundation.dart' show FlutterError;
 
 import '../checkout_controller.dart' show StopUrlSpec;
 import 'checkout_platform.dart';
@@ -38,12 +53,33 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
   /// than pigeon's generated class used directly.
   MethodChannelVpayCheckoutPlatform({VpayCheckoutHostApi? hostApi})
     : _hostApi = hostApi ?? VpayCheckoutHostApi() {
-    VpayCheckoutFlutterApi.setUp(this);
+    _trySetUpFlutterApi();
   }
 
   final VpayCheckoutHostApi _hostApi;
   final StreamController<CheckoutWindowEvent> _windowEvents =
       StreamController<CheckoutWindowEvent>.broadcast();
+  bool _flutterApiRegistered = false;
+
+  /// Wires this instance up to answer [VpayCheckoutFlutterApi] calls from
+  /// the native host — a no-op once it has already succeeded. Swallows
+  /// exactly the [FlutterError] `ServicesBinding.instance` throws before
+  /// `WidgetsFlutterBinding.ensureInitialized()` has run (see this file's
+  /// doc comment); any other exception is a real bug and is left to
+  /// propagate.
+  void _trySetUpFlutterApi() {
+    if (_flutterApiRegistered) {
+      return;
+    }
+    try {
+      VpayCheckoutFlutterApi.setUp(this);
+      _flutterApiRegistered = true;
+    } on FlutterError {
+      // No Flutter binding yet — retried by [show], [dismiss] and
+      // [windowEvents], each of which only runs once the app's own
+      // main() has, by which point one always exists.
+    }
+  }
 
   /// Sets [VpayCheckoutPlatform.instance] to a fresh instance of this class.
   /// Called by Flutter's plugin loader on Android, iOS and macOS — see this
@@ -59,6 +95,7 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
     required bool allowInsecureUrl,
     required CheckoutWindowMode mode,
   }) {
+    _trySetUpFlutterApi();
     return _hostApi.show(
       ShowCheckoutRequest(
         url: url,
@@ -78,10 +115,16 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
   }
 
   @override
-  Future<void> dismiss() => _hostApi.dismiss();
+  Future<void> dismiss() {
+    _trySetUpFlutterApi();
+    return _hostApi.dismiss();
+  }
 
   @override
-  Stream<CheckoutWindowEvent> get windowEvents => _windowEvents.stream;
+  Stream<CheckoutWindowEvent> get windowEvents {
+    _trySetUpFlutterApi();
+    return _windowEvents.stream;
+  }
 
   /// [VpayCheckoutFlutterApi]'s one method: the native host fires this
   /// exactly once per `show` (design doc, "The shape"); this class only

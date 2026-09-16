@@ -39,7 +39,6 @@ import 'package:vpay_checkout_flutter/src/platform/messages.g.dart'
     show CheckoutWindowMode;
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
-import 'support/ensure_platform_registered.dart';
 import 'support/fixture.dart';
 
 void main() {
@@ -48,7 +47,6 @@ void main() {
   late final EmulatorFixture fixture;
 
   setUpAll(() {
-    ensurePlatformRegistered();
     fixture = EmulatorFixture.load();
   });
 
