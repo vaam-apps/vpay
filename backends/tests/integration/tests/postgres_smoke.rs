@@ -3929,6 +3929,23 @@ async fn a_refund_against_another_merchants_intent_is_refused_and_reserves_nothi
 /// The last clause is what makes the release real rather than cosmetic: after
 /// the cancellation the intent must accept a fresh refund for the *whole*
 /// capture, which it could not if the reservation were still held.
+///
+/// # The premise this case has to build, since 2026-09-16
+///
+/// `cancel_in_tx` refuses a refund younger than `vpay-db`'s private
+/// `CREATE_IN_FLIGHT_WINDOW_SECONDS` (60 s), because a young
+/// `pending` refund with no `provider_requests` row is indistinguishable from
+/// a create that is still running and may be about to instruct a rail. A
+/// refund created and cancelled in the same breath — which is what this case
+/// did until the merge of wave 3 — therefore answers `Ok(None)`, and the
+/// subject below is never reached.
+///
+/// So the refund is aged past that window first, exactly as the route-level
+/// twin does (`a_pending_refund_cancels_once_and_gives_its_reservation_back`
+/// in `refunds.rs`, via its harness's `age_past_the_cancel_window`). Nothing
+/// below is weakened by it; the opposite, in fact — the `merchant_2` refusal
+/// underneath is only about tenancy once the age predicate can no longer be
+/// the thing refusing it.
 #[tokio::test]
 async fn canceling_a_pending_refund_releases_its_reservation() -> anyhow::Result<()> {
     let (_container, pool, url) = migrated_postgres_with_url().await?;
@@ -3955,6 +3972,18 @@ async fn canceling_a_pending_refund_releases_its_reservation() -> anyhow::Result
     .await?
     .context("reserving the whole capture")?;
     assert_eq!(refund_figures(&pool, "pi_cancel").await?, (5_000, 0, 5_000));
+
+    // Past the in-flight window — see this case's docs. Ninety seconds, the
+    // same figure `refunds.rs`'s harness uses, against a sixty-second window
+    // measured by Postgres's own `now()` at both ends.
+    sqlx::query(
+        "UPDATE refunds SET created_at = now() - interval '90 seconds' \
+         WHERE id = $1 AND status = 'pending'",
+    )
+    .bind("re_cancel")
+    .execute(&pool)
+    .await
+    .context("aging the refund past the cancel window")?;
 
     // Another merchant cannot cancel it, and the failed attempt releases
     // nothing.
