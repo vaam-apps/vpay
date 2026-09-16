@@ -150,6 +150,18 @@ page issues. Evidence, and the two defects the browser-side read produced, on
 dashboard is finished.** A staff member can sign in and read this merchant's
 payments. What the dashboard still cannot do is anything at all to them.
 
+**Deployment, not application status, and a separate axis from everything
+above:** as of 2026-09-16 ([ADR-0022](../adr/0022-surface-isolation-and-independent-scaling.md))
+the Helm chart templates a real Deployment for this app
+(`dashboard.enabled`, off by default) and for a `/dash/v1`-only backend tier
+(`management.enabled`) it can talk to without sharing a Service with the
+autoscaled merchant-facing one. The image was run with `docker run
+--read-only --tmpfs /tmp --user 1000:1000` and answered its own health path —
+a real observation, not a reasoned claim — but **no Kubernetes Pod has ever
+run**, of this app or any other in this chart. Evidence on
+[docs/status/infrastructure.md](../status/infrastructure.md) and
+[docs/status/verification/2026-09-16-adr-0022.md](../status/verification/2026-09-16-adr-0022.md).
+
 The measurements, the dates and the corrections behind each of those sentences:
 
 - [dashboard/status-built-and-not-built.md](dashboard/status-built-and-not-built.md)
