@@ -8,6 +8,29 @@ The per-capability rows and the adapter matrix. The machine-checked declaration 
 `ProviderError::NotImplemented` token stays in [docs/status.md](../status.md), because
 `cargo xtask verify-status` reads it there.
 
+**Fixed 2026-09-16: a confirmed charge waited up to 61 s for its first status
+query.** The seam pass above closed the gate hole — CI now runs
+`--test live_refunds` — and the first run that compiled that binary went red,
+on a defect that had nothing to do with the SDK, the rails, the stubs or this
+branch. `insert_charge` committed the charge's `poll_charge` job at
+`run_at = now()`, so a worker whose claim loop was busy (it does not sleep
+between claims, only after an empty one) took that job **inside** the confirm's
+own rail call, read a `submitting` charge it cannot tell from a crashed
+confirm, and correctly answered `RecoveryAction::Wait` — no status query, and
+the job parked for the rest of the sixty-second recovery window. The charge
+reached `submitted` milliseconds later and nothing looked at it for another
+minute. Present on every rail, for every merchant, in every deployment, since
+Step 4; invisible to every suite in this repository because every one of them
+either drives the worker by hand or runs against an idle stack, and invisible
+in the log because the `Wait` line is `DEBUG`. Fixed in `vpay-api` alone: the
+job is committed a `POLL_AFTER_CONFIRM_GRACE`
+(`vpay_provider::DEFAULT_REQUEST_TIMEOUT`) out, and `persist_submitted` pulls
+it forward to `now()` in the same transaction as the
+`submitting → submitted` compare-and-swap — the exact moment at which "a
+confirm may still be holding this charge" stops being true. The recovery table
+was not changed; it was right. Reproduced, measured and mutation-proven:
+[verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md).
+
 **Seam pass, 2026-09-16 (wave 3 / arm H).** Read after every arm and every
 review had merged, because a file-set partition orphans the sentences that
 only two arms together make false. Five claims on live pages were corrected
