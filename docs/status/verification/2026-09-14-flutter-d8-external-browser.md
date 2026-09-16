@@ -183,9 +183,9 @@ left to be inferred:
 - **This page's Android evidence (the emulator run) proved Custom Tabs
   worked as an opt-in second mode.** It did not, and could not, prove the
   partial (bottom-sheet) Custom Tab (`CustomTabsIntent
-  .setInitialActivityHeightPx`) or the `VpayCheckoutAppLinkActivity`
+.setInitialActivityHeightPx`) or the `VpayCheckoutAppLinkActivity`
   deep-link forwarder the 2026-09-16 cutover introduces — neither existed
-  yet on 2026-09-14. Nothing has run Android's *current* browser surface on
+  yet on 2026-09-14. Nothing has run Android's _current_ browser surface on
   an emulator; see the cutover page linked above.
 - **The DEX counts table above (debug 4, release 0) measured a real
   control that has since been retired, not merely left unchanged.** The
@@ -193,8 +193,8 @@ left to be inferred:
   `checkout_window_test.dart`, the suite that used it, are both deleted
   along with the `WebView` they reached into. Re-measured on this same
   host during the docs pass that added this correction (`flutter build apk
-  --debug`/`--release` on `example/`, both exit 0, followed by `strings
-  classes*.dex | grep -c evaluateJavascriptForTests` on each): **debug 0,
+--debug`/`--release` on `example/`, both exit 0, followed by `strings
+classes*.dex | grep -c evaluateJavascriptForTests` on each): **debug 0,
   release 0** — zero on both sides now, because the symbol does not exist
   anywhere in the source tree, not because a debug-only capability is still
   being kept out of release.
@@ -206,8 +206,8 @@ left to be inferred:
 - **`checkout_external_browser_test.dart` was updated in source** after
   this page was written (its own header now reads "D8, revised 2026-09-16"
   and its test title changed to `show() opens a real Custom Tab (the only
-  Android surface now); a real return to the host Activity reports
-  dismissed`), but was **not** re-run against an emulator as part of the
+Android surface now); a real return to the host Activity reports
+dismissed`), but was **not** re-run against an emulator as part of the
   2026-09-16 cutover — see
   [`2026-09-16-flutter-browser-cutover.md`](2026-09-16-flutter-browser-cutover.md)
   for exactly what was and was not re-verified.

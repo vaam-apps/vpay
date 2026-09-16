@@ -287,7 +287,7 @@ changes it.
 
 **This supersedes the `WebView` half of D5 above and the `VpayCheckoutMode`
 split D8 below introduced.** The bottom-sheet revision changed the window's
-*shape*; this changes what is rendered inside it. There is no in-app
+_shape_; this changes what is rendered inside it. There is no in-app
 `WebView` left anywhere in this plugin, and no `inApp`/`externalBrowser`
 choice to make — every platform now opens the payer's own browser
 unconditionally. `VpayCheckoutMode` and the wire `CheckoutWindowMode` are
@@ -295,12 +295,12 @@ unconditionally. `VpayCheckoutMode` and the wire `CheckoutWindowMode` are
 list of stop URLs and nothing else.
 
 **Why: a WebView puts the payment form in the wrong process.** A `WebView`
-renders vpay's hosted page inside the *merchant app's own* process. From
+renders vpay's hosted page inside the _merchant app's own_ process. From
 there, `evaluateJavascript`, the cookie store and a `WKNavigationDelegate`/
 `WebViewClient` are all reachable to code the merchant controls — so a
 compromised merchant app could read the payer's PAN and OTP straight out of
 the page, with no signal to the payer or to vpay that it happened. D3 (no
-JavaScript bridge) only ever kept *this plugin's own* code off the page; it
+JavaScript bridge) only ever kept _this plugin's own_ code off the page; it
 never addressed a malicious host app reaching in from outside. A separate
 browser process cannot be inspected that way, and the payer additionally
 gets a real, checkable URL bar. This is a stronger property than D3 bought
@@ -612,20 +612,20 @@ Written now, at design time, so it cannot be forgotten at summary time:
 
 ## Decisions taken, and by whom
 
-| #       | Decision                                                                                                                  | Taken                                             |
-| ------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| D1      | The outcome is polled from `/v1/browser`, never read off a URL                                                            | design                                            |
-| D2      | One pre-flight session read; stop URLs derived, not configured                                                            | design                                            |
-| D3      | No JavaScript bridge; no native peer added to the checkout page                                                           | design                                            |
-| D4      | Dismissal polls before it reports; `pending` is a first-class result                                                      | design                                            |
-| D-M1    | Published as `vpay_checkout_flutter`                                                                                      | maintainer, 2026-09-13                            |
-| D-M2    | An external-browser mode ships in v1 (D8)                                                                                 | maintainer, 2026-09-13                            |
-| D-M3    | Recipes now, `just ci` gate later, with a dated ⛔                                                                        | maintainer, 2026-09-13                            |
-| D-M4    | Android `minSdk` 21, iOS 12.0                                                                                             | maintainer, 2026-09-13                            |
-| D-M5    | Persistent WebView storage, so page memory works                                                                          | maintainer, 2026-09-13                            |
-| D-M6    | The checkout page gets **no** native peer                                                                                 | design (D3), open to reversal                     |
-| D9      | Store-policy bounds on adoption; a README obligation, not a code change                                                   | design, from the maintainer's question 2026-09-13 |
-| D5-rev1 | Android/iOS window is a modal bottom sheet (~90% detent, draggable to full height), not full-screen; macOS/web unaffected | maintainer, 2026-09-16                            |
+| #       | Decision                                                                                                                                                                                   | Taken                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
+| D1      | The outcome is polled from `/v1/browser`, never read off a URL                                                                                                                             | design                                            |
+| D2      | One pre-flight session read; stop URLs derived, not configured                                                                                                                             | design                                            |
+| D3      | No JavaScript bridge; no native peer added to the checkout page                                                                                                                            | design                                            |
+| D4      | Dismissal polls before it reports; `pending` is a first-class result                                                                                                                       | design                                            |
+| D-M1    | Published as `vpay_checkout_flutter`                                                                                                                                                       | maintainer, 2026-09-13                            |
+| D-M2    | An external-browser mode ships in v1 (D8)                                                                                                                                                  | maintainer, 2026-09-13                            |
+| D-M3    | Recipes now, `just ci` gate later, with a dated ⛔                                                                                                                                         | maintainer, 2026-09-13                            |
+| D-M4    | Android `minSdk` 21, iOS 12.0                                                                                                                                                              | maintainer, 2026-09-13                            |
+| D-M5    | Persistent WebView storage, so page memory works                                                                                                                                           | maintainer, 2026-09-13                            |
+| D-M6    | The checkout page gets **no** native peer                                                                                                                                                  | design (D3), open to reversal                     |
+| D9      | Store-policy bounds on adoption; a README obligation, not a code change                                                                                                                    | design, from the maintainer's question 2026-09-13 |
+| D5-rev1 | Android/iOS window is a modal bottom sheet (~90% detent, draggable to full height), not full-screen; macOS/web unaffected                                                                  | maintainer, 2026-09-16                            |
 | D5-rev2 | The in-app WebView is gone on every platform; checkout opens the payer's own browser. `VpayCheckoutMode`/`CheckoutWindowMode` deleted — one surface, no toggle. Supersedes D8's mode split | maintainer, 2026-09-16                            |
 
 One decision remains genuinely open and is **not** taken here: whether

@@ -316,8 +316,8 @@ pass. Evidence:
   maintainer's own `emulator-5554` — but against the WebView-based modal
   sheet the "Modal checkout sheet" section below describes, which the
   "Browser, not WebView" section above has since replaced. `flutter build
-  apk --debug`/`--release` on `example/` both still exit 0 (`BUILD
-  SUCCESSFUL`); nothing has opened the Custom Tab surface on a device or
+apk --debug`/`--release` on `example/` both still exit 0 (`BUILD
+SUCCESSFUL`); nothing has opened the Custom Tab surface on a device or
   emulator since the cutover.
 - **D8's tier 1** (Android App Links / iOS 17.4+ Associated Domains) is not
   implemented on any platform — see the D8 section above. Since the browser

@@ -241,7 +241,7 @@ corrected here rather than silently left to imply a control still holds:
   left compiling and permanently failing. `just test-flutter-emulator` now
   runs two suites — dismiss and external-browser — both already proven
   against the Custom Tab surface on `docs/status/verification/
-  2026-09-14-flutter-d8-external-browser.md` and re-proven since. **Lost
+2026-09-14-flutter-d8-external-browser.md` and re-proven since. **Lost
   coverage:** no automated suite left in this repository drives a full MTN
   push through the payer's real hosted checkout page end to end on Android;
   `checkout_window_test.dart` was the only one that did, and nothing
