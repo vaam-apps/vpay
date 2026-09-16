@@ -108,24 +108,25 @@ any string, raw-string or character literal is prose, and prose declares
 nothing.
 
 `just verify` is **twelve gates and one advisory report**. What each one refuses,
-and what it printed on 2026-09-11 on `722e579`, this branch's last commit
-before this page was written:
+and what each printed when all twelve were re-run, one invocation each, on
+**2026-09-16** on `@COMMIT@` — this branch's head — with
+`DOCKER_HOST=unix:///run/user/1000/docker.sock`:
 
 | Gate                                                                                  | What it refuses                                                                                                                                                  | Last printed                                 |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `verify-no-mocks`                                                                     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable                     |
-| `verify-status`                                                                       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item                         |
-| `verify-errors`                                                                       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 19 error types, 16 `#[from]` variants        |
-| `verify-sdk-parity`                                                                   | an SDK capability with no row, or a row naming no capability                                                                                                     | 550 proving tests, 35 dated gaps, 32 methods |
-| `verify-links`                                                                        | a repository link that resolves to no tracked path                                                                                                               | 1 600 links in 352 files                     |
-| `verify-npm-scope`                                                                    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private            |
-| `check-schema`                                                                        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 26 declarations; see the note below          |
-| `verify-serde`                                                                        | a serialisable type that does not spell the wire convention                                                                                                      | 90 types, 16 exemptions                      |
-| `verify-repositories`                                                                 | a repository implementation named outside `vpay-db`, or an exported schema                                                                                       | 4 implementations, 83 source files outside   |
-| `verify-toolchain`                                                                    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                   | 1.98.0                                       |
-| `verify-ui`                                                                           | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12) | nothing: silent on success, exit 0 only      |
-| `verify-migrations`                                                                   | an applied migration whose bytes changed                                                                                                                         | 42 files                                     |
-| `verify-docs`                                                                         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report                              |
+| `verify-no-mocks`                                                                     | a test double reachable from a shipping binary                                                                                                                   | no test double reachable |
+| `verify-status`                                                                       | an undeclared — or a stale — `NotImplemented` token                                                                                                              | 1 unimplemented item |
+| `verify-errors`                                                                       | an unclassified error type, or `anyhow` in a library crate                                                                                                       | 20 error types, 17 `#[from]` variants |
+| `verify-sdk-parity`                                                                   | an SDK capability with no row, or a row naming no capability                                                                                                     | 603 proving tests, 36 dated gaps, 35 methods, 39 rows |
+| `verify-links`                                                                        | a repository link that resolves to no tracked path                                                                                                               | @LINKS@ |
+| `verify-npm-scope`                                                                    | an unpublishable manifest, or a retired package name outside the record                                                                                          | 2 publishable packages, 1 private |
+| `check-schema`                                                                        | a `schemas/vpay.cstack` that does not type-check                                                                                                                 | 27 declarations; see the note below |
+| `verify-serde`                                                                        | a serialisable type that does not spell the wire convention                                                                                                      | 96 types, 17 exemptions |
+| `verify-repositories`                                                                 | a repository implementation named outside `vpay-db`, or an exported schema                                                                                       | 4 implementations, 83 source files outside |
+| `verify-toolchain`                                                                    | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                   | 1.98.0 |
+| `verify-ui`                                                                           | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12) | nothing: silent on success, exit 0 only |
+| `verify-migrations`                                                                   | an applied migration whose bytes changed                                                                                                                         | 48 files |
+| `verify-docs`                                                                         | **nothing — it exits 0 whatever it finds**                                                                                                                       | advisory report |
 
 **One of those numbers moved twice on the same day and came back.**
 `verify-status` printed **2** unimplemented items partway through 2026-09-15,
@@ -133,8 +134,13 @@ not 1: RFC-0003 § 5 gave `orange_money` a `refund` token. It prints **1**
 again now, because the same day's MTN work retired
 `NotImplemented("mtn_momo::refund")` by writing the Disbursements `transfer`
 call — a different token, from a different branch, for a different reason.
-The column is left at what it printed on 2026-09-11 because that is what the
-sentence above it says it is — a measurement of one tree on one day.
+The column above is the 2026-09-16 re-run, so it reads **1**. _(It stood at
+what the gates printed on 2026-09-11 on `722e579` until 2026-09-16, when nine
+of the thirteen numbers had moved — `verify-errors` 19→20, `verify-sdk-parity`
+550/35/32→603/36/35, `verify-links` 1 600/352→1 717/374, `check-schema`
+26→27, `verify-serde` 90→96, `verify-migrations` 42→48 — and the column was a
+measurement of a tree three merges old. Re-running it was cheaper than
+carrying the caveat.)_
 
 **And `verify-status` gained a third direction the same day, on review.** It
 compared _sets of token strings_ and knew nothing about where a token was
@@ -153,12 +159,16 @@ in `.xtask` pins it, in both directions.
 **`check-schema` did not run under the version this repository pins**, and the
 recipe says so out loud rather than passing quietly: `justfile`'s
 `cratestack_version` is `0.12.0`, the CrateStack CLI on the authoring machine's
-`PATH` is **0.11.1**, and the check ran in full against the 0.11.1 grammar — 26
+`PATH` is **0.11.1**, and the check ran in full against the 0.11.1 grammar — 27
 model/enum declarations, datasource present. That is a property of one machine,
 not of this tree, and it is recorded because a gate that ran against a
 different grammar than CI will is a gate whose green means less than it looks.
 
-Those numbers are a measurement of one tree on one day, not a promise. What each
+Those numbers are a measurement of one tree on one day — `@COMMIT@`, 2026-09-16
+— not a promise. **They are `just verify`'s gates invoked one at a time, not
+`just verify` itself and not `just ci`**, which this branch's agents were
+instructed not to run; that distinction is the whole of what the twelve-in-a-row
+recipe adds. What each
 gate used to miss, the mutation that proved each hole shut, and the dates every
 one of these counts moved on, are in [status/gates.md](status/gates.md) — 509
 lines of it, unedited. Read the numbers in it as date-stamps rather than totals:
