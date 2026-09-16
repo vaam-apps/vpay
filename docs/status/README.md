@@ -35,6 +35,21 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-16-w3-seam.md](verification/2026-09-16-w3-seam.md) —
+  RFC-0003 wave 3 / arm H, the seam pass, run after every arm and every review
+  had merged. Eleven findings, of which one was not a documentation bug: **CI
+  ran `--test live_invoices` and not `--test live_refunds`**, so three
+  `sdks/parity.md` rows were ✅ citing live refund cases no job compiled —
+  `verify-sdk-parity` proves a test **name** exists, never that anything runs
+  it. Also: a merge had pasted seventeen lines of prose into
+  `docs/status.md`'s gate table and deleted its `verify-status` row, and
+  prettier had aligned the wreckage into a plausible-looking table; two
+  paragraphs on that page contradicted each other about how many
+  `NotImplemented` tokens there are; `docs/flows/ledger.md`'s heading claimed
+  four invariants are "asserted nightly" when nothing schedules any of them;
+  and three flow pages had no Status entry for the day their subject changed.
+  Twelve gates, each invoked on its own; **no banner addendum was earned and
+  none was added**
 - [verification/2026-09-16-w3-merge.md](verification/2026-09-16-w3-merge.md) —
   wave 3 merged into the refunds feature branch: arm F with its money review,
   arm F with its contract review, and arm G with its review. One conflict (the
