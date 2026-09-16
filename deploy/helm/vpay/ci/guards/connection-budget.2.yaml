@@ -1,0 +1,39 @@
+# Violates exactly one guard: "connection-budget" — the SECOND of its two
+# directions, which is why this file carries a `.2` suffix rather than a
+# name of its own (`just helm-check` strips the suffix and still requires
+# the failure to name `connection-budget`).
+#
+# `connection-budget.yaml` beside this one covers the unset-`maxConnections`
+# direction. This one covers the ARITHMETIC direction: `maxConnections` IS
+# set, and the ceiling the release can reach still exceeds the budget.
+#
+# ADR-0022's acceptance checklist asks for a fixture in both directions.
+# Until 2026-09-16 the harness mapped one file to one guard, so this one
+# could not exist and the arithmetic had been checked by hand once and by
+# nothing since.
+#
+#   (server.autoscaling.maxReplicas 8 + management.replicaCount 2 + worker.replicaCount 1) * 10
+#     = 110
+#   database.maxConnections 100 - database.reservedConnections 10 = 90
+#   110 > 90, so the guard fires.
+#
+# The numbers are deliberately close rather than absurd: an 8-replica
+# ceiling against a stock Postgres `max_connections` of 100 is exactly the
+# plausible-looking release ADR-0022 §3 says would work in staging and
+# exhaust the connection budget in production.
+management:
+  enabled: true
+  replicaCount: 2
+
+worker:
+  replicaCount: 1
+
+server:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+
+database:
+  maxConnections: 100
+  reservedConnections: 10

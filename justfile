@@ -2923,8 +2923,10 @@ chart := "deploy/helm/vpay"
 # exclusion; the offline argument no longer does on its own.
 #
 # What it proves: the chart lints, all FOUR value sets render, the twenty-four
-# named guards are exactly the twenty-four on disk and each fires on its own
-# values file with a non-zero exit, the default render templates no checkout
+# named guards are exactly the twenty-four `ci/guards/` names on disk and each
+# of the twenty-five fixtures there fires its own guard with a non-zero exit
+# (twenty-five because `connection-budget` has a fixture per direction — see
+# the `.<n>` note at the guard loop), the default render templates no checkout
 # page and `ci/values-full.yaml`'s does, the Ingress path carries its
 # `limit-rps` annotations and the Gateway API path says what rate-limits its
 # token rule, BOTH mechanisms route the rail callback prefix `/provider`, the
@@ -2981,8 +2983,19 @@ helm-check:
     # message stops naming itself — fails here, which is the only thing that
     # keeps these from rotting into decoration.
     #
-    # The expected set is written out rather than counted, because "22 files
-    # were found and 22 fired" is also what deleting a guard *and* its values
+    # SECOND AND LATER DIRECTIONS: `<guard>.<n>.yaml`. Some guards refuse
+    # more than one shape — "connection-budget" refuses both an unset
+    # `database.maxConnections` and an arithmetic overrun, and ADR-0022's own
+    # acceptance checklist asks for a fixture in BOTH directions. Before
+    # 2026-09-16 the harness mapped one file to one guard and a second
+    # fixture could not exist, so the arithmetic direction had been checked
+    # by hand once and by nothing since. A `.<n>` suffix is stripped to get
+    # the guard name, so `connection-budget.2.yaml` must still fail with
+    # `guard "connection-budget"` — the suffix buys a second fixture, never
+    # a second name.
+    #
+    # The expected set is written out rather than counted, because "24 files
+    # were found and 24 fired" is also what deleting a guard *and* its values
     # file looks like. Adding a guard means adding its name here, its values
     # file under ci/guards/, and the `fail` in templates/_validate.tpl — in
     # one commit.
@@ -3012,10 +3025,12 @@ helm-check:
         worker-concurrency-pool
         worker-replicas
     )
-    echo "==> template guards (each must FAIL, by name)"
+    echo "==> template guards (each fixture must FAIL, by its own guard's name)"
     # LC_ALL=C so the comparison does not depend on the runner's collation
-    # rules for the hyphens in these names.
-    found=($(cd "$chart/ci/guards" && for f in *.yaml; do basename "$f" .yaml; done | LC_ALL=C sort))
+    # rules for the hyphens in these names. `sed` strips a `.<n>` variant
+    # suffix and `sort -u` folds the variants back onto one guard, so the
+    # set compared here stays the set of GUARDS, not of files.
+    found=($(cd "$chart/ci/guards" && for f in *.yaml; do basename "$f" .yaml; done | sed 's/\.[0-9][0-9]*$//' | LC_ALL=C sort -u))
     if [ "${expected_guards[*]}" != "${found[*]}" ]; then
         echo "helm-check: FAIL — ci/guards/ holds a different set of guards than this recipe expects." >&2
         echo "  expected: ${expected_guards[*]}" >&2
@@ -3023,22 +3038,39 @@ helm-check:
         exit 1
     fi
 
-    guards=0
-    for name in "${expected_guards[@]}"; do
-        f="$chart/ci/guards/$name.yaml"
-        if message="$(helm template vpay "$chart" -f "$f" 2>&1)"; then
-            echo "helm-check: FAIL — guard '$name' did not fire; $f rendered successfully" >&2
+    fixtures=0
+    fired=()
+    for f in $(cd "$chart/ci/guards" && ls *.yaml | LC_ALL=C sort); do
+        base="${f%.yaml}"
+        name="$(printf '%s' "$base" | sed 's/\.[0-9][0-9]*$//')"
+        path="$chart/ci/guards/$f"
+        if message="$(helm template vpay "$chart" -f "$path" 2>&1)"; then
+            echo "helm-check: FAIL — fixture '$base' did not fire; $path rendered successfully" >&2
             exit 1
         fi
         if ! printf '%s' "$message" | grep -qF "guard \"$name\""; then
-            echo "helm-check: FAIL — $f failed, but not with guard '$name':" >&2
+            echo "helm-check: FAIL — $path failed, but not with guard '$name':" >&2
             printf '%s\n' "$message" >&2
             exit 1
         fi
-        echo "    guard \"$name\" fired"
-        guards=$((guards + 1))
+        if [ "$base" = "$name" ]; then
+            echo "    guard \"$name\" fired"
+        else
+            echo "    guard \"$name\" fired (variant $base)"
+        fi
+        fired+=("$name")
+        fixtures=$((fixtures + 1))
     done
-    echo "    $guards guards, all fired by name (${#expected_guards[@]} expected)"
+    guards=$(printf '%s\n' "${fired[@]}" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+    # Belt and braces: the per-file loop above proves every FIXTURE fires,
+    # and the set comparison proves every expected guard has at least one
+    # file. This proves the two agree on the count, so a variant suffix
+    # cannot quietly stand in for a missing guard.
+    if [ "$guards" -ne "${#expected_guards[@]}" ]; then
+        echo "helm-check: FAIL — $fixtures fixtures fired only $guards distinct guards, expected ${#expected_guards[@]}" >&2
+        exit 1
+    fi
+    echo "    $fixtures fixtures, $guards guards, all fired by name (${#expected_guards[@]} expected)"
 
     # The checkout page, in BOTH directions, over the RENDERED yaml rather
     # than over the values — because "checkout.enabled: false renders nothing"

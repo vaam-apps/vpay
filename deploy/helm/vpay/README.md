@@ -282,6 +282,21 @@ the render fails _with that guard's name in the message_ — so a guard that
 stops firing, or a message that stops naming itself, fails CI. Verified by
 disabling a guard and watching the check fail (2026-09-03).
 
+A guard that refuses more than one shape gets more than one fixture:
+`<guard>.<n>.yaml`, whose suffix the harness strips before checking the
+message, so `connection-budget.2.yaml` must still fail with
+`guard "connection-budget"` — the suffix buys a second fixture, never a
+second name. `connection-budget` is the first to use it (added 2026-09-16):
+`.yaml` covers an unset `database.maxConnections`, `.2.yaml` covers the
+arithmetic direction, `(maxReplicas + management + worker) * 10` over the
+budget, which ADR-0022's acceptance checklist asks for and which until then
+had been checked by hand once and by nothing since. The distinct-guard count
+is asserted against the expected list as well as the file count, so a
+variant cannot quietly stand in for a missing guard. Verified 2026-09-16 by
+mutating the variant twice: made to render successfully it fails as
+`fixture 'connection-budget.2' did not fire`; made to trip
+`worker-replicas` instead it fails as `not with guard 'connection-budget'`.
+
 `values.schema.json` is separate and does a different job: it checks _shape_
 (types, enums, unknown keys) before a template renders. Semantics live in the
 guards, so the error can explain the consequence.
@@ -756,7 +771,8 @@ Written 2026-09-03, step 6 block B.
   … twenty-three files", so it was internally contradictory for one day. The
   remediation added `networkpolicy-management-route`, which makes it
   twenty-four. Measured:
-  `24 guards, all fired by name (24 expected)`.) Proven negatively too, which is the
+  `25 fixtures, 24 guards, all fired by name (24 expected)` — twenty-five
+  because `connection-budget` has two fixtures, one per direction.) Proven negatively too, which is the
   only thing that says these are checks rather than decoration: disabling the
   `grace-period` and `rate-limit-ordering` guards makes `just helm-check`
   fail, and so — verified in the Step 6 review pass, by neutering each `fail`
