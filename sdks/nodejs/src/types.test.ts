@@ -380,3 +380,75 @@ describe("the customer object", () => {
     expect((updated.data.object as Customer).metadata["tier"]).toBe("gold");
   });
 });
+
+describe("the two refund event types", () => {
+  /**
+   * Both have been in {@link KnownEventType} since before anything wrote them
+   * — `docs/flows/webhooks.md` carried them with "— nothing" in the *written
+   * by* column. **`vpay_api::v1::refunds` is the first writer of either**, as
+   * of 2026-09-16, so this is the first time the decode is a claim about
+   * deliverable bytes rather than a forward declaration.
+   *
+   * Assigned to a `KnownEventType` rather than compared as strings: remove
+   * either member from the union and this file stops compiling, which is the
+   * assertion `pnpm typecheck` makes and vitest cannot.
+   */
+  const refunded: KnownEventType = "charge.refunded";
+  const refundUpdated: KnownEventType = "charge.refund.updated";
+
+  const refund: Refund = {
+    id: "re_1",
+    object: "refund",
+    amount: 2_000,
+    currency: "xaf",
+    payment_intent: "pi_123",
+    // The state every refund this repository can produce is in, because
+    // nothing settles one.
+    status: "pending",
+    reason: "requested_by_customer",
+    metadata: { order_id: "1234" },
+    created: 1_700_000_000,
+    fee: null,
+  };
+
+  function eventOf(type: string): Event {
+    return {
+      id: "evt_1",
+      object: "event",
+      type,
+      created: 1_700_000_000,
+      livemode: false,
+      data: { object: refund },
+    };
+  }
+
+  it("are narrowed by isRefundEvent and not by the other two guards", () => {
+    for (const type of [refunded, refundUpdated]) {
+      const event = eventOf(type);
+      expect(isRefundEvent(event), type).toBe(true);
+      // A guard that matched everything would make the one above worthless.
+      expect(isPaymentIntentEvent(event), type).toBe(false);
+      expect(isCheckoutSessionEvent(event), type).toBe(false);
+
+      if (!isRefundEvent(event)) {
+        throw new Error("the guard must narrow this event");
+      }
+      // Inside the narrowing, `data.object` is a Refund at the type level as
+      // well as at runtime — reading these members is the assertion.
+      expect(event.data.object.id).toBe("re_1");
+      expect(event.data.object.status).toBe("pending");
+      expect(event.data.object.fee).toBeNull();
+    }
+  });
+
+  it("carry no payee in the delivered body", () => {
+    // RFC-0003 rejected carrying the destination in `metadata` precisely
+    // because metadata is inside every signed webhook vpay delivers, and the
+    // refund object has ten keys, none of them the payee. Asserted on the
+    // serialised body, not only on the object: a delivered event is bytes a
+    // merchant stores, replays and logs.
+    const body = JSON.stringify(eventOf(refunded));
+    expect(body).not.toContain("destination");
+    expect(body).not.toContain("msisdn");
+  });
+});

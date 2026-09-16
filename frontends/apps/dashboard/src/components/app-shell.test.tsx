@@ -57,9 +57,16 @@ describe("the signed-in shell", () => {
     // a link scanner fires. It was a POST before this shell existed and it
     // stays one.
     renderShell();
-    const button = screen.getByRole("button", { name: /sign out/i });
-    expect(button.getAttribute("type")).toBe("submit");
-    expect(button.closest("form")).not.toBeNull();
+    // EVERY mount, not just the first. The account block is rendered twice
+    // — in the rail's `accountSlot` and in `<main>` behind `xl:hidden` — so
+    // a `getBy` would check one and leave the other unasserted, which is
+    // exactly how a GET-able sign-out could slip in on one breakpoint only.
+    const buttons = screen.getAllByRole("button", { name: /sign out/i });
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.getAttribute("type")).toBe("submit");
+      expect(button.closest("form")).not.toBeNull();
+    }
   });
 
   it("shows who is signed in OUTSIDE the rail, where it is always visible", () => {

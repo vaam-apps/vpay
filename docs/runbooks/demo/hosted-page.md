@@ -190,8 +190,9 @@ Two things to know before you drive them:
   charge's page decides whichever charge the worker asks about next — a `5001`
   charge included, whose amount-keyed mapping the payer-action mappings
   outrank. `just demo-walk` is strictly sequential and opens no page, so it
-  never meets this; two browser tabs on two orders will. The limitation follows
-  from the scenario definitions under `stubs/orange/mappings/`.
+  never meets this; two browser tabs on two orders will. See
+  [../status.md](../../status.md) §"The Orange stub's hosted page grew a payer's
+  window" for the measurements.
 
 The one outcome no _number_ reaches is `cancelled`, because it is not a rail
 outcome at all. Clicking "cancel" on the rail's page ends the payment, but

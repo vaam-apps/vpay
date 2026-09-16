@@ -43,6 +43,10 @@
 //! `parse_callback` is **not** counted: it parses bytes that have already
 //! arrived, touches no rail, and cannot fail slowly. Including it would put
 //! a pure function into a series an operator reads as rail traffic.
+//! `parse_destination` is not counted for the same reason, and is forwarded
+//! for a reason of its own — it is the one port method whose *default* body
+//! is a refusal, so a decorator that forgot to forward it would compile and
+//! would answer `Unsupported` for every rail. See the method.
 
 use std::time::Instant;
 
@@ -55,7 +59,7 @@ use vpay_core::metrics::{
 
 use crate::{
     AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, Refunded, Submitted,
+    ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -168,15 +172,45 @@ impl ProviderAdapter for Measured {
         self.inner.parse_callback(body)
     }
 
+    /// Forwarded unmeasured, and — the part that matters here — forwarded at
+    /// all.
+    ///
+    /// [`ProviderAdapter::parse_destination`] has a default body answering
+    /// [`ProviderError::Unsupported`], which is right for an
+    /// [`Origin`](crate::RefundDestination::Origin) rail and catastrophic for
+    /// a decorator: `Measured` wraps every adapter this workspace resolves
+    /// (`vpay_api::v1::boot::adapters_by_code` is the single funnel), so an
+    /// omitted forward here would not fail to compile — it would make every
+    /// refund on every rail answer "this rail has no such API" in production
+    /// while each adapter's own unit tests, which hold the adapter unwrapped,
+    /// stayed green. `a_defaulted_method_is_not_silently_answered_by_the_wrapper`
+    /// is what catches it.
+    ///
+    /// Unmeasured for [`parse_callback`](Measured::parse_callback)'s reason:
+    /// it parses values that have already arrived, touches no rail, and
+    /// cannot fail slowly. And nothing is derived from the parsed
+    /// [`RefundTarget`] for a label — see `refund` below.
+    fn parse_destination(
+        &self,
+        raw: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<RefundTarget, ProviderError> {
+        self.inner.parse_destination(raw)
+    }
+
+    /// Forwarded with the destination untouched: this decorator counts and
+    /// times, and a layer that looked inside a [`RefundTarget`] — even to
+    /// derive a label from it — would put a payee's phone number in a metric
+    /// series. `error_kind` stays the only dimension.
     async fn refund(
         &self,
         charge: &ChargeRef,
         amount: Money,
+        destination: Option<&RefundTarget>,
         config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
         self.measure(
             provider_operation::REFUND,
-            self.inner.refund(charge, amount, config),
+            self.inner.refund(charge, amount, destination, config),
         )
         .await
     }
@@ -207,6 +241,7 @@ impl ProviderAdapter for Measured {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     use metrics_exporter_prometheus::PrometheusBuilder;
     use uuid::Uuid;
@@ -246,6 +281,7 @@ mod tests {
                 delivers_callbacks: false,
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
+                refund_destination: crate::RefundDestination::Origin,
             }
         }
 
@@ -449,6 +485,197 @@ mod tests {
                 r#"vpay_provider_requests_total{provider="mtn_momo",operation="account_holder_name",error_kind="operation_unsupported_by_rail"} 1"#
             ),
             "{scrape}"
+        );
+    }
+
+    /// An inner adapter that records the `destination` it was handed, so the
+    /// decorator's forwarding can be observed rather than read.
+    ///
+    /// Its own type rather than a third field on [`Answering`]: every other
+    /// case here builds `Answering` by struct literal, and what this proves
+    /// is about one argument of one method. It declares
+    /// [`RefundDestination::Required`](crate::RefundDestination::Required)
+    /// because that is the only declaration for which a `destination` is
+    /// ever `Some` (RFC-0003 section 1) - the value the argument exists for.
+    #[derive(Debug)]
+    struct RecordingRefund {
+        /// Shared with the test, which cannot reach the stub again: the
+        /// adapter is moved into a `Box<dyn ProviderAdapter>` by
+        /// [`Measured::wrap`] and never comes back out.
+        seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl ProviderAdapter for RecordingRefund {
+        fn code(&self) -> &'static str {
+            "mtn_momo"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                flow: ProviderFlow::Push,
+                supports_refunds: true,
+                supports_partial_refunds: false,
+                delivers_callbacks: false,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+                refund_destination: crate::RefundDestination::Required,
+            }
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        /// A `Required` rail's parser, spelled as simply as one can be: it
+        /// answers `Ok` for a key nobody else in this module uses.
+        ///
+        /// It exists so the wrapper's forward can be told apart from the
+        /// port's default, which answers `Err(Unsupported)`. A stub that
+        /// also defaulted would make the two indistinguishable and the test
+        /// below unfalsifiable.
+        fn parse_destination(
+            &self,
+            raw: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<RefundTarget, ProviderError> {
+            raw.get("msisdn")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ProviderError::malformed("recording: no msisdn".to_owned()))
+                .and_then(|msisdn| {
+                    RefundTarget::mobile_money(msisdn).map_err(|invalid| {
+                        ProviderError::malformed(format!("recording: {invalid}"))
+                    })
+                })
+        }
+
+        async fn refund(
+            &self,
+            _charge: &ChargeRef,
+            _amount: Money,
+            destination: Option<&RefundTarget>,
+            _config: &ProviderConfig,
+        ) -> Result<Refunded, ProviderError> {
+            self.seen
+                .lock()
+                .expect("no test panics while holding this lock")
+                .push(destination.map(|target| target.msisdn().to_owned()));
+            Err(ProviderError::NotImplemented("recording::refund"))
+        }
+    }
+
+    /// The destination reaches the inner adapter **unchanged**, and never
+    /// reaches a metric.
+    ///
+    /// Two claims in one case because they are the two halves of the same
+    /// argument about this decorator: it must pass the payee through, and it
+    /// must not read it.
+    ///
+    /// Measured on 2026-09-15, before this test existed: replacing the
+    /// forwarded `destination` with `None` in [`Measured::refund`] left
+    /// `vpay-provider`, both adapter crates and the conformance suite green
+    /// (199 tests, 0 failures), because no adapter reads the argument yet.
+    /// `Measured` is what `vpay_api::v1::boot::adapters_by_code` wraps every
+    /// shipping adapter in, so that mutation would have addressed every
+    /// refund on a `Required` rail to nobody, in production, silently.
+    ///
+    /// The second half is the privacy one: a payee's phone number in a
+    /// metric label is a high-cardinality series that outlives any erasure
+    /// request, and its retention is RFC-0003 open question 2, undecided.
+    /// `error_kind` stays the only dimension.
+    #[test]
+    fn the_destination_reaches_the_inner_adapter_and_never_a_metric() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::clone(&seen),
+        }));
+        let destination =
+            RefundTarget::mobile_money("+237600000200").expect("a documentation MSISDN");
+
+        let scrape = scrape_of(|| {
+            let refunded =
+                block_on(adapter.refund(&charge(), charge().amount, Some(&destination), &config()));
+            assert!(
+                matches!(refunded, Err(ProviderError::NotImplemented(_))),
+                "the inner adapter's answer is forwarded: {refunded:?}"
+            );
+        });
+
+        assert_eq!(
+            seen.lock().expect("the stub released the lock").as_slice(),
+            [Some("237600000200".to_owned())],
+            "the inner adapter must be handed the destination it was called with"
+        );
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="refund",error_kind="not_implemented"} 1"#
+            ),
+            "the call is still counted on the refund series: {scrape}"
+        );
+        assert!(
+            !scrape.contains("237600000200"),
+            "a payee's number must never reach a metric label: {scrape}"
+        );
+    }
+
+    /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather
+    /// than inheriting the port's default.
+    ///
+    /// `parse_destination` is the only port method whose default body is a
+    /// *refusal* an adapter is expected to override, which makes a missing
+    /// forward in this decorator uniquely dangerous: it compiles, every
+    /// adapter's own unit tests keep passing because they hold the adapter
+    /// unwrapped, and every refund in production — `Measured` wraps every
+    /// adapter `vpay_api::v1::boot::adapters_by_code` resolves — answers
+    /// "this rail has no such API" for a rail that plainly does.
+    ///
+    /// The decisive mutation: delete `Measured::parse_destination` and this
+    /// case fails on `Unsupported`.
+    ///
+    /// The second assertion is `refund`'s privacy half, on a method that is
+    /// *un*measured: no series at all may be emitted here, and in particular
+    /// none carrying the number.
+    #[test]
+    fn a_defaulted_method_is_not_silently_answered_by_the_wrapper() {
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "msisdn".to_owned(),
+            serde_json::Value::String("+237600000200".to_owned()),
+        );
+
+        let mut parsed = None;
+        let scrape = scrape_of(|| parsed = Some(adapter.parse_destination(&raw)));
+
+        let parsed = parsed.expect("the closure ran");
+        assert_eq!(
+            parsed
+                .as_ref()
+                .map(|target| target.msisdn().to_owned())
+                .map_err(|error| format!("{error}")),
+            Ok("237600000200".to_owned()),
+            "the inner adapter's parser must be the one that answered, not the port's default"
+        );
+        assert!(
+            !scrape.contains("parse_destination") && !scrape.contains("237600000200"),
+            "parsing a merchant's parameters reaches no rail and must emit no series: {scrape}"
         );
     }
 }

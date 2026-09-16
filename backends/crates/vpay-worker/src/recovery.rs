@@ -196,8 +196,10 @@ pub enum RecoveryAction {
 ///
 /// `submitting` is not only the state a crash leaves behind. It is also the
 /// ordinary state of a **confirm that is still running**: `vpay-api` commits
-/// the charge and its `poll_charge` job in one transaction with
-/// `run_at = now()`, calls the rail, and only then compare-and-swaps
+/// the charge and its `poll_charge` job in one transaction — since
+/// 2026-09-16 at `now() + vpay_api`'s `POLL_AFTER_CONFIRM_GRACE` rather than
+/// at `now()`, so an ordinary confirm is no longer claimable-against at all
+/// — calls the rail, and only then compare-and-swaps
 /// `submitting → submitted`. A worker that claims that job in between sees
 /// exactly the rows a crash leaves, and every branch below would move the
 /// charge out from under a live confirm — which is not a hypothetical: Step

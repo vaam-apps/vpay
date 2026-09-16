@@ -1,9 +1,13 @@
 # AGENTS.md
 
-Detailed policy for high-risk vpay changes. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md); read this file before changing money,
-persistence, rails, authentication, public API or wire types, the UI system, or
-dependencies.
+Instructions for any agent or human contributing to vpay. Read this before
+writing code.
+
+If this is your first change here, start with
+[CONTRIBUTING.md](CONTRIBUTING.md) — the short version, and the smallest safe
+first change. Come back to this file before touching money, persistence, rails,
+authentication, public API or wire types, the UI system, or dependencies; every
+one of those is covered below and none of it is optional.
 
 ---
 
@@ -51,13 +55,21 @@ docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
 edit a document that cites a CI run id, a pull request or an issue.
 
-Two further gates run in CI's `web` job and in neither `just verify` nor
-`just ci`, so a green local run does not predict them: `just audit-web`, and
-`just test-storybook`, which renders every checkout story in a real Chromium
-and fails on an axe accessibility violation. The second is out of `just ci`
-because it needs the network the first time (Playwright fetches a ~115 MB
-Chromium), the same reason `helm-check` is out. Run it before opening a PR
-that touches a checkout screen, a story or the theme.
+One further gate runs in CI's `web` job and in neither `just verify` nor
+`just ci`, so a green local run does not predict it: `just test-storybook`,
+which renders every checkout story in a real Chromium and fails on an axe
+accessibility violation. It is out of `just ci` because it needs the network
+the first time (Playwright fetches a ~115 MB Chromium) and is slow. Run it
+before opening a PR that touches a checkout screen, a story or the theme.
+
+_This paragraph said "two further gates" and named `just audit-web` as the
+other, and had been wrong since 2026-09-11: issue #103 added `audit-web` to
+the `ci` recipe in commit `96ebd20c`, in the same change that lowered it from
+`--audit-level=high` to `--audit-level=moderate`. Corrected 2026-09-16.
+**`just ci` therefore needs the network**, which the `ci` recipe's own comment
+now says out loud — three other recipes justify their exclusion from `just ci`
+on the grounds that it runs offline, and that premise no longer holds on its
+own._
 
 It is the only thing in this repository that returns a colour-contrast
 **verdict** for the screens a payer sees: the jsdom axe suites compute no
@@ -96,8 +108,14 @@ structurally possible.
   fails the build otherwise — and it fails in both directions.
 - Tests for unbuilt behaviour are `#[ignore = "not implemented: … — see
 docs/status.md"]`, so a green run never overstates coverage.
-- Update `docs/status.md` only when a current-state claim or its machine-checked
-  declaration changes. Ordinary implementation work belongs in code and tests.
+- When you finish something, update the status pages in the same commit. A
+  status page that lags is worse than none, because people trust it. **Since
+  2026-09-11 that is more than one file:** `docs/status.md` is the current-state
+  page and carries the declaration this gate reads; the row your change belongs
+  to lives on a page under `docs/status/`, and your `just ci` evidence goes on a
+  dated page under `docs/status/verification/`. `docs/status.md` § "Where a new
+  row goes" says which is which, and
+  [docs/status/README.md](docs/status/README.md) is the index.
 
 If you are unsure whether something counts as done: would a test fail if it
 broke? If no, it is not done.
@@ -265,25 +283,86 @@ exist (`cargo xtask verify-citations`, opt-in because it needs the network).
 A citation that does not resolve is a false claim: strike it through with a
 dated correction. Do not replace it with an id you have not checked.
 
-**`verify-links` checks a destination path and never a `#anchor`.** Re-read
-anchors when changing a document heading.
+**`verify-links` checks a destination path and never a `#anchor`.** A link to a
+heading that has been renamed, or that moved to another page, still passes the
+build. So re-read the anchors pointing into a document whose heading you rename.
+A sweep on 2026-09-11 found **four** stale ones across the tree — three left
+behind by heading renames on 2026-09-06 and 2026-09-07, and one naming a section
+that does not exist. Three are fixed; the fourth is named in
+[docs/README.md](docs/README.md) rather than quietly left.
 
-Keep documents short and audience-specific. Historical measurements, agent
-transcripts, and superseded explanations do not belong in contributor-facing
-documentation.
+**A document that has outgrown one sitting becomes an overview and a
+directory**, not a shorter document. Eleven did on 2026-09-11: the page keeps
+its own path and its own **Status** section, and indexes pages carrying what was
+moved there **verbatim** — no dated measurement, struck-through claim or "this
+said X until date Y and was wrong" may be dropped or paraphrased in the move,
+because those are what make the page worth trusting.
+[docs/README.md](docs/README.md) lists which pages, and what they were.
 
 - A decision that has been made → an ADR (immutable; supersede, never edit).
 - A process → a flow doc, as above.
 - Why a piece of code is shaped the way it is → `docs/reference/<crate>.md`.
 - A proposal under discussion → an RFC.
 - Something an on-call person must do → a runbook.
+- What an **agent** must know before it changes this repository → a skill in
+  [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills), below.
+
+### Docs↔skills parity
+
+**A feature lands in three places or it has not landed: the code, the docs, and
+the skills.**
+
+The agent skills in [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills)
+are a sixth documentation tier with a different audience. A flow doc describes a
+process to a reader who will decide what to do. A skill briefs an agent that is
+already doing it, and is therefore judged on a different question: not "is this
+accurate and complete" but "would an agent that read only this do the right
+thing on its first attempt". That is why they are a separate repository — a
+briefing that has to clear twelve gates to be corrected is a briefing nobody
+corrects — and why drift between them and this tree is gated rather than
+trusted.
+
+The same reasoning as rule 2. A status page that lags is worse than none,
+because people trust it; a skill that lags is worse still, because an agent does
+not merely trust it — it acts on it, at machine speed, in every session that
+loads it.
+
+Change a skill in the same piece of work when your change:
+
+| The change here                     | The skill there                                          |
+| ----------------------------------- | -------------------------------------------------------- |
+| A new or deleted `docs/flows/` page | Whichever skill claims it in `coverage.json`             |
+| A route mounted or unmounted        | `vpay-merchant-api` or `vpay-dashboard`                  |
+| A `NotImplemented` token retired    | Every skill that described it as unbuilt — grep for it   |
+| A new gate, or one that changed     | `vpay-tooling`; `vpay-troubleshooting` if it fails oddly |
+| A toolchain pin bumped              | `vpay-tooling`                                           |
+| An SDK capability added             | `vpay-sdks`, beside the `docs/sdks/parity.md` row        |
+| A path renamed or moved             | Whatever `verify-coverage` names                         |
+
+`vpay-skills`' `node tools/verify-coverage.mjs <path-to-vpay>` fails in **both**
+directions — a `docs/flows/` page no skill covers, and a path a skill claims
+that no longer exists here — and its CI runs against this repository's `master`
+daily. So a merge that outruns the skills surfaces there as a red build rather
+than as a confidently wrong agent three weeks later. Do not leave it to the
+cron: open the `vpay-skills` PR alongside yours and link them.
+
+This repository dogfoods the skills. They install into `.agents/skills/` and pin
+in `skills-lock.json`, the same mechanism `vaam-ui` already uses:
+
+```bash
+npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
+```
 
 ## Commits and PRs
 
 - Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
-- Update documentation when a public contract, operator procedure, or
-  cross-component invariant changes. Do not add narrative status records for
-  refactors, tests, or implementation details.
+- A PR that changes behaviour updates the status pages and the relevant flow doc
+  in the same PR. `docs/status.md` § "Where a new row goes" names the page for
+  each kind of change; [docs/README.md](docs/README.md) is the index of the
+  whole documentation tree.
+- A PR that changes behaviour an agent has to know about opens its companion PR
+  against [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills) and
+  links the two. See § "Docs↔skills parity" above for which skill.
 - `just ci` must pass locally before review.
 
 ## Before you open a PR

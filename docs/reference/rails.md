@@ -245,6 +245,19 @@ worse thing to hold in memory than one token re-minted when the configuration it
 belongs to changes. The fingerprint is what makes the single slot _safe_; it is
 not what makes it fast.
 
+**MTN has two slots since 2026-09-15, one per product, and that is not a map.**
+Collections and Disbursements have separately scoped tokens, so a single slot
+would have every refund evict the charge path's bearer and every subsequent
+charge evict the refund's. Two named fields are bounded at two by the type
+system — a third product is a compiler error at `Adapter::slot`, not a runtime
+insert — so the objection above does not reach them. **`Product` is also part
+of MTN's credential fingerprint**, which is the part that matters: a
+deployment that pastes the same three strings into both halves of its
+configuration must still get two distinct cache keys, because otherwise a
+Collections-scoped bearer is served to the money-_out_ call.
+(`a_collections_bearer_is_never_served_to_a_disbursement` — the only test in
+that crate that fails when the discriminator is removed.)
+
 ### The two invariants that were each a real defect
 
 Both were found in the Step 3 security review, in different adapters, and a
@@ -339,14 +352,26 @@ and will never succeed. The body's `code` is read before anything is decided.
 charge it is about to accept, and failing it here would lose a payment still in
 flight. (`no_record_of_a_reference_is_not_a_failure`.)
 
-**Refunds are not built.** MTN refunds are the _Disbursements_ product — a
-different subscription key, a separately-scoped token, and a `transfer` call
-this adapter does not make. No deployment of this system holds those
-credentials. `supports_refunds` stays `true` because the rail _does_ support
-refunds; it is we who have not built them, so the answer is
-`ProviderError::NotImplemented("mtn_momo::refund")` and it is listed in
-[`status.md`](../status.md). Answering `Unsupported` would be a lie about the
-rail.
+**Refunds are built and have never been called.** As of 2026-09-15
+(RFC-0003 § 5) `refund` makes MTN's _Disbursements_ `transfer` call —
+`POST /disbursement/v1_0/transfer`, under a different subscription key and a
+separately-scoped token minted from `POST /disbursement/token/` — and the
+`NotImplemented("mtn_momo::refund")` token is retired.
+
+**No REAL MTN Disbursements credential exists in this project, and nothing in
+this repository has ever called MTN's Disbursements product**, in sandbox or
+anywhere else. `config/application.yml` carries the three keys unpopulated and
+`refund` answers `ProviderError::Config` naming the first one missing.
+_(Corrected 2026-09-16: this read "No deployment of this system holds those
+credentials" and "`POST /v1/refunds` is unrouted, so no caller can reach it
+regardless". The e2e/demo stack holds stub values aimed at a WireMock
+container, and all five refund routes are mounted — RFC-0003 § 2 — so a caller
+does reach `refund`, and on a deployment with no credential what it reaches is
+that `ProviderError::Config`.)_
+`supports_refunds` stays `true` for the reason it always did: the rail
+refunds, and `Unsupported` would be a lie about MTN. See
+[`adapter-mtn-momo.md`](../flows/adapter-mtn-momo.md) § "The transfer call"
+for the wire and the three things about it that are unsettled.
 
 The 401 path is the adapter's only retry: nothing else is resent, least of all a 500. Resending after a 401 is safe on both calls that use it — `submit` carries
 our own `X-Reference-Id`, so a duplicate is a 409 the caller reads as success,
@@ -359,10 +384,19 @@ credentials are wrong rather than stale, which pages.
 
 Implements `submit`, `query_status` and `parse_callback` against the three calls
 transcribed in [`adapter-orange-money.md`](../flows/adapter-orange-money.md).
-`refund` is deliberately _not_ overridden: Orange documents no refund API for
-Web Payment, so the port's default `ProviderError::Unsupported` is the
-permanent, correct answer and `Capabilities::supports_refunds` is what the core
-branches on. It is not `NotImplemented`, because there is nothing to build.
+`refund` is overridden with
+`ProviderError::NotImplemented("orange_money::refund")` and listed in
+[`status.md`](../status.md). **No Orange transfer wire call is written**, and
+that is the point: an Orange refund is an outbound transfer back to a payee
+(maintainer's decision, 2026-09-15, RFC-0003 § 5), Orange makes transfers — so
+`Capabilities::supports_refunds` is `true` — and this repository has no Orange
+transfer specification, not even reconstructed. An endpoint and a body would be
+invented in the money path. _(Until 2026-09-15 this read: "`refund` is
+deliberately not overridden: Orange documents no refund API for Web Payment, so
+the port's default `ProviderError::Unsupported` is the permanent, correct
+answer … It is not `NotImplemented`, because there is nothing to build."
+"Nothing to build" was the claim that changed, and not by learning anything new
+about Orange.)_
 
 **Sourcing caveat, and it is the important line on this page.** The flow doc
 this adapter is written from is reconstructed from Orange Developer's public

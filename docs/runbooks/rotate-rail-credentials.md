@@ -10,7 +10,8 @@ both and the mechanisms have nothing in common:
   so there is nothing to rotate. Revoking one needs the
   [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) **dual-authority
   check** — YAML _and_ the database. That check is the reason this page
-  exists; see [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md).
+  exists; `docs/roadmap.md` recorded that no runbook documented
+  it.
 
 **Nobody has done either on a deployment.** No cluster has run vpay, and no
 credential in this repository has ever been a real one — every rail call ever
@@ -23,14 +24,20 @@ made went to a WireMock host ([../status.md](../status.md)).
 Rail credentials live in YAML as `${VAR}` placeholders, resolved from the
 process environment at boot. From `config/application.yml`:
 
-| Rail           | `settings` (printed in full by `ProviderHost`'s `Debug`) | `credentials` (redacted)                                                                                                    |
-| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `mtn_momo`     | `target_environment`, `api_user` = `${MTN_API_USER}`     | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}`                                                |
-| `orange_money` | `env`, `lang`                                            | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}` |
+| Rail           | `settings` (printed in full by `ProviderHost`'s `Debug`)                                                       | `credentials` (redacted)                                                                                                                                                                                       |
+| -------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mtn_momo`     | `target_environment`, `api_user` = `${MTN_API_USER}`, `disbursement_api_user` = `${MTN_DISBURSEMENT_API_USER}` | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}`, `disbursement_subscription_key` = `${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}`, `disbursement_api_key` = `${MTN_DISBURSEMENT_API_KEY}` |
+| `orange_money` | `env`, `lang`                                                                                                  | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}`                                                                                    |
 
-Six rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
-(`docs/flows/webhooks.md`, Step 5) for seven **on this branch, as of
-2026-09-03**. The list is not fixed and is not owned by the chart: it is
+Nine rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
+(`docs/flows/webhooks.md`, Step 5) for ten **on this branch, as of
+2026-09-15**. The three `MTN_DISBURSEMENT_*` names arrived that day with
+`mtn_momo::refund` (RFC-0003 § 5). They are the one group here that should
+hold **empty** values — no deployment has been issued an MTN Disbursements
+subscription, and `mtn_momo::refund` answers `ProviderError::Config` naming a
+blank one — but empty is a value and absent is not: a Secret that simply
+lacks the key is an unresolved placeholder and exit 78. There is nothing to
+rotate on them until someone holds the credential. The list is not fixed and is not owned by the chart: it is
 whatever the `config/application.yml` baked into the image you are deploying
 references, and it grows as features land. Read it off that revision at
 upgrade time rather than trusting this table:

@@ -416,13 +416,25 @@ ordinary pending answer by the caller (`vpay_core::settle` answers
 
 `submitting` is not only the state a crash leaves behind. It is also the
 ordinary state of a **confirm that is still running**: `vpay-api`'s
-`insert_charge` commits the charge and its `poll_charge` job in one transaction
-with `run_at = now()`, calls the rail, and only then compare-and-swaps
-`submitting → submitted` (`vpay_db::charges::mark_submitted`). A worker that
-claims that job in between reads exactly the rows a crash leaves, and every
-branch of the table would then move a charge out from under a live confirm,
-whose own compare-and-swap matches no row and answers the merchant `500`
-`write_matched_no_row`.
+`insert_charge` commits the charge and its `poll_charge` job in one transaction,
+calls the rail, and only then compare-and-swaps `submitting → submitted`
+(`vpay_db::charges::mark_submitted`). A worker that claims that job in between
+reads exactly the rows a crash leaves, and every branch of the table would then
+move a charge out from under a live confirm, whose own compare-and-swap matches
+no row and answers the merchant `500` `write_matched_no_row`.
+
+That job was committed with `run_at = now()` until 2026-09-16. It is now
+`now() + POLL_AFTER_CONFIRM_GRACE` (`vpay_provider::DEFAULT_REQUEST_TIMEOUT`,
+twenty seconds), and `persist_submitted` pulls it forward to `now()` in the
+same transaction as the compare-and-swap. The guard below did its job
+throughout — no charge was ever moved out from under a confirm — but the
+_cost_ of the guard firing was not paid attention to: a worker that claimed a
+fresh poll job inside the confirm's rail call answered `Wait`, which asks the
+rail nothing and parks the job for the rest of the sixty-second window, so a
+charge that reached `submitted` five seconds later sat settleable and unasked
+about for another fifty-six. Measured against a real stack on 2026-09-16 from
+`sdks/rust/tests/live_refunds.rs`, whose sixty-second settlement ceiling is
+what caught it; see `docs/status/verification/`.
 
 That is not hypothetical. Step 8's demo hit it in four walkthrough runs out of
 six on a loaded machine, with the confirm's rail call taking 3.7 seconds: on the

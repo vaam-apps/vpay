@@ -111,3 +111,13 @@ authkestra-op.workspace = true
 [[test]]
 name = "live_invoices"
 required-features = ["live-stack"]
+
+# The refund surface's live suite (2026-09-16). Its own binary rather than
+# cases in `live_invoices.rs` because the fixture is different in kind: an
+# invoice case needs a customer, and a refund case needs a **settled charge**
+# — an intent confirmed on the MTN stub and polled to `succeeded` by the
+# `vpay-worker` container — so a shared binary would make every invoice case
+# wait on the worker.
+[[test]]
+name = "live_refunds"
+required-features = ["live-stack"]

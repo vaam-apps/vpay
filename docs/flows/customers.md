@@ -278,15 +278,16 @@ and `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point` in
 literals the coordinate's digits included, and positively, so that an impl
 printing nothing fails too. Restoring any of the four derives is `E0119`, a
 `cargo check` failure rather than a test to keep green. Five mutations, and
-what was and was not run are recorded in the test suite; this change did not
-establish a new whole-repository verification result.
+what was and was not run, are in
+[../status/verification/2026-09-12-customer-debug-redaction.md](../status/verification/2026-09-12-customer-debug-redaction.md)
+— that page's first claim is that **`just ci` was not run on this branch**.
 The review of the same day carried the fix the rest of the way in:
 `vpay_api::v1::customers`' request types (`CreateParams`, `UpdateParams`,
 `AddressParam`/`AddressParams`, `ValidCreate`) derived `Debug` too, and
 `AddressParams` holds the coordinate as the **string the wire sent**, before
 `checked_microdeg` parses it. Five more hand-written impls and
 `no_customer_request_type_ever_prints_a_payers_identifiers_street_or_gps_point`
-close it; restoring any removed field assertion makes that test fail.
+close it; four mutations are on the verification page.
 
 **One thin spot named and not closed (2026-09-12).** The twelve-month sweep's
 own case,

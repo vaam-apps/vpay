@@ -56,3 +56,33 @@ pnpm-lock.yaml
 # `backends/migrations/README.md` is deliberately NOT ignored: it is prose,
 # nothing hashes it, and it is already prettier-clean.
 backends/migrations/*.sql
+
+# Flutter/Dart tooling output (`sdks/flutter/*/build/`, `.dart_tool/`).
+# Unlike every other generated tree named at the top of this file, these are
+# NOT covered by the root `.gitignore`: git ignores them through the package's
+# own nested file (`sdks/flutter/vpay_checkout_flutter/.gitignore`), and
+# prettier reads only the ROOT `.gitignore`. So the "already out of scope"
+# sentence above does not reach them, and an entry here is the guarantee
+# rather than an observation.
+#
+# Measured 2026-09-14: after a `flutter test` and a `flutter build apk`,
+# `just fmt-check-web` reported style issues in 150 files, of which 139 were
+# generated JSON/manifests under these two trees and 12 were real source.
+# CI never sees them — it runs no Flutter recipe (D-M3) — so this is a local
+# papercut, not a CI failure, and it is real for anyone who builds the plugin.
+sdks/flutter/**/build/
+sdks/flutter/**/.dart_tool/
+
+# Agent worktrees (`.claude/worktrees/<name>/`), for the same reason as the
+# Flutter trees above and with the same consequence: git does not ignore
+# `.claude/` — `.claude/skills/vaam-ui` is tracked — so the root `.gitignore`
+# does not put these out of scope, and each worktree is a FULL SECOND COPY of
+# this repository. `prettier --check .` from the main checkout therefore walks
+# every checked-out branch as well as this one, and the run grows with the
+# number of worktrees rather than with the size of the tree.
+#
+# This is what made `just ci` time out in `fmt-check-web` on PR #172 while its
+# author was verifying it. CI never sees it — a runner clones one tree and has
+# no `.claude/worktrees/` — so it is a local papercut, not a CI failure, and
+# it is real for anyone who uses `git worktree` under `.claude/`.
+.claude/worktrees/

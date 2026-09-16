@@ -49,9 +49,45 @@ providers:
       # The UUID half of the Basic credential the token call uses. A settings
       # key, not a credential: it is an identifier, not a bearer secret.
       api_user: ${MTN_API_USER}
+      # The **Disbursements** API user — a second UUID, for the second
+      # product. See the credentials below for why it is not optional-with-a-
+      # fallback, and why every deployment leaves it empty today.
+      disbursement_api_user: ${MTN_DISBURSEMENT_API_USER}
     credentials:
       subscription_key: ${MTN_SUBSCRIPTION_KEY}
       api_key: ${MTN_API_KEY}
+      # MTN refunds are the **Disbursements** product: a different
+      # subscription key, a separately scoped token and a `transfer` call
+      # (docs/flows/adapter-mtn-momo.md, "Credential hierarchy").
+      #
+      # **No deployment holds a REAL set of these** — the e2e/demo stack's
+      # three are stubs aimed at a wiremock container, and nothing else
+      # populates them at all — which is why they are NOT in
+      # `vpay_config::config::REQUIRED_RAIL_KEYS`: an *empty* value is a
+      # value, so an operator who sets all three to the empty string boots
+      # normally and `mtn_momo::refund` answers `ProviderError::Config`
+      # naming the first blank one — a refund that fails loudly rather than a
+      # charge path that will not boot.
+      #
+      # **An UNSET variable is a different thing and it IS a boot failure.**
+      # This comment claimed the opposite until 2026-09-15 (review of arm D)
+      # and it was wrong: `REQUIRED_RAIL_KEYS` is checked on the merged
+      # document, but `${VAR}` resolution happens first and
+      # `vpay_config::config::resolve_string` has no default syntax — an
+      # unset name is `ConfigError::UnresolvedPlaceholder`, exit 78, on both
+      # binaries. Adding these three lines therefore added three names every
+      # environment that loads THIS file must define (empty is fine):
+      # `.env.example` carries them, `deploy/helm/vpay`'s rails secret needs
+      # them, and `the_repositorys_own_configuration_passes_the_adapter_join`
+      # failed until it set them. The authoritative list is always
+      # `grep -o '${[A-Z_]*}' config/application.yml`.
+      #
+      # All three, with no fallback to the Collections values: sending
+      # Collections' Basic password to the Disbursements token mint is a 401
+      # that reads as "MTN refused our partner credentials", pages, and names
+      # nothing that is actually wrong. See `Credentials::from_config`.
+      disbursement_subscription_key: ${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}
+      disbursement_api_key: ${MTN_DISBURSEMENT_API_KEY}
   - code: orange_money
     host:
       # Includes the `/orange-money-webpay/{env}` path prefix on purpose:

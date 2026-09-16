@@ -1458,8 +1458,10 @@ async fn persist_submitted(
     // `500`, and the sentence names both rows — which the closure cannot
     // build, because it does not own the ids the caller passed in. So the
     // transaction is rolled back with the fact, and the caller raises it.
+    let dedupe_key = poll_dedupe_key(&charge.id);
     let outcome = repositories
         .transaction(|tx| {
+            let dedupe_key = &dedupe_key;
             Box::pin(async move {
                 let charge = tx
                     .mark_submitted(
@@ -1468,6 +1470,40 @@ async fn persist_submitted(
                         Some(&ref_extra),
                         submitted.redirect_url.as_deref(),
                     )
+                    .await?;
+
+                // **This is the write that makes the charge settle now
+                // rather than a minute from now.** The compare-and-swap
+                // above is the only moment at which "a confirm may still be
+                // holding this charge" stops being true, so it is the only
+                // moment at which the charge's poll job can be made runnable
+                // without racing the confirm — and it is in this
+                // transaction, so a rolled-back submit cannot leave a job
+                // pulled forward for a charge still in `submitting`.
+                //
+                // Two schedules reach here, and this moves both to `now()`:
+                // `insert_charge`'s `now() + POLL_AFTER_CONFIRM_GRACE`, and
+                // the `created_at + 60 s` a worker parks the job at when it
+                // claimed it during a confirm slower than that grace
+                // (`vpay_worker::RecoveryAction::Wait`). Without it the
+                // second case waits the window out with a `submitted`,
+                // settleable charge and an untouched rail — measured at 56 s
+                // of dead time on 2026-09-16, see `POLL_AFTER_CONFIRM_GRACE`.
+                //
+                // `Duration::ZERO` as the floor, where `provider_callback`
+                // passes the ladder's fastest rung: that floor exists to
+                // stop an unauthenticated caller turning a burst of rail
+                // callbacks into a burst of rail requests. This call site
+                // has no such caller — it runs once per charge, inside the
+                // confirm that created it — and anything it could move is by
+                // definition a job scheduled for a confirm that has just
+                // finished.
+                //
+                // `false` (nothing moved) is normal and deliberately not an
+                // error: it means the job is already claimable, or a worker
+                // holds its lease right now — and that worker is about to
+                // read the charge this transaction is committing.
+                tx.pull_forward_in_tx(dedupe_key, std::time::Duration::ZERO)
                     .await?;
 
                 let updated = tx
@@ -1753,6 +1789,57 @@ fn currencies_agree(rail: &RailConfig, intent_currency: &str) -> Result<(), ApiE
 /// a second chance for the drift the three checks above exist to catch.
 pub(crate) const POLL_CHARGE_KIND: &str = "poll_charge";
 
+/// How long after [`insert_charge`] commits a charge its `poll_charge` job
+/// becomes claimable.
+///
+/// # Why a fresh poll job is not runnable the instant it is committed
+///
+/// It used to be (`run_at = now()`), and that is a race the worker loses
+/// expensively. `insert_charge` commits the charge as `submitting` together
+/// with this job; the confirm then calls the rail and only afterwards
+/// compare-and-swaps `submitting → submitted` ([`persist_submitted`]). A
+/// worker whose claim loop is busy — it does not sleep between claims, so a
+/// stack with any queue at all claims within microseconds — takes the job
+/// inside that window, sees a `submitting` charge younger than
+/// `vpay_worker::RecoveryPolicy::not_found_window`, and does the correct
+/// thing for a charge it cannot tell from a crashed confirm:
+/// `RecoveryAction::Wait`, which asks the rail **nothing** and parks the job
+/// for the rest of that window. The charge is `submitted` and settleable a
+/// few milliseconds later, and nothing looks at it for sixty-one seconds.
+///
+/// Measured on 2026-09-16 against a real stack (`sdks/rust/tests/live_refunds.rs`,
+/// CI's `e2e (compose)` job): both charges `submitted` at t+5 s, their poll
+/// jobs at `attempts = 1` and `run_at = created_at + 61 s`, no status query
+/// on the rail's journal until then, and both live cases failing on their
+/// sixty-second ceiling. On an idle stack the worker's claim loop is asleep
+/// (`vpay_worker::IDLE_SLEEP`) and the confirm wins, which is why a fresh
+/// stack never showed it.
+///
+/// # Why this value
+///
+/// [`vpay_provider::DEFAULT_REQUEST_TIMEOUT`] is the budget a confirm's rail
+/// call runs under, and no deployment can change it — `vpay-config`'s
+/// `ProviderHost::to_provider_config` hard-codes it, deliberately. So an
+/// ordinary confirm is out of `submitting` well before this job is
+/// claimable, and the worker never spends a claim on a charge nobody has
+/// abandoned.
+///
+/// It is a grace, not a guarantee: a confirm that also had to fetch a rail
+/// token can exceed one budget, and then the old behaviour is back — which
+/// is why [`persist_submitted`] pulls this job forward rather than relying on
+/// the grace. The two together are what make settlement independent of how
+/// busy the worker was.
+///
+/// # What it does *not* delay
+///
+/// Recovery of a genuinely crashed confirm. That charge is claimed at
+/// `+ this`, is still younger than `not_found_window`, and is parked to
+/// `created_at + 60 s` exactly as it would have been by a claim at `now()` —
+/// `vpay_worker::RecoveryAction::Wait` carries *the rest of the window*, not
+/// a ladder rung, so the first recovery pass happens at the same instant
+/// either way.
+const POLL_AFTER_CONFIRM_GRACE: std::time::Duration = vpay_provider::DEFAULT_REQUEST_TIMEOUT;
+
 /// Commits the charge row in `submitting`, **and the job that will poll it**,
 /// in one transaction, before any network call.
 ///
@@ -1810,11 +1897,18 @@ async fn insert_charge(
                 // fields from: the confirm path has no `NotFound` streak to
                 // carry, and writing zeroes for one would be this handler
                 // asserting something about a rail it has not yet called.
+                //
+                // `+ POLL_AFTER_CONFIRM_GRACE`, not `now()`: see that
+                // constant. The job is committed with the charge exactly as
+                // it always was — crash safety is unchanged, the row is
+                // there — it simply is not claimable while this very confirm
+                // is still inside the rail call. `persist_submitted` pulls it
+                // to `now()` the moment the confirm is done with the charge.
                 tx.enqueue_in_tx(
                     POLL_CHARGE_KIND,
                     &poll_dedupe_key(&charge.id),
                     &serde_json::json!({ "charge_id": charge.id }),
-                    OffsetDateTime::now_utc(),
+                    OffsetDateTime::now_utc() + POLL_AFTER_CONFIRM_GRACE,
                 )
                 .await?;
 

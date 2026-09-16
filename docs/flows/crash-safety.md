@@ -215,7 +215,19 @@ re-verified 2026-09-07 twice — for issue #77, and again for migration `0037`
 (S5, the money tables through CrateStack); extended 2026-09-10 (issue #85)
 with **two** SIGTERM scenarios, one per arm of `Drain`, which are the first
 automated cases in this repository that signal a shipping process holding
-outstanding work.**
+outstanding work; amended 2026-09-16 — step 2's `poll_charge` job is still
+committed with the charge, and is no longer _claimable_ while the confirm that
+wrote it is still running.**
+
+**The 2026-09-16 amendment changed no ordering on this page.** Every
+write-before-network rule, every compare-and-swap and every kill point are what
+they were; what moved is one `run_at`, and the reason is in the numbered list
+above and measured in
+[../status/verification/2026-09-16-confirm-poll-job-latency.md](../status/verification/2026-09-16-confirm-poll-job-latency.md).
+The guard it protects — "nothing younger than the window is recovered" — is
+unchanged and was never wrong; it was the _cost of it firing on a live
+confirm_ that nobody had measured, and it was up to sixty-one seconds of a
+payment's life.
 
 **Nothing in this document's behaviour changed for `0037` either, and the
 migration is the reason to say so explicitly.** It converted
@@ -389,6 +401,19 @@ ordering this document requires, and in this order:
    `0016`);
 4. call the adapter's `submit`;
 5. record what came back on that row.
+
+Step 2's job is committed with `run_at = now() + POLL_AFTER_CONFIRM_GRACE`
+(`vpay_provider::DEFAULT_REQUEST_TIMEOUT`) since 2026-09-16, and step 5's
+transaction pulls it forward to `now()`. Crash safety is untouched — the row
+is committed with the charge, which is the whole of what this document asks
+for — but it is not _claimable_ while this very confirm still holds the charge
+in `submitting`. It was, and a worker whose claim loop was busy took it inside
+the window, read a `submitting` charge it cannot tell from a crashed confirm,
+and correctly answered `Wait`: no status query, and the job parked for the
+rest of the sixty-second recovery window. The charge reached `submitted`
+milliseconds later and nothing asked the rail about it for another minute.
+Measured against a real stack on 2026-09-16 at 56 s of dead time per payment
+(`docs/status/verification/2026-09-16-confirm-poll-job-latency.md`).
 
 The redirect half is unchanged too: the merchant's `return_url` is committed on
 the charge row at step 2 (`charges.return_url`, migration `0019`), and the

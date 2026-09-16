@@ -343,16 +343,35 @@ would be a lie about a transition that did not happen.
 
 ### None of this is reachable today
 
-**No vpay rail can refund.** `mtn_momo::refund` is
-`ProviderError::NotImplemented` (refunds are MTN's Disbursements product, for
-which this deployment has never held a credential) and Orange Money answers
-`Unsupported` (its Web Payment product documents no refund API at all).
-`POST /v1/refunds` is unrouted and `vpay_db::Refunds` exposes no `create` —
-[../status.md](../status.md) carries all four. So **`amount_refunded` is `0`
-on every invoice in every deployment**, `apply_refund_succeeded` is called by
-no shipping binary, and the cases that prove it seed a `pending` refunds row
-with a raw `INSERT`, exactly as `backends/tests/integration/tests/refunds.rs`
-already does.
+**No vpay rail has ever refunded anything, and neither answers
+`Unsupported`.** `mtn_momo::refund` is written as of 2026-09-15 (RFC-0003 § 5)
+— MTN's Disbursements `transfer` call — but no deployment has ever held a
+Disbursements credential and that product has never been called from this
+repository, so it answers `ProviderError::Config` wherever it is reached.
+`orange_money::refund` is `ProviderError::NotImplemented` since the same day
+(RFC-0003 § 5: an Orange refund is an outbound transfer back to the payee,
+which Orange makes — what is missing is vpay's call, and this repository has
+no Orange transfer specification). _(This read "Orange Money answers
+`Unsupported` (its Web Payment product documents no refund API at all)" and
+"`mtn_momo::refund` is `ProviderError::NotImplemented`" until that date; the
+conclusion below did not move, only the reasons, and they moved in opposite
+directions on the two rails.)_
+~~`POST /v1/refunds` is unrouted until wave 3~~ — **corrected 2026-09-16:
+wave 3 mounted all five refund routes (RFC-0003 § 2)** —
+[../status.md](../status.md) carries all three. **`amount_refunded` is still
+`0` on every invoice in every deployment** and `apply_refund_succeeded` is
+still called by no shipping binary, and the route is not what changes that:
+nothing settles a `pending` refund, because the port has no refund status read
+and there is no refund poll ladder (RFC-0003 open question 8). The route being
+mounted changed the reason that column has no reachable writer, not the fact.
+_(This paragraph also read "`vpay_db::Refunds` exposes no `create`" until
+2026-09-15, when RFC-0003 § 3 added `Refunds::create` and `Refunds::cancel`;
+the conclusion did not move, because no rail and no route can reach them.)_
+The cases that prove it now seed their `pending` refund **through
+`Refunds::create`** — a hand-written `INSERT` would produce a refund with no
+matching reservation, a state the write path cannot reach — while
+`backends/tests/integration/tests/refunds.rs` still seeds its rows directly,
+for the reason its module header gives.
 
 What is built is the _database's_ answer and the transaction that writes it.
 What is not built is everything that would produce a refund in the first

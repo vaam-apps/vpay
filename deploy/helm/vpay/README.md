@@ -54,9 +54,12 @@ kubectl create secret generic vpay-oauth-signing-key \
 
 # One key per `${VAR}` in the baked config of the image you are deploying:
 #   grep -o '${[A-Z_]*}' config/application.yml | sort -u
-# Seven on this branch (2026-09-03): MERCHANT_WEBHOOK_SECRET, MTN_API_KEY,
-# MTN_API_USER, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET,
-# ORANGE_MERCHANT_KEY — the list grows as features land.
+# Ten on this branch (2026-09-15): MERCHANT_WEBHOOK_SECRET, MTN_API_KEY,
+# MTN_API_USER, MTN_DISBURSEMENT_API_KEY, MTN_DISBURSEMENT_API_USER,
+# MTN_DISBURSEMENT_SUBSCRIPTION_KEY, MTN_SUBSCRIPTION_KEY, ORANGE_CLIENT_ID,
+# ORANGE_CLIENT_SECRET, ORANGE_MERCHANT_KEY — the list grows as features land.
+# The three MTN_DISBURSEMENT_* names arrived with `mtn_momo::refund` on
+# 2026-09-15 and may be EMPTY, but must be present: unset is exit 78.
 # `--from-env-file`, not `--from-literal`: a credential on a command line is
 # in your shell history and in `ps` output. See
 # docs/runbooks/rotate-rail-credentials.md §2.

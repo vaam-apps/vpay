@@ -1,0 +1,37 @@
+# Pins the Flutter/Dart pair `just install-flutter`, `just analyze-flutter`
+# and `just test-flutter` read against, the way `rust-toolchain.toml` pins
+# the Rust compiler and `.nvmrc` pins Node — one file, one number, read back
+# rather than duplicated. No CI job and no `vpay-ci` VM installs this pin yet
+# (2026-09-13, D-M3): these recipes exist so the day a Flutter SDK does land
+# in CI, it lands on this version rather than on whatever the image happens
+# to have.
+#
+# CHOSEN, NOT MEASURED AS A FLOOR: this is the version installed on the host
+# these recipes were authored and run against
+# (`/home/selast/dev/tools/flutter/bin`), not a minimum computed from a
+# `pubspec.yaml` SDK constraint the way `rust-toolchain.toml`'s MSRV note
+# reads `cargo metadata`. There is no Dart source in this repository yet to
+# compute one from (`sdks/flutter/vpay_checkout_flutter/` does not exist on
+# this branch) — Lane A's `pubspec.yaml` will declare its own
+# `environment: sdk:` constraint, and whoever wires this pin into CI should
+# check the two agree.
+#
+# CHANNEL IS NOT CLEAN HERE, UNLIKE `rust-toolchain.toml`'s `channel =
+# "1.98.0"`. `flutter --version` on the authoring host reports:
+#
+#   Flutter 3.47.2 • channel [user-branch] • https://github.com/flutter/flutter.git
+#   Tools • Dart 3.13.2 • DevTools 2.60.0
+#
+# `[user-branch]` is not `stable`, `beta` or `dev` — it means this Flutter
+# checkout is on a detached or locally-named ref rather than a channel branch
+# `flutter channel` recognises, the exact drift `rust-toolchain.toml`'s
+# `channel` field is designed to make impossible for the Rust half of this
+# toolchain. The maintainer may want to re-pin this host to a real channel
+# (`flutter channel stable && flutter upgrade`) before this ships in an
+# image; recorded here rather than silently worked around, per this
+# repository's rule against implying more certainty than was checked.
+
+[flutter]
+version = "3.47.2"
+dart = "3.13.2"
+channel = "[user-branch]" # not a clean channel pin — see the note above

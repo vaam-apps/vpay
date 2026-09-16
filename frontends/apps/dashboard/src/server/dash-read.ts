@@ -56,7 +56,7 @@
  * and not allowed (wrong scope, wrong merchant claim), which a new token from
  * the same registration would answer identically.
  */
-import { getJson, type ApiResult } from "./api";
+import { getJson, postJson, type ApiResult } from "./api";
 import type { DashboardConfig } from "../config/settings";
 import { completeAuthorizationCode } from "./oauth";
 
@@ -94,6 +94,81 @@ export async function readDash<T>(
   }
 
   return getJson<T>(config.apiBaseUrl, path, {
+    bearer: exchanged.value.access_token,
+  });
+}
+
+/**
+ * One page of a CrateStack `Page<T>`, as the generated transport answers it.
+ *
+ * **camelCase, and it is the one place in this app that is.** Every vpay wire
+ * type is snake_case — `verify-serde` refuses a serialisable type that does
+ * not spell that convention — but `Page<T>` is **CrateStack's** type, and
+ * `cratestack-core-0.12.0/src/page.rs` declares it
+ * `#[serde(rename_all = "camelCase")]`. So the keys are `totalCount` and
+ * `pageInfo`, not `total_count` and `page_info`.
+ *
+ * This was found by running it, not by reading it: a `total_count` field here
+ * parsed as `undefined` against a `200` that carried every row correctly, and
+ * the pager rendered "1–3 of  so far" with the count simply missing. Nothing
+ * failed — which is exactly why the mismatch is written down here rather than
+ * left for the next reader to re-discover.
+ */
+export interface ProcedurePage<T> {
+  readonly items: readonly T[];
+  readonly totalCount: number | null;
+  readonly pageInfo: {
+    readonly hasNextPage: boolean;
+    readonly hasPreviousPage: boolean;
+  };
+}
+
+/**
+ * Call a `/dash/v1` **procedure**, with [`readDash`]'s token handling.
+ *
+ * The three Lane D read slices are CrateStack procedures rather than REST
+ * routes, so they are reached by `POST /dash/v1/$procs/<name>` with the
+ * arguments in the body. Everything about the *session* is identical to a
+ * plain read, which is the whole reason this delegates rather than
+ * reimplements: one `401` mints a replacement token once and retries, and a
+ * second `401` is answered rather than looped on. That "mint once, then
+ * believe the refusal" rule is the thing most likely to be quietly lost by a
+ * second copy of it, and `dash-read.test.ts` is what holds it.
+ *
+ * **Offset paging, not cursor paging.** `Page<T>` is `{items, total_count,
+ * page_info}` and its `page` argument is `{limit, offset}`. That differs
+ * from `GET /dash/v1/payment_intents`, which is cursor-paged and shares
+ * `crate::v1::paging` with the merchant API on purpose so `has_more` means
+ * the same thing to an operator and to a merchant. The two shapes are not
+ * reconciled here and must not be: changing the payments list's paging is a
+ * reserved decision, and changing a procedure's would make `total_count`
+ * unanswerable.
+ *
+ * @param config the settings this container booted with
+ * @param procedure the procedure name, e.g. `searchRefunds`
+ * @param args the procedure's arguments — `{ page, filter }`
+ * @param bearer the access token read from the `staff_sessions` row
+ * @param sessionToken the staff session token, to mint a replacement with
+ */
+export async function callDashProcedure<T>(
+  config: DashboardConfig,
+  procedure: string,
+  args: unknown,
+  bearer: string,
+  sessionToken: string,
+): Promise<ApiResult<T>> {
+  const path = `/dash/v1/$procs/${procedure}`;
+  const first = await postJson<T>(config.apiBaseUrl, path, args, { bearer });
+  if (first.ok || first.failure.status !== 401) {
+    return first;
+  }
+
+  const exchanged = await completeAuthorizationCode(config, sessionToken);
+  if (!exchanged.ok) {
+    return first;
+  }
+
+  return postJson<T>(config.apiBaseUrl, path, args, {
     bearer: exchanged.value.access_token,
   });
 }

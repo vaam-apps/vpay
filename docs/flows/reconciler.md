@@ -60,6 +60,19 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 Extended 2026-09-12 (issue #100) with the queue's own claim latency, measured
 and bounded — see the fourth bullet below; nothing in the loop changed,
 because the bound was met.**
+
+**Fixed 2026-09-16: the claim latency the bullet below measures was not the
+whole latency a payment saw.** A fresh `poll_charge` job was committed at
+`run_at = now()`, so a claim task that was _not_ idling — which, as that bullet
+says, is the fast case — took it during the confirm's own rail call, read a
+`submitting` charge, and answered `RecoveryAction::Wait`: no status query, and
+the job rescheduled to `created_at + 60 s`. The charge reached `submitted`
+milliseconds later and its first poll was still a minute away. The loop is
+unchanged and the recovery table is unchanged; `vpay-api` now commits that job
+a `POLL_AFTER_CONFIRM_GRACE` out and pulls it forward inside the
+`submitting → submitted` compare-and-swap. Measured before and after against a
+real stack in
+[../status/verification/2026-09-16-confirm-poll-job-latency.md](../status/verification/2026-09-16-confirm-poll-job-latency.md).
 The poll ladder, the recovery table and the 24-hour escalation all run —
 against a real Postgres and a real WireMock rail, in
 `backends/tests/integration/tests/worker_{recovery,e2e}.rs`. What is still
@@ -95,8 +108,10 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   measure the same. `worker_claim_latency.rs` pins **3 s** for the claim and
   **1 s** for the walk, and goes red both for a slower `IDLE_SLEEP` and for a
   loop that sleeps per claimed job. The loop was not changed; the numbers, the
-  mutations and the one thing this leaves open: a single task runs one job at a
-  time, so a slow handler ahead of an arrival delays it by its whole duration.
+  mutations and the one thing this leaves open (a single task runs one job at a
+  time, so a slow handler ahead of an arrival delays it by its whole duration)
+  are in
+  [../status/verification/2026-09-12-worker-claim-latency.md](../status/verification/2026-09-12-worker-claim-latency.md).
 - **The callback endpoint exists.** `POST /provider/{code}/callback`
   (`vpay_api::provider_callback`) is the route the section above describes,
   built 2026-09-04. It never changes state: it enqueues the charge's

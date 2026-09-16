@@ -217,13 +217,48 @@ predictable consequence of the header, not because anything observed it.
   intent currency is not the rail's settlement currency is a 400.
 - **There is no `failed` status.** A refused charge returns the intent to
   `requires_payment_method` with `last_payment_error` set.
-- **`search`, `POST /v1/refunds` and `/v1/balance`** are not routed and answer
-  the honest `404 unknown_route`. **`GET /v1/refunds/{id}` _is_ routed** since
-  2026-09-05 (issue #45) and answers a Stripe-shaped `refund` — but **nothing
-  here drives it through stripe-node's `refunds` resource**, so
-  `stripe.refunds.retrieve()` working is untested rather than known, exactly
-  as `stripe.events.list()` is below. `stripe.refunds.create()` remains a
-  `404`, and correctly so: no rail can refund.
+- **`search` and `/v1/balance`** are not routed and answer the honest
+  `404 unknown_route`. `POST /v1/refunds` was in that list until
+  **2026-09-16**, when RFC-0003 § 2 mounted it along with
+  `POST /v1/refunds/{id}` (metadata only, as Stripe), `GET /v1/refunds` and
+  `POST /v1/refunds/{id}/cancel`; `GET /v1/refunds/{id}` has been routed
+  since 2026-09-05 (issue #45). All five answer Stripe-shaped bodies — but
+  **nothing here drives any of them through stripe-node's `refunds`
+  resource**, so `stripe.refunds.retrieve()` and `stripe.refunds.create()`
+  working is untested rather than known, exactly as `stripe.events.list()` is
+  below.
+
+  **Two divergences a Stripe-shaped client will meet on the create**, both
+  deliberate and neither of them Stripe's:
+
+  - `destination[<payment_method_type>][msisdn]` is **required** on every
+    rail vpay carries, because a mobile-money refund is an outbound transfer
+    and needs a payee (RFC-0003 § 1). Stripe has no such parameter, so
+    `stripe.refunds.create({ payment_intent })` is a `400` naming
+    `destination`. **Both merchant SDKs carry the field** — `destination` on
+    `CreateRefundParams` in `sdks/rust/src/resources.rs` and on the
+    `CreateRefundParams` in `sdks/nodejs/src/types.ts`, each sending
+    `destination[<rail>][msisdn]` — so a vpay SDK is not where this
+    divergence bites; a Stripe-shaped client is.
+    ~~Neither merchant SDK carries the field either — a dated gap in
+    [../sdks/parity.md](../sdks/parity.md).~~ **— corrected 2026-09-16.** That
+    sentence was written by the seam pass when it was true, and the same day's
+    SDK work made it false; `parity.md`'s `destination` row has been ✅/✅
+    since, and its § "Not that the server offers every capability" retracts
+    the gap in its own words. Two vpay documents contradicting each other on
+    the same field is the failure this line is kept to record.
+  - `POST /v1/refunds/{id}` takes `metadata` and nothing else, which **is**
+    Stripe's contract. Where vpay diverges is the refusal: Stripe answers an
+    unaccepted parameter with `parameter_unknown`, and vpay answers a `400`
+    naming the parameter it will not take (`amount`, `reason`,
+    `payment_intent` or `destination`) with a sentence saying to cancel and
+    re-create instead.
+
+  And the thing no compatibility note can carry: **a `201` does not mean
+  money came back.** The refund is `pending`, no rail in this repository has
+  ever returned money, and nothing settles a `pending` refund (RFC-0003 open
+  question 8).
+
 - **`/v1/events` and `/v1/events/{id}` _are_ routed** (Step 5), and their
   bodies are Stripe's `event` shape — but **nothing here drives them through
   stripe-node's `events` resource**, so `stripe.events.list()` working is

@@ -12,6 +12,17 @@ workspace = true
 
 [dependencies]
 vpay-core.workspace = true
+# The double-entry types this crate persists: `ledger::post_in_tx` takes a
+# `vpay_ledger::Transaction` and calls its `validate()` before its first
+# statement (RFC-0003 § 4). A *new* edge as of that work — the crate used to
+# be linked only into `vpay-api` and `vpay-worker`, and only so that
+# `LedgerError` had a slot in the error tree.
+#
+# It does not create a cycle: `vpay-ledger` depends on `vpay-core` and nothing
+# else in this workspace, and in particular not on this crate — the ledger
+# types know nothing about how they are stored, which is why the
+# `account_kind` labels live in `ledger.rs` here and not there.
+vpay-ledger.workspace = true
 # The metrics facade, for `vpay_charge_transitions_total`. It is recorded by
 # `charges::record_transition` and called by the six statements that can move
 # `charges.state` — three here and three in `settlement` — because every

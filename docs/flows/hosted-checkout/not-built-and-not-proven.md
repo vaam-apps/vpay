@@ -58,9 +58,10 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   `preview.ts` imports `app/globals.css` itself rather than restating it.
   All 22 clear WCAG AA; a deliberately unreadable `#3a3a3a` probe fails at
   1.73:1 against the real `#0a0b0d` ground, which is what proves the run can
-  return a negative verdict at all. This is checkout's browser-level contrast
-  verdict; the dashboard has its own Storybook gate. `outcome-contrast.test.ts`
-  remains the no-browser measurement and is not retired by it.
+  return a negative verdict at all. This is the only browser-level contrast
+  verdict in the repository — `outcome-contrast.test.ts` remains the
+  no-browser measurement and is not retired by it. See
+  `docs/status/verification/2026-09-12-storybook-restored.md`.
 - **`checkout_not_configured` answers `500`, not `503`.** A truthful `503`
   needs either a new `Category` or `Category::Configuration` moving — an
   ADR-level change to [ADR-0011](../../adr/0011-error-modelling.md) touching every
@@ -110,7 +111,9 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   story entries plus 1 autodocs entry in `storybook-static/index.json`, the
   theme present in the built stylesheet (`--color-base-100` defined 3×,
   referenced 22×); `just test-storybook` exit 0, 22 passed, 0 skipped, from
-  a cold cache.
+  a cold cache. See
+  `docs/status/verification/2026-09-12-storybook-restored.md` and
+  `docs/status/verification/2026-09-13-storybook-reverified.md`.
 
 ## What the horizon emits, and what it does not
 

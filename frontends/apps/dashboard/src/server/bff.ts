@@ -102,6 +102,8 @@ import { originIsAllowed, HOST_HEADER, ORIGIN_HEADER } from "./csrf";
 import { gateFor, refusalFor } from "./gate";
 import { completeAuthorizationCode } from "./oauth";
 import { readSession } from "./session";
+import { callDashProcedure, type ProcedurePage } from "./dash-read";
+import { PROCEDURE_OF } from "../dash/resource-name";
 
 /**
  * The header that says what kind of context issued a request.
@@ -543,6 +545,101 @@ export async function paymentIntentsListResponse(
     data: page.data,
     has_more: page.hasMore,
     cursor: page.cursor,
+  }));
+}
+
+/**
+ * The largest page a procedure list will ask for.
+ *
+ * A deliberate copy of the procedures' own `MAX_PAGE_LIMIT`, which is itself
+ * a copy of `vpay_api::v1::paging::MAX_LIMIT`. Sending more is not a security
+ * problem — the body clamps it, and a container test proves the clamp — but
+ * asking for a page the server will silently shrink makes "one page" mean two
+ * things between this layer and that one.
+ */
+const MAX_PROCEDURE_LIMIT = 100;
+const DEFAULT_PROCEDURE_LIMIT = 20;
+
+/** A non-negative integer from the query string, or the fallback. */
+function boundedNumber(
+  raw: string | undefined,
+  fallback: number,
+  max: number,
+): number {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.min(parsed, max);
+}
+
+/**
+ * `GET /api/dash/<resource>` for a resource served by a **procedure**.
+ *
+ * The three Lane D slices are CrateStack procedures, so this is a `POST` to
+ * `/dash/v1/$procs/<name>` made *by this process*, on behalf of the browser's
+ * `GET`. The browser can never `POST` here: `middleware.ts` answers `405` to
+ * every method but `GET`/`HEAD` on `/api/dash/:path*`.
+ *
+ * **Offset paging, and the answer says so.** A procedure answers
+ * `{items, total_count}`; the payments list answers `{data, has_more,
+ * cursor}`. These are not reconciled into one shape, on purpose — the
+ * payments list is cursor-paged because it shares `crate::v1::paging` with
+ * the merchant API so `has_more` means the same thing to an operator and a
+ * merchant, and a procedure's `total_count` is exact for the statement that
+ * returned it. Flattening them would make one of those two claims false.
+ *
+ * **No filter is forwarded yet.** Each procedure declares its own filter
+ * type and each validates an unknown value into a `400` naming the
+ * parameter; wiring a filter that this layer does not validate identically
+ * would produce two different answers to the same typo. The page is sent
+ * with an empty filter and the screens offer no filter controls, which is
+ * the honest pairing.
+ */
+export async function procedureListResponse(
+  request: Request,
+  resource: string,
+  config: DashboardConfig | null,
+): Promise<NextResponse> {
+  const reader = await readerFor(request, config);
+  if (!reader.ok) {
+    return reader.response;
+  }
+
+  const procedure = PROCEDURE_OF[resource];
+  if (procedure === undefined) {
+    // Not reachable through a route this app declares; answered the way a
+    // path nothing serves is answered rather than with a sentence naming
+    // the resource.
+    return refusal(404, "No such resource.");
+  }
+
+  const params = searchRecord(request.url);
+  const limit = boundedNumber(
+    params["limit"]?.[0],
+    DEFAULT_PROCEDURE_LIMIT,
+    MAX_PROCEDURE_LIMIT,
+  );
+  const offset = boundedNumber(
+    params["offset"]?.[0],
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+
+  const result = await callDashProcedure<ProcedurePage<unknown>>(
+    reader.session.config,
+    procedure,
+    { page: { limit, offset }, filter: {} },
+    reader.session.accessToken,
+    reader.session.sessionToken,
+  );
+
+  return serve(result, (page) => ({
+    object: "list",
+    data: page.items,
+    total_count: page.totalCount,
+    limit,
+    offset,
   }));
 }
 

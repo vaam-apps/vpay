@@ -1,5 +1,5 @@
 //! The dashboard's CrateStack auth seam (Lane C,
-//! `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`).
+//! `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`).
 //!
 //! `cratestack::AuthProvider` (`cratestack-core-0.12.0/src/context.rs:92`)
 //! has a blanket impl for any `Fn(&http::HeaderMap) -> Result<CratestackContext,

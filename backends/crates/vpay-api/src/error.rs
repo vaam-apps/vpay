@@ -1376,6 +1376,7 @@ mod tests {
             (
                 || {
                     ApiError::Ledger(LedgerError::Unbalanced {
+                        currency: vpay_core::Currency::Xaf,
                         debits: 5_000,
                         credits: 4_900,
                     })
@@ -2134,10 +2135,12 @@ mod tests {
         assert_delegates!(ApiError::Db(leaky_db_error()), leaky_db_error());
         assert_delegates!(
             ApiError::Ledger(LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
                 debits: 5_000,
                 credits: 4_900,
             }),
             LedgerError::Unbalanced {
+                currency: vpay_core::Currency::Xaf,
                 debits: 5_000,
                 credits: 4_900,
             }

@@ -20,11 +20,19 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > (`just test-e2e`). Every rail in every one of those runs is a
 > `wiremock/wiremock` container reached over HTTP.
 >
-> **What has never happened.** No HTTP call to MTN's or Orange's own
-> endpoints — not production, not even their sandboxes. No payer has been
-> prompted on a handset and no money has moved. No cluster has ever run vpay.
-> The dashboard supports staff sign-in and payment reads against the local test
-> stack; it has not run in a production deployment.
+> **What has never happened.** No payer has been prompted on a handset, no
+> money has moved, no webhook has reached a merchant endpoint outside this
+> repository, no rail has ever refunded anything, and no cluster has ever run
+> vpay. The dashboard supports staff sign-in and tenant-bound reads against the
+> local test stack; it has not run in a deployment.
+>
+> _(This said "no HTTP call to MTN's or Orange's own endpoints — not
+> production, not even their sandboxes" until 2026-09-16, and had been wrong
+> since **2026-09-15**, when one EUR `mtn_momo` PaymentIntent was created,
+> confirmed and settled against **MTN's real sandbox**. The payer number was an
+> MTN-sandbox test MSISDN the sandbox settles by itself. Orange's rail has
+> still never been called, and neither has MTN's Disbursements product, which
+> is what a refund on that rail is. See [`docs/status.md`](docs/status.md).)_
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask
@@ -142,14 +150,31 @@ its own — asserting every entry answers `401` without a token
 (`every_registered_v1_path_answers_401_without_a_token`,
 `backends/tests/integration/tests/payment_intents.rs`).
 
-**`POST /v1/refunds` and `GET /v1/balance` are routed nowhere** and answer the
-honest 404 from the nest's fallback. Creating a refund will keep doing so until
-a rail can refund: `mtn_momo::refund` is `NotImplemented` (MTN refunds are the
-Disbursements product, and no deployment holds those credentials) and
-`orange_money` declares `supports_refunds: false`, which is a permanent
-capability answer rather than unbuilt work. So `GET /v1/refunds/{id}` is a read
-with no writer: **nothing in this repository creates a `refunds` row**, and
-every row its tests read was inserted by the suite itself.
+**`GET /v1/balance` is routed nowhere** and answers the honest 404 from the
+nest's fallback. `POST /v1/refunds` was beside it in that sentence until
+2026-09-16, when RFC-0003 § 2 mounted the create, the update, the list and
+the cancel alongside the read — so a merchant can now create a refund, and
+the database half it reaches has been there since 2026-09-15:
+`vpay_db::Refunds::create` inserts the row and reserves its amount against
+the intent in one transaction (RFC-0003 § 3), exercised against a real
+Postgres.
+
+**A `201` from that route does not mean money came back**, and nothing in
+this repository can make it mean that yet. The refund is written as
+`pending`, `charge.refunded` is emitted in the same transaction, the rail is
+instructed — and **nothing settles a `pending` refund**, because the provider
+port has no refund status read and there is no refund poll ladder (RFC-0003
+open question 8, open). The _rail_ half moved on 2026-09-15 and is in two
+states, **neither of them `Unsupported`**:
+`mtn_momo::refund` makes MTN's Disbursements `transfer` call (RFC-0003 § 5) —
+but **no REAL MTN Disbursements credential exists in this project and MTN's
+Disbursements product has never been called from this repository**, so it is
+WireMock-proven and rail-unproven — the only subscription key anywhere is the
+stub the e2e/demo stack points at a WireMock container, which is what the SDKs'
+live refund suites drive — while `orange_money::refund` is a declared
+`NotImplemented` token, because an Orange refund is an outbound transfer this
+repository has no specification to write one against. Both rails declare
+`supports_refunds: true`: that gap is vpay's, not the rails'.
 
 Two other surfaces exist: `/v1/browser`, which a payer's own page calls with a
 publishable key and an intent's `client_secret` instead of a bearer token
@@ -192,8 +217,8 @@ nineteen models carry statements `vpay-server` actually runs** — `currencies`,
 `staff_sessions`, `oauth_authorization_codes` and `credentials`; the six that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
 `ledger_entries`, plus `rate_limit_windows`, whose SQL remains hand-written.
-_(Measured 2026-09-13; this said "nine of thirteen" and had been stale since
-S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
+_(Measured 2026-09-16 by counting `@@allow` arms; this said "nine of thirteen"
+and had been stale since S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
 authoritative schema, and this file has diverged from it on constraints
 CrateStack's grammar cannot express. See
 [`docs/reference/vpay-db.md`](docs/reference/vpay-db.md#cratestack).
@@ -383,7 +408,16 @@ the database. In a real deployment it is a Kubernetes Secret and
 # an unresolved one is a fatal, named startup error — not an empty string.
 export MTN_SUBSCRIPTION_KEY=dev MTN_API_KEY=dev \
        MTN_API_USER=11111111-2222-3333-4444-555555555555 \
+       MTN_DISBURSEMENT_SUBSCRIPTION_KEY= MTN_DISBURSEMENT_API_KEY= \
+       MTN_DISBURSEMENT_API_USER= \
        ORANGE_MERCHANT_KEY=dev ORANGE_CLIENT_ID=dev ORANGE_CLIENT_SECRET=dev
+# The three MTN_DISBURSEMENT_* names were added on 2026-09-15 with
+# `mtn_momo::refund` (RFC-0003 section 5). Empty is the right value here: no
+# REAL MTN Disbursements credential exists in this project, and `refund`
+# answers ProviderError::Config naming the blank one. (The e2e/demo stack sets
+# stub values instead, aimed at a wiremock container -- `just gen-demo-keys`.)
+# They must still be *set* —
+# unset is an unresolved placeholder, which is the fatal error above.
 
 # flags win over env vars
 cargo run -p vpay-server -- \

@@ -118,7 +118,7 @@ ADR-0017; the second half is exp28's, and until it was true everything below
 was reachable over HTTP and by nothing a person could click.
 
 ~~**No login has ever been performed.**~~ Corrected 2026-09-07
-([ADR-0017](../adr/0017-staff-authentication.md)). The cases in
+([ADR-0017](../adr/0017-staff-authentication.md)). Thirteen cases in
 `backends/tests/integration/tests/staff_sign_in.rs` drive the real
 `vpay_api::router` on a real socket over a real Postgres, and **that suite
 mints no token at all**: every token it presents came out of
@@ -135,8 +135,8 @@ subject tomorrow — because their _names_ hardcoded exactly two authentication
 methods on a table that is not about credentials.
 
 That the flow below is unchanged is the **acceptance criterion** and not an
-accident: the suite named in the paragraph above passes with every
-assertion exactly as it was written against the pre-split behaviour. Three
+accident: the suite named in the paragraph above passes **48/48 with every
+assertion exactly as it was written against the pre-split behaviour**. Three
 fixtures and four doc comments moved; not one assertion did. The migration is
 one file and therefore one transaction, and it copies every live row's material
 **byte for byte** — the argon2id PHC string verifies under the same unchanged
@@ -166,7 +166,8 @@ What is built, in the order a request meets it:
   `schemas/vpay.cstack` model and shaped so that **every** repository method
   runs through CrateStack — no `jsonb`, no `bytea`, no native enum, no
   `DEFAULT` on any column a writer names. `docs/reference/vpay-db.md` §
-  CrateStack has the account.
+  CrateStack has the account, and
+  `docs/status/cratestack/2026-09-13-credentials.md` has 0044's measurement.
 - `vpay-server staff add --merchant … --email … --name …`, the **only** way a
   staff member is created. No HTTP endpoint creates one and there is no
   self-service sign-up. It prints a one-time password on stdout alone —
@@ -214,7 +215,8 @@ to the bound tenant when none is named, and answering `400` for a merchant
 this deployment does not serve. No write path: ADR-0008's boundary is
 checked before the staff row and therefore before `is_admin` is even read.
 `vpay_api::dash::DashboardTenancy` (`Bound`/`ChosenByAdmin`) is the seam a
-CrateStack procedure transport mints its tenant context from.
+future CrateStack transport (the dashboard-nav plan's Lane C) mints its
+tenant context from.
 `backends/tests/integration/tests/dashboard_read_surface.rs` grew from 16 to
 21 cases: an admin reads a merchant other than its own, a non-admin's
 identical override parameter is silently ignored and the uniform-404
@@ -236,7 +238,7 @@ cases for admin and non-admin alike. The review also found that migration
 `0043`'s dropped `DEFAULT` broke five hand-written `INSERT`s in
 `postgres_smoke.rs` — `staff_members` has a second writer the compiler
 cannot see — and repaired them by naming the column rather than by restoring
-a default.
+a default. [Verification log](../status/verification/2026-09-13-adr-0018-admin-role-review.md).
 
 **Added 2026-09-10 (issue #79 items 1-3):**
 
@@ -316,6 +318,7 @@ a default.
 5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
    untouched. `TokenManager` holds one key for the life of the process,
    rotation is restart-based, and nothing re-reads the key file.
+6. **The rate limit is per replica** — see "Every refusal is one answer".
 
 **What the two blockers this document recorded turned out to be:**
 
@@ -338,9 +341,9 @@ Solved by changing the _validator_ rather than the grant — ADR-0017 decision
 4. **Key rotation** — see item 5 of what is not built. Unchanged.
 
 What is proven about the dashboard **validator** is now proven about the whole
-path: `backends/tests/integration/tests/dashboard_read_surface.rs` covers which
-rows a validly-minted token may read and which credentials are refused, and
-`staff_sign_in.rs` covers how one is obtained. The
+path: `backends/tests/integration/tests/dashboard_read_surface.rs` (15 cases)
+covers which rows a validly-minted token may read and which credentials are
+refused, and `staff_sign_in.rs` (13 cases) covers how one is obtained. The
 first file's own header still opens by saying it proves nothing about signing
 in, and that remains true _of that file_.
 
@@ -349,4 +352,7 @@ pins. `sha2` gained its first consumer on 2026-09-02; **`hmac`, `subtle` and
 `aes-gcm` gained theirs on 2026-09-07** — the TOTP HMAC, the constant-time
 code comparison, and the sealed TOTP secret respectively. None is unused now.
 
+This flow was tracked as **Phase 2b** in `docs/roadmap.md`, removed
+2026-09-16; the maintainer questions it left open are in
+[`docs/open-decisions.md`](../open-decisions.md).
 See [../status.md](../status.md) for the full, row-by-row picture.

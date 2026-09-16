@@ -1,5 +1,5 @@
 /**
- * The "More" drawer: the nav tree it renders, the accessible name and
+ * The "Menu" drawer: the nav tree it renders, the accessible name and
  * description vaul requires, the theme control it exists to make reachable,
  * the sign-out that must stay a POST inside it too, and the current-entry
  * rule it has to share with the rail.
@@ -49,9 +49,26 @@ function renderShell() {
   );
 }
 
-/** Click "More" and return the open panel, failing if it never opened. */
+/**
+ * Click "Menu" and return the open panel, failing if it never opened.
+ *
+ * **`getAllBy`, and the first one, because `AppShell` mounts the trigger
+ * twice on purpose.** One goes in `SideNav`'s `accountSlot`, which that
+ * component renders **only** in the ≥1280px in-flow sidebar; the other sits
+ * in `<main>` behind `xl:hidden` so every narrower width can still reach the
+ * theme control and the nav tree. Exactly one is ever visible in a browser —
+ * but jsdom applies no CSS, so both are here and a `getBy` throws "found
+ * multiple elements".
+ *
+ * Which one this clicks does not matter to anything below: both render the
+ * same `MoreMenu` with the same props, only one drawer can be open at a
+ * time, and `MoreDetailDrawer` is modal — Radix `aria-hidden`s the rest of
+ * the document while it is open, which is what keeps the sign-out assertion
+ * below true with two triggers mounted.
+ */
 async function openDrawer(): Promise<HTMLElement> {
-  screen.getByRole("button", { name: /more/i }).click();
+  const triggers = screen.getAllByRole("button", { name: /^menu$/i });
+  triggers[0]!.click();
   return await screen.findByRole("dialog");
 }
 
@@ -66,7 +83,7 @@ describe("the More drawer", () => {
     renderMenu();
     const panel = await openDrawer();
     const tree = within(panel).getByRole("navigation", {
-      name: "More destinations",
+      name: "Menu destinations",
     });
     const links = within(tree).getAllByRole("link");
 
@@ -92,7 +109,7 @@ describe("the More drawer", () => {
     renderMenu();
     const panel = await openDrawer();
 
-    expect(panel).toHaveAccessibleName("More");
+    expect(panel).toHaveAccessibleName("Menu");
 
     const describedBy = panel.getAttribute("aria-describedby");
     expect(describedBy, "the drawer names a description element").toBeTruthy();
@@ -193,8 +210,10 @@ describe("the More drawer", () => {
   });
 
   it("never puts two sign-outs in the accessibility tree at once", async () => {
-    // `AppShell` mounts `SignedInBar` twice — once always-visible in
-    // `<main>` (which `dashboard.cy.ts` needs) and once in this drawer. That
+    // `AppShell` mounts `SignedInBar` three times — in `SideNav`'s
+    // `accountSlot` (>=1280px only), in `<main>` behind `xl:hidden` for
+    // every narrower width (which `dashboard.cy.ts` needs at its 1000px
+    // viewport), and once in this drawer. That
     // is safe rather than a duplication bug, and this is the measurement
     // behind that claim rather than an argument for it: `MoreDetailDrawer`
     // is the dimmed, MODAL variant, so Radix marks the rest of the document
@@ -206,10 +225,18 @@ describe("the More drawer", () => {
     // { name: /sign out/i })` unambiguous, which would otherwise throw
     // "found multiple elements" the moment a case opened the drawer.
     renderShell();
-    expect(
-      screen.getAllByRole("button", { name: /sign out/i }),
-      "closed: only the <main> copy",
-    ).toHaveLength(1);
+    // ONE when closed. The account block is mounted in `<main>` behind
+    // `xl:hidden`, and `SideNav`'s `accountSlot` is given content only when
+    // the sidebar is actually shown (>=1280px) — `app-shell.tsx` says why
+    // at length. jsdom's `matchMedia` reports no match, so the rail copy is
+    // not in this tree at all.
+    //
+    // That gating exists because the slot is rendered at EVERY width and
+    // merely hidden by CSS, so a second copy would be FIRST in the DOM and
+    // invisible — which is exactly how `dashboard.cy.ts` came to click a
+    // sign-out it could not see.
+    const closed = screen.getAllByRole("button", { name: /sign out/i });
+    expect(closed, "closed: only the <main> copy").toHaveLength(1);
 
     await openDrawer();
     expect(
@@ -232,6 +259,6 @@ describe("the More drawer", () => {
     expect(h1s[0]?.textContent).toBe("vpay dashboard");
     expect(
       [...document.body.querySelectorAll("h2")].map((h) => h.textContent),
-    ).toContain("More");
+    ).toContain("Menu");
   });
 });

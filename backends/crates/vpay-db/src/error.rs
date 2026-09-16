@@ -161,6 +161,132 @@ pub enum DbError {
         key: String,
     },
 
+    /// A `currency_code` stored on a row is not one `vpay_core::Currency`
+    /// models, so the amount beside it cannot be turned into a
+    /// `vpay_core::Money`.
+    ///
+    /// Reachable from exactly one place — [`crate::settlement`], building the
+    /// `Money` a ledger posting's legs carry (RFC-0003 § 4) — and unreachable
+    /// in a coherent deployment. `currencies` is seeded from
+    /// `Currency::ALL` at boot (`config_reconcile`), and an intent cannot be
+    /// created in a code `vpay-api` could not parse, so a row carrying one is
+    /// a database somebody has written to by hand.
+    ///
+    /// `Category::Internal`, therefore: it is not a request a merchant can
+    /// make, no retry changes it, and the settlement that raised it rolls
+    /// back whole rather than posting a leg in a currency vpay cannot add up.
+    /// Choosing `Storage` instead would put "retry, vpay is unavailable" on a
+    /// settlement that will fail identically forever.
+    #[error(
+        "currency {code} is stored on {table} but is not a currency this build models; no ledger \
+         posting can be built for it"
+    )]
+    UnknownCurrency {
+        /// The code as stored. Never a secret — an ISO-4217 code.
+        code: String,
+        /// Which table it was read from, for the operator reading the log.
+        table: &'static str,
+    },
+
+    /// A refund would have taken `amount_refunded + amount_refund_pending`
+    /// past the intent's `amount` — migration `0003`'s `no_over_refund`
+    /// CHECK, refusing the write (RFC-0003 § 3).
+    ///
+    /// # Why it is a variant and not the `Query` a `23514` otherwise becomes
+    ///
+    /// [`classify_write`] folds every CHECK violation into
+    /// [`DbError::Query`] on the stated grounds that a CHECK guards an
+    /// invariant the application should have enforced first, so reaching one
+    /// is a vpay bug. **This CHECK is the exception, by design.**
+    /// `docs/flows/ledger.md` § "When refunds post" requires the over-refund
+    /// guard to be the database's, precisely so that two concurrent refunds
+    /// serialize on the row lock rather than on an application read that
+    /// races; `vpay_db::Refunds::create` therefore reaches it in normal
+    /// operation, on a request a merchant sent, and the second of two racing
+    /// refunds is refused here with nothing wrong anywhere.
+    ///
+    /// The classification is what makes that difference load-bearing rather
+    /// than cosmetic. `Query` is `Category::Storage` — `503`, "vpay is
+    /// temporarily unavailable, retry" — which on a refund is an instruction
+    /// to re-send a request that can never succeed, and which would also
+    /// have the worker retry it unattended. `Category::Conflict` is `409` and
+    /// [`vpay_core::Retry::Never`], which is the truth: the intent has less
+    /// left to refund than was asked for, and no amount of waiting changes
+    /// it.
+    ///
+    /// The amounts are **not** carried. Reading them back would need a second
+    /// statement against a row this transaction is about to roll back, and
+    /// the number it returned would already be stale — which is the read
+    /// this design exists to avoid. The intent id is what an operator needs
+    /// to look the current figures up for themselves.
+    #[error(
+        "refunding payment intent {payment_intent_id} would exceed what it captured; the \
+         no_over_refund constraint refused the reservation"
+    )]
+    OverRefund {
+        /// The intent whose refundable balance was exhausted.
+        payment_intent_id: String,
+        /// The underlying driver error, kept whole for operator logs.
+        #[source]
+        source: sqlx::Error,
+    },
+
+    /// A `refunds` row's `currency_code` is not the `currency_code` of the
+    /// `payment_intents` row it refunds, so the settlement was refused
+    /// (2026-09-16).
+    ///
+    /// # Why this needs refusing rather than reconciling
+    ///
+    /// `refunds.currency_code` is a real column whose only constraint is the
+    /// foreign key onto `currencies` (migration `0017`). **Nothing in the
+    /// schema ties it to the intent's**, and `docs/flows/money.md` is one
+    /// currency per object with no conversion anywhere — so there is no
+    /// arithmetic that makes a mismatched pair agree. It cannot be resolved
+    /// by picking a side either: by the time
+    /// [`crate::Settlement::apply_refund_succeeded`] builds the posting it
+    /// has already added the refund's `amount` to
+    /// `payment_intents.amount_refunded` and to `invoices.amount_refunded`,
+    /// both denominated in the *intent's* currency and neither looking at a
+    /// currency at all. Whichever code the ledger legs then carried, those
+    /// two totals would already be counting minor units of one currency into
+    /// another.
+    ///
+    /// The refusal aborts the settlement transaction whole, which is the
+    /// fail-closed direction: the flip to `succeeded`, both counters, the
+    /// invoice and the posting all roll back and the refund stays `pending`.
+    ///
+    /// # Why it fires today only for a writer that does not exist yet
+    ///
+    /// `vpay_db::Refunds::create` is the only writer of the column and
+    /// derives it from the intent inside the same transaction —
+    /// [`crate::NewRefund`] has no `currency_code` field for a caller to fill
+    /// — so a coherent deployment cannot produce one. That is precisely
+    /// [`Self::UnknownCurrency`]'s standing, and the same reasoning applies:
+    /// "unreachable from today's call sites" is a fact about today's call
+    /// sites, and `vpay_ledger::Transaction::validate` would not catch the
+    /// mismatch if a second writer ever appeared — it balances each currency
+    /// on its own book, and every leg in the same *wrong* currency balances
+    /// perfectly.
+    ///
+    /// `Category::Internal`: a merchant cannot ask for this, no retry
+    /// changes it, and it pages rather than being reported as somebody's bad
+    /// request.
+    #[error(
+        "refund {refund_id} is denominated in {refund_currency} but payment intent \
+         {payment_intent_id} is in {intent_currency}; vpay converts no currency, so the \
+         settlement was refused rather than posted in either"
+    )]
+    RefundCurrencyMismatch {
+        /// The `re_…` whose settlement was refused.
+        refund_id: String,
+        /// The code stored on the refund. Never a secret — an ISO-4217 code.
+        refund_currency: String,
+        /// The `pi_…` it refunds.
+        payment_intent_id: String,
+        /// The code stored on the intent. Never a secret — an ISO-4217 code.
+        intent_currency: String,
+    },
+
     /// A `currencies` row already exists with a different `exponent` than
     /// the boot-time seed claims — e.g. the deployment says `XAF` has two
     /// decimal places while the database recorded zero.
@@ -331,6 +457,32 @@ pub enum DbError {
     /// wants them matches on it.
     #[error(transparent)]
     Persistence(#[from] crate::PersistenceError),
+
+    /// A ledger posting did not balance, or had fewer than two legs, and was
+    /// therefore not written. Raised by `crate::ledger::post_in_tx`, which
+    /// calls [`vpay_ledger::Transaction::validate`] before its first
+    /// statement (RFC-0003 § 4).
+    ///
+    /// **This is a storage error only in the sense that it stops a write.**
+    /// Nothing about the database is wrong when it fires: the posting vpay
+    /// built for a settlement it had already decided on does not balance,
+    /// which is this system's own invariant failing. Its classification is
+    /// *delegated* to [`vpay_ledger::LedgerError`] for [`Self::Persistence`]'s
+    /// reason — that leaf has already decided that an unbalanced transaction
+    /// is `Category::Internal`, never retried, and pages — and
+    /// `cargo xtask verify-errors` fails if the `Classify` impl below ever
+    /// answers for this variant with a wildcard instead of naming it.
+    ///
+    /// Why it is a variant here rather than a second error type returned
+    /// alongside `DbError`: the caller is a settlement transaction that
+    /// already handles `DbError` and must roll back whole either way, and a
+    /// second error type would make "the posting was refused" and "the
+    /// posting failed to write" two different shapes of the same abandoned
+    /// transaction. Invariant 1 is deliberately not a database constraint
+    /// (`docs/flows/ledger.md`), so this variant is the *only* thing standing
+    /// between an unbalanced posting and the `ledger_entries` table.
+    #[error(transparent)]
+    Ledger(#[from] vpay_ledger::LedgerError),
 }
 
 /// Maps a failed *write* onto the variant that says whose problem it is:
@@ -416,7 +568,14 @@ impl vpay_core::Classify for DbError {
             // `503` and "retry" — see the variant's own comment for why
             // retry advice on a duplicate charge is dangerous rather than
             // merely unhelpful.
-            Self::UniqueViolation { .. } => Category::Conflict,
+            //
+            // An over-refund is the same shape and reaches the same answer
+            // through a different door: the merchant asked for more than the
+            // intent has left, the database refused, and `409`/never-retry is
+            // the honest reply. See the variant for why this one CHECK
+            // violation does not classify as `Storage` the way every other
+            // does.
+            Self::UniqueViolation { .. } | Self::OverRefund { .. } => Category::Conflict,
             // The request named a currency, provider or object that does not
             // exist. Nothing about retrying it unchanged can succeed.
             Self::ForeignKeyViolation { .. } => Category::InvalidRequest,
@@ -428,14 +587,37 @@ impl vpay_core::Classify for DbError {
             // fixes either: a compare-and-swap this crate's own caller was
             // supposed to have set up matched nothing, or a CHECK that
             // closes a vocabulary has gone.
+            //
+            // A stored currency this build does not model is the third
+            // shape of the same thing — see the variant for why it cannot
+            // arise from anything a merchant sent.
+            //
+            // A refund denominated in a currency that is not its intent's is
+            // the fourth, and reaches Internal by the same door: `NewRefund`
+            // has no `currency_code` field, so no request can produce one.
+            // Not `Conflict`: nothing raced and nothing about the merchant's
+            // request was wrong, so `409`/"do not repeat this" would put the
+            // blame on the only party who could not have caused it.
             Self::WriteMatchedNoRow { .. }
             | Self::StaffStatusUnknown { .. }
             | Self::CredentialKindUnknown { .. }
-            | Self::SessionStateUnknown { .. } => Category::Internal,
+            | Self::SessionStateUnknown { .. }
+            | Self::UnknownCurrency { .. }
+            | Self::RefundCurrencyMismatch { .. } => Category::Internal,
             // Delegated, never re-decided. Named explicitly rather than
             // caught by a wildcard, which is both ADR-0011's rule and what
             // `verify-errors` checks.
+            //
+            // `Ledger` delegates for the same reason and reaches
+            // `Category::Internal` by it — but through `vpay_ledger`'s own
+            // decision rather than through a second one taken here, which
+            // matters because `LedgerError::Money` is *not* internal and a
+            // classification written out by hand here would have flattened
+            // the two. `vpay_api::ApiError::Ledger` delegates to the same
+            // leaf, so a ledger failure classifies identically whether it
+            // surfaced through this crate or beside it.
             Self::Persistence(error) => error.category(),
+            Self::Ledger(error) => error.category(),
         }
     }
 
@@ -451,6 +633,12 @@ impl vpay_core::Classify for DbError {
             // exists. A merchant branching on this code needs to tell "you
             // already did this" from "this intent cannot be cancelled now".
             Self::UniqueViolation { .. } => "resource_conflict",
+            // Not `resource_conflict` either: a merchant branching on this
+            // needs "there is not that much left to refund" to be
+            // distinguishable from "you already did this", which is the only
+            // difference that tells them whether to re-send with a smaller
+            // amount or to stop.
+            Self::OverRefund { .. } => "over_refund",
             Self::ForeignKeyViolation { .. } => "invalid_reference",
             Self::CurrencyExponentConflict { .. } => "currency_exponent_conflict",
             Self::ProviderFlowUnknown { .. } => "provider_flow_unknown",
@@ -458,7 +646,19 @@ impl vpay_core::Classify for DbError {
             Self::CredentialKindUnknown { .. } => "credential_kind_unknown",
             Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
+            Self::UnknownCurrency { .. } => "unknown_currency",
+            // Not `unknown_currency`: both codes are currencies this build
+            // models and both are in `currencies`. What is wrong is that
+            // they are not the same one, and an operator grepping the two
+            // apart is the difference between "seed the currency" and "find
+            // the writer".
+            Self::RefundCurrencyMismatch { .. } => "refund_currency_mismatch",
             Self::Persistence(error) => error.code(),
+            // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
+            // `database_…` code, deliberately: nothing about the database
+            // failed, and an operator grepping for a storage incident should
+            // not find this.
+            Self::Ledger(error) => error.code(),
         }
     }
 }

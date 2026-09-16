@@ -18,15 +18,19 @@
 //! `vpay-api`'s `require_dashboard_procedure_token`, over a context built by
 //! `crate::dashboard_transport::ExtensionAuthProvider` from the tenant that
 //! middleware already resolved
-//! (`docs/plans/2026-09-13-dashboard-nav-notes/plan.md`). That context
+//! (`docs/plans/2026-09-13-dashboard-nav-notes/transport.md`). That context
 //! is never `vpay_db::persistence::system_context()` — the only context in
 //! this crate for which `is_system()` is true, and a system context carries
 //! no tenant, so [`tenant_of`] would refuse it exactly as it refuses any
 //! other tenantless caller. `Payments` is no longer `allow(dead_code)`
 //! outside tests, because this transport constructs one in every build —
-//! see `crate::schema`'s note on the `mod` declaration. The transport's
-//! container-backed contract is pinned in
-//! `backends/tests/integration/tests/dashboard_procedure_transport.rs`.
+//! see `crate::schema`'s note on the `mod` declaration. ~~`docs/status.md`
+//! says the same thing in the same words.~~ **Struck by the Lane C review,
+//! 2026-09-13: it does not — `docs/status.md` was not touched by that
+//! commit.** The page that carries this is `docs/status/cratestack.md`,
+//! which indexes
+//! `docs/status/cratestack/2026-09-13-dashboard-procedure-transport.md`;
+//! `crate::schema`'s note says why the page moved.
 //!
 //! # What offset paging cannot promise, and what `seq` does not fix
 //!
@@ -91,6 +95,14 @@ use time::OffsetDateTime;
 use vpay_core::IntentStatus;
 
 use super::cratestack_schema::{self, procedures, types};
+
+// `#[path]` rather than a plain `mod search_refunds;` in `schema.rs`:
+// `resolve_page`, `tenant_of`, `to_chrono` and `to_time` are private
+// `fn`s in THIS file, so only a child of this module can reach them.
+// The other slices import nothing private and so declare themselves in
+// `schema.rs`; normalising this one to match them does not compile.
+#[path = "search_refunds.rs"]
+mod search_refunds;
 
 /// The largest page this procedure will answer.
 ///
@@ -200,6 +212,71 @@ impl procedures::ProcedureRegistry for Payments {
             .map_err(cratestack::cratestack_error_from_sqlx)?;
 
         page_of(rows, limit, offset)
+    }
+
+    // A thin delegation, on purpose: this trait's home is `Payments`, but
+    // the refunds slice's real body — the JOIN onto `payment_intents` that
+    // its own tenancy predicate needs, since `model Refund` has no
+    // `merchant_id` — lives in `search_refunds.rs`, not here. See that
+    // file's module doc for why.
+    async fn search_refunds(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_refunds::Args,
+        authorized: procedures::search_refunds::Authorized,
+    ) -> Result<procedures::search_refunds::Output, CratestackError> {
+        search_refunds::run(db, ctx, args, authorized).await
+    }
+    /// `procedure searchWebhookDeliveries` (Lane D, slice: webhook
+    /// deliveries) — a thin delegation. The real body, including the
+    /// join-based tenancy predicate `webhook_deliveries` needs and this
+    /// table does not, lives in `super::search_webhook_deliveries::search`;
+    /// this method exists only because the generated `ProcedureRegistry`
+    /// trait requires one method per declared procedure on the one type
+    /// that implements it.
+    async fn search_webhook_deliveries(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_webhook_deliveries::Args,
+        _authorized: procedures::search_webhook_deliveries::Authorized,
+    ) -> Result<procedures::search_webhook_deliveries::Output, CratestackError> {
+        super::search_webhook_deliveries::search(db, ctx, args).await
+    }
+    /// `procedure searchCustomers` — a thin delegation, and deliberately no
+    /// more than one. The real body, including its own tenancy predicate and
+    /// its own `anonymized_at` exclusion, is
+    /// `super::search_customers::search_customers`; this method exists only
+    /// because `ProcedureRegistry` requires one implementer for every
+    /// procedure this schema declares, and `Payments` is that implementer.
+    /// `_authorized` is dropped for the reason it is dropped above: the
+    /// witness proves the `@allow` arm already passed, and the body has
+    /// nothing further to ask it.
+    async fn search_customers(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_customers::Args,
+        _authorized: procedures::search_customers::Authorized,
+    ) -> Result<procedures::search_customers::Output, CratestackError> {
+        super::search_customers::search_customers(db, ctx, args).await
+    }
+
+    /// `procedure searchCheckoutSessions` (Lane D, slice: checkout
+    /// sessions) — a thin delegation. The real body, including the two
+    /// payer credentials it refuses to project, is
+    /// `super::search_checkout_sessions::search_checkout_sessions`; this
+    /// method exists only because the generated `ProcedureRegistry` requires
+    /// one implementer for every procedure the schema declares.
+    async fn search_checkout_sessions(
+        &self,
+        db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::search_checkout_sessions::Args,
+        _authorized: procedures::search_checkout_sessions::Authorized,
+    ) -> Result<procedures::search_checkout_sessions::Output, CratestackError> {
+        super::search_checkout_sessions::search_checkout_sessions(db, ctx, args).await
     }
 }
 

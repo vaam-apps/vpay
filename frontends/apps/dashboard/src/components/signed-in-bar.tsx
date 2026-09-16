@@ -36,7 +36,19 @@ export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
         <Code>{merchantId}</Code>
       </span>
       <form action={signOut}>
-        <Button type="submit" variant="ghost" size="sm">
+        {/*
+          `destructive`, the package's own variant, and NOT a red class of
+          this app's choosing. `@vaam-apps/ui`'s one rule is that a state's
+          colour is declared once and rendered by the library — an app that
+          spells its own red is how the same meaning ends up amber on one
+          screen and crimson on another. `verify-ui` refuses a raw
+          status-colour token here for exactly that reason.
+
+          Sign-out is destructive in the sense the variant means: it ends the
+          session and revokes the token, and it is the one control on this
+          bar an operator should never hit by accident.
+        */}
+        <Button type="submit" variant="destructive" size="sm">
           Sign out
         </Button>
       </form>

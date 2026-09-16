@@ -44,7 +44,7 @@ no `client_secret_suffix`, and a tenancy predicate read from the caller's
 context rather than from its arguments. ~~It is **not** wired to this app and
 not to any route: no CrateStack router is mounted in this workspace, and the
 only `CratestackContext` vpay mints carries no tenant.~~ **Corrected
-2026-09-13 (Lane C, `docs/plans/2026-09-13-dashboard-nav-notes/plan.md`):
+2026-09-13 (Lane C, `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`):
 something is wired to it now, at the transport layer — not to this app.**
 `POST /dash/v1/$procs/searchPaymentIntents` answers over HTTP against a real
 Postgres, behind a new `require_dashboard_procedure_token` middleware and a
@@ -56,8 +56,10 @@ procedure is not "the dashboard reads through CrateStack." Its cursor paging
 stays cursor paging — sharing `crate::v1::paging` with the merchant API is
 what makes `has_more` mean one thing to an operator and to a merchant, and
 moving the frontend onto the procedure is still a maintainer's decision, not
-a consequence of this. The container-backed evidence is in
-`backends/tests/integration/tests/dashboard_procedure_transport.rs`.
+a consequence of this. Evidence:
+[../../status/cratestack/2026-09-13-dashboard-procedure-transport.md](../../status/cratestack/2026-09-13-dashboard-procedure-transport.md).
+[../status.md](../../status.md) § "The first `procedure`" has the original
+measurements.
 
 **And the thing to weigh before anyone wires it to a table
 (2026-09-11, exp54 review): offset paging is not stable while payments are
@@ -111,9 +113,10 @@ all — no `PageShell`, `Stack`, `Heading`, `Text` or `List` — so unlike the
 2026-09-07 restyle above, this one does not drive `styling_files` or
 `class_tokens_distinct` to zero: both apps now write layout classes
 directly, and `just verify-ui`'s old blanket "no `className` in an app" rule
-was replaced by three narrower ones for exactly that reason: a plain literal
-only, no raw status-colour token, and a 60-character budget. `data-theme` moved
-`bumblebee` → `dark`: `@vaam-apps/ui`
+was replaced by three narrower ones for exactly that reason (a plain
+literal only, no raw status-colour token, a 60-character budget — see
+[../../status/gates.md](../../status/gates.md)'s `verify-ui` entry for the
+full derivation). `data-theme` moved `bumblebee` → `dark`: `@vaam-apps/ui`
 compiles one theme, registered under daisyUI's built-in name, and
 `src/layout.test.tsx` still pins the attribute directly for the same reason
 as before — a wrong value renders the page completely unthemed, silently.
@@ -129,7 +132,8 @@ disk.
 `@vpay/tokens`. The dashboard's payment-status colour and glyph now come
 from `src/payment-status.ts`'s `defineStatusSystem` table, whose `label`
 field still reads `@vpay/tokens`'s `statusLabel`, so the operator-facing copy
-keeps one source.
+keeps one source. See `docs/status/verification/2026-09-12.md` for what was
+run and measured.
 
 ## Contrast under the dark theme, measured 2026-09-12
 

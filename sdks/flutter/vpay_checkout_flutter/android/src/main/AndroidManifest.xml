@@ -1,0 +1,38 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="dev.vpay.checkout_flutter">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+
+  <!--
+    D8, wired 2026-09-14: `androidx.browser`'s own recommended manifest
+    entry so `CustomTabsIntent` can resolve a Custom-Tabs-capable browser
+    on API 30+'s package-visibility restrictions
+    (`VpayCheckoutExternalBrowserSession`). No custom URL scheme entry
+    here or anywhere in this plugin, on purpose — design doc D8.
+  -->
+  <queries>
+    <intent>
+      <action android:name="android.support.customtabs.action.CustomTabsService" />
+    </intent>
+  </queries>
+
+  <application>
+    <!--
+      D5 (docs/plans/2026-09-13-flutter-plugin.md): a plain Activity, full-bleed
+      WebView, non-negotiably `android:exported="false"`. This Activity takes a
+      URL extra that carries a payer credential (the checkout session's own
+      secret, in the URL fragment) — an exported Activity accepting that extra
+      is a classic intent-redirection hole: any other app on the device could
+      start it directly, handing it an attacker-chosen URL to load with the
+      plugin's own WebView settings, or intercepting the extra by other means.
+      No other app has any business starting this Activity, so it is launched
+      only by this same app's own Flutter engine, with `startActivityForResult`.
+    -->
+    <activity
+      android:name=".VpayCheckoutActivity"
+      android:exported="false"
+      android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+      android:configChanges="orientation|screenSize|keyboardHidden" />
+  </application>
+
+</manifest>

@@ -135,9 +135,11 @@ already passed, and tokens signed with it stop verifying.
 
 `vpay_db::ensure_active_signing_key` refuses to re-activate a retired row.
 It does not silently resurrect the old key, because re-publishing a key that
-was deliberately retired is a policy decision nobody has made; see
-[../open-decisions.md](../open-decisions.md). It returns
-`DbError::SigningKeyRetired { kid, retired_at }`, which
+was deliberately retired is a policy decision nobody has made
+([../open-decisions.md](../open-decisions.md), "Merchant-token lifetime and
+revocation", which carries the signing-key overlap window; this cited
+`docs/roadmap.md`'s "Open — signing-key rotation overlap window" until that
+page was removed on 2026-09-16). It returns `DbError::SigningKeyRetired { kid, retired_at }`, which
 classifies as `Category::Configuration`, which is exit **78**.
 
 The number is the point. 78 (`EX_CONFIG`) tells a supervisor _fix the

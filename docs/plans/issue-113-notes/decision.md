@@ -454,7 +454,8 @@ formats one today — which is the same standing as the `NewCustomer` half, and
 the reason both are worth closing rather than neither. It is negative **and** positive: a `Debug`
 printing nothing would pass every substring search and fails the counts. The
 five mutations, the commands that were run and — as importantly — the ones that
-were **not** are recorded in this decision.
+were **not** are in
+[../../status/verification/2026-09-12-customer-debug-redaction.md](../../status/verification/2026-09-12-customer-debug-redaction.md).
 
 Why it is not a decision: whatever the maintainer answers, a payer's
 coordinate must not be in vpay's own logs for the life of the log retention.

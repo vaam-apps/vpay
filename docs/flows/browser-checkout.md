@@ -420,5 +420,7 @@ spec covers it, and `examples/shop`'s popup mode has been read and run by
 hand and by nothing else. Recorded as a dated ⛔ in
 [../sdks/parity.md](../sdks/parity.md).
 
-The current project-level limits are in [`docs/status.md`](../status.md); this
-document remains the design and proof map for the browser checkout.
+See `docs/status.md`'s Backend/Frontend/Merchant SDK tables for the
+machine-checked picture (route count, migration count, test counts). This
+document is the design and the proof map; that one is the ledger of what was
+actually re-measured, when.

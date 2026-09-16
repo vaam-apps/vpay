@@ -1,0 +1,65 @@
+-- 0047: correct two shipped COMMENTs that describe a refund path the
+-- repository no longer has.
+--
+-- NUMBERING. This migration was written as `0046` on the MTN Disbursements
+-- branch while `0046_ledger-id-length.sql` was taking that number on the
+-- refunds branch. It is `0047` because it had never been applied anywhere
+-- when the two branches met: sqlx's immutability rule (below) protects
+-- migrations that have SHIPPED, and renumbering an unapplied file — with its
+-- `MANIFEST.sha256` line rehashed in the same commit — is the correction the
+-- rule permits. `0046_ledger-id-length.sql` keeps `0046`.
+--
+-- Two things moved on 2026-09-15, in two different branches:
+--
+--   * `mtn_momo::refund` became MTN's Disbursements `transfer` call
+--     (RFC-0003 § 5) and the `NotImplemented("mtn_momo::refund")` token was
+--     retired. MTN's Disbursements product has never been called from this
+--     repository and no deployment holds its subscription key.
+--   * `orange_money::refund` went the other way: it stopped answering the
+--     port's `Unsupported` and became a declared
+--     `NotImplemented("orange_money::refund")` token, because an Orange
+--     refund is an outbound transfer and the rail has no such API documented
+--     here. `supports_refunds` is `true` on both rails, so neither answers
+--     `Unsupported` any more.
+--   * `vpay_db::Refunds::create` was written (RFC-0003 § 3): the database
+--     half of a refund — the row, the reservation, the over-refund guard —
+--     exists, and `vpay_db::settlement`'s `apply_refund_succeeded` /
+--     `apply_refund_failed` maintain `payment_intents.amount_refunded` and
+--     `amount_refund_pending` alongside it. `POST /v1/refunds` is still
+--     routed nowhere (Wave 3), so no deployment can reach any of it.
+--
+-- COMMENTs written before those days assert the opposite, and because they are
+-- `COMMENT ON` statements they are not merely stale text in a file — they are
+-- **in every database that applied 0017 and 0042**, and an operator reading
+-- `\d+ refunds` or `\d+ invoices` sees them.
+--
+-- `0020_provider-requests-status-code-comment.sql` is the precedent this follows:
+-- a migration whose whole purpose is a comment. It is also the only mechanism
+-- available. An applied migration is immutable down to the byte (sqlx stores a
+-- SHA-384 of the whole file and refuses to boot when it moves — issue #76,
+-- `docs/runbooks/migrations.md`), and `backends/migrations/README.md` says in
+-- as many words: "To fix a mistake in an applied migration, write a new
+-- migration that corrects it. Never touch the old file."
+--
+-- This migration changes no data, no column and no constraint.
+--
+-- What is corrected, and what is NOT. The parentheticals about which adapter
+-- can refund, and about what does and does not write a `refunds` row. Both
+-- COMMENTs' substance stands: no route creates a refund, `POST /v1/refunds` is
+-- unrouted, no rail call has ever been made for a refund, and every stored
+-- `invoices.amount_refunded` is 0 in any deployment. The reasons changed, not
+-- the facts, and the replacement text says which.
+--
+-- Three `--` headers carry the same stale claims and are in no database, so no
+-- statement can reach them: `0017`'s ("no adapter `refund` implementation"),
+-- `0031`'s ("`mtn_momo::refund` is the one remaining `NotImplemented` token")
+-- and `0042`'s own (the `NotImplemented`/`Unsupported` pair, the "`vpay_db::
+-- Refunds` exposes no create" GAP note, and the claim that the settlement does
+-- not maintain `payment_intents`' refund counters). They are recorded in
+-- `backends/migrations/README.md` § Errata instead.
+
+COMMENT ON TABLE refunds IS
+    'Intended persistence shape for refunds. NOT REACHABLE FROM ANY DEPLOYMENT: vpay_db::Refunds::create writes this table and GET /v1/refunds/{id} reads it, but POST /v1/refunds is routed nowhere, so no merchant request can create a row and every deployment''s table is empty but for rows an operator or a test put there. (0017 said "no refunds repository, no /v1/refunds route, and the adapter refund path is still NotImplemented"; corrected by 0047 on 2026-09-15. The repository and the read landed with issue #45, the create with RFC-0003 section 3. On the rails: mtn_momo::refund is MTN''s Disbursements transfer call, against a credential no deployment holds and a product this repository has never called, and orange_money::refund is a declared NotImplemented token because no Orange transfer API is documented here - neither answers Unsupported. See docs/status.md.)';
+
+COMMENT ON COLUMN invoices.amount_refunded IS
+    'Running total of succeeded refunds against the intent that paid this invoice, in minor units of this row''s currency_code (issue #91, D5). GROSS: it is not subtracted from amount_paid and does not enter amounts_add_up, so a refunded invoice stays paid with nothing remaining. Written by exactly one statement, vpay_db::invoices::add_refund_for_intent_in_tx, inside vpay_db::settlement''s refund transaction. EVERY STORED VALUE IS 0 IN ANY DEPLOYMENT: POST /v1/refunds is routed nowhere, so nothing a merchant can call creates the refund this column counts. (0042 gave the reason as "NO RAIL CAN REFUND YET (ProviderAdapter::refund is NotImplemented on MTN and Unsupported on Orange)"; corrected by 0047 on 2026-09-15. mtn_momo::refund makes MTN''s Disbursements transfer call, under a credential no deployment holds and against a product this repository has never called, while orange_money::refund is a declared NotImplemented token - Unsupported is no longer either rail''s answer. 0042''s GAP note is stale in two further ways, also corrected here: vpay_db::Refunds::create does now insert a refunds row (RFC-0003 section 3), and payment_intents.amount_refunded / amount_refund_pending ARE maintained by the same settlement, in vpay_db::settlement::apply_refund_succeeded and apply_refund_failed, in the transaction that writes this column. Note also that MTN''s transfer answers 202 ACCEPTED: an Ok from the port is not a settlement, so the writer that eventually drives this column must not treat one as succeeded - RFC-0003 open question 8.) See docs/status.md.';

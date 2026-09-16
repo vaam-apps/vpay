@@ -1,0 +1,135 @@
+# vpay "live" profile overlay — config/application-live.yml
+#
+# A PROD-LIKE LOCAL overlay: `deployment.livemode` stays `false` (so it boots
+# against a localhost public URL — a true `livemode: true` would refuse to
+# boot here, see docs/flows/configuration.md's "Rules that refuse to boot"),
+# but the MTN rail is pointed at the REAL MTN SANDBOX and authenticated with
+# real sandbox credentials. Orange is omitted and therefore disabled.
+#
+# Loaded by running the binaries with `--profile live` / `VPAY_PROFILE=live`;
+# it overlays config/application.yml (ADR-0003 — a profile selects a FILE,
+# never a code path; same binary, same image, different YAML).
+#
+# figment deep-merges dictionaries key-by-key, but a LIST in an overlay
+# replaces the base list wholesale. So `providers` and `merchant_clients`
+# below are the COMPLETE lists for this profile — the base file's
+# acme-cameroon and orange_money do not survive.
+
+deployment:
+  name: vpay-live
+  # MUST stay false to boot against http://localhost:8080 (https-only and
+  # no-localhost are livemode boot guards). The goal here is a prod-shaped
+  # SANDBOX test, not a real-money deployment.
+  livemode: false
+  # The OP's issuer is derived from this: {public_base_url}/v1/oauth. The
+  # merchant SDK must be given the same base URL or every token exchange is
+  # refused with invalid_client.
+  public_base_url: http://localhost:8080
+
+# The ONE rail this profile routes: MTN MoMo against the REAL MTN sandbox.
+# Orange Money is deliberately absent, so `reconcile` seeds it disabled and a
+# confirm cannot name it.
+#
+# ⚠️ MTN's sandbox rejects XAF and only accepts EUR (docs/flows/money.md) —
+#    this is why `currency: EUR` below is load-bearing. Confirm requests
+#    against this rail must be EUR amounts (e.g. 5000 EUR minor = 50.00 EUR).
+#
+# Credentials are ${VAR} placeholders resolved from the environment; an
+# unresolved one is a fatal, named boot error (exit 78), never an empty
+# string. Export these before starting the server.
+providers:
+  - code: mtn_momo
+    host:
+      # MTN MoMo sandbox. (Production is https://proxy.momoapi.mtn.com with
+      # target_environment: mtncameroon — CONFIRM before any real-money use.)
+      url: https://sandbox.momodeveloper.mtn.com
+      label: mtn-sandbox
+    currency: EUR
+    settings:
+      subscription_key_header: Ocp-Apim-Subscription-Key
+      # `sandbox` for the sandbox; production uses the country product name.
+      target_environment: sandbox
+      # The UUID you created via POST /v1_0/apiuser. Identifier, not a secret.
+      api_user: ${MTN_API_USER}
+    credentials:
+      # Your MTN COLLECTIONS subscription key — the requesttopay flow, which
+      # is the charge path and everything this file's runbook exercises.
+      #
+      # **The Disbursements keys are deliberately absent from this file**, and
+      # that is a narrower statement than it used to be. It said "refunds,
+      # which vpay does not implement"; since 2026-09-15 `mtn_momo::refund`
+      # IS implemented (RFC-0003 § 5) and `config/application.yml` carries
+      # `disbursement_subscription_key`, `disbursement_api_key` and
+      # `disbursement_api_user`. They are not here because a `${VAR}` in this
+      # file is exit 78 at boot, nobody running
+      # docs/runbooks/live-sandbox-test.md holds a Disbursements
+      # subscription, and that runbook is a Collections test. Add all three
+      # the day you have the credentials — and note that the refund call has
+      # never been made against MTN, in sandbox or anywhere else
+      # (docs/status.md).
+      subscription_key: ${MTN_SUBSCRIPTION_KEY}
+      # The API key created via POST /v1_0/apiuser/{uuid}/apikey.
+      api_key: ${MTN_API_KEY}
+    # Where MTN is told to call us back. vpay's settlement does NOT depend on
+    # this being reachable (callbacks are only hints; the worker's
+    # authenticated status query is what moves money), but MTN validates that
+    # the X-Callback-Url host matches the providerCallbackHost you registered
+    # for this api_user. Align this with that registration, or MTN answers
+    # INVALID_CALLBACK_URL_HOST. Defaults to {public_base_url}/provider/mtn_momo/callback.
+    callback_url: http://localhost:8080/provider/mtn_momo/callback
+
+# The merchants this deployment authenticates. Replaces the base list, so
+# acme-cameroon is gone — dashboard_client.merchant_id below is repointed to
+# this one to keep the boot guard (DashboardUnknownMerchant) happy.
+#
+# live-merchant's PUBLIC JWK corresponds to the PRIVATE key generated with:
+#     cargo xtask gen-signing-key --out .e2e/live-merchant
+# (private half at .e2e/live-merchant/oauth-signing-key.pem). vpay holds only
+# the public half; the merchant signs client_credentials assertions with the
+# private half (ADR-0010).
+#
+# The key-specific halves (`kid` and the RSA modulus `n`) are ${VAR}
+# placeholders resolved from the environment, not literals — set
+# LIVE_MERCHANT_JWK_KID / LIVE_MERCHANT_JWK_N in `.env.live` (git-ignored) to
+# the values `cargo xtask gen-signing-key` prints. `kty`/`use`/`alg`/`e` are
+# fixed and not key-specific (the generator always emits 3072-bit RSA, e = AQAB).
+merchant_clients:
+  - client_id: live-merchant
+    merchant_id: live-merchant
+    display_name: Live Sandbox Merchant
+    jwks:
+      keys:
+        - kty: RSA
+          use: sig
+          kid: ${LIVE_MERCHANT_JWK_KID}
+          alg: RS256
+          n: ${LIVE_MERCHANT_JWK_N}
+          e: AQAB
+    grant_types: [client_credentials]
+    # Both scopes, so a single merchant can read its own intents too.
+    scopes: [payments:write, payments:read]
+    # The `aud` the OP must stamp on every /v1 token. REQUIRED, or boot fails.
+    allowed_audiences: ["vpay:v1"]
+    # Optional: a publishable key for the payer-facing /v1/browser surface.
+    # `pk_test_` because livemode is false (PublishableKeyLivemodeMismatch).
+    publishable_keys: ["pk_test_livesandboxmerchant01"]
+    # No webhook endpoints configured. Settlement is observed by polling
+    # GET /v1/payment_intents/{id}. (To receive signed webhooks locally you
+    # would add a webhooks: list here AND top-level `webhooks:
+    # allow_private_targets: true`, since a localhost receiver is a private
+    # target — legal under livemode: false.)
+
+# Repoint the dashboard client's tenant at the one merchant this profile
+# registers. Without this, the base file's `acme-cameroon` is unregistered
+# and the server refuses to boot (ConfigError::DashboardUnknownMerchant).
+dashboard_client:
+  merchant_id: live-merchant
+
+# Staff sign-in for the dashboard (ADR-0017). The base file has no staff_auth
+# at all, so /dash/v1 serves its READ surface with no login until these are
+# set; with them set, `vpay-server staff add` can create an account. Both are
+# secrets — resolved from the environment like every other ${VAR}. Throwaway
+# values are in `.env.live` (git-ignored).
+staff_auth:
+  password_pepper: ${VPAY_STAFF_PEPPER}
+  totp_encryption_key: ${VPAY_STAFF_TOTP_KEY}

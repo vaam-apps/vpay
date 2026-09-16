@@ -370,8 +370,8 @@ hold the first and wait `ACQUIRE_TIMEOUT` (5 s) for the second, and all ten
 would then fail as `PersistenceError::Backend` → `Category::Storage`.
 
 Not reachable today and recorded rather than worked around: `disable_client`
-has no shipping caller at all yet (see
-[ADR-0010](../../adr/0010-merchant-auth-private-key-jwt.md)), and the
+has no shipping caller at all yet (the roadmap that recorded this was
+removed 2026-09-16), and the
 _insert_ branch takes only one connection, because `auth().isSystem()` is not
 a relation predicate and `evaluate_create_policies` therefore issues no query
 for it. It is the first thing to re-check if a route or an admin surface ever

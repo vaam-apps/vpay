@@ -21,6 +21,12 @@
 use sqlx::{AssertSqlSafe, Postgres, Row as _, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
+use vpay_core::{Currency, Money};
+// Aliased because `sqlx::Transaction` is already `Transaction` in this file
+// and the two appear within three lines of each other in `post_capture`. The
+// alias names the one that is a *ledger* transaction, which is the one a
+// reader is least likely to be expecting here.
+use vpay_ledger::Transaction as LedgerTransaction;
 
 use crate::charges::{ChargeRow, record_transition};
 use crate::checkout_sessions;
@@ -171,6 +177,237 @@ async fn emit(
         },
     )
     .await?;
+
+    Ok(())
+}
+
+/// Builds the [`Money`] a ledger leg carries from a row's own minor units and
+/// its own `currency_code`.
+///
+/// # Both halves come off the same row, deliberately
+///
+/// `docs/flows/money.md` is one currency per object with no conversion
+/// anywhere in vpay, so an amount and the currency it is denominated in are
+/// one fact and must be read as one. A signature taking a `Currency` from
+/// somewhere else is a signature that can post 5 000 EUR for a 5 000 XAF
+/// capture, and `Transaction::validate` would not notice — it balances each
+/// currency on its own book, and a transaction whose every leg is in the same
+/// *wrong* currency balances perfectly.
+///
+/// # Errors
+///
+/// [`DbError::UnknownCurrency`] for a stored code this build does not model —
+/// see that variant for why a coherent deployment cannot produce one.
+/// [`DbError::Ledger`] wrapping [`vpay_core::MoneyError::Negative`] for a
+/// negative amount, which every column involved forbids by CHECK.
+fn money_from_row(minor: i64, currency_code: &str, table: &'static str) -> Result<Money, DbError> {
+    let currency = Currency::from_code(currency_code).map_err(|_| DbError::UnknownCurrency {
+        code: currency_code.to_owned(),
+        table,
+    })?;
+    Money::new(minor, currency).map_err(|error| DbError::Ledger(error.into()))
+}
+
+/// Records the capture posting for a settled charge, inside the settlement
+/// transaction (RFC-0003 § 4).
+///
+/// # The merchant is the intent's, and this function is where that is
+/// guaranteed
+///
+/// `ledger_entries.merchant_id` is denormalised on purpose — a ledger records
+/// what was true when money moved, and a balance derived through mutable
+/// operational rows silently changes when one of them does (migration `0045`
+/// § "Why a column at all"). The cost, which that migration states and
+/// `docs/flows/ledger.md` § Status repeats, is that **no constraint can check
+/// the column against the charge**: the merchant is three tables away
+/// (`ledger_entries -> ledger_transactions -> charges ->
+/// payment_intents.merchant_id`) and a row-level CHECK sees one row.
+/// [`crate::ledger::post_in_tx`] does not check it either; it binds whatever
+/// the caller built the `AccountKind::MerchantPayable` with.
+///
+/// So the agreement is this call site's to guarantee, and it is guaranteed
+/// the only way that works: `intent` is the row
+/// [`crate::payment_intents::succeed_after_submission`] returned *in this
+/// transaction*, and the merchant, the amount and the currency are all read
+/// off it. Nothing a caller passed reaches any of the three —
+/// [`Settlement::apply_succeeded`] takes no merchant argument at all, which
+/// is what makes "threaded a caller-supplied merchant_id through" a change to
+/// this function's signature rather than a value someone could quietly pass.
+/// `a_capture_posting_is_attributed_to_the_intents_own_merchant` in
+/// `postgres_smoke.rs` is that property as a test.
+///
+/// # No fee leg, because there is no fee
+///
+/// `docs/flows/ledger.md` § Postings tabulates a three-leg capture when a
+/// platform fee is charged. vpay charges none: no column in this schema holds
+/// a capture-time platform fee, no configuration computes one, and
+/// `refunds.fee` is a different number entirely (what a rail charged *us* to
+/// move money back, which posts nothing — issue #46). Passing `None` is
+/// therefore the honest reading of the table rather than a simplification,
+/// and `Transaction::capture` produces the two-leg form. When a fee model
+/// exists, the number is read off the row that holds it and passed here; the
+/// invariant-2 line in `docs/flows/ledger.md` moves in the same commit.
+///
+/// # The gross is `amount_received`, not `amount`
+///
+/// They are equal by construction — `succeed_after_submission` writes
+/// `amount_received = amount`, because no rail vpay speaks to can settle part
+/// of a submitted amount — and they are not the same claim. The ledger
+/// records money that moved, so it reads the column that means "this much was
+/// received". If partial capture ever exists, this line is already right.
+///
+/// # A duplicate is never swallowed here
+///
+/// `transaction_id` is freshly minted (`vpay_core::ids::ledger_transaction_id`),
+/// so [`DbError::UniqueViolation`] on `ledger_transactions_pkey` is
+/// unreachable — and if it happened anyway it propagates, rolling the
+/// settlement back. Catching it and committing would hand the caller
+/// `TxOutcome::Commit` while Postgres had already turned the `COMMIT` into a
+/// `ROLLBACK`, discarding the charge, the intent and the event as well as the
+/// posting;
+/// `swallowing_a_duplicate_posting_inside_a_transaction_discards_the_whole_transaction`
+/// in `postgres_smoke.rs` measures exactly that.
+///
+/// # Errors
+///
+/// [`DbError::Ledger`] if the posting does not balance — impossible for a
+/// [`Transaction::capture`], and an error rather than an `expect` because
+/// ADR-0007 forbids panicking on a vpay bug. [`DbError::UnknownCurrency`],
+/// [`DbError::ForeignKeyViolation`] for an unknown charge, or
+/// [`DbError::Query`]; each aborts the settlement, which is the fail-closed
+/// direction — a charge that settled without its ledger row would be a ledger
+/// permanently short one capture, and invariant 2 wrong for that merchant
+/// forever.
+async fn post_capture(
+    tx: &mut Transaction<'_, Postgres>,
+    charge: &ChargeRow,
+    intent: &PaymentIntentRow,
+) -> Result<(), DbError> {
+    let gross = money_from_row(
+        intent.amount_received,
+        &intent.currency_code,
+        "payment_intents",
+    )?;
+    let posting = LedgerTransaction::capture(&intent.merchant_id, gross, None)?;
+
+    let transaction_id = vpay_core::ids::ledger_transaction_id();
+    crate::ledger::post_in_tx(tx, &transaction_id, &charge.id, &posting).await?;
+
+    tracing::info!(
+        ledger_transaction_id = %transaction_id,
+        charge_id = %charge.id,
+        payment_intent_id = %intent.id,
+        merchant_id = %intent.merchant_id,
+        amount = intent.amount_received,
+        currency_code = %intent.currency_code,
+        "a capture was posted to the ledger"
+    );
+
+    Ok(())
+}
+
+/// Records the refund posting for a settled refund, inside the settlement
+/// transaction (RFC-0003 § 4).
+///
+/// [`post_capture`]'s twin, and every paragraph there applies unchanged: the
+/// merchant, the amount's currency and the charge are all derived from the
+/// intent row *this transaction* wrote, the transaction id is minted, and a
+/// duplicate is never swallowed.
+///
+/// **Two legs, never three.** The rail's refund fee is reported on the
+/// `refund` object and posted to no account (issue #46, left standing by
+/// RFC-0003 § 4), which is why `Transaction::refund` has no `fee` parameter
+/// for this function to pass one to.
+///
+/// `charge_id` is read inside the transaction rather than taken from
+/// `refunds.charge_id`: the column is nullable (migration `0017`) and is
+/// filled by whoever created the refund, and a ledger attribution that
+/// depends on a writer having remembered is not an attribution. For a
+/// `succeeded` intent the lookup always finds a row — one charge per intent,
+/// forever — so `None` is the broken invariant the caller turns into
+/// [`DbError::WriteMatchedNoRow`].
+///
+/// # The currency is the **refund's**, and a disagreement is refused
+/// (2026-09-16)
+///
+/// Both halves of the [`Money`] come off `refunds` — [`money_from_row`]'s own
+/// rule, which this function used to break by pairing `refund.amount` with
+/// `intent.currency_code`. `crate::refunds::SettledRefund` carried no
+/// currency, and `refunds.currency_code`'s only constraint is its foreign key
+/// onto `currencies` (migration `0017`); nothing in the schema ties it to the
+/// intent's. They agree today only because `Refunds::create` is the sole
+/// writer.
+///
+/// Reading the refund's own column is not on its own enough, because by the
+/// time this runs [`Settlement::apply_refund_succeeded`] has already added
+/// `refund.amount` to two figures denominated in the *intent's* currency —
+/// `payment_intents.amount_refunded`
+/// ([`payment_intents::settle_refund_in_tx`]) and `invoices.amount_refunded`
+/// ([`invoices::add_refund_for_intent_in_tx`]). Neither addition looks at a
+/// currency. **So when the two codes differ there is no correct posting to
+/// make**: whichever one these legs carried, the intent and the invoice would
+/// already be counting minor units of one currency into a total denominated
+/// in another.
+///
+/// The refusal is therefore the fix, and reading the currency off the refund
+/// is what makes the refusal possible. [`DbError::RefundCurrencyMismatch`]
+/// aborts the settlement, which rolls back the flip to `succeeded`, both
+/// counters and the invoice, leaving the refund `pending` for a human — the
+/// fail-closed direction every other error on this path takes. It is
+/// `Category::Internal` because a mismatch is a vpay bug and not a request
+/// any merchant can make: `NewRefund` has no `currency_code` field to pass.
+///
+/// The cost is stated plainly: with this guard in place `refund.currency_code`
+/// and `intent.currency_code` are provably equal on the line below, so
+/// swapping one for the other is unobservable. The guard, not the argument to
+/// [`money_from_row`], is what
+/// `a_refund_whose_currency_disagrees_with_its_intent_is_refused_and_posts_nothing`
+/// in `postgres_smoke.rs` pins. The argument stays the refund's because the
+/// ledger must record what the *object the merchant sees* says, if these two
+/// ever come apart again.
+///
+/// # Errors
+///
+/// [`post_capture`]'s, plus [`DbError::WriteMatchedNoRow`] on `charges` if the
+/// refunded intent has none, and [`DbError::RefundCurrencyMismatch`] if the
+/// refund's currency is not the intent's.
+async fn post_refund(
+    tx: &mut Transaction<'_, Postgres>,
+    refund: &crate::refunds::SettledRefund,
+    intent: &PaymentIntentRow,
+) -> Result<(), DbError> {
+    if refund.currency_code != intent.currency_code {
+        return Err(DbError::RefundCurrencyMismatch {
+            refund_id: refund.id.clone(),
+            refund_currency: refund.currency_code.clone(),
+            payment_intent_id: intent.id.clone(),
+            intent_currency: intent.currency_code.clone(),
+        });
+    }
+
+    let charge_id = crate::charges::id_for_intent_in_tx(tx, &intent.id)
+        .await?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "charges",
+            key: intent.id.clone(),
+        })?;
+
+    let amount = money_from_row(refund.amount, &refund.currency_code, "refunds")?;
+    let posting = LedgerTransaction::refund(&intent.merchant_id, amount);
+
+    let transaction_id = vpay_core::ids::ledger_transaction_id();
+    crate::ledger::post_in_tx(tx, &transaction_id, &charge_id, &posting).await?;
+
+    tracing::info!(
+        ledger_transaction_id = %transaction_id,
+        charge_id = %charge_id,
+        refund_id = %refund.id,
+        payment_intent_id = %intent.id,
+        merchant_id = %intent.merchant_id,
+        amount = refund.amount,
+        currency_code = %refund.currency_code,
+        "a refund was posted to the ledger"
+    );
 
     Ok(())
 }
@@ -396,9 +633,11 @@ pub trait Settlement: Send + Sync {
         event_data: &serde_json::Value,
     ) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError>;
 
-    /// Settles a refund a rail reported as paid back: the `refunds` row
-    /// `pending` -> `succeeded`, and the invoice that intent paid gains the
-    /// amount on `invoices.amount_refunded` — in **one** transaction.
+    /// Settles a refund a rail reported as paid back — in **one**
+    /// transaction: the `refunds` row `pending` -> `succeeded`, the intent's
+    /// `amount_refund_pending` down and its `amount_refunded` up by the same
+    /// amount, the invoice that intent paid gaining the amount on
+    /// `invoices.amount_refunded`, and the refund's two ledger legs.
     ///
     /// Returns the settled refund and the invoice as it now stands, or
     /// `Ok(None)` if the refund was no longer `pending`, which means this
@@ -406,44 +645,109 @@ pub trait Settlement: Send + Sync {
     /// against an intent that pays no invoice (most of them) or whose invoice
     /// is not `paid`.
     ///
-    /// # Why the two writes are one transaction
+    /// # The intent's counters, added by RFC-0003 § 3
     ///
-    /// [`flip_invoice`]'s argument, and it is the same one: a second write
+    /// This method used to flip the refund and update the **invoice** only,
+    /// so a refund moved the document and left the intent claiming the whole
+    /// amount was still kept — `docs/flows/ledger.md` § "When refunds post"
+    /// requires both, and invariant 3 (`amount_refunded` = Σ succeeded
+    /// refunds) had no code maintaining its left-hand side. It does now.
+    ///
+    /// # Why the writes are one transaction
+    ///
+    /// [`flip_invoice`]'s argument, applied four times over: a second write
     /// after the refund commits would leave a window in which the money is
-    /// recorded as returned and the document still says the whole amount was
-    /// kept, and a crash in that window would make it permanent. An invoice
-    /// has no poller, no sweep and no job that would ever notice.
+    /// recorded as returned and the intent, the document or the ledger still
+    /// says otherwise, and a crash in that window would make it permanent.
+    /// None of the three has a poller, a sweep or a job that would notice.
     ///
     /// # No event
     ///
     /// `invoice.paid` is **not** re-emitted (D5) — the invoice is still
     /// `paid` and telling a merchant a second time that a bill was settled
     /// because part of it came back would be a lie about a transition that
-    /// did not happen. `charge.refunded` and `charge.refund.updated` are
-    /// documented types this repository still emits nothing for
-    /// (`docs/status.md`), and this method does not change that: emitting one
-    /// needs the wire object `vpay-api` shapes, which is the caller's to
-    /// supply, and there is no caller.
+    /// did not happen. ~~`charge.refunded` and `charge.refund.updated` are
+    /// documented types this repository still emits nothing for~~ — **both
+    /// have been emitted by `vpay_api::v1::refunds` since 2026-09-16
+    /// (RFC-0003 § 2), and this method still emits neither.** The reason is
+    /// unchanged and is the reason it was written down: emitting one needs
+    /// the wire object `vpay-api` shapes, which is the caller's to supply.
+    /// A caller that settles a refund through here owes the merchant a
+    /// `charge.refund.updated`, and this method's signature is what would
+    /// have to carry it — as `erase_customer_in_tx`'s does.
     ///
-    /// # There is no rail behind this
+    /// # Nothing reaches this method, and the reason changed on 2026-09-16
     ///
-    /// `ProviderAdapter::refund` is `NotImplemented` on MTN and `Unsupported`
-    /// on Orange, and nothing creates the `pending` row this settles, so no
-    /// shipping binary calls this method. It exists because D5 is a decision
+    /// ~~`POST /v1/refunds` is unrouted, so no shipping binary calls this
+    /// method today~~ — the route is mounted now, and it still does not call
+    /// this method, because **an `Ok` from a rail is an acceptance and not a
+    /// settlement** (below). What reaches it is nothing at all: there is no
+    /// refund poll ladder, so no code path in this repository moves a refund
+    /// out of `pending`. The rails stopped being the reason on
+    /// 2026-09-15: `mtn_momo::refund` makes MTN's Disbursements `transfer`
+    /// call — against a product this repository has never called and under
+    /// no REAL MTN Disbursements credential, the only subscription key
+    /// anywhere in this project being the e2e/demo stack's WireMock stub —
+    /// and `orange_money::refund` is a declared
+    /// `NotImplemented` token (RFC-0003 § 5), never `Unsupported`.
+    ///
+    /// **And when that handler was written it did not, which is why nothing
+    /// calls this: an `Ok(Refunded)` must not become
+    /// `refunds.status = 'succeeded'` on its own.** MTN's `transfer` answers
+    /// `202 ACCEPTED`; the port has no refund status read and `Refunded` has
+    /// no status field, so the most an adapter can report is that the rail
+    /// took the instruction (RFC-0003 open question 8). This method is the
+    /// one that would record the lie. It exists because D5 is a decision
     /// about what the database does when a refund lands, and the alternative
     /// was to leave that decision as a sentence in a document with no
     /// statement behind it. `docs/status.md` carries the gap.
     ///
     /// # Errors
     ///
-    /// [`DbError::Query`] if any statement or the commit fails — including
-    /// migration `0042`'s `refunded_at_most_paid` for a refund larger than
-    /// what the invoice actually collected, which rolls the whole
+    /// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the intent
+    /// carried no matching reservation, or on `charges` if the refunded
+    /// intent has no charge to attribute the posting to — both broken
+    /// invariants, which page. [`DbError::Ledger`] if the posting does not
+    /// balance. [`DbError::Query`] if any statement or the commit fails —
+    /// including migration `0042`'s `refunded_at_most_paid` for a refund
+    /// larger than what the invoice actually collected, which rolls the whole
     /// transaction back and leaves the refund `pending` for a retry to find.
     async fn apply_refund_succeeded(
         &self,
         refund_id: &str,
     ) -> Result<Option<(crate::refunds::SettledRefund, Option<crate::InvoiceRow>)>, DbError>;
+
+    /// Settles a refund a rail declined: the `refunds` row `pending` ->
+    /// `failed` with the failure pair, and the intent's
+    /// `amount_refund_pending` released — in one transaction.
+    ///
+    /// Returns the refund as it stood, or `Ok(None)` if it was no longer
+    /// `pending`, which means this settlement already happened.
+    ///
+    /// # It posts nothing, and that is the design rather than an omission
+    ///
+    /// A `pending` refund holds a reservation and has no ledger transaction,
+    /// so there is nothing to reverse and **no compensating entry is
+    /// written**. `docs/flows/ledger.md` § "When refunds post" names that as
+    /// the whole reason `amount_refund_pending` is a column instead of
+    /// posting optimistically and unwinding: a reversal entry is a second
+    /// movement in a ledger where no money moved twice.
+    ///
+    /// `amount_refunded` is untouched for the same reason, which is what
+    /// keeps invariant 3 true — a failed refund is not a succeeded one.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the intent
+    /// carried no matching reservation — a broken invariant, which pages.
+    /// [`DbError::Query`] if any statement or the commit fails, including a
+    /// `code` outside `refunds_failure_code_enum_check`'s vocabulary.
+    async fn apply_refund_failed(
+        &self,
+        refund_id: &str,
+        code: &str,
+        raw: &str,
+    ) -> Result<Option<crate::refunds::SettledRefund>, DbError>;
 
     /// Moves a charge between two *live* states, as a compare-and-swap, and
     /// reports whether it fired.
@@ -534,6 +838,68 @@ pub trait Settlement: Send + Sync {
     ) -> Result<Vec<String>, DbError>;
 }
 
+/// Fails one `pending` refund and releases its reservation, **inside the
+/// caller's transaction**.
+///
+/// The whole of what [`Settlement::apply_refund_failed`] does; that method is
+/// now this function plus a transaction. Extracted on 2026-09-16 for
+/// `POST /v1/refunds`, which has to write `charge.refund.updated` in the same
+/// commit — an event apart from the transition it reports is either a webhook
+/// for something that did not happen or a transition no merchant hears about
+/// (`docs/flows/webhooks.md`). One implementation, two entry points: a second
+/// copy of "fail the row and give the reservation back" is how the refund and
+/// the intent's counters stop agreeing.
+///
+/// `Ok(None)` means the refund was not `pending` — already settled, already
+/// failed, or no such row — and nothing has been written, so the caller may
+/// abandon its transaction. Nothing is rolled back here; the transaction is
+/// not this function's.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the refund was
+/// `pending` but the intent carried no matching reservation — a broken
+/// invariant, which pages. [`DbError::Query`] if any statement fails,
+/// including a `code` outside `refunds_failure_code_enum_check`'s vocabulary.
+pub(crate) async fn fail_refund_in_tx(
+    conn: &mut sqlx::PgConnection,
+    refund_id: &str,
+    code: &str,
+    raw: &str,
+    now: OffsetDateTime,
+) -> Result<Option<crate::refunds::SettledRefund>, DbError> {
+    let Some(refund) = crate::refunds::fail_in_tx(&mut *conn, refund_id, code, raw, now).await?
+    else {
+        return Ok(None);
+    };
+
+    // The reservation goes back and nothing else moves. `amount_refunded`
+    // is untouched, the invoice is untouched, and **no ledger row is
+    // written** — there is none to reverse, which
+    // `docs/flows/ledger.md` § "When refunds post" names as the reason
+    // the reservation column exists at all.
+    let intent =
+        payment_intents::release_refund_in_tx(&mut *conn, &refund.payment_intent_id, refund.amount)
+            .await?
+            .ok_or_else(|| DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                key: refund.payment_intent_id.clone(),
+            })?;
+
+    tracing::info!(
+        refund_id = %refund.id,
+        payment_intent_id = %intent.id,
+        amount = refund.amount,
+        failure_code = %code,
+        amount_refunded = intent.amount_refunded,
+        amount_refund_pending = intent.amount_refund_pending,
+        "a refund failed at the rail; its reservation was released and nothing was posted, \
+         pending this transaction's commit"
+    );
+
+    Ok(Some(refund))
+}
+
 #[async_trait::async_trait]
 impl Settlement for crate::repository::PgRepositories {
     async fn apply_succeeded(
@@ -589,6 +955,13 @@ impl Settlement for crate::repository::PgRepositories {
         // event beside it — in this transaction, which is the whole of
         // "marked paid in TX1".
         flip_invoice(&mut tx, &intent, invoice).await?;
+
+        // The capture posting, in the same transaction as the charge it
+        // records. RFC-0003 § 4 is explicit that this cannot wait for the
+        // refund work it was written beside: a ledger holding refunds and no
+        // captures drives `balance(merchant_payable)` negative and reads as
+        // violating invariant 2 on every row.
+        post_capture(&mut tx, &charge, &intent).await?;
 
         emit(&mut tx, EVENT_SUCCEEDED, event_id, &intent, event_data).await?;
 
@@ -681,6 +1054,25 @@ impl Settlement for crate::repository::PgRepositories {
             return Ok(None);
         };
 
+        // The intent's own counters: the reservation `Refunds::create` took
+        // is consumed and `amount_refunded` grows by the same amount, in one
+        // statement. This is the half that did not exist until RFC-0003 § 3
+        // — the invoice moved and the intent did not — and it is what makes
+        // `docs/flows/ledger.md` invariant 3 (`amount_refunded` = Σ succeeded
+        // refunds) true of the left-hand side.
+        //
+        // `Ok(None)` is not a race here: the refund's own compare-and-swap
+        // out of `pending` has already matched, so a missing reservation is a
+        // broken invariant, and it pages rather than being reported as a
+        // merchant's problem.
+        let intent =
+            payment_intents::settle_refund_in_tx(&mut tx, &refund.payment_intent_id, refund.amount)
+                .await?
+                .ok_or_else(|| DbError::WriteMatchedNoRow {
+                    table: "payment_intents",
+                    key: refund.payment_intent_id.clone(),
+                })?;
+
         // The invoice, if the refunded intent was paying one. `Ok(None)` is
         // the normal answer and is not an error: most intents have no invoice
         // at all, and one whose invoice is not `paid` is refused by the
@@ -703,9 +1095,33 @@ impl Settlement for crate::repository::PgRepositories {
             );
         }
 
+        // The refund posting, against the merchant the *intent* names. See
+        // `post_refund`, and `post_capture` for why that attribution is this
+        // call site's obligation and not a constraint's.
+        post_refund(&mut tx, &refund, &intent).await?;
+
         tx.commit().await.map_err(DbError::Query)?;
 
         Ok(Some((refund, invoice)))
+    }
+
+    async fn apply_refund_failed(
+        &self,
+        refund_id: &str,
+        code: &str,
+        raw: &str,
+    ) -> Result<Option<crate::refunds::SettledRefund>, DbError> {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let now = OffsetDateTime::now_utc();
+
+        let Some(refund) = fail_refund_in_tx(&mut tx, refund_id, code, raw, now).await? else {
+            tx.rollback().await.map_err(DbError::Query)?;
+            return Ok(None);
+        };
+
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(refund))
     }
 
     async fn set_live_state(

@@ -63,6 +63,33 @@ services:
       # failure this stack has already had once — so the three new names are
       # set on the worker below as well.
       MTN_API_USER: 11111111-2222-3333-4444-555555555555
+      # Added 2026-09-15 (RFC-0003 section 5): MTN's Disbursements product,
+      # which is what a refund on this rail is. Same exit-78 rule as the
+      # three above, and set on the worker below for the same reason.
+      #
+      # They are set because the BASE `config/application.yml` references
+      # them and an unresolved `${VAR}` is exit 78 on both binaries — not
+      # because MTN refunds work. Nothing about the sentence below is a
+      # claim that they do: the rail here is a `wiremock/wiremock` container
+      # answering a stub this repository wrote from MTN's documentation, and
+      # MTN's Disbursements product has still never been called from this
+      # repository.
+      #
+      # **The subscription key is the one credential here that is NOT
+      # `wiremock-`-prefixed, and that is deliberate.** This block used to
+      # carry a note saying the prefixed value matched no mapping — so a
+      # transfer from this stack reached WireMock's 404 and
+      # `mtn_momo::refund` reported `ProviderError::Config` — and that
+      # "making the values agree would be a change worth making the day a
+      # refund walk exists". That day is 2026-09-16: the four refund routes
+      # are mounted and `sdks/*/…live…` drive a refund through this stack
+      # over HTTP. `wiremock/mtn/mappings/transfer.json` answers `202` only
+      # for the exact key `stub-disbursement-subscription-key`, so this line
+      # spells it. The other two stay prefixed because no mapping matches on
+      # them: the disbursements token stub mints for any subscription key.
+      MTN_DISBURSEMENT_SUBSCRIPTION_KEY: stub-disbursement-subscription-key
+      MTN_DISBURSEMENT_API_KEY: wiremock-stub-disbursement-api-key
+      MTN_DISBURSEMENT_API_USER: 66666666-7777-8888-9999-000000000000
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret
@@ -145,6 +172,9 @@ services:
       MTN_SUBSCRIPTION_KEY: wiremock-stub-subscription-key
       MTN_API_KEY: wiremock-stub-api-key
       MTN_API_USER: 11111111-2222-3333-4444-555555555555
+      MTN_DISBURSEMENT_SUBSCRIPTION_KEY: stub-disbursement-subscription-key
+      MTN_DISBURSEMENT_API_KEY: wiremock-stub-disbursement-api-key
+      MTN_DISBURSEMENT_API_USER: 66666666-7777-8888-9999-000000000000
       ORANGE_MERCHANT_KEY: wiremock-stub-merchant-key
       ORANGE_CLIENT_ID: wiremock-stub-client-id
       ORANGE_CLIENT_SECRET: wiremock-stub-client-secret

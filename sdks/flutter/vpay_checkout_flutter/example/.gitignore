@@ -1,0 +1,8 @@
+# Flutter/Dart tooling output — never source, never reviewed.
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/

@@ -1,12 +1,137 @@
 # CLAUDE.md
 
-Coding agents start with [CONTRIBUTING.md](CONTRIBUTING.md). Read
-[AGENTS.md](AGENTS.md) before high-risk work: money, persistence, rails,
-authentication, public API or wire types, UI-system changes, or dependencies.
+Claude Code and other coding agents: **read [AGENTS.md](AGENTS.md) first.** It is
+the source of truth for how to work in this repository. This file adds only what
+is specific to working here as an agent. For a first, small change —
+and for the shortest statement of the rules that always apply — start with
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Do not make the scaffold appear more complete than it is. Leave unimplemented
-behavior explicit, ensure tests assert observable behavior, and report
-verification honestly.
+## Before you start
 
-Run `just ci` before completing a change. Use the project recipe rather than a
-reconstructed command, and state what you did not verify.
+```bash
+just verify    # the self-checks the justfile's `verify` recipe lists — twelve
+               # on 2026-09-07, and the recipe echoes its own count on success
+               # — all of which must pass before AND after your change, plus
+               # the `verify-docs` report, which never fails
+cat docs/status.md
+```
+
+`docs/status.md` is 259 lines as of 2026-09-11 and is meant to be read in one
+sitting; it was 6 151 the day before. Nothing was deleted —
+[docs/status/](docs/status/README.md) carries the whole history, verbatim, one
+page per area and per date, and [docs/README.md](docs/README.md) says which page
+answers which question.
+
+_(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
+said "ten" until `verify-migrations` landed on 2026-09-07.
+[AGENTS.md](AGENTS.md) carries the count and the history of every gate that
+moved it; that is the copy to trust, and this one now agrees with it.)_
+
+`docs/status.md` tells you what is actually built. Do not infer capability from
+the presence of a file — most of this repo is scaffold, and it says so.
+
+## The failure mode to avoid
+
+The most likely way to damage this project is to make it _look_ more finished
+than it is:
+
+- filling an unimplemented function with something plausible that returns a
+  hard-coded success,
+- writing a test that asserts nothing so a suite goes green,
+- adding a mock adapter to make local development easier,
+- rendering fake rows in the dashboard so a screenshot looks good,
+- marking something ✅ in `docs/status.md` because it compiles.
+
+Each of these is worse than leaving the gap visible. This is a payment system;
+someone will eventually trust it with real money on the strength of what the
+repo claims about itself.
+
+If you cannot implement something properly, leave
+`ProviderError::NotImplemented`, list it in `docs/status.md`, and say so plainly
+in your summary.
+
+## When you finish a task
+
+1. `just ci` — which since Step 7 also runs `just test-doc`
+   (`cargo test --doc --workspace`). `cargo nextest` runs no doctests, so an
+   example in a doc comment is only checked by that step.
+2. Update the status pages — in the same commit, not a follow-up. That is
+   `docs/status.md` only if you moved the machine-checked declaration, the
+   banner or the gate table; otherwise it is the area page under
+   `docs/status/`, plus a dated page under `docs/status/verification/` for
+   your gate output. `docs/status.md` § "Where a new row goes" is the map.
+3. Update the relevant `docs/flows/*.md` **Status** section. Six of those
+   flows are an overview plus a directory since 2026-09-11; the **Status**
+   section stayed on the overview in all six. In `webhooks.md` and
+   `dashboard.md` it is a summary plus an index — add your evidence to the
+   page it points at, not to the index.
+4. **Achieve docs↔skills parity.** A feature lands in three places or it has
+   not landed: the code, the docs, and the agent skills in
+   [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills). If your
+   change adds or removes a `docs/flows/` page, mounts or unmounts a route,
+   retires a `NotImplemented` token, adds or changes a gate, bumps a toolchain
+   pin, or moves a path a skill cites, the matching skill changes in the same
+   piece of work — a PR against `vpay-skills`, linked from yours. Its
+   `tools/verify-coverage.mjs` fails in both directions and its CI runs daily
+   against this repository's `master`, so the gap surfaces there as a red
+   build; do not leave it to. § "Why this rule exists" below.
+5. In your summary to the user, state explicitly what you did **not** do.
+
+## Why this rule exists
+
+A status page that lags is worse than none, because people trust it. **A skill
+that lags is worse still, because an agent does not merely trust it — it acts
+on it, at machine speed, in every session that loads it.** The skills are how
+the next agent learns that a stub rail is a WireMock host rather than a linked
+implementation, that callbacks are hints, and that `refunds` has a table and no
+writer. A skill describing a designed-but-unbuilt feature in the present tense
+is this repository's cardinal sin with a force multiplier attached.
+
+The skills are installed, not cloned:
+
+```bash
+npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
+```
+
+`vpay` is the orientation skill and routes to the rest. This repository
+dogfoods them: they install into `.agents/skills/` and pin in
+`skills-lock.json`, the same mechanism `vaam-ui` already uses.
+
+## Verifying rather than assuming
+
+This repo prefers evidence over confidence:
+
+- Ran the tests? Say how many passed _and how many are ignored_. Doctests are
+  a separate runner and a separate count (`just test-doc`); "the tests pass"
+  without one is half an answer.
+- Changed the schema? Apply it to a real Postgres and prove the constraint fires.
+- Changed a diagram? Render it and look at it — "renders without error" is not
+  "renders correctly".
+- Claimed an adapter works? Point at the conformance case that proves it.
+
+## Things that will waste your time
+
+- `rust-toolchain.toml` pins `1.98.0` — it was `1.95.0` until 2026-09-05 — and
+  that is the same version `backends/Dockerfile` builds with; CI reads the pin
+  from the file. The musl target needs
+  `rustup target add x86_64-unknown-linux-musl`.
+- Cypress needs `pnpm exec cypress install` on a network that can reach its CDN;
+  `CYPRESS_INSTALL_BINARY=0` skips it.
+- `clippy.toml` exempts tests from the `unwrap`/`expect`/`panic` deny. If clippy
+  complains about `expect` in a test, you are outside a `#[cfg(test)]` module.
+- `schemas/vpay.cstack` **is** wired into the build (2026-09-06). This bullet
+  said the opposite — "not wired into the build, its syntax is unverified, do
+  not try to make it compile" — and had been wrong in two stages: `just
+check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
+  private `mod schema` began _compiling_ the file on 2026-09-06. A syntax
+  error in it is now a `cargo build` failure. Two things follow. The CLI and
+  the library must stay on one version — `justfile`'s `cratestack_version`
+  and `Cargo.toml`'s `cratestack = "=0.12.0"` — so bump them together. And
+  the generated module is private to `vpay-db` on purpose: `cargo xtask
+verify-repositories` fails if `mod schema` is made `pub` or re-exported,
+  because the module the macro creates exists in no source file and nothing
+  else would object. Adding a `model` is not free either: it must match the
+  live table, and `postgres_smoke.rs`'s drift test pins the exact gap. See
+  `docs/reference/vpay-db/cratestack.md`. `vpay-db.md` § CrateStack is a
+  pointer to it and keeps that heading on purpose: four doc comments in
+  `backends/crates/vpay-db/src/` link to `vpay-db.md#cratestack`.

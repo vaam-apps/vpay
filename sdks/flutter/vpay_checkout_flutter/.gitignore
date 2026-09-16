@@ -1,0 +1,13 @@
+# Flutter/Dart tooling output — never source, never reviewed.
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+
+# `pubspec.lock` is deliberately NOT committed: this is a library package
+# (pub.dev's own convention for a package, as opposed to an application) —
+# `example/`'s own .gitignore does the opposite for the same reason.
+pubspec.lock
