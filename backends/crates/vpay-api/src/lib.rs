@@ -2873,4 +2873,164 @@ mod tests {
              line: {api_error_line}"
         );
     }
+
+    /// ADR-0022: `deployment.surfaces` decides which of `/v1` (business) and
+    /// `/dash/v1` (management) a process mounts. Every test here drives
+    /// requests off [`V1_ROUTES`] and [`DASH_ROUTES`] rather than a
+    /// hand-written path list, for the reason those tables exist at all
+    /// (axum 0.8 cannot enumerate a built router): a route added to either
+    /// table without updating a hand-written list here would pass silently.
+    ///
+    /// No request in this module carries a token. That is deliberate and
+    /// sufficient: the property under test is *which route answers at all*
+    /// (404, meaning "not mounted", vs. 401, meaning "mounted and
+    /// authenticated"), not what a valid credential does once inside — the
+    /// existing per-surface suites already cover that.
+    mod surfaces {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        use crate::test_fixtures::deps_with_surfaces;
+        use crate::{DASH_NEST, DASH_ROUTES, V1_ROUTES, router};
+
+        async fn status_of(app: &Router, uri: &str) -> StatusCode {
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("valid request"),
+                )
+                .await
+                .expect("router does not fail to serve")
+                .status()
+        }
+
+        /// `surfaces: [management]` — every `/v1` route is unmounted (404),
+        /// and `/dash/v1` still answers exactly as it does today (401
+        /// without a token; `dash_read_surface`'s own suite covers 200 with
+        /// one). This is the counterpart to
+        /// `absent_surfaces_config_mounts_both_surfaces` below: together
+        /// they show the toggle turns `/v1` off *and* leaves `/dash/v1`
+        /// alone.
+        #[tokio::test]
+        async fn management_only_unmounts_v1_and_keeps_dash_v1() {
+            let app = router(deps_with_surfaces(Some(vec!["management".to_owned()])));
+
+            for route in V1_ROUTES {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::NOT_FOUND,
+                    "{path} must 404 when deployment.surfaces = [management]; got {status}"
+                );
+            }
+
+            for route in DASH_ROUTES {
+                let path = format!("{DASH_NEST}{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNAUTHORIZED,
+                    "{path} must still answer 401 without a token when deployment.surfaces = \
+                     [management]; got {status}"
+                );
+            }
+        }
+
+        /// `surfaces: [business]` — the mirror image: `/dash/v1` is
+        /// unmounted (404) and `/v1` answers exactly as it does today (401
+        /// without a token).
+        #[tokio::test]
+        async fn business_only_unmounts_dash_v1_and_keeps_v1() {
+            let app = router(deps_with_surfaces(Some(vec!["business".to_owned()])));
+
+            for route in DASH_ROUTES {
+                let path = format!("{DASH_NEST}{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::NOT_FOUND,
+                    "{path} must 404 when deployment.surfaces = [business]; got {status}"
+                );
+            }
+
+            for route in V1_ROUTES {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNAUTHORIZED,
+                    "{path} must still answer 401 without a token when deployment.surfaces = \
+                     [business]; got {status}"
+                );
+            }
+        }
+
+        /// The backward-compatibility test, and the most important one in
+        /// this module: an absent `deployment.surfaces` — what every
+        /// deployment that predates ADR-0022 has — mounts **both** surfaces,
+        /// unchanged. An upgrade that silently dropped `/v1` here would be
+        /// exactly the regression ADR-0022 exists to prevent.
+        #[tokio::test]
+        async fn absent_surfaces_config_mounts_both_surfaces() {
+            let app = router(deps_with_surfaces(None));
+
+            for route in V1_ROUTES {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNAUTHORIZED,
+                    "{path} must answer (401 without a token) when deployment.surfaces is \
+                     absent; got {status}"
+                );
+            }
+
+            for route in DASH_ROUTES {
+                let path = format!("{DASH_NEST}{}", route.path.replace("{id}", "pi_anything"));
+                let status = status_of(&app, &path).await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNAUTHORIZED,
+                    "{path} must answer (401 without a token) when deployment.surfaces is \
+                     absent; got {status}"
+                );
+            }
+        }
+
+        /// `surfaces: []` is a boot error, not a router with nothing
+        /// mounted. This is a `vpay_config` unit, not a request through this
+        /// crate's router — an empty list never reaches `RouterDeps` at all,
+        /// because `Config::validate_all` refuses to boot first. See
+        /// `deployment_surfaces_empty_is_a_boot_error` and
+        /// `deployment_surfaces_unknown_value_is_a_boot_error` in
+        /// `vpay-config`'s own test suite for the exit-78 and
+        /// message-naming-the-key assertions; duplicating a `Config::load`
+        /// round trip here would test `vpay_config` through `vpay_api`
+        /// instead of at its own boundary.
+        #[test]
+        fn empty_surfaces_is_refused_before_a_router_is_ever_built() {
+            let deployment = vpay_config::Deployment {
+                name: "test".to_owned(),
+                livemode: false,
+                public_base_url: "https://api.vpay.test".to_owned(),
+                surfaces: Some(Vec::new()),
+            };
+            let err = deployment
+                .enabled_surfaces()
+                .expect_err("an empty surfaces list must be refused");
+            assert!(
+                matches!(err, vpay_config::ConfigError::NoSurfacesConfigured),
+                "got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("deployment.surfaces"),
+                "the message must name the key: {err}"
+            );
+        }
+    }
 }

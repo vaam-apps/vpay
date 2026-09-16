@@ -379,13 +379,16 @@ async fn run() -> anyhow::Result<()> {
         staff_login: booted.staff_login,
         // Already validated by `Config::load` -> `validate_all`
         // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
-        // failure long before this line, so re-resolving it here can only
-        // ever hit the `Ok` arm.
+        // failure long before this line, so this `?` is unreachable for a
+        // `Config` that made it this far — `.context` rather than
+        // `.expect()` anyway, because this function returns `anyhow::Result`
+        // and every other fallible line in it already propagates rather
+        // than panics.
         surfaces: booted
             .config
             .deployment
             .enabled_surfaces()
-            .expect("validated at Config::load"),
+            .context("re-resolving deployment.surfaces after Config::load already validated it")?,
     };
 
     let (observability, observability_shutdown_tx) =

@@ -26,13 +26,14 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
-use vpay_config::oauth::{GrantType, MerchantClient};
-use vpay_config::{Config, Deployment, MERCHANT_AUDIENCE};
+use vpay_config::oauth::{DashboardClient, GrantType, MerchantClient};
+use vpay_config::{Config, Deployment, EnabledSurfaces, MERCHANT_AUDIENCE};
 use vpay_db::Repositories;
 
 use crate::RouterDeps;
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
+use crate::resource_auth::DashboardJwtValidator;
 use crate::resource_auth::{JwtValidator, MerchantJwtValidator};
 
 /// The base URL every fixture below derives its issuer and endpoints from.
@@ -267,5 +268,83 @@ pub(crate) fn deps() -> RouterDeps {
         // (everything but `lib.rs`'s own `surfaces` module) exercise the
         // router as it behaves today, with nothing turned off.
         surfaces: vpay_config::EnabledSurfaces::ALL,
+    }
+}
+
+/// A dashboard registration bound to `merchant_id`, for the ADR-0022
+/// `surfaces` boundary tests only. `deps` above deliberately carries
+/// `dashboard_client: None` (see its own comment); the tests that need
+/// `/dash/v1` to actually mount build a *different* [`Config`] with this
+/// client attached, through [`deps_with_surfaces`].
+pub(crate) fn dashboard_client(merchant_id: &str) -> DashboardClient {
+    DashboardClient {
+        client_id: "dashboard".to_owned(),
+        redirect_uris: vec!["https://dashboard.vpay.test/callback".to_owned()],
+        merchant_id: merchant_id.to_owned(),
+        scope: "dashboard:read".to_owned(),
+        client_secret: None,
+    }
+}
+
+/// [`RouterDeps`] for the ADR-0022 `deployment.surfaces` boundary tests
+/// (`lib.rs`'s `surfaces` test module): one merchant, one dashboard client
+/// bound to that merchant's tenant, and `deployment.surfaces` set to
+/// whatever the caller passes — `None` for "absent" (both surfaces, the
+/// backward-compatibility case), `Some(vec![...])` for an explicit list.
+///
+/// Both the merchant and the dashboard validators point at dead loopback
+/// JWKS URLs, exactly as [`deps`] above does and for the same reason: every
+/// assertion in that test module is about which *route* answers, driven by
+/// requests carrying no `Authorization` header at all, so the auth layer
+/// refuses before either validator's cache is ever consulted.
+///
+/// # Panics
+/// If `surfaces` is empty or names an unknown value — the two cases
+/// [`vpay_config::Deployment::enabled_surfaces`] itself refuses. This
+/// fixture panics rather than propagating that `Result` because every
+/// caller in the `surfaces` test module passes a value it controls; the one
+/// test that exercises the empty-list refusal calls
+/// `enabled_surfaces` directly on a `Deployment`; see
+/// `deployment_surfaces_empty_is_a_boot_error` in `vpay-config`.
+pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
+    let merchant_client = merchant("acme-cameroon", &["payments:write"]);
+    let merchant_id = merchant_client.merchant_id.clone();
+    let mut config = config_with(PUBLIC_BASE_URL, vec![merchant_client]);
+    config.dashboard_client = Some(dashboard_client(&merchant_id));
+    config.deployment.surfaces = surfaces;
+
+    let resolved: EnabledSurfaces = config
+        .deployment
+        .enabled_surfaces()
+        .expect("this fixture's callers pass a legal `surfaces` value");
+
+    RouterDeps {
+        repositories: lazy_repositories(),
+        merchant_op: merchant_op(),
+        adapters: Arc::new(std::collections::BTreeMap::new()),
+        resource_config: Arc::new(
+            crate::ResourceConfig::from_config(&config)
+                .expect("the fixture's rails project onto the port"),
+        ),
+        merchant_validator: MerchantJwtValidator(
+            JwtValidator::new(
+                "http://127.0.0.1:1/v1/oauth/jwks.json",
+                Duration::from_secs(300),
+                ISSUER,
+                vpay_config::MERCHANT_AUDIENCE,
+            )
+            .expect("the vendored-roots JWKS client builds"),
+        ),
+        dashboard_validator: Some(DashboardJwtValidator(
+            JwtValidator::new(
+                "http://127.0.0.1:1/dash/v1/oauth/jwks.json",
+                Duration::from_secs(300),
+                ISSUER,
+                "dashboard",
+            )
+            .expect("the vendored-roots JWKS client builds"),
+        )),
+        staff_login: None,
+        surfaces: resolved,
     }
 }
