@@ -3906,8 +3906,16 @@ gen-demo-keys: gen-e2e-signing-key
     # must stay that, and `8080`/`8082` appear in prose in the `metadata`
     # blocks. Anchoring on the path segment is what keeps this from being a
     # blind port substitution over a JSON document.
+    # `perl -pi -e`, not `sed -i`: BSD sed (every macOS) reads `-i`'s next
+    # argument as a backup suffix, so the GNU-portable-looking
+    # `sed -i 's|…|…|g' FILE` took the script as the suffix and the FILE as
+    # the script, and failed with `sed: 1: ".e2e/…": invalid command code .`
+    # — which meant `just demo-up` could not run on macOS at all (found
+    # 2026-09-16, on the first attempt to bring the demo stack up on a Mac).
+    # `sed -i ''` would fix it here and break Linux; `perl -pi -e` is the
+    # same on both, and perl is present on macOS and on this repo's CI image.
     find "$orange_gen" -name '*.json' -print0 \
-        | xargs -0 sed -i 's|localhost:[0-9]\{1,\}/stub-hosted-page|localhost:{{demo_orange_port}}/stub-hosted-page|g'
+        | xargs -0 perl -pi -e 's|localhost:[0-9]+/stub-hosted-page|localhost:{{demo_orange_port}}/stub-hosted-page|g'
     # The post-condition, checked rather than assumed: no OTHER port survives
     # in a payer-facing URL. A `sed` that silently matched nothing would
     # otherwise leave the demo pointing at 8082 with this recipe reporting
