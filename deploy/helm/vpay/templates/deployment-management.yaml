@@ -1,0 +1,184 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.management.enabled }}
+# ADR-0022 §2: the second server Deployment. Same image, same binary, same
+# `serve` mode as `-server` — the only difference is which ConfigMap backs
+# its profile overlay (`configmap-overlay-split.yaml` forces
+# `deployment.surfaces: [management]` here, `[business]` on `-server`), and
+# that this one is never autoscaled: a small, known number of staff sessions
+# does not want an HPA competing for the same connection budget the business
+# tier actually needs (§2, "a decision rather than an omission").
+#
+# Everything else about this pod spec mirrors `-server`'s, deliberately —
+# it is the SAME binary in the SAME `serve` mode, so it needs the SAME
+# signing key (`/v1/oauth` mounts on this tier too — both the merchant
+# private-key-JWT grant and ADR-0017's staff authorization-code grant
+# terminate there, and both need JWKS) and the SAME rails Secret (an
+# unresolved `${VAR}` placeholder in the baked config is a boot-time exit 78
+# regardless of which routes a process actually mounts).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vpay.fullname" . }}-management
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Fixed. Never an HPA — see this file's header.
+  replicas: {{ .Values.management.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "management") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 8 }}
+      annotations:
+        # Always present, unlike `-server`'s conditional one: this
+        # Deployment's overlay ConfigMap is not optional (it is what carries
+        # `deployment.surfaces: [management]`), so its checksum always
+        # applies.
+        checksum/config-overlay: {{ include "vpay.overlayWithSurfaces" (dict "ctx" . "surfaces" (list "management")) | sha256sum }}
+        {{- with .Values.management.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "vpay.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "vpay.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: management
+          # Same image as `-server` — literally the same component key, not
+          # a second `images.*` entry: ADR-0022 rejected separate crates AND
+          # separate binaries for this surface split, so there is exactly
+          # one image to name.
+          image: {{ include "vpay.image" (dict "ctx" . "component" "server") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- include "vpay.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.observability.port }}
+              protocol: TCP
+          env:
+            {{- include "vpay.commonEnv" . | nindent 12 }}
+            - name: VPAY_BIND
+              value: {{ printf "0.0.0.0:%d" (int .Values.server.port) | quote }}
+            - name: VPAY_OAUTH_SIGNING_KEY_FILE
+              value: {{ .Values.signingKey.mountPath | quote }}
+            {{- with .Values.management.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.rails.existingSecret | quote }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.observability.readinessPath }}
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: {{ .Values.observability.livenessPath }}
+              port: metrics
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.management.resources | nindent 12 }}
+          volumeMounts:
+            - name: signing-key
+              mountPath: {{ .Values.signingKey.mountPath }}
+              subPath: {{ .Values.signingKey.key }}
+              readOnly: true
+            - name: config-overlay
+              mountPath: {{ include "vpay.overlayMountPath" . }}
+              subPath: {{ include "vpay.overlayFileName" . }}
+              readOnly: true
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.signingKey.existingSecret | quote }}
+            defaultMode: {{ .Values.signingKey.defaultMode }}
+            items:
+              - key: {{ .Values.signingKey.key }}
+                path: {{ .Values.signingKey.key }}
+        - name: config-overlay
+          configMap:
+            name: {{ include "vpay.fullname" . }}-management-config-overlay
+      {{- with .Values.management.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.management.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.management.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vpay.fullname" . }}-management
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.observability.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+{{- if .Values.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "vpay.fullname" . }}-management
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.managementMinAvailable }}
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "management") | nindent 6 }}
+{{- end }}
+{{- end }}

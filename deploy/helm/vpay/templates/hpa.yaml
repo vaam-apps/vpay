@@ -1,0 +1,48 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.server.autoscaling.enabled }}
+# ADR-0022 §2/§3. Off by default (`server.autoscaling.enabled: false`), so
+# no existing release changes behaviour on upgrade — with it off,
+# `deployment-server.yaml` sets `spec.replicas: server.replicaCount` and
+# this object does not exist at all, exactly as before this ADR.
+#
+# **The bound that makes this safe to turn on is the "connection-budget"
+# guard in `_validate.tpl`**, not this object — an HPA on its own has no
+# opinion about `vpay_db::pool::MAX_CONNECTIONS`, and `maxReplicas` here
+# multiplied by that constant is exactly the arithmetic that guard checks
+# against `database.maxConnections`.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "vpay.fullname" . }}-server
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "vpay.fullname" . }}-server
+  minReplicas: {{ .Values.server.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.server.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      # Must be well above `terminationGracePeriodSeconds` (ADR-0022's own
+      # "Scale-down interacts with the 25s drain deadline" consequence) — an
+      # aggressive scale-down policy evicts mid-request far more often than
+      # a fixed replica count ever did. Not checked by a `_validate.tpl`
+      # guard: the default (60s, against a 35s grace period) already carries
+      # the margin, and every other number this HPA reads is either bounded
+      # by "connection-budget" or is a plain autoscaling policy choice this
+      # chart has no independent opinion about.
+      stabilizationWindowSeconds: {{ .Values.server.autoscaling.behavior.scaleDown.stabilizationWindowSeconds }}
+{{- end }}

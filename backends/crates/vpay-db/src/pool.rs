@@ -61,6 +61,20 @@ use crate::repository::{PgRepositories, Repositories};
 /// loop each want a connection of their own — remains the maintainer's, in
 /// `docs/plans/exp45-worker-pool-bound-notes/opus-review.md`; this file
 /// decides neither number.
+///
+/// # A second pairing, across the process boundary (2026-09-16, ADR-0022)
+///
+/// This constant is *also* duplicated — as the literal `10` — in
+/// `deploy/helm/vpay/templates/_validate.tpl`'s `"connection-budget"` guard,
+/// which bounds `(server.autoscaling.maxReplicas + management.replicaCount +
+/// worker.replicaCount) * 10` against `database.maxConnections -
+/// database.reservedConnections`. That guard cannot read this file — the
+/// chart has no dependency on this crate and never will — so the number is
+/// written down there by hand, the same way `worker.concurrency` is paired
+/// with this constant by the `"worker-concurrency-pool"` guard above. If
+/// this constant ever moves, that guard's literal has to move with it, or
+/// an autoscaled release passes a chart-level check that no longer means
+/// what its own message says.
 pub const MAX_CONNECTIONS: u32 = 10;
 
 /// How long a caller waits for a connection to become available from

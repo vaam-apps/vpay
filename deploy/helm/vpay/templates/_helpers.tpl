@@ -168,3 +168,33 @@ The overlay ConfigMap's name and its single key. The key must be exactly what
 {{- define "vpay.overlayMountPath" -}}
 {{- printf "%s/%s" (dir .Values.config.path) (include "vpay.overlayFileName" .) -}}
 {{- end -}}
+
+{{/*
+ADR-0022: the operator's own `config.overlay` document, with
+`deployment.surfaces` forced to the given list — the mechanism that gives
+`-server` and `-management` two different effective configurations from one
+`config.overlay` value, without vpay-config gaining a second overlay layer
+(it has exactly one: `Config::load`'s `profile_overlay_path`, merged once).
+
+Call as: (dict "ctx" $ "surfaces" (list "business"))
+
+`fromYaml` on the chart's own default (`""`) answers `nil`, not `dict{}` —
+sprig's `fromYaml` wraps a parse error into a `"$error"` key on a failure,
+and an *empty* document is not a parse error, so `mergeOverwrite` would be
+handed a bare `nil` as its destination. `default dict` catches both that and
+an overlay that is genuinely empty; either way the result is "no operator
+overlay, just the surfaces override" rather than a template error.
+
+`mergeOverwrite`, not `merge`: `surfaces` must win even if some future
+overlay ever wrote its own (today nothing does — `ci/values-full.yaml`'s
+overlay carries no `surfaces` key, and this helper is the only thing that
+ever sets one). `mergeOverwrite`'s deep-merge is what lets the operator's
+OTHER `deployment.*` keys (`name`, `livemode`, `public_base_url`) survive
+alongside the injected key rather than the whole `deployment:` block being
+replaced.
+*/}}
+{{- define "vpay.overlayWithSurfaces" -}}
+{{- $base := fromYaml (.ctx.Values.config.overlay | default "") | default dict -}}
+{{- $merged := mergeOverwrite (deepCopy $base) (dict "deployment" (dict "surfaces" .surfaces)) -}}
+{{- toYaml $merged -}}
+{{- end -}}

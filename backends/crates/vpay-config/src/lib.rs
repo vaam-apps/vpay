@@ -134,9 +134,7 @@ impl Deployment {
                 SURFACE_BUSINESS => enabled.business = true,
                 SURFACE_MANAGEMENT => enabled.management = true,
                 other => {
-                    return Err(ConfigError::UnknownSurface(
-                        other.to_owned(),
-                    ));
+                    return Err(ConfigError::UnknownSurface(other.to_owned()));
                 }
             }
         }

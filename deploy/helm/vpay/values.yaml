@@ -71,47 +71,115 @@ images:
     name: vpay-checkout
     tag: ""
     digest: ""
+  # The admin frontend (ADR-0022). Only read when `dashboard.enabled` is
+  # true. Added alongside the Deployment below, not before: `images.checkout`
+  # existed for months while `checkout.enabled` stayed false, but this key
+  # would have named an image nothing here could template a workload for.
+  dashboard:
+    name: vpay-dashboard
+    tag: ""
+    digest: ""
 
 # ------------------------------------------------------------ dashboard ----
 
-# The dashboard is NOT deployed by this chart.
+# ADR-0022 templates this workload. Until that ADR, this chart declined to:
+# `frontends/Dockerfile`'s `runner` stage declared no `USER` and its
+# behaviour under `readOnlyRootFilesystem` had never been observed — the
+# "dashboard-not-templated" guard was this chart's `ProviderError::NotImplemented`
+# for exactly that gap. Both are now closed: the image runs `USER node`, and
+# ADR-0022's own Dockerfile-hardening commit ran it with
+# `--read-only --tmpfs /tmp --user 1000:1000` and recorded it answering
+# `GET /healthz` 200 and turning Docker-healthy — a recorded run, not a
+# reasoned claim, and the one item the ADR's own verification list said no
+# gate could stand in for. See `docs/status/verification/` for that run.
 #
-# `ghcr.io/vaam-apps/vpay-dashboard` is published by the release workflow,
-# but templating a workload for it here would be a guess: `frontends/Dockerfile`
-# is `node:22-alpine`-based (not `scratch`), declares no `USER`, and Next's
-# standalone server's filesystem needs under `readOnlyRootFilesystem` have
-# never been observed. Rather than ship a plausible-looking Deployment nobody
-# has run, this key exists only so that turning it on is a loud, named
-# failure instead of a silent no-op — the chart equivalent of
-# `ProviderError::NotImplemented` (AGENTS.md rule 2).
+# **What is still true of every workload in this chart**: no *pod* has ever
+# run — a container under `docker run` is not a Kubernetes Pod, and the
+# probes' thresholds, the resource numbers and the Service below are reasoned
+# from the image and from Kubernetes' documented behaviour, exactly like the
+# rest of this chart. `docs/status.md`'s banner names this gap; ADR-0022 does
+# not close it and does not claim to.
 dashboard:
   enabled: false
 
+  # Fixed at 2, never autoscaled (ADR-0022 §2): staff traffic is a small,
+  # known number of sessions, and this pod carries no database pool at all
+  # (it reaches `/dash/v1` through the BFF in `app/api/dash/*`, over HTTP,
+  # not through `vpay_db`) — so autoscaling it would not even trade against
+  # the connection budget the "connection-budget" guard bounds. It is a
+  # plain int, not wired into `_validate.tpl`, for the same reason
+  # `management.replicaCount` is not: a fixed tier the operator can still
+  # resize by hand is not the failure mode either guard exists for.
+  replicaCount: 2
+  # The standalone server's own port, set here and via env for the same
+  # reason `checkout.port` is: so changing it cannot leave the container
+  # listening on the image's default with a Service pointing at the new one.
+  port: 3000
+
+  # Placeholders, not measurements — see `server.resources`'s own note. A
+  # Next standalone server is lighter than either Rust binary at idle and
+  # heavier under a cold compile-free start; nothing here has been profiled.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+  service:
+    type: ClusterIP
+    port: 3000
+    annotations: {}
+
+  # This pod's view of `/dash/v1`, for the BFF's server-side calls
+  # (`app/api/dash/*`). Empty means this release's own management Service —
+  # the right answer whenever `management.enabled` is true, and the only
+  # answer this chart could pick for an in-cluster deployment. If
+  # `management.enabled` is false there is no management Service to default
+  # to and an operator must set this explicitly (or run `-server` with every
+  # surface, today's default, and point it there).
+  apiUrl: ""
+
+  # The three OAuth values ADR-0017's authorization-code grant needs
+  # (`VPAY_DASHBOARD_CLIENT_ID`, `VPAY_DASHBOARD_REDIRECT_URI`,
+  # `VPAY_DASHBOARD_SCOPE`) — the registration this chart's `config.overlay`
+  # (or the baked base config) must carry under `dashboard_client` for them
+  # to mean anything. **Deliberately not guarded empty**, unlike
+  # `checkout.publicApiUrl`: `frontends/apps/dashboard/src/config/settings.ts`
+  # fails closed on a missing value by rendering "not configured" on
+  # `/login` rather than throwing, so an empty default here is an honest
+  # "not wired up yet" pod that still passes its own readiness probe —
+  # not a crash loop a guard needs to prevent.
+  clientId: ""
+  redirectUri: ""
+  scope: ""
+
   # The origin a browser reaches the dashboard on (`https://dash.example`).
   #
-  # NOTHING IN THIS CHART CONSUMES IT, because this chart templates no
-  # dashboard workload — see above. It is here for the same reason `enabled`
-  # is: so that the thing an operator has to get right is *named*, in the
-  # place they will look, rather than discovered from a refused sign-in.
+  # `VPAY_DASHBOARD_PUBLIC_ORIGIN` on the Deployment below. The dashboard's
+  # server actions refuse any request whose `Origin` is not this value (issue
+  # #88 item 4); Next's own check compares `Origin` against
+  # `X-Forwarded-Host`, which is two caller-supplied values agreeing whenever
+  # the caller wants them to. Unset, the app falls back to comparing the
+  # `Host` header — never `X-Forwarded-Host`, so still stronger than Next's,
+  # and **wrong behind a proxy that rewrites `Host`**, where every action is
+  # then refused.
   #
-  # What it is: `VPAY_DASHBOARD_PUBLIC_ORIGIN` on whatever runs
-  # `ghcr.io/vaam-apps/vpay-dashboard`. The dashboard's server actions refuse
-  # any request whose `Origin` is not this value (issue #88 item 4); Next's
-  # own check compares `Origin` against `X-Forwarded-Host`, which is two
-  # caller-supplied values agreeing whenever the caller wants them to. Unset,
-  # the app falls back to comparing the `Host` header — never
-  # `X-Forwarded-Host`, so still stronger than Next's, and **wrong behind a
-  # proxy that rewrites `Host`**, where every action is then refused.
-  #
-  # Empty is the default and empty is not "allow everything": it means the app
-  # uses that `Host` fallback. A value that is set but is not an absolute
-  # http(s) origin — a trailing slash, a path, a bare hostname — is a typo
-  # that would refuse every action, so the "dashboard-public-origin" guard in
-  # templates/_validate.tpl refuses it here instead.
-  #
-  # Making it REQUIRED is the follow-up, and it lands with the Deployment this
-  # chart does not yet write: a required value on a workload that does not
-  # exist would fail a deployment for a setting nothing reads.
+  # **Required when `dashboard.enabled` is true** (the "dashboard-public-origin"
+  # guard) — this is the follow-up `enabled`'s own history promised, landing
+  # in the same commit as the Deployment: a default here would be an
+  # operator's action silently refused in production, discovered from a
+  # payer's or a staff member's side and not from a chart that could have
+  # said so at install time. When `dashboard.enabled` is false the value is
+  # inert and its shape is still checked, so a typo written ahead of turning
+  # the dashboard on is caught early rather than the day it starts mattering.
+  # A value that is set but is not an absolute http(s) origin — a trailing
+  # slash, a path, a bare hostname — is the same guard's other half.
   publicOrigin: ""
 
 # ------------------------------------------------------------- checkout ----
@@ -296,12 +364,82 @@ server:
   # Extra environment variables, as a list of core/v1 EnvVar objects.
   extraEnv: []
 
+  # ADR-0022 §2/§3: autoscale the business workload, bounded by the Postgres
+  # connection budget rather than by CPU headroom alone.
+  #
+  # **Off by default, so no existing release changes behaviour on upgrade**
+  # — the same reason `checkout.enabled` and `networkPolicy.enabled` default
+  # false. With it off, `server.replicaCount` above still governs and this
+  # chart renders exactly what it always has.
+  autoscaling:
+    enabled: false
+    # Ignored while `enabled` is false. Once true, the Deployment stops
+    # setting `spec.replicas` at all (a static value fights the autoscaler —
+    # see `templates/deployment-server.yaml`), and these two become the
+    # HPA's bounds instead.
+    minReplicas: 2
+    maxReplicas: 6
+    # CPU is the default and a poor proxy for a workload that spends its
+    # time awaiting a rail (ADR-0022 § "Left to the maintainer" item 2,
+    # which recommends in-flight requests or RPS via `ServiceMonitor`
+    # instead). Kept as CPU here because that metric needs no
+    # `ServiceMonitor`/custom-metrics adapter to demonstrate — the
+    # production choice is explicitly left open.
+    targetCPUUtilizationPercentage: 70
+    behavior:
+      scaleDown:
+        # Must be strictly ABOVE `terminationGracePeriodSeconds` (35s by
+        # default) — the "connection-budget" guard does not check this one
+        # (it is not about the connection budget), but ADR-0022's own
+        # "Scale-down interacts with the 25s drain deadline" consequence
+        # names exactly this knob: an aggressive scale-down policy evicts
+        # mid-request far more often than a fixed replica count ever did.
+        # 60s is comfortably above the 35s default with margin for a slow
+        # drain; raise both together if `shutdownGraceSeconds` ever moves.
+        stabilizationWindowSeconds: 60
+
 worker:
   replicaCount: 1
   # `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY`. Zero is refused by the
   # binary itself (`WorkerArgs::concurrency`) — a worker that claims no jobs
   # looks permanently healthy and drives nothing.
   concurrency: 4
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+# ADR-0022 §2: the second server Deployment, running the SAME image as
+# `-server` with `deployment.surfaces` forced to `[management]` instead of
+# left absent — see `templates/_helpers.tpl`'s `vpay.overlayWithSurfaces` for
+# how, and `docs/adr/0022-surface-isolation-and-independent-scaling.md` §
+# "Why it cannot be inferred" for why `merchant_clients` cannot stand in for
+# this flag.
+#
+# **Off by default, so no existing release changes topology on upgrade.**
+# With it false this chart renders exactly what it always has: one
+# `-server` Deployment serving every surface, `-server`'s own overlay
+# untouched. Turning it on is what actually splits the surfaces apart —
+# `-server` then stops serving `/dash/v1` too, not just `-management`
+# starting to.
+management:
+  enabled: false
+  # Fixed, never autoscaled (ADR-0022 §2: "a decision rather than an
+  # omission" — an HPA here would add replicas, each carrying a
+  # ten-connection pool, in response to staff-session noise rather than the
+  # load that actually needs headroom). Counted by the "connection-budget"
+  # guard exactly as `worker.replicaCount` is.
+  replicaCount: 2
+  # Same image, same resource shape as `server.resources` by default — a
+  # process running fewer routes is not a process using less memory per
+  # connection, and nothing here has measured otherwise.
   resources:
     requests:
       cpu: 100m
@@ -376,6 +514,25 @@ database:
   # Key within it. The value must be a full `postgres://...` URL — it becomes
   # `DATABASE_URL` verbatim.
   existingSecretKey: url
+
+  # ADR-0022 §3: the "connection-budget" guard's inputs. Neither is read by
+  # either binary — `vpay_db::pool::MAX_CONNECTIONS` (10, paired with this
+  # guard in that file's own doc comment) is what actually bounds a single
+  # process's pool — these two exist only so the CHART can refuse a release
+  # whose total possible connection count would exceed what the real
+  # Postgres instance allows.
+  #
+  # `0` here means "not set". **Required (> 0) once `server.autoscaling.enabled`
+  # is true** — the guard refuses a default rather than guessing 100 on
+  # behalf of a managed instance, which the ADR names as exactly how this
+  # becomes a 3am incident. Read it off the instance you are pointing
+  # `existingSecret` at (a managed Postgres' own `max_connections`, or
+  # `SHOW max_connections;`).
+  maxConnections: 0
+  # Non-zero operator headroom subtracted from `maxConnections` before the
+  # guard compares — `psql`, a second replica mid-rollout, an operator's own
+  # session. 20 is a starting point, not a measurement.
+  reservedConnections: 20
 
 signingKey:
   # Secret holding the RS256 private key the merchant OP signs `/v1` access
@@ -768,6 +925,28 @@ networkPolicy:
   # observability port.
   monitoringNamespace: monitoring
   dnsNamespace: kube-system
+  # ADR-0022 §5: the management tier admits the dashboard's pods and nothing
+  # else on the traffic port — deliberately NOT
+  # `networkPolicy.ingressControllerNamespace`, unlike `-server`. The ADR
+  # recommends the management API not face the public gateway at all where
+  # the operator can arrange it, and leaves the exact mechanism (a separate
+  # internal Gateway) to the maintainer (§ "Left to the maintainer" item 3);
+  # this is the one lever this chart controls on its own; when
+  # `management.enabled` is true it is what stands between "the HTTPRoute
+  # rule is the only path to `-management`" and "so is every other Service
+  # in the namespace." An HTTPRoute rule alone does not enforce this — it
+  # only says where THIS chart's own routing sends `/dash/v1`; nothing stops
+  # a caller inside the cluster from addressing the management Service
+  # directly unless this policy is also on.
+  managementIngress:
+    # Read only when `management.enabled` is true. `{}` (match every pod in
+    # this namespace) is almost certainly too wide for a real deployment —
+    # it is the fail-open default so `networkPolicy.enabled: true` does not
+    # also require naming the dashboard's labels before anything starts.
+    # Narrow it to the dashboard's own selector once that Deployment is
+    # running in this namespace, or to whatever else legitimately calls
+    # `/dash/v1`.
+    podSelector: {}
   database:
     # Where Postgres is. Set exactly one shape:
     #   cidrs: ["10.0.4.7/32"]            — a managed instance's address
@@ -789,13 +968,23 @@ networkPolicy:
       - 169.254.0.0/16
 
 podDisruptionBudget:
-  # Server only. The worker is a single replica whose jobs are leased and
-  # re-claimable, so a PDB on it would block node drains to protect nothing.
+  # `-server` and, when `management.enabled` is true, `-management`. Never
+  # `-worker`: its jobs are leased and re-claimable, so a PDB there would
+  # block node drains to protect nothing. Never `-dashboard`: same reasoning
+  # as the worker's, one layer up — a staff session mid-request is not work
+  # this chart tracks a lease for, and the BFF's own retry (if any) is the
+  # app's concern, not the platform's.
   enabled: true
-  # Must be strictly less than `server.replicaCount`, or no voluntary
-  # eviction — and therefore no node drain — can ever proceed. The
-  # "pdb-minavailable" guard.
+  # `-server`'s budget. Must be strictly less than `server.replicaCount`
+  # (or, once `server.autoscaling.enabled` is true, than
+  # `server.autoscaling.minReplicas` — the "pdb-minavailable" guard checks
+  # whichever one actually governs), or no voluntary eviction — and
+  # therefore no node drain — can ever proceed.
   minAvailable: 1
+  # `-management`'s budget, read only when `management.enabled` is true.
+  # Checked against `management.replicaCount` (fixed at 2 by default) by the
+  # same "pdb-minavailable" guard.
+  managementMinAvailable: 1
 
 # ----------------------------------------------------------------- misc ----
 

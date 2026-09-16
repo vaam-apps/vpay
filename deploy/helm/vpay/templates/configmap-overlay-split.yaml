@@ -1,0 +1,55 @@
+{{- include "vpay.validate" . -}}
+{{- if .Values.management.enabled }}
+# ADR-0022: once the surfaces are split, `-server` and `-management` each
+# need their OWN effective `deployment.surfaces`, and `vpay_config::Config::load`
+# merges exactly one profile overlay on top of the baked base config — there
+# is no second layer to add a third document to. So each Deployment below
+# gets its own ConfigMap, both derived from the SAME `config.overlay` value
+# (see `vpay.overlayWithSurfaces` in `_helpers.tpl`) with only `deployment.surfaces`
+# forced apart, and each is mounted at the identical in-pod path
+# (`vpay.overlayMountPath`) its own Deployment already points `VPAY_CONFIG`/
+# `VPAY_PROFILE` at — so nothing about *loading* the overlay changes, only
+# *which ConfigMap* backs the file inside each pod.
+#
+# Independent of `config.createOverlayConfigMap`: that flag governs the
+# SHARED overlay `-server` (when `management.enabled` is false) and
+# `-worker` mount (see `configmap-overlay.yaml`), which is unaffected by
+# this file either way. `-worker` keeps mounting the shared one even when
+# the split is on — `deployment.surfaces` is validated at boot on every
+# binary mode (`Config::validate_all` runs it unconditionally) but only
+# `router()` consumes the result, and `vpay-server worker` never builds one.
+#
+# `-server`'s copy here REPLACES what it would otherwise mount: once the
+# split is on, `-server` must stop serving `/dash/v1` too, not just
+# `-management` start serving it — see `docs/adr/0022-surface-isolation-and-independent-scaling.md`
+# § "Two server Deployments from one image". Templating this as `-server`'s
+# ONLY overlay while `management.enabled` is true is what makes the two
+# tiers different processes rather than two names for the same one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vpay.fullname" . }}-server-config-overlay
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ include "vpay.overlayFileName" . }}: |
+{{ include "vpay.overlayWithSurfaces" (dict "ctx" . "surfaces" (list "business")) | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vpay.fullname" . }}-management-config-overlay
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ include "vpay.overlayFileName" . }}: |
+{{ include "vpay.overlayWithSurfaces" (dict "ctx" . "surfaces" (list "management")) | indent 4 }}
+{{- end }}

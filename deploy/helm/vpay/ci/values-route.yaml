@@ -29,6 +29,14 @@ config:
       livemode: true
       public_base_url: https://api.vpay.example
 
+# ADR-0022: exercises the /dash/v1 HTTPRoute rule (`route.enabled` above is
+# what makes it render) — the one case `values-full.yaml`'s route.enabled:
+# false never reaches, since these two files are the Ingress half and the
+# Gateway API half of "everything this chart can render" and neither
+# exercises the other's routing mechanism.
+management:
+  enabled: true
+
 route:
   enabled: true
   parentRefs:

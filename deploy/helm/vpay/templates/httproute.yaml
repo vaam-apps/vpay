@@ -113,5 +113,24 @@ spec:
         - name: {{ $fullName }}
           port: {{ .Values.service.port }}
 {{- end }}
+{{- if .Values.management.enabled }}
+    # ADR-0022 §5: `/dash/v1` -> the management Service, once the surfaces
+    # are split. Not rendered while `management.enabled` is false: `/dash/v1`
+    # is already reachable on `{{ $fullName }}`'s own Service in that
+    # configuration (the same one the `api` rule above targets), and adding
+    # an identical-target rule would be a second path to the same backend
+    # rather than a new capability.
+    #
+    # `PathPrefix`, matching `api`'s own choice for `/v1` above — `/dash/v1`
+    # is the whole of a distinct surface (`dash::DASH_NEST`), not one
+    # resource among several, so there is no narrower shape to prefer.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /dash/v1
+      backendRefs:
+        - name: {{ $fullName }}-management
+          port: {{ .Values.service.port }}
+{{- end }}
 {{- end }}
 {{- end }}

@@ -58,7 +58,7 @@ rewrite of working structure:
    `frontends/apps/dashboard/app/api/dash/*` are Next route handlers; the
    browser never holds a `/v1` credential.
 
-And `/dash/v1` is *already* conditional: `router` takes
+And `/dash/v1` is _already_ conditional: `router` takes
 `dashboard_validator: Option<DashboardJwtValidator>`, so a deployment with no
 `dashboard_client` in its YAML serves no management surface at all
 (`lib.rs:1668`).
@@ -249,7 +249,7 @@ deadline is required, not optional.
 **Migrations run at boot, before the listener binds**
 (`deployment-server.yaml:104`). Today that is a property of a fixed set of
 replicas rolling. Under an HPA, a scale-up event during a deploy can start a
-pod carrying a *different* image version than the one that migrated. This ADR
+pod carrying a _different_ image version than the one that migrated. This ADR
 does not solve that; it records it as the reason migrations must stay
 backward-compatible with the previous image, and as an argument for moving
 them out of pod boot in a later ADR.

@@ -1,0 +1,9 @@
+# Violates exactly one guard: "connection-budget".
+#
+# server.autoscaling.enabled with database.maxConnections left at its
+# default (0, "not set") — the cheapest way to get this wrong, and the one
+# the guard exists to refuse by name rather than let the chart guess 100 on
+# behalf of a managed Postgres instance.
+server:
+  autoscaling:
+    enabled: true

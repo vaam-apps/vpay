@@ -41,10 +41,50 @@ RUN pnpm --filter @vpay/dashboard build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production
+
+# `HOME` and `XDG_CACHE_HOME` point at /tmp for the `checkout` stage's own
+# reason (below): this image is meant to run with
+# `readOnlyRootFilesystem: true` (`read_only: true` in compose), so anything
+# that wants somewhere to write gets the tmpfs, and nothing else is
+# writable. Next's standalone server writes nothing outside those two under
+# `NODE_ENV=production`.
+#
+# `PORT`/`HOSTNAME` are the standalone server's own knobs, same as
+# `checkout`'s — and here they are not cosmetic. **Measured**: without an
+# explicit `HOSTNAME`, Docker itself injects `HOSTNAME=<container id>` into
+# every container's environment, `/etc/hosts` maps that id to the
+# container's bridge IP (not `127.0.0.1`), and Next's standalone server
+# binds to whatever `HOSTNAME` resolves to. The result is a server that
+# answers on the container's real interface — so `docker run -p` still
+# works — but refuses every connection to `127.0.0.1`, which is exactly
+# what the `HEALTHCHECK` below and a kubelet's probe both dial. Confirmed by
+# running the built image and exec'ing `node -e "fetch('http://127.0.0.1:3000/…')"` inside
+# it: `ECONNREFUSED` without this line, `200` with it.
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0 \
+    HOME=/tmp \
+    XDG_CACHE_HOME=/tmp
+
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/standalone ./
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/static ./frontends/apps/dashboard/.next/static
+
+# `node`, the image's own unprivileged user (uid 1000) — see the `checkout`
+# stage's own comment on this line for why a `node:22-alpine` image can make
+# this claim without a numeric `runAsUser` guess.
+USER node
+
 EXPOSE 3000
+
+# `/healthz` is `frontends/apps/dashboard/app/healthz/route.ts`, added
+# alongside this HEALTHCHECK (ADR-0022): it did not exist before, and a
+# `HEALTHCHECK` with nothing to poll would be exactly the "looks more
+# finished than it is" this repository forbids. Same shape as the `checkout`
+# stage's below — `node -e` because neither curl nor wget is in
+# `node:22-alpine`, and Node 22's global `fetch` already is.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
+    CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "frontends/apps/dashboard/server.js"]
 
 # -------------------------------------------------------------- checkout ---

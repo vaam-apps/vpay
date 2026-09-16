@@ -2973,7 +2973,7 @@ helm-check:
     expected_guards=(
         checkout-not-templated-by-default
         checkout-templated-when-enabled
-        dashboard-not-templated
+        connection-budget
         dashboard-public-origin
         database-secret
         extra-env-collision
@@ -3044,6 +3044,32 @@ helm-check:
         fi
     done
     echo "    default: no checkout object; ci/values-full.yaml: Deployment + Service + Ingress"
+
+    # ADR-0022's two new workloads, same absence-cannot-be-a-fail-guard
+    # reasoning as the checkout block above: management.enabled and
+    # dashboard.enabled both default to false, so no existing release gets
+    # either object on upgrade, and that is an absence — not a `fail`.
+    echo "==> management tier and dashboard: absent by default, present when enabled"
+    for name in -management -dashboard; do
+        if grep -q -- "$name" "$out/default.yaml"; then
+            echo "helm-check: FAIL — the default render names a $name object, but management.enabled and dashboard.enabled both default to false:" >&2
+            grep -n -- "$name" "$out/default.yaml" >&2
+            exit 1
+        fi
+    done
+    for name in vpay-management vpay-dashboard; do
+        for kind in Deployment Service; do
+            if ! grep -B20 "^  name: $name$" "$out/full.yaml" | grep -q "^kind: $kind$"; then
+                echo "helm-check: FAIL — ci/values-full.yaml enables management and dashboard but rendered no $kind for $name" >&2
+                exit 1
+            fi
+        done
+    done
+    if ! grep -q "^kind: HorizontalPodAutoscaler$" "$out/full.yaml"; then
+        echo "helm-check: FAIL — ci/values-full.yaml enables server.autoscaling but rendered no HorizontalPodAutoscaler" >&2
+        exit 1
+    fi
+    echo "    default: no -management or -dashboard object, no HPA; ci/values-full.yaml: both Deployments + Services, HPA"
 
     # ADR-0009 assumes a rate limit exists in front of the token endpoint.
     # This is the only thing in the repository that checks one is configured,

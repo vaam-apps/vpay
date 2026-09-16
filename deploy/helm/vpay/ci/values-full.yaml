@@ -11,14 +11,21 @@
 # defaults, the digest is a real-shaped but meaningless one, and the CIDR is
 # documentation-range.
 
-# `dashboard.enabled` stays FALSE here: it is a named template failure, not a
-# workload, and "everything this chart can render" does not include a thing it
-# refuses to render. `publicOrigin` is set anyway, to a well-formed value, so
-# that the "dashboard-public-origin" guard's PASSING side is exercised by
-# something — the guard's own values file only proves it fires.
+# ADR-0022. `enabled: true` here, unlike before that ADR: this chart
+# templates a real Deployment for it now, and "everything this chart can
+# render" would otherwise skip the one workload that took the longest to
+# become templatable. `clientId`/`redirectUri`/`scope` point at nothing real
+# — this file exercises the SHAPE every value renders into, not a working
+# OAuth registration — and `publicOrigin` is required once `enabled` is
+# true (the "dashboard-public-origin" guard).
 dashboard:
-  enabled: false
+  enabled: true
   publicOrigin: "https://dash.example"
+  clientId: "dashboard"
+  redirectUri: "https://dash.example/api/auth/callback"
+  scope: "dashboard:read"
+  podAnnotations:
+    example.vpay/rendered-by: ci
 
 images:
   server:
@@ -30,6 +37,10 @@ images:
     # Ditto, and on this component specifically because the
     # "image-digest-format" guard was widened to cover it.
     digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  dashboard:
+    # Ditto again — the "image-digest-format" guard covers every
+    # `images.*.digest`, not a named list of components.
+    digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
   pullSecrets:
     - name: ghcr-pull
 
@@ -37,6 +48,30 @@ server:
   replicaCount: 3
   podAnnotations:
     example.vpay/rendered-by: ci
+  # ADR-0022. `replicaCount` above stops governing once this is true
+  # (`deployment-server.yaml` sets no `spec.replicas` at all) — left in
+  # place anyway so a value file that later disables autoscaling has
+  # something sane to fall back to. `maxReplicas` is the chart's own
+  # default (6); `database.maxConnections` below is sized to clear the
+  # "connection-budget" guard at that ceiling with `management.replicaCount`
+  # (2, the chart default) and `worker.replicaCount` (2, below) both
+  # counted: (6 + 2 + 2) * 10 = 100, comfortably under 150 - 20 = 130.
+  autoscaling:
+    enabled: true
+    # 3, not the chart's own default of 2: `podDisruptionBudget.minAvailable`
+    # below is 2, and the "pdb-minavailable" guard now compares that against
+    # `minReplicas` once autoscaling is on — 2 against a default of 2 would
+    # itself violate the guard this file is not trying to exercise.
+    minReplicas: 3
+
+# ADR-0022. Same reasoning as `dashboard.enabled` above: this chart
+# templates the management tier now, so "everything this chart can render"
+# includes it.
+management:
+  enabled: true
+  podAnnotations:
+    example.vpay/rendered-by: ci
+
 worker:
   replicaCount: 2
   # 5, not the 8 this file carried until 2026-09-10: `vpay-server worker`
@@ -73,8 +108,23 @@ ingress:
     enabled: true
     clusterIssuer: letsencrypt-prod
 
+# ADR-0022. Required once server.autoscaling.enabled is true (the
+# "connection-budget" guard). Sized to clear it at server.autoscaling's own
+# maxReplicas (the chart default, 6) with management.replicaCount (2) and
+# worker.replicaCount (2, below) both counted: (6 + 2 + 2) * 10 = 100
+# against 150 - 20 = 130.
+database:
+  maxConnections: 150
+  reservedConnections: 20
+
 networkPolicy:
   enabled: true
+  # ADR-0022. `{}` (the chart's own default) is deliberately not overridden
+  # here — "everything this chart can render" includes the fail-open
+  # default a first `management.enabled: true` release actually gets, not a
+  # narrowed example an operator would have to reverse-engineer.
+  managementIngress:
+    podSelector: {}
   database:
     # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
     cidrs:
@@ -83,6 +133,7 @@ networkPolicy:
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
+  managementMinAvailable: 1
 
 # vpay's own payment page, on its own hostname — the shape to prefer, and the
 # one `checkout.public_base_url` is happiest with. The path-prefix shape is

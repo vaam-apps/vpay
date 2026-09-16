@@ -364,32 +364,31 @@ async fn run() -> anyhow::Result<()> {
     );
     tracing::info!(addr = %bound, "listening");
 
-    let deps = RouterDeps {
-        repositories: booted.repositories,
-        merchant_op: booted.merchant_op,
-        merchant_validator,
-        dashboard_validator,
-        adapters: Arc::new(booted.adapters),
-        // The projection, not the whole `Config` — see `ResourceConfig`, and
-        // note this is the only way `deployment.livemode` reaches a handler.
-        resource_config: Arc::new(
-            ResourceConfig::from_config(&booted.config)
-                .context("projecting the validated configuration onto the /v1 request path")?,
-        ),
-        staff_login: booted.staff_login,
-        // Already validated by `Config::load` -> `validate_all`
-        // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
-        // failure long before this line, so this `?` is unreachable for a
-        // `Config` that made it this far — `.context` rather than
-        // `.expect()` anyway, because this function returns `anyhow::Result`
-        // and every other fallible line in it already propagates rather
-        // than panics.
-        surfaces: booted
-            .config
-            .deployment
-            .enabled_surfaces()
-            .context("re-resolving deployment.surfaces after Config::load already validated it")?,
-    };
+    let deps =
+        RouterDeps {
+            repositories: booted.repositories,
+            merchant_op: booted.merchant_op,
+            merchant_validator,
+            dashboard_validator,
+            adapters: Arc::new(booted.adapters),
+            // The projection, not the whole `Config` — see `ResourceConfig`, and
+            // note this is the only way `deployment.livemode` reaches a handler.
+            resource_config: Arc::new(
+                ResourceConfig::from_config(&booted.config)
+                    .context("projecting the validated configuration onto the /v1 request path")?,
+            ),
+            staff_login: booted.staff_login,
+            // Already validated by `Config::load` -> `validate_all`
+            // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
+            // failure long before this line, so this `?` is unreachable for a
+            // `Config` that made it this far — `.context` rather than
+            // `.expect()` anyway, because this function returns `anyhow::Result`
+            // and every other fallible line in it already propagates rather
+            // than panics.
+            surfaces: booted.config.deployment.enabled_surfaces().context(
+                "re-resolving deployment.surfaces after Config::load already validated it",
+            )?,
+        };
 
     let (observability, observability_shutdown_tx) =
         start_observability(args.common.observability_bind, metrics).await?;

@@ -1,4 +1,15 @@
 {{- include "vpay.validate" . -}}
+{{/*
+ADR-0022: once `management.enabled` is true, `-server` mounts its OWN
+overlay ConfigMap (forcing `deployment.surfaces: [business]`) instead of the
+shared one `config.createOverlayConfigMap` governs — see
+`configmap-overlay-split.yaml` and `vpay.overlayWithSurfaces`. `$mountOverlay`
+is therefore wider than `config.createOverlayConfigMap` alone: the split
+overlay must be mounted even for an operator who set no `config.overlay` at
+all, because `[business]` still has to reach the process from somewhere.
+*/}}
+{{- $mountOverlay := or .Values.config.createOverlayConfigMap .Values.management.enabled -}}
+{{- $overlayCmName := ternary (printf "%s-server-config-overlay" (include "vpay.fullname" .)) (include "vpay.overlayConfigMapName" .) .Values.management.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,7 +21,15 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
+  # Absent, not zero and not omitted-by-accident, once the HPA governs:
+  # `Deployment.spec.replicas` and an active HorizontalPodAutoscaler fight
+  # over the same field, and Kubernetes' own docs call setting both "highly
+  # discouraged". `server.replicaCount` still applies at helm install/upgrade
+  # time when `autoscaling.enabled` later flips back to false, because Helm
+  # re-renders the whole object rather than patching it.
+  {{- if not .Values.server.autoscaling.enabled }}
   replicas: {{ .Values.server.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "server") | nindent 6 }}
@@ -18,14 +37,17 @@ spec:
     metadata:
       labels:
         {{- include "vpay.componentLabels" (dict "ctx" . "component" "server") | nindent 8 }}
-      {{- if or .Values.config.createOverlayConfigMap .Values.server.podAnnotations }}
+      {{- if or $mountOverlay .Values.server.podAnnotations }}
       annotations:
-        {{- if .Values.config.createOverlayConfigMap }}
+        {{- if $mountOverlay }}
         # The overlay is mounted with `subPath`, which does NOT live-update
         # when the ConfigMap changes (and ADR-0003 has no hot reload anyway).
         # This checksum turns an overlay edit into a rolling restart, which is
-        # the only way the change takes effect.
-        checksum/config-overlay: {{ .Values.config.overlay | sha256sum }}
+        # the only way the change takes effect. Hashes the EFFECTIVE document
+        # (post `vpay.overlayWithSurfaces`) once the split is on, so a change
+        # to `management.enabled` itself — which changes this pod's overlay
+        # content without changing `config.overlay` — still restarts it.
+        checksum/config-overlay: {{ (ternary (include "vpay.overlayWithSurfaces" (dict "ctx" . "surfaces" (list "business"))) .Values.config.overlay .Values.management.enabled) | sha256sum }}
         {{- end }}
         {{- with .Values.server.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -117,7 +139,7 @@ spec:
               mountPath: {{ .Values.signingKey.mountPath }}
               subPath: {{ .Values.signingKey.key }}
               readOnly: true
-            {{- if .Values.config.createOverlayConfigMap }}
+            {{- if $mountOverlay }}
             # `subPath`, NOT a directory mount: the image bakes `config/` at
             # /config, and mounting a ConfigMap at /config would replace the
             # baked base file, after which the process exits 78 complaining
@@ -140,10 +162,15 @@ spec:
             items:
               - key: {{ .Values.signingKey.key }}
                 path: {{ .Values.signingKey.key }}
-        {{- if .Values.config.createOverlayConfigMap }}
+        {{- if $mountOverlay }}
         - name: config-overlay
           configMap:
-            name: {{ include "vpay.overlayConfigMapName" . }}
+            # `-server-config-overlay` (ADR-0022, `configmap-overlay-split.yaml`)
+            # once `management.enabled` is true — the one that forces
+            # `deployment.surfaces: [business]` — else the shared
+            # `config.createOverlayConfigMap` one, unchanged from before this
+            # ADR.
+            name: {{ $overlayCmName }}
         {{- end }}
       {{- with .Values.server.nodeSelector }}
       nodeSelector:

@@ -9,6 +9,7 @@
     "dashboard",
     "checkout",
     "server",
+    "management",
     "worker",
     "config",
     "database",
@@ -56,7 +57,8 @@
           }
         },
         "server": { "$ref": "#/definitions/imageRef" },
-        "checkout": { "$ref": "#/definitions/imageRef" }
+        "checkout": { "$ref": "#/definitions/imageRef" },
+        "dashboard": { "$ref": "#/definitions/imageRef" }
       }
     },
 
@@ -64,10 +66,41 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled"],
-      "description": "Not templated by this chart. `enabled: true` is a named template failure, not a workload. `publicOrigin` is consumed by nothing here for the same reason — it names VPAY_DASHBOARD_PUBLIC_ORIGIN on the separately-deployed dashboard, and its SHAPE is checked by the \"dashboard-public-origin\" guard because a trailing slash or a bare hostname there refuses every server action.",
+      "description": "The admin frontend, templated by this chart since ADR-0022 (off by default). `publicOrigin` is required once `enabled` is true (the \"dashboard-public-origin\" guard, which also checks its SHAPE regardless of `enabled` — a trailing slash or a bare hostname there refuses every server action). `clientId`/`redirectUri`/`scope` are deliberately not guarded: the app itself fails closed on a missing value by rendering it on /login rather than crashing, so an empty default is an honest \"not wired up\" pod rather than one a guard needs to keep from crash-looping.",
       "properties": {
         "enabled": { "type": "boolean" },
-        "publicOrigin": { "type": "string" }
+        "publicOrigin": { "type": "string" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } },
+        "apiUrl": {
+          "type": "string",
+          "description": "This pod's view of /dash/v1. Empty means this release's own management Service when management.enabled is true, or the single -server Service otherwise."
+        },
+        "clientId": { "type": "string" },
+        "redirectUri": { "type": "string" },
+        "scope": { "type": "string" },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "port"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+            },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
       }
     },
 
@@ -184,6 +217,54 @@
         "nodeSelector": { "type": "object" },
         "tolerations": { "type": "array" },
         "affinity": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } },
+        "autoscaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "minReplicas", "maxReplicas", "targetCPUUtilizationPercentage", "behavior"],
+          "description": "ADR-0022. Off by default, so no existing release changes behaviour on upgrade. Bounded, once enabled, by the \"connection-budget\" guard in templates/_validate.tpl against database.maxConnections — this schema checks shape only.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minReplicas": { "type": "integer", "minimum": 1 },
+            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "behavior": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["scaleDown"],
+              "properties": {
+                "scaleDown": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["stabilizationWindowSeconds"],
+                  "properties": {
+                    "stabilizationWindowSeconds": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Should stay well above terminationGracePeriodSeconds (ADR-0022's own consequence section); not independently enforced by a template guard."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "management": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "replicaCount", "resources"],
+      "description": "ADR-0022 §2: the second server Deployment, serving only /dash/v1 and the staff sign-in routes, fixed-replica and never autoscaled. Off by default, so no existing release changes topology on upgrade. Counted by the \"connection-budget\" guard exactly as worker.replicaCount is.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "resources": { "$ref": "#/definitions/resources" },
+        "podAnnotations": { "type": "object" },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
         "extraEnv": { "type": "array", "items": { "type": "object" } }
       }
     },
@@ -225,7 +306,17 @@
       "required": ["existingSecret", "existingSecretKey"],
       "properties": {
         "existingSecret": { "type": "string" },
-        "existingSecretKey": { "type": "string" }
+        "existingSecretKey": { "type": "string" },
+        "maxConnections": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 means unset. Required (>0) once server.autoscaling.enabled is true — paired with vpay_db::pool::MAX_CONNECTIONS (10, a compile-time constant the chart cannot read) by the \"connection-budget\" guard in templates/_validate.tpl; see that guard's own comment and pool.rs's doc comment for the pairing, the way worker.concurrency is paired with the pool by the \"worker-concurrency-pool\" guard."
+        },
+        "reservedConnections": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Operator headroom subtracted from maxConnections before the \"connection-budget\" guard compares."
+        }
       }
     },
 
@@ -442,6 +533,16 @@
         "ingressControllerNamespace": { "type": "string" },
         "monitoringNamespace": { "type": "string" },
         "dnsNamespace": { "type": "string" },
+        "managementIngress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "podSelector": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
         "database": {
           "type": "object",
           "additionalProperties": false,
@@ -476,7 +577,12 @@
         "minAvailable": {
           "type": "integer",
           "minimum": 0,
-          "description": "An integer, never a percentage string: the pdb-minavailable guard compares it with server.replicaCount, and a percentage would make that comparison a lie."
+          "description": "An integer, never a percentage string: the pdb-minavailable guard compares it with server.replicaCount (or server.autoscaling.minReplicas once that is enabled), and a percentage would make that comparison a lie."
+        },
+        "managementMinAvailable": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "-management's own budget, read only when management.enabled is true. Compared against management.replicaCount by the same pdb-minavailable guard."
         }
       }
     },
