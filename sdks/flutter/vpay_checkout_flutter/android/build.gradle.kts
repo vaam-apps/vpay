@@ -97,6 +97,12 @@ dependencies {
     // .ActivityLifecycleCallbacks` watching for the host Activity's own
     // `onResume`, never a scheme callback.
     implementation("androidx.browser:browser:1.8.0")
+    // The modal bottom sheet (design D5, revised 2026-09-16): BottomSheetBehavior
+    // itself, and the CoordinatorLayout its sheet view's parent must be.
+    // VpayCheckoutActivity builds the sheet's views in code, not a layout XML
+    // resource — see that file's own header.
+    implementation("com.google.android.material:material:1.14.0")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")

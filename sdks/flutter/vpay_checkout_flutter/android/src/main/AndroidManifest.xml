@@ -27,11 +27,23 @@
       plugin's own WebView settings, or intercepting the extra by other means.
       No other app has any business starting this Activity, so it is launched
       only by this same app's own Flutter engine, with `startActivityForResult`.
+
+      Revised 2026-09-16 ("Modal checkout sheet" — the maintainer's own
+      words: the old full-screen window "feels like the user is quitting the
+      app"). `@style/Theme.Vpay.CheckoutSheet` (res/values/styles.xml) is
+      translucent rather than opaque, so the merchant's own Activity stays
+      visible behind this one — VpayCheckoutActivity.kt lays the WebView out
+      as a Material `BottomSheetBehavior` sheet over it. Still the SAME
+      Activity, still `exported="false"`: this is not a
+      `BottomSheetDialogFragment` hosted by the merchant's own Activity —
+      that would dissolve the Activity isolation the exported="false"/
+      intent-redirection reasoning above rests on, for a cosmetically
+      identical result.
     -->
     <activity
       android:name=".VpayCheckoutActivity"
       android:exported="false"
-      android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+      android:theme="@style/Theme.Vpay.CheckoutSheet"
       android:configChanges="orientation|screenSize|keyboardHidden" />
   </application>
 

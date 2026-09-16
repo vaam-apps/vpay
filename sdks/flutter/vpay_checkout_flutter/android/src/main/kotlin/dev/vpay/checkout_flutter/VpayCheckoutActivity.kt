@@ -1,10 +1,28 @@
-// The Android native window itself (design doc D5). A plain `Activity` with
-// a full-bleed `WebView` — nothing else. This class decides nothing about
-// the payer's payment outcome (D1): it only watches for a navigation that
-// matches one of `ShowCheckoutRequest.stopUrls`, or a dismissal, and
-// reports which. `checkout_controller.dart`'s poll of
+// The Android native window itself (design doc D5). An `Activity` whose
+// `WebView` is laid out as a Material modal bottom sheet — nothing else.
+// This class decides nothing about the payer's payment outcome (D1): it
+// only watches for a navigation that matches one of
+// `ShowCheckoutRequest.stopUrls`, or a dismissal, and reports which.
+// `checkout_controller.dart`'s poll of
 // `GET /v1/browser/payment_intents/{id}` is the only thing that ever says
 // `succeeded`.
+//
+// Revised 2026-09-16 ("Modal checkout sheet" — the maintainer's own words:
+// the previous full-screen window "feels like the user is quitting the
+// app"). Still the SAME Activity: `android:exported="false"` and every
+// other non-negotiable below is unchanged, and this is deliberately NOT a
+// `BottomSheetDialogFragment` hosted inside the merchant's own Activity,
+// which would dissolve the Activity isolation those non-negotiables rest
+// on for a cosmetically identical result. What changed is
+// `AndroidManifest.xml`'s theme (`@style/Theme.Vpay.CheckoutSheet`,
+// `res/values/styles.xml`) — translucent rather than opaque, so the
+// merchant's own Activity, one below this one in the same task, stays
+// visible behind it — and `onCreate` below, which now builds a scrim plus
+// a `CoordinatorLayout`/`BottomSheetBehavior` sheet around the `WebView`
+// instead of a bare full-bleed one. Drag-down, a scrim tap and back press
+// (below) all funnel into [requestDismiss], which only ever finishes
+// through the one [finishAsDismissed] this file already had — no second,
+// separate "cancel" path (design D4).
 //
 // Non-negotiables (docs/plans/2026-09-13-flutter-plugin-brief.md, and the
 // design doc's D5):
@@ -49,15 +67,22 @@ package dev.vpay.checkout_flutter
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.coordinatorlayout.widget.CoordinatorLayout
+import com.google.android.material.bottomsheet.BottomSheetBehavior
 
 /** The Intent extra carrying `ShowCheckoutRequest.url` — cleared on finish. */
 private const val EXTRA_URL = "vpay_checkout_url"
@@ -70,6 +95,23 @@ private const val BUNDLE_SCHEME = "scheme"
 private const val BUNDLE_HOST = "host"
 private const val BUNDLE_PORT = "port"
 private const val BUNDLE_PATH = "path"
+
+/**
+ * The large detent the maintainer asked for explicitly: the hosted page is
+ * a form, and a shorter detent would push its own "Pay" button under the
+ * fold. [BottomSheetBehavior.setHalfExpandedRatio] takes the fraction of
+ * the PARENT's height the sheet occupies at its initial, half-expanded
+ * state — the sheet is still draggable past this, all the way to
+ * [BottomSheetBehavior.STATE_EXPANDED] (the full height), which is the
+ * "draggable to full height" half of the same instruction.
+ */
+private const val SHEET_INITIAL_HEIGHT_RATIO = 0.9f
+
+/** Rounded top corners on the sheet — the merchant's app is visible above them. */
+private const val SHEET_CORNER_RADIUS_DP = 16f
+
+/** A translucent black scrim over whatever of the merchant's app shows above the sheet. */
+private const val SCRIM_COLOR = 0x99000000.toInt()
 
 class VpayCheckoutActivity : ComponentActivity() {
 
@@ -117,6 +159,7 @@ class VpayCheckoutActivity : ComponentActivity() {
 
   private var webView: WebView? = null
   private var stopUrls: List<CheckoutStopUrl> = emptyList()
+  private var bottomSheetBehavior: BottomSheetBehavior<FrameLayout>? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -124,6 +167,9 @@ class VpayCheckoutActivity : ComponentActivity() {
 
     val url = intent.getStringExtra(EXTRA_URL)
     if (url == null) {
+      // Nothing was ever shown — no sheet exists to animate, so this skips
+      // straight to the one dismissal path (design D4) rather than going
+      // through [requestDismiss].
       finishAsDismissed()
       return
     }
@@ -143,11 +189,6 @@ class VpayCheckoutActivity : ComponentActivity() {
 
     val view = WebView(this)
     webView = view
-    setContentView(
-      view,
-      ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-    )
-
     view.settings.apply {
       javaScriptEnabled = true
       domStorageEnabled = true
@@ -178,18 +219,128 @@ class VpayCheckoutActivity : ComponentActivity() {
         }
       }
 
+    setContentView(buildSheetView(view))
     view.loadUrl(url)
 
     onBackPressedDispatcher.addCallback(
       this,
       object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
-          // Always a dismissal, never `webView.goBack()` — see this file's
-          // header.
-          finishAsDismissed()
+          // Never `webView.goBack()` — see this file's header. Routed
+          // through [requestDismiss] so back press lands on the exact same
+          // dismissal path a drag-down or a scrim tap does.
+          requestDismiss()
         }
       },
     )
+  }
+
+  /**
+   * Builds the scrim + Material bottom sheet around [webView] and returns
+   * the root view for [setContentView]. The sheet starts at
+   * [SHEET_INITIAL_HEIGHT_RATIO] of the screen (the maintainer's explicit
+   * "large detent" decision) and is draggable up to full height
+   * ([BottomSheetBehavior.STATE_EXPANDED]) or down past the detent, which
+   * hides it — [BottomSheetBehavior.BottomSheetCallback.onStateChanged]
+   * below is the ONE place that then calls [finishAsDismissed], so a touch
+   * drag, a scrim tap and a back press all resolve identically.
+   */
+  private fun buildSheetView(webView: WebView): View {
+    val root = CoordinatorLayout(this)
+
+    val scrim =
+      View(this).apply {
+        setBackgroundColor(SCRIM_COLOR)
+        isClickable = true
+        // Same dismissal path a drag-down or back press uses — see
+        // [requestDismiss].
+        setOnClickListener { requestDismiss() }
+      }
+    root.addView(
+      scrim,
+      CoordinatorLayout.LayoutParams(
+        CoordinatorLayout.LayoutParams.MATCH_PARENT,
+        CoordinatorLayout.LayoutParams.MATCH_PARENT,
+      ),
+    )
+
+    val sheet =
+      FrameLayout(this).apply {
+        background =
+          GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(Color.WHITE)
+            val radiusPx = SHEET_CORNER_RADIUS_DP * resources.displayMetrics.density
+            cornerRadii =
+              floatArrayOf(radiusPx, radiusPx, radiusPx, radiusPx, 0f, 0f, 0f, 0f)
+          }
+        // Clips `webView` itself to the rounded-top-corners background
+        // above — otherwise the WebView's own rectangular content would
+        // paint square corners over the drawable's rounded ones.
+        clipToOutline = true
+        outlineProvider = ViewOutlineProvider.BACKGROUND
+        addView(
+          webView,
+          FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+          ),
+        )
+      }
+    val sheetParams =
+      CoordinatorLayout.LayoutParams(
+          CoordinatorLayout.LayoutParams.MATCH_PARENT,
+          CoordinatorLayout.LayoutParams.MATCH_PARENT,
+        )
+        .apply { behavior = BottomSheetBehavior<FrameLayout>() }
+    root.addView(sheet, sheetParams)
+
+    val behavior = BottomSheetBehavior.from(sheet)
+    behavior.isFitToContents = false
+    behavior.halfExpandedRatio = SHEET_INITIAL_HEIGHT_RATIO
+    behavior.isHideable = true
+    // A drag past the detent goes straight to hidden rather than resting at
+    // a small "collapsed" peek — a collapsed hosted-checkout form is not a
+    // state this design has a use for.
+    behavior.skipCollapsed = true
+    behavior.state = BottomSheetBehavior.STATE_HALF_EXPANDED
+    behavior.addBottomSheetCallback(
+      object : BottomSheetBehavior.BottomSheetCallback() {
+        override fun onStateChanged(bottomSheet: View, newState: Int) {
+          // The ONE place a drag-down (or [requestDismiss] driving the
+          // state here itself) turns into the dismissal event — design D4's
+          // one dismissal signal, never a second "cancel" path.
+          if (newState == BottomSheetBehavior.STATE_HIDDEN) {
+            finishAsDismissed()
+          }
+        }
+
+        override fun onSlide(bottomSheet: View, slideOffset: Float) {}
+      }
+    )
+    bottomSheetBehavior = behavior
+
+    return root
+  }
+
+  /**
+   * The single entry point for "the payer is leaving the sheet" — back
+   * press and the scrim's own tap listener both call this, and it is what a
+   * touch drag past the detent ends at too, all converging on
+   * [BottomSheetBehavior.STATE_HIDDEN] and the ONE
+   * [BottomSheetBehavior.BottomSheetCallback] above that reports
+   * [finishAsDismissed] (design D4: no second, separate "cancel" path).
+   */
+  private fun requestDismiss() {
+    val behavior = bottomSheetBehavior
+    if (behavior != null && behavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+      behavior.state = BottomSheetBehavior.STATE_HIDDEN
+    } else {
+      // No sheet was ever built (shouldn't happen once onCreate reaches
+      // here, but this is the same fallback the null-url early return
+      // above uses) — finish directly rather than silently doing nothing.
+      finishAsDismissed()
+    }
   }
 
   /** `true` (and finishes) when [uri] matches one of [stopUrls]. */

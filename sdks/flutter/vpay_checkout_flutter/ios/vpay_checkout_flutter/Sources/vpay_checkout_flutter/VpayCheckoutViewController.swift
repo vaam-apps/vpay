@@ -22,6 +22,20 @@
 //   content, not vpay's own.
 // - `WKWebViewConfiguration.websiteDataStore` is the **default, persistent**
 //   store (D-M5) — never `.nonPersistent()`.
+//
+// Revised 2026-09-16 ("Modal checkout sheet" — the maintainer's own words:
+// the Android full-screen `Activity` "feels like the user is quitting the
+// app"; the instruction covers iOS too). `.pageSheet` (below) already
+// renders as a card with the presenting app visible behind it on iOS 13+,
+// so this controller needed no new presentation style there — what changed
+// is `viewDidLoad` adopting `UISheetPresentationController` explicitly on
+// iOS 15+, so the maintainer's stated "large detent, draggable to full
+// height" decision (`docs/plans/2026-09-13-flutter-plugin.md`, D5) is an
+// actual `.large()` detent, not just `.pageSheet`'s own implicit default.
+// iOS 12 — the D-M4 floor this plugin also supports — has no non-full-screen
+// modal presentation API at all, so it necessarily stays `.fullScreen`
+// there; that is a consequence of supporting that floor, not an oversight,
+// and is stated plainly rather than pretended away.
 import UIKit
 import WebKit
 
@@ -43,8 +57,19 @@ final class VpayCheckoutViewController: UIViewController {
     self.checkoutUrl = checkoutUrl
     self.stopUrls = stopUrls
     super.init(nibName: nil, bundle: nil)
-    modalPresentationStyle = .pageSheet
-    isModalInPresentation = false  // allows the interactive swipe (D4/D5).
+    // D-M4: iOS 12 is this plugin's floor, and `.pageSheet`/
+    // `isModalInPresentation` are both iOS 13+ APIs — on 12 there is no
+    // non-full-screen modal presentation at all, so this necessarily stays
+    // `.fullScreen` there (this file's own header explains why that is a
+    // stated consequence, not an oversight). 13+ gets the card-style sheet;
+    // `viewDidLoad` below widens 15+ further to an explicit `.large()`
+    // detent.
+    if #available(iOS 13.0, *) {
+      modalPresentationStyle = .pageSheet
+      isModalInPresentation = false  // allows the interactive swipe (D4/D5).
+    } else {
+      modalPresentationStyle = .fullScreen
+    }
   }
 
   @available(*, unavailable)
@@ -69,6 +94,18 @@ final class VpayCheckoutViewController: UIViewController {
     // not run yet — UIKit creates the adaptive presentation controller
     // before loading the presented controller's view.
     presentationController?.delegate = self
+    // The maintainer's explicit "large detent, draggable to full height"
+    // decision (D5, revised 2026-09-16), made an actual API call rather than
+    // relying on `.pageSheet`'s own implicit default. `sheetPresentationController`
+    // is `nil` on iOS 12-14 (no `UISheetPresentationController` API there, or
+    // — on 13/14 — `presentationController` is a plain
+    // `UIPresentationController`, not that subclass), so this is a no-op on
+    // those versions and `.pageSheet`'s already-card-like default (13/14) or
+    // `.fullScreen` (12, this file's own header) stands unchanged.
+    if #available(iOS 15.0, *), let sheet = sheetPresentationController {
+      sheet.detents = [.large()]
+      sheet.prefersGrabberVisible = true
+    }
     webView?.load(URLRequest(url: checkoutUrl))
   }
 

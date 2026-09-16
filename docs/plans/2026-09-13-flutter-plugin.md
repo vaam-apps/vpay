@@ -220,6 +220,69 @@ Android handset is the payer this repository is actually for. The cost is
 bought knowingly and is stated in "What will not be true when this ships": older
 system WebViews have quirks nobody in this repository will test.
 
+## D5, revised 2026-09-16 — a modal bottom sheet, not a full-screen window
+
+**Requested by the maintainer, verbatim:** the original D5 full-screen window
+"feels like the user is quitting the app." This revises D5's Android and iOS
+shapes above; nothing else in this document changes — the outcome still comes
+only from the API (D1), the pre-flight still derives the stop URLs (D2), no
+JavaScript bridge is added (D3), and dismissal still polls before it reports
+(D4).
+
+**Android — same `VpayCheckoutActivity`, a translucent theme, not a new
+Fragment.** `android:theme` moved from
+`@android:style/Theme.NoTitleBar.Fullscreen` to a translucent one
+(`@style/Theme.Vpay.CheckoutSheet`, `android/src/main/res/values/styles.xml`)
+so the Activity below it in the same task — the merchant's own — stays drawn
+on screen. The `WebView` is laid out bottom-anchored inside a
+`CoordinatorLayout` + Material `BottomSheetBehavior`, with a scrim view above
+it and rounded top corners on the sheet itself. **Deliberately not** a
+`BottomSheetDialogFragment` hosted inside the merchant's own Activity: that
+would dissolve the Activity isolation `android:exported="false"` and the
+intent-redirection reasoning above rest on, for a cosmetically identical
+result — the whole point of a separate Activity is that no other code in the
+merchant's process, fragment host included, ever holds a reference to the
+`WebView` carrying the payer's session credential.
+
+**Height: a large detent, ~90% of the screen, draggable to full height.** The
+maintainer's explicit decision: the hosted page is a form, and a shorter
+detent would push its own "Pay" button under the fold.
+`BottomSheetBehavior.halfExpandedRatio = 0.9f` with `isFitToContents = false`
+is the ~90% detent; `BottomSheetBehavior.STATE_EXPANDED` (a further drag up)
+is the full-height state. `skipCollapsed = true` means a drag past the detent
+goes straight to hidden — a small "peek" state has no use here.
+
+**Drag-down, a scrim tap and back press are the SAME dismissal signal, not a
+new one.** All three converge on `BottomSheetBehavior.STATE_HIDDEN`, and the
+sheet's own `BottomSheetCallback` is the one place that then calls the
+Activity's existing `finishAsDismissed()` — the identical event D4's poll
+already handles, never a second "cancel" path.
+
+**iOS — `UISheetPresentationController` on 15+, `.pageSheet` on 13/14,
+`.fullScreen` on 12.** `.pageSheet` already renders as a card with the
+presenting app visible behind it on iOS 13+, so `VpayCheckoutViewController`
+needed no new presentation style there; `viewDidLoad` now sets an explicit
+`.large()` detent via `UISheetPresentationController` on iOS 15+, so the same
+"large detent, draggable to full height" decision above is an actual API
+call rather than `.pageSheet`'s own implicit default. **iOS 12 — the D-M4
+floor — has no non-full-screen modal presentation API at all**, so it
+necessarily stays a full-screen `.fullScreen` modal there; this is a stated
+consequence of supporting that floor, not an oversight, and is not
+implemented as anything closer to a sheet than the platform allows. **iOS and
+macOS are compiled by nobody** (this repository has no Xcode/`swiftc`
+toolchain, D-M4's own section above) — reviewed by reading only, exactly as
+every other Swift file in this plugin is.
+
+**macOS — unaffected.** `VpayCheckoutViewController` there already presents
+`NSViewController` `as a sheet` (this file's own header, unchanged) — the
+maintainer's complaint was about the full-screen Android/iOS shape, not
+macOS's existing sheet presentation, so this revision does not touch it.
+
+**Web — unaffected, by design.** The web host has never been a native window:
+it is `window.open(url)`, a popup the merchant's own browser chrome already
+surrounds. There is no "full-screen takeover" to fix on web, so nothing here
+changes it.
+
 ## D6 — the credential never reaches a log line
 
 Every SDK in this repository redacts this value and each one had to be made to:
@@ -448,19 +511,20 @@ Written now, at design time, so it cannot be forgotten at summary time:
 
 ## Decisions taken, and by whom
 
-| #    | Decision                                                                | Taken                                             |
-| ---- | ----------------------------------------------------------------------- | ------------------------------------------------- |
-| D1   | The outcome is polled from `/v1/browser`, never read off a URL          | design                                            |
-| D2   | One pre-flight session read; stop URLs derived, not configured          | design                                            |
-| D3   | No JavaScript bridge; no native peer added to the checkout page         | design                                            |
-| D4   | Dismissal polls before it reports; `pending` is a first-class result    | design                                            |
-| D-M1 | Published as `vpay_checkout_flutter`                                    | maintainer, 2026-09-13                            |
-| D-M2 | An external-browser mode ships in v1 (D8)                               | maintainer, 2026-09-13                            |
-| D-M3 | Recipes now, `just ci` gate later, with a dated ⛔                      | maintainer, 2026-09-13                            |
-| D-M4 | Android `minSdk` 21, iOS 12.0                                           | maintainer, 2026-09-13                            |
-| D-M5 | Persistent WebView storage, so page memory works                        | maintainer, 2026-09-13                            |
-| D-M6 | The checkout page gets **no** native peer                               | design (D3), open to reversal                     |
-| D9   | Store-policy bounds on adoption; a README obligation, not a code change | design, from the maintainer's question 2026-09-13 |
+| #       | Decision                                                                                                                  | Taken                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| D1      | The outcome is polled from `/v1/browser`, never read off a URL                                                            | design                                            |
+| D2      | One pre-flight session read; stop URLs derived, not configured                                                            | design                                            |
+| D3      | No JavaScript bridge; no native peer added to the checkout page                                                           | design                                            |
+| D4      | Dismissal polls before it reports; `pending` is a first-class result                                                      | design                                            |
+| D-M1    | Published as `vpay_checkout_flutter`                                                                                      | maintainer, 2026-09-13                            |
+| D-M2    | An external-browser mode ships in v1 (D8)                                                                                 | maintainer, 2026-09-13                            |
+| D-M3    | Recipes now, `just ci` gate later, with a dated ⛔                                                                        | maintainer, 2026-09-13                            |
+| D-M4    | Android `minSdk` 21, iOS 12.0                                                                                             | maintainer, 2026-09-13                            |
+| D-M5    | Persistent WebView storage, so page memory works                                                                          | maintainer, 2026-09-13                            |
+| D-M6    | The checkout page gets **no** native peer                                                                                 | design (D3), open to reversal                     |
+| D9      | Store-policy bounds on adoption; a README obligation, not a code change                                                   | design, from the maintainer's question 2026-09-13 |
+| D5-rev1 | Android/iOS window is a modal bottom sheet (~90% detent, draggable to full height), not full-screen; macOS/web unaffected | maintainer, 2026-09-16                            |
 
 One decision remains genuinely open and is **not** taken here: whether
 `docs/flows/mobile-checkout.md` supersedes or sits beside
