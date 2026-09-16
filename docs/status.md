@@ -182,14 +182,20 @@ a doc comment to keep this gate green
 `a_token_in_a_doc_attribute_is_not_a_shipping_claim` and
 `the_lexer_tells_the_four_states_apart` in `xtask`).
 
-**There are exactly two, down from eight on 2026-09-03 (Step 3), and the list
-has moved in both directions — which is the distinction it exists to keep
-visible.** Six went because the code was _written_:
-`{mtn_momo,orange_money}::{submit, query_status, parse_callback}` are real
-HTTP calls now.
+**There is exactly one, down from eight on 2026-09-03 (Step 3) and from two
+partway through 2026-09-15 — and the list has moved in both directions, which
+is the distinction it exists to keep visible.** All eight of the original
+tokens have left it at some point, for two different reasons, and one of the
+eight came back.
 
-`orange_money::refund` left and came back, and it is the same token meaning
-two different things. It left on 2026-09-03 because it was **not unbuilt work
+Seven left because the code was _written_:
+`{mtn_momo,orange_money}::{submit, query_status, parse_callback}` are real
+HTTP calls now, and `mtn_momo::refund` joined them on 2026-09-15 when the
+Disbursements `transfer` call landed. The two sections below are the warning
+that goes with that seventh.
+
+The eighth, `orange_money::refund`, left and came back, and it is the same
+token meaning two different things. It left on 2026-09-03 because it was **not unbuilt work
 in the first place**: Orange's Web Payment product documents no refund API, so
 the adapter inherited the port's `ProviderError::Unsupported` — a permanent
 capability answer the core branches on. It returned on **2026-09-15**, when
@@ -201,10 +207,27 @@ must not be described with the same token as work someone still owes — which
 is also why re-listing it took a decision about Orange rather than a decision
 about this list.
 
-**There is exactly one, down from eight on 2026-09-03 (Step 3) and from two on
-2026-09-15 — and the three reasons items have left this list are different
-reasons, which is the distinction it exists to keep visible.** Six went
-because the code was _written_:
+- `orange_money::refund` — added 2026-09-15 by RFC-0003 § 5. An Orange refund
+  is an outbound **transfer** back to the payee: there is no "back the way it
+  came" on a redirect rail, where `payer_ref` is `None` and vpay never learns
+  who paid, which is why this rail declares
+  `RefundDestination::Required`. **No Orange transfer API is documented in
+  this repository — not even reconstructed.** The three calls the adapter does
+  make were built from Orange Developer's public overview plus community SDKs
+  that agree with each other; for transfers no such source exists here, so an
+  endpoint path and a request body would be _invented_, in the money path, on
+  a rail nobody has ever called. It stays a token until item 5 of
+  [flows/adapter-orange-money.md](flows/adapter-orange-money.md)'s "To confirm
+  with Orange Cameroun" list has an answer.
+  `supports_refunds` is **`true`** — the rail refunds; answering `Unsupported`
+  would now be a lie about Orange rather than an admission about us — while
+  `supports_partial_refunds` stays **`false`**, decided and not merely left
+  over: nothing here knows an Orange transfer's amount semantics, and
+  withdrawing a partial-refund capability a merchant had already integrated
+  against is a breaking change, where adding one later is not.
+  (`refund_is_a_token_about_vpay_not_an_answer_about_orange` in the adapter,
+  `a_rail_without_the_refund_capability_answers_unsupported` in the
+  conformance suite.)
 
 **Declared and unpopulated, beside that token: the refund `fee`.** Added
 2026-09-05 for [issue #46](https://github.com/vaam-apps/vpay/issues/46), which
@@ -243,27 +266,25 @@ declared `NotImplemented` token, and the docs→code half of the gate would
 then fail because no shipping code carries one. That is the gate working
 rather than a trap, and it is why each bullet above opens with a noun.
 
-- `orange_money::refund` — added 2026-09-15 by RFC-0003 § 5. An Orange refund
-  is an outbound **transfer** back to the payee: there is no "back the way it
-  came" on a redirect rail, where `payer_ref` is `None` and vpay never learns
-  who paid, which is why this rail declares
-  `RefundDestination::Required`. **No Orange transfer API is documented in
-  this repository — not even reconstructed.** The three calls the adapter does
-  make were built from Orange Developer's public overview plus community SDKs
-  that agree with each other; for transfers no such source exists here, so an
-  endpoint path and a request body would be _invented_, in the money path, on
-  a rail nobody has ever called. It stays a token until item 5 of
-  [flows/adapter-orange-money.md](flows/adapter-orange-money.md)'s "To confirm
-  with Orange Cameroun" list has an answer.
-  `supports_refunds` is **`true`** — the rail refunds; answering `Unsupported`
-  would now be a lie about Orange rather than an admission about us — while
-  `supports_partial_refunds` stays **`false`**, decided and not merely left
-  over: nothing here knows an Orange transfer's amount semantics, and
-  withdrawing a partial-refund capability a merchant had already integrated
-  against is a breaking change, where adding one later is not.
-  (`refund_is_a_token_about_vpay_not_an_answer_about_orange` in the adapter,
-  `a_rail_without_the_refund_capability_answers_unsupported` in the
-  conformance suite.)
+**What has to exist before it is ever anything but `null`.** For MTN, two of
+the three landed on 2026-09-15 and the one that matters did not. The
+Disbursements keys are in `config/application.yml` (unpopulated in every
+deployment but the e2e/demo stack, whose three values are stubs aimed at a
+`wiremock/wiremock` container) and `mtn_momo::refund` is written. What is still missing is **a
+real Disbursements response that actually carries a fee**: MTN's documented
+transfer response has no fee field, `vpay_adapter_mtn_momo::wire::Transfer`'s
+202 carries an empty body, the adapter therefore answers `fee: None`
+(asserted by `an_accepted_transfer_reports_no_fee_and_no_key_material` and by
+the conformance case), and whether that product reports a fee at all has
+never been verified against MTN — **the Disbursements API has never been
+called from this repository.** For Orange, since 2026-09-15: an Orange
+transfer specification of any kind — this repository has none, so whether that
+product reports a fee is not merely unverified, it is unasked. (This paragraph
+read "For Orange: nothing, ever — the Web Payment product documents no refund
+API … and there is no refund to charge a fee for" until RFC-0003 § 5 decided
+that an Orange refund is a transfer back.) **An adapter must not invent one**: `None`
+is "the rail did not report a fee" and `Some(0)` is "the rail said it was
+free", and collapsing them is the exact defect the issue reports one layer up.
 
 `mtn_momo::refund` left this list on 2026-09-15 for the first reason — the
 Disbursements `transfer` call is written (RFC-0003 § 5) — and **a short list
@@ -271,7 +292,8 @@ here is the weakest claim this page makes, not the strongest.** A
 `NotImplemented` token is one narrow kind of gap: "this function has no body".
 A token's absence says nothing about whether a written call has ever been
 made, and in the case that just left, it has not. Read the section below and
-the Rails row in "Where things stand" before reading this list as good news.
+the **Adapters** row in "Where things stand" before reading this list as good
+news.
 
 ### `mtn_momo::refund` is written, WireMock-proven and **rail-unproven**
 
@@ -282,11 +304,13 @@ to the payee the merchant nominated — and **nothing in this repository has
 ever called MTN's Disbursements product.** Not in production, not against
 MTN's sandbox, not once.
 
-**No deployment of this system holds a Disbursements subscription key.**
+**No deployment of this system holds a REAL Disbursements subscription key.**
 `config/application.yml` now carries `disbursement_subscription_key`,
-`disbursement_api_key` and `disbursement_api_user`; every deployment leaves
-all three empty, and `mtn_momo::refund` answers `ProviderError::Config`
-naming the first one that is missing. **Empty, not absent** — corrected on
+`disbursement_api_key` and `disbursement_api_user`; every deployment but one
+leaves all three empty, and `mtn_momo::refund` answers `ProviderError::Config`
+naming the first one that is missing. The exception, since 2026-09-16, is the
+e2e/demo compose stack, whose three values are stub strings addressed at a
+`wiremock/wiremock` container. **Empty, not absent** — corrected on
 review 2026-09-15: those three lines added three `${VAR}` names that every
 environment loading that file must now define, because an unresolved
 placeholder is exit 78 on both binaries before any key check runs. The list
@@ -362,9 +386,6 @@ does not begin with a backticked path, and may not: `verify-status` reads
 `- ` followed by a backtick as a declared token, and the docs→code half of
 the gate would then fail because no shipping code carries a `mtn_momo::refund`
 token any more.)_
-is "the rail did not report a fee" and `Some(0)` is "the rail said it was
-free", and collapsing them is the exact defect the issue reports one layer up.
-
 **Also missing, and larger:** no **shipping** path writes a `refunds` row.
 Reading one stopped being missing on 2026-09-06 — issue #45 landed
 `vpay_db::Refunds::get_for_merchant` and `GET /v1/refunds/{id}` while this
