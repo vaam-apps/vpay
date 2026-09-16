@@ -229,6 +229,22 @@ implemented and never will be on this rail … There is no `orange_money::*`
 `NotImplemented` token left" until RFC-0003 § 5. "Never will be" was the part
 that turned out to be a decision nobody had made.)_
 
+**Updated 2026-09-16 (RFC-0003 § 2, wave 3): the token is reachable by a
+merchant for the first time, and that is the only thing that moved.** Until
+2026-09-16 `orange_money::refund` could be provoked only by a test —
+`POST /v1/refunds` was mounted nowhere. It is mounted now, so a merchant with
+an `orange_money` charge gets a **`501`**: `vpay_api::v1::refunds` writes the
+`pending` row, calls this adapter, takes the token, moves the refund to
+`failed`, releases the reservation it took on the intent and emits
+`charge.refund.updated`. `an_unbuilt_rail_refund_fails_and_releases_its_reservation`
+in `backends/tests/integration/tests/refunds.rs` asserts the `501`, the
+`failed` status, the `provider_error` failure code and the released
+reservation — and, per [errors.md](errors.md), it is the **first** `501` any
+`/v1` caller in this repository's history can provoke. **No Orange transfer
+was written**, nothing about this rail's behaviour changed, item 5 of "To
+confirm with Orange Cameroun" is still what unblocks it, and Orange's rail has
+still never been called for anything.
+
 **Updated 2026-09-15 (RFC-0003 § 5, wave 2).** Nothing about this rail's
 behaviour changed and no refund got closer to working; what changed is what
 the refusal is a claim about. `supports_refunds` is `true`,

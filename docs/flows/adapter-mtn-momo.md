@@ -352,6 +352,20 @@ never treat 500 as blind-retry.
 
 ## Status
 
+**Updated 2026-09-16 (RFC-0003 § 2, wave 3): this adapter's `refund` has a
+merchant-reachable caller, and MTN's Disbursements product has still never
+been called.** `POST /v1/refunds` is mounted, so the transfer below is
+attempted by a merchant request rather than only by a test. What it reaches
+depends entirely on the stack, and on no stack is it MTN: on every deployment
+but one the three Disbursements values are empty and `refund` answers
+`ProviderError::Config`; on the e2e/demo stack they are **stub strings aimed
+at a `wiremock/wiremock` container**, which answers MTN's documented `202` and
+proves the wire and nothing about money. **No REAL MTN Disbursements
+credential exists in this project.** An accepted transfer leaves the refund
+`pending`, and **nothing settles a `pending` refund** — the port has no refund
+status read and there is no refund poll ladder (RFC-0003 open question 8,
+open) — so a `202` from anywhere is an instruction taken and not money moved.
+
 **Updated 2026-09-15 (RFC-0003 § 5, arm D): `refund` is written, and MTN's
 Disbursements product has still never been called.** The
 `ProviderError::NotImplemented("mtn_momo::refund")` token is retired —
@@ -413,8 +427,11 @@ MTN refunds are the _Disbursements_ product — a different subscription key, a
 separately-scoped token and a `transfer` call — and the adapter now makes that
 call: `POST /disbursement/v1_0/transfer`, addressed to the payee the merchant
 nominated in `destination[mtn_momo][msisdn]`. The `NotImplemented` token is
-retired, `verify-status` prints zero items, and **none of that is the claim
-"MTN refunds work".**
+retired and **none of that is the claim "MTN refunds work".** _(This sentence
+said `verify-status` "prints zero items" until 2026-09-16. It prints **1** —
+`orange_money::refund`, added the same day by RFC-0003 § 5 — which is what
+the entry at the top of this section already said, in the same page, in the
+other direction.)_
 
 **No REAL MTN Disbursements credential exists in this project**, and
 **nothing in this repository has ever called MTN's Disbursements product** —
