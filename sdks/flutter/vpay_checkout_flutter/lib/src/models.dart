@@ -172,6 +172,28 @@ enum CheckoutSessionStatus {
   };
 }
 
+/// `checkout.session`'s `payment_status` — `vpay_api::model::CheckoutSessionObject`'s
+/// wire, untouched by an expiry: a session can be `status: expired` with
+/// `payment_status: failed` when the intent it drove failed before the
+/// session's own expiry ran, and the screen machine
+/// (`src/sheet/checkout_screen.dart`) needs exactly that combination to
+/// decide whether an expired session shows the neutral "expired" screen or
+/// the intent's own outcome — `machine.ts:251-305`'s `stateForContext`,
+/// restated.
+enum CheckoutSessionPaymentStatus {
+  unpaid,
+  paid,
+  failed,
+  unknown;
+
+  static CheckoutSessionPaymentStatus fromWire(String value) => switch (value) {
+    'unpaid' => CheckoutSessionPaymentStatus.unpaid,
+    'paid' => CheckoutSessionPaymentStatus.paid,
+    'failed' => CheckoutSessionPaymentStatus.failed,
+    _ => CheckoutSessionPaymentStatus.unknown,
+  };
+}
+
 /// `hosted` or `embedded`. D2 refuses `embedded` at the pre-flight.
 enum CheckoutUiMode {
   hosted,
@@ -183,6 +205,190 @@ enum CheckoutUiMode {
     'embedded' => CheckoutUiMode.embedded,
     _ => CheckoutUiMode.unknown,
   };
+}
+
+/// `push` or `redirect` — `vpay_core::ProviderFlow`'s wire, and the one
+/// capability of a rail a native sheet acts on: whether it collects
+/// [RailSpec.fields] and confirms inline, or expects a redirect.
+enum RailFlow {
+  push,
+  redirect,
+
+  /// A flow value this package does not recognise. Structural, not
+  /// per-code: `railChoices` (`src/sheet/rails.dart`) treats any rail whose
+  /// [RailFlow] is `unknown` as unsupported (D9) rather than guessing what
+  /// to render for it. This is what lets a rail the SDK has never heard of
+  /// still be handled safely — refused with its code shown, never rendered
+  /// blind.
+  unknown;
+
+  static RailFlow fromWire(String value) => switch (value) {
+    'push' => RailFlow.push,
+    'redirect' => RailFlow.redirect,
+    _ => RailFlow.unknown,
+  };
+}
+
+/// `vpay_provider::PhonePayerType`'s wire. Only `mobile` exists today.
+enum RailFieldPhoneType {
+  mobile,
+  unknown;
+
+  static RailFieldPhoneType fromWire(String value) => switch (value) {
+    'mobile' => RailFieldPhoneType.mobile,
+    _ => RailFieldPhoneType.unknown,
+  };
+}
+
+/// What a [RailField] demands of the value at its key —
+/// `vpay_provider::PayerFieldKind`'s wire, `#[serde(tag = "type")]`
+/// flattened onto the field object it decorates.
+///
+/// **A card-collecting variant must never be added here**, even though the
+/// wire's `type` is an open string and a future rail could in principle
+/// declare one. Cards are out of scope forever (issue #189): a native PAN
+/// field moves the integration from PCI SAQ-A to SAQ-D. A `type` this
+/// package does not recognise — `"card"` included — decodes to
+/// [RailFieldKindUnknown] and nothing else, so a sheet built on this SDK has
+/// no representable way to render one.
+sealed class RailFieldKind {
+  const RailFieldKind();
+
+  /// Reads the flattened `type` (and, for `"phone"`, `region`/`phone_type`)
+  /// out of one field object.
+  factory RailFieldKind.fromJson(Map<String, Object?> json) {
+    final String type = json['type']! as String;
+    if (type == 'phone') {
+      return RailFieldKindPhone(
+        region: json['region']! as String,
+        phoneType: RailFieldPhoneType.fromWire(json['phone_type']! as String),
+      );
+    }
+    return RailFieldKindUnknown(type);
+  }
+}
+
+/// A phone number, validated server-side with `phonenumber` against
+/// [region] and required to be of [phoneType]. The only kind a payer field
+/// carries today (MTN's `msisdn`).
+final class RailFieldKindPhone extends RailFieldKind {
+  const RailFieldKindPhone({required this.region, required this.phoneType});
+
+  /// ISO 3166-1 alpha-2, e.g. `"CM"`.
+  final String region;
+
+  final RailFieldPhoneType phoneType;
+}
+
+/// A field `type` this package does not recognise — carried through, never
+/// rendered. See [RailFieldKind]'s doc comment for why this branch, and
+/// only this branch, is where an unrecognised type (including a future
+/// `"card"`) lands.
+final class RailFieldKindUnknown extends RailFieldKind {
+  const RailFieldKindUnknown(this.rawType);
+
+  final String rawType;
+}
+
+/// One field a payer must fill in before a push rail can be confirmed
+/// against — `vpay_provider::PayerField`'s wire.
+final class RailField {
+  const RailField({
+    required this.name,
+    required this.kind,
+    required this.required,
+    required this.labelKey,
+  });
+
+  /// The key under `payment_method_data[<rail code>][<name>]` this field
+  /// reads, e.g. `"msisdn"`.
+  final String name;
+
+  final RailFieldKind kind;
+
+  /// Whether confirm refuses a missing or blank value.
+  final bool required;
+
+  /// The i18n key a client looks up to label this field's input.
+  final String labelKey;
+
+  factory RailField.fromJson(Map<String, Object?> json) => RailField(
+    name: json['name']! as String,
+    kind: RailFieldKind.fromJson(json),
+    required: json['required']! as bool,
+    labelKey: json['label_key']! as String,
+  );
+}
+
+/// [RailSpec.displayName]'s two languages — `vpay_api::model::RailDisplayName`'s
+/// wire. Both members individually optional: a deployment may configure
+/// only one language.
+final class RailDisplayName {
+  const RailDisplayName({this.en, this.fr});
+
+  final String? en;
+  final String? fr;
+
+  factory RailDisplayName.fromJson(Map<String, Object?> json) =>
+      RailDisplayName(en: json['en'] as String?, fr: json['fr'] as String?);
+}
+
+/// One rail a payer may confirm this session against —
+/// `vpay_api::model::RailSpec`'s wire. Everything a native payer sheet needs
+/// to render a rail with no branch anywhere in the client keyed on
+/// [code]'s own value (#186, #189): the fields to collect, the flow that
+/// decides whether to collect them at all, and a label a sheet can show
+/// before its own i18n catalogue has a translation for [code].
+final class RailSpec {
+  const RailSpec({
+    required this.code,
+    required this.flow,
+    required this.labelKey,
+    required this.displayName,
+    required this.fields,
+  });
+
+  /// `providers.code` — also the value confirm's `payment_method_data[type]`
+  /// must carry. Never branched on by this package: `src/sheet/rails.dart`'s
+  /// `railChoices` decides what to render from [flow] and each field's own
+  /// [RailFieldKind], never from this value's identity — see those two for
+  /// how a rail this package has never heard of still renders safely.
+  final String code;
+
+  final RailFlow flow;
+
+  /// The i18n key for this rail's own name, mechanically `"rail.{code}"`. A
+  /// client with no translation for it falls back to [displayName], and
+  /// past that to [code] itself.
+  final String labelKey;
+
+  /// This deployment's own configured name for the rail, or `null` when it
+  /// configured none — the server omits the key entirely rather than
+  /// sending `null` (`RailSpec::display_name`'s own doc), and [fromJson]
+  /// treats an absent key and a JSON `null` the same way.
+  final RailDisplayName? displayName;
+
+  /// What the payer must fill in before this rail can be confirmed against —
+  /// empty for a redirect rail, which collects nothing. Always present as
+  /// an array, never omitted, even when empty.
+  final List<RailField> fields;
+
+  factory RailSpec.fromJson(Map<String, Object?> json) => RailSpec(
+    code: json['code']! as String,
+    flow: RailFlow.fromWire(json['flow']! as String),
+    labelKey: json['label_key']! as String,
+    displayName: json['display_name'] == null
+        ? null
+        : RailDisplayName.fromJson(
+            (json['display_name']! as Map).cast<String, Object?>(),
+          ),
+    fields: (json['fields']! as List<Object?>)
+        .map(
+          (Object? e) =>
+              RailField.fromJson((e! as Map).cast<String, Object?>()),
+        )
+        .toList(growable: false),
+  );
 }
 
 /// `checkout.session` as `GET /v1/browser/checkout/sessions/{id}` renders
@@ -204,6 +410,8 @@ final class CheckoutSession {
     required this.expiresAt,
     required this.created,
     required this.clientSecret,
+    required this.rails,
+    required this.paymentStatus,
   });
 
   /// `cs_…`.
@@ -218,6 +426,9 @@ final class CheckoutSession {
   final CheckoutUiMode uiMode;
 
   final CheckoutSessionStatus status;
+
+  /// See [CheckoutSessionPaymentStatus]'s own doc comment.
+  final CheckoutSessionPaymentStatus paymentStatus;
 
   /// Hosted mode only; `null` on an embedded session. May carry the literal
   /// `{CHECKOUT_SESSION_ID}` (D2) — unsubstituted here, exactly as the
@@ -256,6 +467,14 @@ final class CheckoutSession {
   /// off a body that will never carry it.
   final String clientSecret;
 
+  /// The server-driven rail spec (#186, #189): one entry per code in the
+  /// intent's `payment_method_types`, in that order. Always present as an
+  /// array, never omitted, even when empty — `CheckoutSessionForPayer::rails`'s
+  /// own doc: this is "here is what to render a picker from", not "the
+  /// merchant configured nothing", so an absent array would be a version
+  /// skew, not a legitimate empty state.
+  final List<RailSpec> rails;
+
   /// [clientSecret] is **not** read from [json] — see that field's doc
   /// comment for why the server never sends it back — so the caller passes
   /// the value it already authenticated with.
@@ -276,6 +495,14 @@ final class CheckoutSession {
     expiresAt: json['expires_at']! as int,
     created: json['created']! as int,
     clientSecret: clientSecret,
+    rails: (json['rails']! as List<Object?>)
+        .map(
+          (Object? e) => RailSpec.fromJson((e! as Map).cast<String, Object?>()),
+        )
+        .toList(growable: false),
+    paymentStatus: CheckoutSessionPaymentStatus.fromWire(
+      json['payment_status']! as String,
+    ),
   );
 
   static bool isCheckoutSessionJson(Object? body) =>

@@ -24,12 +24,21 @@ export 'src/errors.dart' show VpayClientErrorCodes, VpayError;
 export 'src/models.dart'
     show
         CheckoutSession,
+        CheckoutSessionPaymentStatus,
         CheckoutSessionStatus,
         CheckoutUiMode,
         FailureCode,
         LastPaymentError,
         PaymentIntent,
-        PaymentIntentStatus;
+        PaymentIntentStatus,
+        RailDisplayName,
+        RailField,
+        RailFieldKind,
+        RailFieldKindPhone,
+        RailFieldKindUnknown,
+        RailFieldPhoneType,
+        RailFlow,
+        RailSpec;
 export 'src/platform/checkout_platform.dart'
     show UnimplementedVpayCheckoutPlatform, VpayCheckoutPlatform;
 export 'src/platform/messages.g.dart'
@@ -42,4 +51,80 @@ export 'src/result.dart'
         VpayCheckoutResult,
         VpayCheckoutSucceeded,
         VpayCheckoutUnresolved;
+export 'src/sheet/checkout_screen.dart'
+    show
+        CheckoutBack,
+        CheckoutChooseRail,
+        CheckoutCollectMsisdn,
+        CheckoutConfirmStarted,
+        CheckoutConfirming,
+        CheckoutContext,
+        CheckoutEvent,
+        CheckoutExpired,
+        CheckoutForward,
+        CheckoutForwarding,
+        CheckoutIntentUpdated,
+        CheckoutLoadError,
+        CheckoutLoadFailed,
+        CheckoutLoaded,
+        CheckoutLoading,
+        CheckoutOutcome,
+        CheckoutProblem,
+        CheckoutReadyRedirect,
+        CheckoutRedirectRequired,
+        CheckoutRedirecting,
+        CheckoutRefuse,
+        CheckoutRefused,
+        CheckoutScreenState,
+        CheckoutSelectRail,
+        CheckoutSessionRefreshed,
+        CheckoutWaiting,
+        Outcome,
+        OutcomeKind,
+        RefusalReason,
+        checkoutInitialState,
+        intentOutcome,
+        reduceCheckoutScreen,
+        stateForContext;
+export 'src/sheet/failures.dart' show maxProviderReasonLength, providerReason;
+export 'src/sheet/money.dart'
+    show currencyExponent, minorUnitsToDecimalString, toDecimalString;
+export 'src/sheet/msisdn.dart'
+    show formatCameroonMsisdn, normalizeCameroonMsisdn;
+export 'src/sheet/poll_jitter.dart'
+    show
+        FixedJitterSource,
+        JitterSource,
+        SystemJitterSource,
+        defaultPollBudget,
+        defaultPollInterval,
+        jitteredDelay,
+        nextPollDelay,
+        pollJitterSpread;
+export 'src/sheet/rails.dart'
+    show
+        RailChoices,
+        SupportedRail,
+        UnsupportedRail,
+        UnsupportedRailReason,
+        railChoices;
+export 'src/sheet/return_screen.dart'
+    show
+        ReturnContext,
+        ReturnEvent,
+        ReturnExpired,
+        ReturnForward,
+        ReturnForwarding,
+        ReturnLoadError,
+        ReturnLoading,
+        ReturnOutcome,
+        ReturnPaymentIntent,
+        ReturnPollFailed,
+        ReturnPolling,
+        ReturnRead,
+        ReturnReadFailed,
+        ReturnScreenState,
+        reduceReturn,
+        returnInitialState,
+        stateForReturn;
 export 'src/vpay_checkout.dart' show VpayCheckout;

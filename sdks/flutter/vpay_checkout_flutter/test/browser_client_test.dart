@@ -213,6 +213,7 @@ void main() {
       'url': 'https://checkout.example/c/cs_123#$_csSecret',
       'expires_at': 1700086400,
       'created': 1700000000,
+      'rails': const <Object?>[],
       // No `client_secret` key: the real session read never sends the
       // session's own secret back — see `CheckoutSession.clientSecret`'s
       // doc comment in `lib/src/models.dart`.
@@ -288,11 +289,13 @@ void main() {
         'payment_intent': _paymentIntentJson(),
         'ui_mode': 'hosted',
         'status': 'open',
+        'payment_status': 'unpaid',
         'success_url': 'https://shop.example/thanks',
         'cancel_url': 'https://shop.example/cancel',
         'url': 'https://checkout.example/c/cs_123#$_csSecret',
         'expires_at': 1700086400,
         'created': 1700000000,
+        'rails': const <Object?>[],
         // No `client_secret` key: the real session read never sends the
         // session's own secret back — see
         // `CheckoutSession.clientSecret`'s doc comment in
