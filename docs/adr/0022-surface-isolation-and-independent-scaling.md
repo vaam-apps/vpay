@@ -348,10 +348,30 @@ Three decisions are deliberately not made here.
    recommends an internal-only path; that depends on how staff reach the
    cluster, which this repository does not know.
 
+   _Still open, and deliberately so. What changed on 2026-09-16 is only that
+   the chart can no longer answer it by accident._ Before the remediation, a
+   release with `management.enabled`, `route.enabled` and
+   `networkPolicy.enabled` all on published `/dash/v1` at the Gateway **and**
+   rendered a policy that denied that Gateway at the pod — green, healthy,
+   and dropping every request. `networkPolicy.managementIngress.namespaceSelector`
+   is the lever for "yes, from that namespace" (it did not exist:
+   `values.schema.json` pinned `additionalProperties: false` on that object),
+   and the `networkpolicy-management-route` guard refuses the release until
+   one of the two answers is written down. The chart still expresses no
+   preference between them.
+
 ## Verification this ADR requires before it is Accepted
 
 - `just helm-check` green, with new `ci/guards/` cases for `connection-budget`
   (both directions) and for the retired guard 12.
+  **Met 2026-09-16, in remediation**, and not before it: only the
+  unset-`maxConnections` direction had a fixture, because the harness mapped
+  one file to one guard. It now accepts `<guard>.<n>.yaml` variants and
+  `ci/guards/connection-budget.2.yaml` is the arithmetic direction. Guard 12
+  (`dashboard-not-templated`) is retired rather than re-cased, since the
+  chart now writes the Deployment it existed to refuse — the absence is
+  asserted over the rendered YAML instead, which is what the next item asks
+  for.
 - A rendered default `helm template` containing **no** `-management` or
   `-dashboard` objects while both are disabled — the same two-halved assertion
   `checkout-not-templated-by-default` already uses (`_validate.tpl:309`).
