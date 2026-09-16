@@ -291,6 +291,37 @@ itself (the desktop target, as opposed to iOS) was not exercised in this
 pass. Evidence:
 [verification/2026-09-16-flutter-browser-cutover.md](verification/2026-09-16-flutter-browser-cutover.md).
 
+## Issue #189, lane 1 — the server-driven rail spec and the screen/return machines (2026-09-16)
+
+The browser cutover above removed the checkout `WebView` for the UX reasons
+issue #189 states; #189 itself is the next step, rendering the checkout as
+native Flutter widgets driven by the #186 rail spec instead of the browser
+at all. This is **lane 1 only — pure-Dart core, no widget renders**:
+`lib/src/models.dart` now parses `CheckoutSession.rails` (`RailSpec`,
+`RailField`, `RailFieldKind`, `RailDisplayName`, `RailFlow`,
+`CheckoutSessionPaymentStatus`); `lib/src/sheet/` carries the payment screen
+machine (`checkout_screen.dart`, the `machine.ts` port, 13 screens), the
+return machine (`return_screen.dart`, the `return.ts` port — structurally
+credential-free, D6), the shared poll-terminal rule
+(`outcome.dart`), the server-driven (never per-code) rail-support decision
+(`rails.dart`), and Dart ports of `money.ts`'s no-float digit surgery,
+`msisdn.ts`'s Cameroon normaliser and `failures.ts`'s `providerReason`.
+`flutter test` is 200 passed / 0 skipped (was 80 before this lane); three
+mutations pinning the money/poll-terminal/no-rail-code-branching traps were
+run against the real source and confirmed to fail the tests built for them,
+then reverted. `docs/sdks/parity.md` gained ten rows for what this lane
+proves. Evidence, including the pre-existing (not newly introduced)
+`just fmt-check-web` failure this run found:
+[verification/2026-09-16-flutter-rail-spec-screen-machine.md](verification/2026-09-16-flutter-rail-spec-screen-machine.md).
+
+**Not done, and owed to a later lane:** the sheet widget itself, i18n (the
+~71-key catalogue, French default), the "remember this number" feature, the
+test-mode banner, focus management/`Semantics`, wiring the jittered-poll
+primitive (`poll_jitter.dart`) into an actual controller, the `redirect`
+rail's hand-off back into the sheet, and the ADR issue #189 asks for on
+dropping D4/D8's iframe/`postMessage` concepts (`frame.ts`/`origins.ts`/
+`csp.ts`) as web-only with no native analogue.
+
 ## What is still not real
 
 - **No `just ci` gate** (D-M3). `install-flutter`/`analyze-flutter`/
@@ -370,3 +401,8 @@ pass. Evidence:
   exactly what remains unverified (deep-link return detection on every
   platform, macOS's own dismissal signal, and any device/emulator run of
   the new Android or macOS surface).
+- [verification/2026-09-16-flutter-rail-spec-screen-machine.md](verification/2026-09-16-flutter-rail-spec-screen-machine.md)
+  — issue #189 lane 1: `flutter test` 200/0 (was 80/0), `dart analyze`/
+  `dart format` clean, `verify-sdk-parity`/`verify-links` green, all three
+  mutation proofs run and reverted with their exact failure counts, and the
+  pre-existing (unchanged by this lane) `just fmt-check-web` failure.

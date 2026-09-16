@@ -412,3 +412,23 @@ they depended on; no suite in this repository drives a full MTN push
 through the payer's real hosted checkout page end to end on Android any
 more. macOS was not exercised in this pass. Evidence:
 [`../status/verification/2026-09-16-flutter-browser-cutover.md`](../status/verification/2026-09-16-flutter-browser-cutover.md).
+
+**Added 2026-09-16, later still — issue #189 lane 1: the server-driven rail
+spec and the screen/return machines, pure-Dart core only.** Issue #189 is
+the next step past the browser cutover above: rendering the checkout as
+native Flutter widgets driven by the #186 rail spec, so the browser this
+section just finished describing stops being the checkout and becomes only
+the `redirect`-rail handler. This lane builds none of the widgets —
+`lib/src/models.dart` parses `CheckoutSession.rails`; `lib/src/sheet/`
+carries a 13-screen payment reducer (`machine.ts`'s port), a separate
+credential-free return reducer (`return.ts`'s port, D6), the shared
+poll-terminal rule, the structural (never-per-code) rail-support decision,
+and Dart ports of `money.ts`, `msisdn.ts` and `failures.ts`'s
+`providerReason`. `flutter test` is 200 passed / 0 skipped (was 80 before
+this lane); three mutations (float money division, a terminal bare
+`requires_payment_method`, an inserted rail-code branch) were each applied
+to the real source and confirmed to fail the tests built to catch them, then
+reverted. **Not done:** the sheet widget, i18n, "remember this number", the
+test-mode banner, focus management, the `redirect` hand-off, and wiring the
+new jittered-poll primitive into a controller. Evidence:
+[`../status/verification/2026-09-16-flutter-rail-spec-screen-machine.md`](../status/verification/2026-09-16-flutter-rail-spec-screen-machine.md).
