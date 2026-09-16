@@ -2,9 +2,9 @@
 /// reports a dismissal over the REAL platform channel, never a fabricated
 /// outcome.
 ///
-/// Run SEPARATELY from `checkout_window_test.dart`
-/// (`just test-flutter-emulator`'s own two invocations) because this file
-/// needs a real hardware-back-key event, and a headless emulator has no
+/// Run SEPARATELY from `checkout_external_browser_test.dart`
+/// (`just test-flutter-emulator`'s own separate invocations) because this
+/// file needs a real hardware-back-key event, and a headless emulator has no
 /// touchscreen or keyboard for this suite to drive from inside the Dart
 /// test process itself (which runs ON the device, with no `adb` of its
 /// own). The recipe supplies the back press from the HOST, timed off a log
@@ -23,8 +23,6 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:vpay_checkout_flutter/src/platform/messages.g.dart'
-    show CheckoutWindowMode;
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
 import 'support/fixture.dart';
@@ -57,7 +55,6 @@ void main() {
         url: fixture.sessionUrl,
         stopUrls: const [],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.inApp,
       );
 
       // Gives the Activity transition time to land in the foreground

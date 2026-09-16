@@ -1,16 +1,25 @@
-// The Android host (design doc D5, D8) — Lane C
-// (docs/plans/2026-09-13-flutter-plugin-brief.md). This class only wires
-// Dart's `VpayCheckoutHostApi` calls to launching/closing either
-// `VpayCheckoutActivity` (mode `IN_APP`) or a
-// `VpayCheckoutExternalBrowserSession` (mode `EXTERNAL_BROWSER`, D8 —
-// Custom Tabs, wired 2026-09-14), and forwards whichever one's result back
-// over `VpayCheckoutFlutterApi.onWindowEvent`. It decides nothing about the
-// outcome itself (D1) — see those two classes' own headers for where the
-// actual window lives in each mode.
+// The Android host (design doc D5, D8). This class only wires Dart's
+// `VpayCheckoutHostApi` calls to launching/closing `VpayCheckoutActivity`,
+// and forwards its result back over `VpayCheckoutFlutterApi.onWindowEvent`.
+// It decides nothing about the outcome itself (D1) — see
+// `VpayCheckoutActivity.kt`'s own header for where the window (and the App
+// Link forwarder, `VpayCheckoutAppLinkActivity`) actually live.
+//
+// One path only, as of the 2026-09-16 "browser, not WebView" revision:
+// `ShowCheckoutRequest` no longer carries a `mode`
+// (`CheckoutWindowMode`/`VpayCheckoutMode` — `IN_APP`/`inApp` vs
+// `EXTERNAL_BROWSER`/`externalBrowser` — do not exist in
+// `pigeons/checkout.dart` any more), because there is no longer an in-app
+// WebView mode to choose between: every window is now the payer's own
+// browser, opened as a partial (bottom sheet) Custom Tab. The separate
+// `VpayCheckoutExternalBrowserSession` class this file used to dispatch to
+// for the old `EXTERNAL_BROWSER` mode is gone — its Custom Tab launch now
+// lives inside `VpayCheckoutActivity` itself, which is also the thing that
+// can receive an App Link return, so there is exactly one surface left,
+// not two kept in sync.
 package dev.vpay.checkout_flutter
 
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Intent
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -31,10 +40,6 @@ class VpayCheckoutFlutterPlugin :
   private var activity: Activity? = null
   private var activityBinding: ActivityPluginBinding? = null
   private val scope = CoroutineScope(Dispatchers.Main)
-
-  /** Non-null exactly while a D8 external-browser session is pending a
-   * return — see `VpayCheckoutExternalBrowserSession`'s own header. */
-  private var externalBrowserSession: VpayCheckoutExternalBrowserSession? = null
 
   override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
     VpayCheckoutHostApi.setUp(binding.binaryMessenger, this)
@@ -69,13 +74,6 @@ class VpayCheckoutFlutterPlugin :
   // VpayCheckoutHostApi — Dart calling into this host.
 
   override suspend fun show(request: ShowCheckoutRequest) {
-    when (request.mode) {
-      CheckoutWindowMode.IN_APP -> showInApp(request)
-      CheckoutWindowMode.EXTERNAL_BROWSER -> showExternalBrowser(request)
-    }
-  }
-
-  private fun showInApp(request: ShowCheckoutRequest) {
     val hostActivity = requireActivity()
     if (VpayCheckoutActivity.isOpen()) {
       throw FlutterError(
@@ -90,48 +88,6 @@ class VpayCheckoutFlutterPlugin :
     )
   }
 
-  /**
-   * D8: Custom Tabs. `VpayCheckoutExternalBrowserSession`'s own header
-   * explains why this never uses `startActivityForResult` and why an
-   * `onResume` on [hostActivity] is the return signal.
-   */
-  private fun showExternalBrowser(request: ShowCheckoutRequest) {
-    val hostActivity = requireActivity()
-    if (VpayCheckoutActivity.isOpen() || externalBrowserSession != null) {
-      throw FlutterError(
-        "already_open",
-        "vpay_checkout_flutter: a checkout window is already open.",
-        null,
-      )
-    }
-    val session =
-      VpayCheckoutExternalBrowserSession(
-        application = hostActivity.application,
-        hostActivity = hostActivity,
-        onEvent = ::reportExternalBrowserEvent,
-      )
-    externalBrowserSession = session
-    try {
-      session.launch(request.url)
-    } catch (e: ActivityNotFoundException) {
-      externalBrowserSession = null
-      throw FlutterError(
-        "no_browser",
-        "vpay_checkout_flutter: no app on this device can open " +
-          "VpayCheckoutMode.externalBrowser's Custom Tabs intent.",
-        null,
-      )
-    }
-  }
-
-  private fun reportExternalBrowserEvent(event: CheckoutWindowEvent) {
-    externalBrowserSession = null
-    val api = flutterApi
-    if (api != null) {
-      scope.launch { api.onWindowEvent(event) }
-    }
-  }
-
   private fun requireActivity(): Activity =
     activity
       ?: throw FlutterError(
@@ -142,7 +98,6 @@ class VpayCheckoutFlutterPlugin :
 
   override suspend fun dismiss() {
     VpayCheckoutActivity.dismissIfOpen()
-    externalBrowserSession?.dismiss()
   }
 
   // ActivityResultListener — VpayCheckoutActivity reporting back.

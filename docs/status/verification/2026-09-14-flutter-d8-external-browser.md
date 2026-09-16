@@ -163,3 +163,56 @@ showed only `webank_kyc`.
 - **Not the web popup's runtime behaviour** for either mode — no browser has
   driven it.
 - **Not a real device, not a store review.**
+
+## Correction, 2026-09-16, later: `CheckoutWindowMode` — the whole subject of this page — is deleted
+
+Everything above measured a **mode**: `inApp` (the in-app `WebView`) versus
+`externalBrowser` (Custom Tabs/`SFSafariViewController`/`NSWorkspace`), and
+this page's own evidence — real, at the time — was that both existed and a
+merchant could choose. Later on 2026-09-16, D5 was revised again ("browser,
+not WebView"): the in-app `WebView` is deleted from every platform, and with
+it `VpayCheckoutMode`/`CheckoutWindowMode` themselves are deleted, not
+merely defaulted. There is no mode argument left anywhere in this plugin's
+public API — see `docs/status/mobile-flutter-plugin.md`'s "Browser, not
+WebView" section and
+[`2026-09-16-flutter-browser-cutover.md`](2026-09-16-flutter-browser-cutover.md).
+
+What that means for this page's own claims, stated precisely rather than
+left to be inferred:
+
+- **This page's Android evidence (the emulator run) proved Custom Tabs
+  worked as an opt-in second mode.** It did not, and could not, prove the
+  partial (bottom-sheet) Custom Tab (`CustomTabsIntent
+  .setInitialActivityHeightPx`) or the `VpayCheckoutAppLinkActivity`
+  deep-link forwarder the 2026-09-16 cutover introduces — neither existed
+  yet on 2026-09-14. Nothing has run Android's *current* browser surface on
+  an emulator; see the cutover page linked above.
+- **The DEX counts table above (debug 4, release 0) measured a real
+  control that has since been retired, not merely left unchanged.** The
+  debug-only JS-injection hook (`VpayCheckoutActivityTestHarness.kt`) and
+  `checkout_window_test.dart`, the suite that used it, are both deleted
+  along with the `WebView` they reached into. Re-measured on this same
+  host during the docs pass that added this correction (`flutter build apk
+  --debug`/`--release` on `example/`, both exit 0, followed by `strings
+  classes*.dex | grep -c evaluateJavascriptForTests` on each): **debug 0,
+  release 0** — zero on both sides now, because the symbol does not exist
+  anywhere in the source tree, not because a debug-only capability is still
+  being kept out of release.
+- **`checkout_dismiss_test.dart`, cited above as "in-app mode," is
+  unaffected in substance** — a back press against the plugin's window
+  still reports `dismissed` — but "in-app mode" is no longer a
+  distinguishable thing to be testing instead of; it is simply the
+  plugin's one behaviour now.
+- **`checkout_external_browser_test.dart` was updated in source** after
+  this page was written (its own header now reads "D8, revised 2026-09-16"
+  and its test title changed to `show() opens a real Custom Tab (the only
+  Android surface now); a real return to the host Activity reports
+  dismissed`), but was **not** re-run against an emulator as part of the
+  2026-09-16 cutover — see
+  [`2026-09-16-flutter-browser-cutover.md`](2026-09-16-flutter-browser-cutover.md)
+  for exactly what was and was not re-verified.
+
+Nothing else on this page is corrected: the redaction re-application, the
+pigeon-regeneration mechanics, and the fact that a real `CustomTabsIntent`
+opened a real Chrome on 2026-09-14 all remain true statements about what
+was measured that day, against the code that existed that day.

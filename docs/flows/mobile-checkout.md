@@ -1,9 +1,14 @@
 # Mobile checkout (`vpay_checkout_flutter`)
 
 **What this is.** A Flutter plugin that opens vpay's hosted checkout page — the
-same page [hosted-checkout.md](hosted-checkout.md) describes — in a native
-window on Android, iOS, macOS and web, and answers the merchant's app with a
-typed result once the payment is actually decided. Requested by the
+same page [hosted-checkout.md](hosted-checkout.md) describes — in the payer's
+own browser on Android, iOS, macOS and web, and answers the merchant's app
+with a typed result once the payment is actually decided. **Revised
+2026-09-16**: there is no in-app WebView any more, on any platform — a
+partial (bottom-sheet) Custom Tab on Android, `SFSafariViewController` on
+iOS, the default browser via `NSWorkspace` on macOS, the same `window.open`
+popup on web it always used. See the Status section's final entry for why
+and what it costs. Requested by the
 maintainer on 2026-09-13, verbatim: _"Let's develop a custom vpay flutter
 plugin. We'll do it by using a new Activity (android), UIViewController
 (iOS/…) and similar for web. We'll do the payment activity in the mobile
@@ -56,12 +61,16 @@ mechanism.
    A navigation matches a stop URL on **scheme, host, port and path only** —
    query and fragment are ignored — so a merchant's own tracking parameters on
    `success_url` do not break the match.
-3. **Open the native window** on the platform host (Android `Activity` +
-   `WebView`, iOS/macOS `UIViewController`/`NSViewController` + `WKWebView`, or
-   a `window.open` popup on web — Lane C), loading `session.url` from
-   `POST /v1/checkout/sessions`. The window's only job is to show the page and
-   report two things back over a typed channel: "reached one of these stop
-   URLs" or "the payer left."
+3. **Open the payer's own browser** on the platform host — a partial
+   (bottom-sheet) Custom Tab on Android, `SFSafariViewController` on iOS,
+   the default browser via `NSWorkspace` on macOS, or a `window.open` popup
+   on web (Lane C) — loading `session.url` from `POST /v1/checkout/sessions`.
+   **Since D5's 2026-09-16 revision there is no in-app WebView on any
+   platform** (see the Status section's final entry), so the host cannot
+   watch a navigation any more; its only job is to show the page and report
+   two things back over a typed channel: "an incoming deep link matched one
+   of these stop URLs" (unverified on every platform as of this revision) or
+   "the payer left."
 4. **Resolve.** On a reached stop URL, or on dismissal, the plugin polls the
    payment intent — on a budget, and (D4) **before** reporting anything for a
    dismissal, never immediately as "canceled." A dismissed sheet fifteen
@@ -74,27 +83,31 @@ mechanism.
 
 ## What can go wrong
 
-- **The rail refuses an embedded WebView.** Orange's page has never been
-  driven inside one — vpay has only ever talked to a WireMock stub serving two
-  links, and "Orange's page inside a WebView is unproven" is named as the
-  single biggest technical risk in the design. `VpayCheckoutMode.externalBrowser`
-  (D8) is the mitigation, and as of 2026-09-14 it is **wired, not merely
-  designed**: `pigeons/checkout.dart`'s `ShowCheckoutRequest` carries a
-  `mode` field, threaded end to end. Android launches Custom Tabs
-  (`androidx.browser`) and reports the payer's return over
-  `Application.ActivityLifecycleCallbacks` — no `startActivityForResult`, no
-  scheme to call back on, because the outcome is always polled (D1). The
-  external mode degrades correctly with **no merchant deployment work at
-  all**, exactly as designed — the payer finishes in the system browser,
-  closes it or switches back, and the plugin polls on resume. Android's path
-  is **compiled AND run for real** on a headless emulator (a real Custom Tab
-  opened, a real back press returned to the host `Activity`, a real
-  dismissal arrived over the real channel); iOS wraps
-  `SFSafariViewController`, macOS opens the default browser via
-  `NSWorkspace`, both **compiled by nobody**. **Not built**: D8's "tier 1"
-  (Android App Links / iOS 17.4+ Associated Domains, for a window that
-  closes itself), which needs a merchant-hosted deployment this repository
-  cannot provide. See the dated rows in
+- **The rail refuses an embedded WebView.** **Moot as of D5's 2026-09-16
+  revision: there is no WebView left, on any platform, to refuse an embed
+  into.** This was the single biggest technical risk named in the original
+  design — Orange's page had never been driven inside a WebView, and vpay
+  had only ever talked to a WireMock stub serving two links. It is retired
+  by construction, not proven safe: the page now always runs in the payer's
+  own browser (a partial Custom Tab on Android, `SFSafariViewController` on
+  iOS, the default browser on macOS, the existing popup on web), the same
+  surface `VpayCheckoutMode.externalBrowser` (D8) used to offer as one of
+  two options before `VpayCheckoutMode`/`CheckoutWindowMode` were deleted
+  outright. Android's Custom Tab and iOS's `SFSafariViewController` are the
+  same code D8 built 2026-09-14 (`Application.ActivityLifecycleCallbacks`
+  for the return signal — no `startActivityForResult`, no scheme to call
+  back on, because the outcome is always polled, D1) — repurposed as the
+  only path. **What this costs**: no host on any platform can watch a
+  navigation any more, so a stop URL only ever arrives as an incoming deep
+  link (Android App Link / iOS or macOS Universal Link), and that signal is
+  **unverified on every platform** as of 2026-09-16 — it needs a
+  merchant-hosted `assetlinks.json`/`apple-app-site-association` deployment
+  this repository cannot provide or prove against. Every checkout today
+  therefore ends as `dismissed`, never `stopUrlReached`, and D1/D4's poll is
+  what makes that correct regardless. Android and the example app **compile**
+  (`BUILD SUCCESSFUL`) but this cutover has **not** been run on an emulator;
+  it has been run — not merely compiled — on a real iOS Simulator, for the
+  first time (see the Status section's final entry). See the dated rows in
   [`../sdks/parity.md`](../sdks/parity.md).
 - **The payer dismisses the window mid-flow.** Handled by D4's short poll
   before reporting anything (above); `VpayCheckoutPending` exists precisely so
@@ -124,16 +137,23 @@ mechanism.
   app — a publishable key and one session's own short-lived secrets, same as
   a browser.
 - No JavaScript bridge and no native peer is added to the checkout page
-  (D3): `addJavascriptInterface`/`WKScriptMessageHandler` are not used, so
-  there is nothing on the page for a rail's own content — loaded top-level
-  inside the same WebView — to call.
+  (D3): `addJavascriptInterface`/`WKScriptMessageHandler` were never used
+  even when the page ran inside this plugin's own WebView, and since D5's
+  2026-09-16 revision the page runs in the payer's own browser process
+  instead, where this plugin's code cannot reach it at all — a stronger
+  version of the same property, not a restatement of it (see the Status
+  section's final entry for the security reasoning).
 - A session credential never reaches a log line, a generated `toString`, or
   an Android extra/iOS property that outlives the window (D6) — a parity row
   in its own right, not a promise; see
   [`../sdks/parity.md`](../sdks/parity.md) once Lane A lands it.
-- `onReceivedSslError` is never overridden and `decidePolicyFor` never bypasses
-  certificate validation — an SDK that proceeds through a certificate error on
-  a payment page is the single worst thing this plugin could ship (D5).
+- `onReceivedSslError` was never overridden and `decidePolicyFor` never
+  bypassed certificate validation while this plugin still rendered the page
+  itself — an SDK that proceeds through a certificate error on a payment
+  page would have been the single worst thing this plugin could ship (D5).
+  **Moot as of 2026-09-16**: the plugin no longer renders the page or
+  handles its TLS at all — the payer's own browser does, with its own
+  certificate handling this plugin cannot override even if it wanted to.
 
 ## App Store and Play policy — a constraint on adoption, not a code change
 
@@ -143,8 +163,9 @@ live guidelines rather than answered from memory (design doc D9; the numbering
 had already moved — it is 3.1.3(e), not the 3.1.5(a) it was for years).
 
 **The rule keys on what is sold, not on where the payment UI lives.** The
-in-app `WebView` and the external-browser mode (D8) are treated identically by
-both stores; neither is a way around anything.
+former in-app `WebView` and the browser surface that replaced it (D5, revised
+2026-09-16) are treated identically by both stores; neither is a way around
+anything.
 
 **vpay's own merchants are on the permitted side, and not by a carve-out.**
 Apple's App Store Review Guidelines, **3.1.3(e)**, verbatim:
@@ -165,18 +186,19 @@ are not supported by it.
 **3.1.1** requires In-App Purchase to unlock features or functionality
 _within_ the app — subscriptions, in-app credits, game levels, premium
 content, full-version unlocks, digital gift cards or vouchers redeemable for
-digital goods. A vpay checkout for any of those is a rejection, in-app WebView
-or external browser alike.
+digital goods. A vpay checkout for any of those is a rejection, whichever
+surface renders it.
 
-**The trap: `externalBrowser` does not move a digital-goods app out of
-3.1.1.** Apple's **3.1.1(a)** goes further: outside the United States
+**The trap: opening the payer's browser does not move a digital-goods app
+out of 3.1.1.** Apple's **3.1.1(a)** goes further: outside the United States
 storefront, an app and its metadata "may not include buttons, external links,
 or other calls to action that direct customers to purchasing mechanisms other
 than in-app purchase" without a StoreKit External Purchase Link Entitlement,
-which is region-limited. For a digital-goods merchant, opening Safari via
-`VpayCheckoutMode.externalBrowser` is not neutral — it can itself be the
-violation. The plugin's own README documents `externalBrowser` and this
-constraint in the same breath, so the mode does not read as a workaround.
+which is region-limited. For a digital-goods merchant, this plugin opening a
+browser at all — the only thing it does since D5's 2026-09-16 revision — is
+not neutral: it can itself be the violation. The plugin's own README must
+document this constraint in the same breath it documents what the plugin
+does, so it does not read as a workaround.
 
 **Bounds on the above.** This is a reading of the published guidelines on
 2026-09-13, not legal advice and not a review outcome — Apple's reviewers
@@ -336,3 +358,57 @@ drag-down and a scrim tap as dismissal triggers; `just test-flutter-emulator`
 still exits 0, all three suites green. iOS/macOS remain compiled by nobody.
 Evidence:
 [`../status/verification/2026-09-16-flutter-bottom-sheet.md`](../status/verification/2026-09-16-flutter-bottom-sheet.md).
+
+**Revised again 2026-09-16, later the same day — the WebView is gone, on
+every platform, and every mode reference above describes a design this
+plugin no longer has.** The plugin now opens the payer's own browser
+unconditionally: a partial (bottom-sheet) Custom Tab on Android
+(`CustomTabsIntent.setInitialActivityHeightPx`), `SFSafariViewController`
+on iOS, the default browser via `NSWorkspace` on macOS, the same popup on
+web. `VpayCheckoutMode` and the wire `CheckoutWindowMode` are **deleted
+outright**, not deprecated — there is no `inApp`/`externalBrowser` choice
+left anywhere above this paragraph to make. `VpayCheckoutViewController.swift`
+(the old `WKWebView` controller) is deleted on both Apple platforms, and
+`VpayCheckoutActivity.kt` no longer creates a `WebView` of any kind. A new,
+narrow, exported `VpayCheckoutAppLinkActivity` exists solely to forward an
+incoming Android App Link; the plugin ships no `<intent-filter>` of its own
+(a hostless `https` filter would claim every `https` URL on the device),
+so the merchant declares one for their own verified host via
+`tools:node="merge"`.
+
+**Why**: a WebView renders the payment form inside the merchant app's own
+process, where `evaluateJavascript`, the cookie store and a navigation
+delegate are all reachable to code the merchant controls — a compromised
+merchant app could read the payer's PAN and OTP undetectably. A separate
+browser process cannot be inspected that way, and the payer gets a real,
+checkable URL bar. **The cost**: no host on any platform can observe a
+navigation any more, so `CheckoutWindowOutcome.stopUrlReached` now means an
+incoming deep link matched a stop URL, never an intercepted navigation, and
+that signal is **unverified on every platform** as of this revision — it
+needs a merchant-hosted `assetlinks.json`/`apple-app-site-association`
+deployment this repository cannot provide. Every checkout today ends as
+`dismissed`, and D1/D4's poll is what makes that correct regardless. macOS
+loses even its previous weak signal: the old code reported `dismissed` when
+the app merely regained focus, which was never real evidence the browser
+had closed; that fake signal is removed, so macOS now has **no dismissal
+signal at all** unless a Universal Link arrives or the merchant calls
+`dismiss()` itself.
+
+**Verified, and precisely how far.** Run — not merely compiled — for the
+first time on a real iOS Simulator (iPhone 17 Pro, iOS 26.5): the
+`SFSafariViewController` sheet renders with Safari's own address bar;
+tapping through to `success_url` leaves the sheet open (no navigation
+interception exists any more); tapping Done reports `dismissed`, D4 polls,
+and the checkout resolves `VpayCheckoutSucceeded`. The Dart suite stays 80
+passed / 0 skipped, `dart analyze --fatal-infos` clean. Android and
+`example/` **compile** (`BUILD SUCCESSFUL`) but were **not** run on an
+emulator against this architecture — the Lane E/D8 emulator evidence
+earlier in this section predates the cutover and does not carry forward.
+The debug-only JS-injection harness (`evaluateJavascriptForTests`,
+`VpayCheckoutActivityTestHarness.kt`) and `checkout_window_test.dart` — the
+one suite that drove a full MTN MoMo push through the real hosted page
+rendered inside a real WebView — are both deleted along with the WebView
+they depended on; no suite in this repository drives a full MTN push
+through the payer's real hosted checkout page end to end on Android any
+more. macOS was not exercised in this pass. Evidence:
+[`../status/verification/2026-09-16-flutter-browser-cutover.md`](../status/verification/2026-09-16-flutter-browser-cutover.md).

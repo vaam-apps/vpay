@@ -56,22 +56,6 @@ class CheckoutStopUrl {
   final String path;
 }
 
-/// D8: which window the platform host shows. Mirrors
-/// `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
-/// distinct on purpose (one is the public Dart API, one is a wire type) so
-/// the pigeon-generated side can change shape without touching the public
-/// one, but every member here must have a same-named counterpart there.
-enum CheckoutWindowMode {
-  /// The in-app `WebView`/`WKWebView`/popup (design doc D5).
-  inApp,
-
-  /// Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
-  /// (design doc D8) — no custom URL scheme, ever (D8: schemes are
-  /// first-come-first-served on Android and any installed app could claim
-  /// one).
-  externalBrowser,
-}
-
 /// What `show` hands the platform host.
 ///
 /// `stopUrls` is empty exactly when the session carries no `success_url` or
@@ -83,7 +67,6 @@ class ShowCheckoutRequest {
     required this.url,
     required this.stopUrls,
     required this.allowInsecureUrl,
-    required this.mode,
   });
 
   /// The session's own hosted `url` (D6: carries the session secret in its
@@ -91,18 +74,16 @@ class ShowCheckoutRequest {
   /// does not construct a URL of its own.
   final String url;
 
+  /// The host matches an **incoming deep link** against these (D2:
+  /// scheme+host+port+path, query and fragment ignored). It no longer
+  /// matches navigations: since D5 was revised on 2026-09-16 the page runs
+  /// in the browser's own process, where no host on any platform can see a
+  /// navigation at all. See [CheckoutWindowOutcome.stopUrlReached].
   final List<CheckoutStopUrl?> stopUrls;
 
   /// D6's named insecure opt-in, forwarded so a platform host does not have
   /// to re-derive "is this the demo stack" from the URL's scheme itself.
   final bool allowInsecureUrl;
-
-  /// D8: `inApp` (the default) or `externalBrowser`. A platform host that
-  /// has not implemented `externalBrowser` refuses rather than silently
-  /// falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
-  /// `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
-  /// failure.
-  final CheckoutWindowMode mode;
 }
 
 /// Which of the two signals `checkout_controller.dart` polls will resolve
@@ -110,11 +91,24 @@ class ShowCheckoutRequest {
 /// whole point (D1) is that this interface cannot say that, only Dart's
 /// poll of `/v1/browser/payment_intents/{id}` can.
 enum CheckoutWindowOutcome {
-  /// A navigation matched one of `ShowCheckoutRequest.stopUrls`.
+  /// An **incoming deep link** (Android App Link, iOS/macOS Universal
+  /// Link) matched one of `ShowCheckoutRequest.stopUrls`, bringing the app
+  /// back to the foreground.
+  ///
+  /// **Unverified on every platform** as of 2026-09-16, and the status
+  /// pages say so: a verified App Link/Universal Link needs an HTTPS
+  /// origin serving `assetlinks.json` / `apple-app-site-association` for
+  /// the merchant's own `success_url` host, which this repository can
+  /// neither deploy nor prove against. Every host below therefore reports
+  /// [dismissed] in practice today, and D1/D4 make that
+  /// correctness-complete — the poll, not the window, decides. Nothing
+  /// here pretends otherwise.
   stopUrlReached,
 
-  /// The payer dismissed the window (back press, swipe, close) without a
-  /// navigation ever matching a stop URL.
+  /// The payer closed the browser sheet (back press, swipe, "Done") with
+  /// no matching deep link having arrived. Since D5's 2026-09-16 revision
+  /// this is the **ordinary** end of a successful payment too, not only a
+  /// cancellation — which is exactly why D4 polls before answering.
   dismissed,
 }
 
@@ -135,10 +129,22 @@ class CheckoutWindowEvent {
 /// window's entire vocabulary (design doc, "The shape").
 @HostApi()
 abstract class VpayCheckoutHostApi {
-  /// Opens the native window (Android `Activity`+`WebView`, iOS/macOS
-  /// `UIViewController`/`NSViewController`+`WKWebView`, or `window.open` on
-  /// web — D5) loading `request.url`. Resolves once the window is showing;
-  /// the outcome arrives later, over [VpayCheckoutFlutterApi.onWindowEvent].
+  /// Opens the payer's **browser** on `request.url` — a partial (bottom
+  /// sheet) Custom Tab on Android, a detented `SFSafariViewController` on
+  /// iOS, `NSWorkspace.open` on macOS, `window.open` on web (D5, revised
+  /// 2026-09-16). Resolves once the window is showing; the outcome arrives
+  /// later, over [VpayCheckoutFlutterApi.onWindowEvent].
+  ///
+  /// No host renders the page in a `WebView`/`WKWebView` any more. That
+  /// was the previous D5 and it put vpay's payment form inside the
+  /// merchant app's own process, where `evaluateJavascript`, the cookie
+  /// store and a navigation delegate are all reachable — i.e. where a
+  /// compromised merchant app could read the payer's PAN and OTP without
+  /// the payer being able to tell. The browser's process cannot be
+  /// inspected that way, and the payer gets a real URL bar. The cost is
+  /// stated rather than hidden: no host can see a navigation any more, so
+  /// stop URLs arrive only as deep links — see
+  /// [CheckoutWindowOutcome.stopUrlReached].
   @async
   void show(ShowCheckoutRequest request);
 

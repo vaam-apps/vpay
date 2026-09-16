@@ -176,3 +176,40 @@ regression test still bites. `git status` was checked clean of scratch
 changes before finishing; only the two-part fix, the two new
 `native_mobile_host_*.dart` files, the pre-existing test, the suite edits
 and this documentation remain.
+
+## Correction, 2026-09-16, later: the WebView this page's walk screenshotted is gone
+
+**The fix itself is unaffected — this correction is about wording, not the
+defect or the repair.** The lazy-resolve mechanism this page proves
+(`VpayCheckoutPlatform.instance` resolving `MethodChannelVpayCheckoutPlatform`
+on first read rather than depending on `dartPluginClass` winning a race) has
+nothing to do with what is rendered inside the window once it opens, and
+nothing about it changed in the later browser cutover.
+
+Two things this page said, said accurately at the time, no longer describe
+the current plugin:
+
+- **"A screenshot of the real vpay hosted checkout page rendering inside
+  that Activity"** (the hand-driven walk section): true of the
+  `WebView`-based `VpayCheckoutActivity` this page's walk exercised. Later
+  the same day, D5 was revised again ("browser, not WebView") —
+  `VpayCheckoutActivity` no longer renders the page itself at all; it opens
+  a partial Custom Tab, and the browser (Chrome, on Android) renders the
+  page. The registration fix this page proves is what makes that Custom
+  Tab openable in a real installed app in the first place; it says nothing
+  about what is inside it, before or after the cutover.
+- **The Gates table's `just test-flutter-emulator`: "window / dismiss /
+  external-browser suites all green."** The "window suite" was
+  `checkout_window_test.dart`, which drove the WebView above through a full
+  MTN push using a debug-only JS-injection hook. Both are deleted along
+  with the WebView they depended on — see
+  `docs/status/mobile-flutter-plugin.md`'s "Browser, not WebView" section.
+  `just test-flutter-emulator` now runs two suites, not three, and neither
+  has been re-run against the current (browser) Android architecture — see
+  [`2026-09-16-flutter-browser-cutover.md`](2026-09-16-flutter-browser-cutover.md)
+  for what has and has not been re-verified since.
+
+Nothing else on this page is corrected: the root-cause analysis, the
+two-part fix, the regression test's both exit codes, and every other gate
+in the table remain accurate statements about what this specific defect was
+and how it was fixed.

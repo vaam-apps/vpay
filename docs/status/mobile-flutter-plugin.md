@@ -189,6 +189,108 @@ sheet, and the result back on the merchant's own screen.
 Evidence:
 [verification/2026-09-16-flutter-bottom-sheet.md](verification/2026-09-16-flutter-bottom-sheet.md).
 
+## Browser, not WebView — and the JS test harness retires with it (2026-09-16, later)
+
+D5 was revised again the same day, past the bottom sheet above: the plugin
+now launches the payer's own browser — a partial Custom Tab on Android,
+`SFSafariViewController` on iOS, `NSWorkspace.open` on macOS — instead of
+rendering the checkout page in an in-app `WebView`. There is no `WebView`
+anywhere in this plugin any more: `VpayCheckoutViewController.swift` is
+deleted on both Apple platforms and `VpayCheckoutActivity.kt` no longer
+creates one.
+
+That is a correction, not just an addition, to two things this page and
+[verification/2026-09-16-flutter-bottom-sheet.md](verification/2026-09-16-flutter-bottom-sheet.md)
+already claimed above, in the "Non-negotiables, re-measured on the new
+theme" and D8 rows:
+
+- **The "Debug-only JS harness (`evaluateJavascriptForTests`) stays
+  debug-only" / "DEX string count … debug 4, release 0" rows measured a
+  real control**: a native→JS injection hook
+  (`VpayCheckoutActivityTestHarness.kt`, `android/src/debug/kotlin`,
+  reached from Dart only through
+  `example/integration_test/support/test_js_harness.dart`) that stayed out
+  of release DEX. **That control is retired, not still holding.** The hook
+  called `WebView.evaluateJavascript`, and there is no `WebView` left to
+  call it on, so both the hook and its Dart caller were deleted rather than
+  left compiling against nothing. A DEX grep for
+  `evaluateJavascriptForTests` today still reads debug 0 / release 0 —
+  zero because the symbol does not exist anywhere in the source tree any
+  more, not because a debug-only capability is still being kept out of
+  release.
+- **`just test-flutter-emulator`, "all three suites green (window, dismiss,
+  external-browser)"**: the "window suite" was `checkout_window_test.dart`,
+  which drove the real `WebView` through a full MTN MoMo push using the JS
+  harness above — it could not pass again once the `WebView` it drove was
+  gone, so it was deleted with it. `just test-flutter-emulator` now runs
+  two suites, dismiss and external-browser, both re-proven against the
+  Custom Tab / browser surface. **Lost coverage:** no suite in this
+  repository drives a full MTN push through the real hosted checkout page
+  end to end on Android any more; `checkout_window_test.dart` was the only
+  one that did, and nothing replaced it.
+
+Everything else the bottom-sheet section proved — `exported="false"`,
+`onReceivedSslError`/`addJavascriptInterface`/`allowFileAccess*`, the
+drag-down/scrim/back-press dismissal path — is unaffected by this
+correction; only the two rows above implied a control that no longer
+exists.
+
+**What the paragraph above left out, added here rather than treated as a
+separate pass.** The WebView cutover is bigger than "the browser renders
+the page instead of a WebView" — three more things changed the same day,
+and this page did not yet say so.
+
+1. **`VpayCheckoutMode`/`CheckoutWindowMode` are deleted outright, not one
+   of two selectable modes any more.** `VpayCheckout.start` takes a session
+   URL and nothing else; `VpayCheckoutPlatform.show` takes no `mode`
+   argument. What D8 (below) called `externalBrowser` is now the only thing
+   any platform does — there is no `inApp` to fall back to and nothing left
+   to special-case.
+2. **`CheckoutWindowOutcome.stopUrlReached` changed meaning.** It used to
+   fire on an intercepted `WebView` navigation; now it fires only on an
+   **incoming deep link** (an Android App Link or an iOS/macOS Universal
+   Link). That signal is **unverified on every platform** as of 2026-09-16:
+   a real App Link/Universal Link needs an HTTPS origin serving
+   `assetlinks.json`/`apple-app-site-association` for the merchant's own
+   `success_url` host, which this repository can neither deploy nor prove
+   against. Every checkout today ends as `dismissed` in practice — D1/D4's
+   poll is what makes that correctness-complete regardless. A new, narrow,
+   exported `VpayCheckoutAppLinkActivity` exists on Android solely to
+   forward an incoming App Link into the plugin; the plugin itself ships
+   **no** `<intent-filter>` of its own — a hostless `https` filter would
+   claim every `https` URL on the device (harmful on API 21-30, merely
+   inert on 31+, since verified App Links need a host anyway) — so the
+   merchant declares an `<intent-filter>` for their own verified host,
+   merged via `tools:node="merge"`.
+3. **macOS lost its only dismissal signal.** The previous code reported
+   `dismissed` the moment the app regained focus, which was never real
+   evidence the browser had actually closed (a payer can switch back to
+   check something else and switch away again without touching the
+   browser). That fake signal is removed rather than kept for appearances:
+   macOS now has **no dismissal signal at all** unless a Universal Link
+   arrives or the merchant calls `dismiss()` itself, so D4's poll never
+   starts there on its own.
+
+**Verified, and precisely how far — the part this page owes and had not
+yet paid.** For the first time, this plugin was run — not merely compiled —
+on a real iOS Simulator (iPhone 17 Pro, iOS 26.5), on a macOS host with a
+real Xcode toolchain (this repository's earlier "no `xcodebuild` on this
+host" claims were about a different, Linux host): the `SFSafariViewController`
+sheet renders with Safari's own address bar; tapping through to
+`success_url` leaves the sheet open, since no navigation interception
+exists any more; tapping Done reports `dismissed`, D4 polls, and the
+checkout resolves `VpayCheckoutSucceeded`. **iOS is no longer only
+"compiled by nobody"** — see the correction to the "iOS and macOS hosts"
+row in `docs/sdks/parity.md`. The Dart suite stays 80 passed / 0 skipped,
+`dart analyze --fatal-infos` clean. Android and `example/` **compile**
+(`BUILD SUCCESSFUL`) but were **not** run on an emulator against this
+architecture — the Lane E/D8 emulator evidence elsewhere on this page
+predates the cutover and does not carry forward; citing it as current
+proof would be exactly the failure mode `CLAUDE.md` warns against. macOS
+itself (the desktop target, as opposed to iOS) was not exercised in this
+pass. Evidence:
+[verification/2026-09-16-flutter-browser-cutover.md](verification/2026-09-16-flutter-browser-cutover.md).
+
 ## What is still not real
 
 - **No `just ci` gate** (D-M3). `install-flutter`/`analyze-flutter`/
@@ -196,21 +298,38 @@ Evidence:
   `just verify`, and `docs/status.md`'s gate table does not claim otherwise.
   Every count this repository quotes for this package is a human running it
   by hand.
-- **No iOS or macOS compile.** Not "not yet run" — there is no toolchain on
-  this host and there cannot be. Confirmed again by D8: `swiftc`/`swift` are
-  both absent from this host too.
-- **No browser** for web's `inApp` popup — proven by compiling
-  (`flutter build web`) and, separately, by `just test-flutter-web` running
-  `web_checkout_platform_test.dart` in a real Chrome (2026-09-15), but no
-  human or automated walk has ever opened the popup end to end against the
-  real hosted page. **Android's `inApp` window is the exception as of
-  2026-09-16**: corrected below and in the "A real installed app never
-  opened the window" and "Modal checkout sheet" sections — it has been
-  opened for real, repeatedly, on the maintainer's own `emulator-5554`.
-  `externalBrowser` was already the exception before that: Android's Custom
-  Tabs path was run for real on a headless emulator (D8, above).
+- **No macOS compile, still.** There is no toolchain that has ever built
+  the macOS target in this repository. **iOS is the exception as of
+  2026-09-16**, and only iOS: the browser cutover was run — not merely
+  compiled — on a real iOS Simulator on a macOS host with a real Xcode
+  toolchain (see the "Browser, not WebView" section above). The earlier
+  "no `xcodebuild`" claims were about this repository's own (Linux) host,
+  which is still true for that host; they no longer describe every host
+  this plugin has ever been built on.
+- **No browser walk for web's popup end to end against the real hosted
+  page.** Proven by compiling (`flutter build web`) and, separately, by
+  `just test-flutter-web` running `web_checkout_platform_test.dart` in a
+  real Chrome (2026-09-15), but no human or automated walk has ever opened
+  the popup end to end against the real hosted page.
+- **Android has not been run on an emulator against the current
+  (browser) architecture.** It was run for real, repeatedly, on the
+  maintainer's own `emulator-5554` — but against the WebView-based modal
+  sheet the "Modal checkout sheet" section below describes, which the
+  "Browser, not WebView" section above has since replaced. `flutter build
+  apk --debug`/`--release` on `example/` both still exit 0 (`BUILD
+  SUCCESSFUL`); nothing has opened the Custom Tab surface on a device or
+  emulator since the cutover.
 - **D8's tier 1** (Android App Links / iOS 17.4+ Associated Domains) is not
-  implemented on any platform — see the D8 section above.
+  implemented on any platform — see the D8 section above. Since the browser
+  cutover this is no longer only a UX upgrade: tier 1 is what
+  `CheckoutWindowOutcome.stopUrlReached` now depends on entirely, and it is
+  **unverified on every platform** — see the "Browser, not WebView"
+  section's own dated addition above.
+- **macOS has no dismissal signal at all any more.** The fake
+  focus-regained signal the previous code used is removed; nothing reports
+  `dismissed` on macOS unless a Universal Link arrives (itself unverified,
+  above) or the merchant calls `dismiss()` — see the "Browser, not WebView"
+  section's own dated addition above.
 - **No real rail.** `just test-flutter-e2e` (Lane D, above) proved the
   running-vpay half; the rail behind that stack is still WireMock.
 - **No App Store or Play review.** ADR-0021 and D9 read the published rules;
@@ -245,3 +364,9 @@ Evidence:
   the new theme, the three-cold-launch hand-driven walk's `dumpsys` evidence
   and dismissal-trigger results, `just test-flutter-emulator`'s exit code,
   and every "do not break" gate rerun on the change.
+- [verification/2026-09-16-flutter-browser-cutover.md](verification/2026-09-16-flutter-browser-cutover.md)
+  — the browser cutover: the real iOS Simulator walk, the Dart suite and
+  `dart analyze` counts, the Android/`example` compile-only result, and
+  exactly what remains unverified (deep-link return detection on every
+  platform, macOS's own dismissal signal, and any device/emulator run of
+  the new Android or macOS surface).

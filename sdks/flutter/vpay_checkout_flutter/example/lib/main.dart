@@ -57,14 +57,43 @@ class _CheckoutPage extends StatefulWidget {
   State<_CheckoutPage> createState() => _CheckoutPageState();
 }
 
+/// The three fields' starting values, overridable at build time so a
+/// device run does not need the session URL retyped — or pasted past a
+/// simulator keyboard that mangles `#` and `_` — on every cold launch:
+///
+/// ```bash
+/// flutter run \
+///   --dart-define=VPAY_BASE_URL=http://localhost:8080 \
+///   --dart-define=VPAY_PUBLISHABLE_KEY=pk_test_… \
+///   --dart-define=VPAY_SESSION_URL='http://localhost:8080/c/cs_…#cs_…_secret_…'
+/// ```
+///
+/// These are only the text fields' *initial* text — every one stays
+/// editable, and nothing here reaches [VpayCheckout] except through the
+/// controller the payer can overwrite. The session URL still comes from a
+/// merchant server (this app never creates a session, see the library doc
+/// comment); `--dart-define` only saves retyping what that server already
+/// returned.
+const String _defaultBaseUrl = String.fromEnvironment(
+  'VPAY_BASE_URL',
+  defaultValue: 'http://localhost:8080',
+);
+const String _defaultPublishableKey = String.fromEnvironment(
+  'VPAY_PUBLISHABLE_KEY',
+  defaultValue: 'pk_test_acmecameroonsandbox01',
+);
+const String _defaultSessionUrl = String.fromEnvironment('VPAY_SESSION_URL');
+
 class _CheckoutPageState extends State<_CheckoutPage> {
   final TextEditingController _baseUrlController = TextEditingController(
-    text: 'http://localhost:8080',
+    text: _defaultBaseUrl,
   );
   final TextEditingController _publishableKeyController = TextEditingController(
-    text: 'pk_test_acmecameroonsandbox01',
+    text: _defaultPublishableKey,
   );
-  final TextEditingController _sessionUrlController = TextEditingController();
+  final TextEditingController _sessionUrlController = TextEditingController(
+    text: _defaultSessionUrl,
+  );
 
   String _status = 'Idle.';
   bool _running = false;

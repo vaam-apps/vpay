@@ -1,10 +1,11 @@
 /// A payer-facing checkout surface for vpay (`docs/adr/0021-flutter-checkout-plugin.md`).
 ///
-/// **Before using [VpayCheckoutMode.externalBrowser] on iOS or opening a
-/// vpay checkout for any digital-goods purchase, read this package's
-/// README's "App Store and Play policy" section.** It is not a way around
-/// Apple's or Google's in-app purchase rules — see D9 in
-/// `docs/plans/2026-09-13-flutter-plugin.md`.
+/// **Before opening a vpay checkout for any digital-goods purchase, read
+/// this package's README's "App Store and Play policy" section.** It is
+/// not a way around Apple's or Google's in-app purchase rules — see D9 in
+/// `docs/plans/2026-09-13-flutter-plugin.md`. That section matters more
+/// since D5's 2026-09-16 revision, not less: every checkout now opens the
+/// payer's browser, which is exactly the shape those rules scrutinise.
 library;
 
 export 'src/browser_client.dart'
@@ -41,4 +42,4 @@ export 'src/result.dart'
         VpayCheckoutResult,
         VpayCheckoutSucceeded,
         VpayCheckoutUnresolved;
-export 'src/vpay_checkout.dart' show VpayCheckout, VpayCheckoutMode;
+export 'src/vpay_checkout.dart' show VpayCheckout;

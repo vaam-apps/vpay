@@ -205,6 +205,98 @@ opens (attempted — see `docs/sdks/parity.md`'s dated row for the outcome);
 and `just ci` still does not run any of this (D-M3, unchanged).
 carries the evidence.
 
+**D5 revised again, 2026-09-16, later the same day: the in-app `WebView` is
+gone — on every platform, not only behind an opt-in mode.** Both paragraphs
+above described a `WebView`-based window with `externalBrowser` as a second,
+selectable surface. That is no longer the design. `VpayCheckoutHostApi.show`
+now opens the payer's own browser unconditionally — there is no `mode`
+argument left to select anything with. `VpayCheckoutMode` and the wire
+`CheckoutWindowMode` are **deleted**, not deprecated: `VpayCheckout.start`
+takes a session URL and nothing else, and every platform host reached
+through `VpayCheckoutPlatform.show` behaves identically to what D8 above
+called `externalBrowser`. `VpayCheckoutViewController.swift` (iOS/macOS) is
+deleted outright, and `VpayCheckoutActivity.kt` no longer constructs a
+`WebView` of any kind.
+
+**Why, stated as the security reasoning this decision rests on, not just
+recorded as a fact.** A `WebView` renders vpay's payment form inside the
+merchant app's own process. In that process, `evaluateJavascript`, the
+cookie store and a navigation delegate are all reachable to code the
+merchant controls — which means a compromised merchant app could read the
+payer's PAN and OTP directly out of the page, undetectably, with no signal
+to the payer or to vpay that it happened. A separate browser process cannot
+be inspected that way from the host app at all, and the payer additionally
+gets a real, checkable URL bar — something a `WebView` never offered and a
+phished payer has no way to demand. This is a strictly stronger security
+property than D3 (no JavaScript bridge) alone ever bought: D3 kept the
+*plugin's own* code off the page; this removes the page from the merchant's
+process altogether.
+
+**The cost, stated rather than buried.** With the page in a separate
+process, no host on any platform can observe a navigation any more —
+D2/D2's stop-URL matching, built for a `WebView`'s navigation delegate, has
+nothing left to watch. `CheckoutWindowOutcome.stopUrlReached` is redefined:
+it now means an **incoming deep link** (an Android App Link or an
+iOS/macOS Universal Link) matched one of the session's stop URLs, not an
+intercepted navigation. That signal is **unverified on every platform** as
+of this revision — a real App Link/Universal Link needs an HTTPS origin
+serving `assetlinks.json`/`apple-app-site-association` for the merchant's
+own `success_url` host, which this repository can neither deploy nor prove
+against. Every checkout today therefore ends as `dismissed` in practice,
+never `stopUrlReached` — D1 and D4 are what make that correctness-complete
+regardless: the poll decides, never the window. macOS loses even the weak
+signal it had: the previous code reported `dismissed` the moment the app
+regained focus, which was never real evidence the browser had actually
+closed (a payer could simply switch back to check something and switch
+away again). That fake signal is removed rather than kept for appearances,
+so macOS now has **no dismissal signal at all** unless a Universal Link
+arrives or the merchant calls `dismiss()` itself — D4's poll never starts
+there otherwise. This is the same trade-off D8's tier 0/tier 1 split above
+already named for the external-browser mode; it now applies to the only
+mode there is.
+
+**What each platform host does now.** Android launches a **partial**
+(bottom-sheet) Custom Tab via `CustomTabsIntent.setInitialActivityHeightPx`
+— not a full-screen Custom Tab — continuing the "not a full-screen takeover"
+shape the modal-sheet revision above already established for the WebView it
+has since replaced. `VpayCheckoutActivity` stays `android:exported="false"`;
+a new, narrow, exported `VpayCheckoutAppLinkActivity` exists solely to
+forward an incoming App Link into the plugin. The plugin itself ships **no**
+`<intent-filter>` of its own: a hostless `https` filter would claim every
+`https` URL on the device — harmful on API 21-30, where it can hijack links
+meant for other apps, and merely inert on 31+, where Android's own verified
+App Links require a host anyway. The merchant instead declares an
+`<intent-filter>` for their own verified `success_url`/`cancel_url` host,
+merged into the manifest via `tools:node="merge"`. iOS wraps
+`SFSafariViewController` with an explicit `.large()` detent (unchanged
+choice from D8 above, now unconditional rather than mode-gated). macOS
+calls `NSWorkspace.shared.open(url)` and has lost its dismissal signal, as
+described above.
+
+**Lost coverage, named rather than left implicit.** The debug-only
+JavaScript-injection harness (`evaluateJavascriptForTests`,
+`VpayCheckoutActivityTestHarness.kt`) and `checkout_window_test.dart`, the
+one suite that drove a full MTN MoMo push through the real hosted checkout
+page rendered inside a real `WebView`, are both deleted along with the
+`WebView` they depended on. No suite in this repository drives a full MTN
+push through the payer's real hosted checkout page end to end on Android
+any more.
+
+**Verified, and precisely how far.** For the first time, this plugin was
+run — not merely compiled — on a real iOS Simulator (iPhone 17 Pro, iOS
+26.5): the `SFSafariViewController` sheet renders with Safari's own address
+bar; tapping through to `success_url` leaves the sheet open, since no
+navigation interception exists any more; tapping Done reports `dismissed`,
+D4 polls, and the checkout resolves `VpayCheckoutSucceeded`. The Dart suite
+stays 80 passed / 0 skipped, and `dart analyze --fatal-infos` is clean.
+Android and `example/` **compile** (`BUILD SUCCESSFUL`) but were **not**
+run on an emulator against this architecture — the Lane E/D8 emulator
+evidence earlier in this ADR predates the cutover and does not carry
+forward; citing it as current proof would be the exact failure mode
+`CLAUDE.md` warns against. macOS was not exercised at all in this pass.
+Evidence:
+[`../status/verification/2026-09-16-flutter-browser-cutover.md`](../status/verification/2026-09-16-flutter-browser-cutover.md).
+
 **Reversible, at the cost this repository always pays for a reversal: a new
 ADR, not an edit to this one.** The clearest candidate is D3 (no native peer
 on the checkout page) — the design doc calls it "open to reversal" if a

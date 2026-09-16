@@ -34,7 +34,6 @@ void main() {
         url: _sessionUrl,
         stopUrls: const <CheckoutStopUrl?>[],
         allowInsecureUrl: false,
-        mode: CheckoutWindowMode.inApp,
       );
 
       final rendered = request.toString();
@@ -46,7 +45,6 @@ void main() {
       // The fields that are not credentials still render, so the type
       // stays diagnosable.
       expect(rendered, contains('allowInsecureUrl: false'));
-      expect(rendered, contains('mode: CheckoutWindowMode.inApp'));
     });
 
     test('the redaction survives string interpolation, which is how it would actually be logged', () {
@@ -54,7 +52,6 @@ void main() {
         url: _sessionUrl,
         stopUrls: const <CheckoutStopUrl?>[],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.externalBrowser,
       );
 
       expect('showing $request', isNot(contains(_sessionSecret)));

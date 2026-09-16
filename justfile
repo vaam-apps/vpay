@@ -577,10 +577,16 @@ test-flutter-e2e: _flutter-preflight
     VPAY_E2E_FIXTURE_FILE="$fixture" flutter test test_e2e
 
 # Lane E (docs/plans/2026-09-13-flutter-plugin.md D1/D5) — the ONLY recipe in
-# this file that drives the real `VpayCheckoutActivity` and its real
-# `WebView` on a real (headless) Android emulator. Everything above this
-# line proves the Dart core; nothing above it has ever opened the native
-# window at all — `docs/sdks/parity.md`'s dated ⛔ rows say so.
+# this file that drives the real `VpayCheckoutActivity` and the real
+# browser tab (a Custom Tab) it opens, on a real (headless) Android
+# emulator. Everything above this line proves the Dart core; nothing above
+# it has ever opened the native window at all — `docs/sdks/parity.md`'s
+# dated ⛔ rows say so.
+#
+# This used to also drive an in-app `WebView` (`checkout_window_test.dart`,
+# run as a third "window suite" alongside the two below) — retired
+# 2026-09-16 along with the WebView itself, D5's "browser, not WebView"
+# revision (`docs/status/mobile-flutter-plugin.md`).
 #
 # Separate from `test-flutter` (stack-independent, MUST keep passing with
 # nothing running) and from `test-flutter-e2e` (no device, no window —
@@ -608,7 +614,7 @@ test-flutter-e2e: _flutter-preflight
 # `10.0.2.2`: the checkout page's OWN client-side JS calls
 # `NEXT_PUBLIC_VPAY_API_URL`, baked into the container as `localhost:8080`,
 # and `adb reverse` is the one fix that makes that string resolve correctly
-# for both this recipe's own HTTP calls and the WebView's).
+# for both this recipe's own HTTP calls and the payer's browser's).
 test-flutter-emulator: _flutter-preflight
     #!/usr/bin/env bash
     set -euo pipefail
@@ -679,18 +685,30 @@ test-flutter-emulator: _flutter-preflight
     # browser calls (`examples/shop/src/server/routers/orders.ts`), which
     # performs a real `POST /v1/payment_intents` + `POST
     # /v1/checkout/sessions`. Neither is pre-confirmed: unlike
-    # `test-flutter-e2e`'s fixture, this suite drives the REAL page's own
-    # confirm UI, so it needs sessions still `requires_payment_method`, not
-    # ones this recipe already settled with a raw HTTP call.
+    # `test-flutter-e2e`'s fixture, both the dismiss and external-browser
+    # suites below open a real session and drive it to a real dismissal,
+    # never a confirm, so `requires_payment_method` sessions serve them
+    # just as well as ones this recipe already settled with a raw HTTP
+    # call — kept unconfirmed anyway since nothing here needs them settled.
     mint_order() {
         curl -sS -X POST "$shop_url/api/trpc/orders.create" \
             -H 'Content-Type: application/json' \
             -d "{\"email\":\"$1\",\"lines\":[{\"productId\":\"njangi-tote\",\"quantity\":1}],\"mode\":\"hosted\"}"
     }
 
-    window_order="$(mint_order laneE-window@example.test)"
-    window_url="$(printf '%s' "$window_order" | jq -er '.result.data.url')" || {
-        echo "test-flutter-emulator: FAIL — orders.create (window fixture) answered: $window_order" >&2
+    # `EmulatorFixture` still carries `sessionUrl`/`publishableKey` under
+    # the "window"-flavoured names history left behind — the suite that
+    # read `publishableKey` (`checkout_window_test.dart`, driving a real
+    # MTN push through an in-app WebView's own confirm UI) was retired
+    # 2026-09-16 along with that WebView (`docs/status/
+    # mobile-flutter-plugin.md`). `sessionUrl` itself lives on: it is what
+    # `checkout_dismiss_test.dart` opens and back-presses out of below.
+    # `publishable_key` is still minted and still sent in the fixture JSON
+    # only because `support/fixture.dart`'s `EmulatorFixture.load` still
+    # requires the field non-empty — trimming it is a separate change.
+    session_order="$(mint_order laneE-session@example.test)"
+    session_url="$(printf '%s' "$session_order" | jq -er '.result.data.url')" || {
+        echo "test-flutter-emulator: FAIL — orders.create (session fixture) answered: $session_order" >&2
         exit 1
     }
     dismiss_order="$(mint_order laneE-dismiss@example.test)"
@@ -698,9 +716,9 @@ test-flutter-emulator: _flutter-preflight
         echo "test-flutter-emulator: FAIL — orders.create (dismiss fixture) answered: $dismiss_order" >&2
         exit 1
     }
-    publishable_key="$(printf '%s' "$window_url" | sed -E 's/.*[?&]key=([^&#]*).*/\1/')"
-    if [ -z "$publishable_key" ] || [ "$publishable_key" = "$window_url" ]; then
-        echo "test-flutter-emulator: FAIL — could not read ?key=... off the minted session url: $window_url" >&2
+    publishable_key="$(printf '%s' "$session_url" | sed -E 's/.*[?&]key=([^&#]*).*/\1/')"
+    if [ -z "$publishable_key" ] || [ "$publishable_key" = "$session_url" ]; then
+        echo "test-flutter-emulator: FAIL — could not read ?key=... off the minted session url: $session_url" >&2
         exit 1
     fi
     echo "test-flutter-emulator: minted 2 real, unconfirmed hosted sessions (key=$publishable_key)"
@@ -711,7 +729,7 @@ test-flutter-emulator: _flutter-preflight
     jq -n \
         --arg baseUrl "$base_url" \
         --arg publishableKey "$publishable_key" \
-        --arg sessionUrl "$window_url" \
+        --arg sessionUrl "$session_url" \
         --arg dismissSessionUrl "$dismiss_url" \
         --arg mtnSucceedsMsisdn "237600000100" \
         '{baseUrl: $baseUrl, publishableKey: $publishableKey, sessionUrl: $sessionUrl, dismissSessionUrl: $dismissSessionUrl, mtnSucceedsMsisdn: $mtnSucceedsMsisdn}' \
@@ -725,10 +743,6 @@ test-flutter-emulator: _flutter-preflight
     example_dir="{{ flutter_plugin_dir }}/example"
     echo "test-flutter-emulator: resolving the example app's own dependencies"
     (cd "$example_dir" && flutter pub get) >/dev/null
-
-    echo "test-flutter-emulator: === window suite (real Activity, real WebView, full MTN push, real stop-URL interception) ==="
-    window_status=0
-    (cd "$example_dir" && flutter test integration_test/checkout_window_test.dart -d "$device" --dart-define="VPAY_E2E_FIXTURE_B64=$fixture_b64") || window_status=$?
 
     echo "test-flutter-emulator: === dismiss suite (real back press -> real dismissal) ==="
     dismiss_log="$tmp/dismiss.log"
@@ -817,11 +831,11 @@ test-flutter-emulator: _flutter-preflight
     wait "$external_browser_pid" || external_browser_status=$?
     cat "$external_browser_log"
 
-    if [ "$window_status" -ne 0 ] || [ "$dismiss_status" -ne 0 ] || [ "$external_browser_status" -ne 0 ]; then
-        echo "test-flutter-emulator: FAIL — window suite exit $window_status, dismiss suite exit $dismiss_status, external browser suite exit $external_browser_status" >&2
+    if [ "$dismiss_status" -ne 0 ] || [ "$external_browser_status" -ne 0 ]; then
+        echo "test-flutter-emulator: FAIL — dismiss suite exit $dismiss_status, external browser suite exit $external_browser_status" >&2
         exit 1
     fi
-    echo "test-flutter-emulator: all three suites green"
+    echo "test-flutter-emulator: both suites green"
 
 # Vendors `@vaam-apps/vpay-stripe-js`'s build output into
 # `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports

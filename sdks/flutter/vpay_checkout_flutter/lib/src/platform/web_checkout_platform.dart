@@ -36,13 +36,15 @@
 /// this page's origin (another tab, another popup, an iframe of the
 /// merchant's own).
 ///
-/// **D8's `VpayCheckoutMode` collapses to one behaviour here.** `inApp` and
-/// `externalBrowser` both open the same `window.open` popup — there is no
-/// in-app WebView on Flutter web to distinguish `inApp` from, and the popup
-/// this class already opens for every mode *is* an external-browser
-/// context. [show]'s `mode` parameter is accepted, never dropped from the
-/// signature (a caller passing `externalBrowser` on web gets a real window,
-/// not an `UnimplementedError`), and then intentionally not read.
+/// **Web needed no cutover on 2026-09-16.** When D5 dropped the in-app
+/// `WebView` on the three native platforms in favour of the payer's own
+/// browser, web was already there: a `window.open` popup *is* a real
+/// browsing context in the browser's own process, with its own URL bar,
+/// and this class has never had a `WebView` to give up. What web gives up
+/// instead is the opposite thing — it is the one platform that still
+/// cannot see the payer's navigation, and never could, which is why
+/// [_onMessage] pins both `origin` and `event.source` rather than reading
+/// a URL.
 library;
 
 import 'dart:async';
@@ -112,15 +114,6 @@ final class WebVpayCheckoutPlatform extends VpayCheckoutPlatform {
     // not that this platform ignores the distinction, it is that the
     // distinction does not exist here. There is no in-app WebView option
     // on Flutter web at all (design doc, "The shape": web's row is
-    // `window.open` popup, "no plugin window") — a `window.open` popup
-    // already **is** an external-browser context, the same surface
-    // `sdks/stripe-js/src/popup.ts` treats as a first-class peer for every
-    // integration on the web. So `inApp` and `externalBrowser` open the
-    // identical popup here; this parameter is accepted (never silently
-    // dropped from the signature — a caller passing `externalBrowser` gets
-    // a real window, not an `UnimplementedError`) and then intentionally
-    // not read.
-    required CheckoutWindowMode mode,
   }) async {
     _teardown();
     _settled = false;

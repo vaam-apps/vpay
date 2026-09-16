@@ -1,8 +1,18 @@
-/// What `just test-flutter-emulator` mints on the HOST before running this
-/// suite ON THE EMULATOR — the same shape Lane D's
-/// `test_e2e/real_stack_e2e_test.dart` fixture is, trimmed to what a
-/// WebView-driving suite needs (no pre-expired session: this suite drives
-/// the REAL page's own confirm, it never calls `/confirm` itself).
+/// What `just test-flutter-emulator` mints on the HOST before running the
+/// dismiss and external-browser suites ON THE EMULATOR — the same shape
+/// Lane D's `test_e2e/real_stack_e2e_test.dart` fixture is (no pre-expired
+/// session: both suites open a real, still-open session, they never call
+/// `/confirm` themselves).
+///
+/// [publishableKey] and [mtnSucceedsMsisdn] were added for
+/// `checkout_window_test.dart`, the suite that drove a full MTN push
+/// through the in-app `WebView`'s own confirm UI. That suite (and the
+/// `WebView` it drove) was retired 2026-09-16 —
+/// `docs/status/mobile-flutter-plugin.md` — and neither field is read by
+/// any suite left in this directory; they stay required here only because
+/// trimming them would also mean reworking `justfile`'s
+/// `test-flutter-emulator` fixture-minting step, which is out of scope for
+/// that retirement.
 ///
 /// Carried in as `--dart-define=VPAY_E2E_FIXTURE_B64=...`, NOT
 /// `Platform.environment` (`test_e2e/real_stack_e2e_test.dart`'s own
@@ -42,11 +52,14 @@ class EmulatorFixture {
   /// own `NEXT_PUBLIC_VPAY_API_URL` is baked as `http://localhost:8080`
   /// (`compose.demo.yml`), and the page's client-side JS has to resolve
   /// that same string — `adb reverse` makes "localhost" mean the same
-  /// thing to the WebView's JS and to this suite's own `BrowserClient`
-  /// calls, where rewriting only the top-level URL's host would not.
+  /// thing to the payer's browser (a Custom Tab on Android) and to this
+  /// suite's own `BrowserClient` calls, where rewriting only the
+  /// top-level URL's host would not. Unused by any suite left in this
+  /// directory — see this file's header.
   final String baseUrl;
 
   /// The merchant's publishable key the minted [sessionUrl] carries.
+  /// Unused by any suite left in this directory — see this file's header.
   final String publishableKey;
 
   /// A FRESH, still-`open`, UNCONFIRMED hosted session's `url` —
@@ -54,24 +67,27 @@ class EmulatorFixture {
   /// `examples/shop`'s real server exactly as
   /// `test_e2e/real_stack_e2e_test.dart`'s fixture is, with its host
   /// already `localhost:3080` (`adb reverse tcp:3080 tcp:3080` makes that
-  /// reachable from the emulator too). Deliberately NOT pre-confirmed:
-  /// this suite drives the REAL page's own rail-select/msisdn/submit UI to
-  /// confirm it, which is the thing under test.
+  /// reachable from the emulator too). Deliberately NOT pre-confirmed —
+  /// read by `checkout_dismiss_test.dart`, which opens it and drives a
+  /// real back press, never a confirm; no suite in this directory drives a
+  /// page's own confirm UI any more (`checkout_window_test.dart`, the one
+  /// that did, was retired 2026-09-16).
   final String sessionUrl;
 
-  /// A SECOND, independently-minted hosted session's `url`, used only by
-  /// `checkout_dismiss_test.dart` — a separate session so that file never
-  /// depends on `checkout_window_test.dart` having run first (or at all):
-  /// each `flutter test integration_test/<file>.dart` invocation is its
-  /// own process, and sharing one session across both would make the
-  /// dismiss suite's pass/fail depend on run order.
+  /// A SECOND, independently-minted hosted session's `url`, read by
+  /// `checkout_external_browser_test.dart` — a separate session so that
+  /// file never depends on `checkout_dismiss_test.dart` having run first
+  /// (or at all): each `flutter test integration_test/<file>.dart`
+  /// invocation is its own process, and sharing one session across both
+  /// would make one suite's pass/fail depend on run order.
   final String dismissSessionUrl;
 
   /// `frontends/tests/e2e/cypress/support/shop.ts`'s `MTN.succeeds` —
   /// `PENDING` on the first status query, `SUCCESSFUL` on the next
   /// (WireMock scenario `mtn-e2e-poll`). Digits-only: vpay's page
   /// validates Cameroon E.164 and refuses the hex-suffixed steering
-  /// numbers other suites use.
+  /// numbers other suites use. Unused by any suite left in this
+  /// directory — see this file's header.
   final String mtnSucceedsMsisdn;
 
   static const String _fixtureB64 = String.fromEnvironment(

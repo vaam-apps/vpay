@@ -1,35 +1,52 @@
-// D8's iOS external-browser window, wired 2026-09-14:
-// `SFSafariViewController`, not `ASWebAuthenticationSession` — design doc
-// D8 explains why: with no custom URL scheme (`checked_forward_url`
-// accepts only `http(s)`, and a scheme is refused by design — schemes are
-// first-come-first-served on Android and this plugin does not add one on
-// any platform for consistency), `ASWebAuthenticationSession`'s
-// `callbackURLScheme` would never fire below iOS 17.4, and it costs a
-// system "… wants to use … to sign in" consent alert that is the wrong
-// sentence on a payment. `SFSafariViewController` needs no callback at
-// all: it is presented in-process, like a modal view controller, and its
-// delegate tells us the moment the payer dismisses it.
+// The iOS host's ONE window (design doc D5, revised 2026-09-16 — "the payer's
+// browser, not an in-app WKWebView"; D8): `SFSafariViewController`, not
+// `ASWebAuthenticationSession` — design doc D8 explains why: with no custom
+// URL scheme (`checked_forward_url` accepts only `http(s)`, and a scheme is
+// refused by design — schemes are first-come-first-served on Android and
+// this plugin does not add one on any platform for consistency),
+// `ASWebAuthenticationSession`'s `callbackURLScheme` would never fire below
+// iOS 17.4, and it costs a system "… wants to use … to sign in" consent
+// alert that is the wrong sentence on a payment. `SFSafariViewController`
+// needs no callback at all: it is presented in-process, like a modal view
+// controller, and its delegate tells us the moment the payer taps "Done".
 //
-// **Tier 1 (iOS 17.4+ Associated Domains, `ASWebAuthenticationSession`'s
-// https callback) is NOT implemented here.** It needs a merchant-hosted
-// `apple-app-site-association` file this repository cannot deploy or
-// prove against — see `docs/sdks/parity.md`'s dated gap. This class only
-// implements D8's tier 0, which the design doc states explicitly is
-// correctness-complete on its own (D1: the outcome always comes from
-// polling the payment intent, never from the window).
+// This used to be one of two hosts (the other, `VpayCheckoutViewController`,
+// wrapped an in-app `WKWebView`). D5's 2026-09-16 revision deleted that
+// class entirely: rendering vpay's payment form inside the merchant app's
+// own process put `evaluateJavascript`, the cookie store and a navigation
+// delegate all within reach of a compromised merchant app — i.e. somewhere
+// a payer's PAN and OTP could be read without the payer being able to tell.
+// The browser's own process cannot be inspected that way, and the payer
+// gets a real URL bar. The cost, stated rather than hidden: no host on any
+// platform can see a navigation any more (Apple's own isolation — a
+// `SFSafariViewController` exposes no navigation delegate at all, for
+// exactly the same reason this plugin wants one), so a stop URL only ever
+// arrives as an incoming **Universal Link**, handled by
+// `VpayCheckoutFlutterPlugin.application(_:continue:restorationHandler:)`
+// and reported here via `reportStopUrlReached(url:)`. The only other signal
+// this class has of its own is the payer tapping "Done", reported as
+// `CheckoutWindowOutcome.dismissed`. D1/D4 make both cases
+// correctness-complete: `checkout_controller.dart` polls the real payment
+// intent before answering either one, so a payer who paid and then tapped
+// Done (no Universal Link ever arriving) still resolves `succeeded`, not
+// `canceled`.
 //
-// Unlike `VpayCheckoutViewController`'s `WKWebView`, `SFSafariViewController`
-// exposes no navigation delegate at all — Apple's own isolation, for
-// exactly the reason D8 wants an external-browser mode to begin with. So
-// there is no stop-URL interception here: the only signal is the payer
-// tapping "Done", reported as `CheckoutWindowOutcome.dismissed`. D1/D4
-// make this correctness-complete: `checkout_controller.dart` polls the
-// real payment intent before answering a dismissal, so a payer who paid
-// and then tapped Done still resolves `succeeded`, not `canceled`.
+// **Universal Link intake is wired but UNVERIFIED as of 2026-09-16.** A
+// verified Universal Link needs an HTTPS origin serving
+// `apple-app-site-association` for the merchant's own `success_url`/
+// `cancel_url` host, an associated-domains entitlement on a signed app, and
+// a real device or a simulator with that entitlement provisioned — none of
+// which this repository can deploy or prove against. The matching code
+// below has been read, not driven by an actual incoming Universal Link.
+// Nothing in this file or `VpayCheckoutFlutterPlugin` pretends otherwise.
 //
-// **Compiled by nobody** (this repository has no macOS/iOS toolchain — see
-// `docs/plans/2026-09-13-flutter-plugin-brief.md`, "What this host can
-// actually verify"). Reviewed by reading only.
+// This file **compiles and runs on a real iOS Simulator** as of 2026-09-16
+// (`flutter build ios --simulator --debug` from `example/`) — unlike the
+// "Compiled by nobody" claim earlier files in this plugin's history carried,
+// which was true only while this repository had no macOS/iOS toolchain at
+// all. It has not been driven against a real device, a real MTN/Orange
+// endpoint or a real Universal Link, which is a different, narrower claim
+// than "compiled by nobody" and is stated as such above.
 import SafariServices
 import UIKit
 
@@ -50,6 +67,35 @@ final class VpayCheckoutExternalBrowserSession: NSObject {
 
   func present(from presenter: UIViewController) {
     presenter.present(safari, animated: true)
+    // The maintainer's explicit "large detent, draggable to full height"
+    // decision (D5, revised 2026-09-16) — the same one the deleted
+    // `VpayCheckoutViewController` applied to its own `.pageSheet` via
+    // `viewDidLoad`. `SFSafariViewController` has no `viewDidLoad` hook of
+    // its own to override, but `sheetPresentationController` is built by
+    // UIKit as soon as the presentation is requested (the same reasoning
+    // the deleted controller's header gave for reading it in `viewDidLoad`
+    // before the presentation animation had run), so it is safe to
+    // configure immediately after this `present` call rather than from
+    // some later callback. `nil` on iOS 13/14 (a plain
+    // `UIPresentationController`, not that subclass) and on iOS 12 (no
+    // non-full-screen modal presentation API at all) — both fall back to
+    // `.pageSheet`'s already-card-like default or `.fullScreen`
+    // unchanged, exactly as the deleted controller's header explained.
+    if #available(iOS 15.0, *), let sheet = safari.sheetPresentationController {
+      sheet.detents = [.large()]
+      sheet.prefersGrabberVisible = true
+    }
+  }
+
+  /// Called by `VpayCheckoutFlutterPlugin.application(_:continue:restorationHandler:)`
+  /// when an incoming Universal Link matched one of
+  /// `ShowCheckoutRequest.stopUrls` (D2: scheme+host+port+path, query and
+  /// fragment ignored) while this session's sheet is showing. Wired but
+  /// UNVERIFIED — see this file's header.
+  func reportStopUrlReached(url: URL) {
+    guard !reported else { return }
+    report(CheckoutWindowEvent(outcome: .stopUrlReached, reachedUrl: url.absoluteString))
+    safari.presentingViewController?.dismiss(animated: true)
   }
 
   /// Called by `VpayCheckoutFlutterPlugin` when `dismiss()` is invoked from
@@ -73,7 +119,9 @@ final class VpayCheckoutExternalBrowserSession: NSObject {
 extension VpayCheckoutExternalBrowserSession: SFSafariViewControllerDelegate {
   func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
     // The payer tapped "Done" — the only dismissal signal this class has
-    // (see this file's header).
+    // of its own (see this file's header). No navigation delegate exists
+    // to watch a stop URL against; that only ever arrives as a Universal
+    // Link, above.
     reportDismissedIfNeeded()
   }
 }

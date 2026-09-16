@@ -93,7 +93,6 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
-    required CheckoutWindowMode mode,
   }) {
     _trySetUpFlutterApi();
     return _hostApi.show(
@@ -109,7 +108,6 @@ final class MethodChannelVpayCheckoutPlatform extends VpayCheckoutPlatform
             ),
         ],
         allowInsecureUrl: allowInsecureUrl,
-        mode: mode,
       ),
     );
   }

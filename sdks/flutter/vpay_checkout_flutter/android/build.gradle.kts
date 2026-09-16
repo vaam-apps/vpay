@@ -39,13 +39,12 @@ android {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
         }
-        getByName("debug") {
-            // Lane E's JS-evaluation test harness
-            // (VpayCheckoutActivityTestHarness.kt) lives only here, so it
-            // compiles into a debug build and never a release one — see
-            // VpayCheckoutActivity.kt's own file header.
-            java.srcDirs("src/debug/kotlin")
-        }
+        // The debug-only `src/debug/kotlin` source set (Lane E's
+        // JS-evaluation test harness, VpayCheckoutActivityTestHarness.kt)
+        // was retired 2026-09-16 with the WebView it reached for — see
+        // VpayCheckoutActivity.kt's own file header ("browser, not
+        // WebView"). Nothing lives under `src/debug/kotlin` any more, so
+        // there is no debug source set to declare here.
         getByName("test") {
             java.srcDirs("src/test/kotlin")
         }
@@ -87,22 +86,25 @@ dependencies {
     // callback shape to Kotlin coroutines.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // VpayCheckoutActivity is a ComponentActivity, for onBackPressedDispatcher
-    // (design doc D5: back press is always a dismissal, never a WebView
-    // history pop).
+    // (design doc D5: back press is always a dismissal).
     implementation("androidx.activity:activity:1.9.3")
-    // D8's Custom Tabs mode, wired 2026-09-14: `ShowCheckoutRequest.mode`
-    // carries `EXTERNAL_BROWSER`, and `VpayCheckoutFlutterPlugin.show`
-    // launches a `CustomTabsIntent` for it. No custom URL scheme anywhere
-    // (D8) — return detection is tier 0, `Application
-    // .ActivityLifecycleCallbacks` watching for the host Activity's own
-    // `onResume`, never a scheme callback.
+    // D5/D8, revised 2026-09-16 ("browser, not WebView"): every checkout
+    // window is now a partial (bottom sheet) Custom Tab
+    // (`VpayCheckoutActivity.launchCustomTab`,
+    // `setInitialActivityHeightPx`/`setToolbarCornerRadiusDp`/
+    // `setCloseButtonPosition`, all confirmed present in this version). No
+    // custom URL scheme anywhere (ADR-0021/D8) — return detection is either
+    // tier 0 (this Activity's own second `onResume`) or, if a merchant has
+    // configured real App Links, an incoming deep link forwarded by
+    // `VpayCheckoutAppLinkActivity`.
     implementation("androidx.browser:browser:1.8.0")
-    // The modal bottom sheet (design D5, revised 2026-09-16): BottomSheetBehavior
-    // itself, and the CoordinatorLayout its sheet view's parent must be.
-    // VpayCheckoutActivity builds the sheet's views in code, not a layout XML
-    // resource — see that file's own header.
-    implementation("com.google.android.material:material:1.14.0")
-    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
+    // The old Material `BottomSheetBehavior`/`CoordinatorLayout` sheet this
+    // module used to build around a `WebView` is gone as of the same
+    // revision — Chrome's own partial-Custom-Tabs feature is the bottom
+    // sheet now, so `com.google.android.material:material` and
+    // `androidx.coordinatorlayout:coordinatorlayout` are no longer used
+    // anywhere in this module and are deliberately not dependencies any
+    // more.
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")

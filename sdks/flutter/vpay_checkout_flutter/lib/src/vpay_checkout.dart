@@ -12,45 +12,8 @@ import 'checkout_controller.dart';
 import 'errors.dart';
 import 'platform/checkout_platform.dart';
 import 'platform/messages.g.dart'
-    show CheckoutWindowEvent, CheckoutWindowMode, CheckoutWindowOutcome;
+    show CheckoutWindowEvent, CheckoutWindowOutcome;
 import 'result.dart';
-
-/// D8: the in-app WebView (default) or the external-browser mode. Both are
-/// resolved identically by [CheckoutController] — the mode only changes
-/// what the platform host shows, never how the outcome is decided (D1).
-///
-/// Kept distinct from `pigeons/checkout.dart`'s `CheckoutWindowMode` (the
-/// wire type [_toWire] converts to) rather than exporting that one
-/// directly: this is the public Dart API and must not change shape just
-/// because the pigeon-generated seam does.
-enum VpayCheckoutMode {
-  /// The in-app `WebView`/`WKWebView`/popup (design doc D5). The default,
-  /// and the only mode with no scheme-hijack surface at all.
-  inApp,
-
-  /// Custom Tabs (`androidx.browser`) on Android, `SFSafariViewController`
-  /// on iOS below 17.4 (design doc D8). Android is wired end to end and
-  /// compiles for real; iOS/macOS are wired the same way but compiled by
-  /// nobody (no Xcode on this host); web opens the same popup it always
-  /// does, because a `window.open` popup already is an external-browser
-  /// context — see `WebVpayCheckoutPlatform`'s own doc comment.
-  ///
-  /// **No custom URL scheme, on any platform, ever** (design doc D8):
-  /// `checked_forward_url` accepts only `http(s)`, and schemes are
-  /// first-come-first-served on Android, so a scheme callback could be
-  /// hijacked by any installed app. Return detection is therefore D8's
-  /// "tier 0" — the payer finishes on the merchant's own page and the
-  /// plugin polls on resume — which D1 already makes correctness-complete:
-  /// the window never decides an outcome, only `/v1/browser` does.
-  externalBrowser,
-}
-
-extension on VpayCheckoutMode {
-  CheckoutWindowMode get _toWire => switch (this) {
-    VpayCheckoutMode.inApp => CheckoutWindowMode.inApp,
-    VpayCheckoutMode.externalBrowser => CheckoutWindowMode.externalBrowser,
-  };
-}
 
 /// `{base}/c/{cs_id}?key={pk}#{cs_secret}` (D6), split into the one thing
 /// this package needs out of it: the fragment. The query's `key` is not
@@ -109,10 +72,7 @@ final class VpayCheckout {
   /// `sessionUrl` or off anything the platform window navigates to (D1) —
   /// only [BrowserClient.retrievePaymentIntent], through [_controller],
   /// decides.
-  Future<VpayCheckoutResult> start(
-    String sessionUrl, {
-    VpayCheckoutMode mode = VpayCheckoutMode.inApp,
-  }) async {
+  Future<VpayCheckoutResult> start(String sessionUrl) async {
     final _SessionUrl? parsed = _SessionUrl.parse(sessionUrl);
     if (parsed == null) {
       return VpayCheckoutUnresolved(
@@ -136,7 +96,7 @@ final class VpayCheckout {
           error: error,
         );
       case CheckoutPreflightSuccess(:final ready):
-        return _showAndResolve(sessionUrl, ready, mode);
+        return _showAndResolve(sessionUrl, ready);
     }
   }
 
@@ -153,7 +113,6 @@ final class VpayCheckout {
   Future<VpayCheckoutResult> _showAndResolve(
     String sessionUrl,
     CheckoutPreflightReady ready,
-    VpayCheckoutMode mode,
   ) async {
     // `VpayCheckoutPlatform.instance` is `UnimplementedVpayCheckoutPlatform`
     // unless a host registered itself; reading `windowEvents` off it throws
@@ -190,7 +149,6 @@ final class VpayCheckout {
           url: sessionUrl,
           stopUrls: ready.stopUrls,
           allowInsecureUrl: _controller.client.allowInsecureBaseUrl,
-          mode: mode._toWire,
         );
       } on UnimplementedError {
         // The honest "no host here" gap, not a runtime failure — it must

@@ -202,42 +202,32 @@ class FlutterError (
 ) : RuntimeException()
 
 /**
- * D8: which window the platform host shows. Mirrors
- * `vpay_checkout.dart`'s `VpayCheckoutMode` — the two enums are kept
- * distinct on purpose (one is the public Dart API, one is a wire type) so
- * the pigeon-generated side can change shape without touching the public
- * one, but every member here must have a same-named counterpart there.
- */
-enum class CheckoutWindowMode(val raw: Int) {
-  /** The in-app `WebView`/`WKWebView`/popup (design doc D5). */
-  IN_APP(0),
-  /**
-   * Custom Tabs on Android, `SFSafariViewController` on iOS below 17.4
-   * (design doc D8) — no custom URL scheme, ever (D8: schemes are
-   * first-come-first-served on Android and any installed app could claim
-   * one).
-   */
-  EXTERNAL_BROWSER(1);
-
-  companion object {
-    fun ofRaw(raw: Int): CheckoutWindowMode? {
-      return values().firstOrNull { it.raw == raw }
-    }
-  }
-}
-
-/**
  * Which of the two signals `checkout_controller.dart` polls will resolve
  * happened. Never a `succeeded`/`canceled`/`failed` member — the design's
  * whole point (D1) is that this interface cannot say that, only Dart's
  * poll of `/v1/browser/payment_intents/{id}` can.
  */
 enum class CheckoutWindowOutcome(val raw: Int) {
-  /** A navigation matched one of `ShowCheckoutRequest.stopUrls`. */
+  /**
+   * An **incoming deep link** (Android App Link, iOS/macOS Universal
+   * Link) matched one of `ShowCheckoutRequest.stopUrls`, bringing the app
+   * back to the foreground.
+   *
+   * **Unverified on every platform** as of 2026-09-16, and the status
+   * pages say so: a verified App Link/Universal Link needs an HTTPS
+   * origin serving `assetlinks.json` / `apple-app-site-association` for
+   * the merchant's own `success_url` host, which this repository can
+   * neither deploy nor prove against. Every host below therefore reports
+   * [dismissed] in practice today, and D1/D4 make that
+   * correctness-complete — the poll, not the window, decides. Nothing
+   * here pretends otherwise.
+   */
   STOP_URL_REACHED(0),
   /**
-   * The payer dismissed the window (back press, swipe, close) without a
-   * navigation ever matching a stop URL.
+   * The payer closed the browser sheet (back press, swipe, "Done") with
+   * no matching deep link having arrived. Since D5's 2026-09-16 revision
+   * this is the **ordinary** end of a successful payment too, not only a
+   * cancellation — which is exactly why D4 polls before answering.
    */
   DISMISSED(1);
 
@@ -322,20 +312,19 @@ data class ShowCheckoutRequest (
    * does not construct a URL of its own.
    */
   val url: String,
+  /**
+   * The host matches an **incoming deep link** against these (D2:
+   * scheme+host+port+path, query and fragment ignored). It no longer
+   * matches navigations: since D5 was revised on 2026-09-16 the page runs
+   * in the browser's own process, where no host on any platform can see a
+   * navigation at all. See [CheckoutWindowOutcome.stopUrlReached].
+   */
   val stopUrls: List<CheckoutStopUrl?>,
   /**
    * D6's named insecure opt-in, forwarded so a platform host does not have
    * to re-derive "is this the demo stack" from the URL's scheme itself.
    */
-  val allowInsecureUrl: Boolean,
-  /**
-   * D8: `inApp` (the default) or `externalBrowser`. A platform host that
-   * has not implemented `externalBrowser` refuses rather than silently
-   * falling back to `inApp` — see `vpay_checkout.dart`'s doc comment on
-   * `VpayCheckoutMode.externalBrowser` for why that fallback is the worse
-   * failure.
-   */
-  val mode: CheckoutWindowMode
+  val allowInsecureUrl: Boolean
 )
  {
   companion object {
@@ -343,8 +332,7 @@ data class ShowCheckoutRequest (
       val url = pigeonVar_list[0] as String
       val stopUrls = pigeonVar_list[1] as List<CheckoutStopUrl?>
       val allowInsecureUrl = pigeonVar_list[2] as Boolean
-      val mode = pigeonVar_list[3] as CheckoutWindowMode
-      return ShowCheckoutRequest(url, stopUrls, allowInsecureUrl, mode)
+      return ShowCheckoutRequest(url, stopUrls, allowInsecureUrl)
     }
   }
   fun toList(): List<Any?> {
@@ -352,7 +340,6 @@ data class ShowCheckoutRequest (
       url,
       stopUrls,
       allowInsecureUrl,
-      mode,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -363,7 +350,7 @@ data class ShowCheckoutRequest (
       return true
     }
     val other = other as ShowCheckoutRequest
-    return MessagesPigeonUtils.deepEquals(this.url, other.url) && MessagesPigeonUtils.deepEquals(this.stopUrls, other.stopUrls) && MessagesPigeonUtils.deepEquals(this.allowInsecureUrl, other.allowInsecureUrl) && MessagesPigeonUtils.deepEquals(this.mode, other.mode)
+    return MessagesPigeonUtils.deepEquals(this.url, other.url) && MessagesPigeonUtils.deepEquals(this.stopUrls, other.stopUrls) && MessagesPigeonUtils.deepEquals(this.allowInsecureUrl, other.allowInsecureUrl)
   }
 
   override fun hashCode(): Int {
@@ -371,20 +358,20 @@ data class ShowCheckoutRequest (
     result = 31 * result + MessagesPigeonUtils.deepHash(this.url)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.stopUrls)
     result = 31 * result + MessagesPigeonUtils.deepHash(this.allowInsecureUrl)
-    result = 31 * result + MessagesPigeonUtils.deepHash(this.mode)
     return result
   }
   /**
    * Hand-edited after generation (2026-09-14), and it must stay edited: `url`'s
    * fragment is the checkout session's own `client_secret` (design doc D6), and
    * Kotlin's generated `toString` would render it into any `Log.d(TAG, request)`
-   * or crash-reporter breadcrumb. Regenerating this file undoes it; re-apply it
-   * here and in the Dart and Swift copies. The Dart copy is the one under test
-   * (`test/messages_redaction_test.dart`); this one is not compiled by any test
-   * in this repository.
+   * or crash-reporter breadcrumb. Regenerating this file undoes it — it did, on
+   * 2026-09-16, when the D5 browser cutover regenerated all four copies at once;
+   * re-apply it here and in the Dart and Swift copies. The Dart copy is the one
+   * under test (`test/messages_redaction_test.dart`); this one is not compiled
+   * by any test in this repository.
    */
   override fun toString(): String {
-    return "ShowCheckoutRequest(url=[${url.length} chars redacted], stopUrls=$stopUrls, allowInsecureUrl=$allowInsecureUrl, mode=$mode)"
+    return "ShowCheckoutRequest(url=[${url.length} chars redacted], stopUrls=$stopUrls, allowInsecureUrl=$allowInsecureUrl)"
   }
 }
 
@@ -445,25 +432,20 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
     return when (type) {
       129.toByte() -> {
         return (readValue(buffer) as Long?)?.let {
-          CheckoutWindowMode.ofRaw(it.toInt())
-        }
-      }
-      130.toByte() -> {
-        return (readValue(buffer) as Long?)?.let {
           CheckoutWindowOutcome.ofRaw(it.toInt())
         }
       }
-      131.toByte() -> {
+      130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           CheckoutStopUrl.fromList(it)
         }
       }
-      132.toByte() -> {
+      131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           ShowCheckoutRequest.fromList(it)
         }
       }
-      133.toByte() -> {
+      132.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           CheckoutWindowEvent.fromList(it)
         }
@@ -473,24 +455,20 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is CheckoutWindowMode -> {
+      is CheckoutWindowOutcome -> {
         stream.write(129)
         writeValue(stream, value.raw.toLong())
       }
-      is CheckoutWindowOutcome -> {
-        stream.write(130)
-        writeValue(stream, value.raw.toLong())
-      }
       is CheckoutStopUrl -> {
-        stream.write(131)
+        stream.write(130)
         writeValue(stream, value.toList())
       }
       is ShowCheckoutRequest -> {
-        stream.write(132)
+        stream.write(131)
         writeValue(stream, value.toList())
       }
       is CheckoutWindowEvent -> {
-        stream.write(133)
+        stream.write(132)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -507,10 +485,22 @@ private open class MessagesPigeonCodec : StandardMessageCodec() {
  */
 interface VpayCheckoutHostApi {
   /**
-   * Opens the native window (Android `Activity`+`WebView`, iOS/macOS
-   * `UIViewController`/`NSViewController`+`WKWebView`, or `window.open` on
-   * web — D5) loading `request.url`. Resolves once the window is showing;
-   * the outcome arrives later, over [VpayCheckoutFlutterApi.onWindowEvent].
+   * Opens the payer's **browser** on `request.url` — a partial (bottom
+   * sheet) Custom Tab on Android, a detented `SFSafariViewController` on
+   * iOS, `NSWorkspace.open` on macOS, `window.open` on web (D5, revised
+   * 2026-09-16). Resolves once the window is showing; the outcome arrives
+   * later, over [VpayCheckoutFlutterApi.onWindowEvent].
+   *
+   * No host renders the page in a `WebView`/`WKWebView` any more. That
+   * was the previous D5 and it put vpay's payment form inside the
+   * merchant app's own process, where `evaluateJavascript`, the cookie
+   * store and a navigation delegate are all reachable — i.e. where a
+   * compromised merchant app could read the payer's PAN and OTP without
+   * the payer being able to tell. The browser's process cannot be
+   * inspected that way, and the payer gets a real URL bar. The cost is
+   * stated rather than hidden: no host can see a navigation any more, so
+   * stop URLs arrive only as deep links — see
+   * [CheckoutWindowOutcome.stopUrlReached].
    */
   suspend fun show(request: ShowCheckoutRequest)
   /** Closes the window if one is open. A no-op if none is. */

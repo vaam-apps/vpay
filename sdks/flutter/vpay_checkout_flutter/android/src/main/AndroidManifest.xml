@@ -4,11 +4,10 @@
   <uses-permission android:name="android.permission.INTERNET" />
 
   <!--
-    D8, wired 2026-09-14: `androidx.browser`'s own recommended manifest
-    entry so `CustomTabsIntent` can resolve a Custom-Tabs-capable browser
-    on API 30+'s package-visibility restrictions
-    (`VpayCheckoutExternalBrowserSession`). No custom URL scheme entry
-    here or anywhere in this plugin, on purpose — design doc D8.
+    `androidx.browser`'s own recommended manifest entry so `CustomTabsIntent`
+    can resolve a Custom-Tabs-capable browser on API 30+'s package-visibility
+    restrictions (`VpayCheckoutActivity.launchCustomTab`). No custom URL
+    scheme entry here or anywhere in this plugin, on purpose — ADR-0021/D8.
   -->
   <queries>
     <intent>
@@ -18,33 +17,93 @@
 
   <application>
     <!--
-      D5 (docs/plans/2026-09-13-flutter-plugin.md): a plain Activity, full-bleed
-      WebView, non-negotiably `android:exported="false"`. This Activity takes a
-      URL extra that carries a payer credential (the checkout session's own
-      secret, in the URL fragment) — an exported Activity accepting that extra
-      is a classic intent-redirection hole: any other app on the device could
-      start it directly, handing it an attacker-chosen URL to load with the
-      plugin's own WebView settings, or intercepting the extra by other means.
-      No other app has any business starting this Activity, so it is launched
-      only by this same app's own Flutter engine, with `startActivityForResult`.
+      D5, revised 2026-09-16 ("browser, not WebView" — VpayCheckoutActivity.kt's
+      own header has the full history): a plain Activity that launches the
+      payer's browser as a partial (bottom sheet) Custom Tab and renders
+      nothing of its own, non-negotiably `android:exported="false"`. This
+      Activity takes a URL extra that carries a payer credential (the
+      checkout session's own secret, in the URL fragment) — an exported
+      Activity accepting that extra is a classic intent-redirection hole:
+      any other app on the device could start it directly, handing it an
+      attacker-chosen URL to load, or intercepting the extra by other
+      means. No other app has any business starting this Activity, so it is
+      launched only by this same app's own Flutter engine, with
+      `startActivityForResult`.
 
-      Revised 2026-09-16 ("Modal checkout sheet" — the maintainer's own
-      words: the old full-screen window "feels like the user is quitting the
-      app"). `@style/Theme.Vpay.CheckoutSheet` (res/values/styles.xml) is
-      translucent rather than opaque, so the merchant's own Activity stays
-      visible behind this one — VpayCheckoutActivity.kt lays the WebView out
-      as a Material `BottomSheetBehavior` sheet over it. Still the SAME
-      Activity, still `exported="false"`: this is not a
-      `BottomSheetDialogFragment` hosted by the merchant's own Activity —
-      that would dissolve the Activity isolation the exported="false"/
-      intent-redirection reasoning above rests on, for a cosmetically
-      identical result.
+      `Theme.Translucent.NoTitleBar` (a stock Android theme — this plugin no
+      longer ships its own `styles.xml`; the old `Theme.Vpay.CheckoutSheet`
+      existed only to host the WebView-based Material bottom sheet this
+      revision removes) keeps the merchant's own Activity, one below this
+      one in the same task, visible through the brief moments this Activity
+      is on screen before the Custom Tab covers it and after it resumes.
     -->
     <activity
       android:name=".VpayCheckoutActivity"
       android:exported="false"
-      android:theme="@style/Theme.Vpay.CheckoutSheet"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar"
       android:configChanges="orientation|screenSize|keyboardHidden" />
+
+    <!--
+      App Link intake. `VpayCheckoutActivity` above stays `exported="false"`
+      — see its own comment and file header — and an `exported="false"`
+      component cannot be the target of an external Intent, App Links
+      included, at all. So this is a SECOND, exported entry point, kept as
+      narrow as `VpayCheckoutAppLinkActivity.kt`'s own header can make it:
+      it holds no state, never sees the checkout session's credential-
+      bearing URL, and only forwards a public success/cancel URL to
+      whichever `VpayCheckoutActivity` is currently open. That file's header
+      has the full security tradeoff this widening buys and costs — stated
+      loudly there and here rather than left implicit, per this change's own
+      instructions.
+
+      **This plugin deliberately declares NO `<intent-filter>` here**, and
+      that is the whole point of the entry. `stopUrls` — the merchant's own
+      `success_url`/`cancel_url` — are runtime configuration per checkout
+      session (D2), so this shared plugin cannot know the host. The filter
+      it would otherwise have to write, `<data android:scheme="https"/>`
+      with no `android:host`, matches EVERY https URL on the device, and
+      that is actively harmful rather than merely useless:
+
+        - `minSdk` here is 21. On API 21-30 an unverified web
+          intent-filter still joins the system "Open with" chooser, so
+          every merchant app shipping this plugin would offer itself as a
+          handler for every https link its payer ever taps, anywhere on
+          the device. A payments SDK silently turning its host app into a
+          candidate browser is not a tradeoff worth any deep-link
+          convenience.
+        - On API 31+ Android excludes unverified web links from that
+          chooser, so the same filter routes nothing at all. Harmful on
+          old Android, inert on new Android — there is no version where a
+          hostless filter is the right answer.
+
+      So the merchant declares the filter, for their own verified host, in
+      their OWN app's manifest, targeting this activity by name:
+
+        <activity android:name="dev.vpay.checkout_flutter.VpayCheckoutAppLinkActivity"
+                  tools:node="merge">
+          <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="shop.example.com" />
+          </intent-filter>
+        </activity>
+
+      …alongside serving a real `assetlinks.json` on that host. Until a
+      merchant does both, no deep link reaches this activity and every
+      checkout ends as `dismissed` — which D1/D4 already make
+      correctness-complete (the poll decides, never the window).
+
+      UNVERIFIED end to end: this repository has no HTTPS domain serving
+      `assetlinks.json`, so no deep-link return has ever been driven
+      through this activity. It is wired, not proven.
+    -->
+    <activity
+      android:name=".VpayCheckoutAppLinkActivity"
+      android:exported="true"
+      android:noHistory="true"
+      android:excludeFromRecents="true"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
   </application>
 
 </manifest>

@@ -206,3 +206,50 @@ Exit code (read from a file): `0`.
   low-end API 21 device; this is the same untested floor
   `docs/plans/2026-09-13-flutter-plugin.md`'s own "What will not be true
   when this ships" already names for the WebView itself.
+
+## Correction, 2026-09-16, later: the WebView this page measured is gone, and so is the gate it fed
+
+Everything above was measured against the `WebView`-based sheet this page's
+own title names. Later the same day, D5 was revised again ("browser, not
+WebView") — the plugin now launches the payer's browser (a partial Custom
+Tab on Android, `SFSafariViewController` on iOS, `NSWorkspace.open` on
+macOS) instead of rendering the checkout page in an in-app `WebView` at all.
+`VpayCheckoutViewController.swift` is deleted on both Apple platforms and
+`VpayCheckoutActivity.kt` no longer creates a `WebView` of any kind — see
+`docs/status/mobile-flutter-plugin.md`'s own dated row for that change.
+
+That cutover retires two rows in the table above, and they are being
+corrected here rather than silently left to imply a control still holds:
+
+- **"Debug-only JS harness (`evaluateJavascriptForTests`) stays debug-only"
+  — debug 4, release 0.** This measured that a debug-only native→JS
+  injection hook never reached a release APK's DEX. The hook
+  (`VpayCheckoutActivityTestHarness.kt`, `android/src/debug/kotlin`) and its
+  Dart-side caller (`example/integration_test/support/test_js_harness.dart`,
+  used only by `checkout_window_test.dart`) were deleted along with the
+  WebView they reached into: there is no `WebView` left in this plugin for
+  a JS-evaluation hook to call `evaluateJavascript` on. **The gate is
+  retired, not passing** — grepping a release DEX for
+  `evaluateJavascriptForTests` today reads 0 because the symbol no longer
+  exists anywhere in the source tree, debug or release, not because a
+  debug/release split is still holding a live capability out of release.
+- **`just test-flutter-emulator`: "window / dismiss / external-browser
+  suites all green".** The "window suite" was
+  `checkout_window_test.dart`, which drove the real `WebView` through a
+  full MTN push using the JS harness above. It could never pass again once
+  the WebView it drove was deleted, so it was deleted with it rather than
+  left compiling and permanently failing. `just test-flutter-emulator` now
+  runs two suites — dismiss and external-browser — both already proven
+  against the Custom Tab surface on `docs/status/verification/
+  2026-09-14-flutter-d8-external-browser.md` and re-proven since. **Lost
+  coverage:** no automated suite left in this repository drives a full MTN
+  push through the payer's real hosted checkout page end to end on Android;
+  `checkout_window_test.dart` was the only one that did, and nothing
+  replaced it.
+
+No other row above is affected — the sheet chrome, `exported="false"`, the
+`onReceivedSslError`/`addJavascriptInterface`/`allowFileAccess*` checks, and
+the drag-down/scrim/back-press dismissal path were all re-measured again as
+part of the same-day browser cutover; see
+`docs/status/mobile-flutter-plugin.md`'s dated row for that evidence rather
+than restating it here.

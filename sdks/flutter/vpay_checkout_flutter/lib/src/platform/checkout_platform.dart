@@ -38,7 +38,7 @@
 library;
 
 import '../checkout_controller.dart' show StopUrlSpec;
-import 'messages.g.dart' show CheckoutWindowEvent, CheckoutWindowMode;
+import 'messages.g.dart' show CheckoutWindowEvent;
 import 'method_channel_checkout_platform.dart'
     show MethodChannelVpayCheckoutPlatform;
 import 'native_mobile_host_stub.dart'
@@ -82,16 +82,14 @@ abstract class VpayCheckoutPlatform {
   /// what "matches" means itself. [allowInsecureUrl] mirrors
   /// `BrowserClient.allowInsecureBaseUrl` (D6).
   ///
-  /// [mode] is D8's `inApp`/`externalBrowser` choice. A host that has not
-  /// implemented `externalBrowser` must throw [UnimplementedError] rather
-  /// than silently opening the in-app window instead — see
-  /// `vpay_checkout.dart`'s doc comment on `VpayCheckoutMode.externalBrowser`
-  /// for why that fallback is the worse failure.
+  /// There is no mode parameter. Since D5's 2026-09-16 revision there is
+  /// one surface — the payer's browser — on every platform, so there is
+  /// nothing left to choose between. See `pigeons/checkout.dart`'s
+  /// `VpayCheckoutHostApi.show` for why the `WebView` went away.
   Future<void> show({
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
-    required CheckoutWindowMode mode,
   });
 
   /// Closes the window if one is open.
@@ -121,7 +119,6 @@ final class UnimplementedVpayCheckoutPlatform extends VpayCheckoutPlatform {
     required String url,
     required List<StopUrlSpec> stopUrls,
     required bool allowInsecureUrl,
-    required CheckoutWindowMode mode,
   }) => _unimplemented('show');
 
   @override

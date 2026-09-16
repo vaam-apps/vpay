@@ -137,7 +137,6 @@ void main() {
         url: sessionUrl.toString(),
         stopUrls: const <Never>[],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.inApp,
       );
 
       // The named-window trick — see this file's own header.
@@ -178,7 +177,6 @@ void main() {
         url: _fixtureUri(const <String, String>{}).toString(),
         stopUrls: const <Never>[],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.inApp,
       );
 
       // A SECOND, independent real popup on a genuinely DIFFERENT origin
@@ -250,7 +248,6 @@ void main() {
           url: _fixtureUri(const <String, String>{}).toString(),
           stopUrls: const <Never>[],
           allowInsecureUrl: true,
-          mode: CheckoutWindowMode.inApp,
         );
 
         // A SECOND, independent real popup — deliberately NOT the
@@ -330,7 +327,6 @@ void main() {
         url: _fixtureUri(const <String, String>{}).toString(),
         stopUrls: const <Never>[],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.inApp,
       );
 
       final web.Window? handle = web.window.open('', 'vpay-checkout');
@@ -378,7 +374,6 @@ void main() {
           }).toString(),
           stopUrls: const <Never>[],
           allowInsecureUrl: true,
-          mode: CheckoutWindowMode.inApp,
         );
 
         await _waitUntil(

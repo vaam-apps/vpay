@@ -1,11 +1,22 @@
-/// D8 — proves `VpayCheckoutMode.externalBrowser` opens a REAL Custom Tab
-/// on a REAL (headless) Android emulator, and that a REAL return to the
+/// D8, revised 2026-09-16 — proves the platform host opens a REAL Custom
+/// Tab on a REAL (headless) Android emulator, and that a REAL return to the
 /// host app's own `Activity` reports the real dismissal over the real
 /// platform channel — never a fabricated outcome.
 ///
-/// Run SEPARATELY from `checkout_window_test.dart`/`checkout_dismiss_test
-/// .dart`, the same way those two are separate from each other: this file
-/// needs a real hardware back-key event too (to leave the Custom Tab and
+/// Formerly this covered `VpayCheckoutMode.externalBrowser` as one of two
+/// selectable modes; since the 2026-09-16 revision of D5 there is only one
+/// surface — the payer's browser, a Custom Tab on Android — on every
+/// platform, so `VpayCheckoutPlatform.show` no longer takes a `mode`
+/// argument at all. What this file proves did not change: it is no longer
+/// a *distinct* mode alongside an in-app WebView (that surface, and the
+/// `checkout_window_test.dart`/JS-evaluation harness that drove it, were
+/// retired 2026-09-16 along with the WebView itself — see
+/// `docs/status/mobile-flutter-plugin.md`), it is simply what `show` does
+/// now, always.
+///
+/// Run SEPARATELY from `checkout_dismiss_test.dart`, the same way those
+/// two are separate from each other: this file needs a real hardware
+/// back-key event too (to leave the Custom Tab and
 /// return to the host app), and a headless emulator has no touchscreen or
 /// keyboard for this suite to drive from inside the Dart test process
 /// itself (which runs ON the device, with no `adb` of its own). The host
@@ -22,21 +33,19 @@
 /// once Chrome, not this plugin, owns the page.
 ///
 /// This still proves something no stub could: [VpayCheckoutPlatform.show]
-/// with `mode: externalBrowser` launches a REAL `CustomTabsIntent` that a
-/// REAL browser (Chrome, confirmed present on this AVD's system image —
-/// see this repository's own report for the `pm`/`cmd package` evidence)
-/// actually opens, backgrounding the host app; the event that arrives is
-/// READ off the REAL `VpayCheckoutFlutterApi.onWindowEvent` channel after
-/// a REAL `Application.ActivityLifecycleCallbacks.onActivityResumed` fired
-/// on a REAL `Activity`.
+/// launches a REAL `CustomTabsIntent` that a REAL browser (Chrome,
+/// confirmed present on this AVD's system image — see this repository's
+/// own report for the `pm`/`cmd package` evidence) actually opens,
+/// backgrounding the host app; the event that arrives is READ off the REAL
+/// `VpayCheckoutFlutterApi.onWindowEvent` channel after a REAL
+/// `Application.ActivityLifecycleCallbacks.onActivityResumed` fired on a
+/// REAL `Activity`.
 library;
 
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:vpay_checkout_flutter/src/platform/messages.g.dart'
-    show CheckoutWindowMode;
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
 import 'support/fixture.dart';
@@ -51,7 +60,7 @@ void main() {
   });
 
   testWidgets(
-    'externalBrowser opens a real Custom Tab; a real return to the host Activity reports dismissed',
+    'show() opens a real Custom Tab (the only Android surface now); a real return to the host Activity reports dismissed',
     (WidgetTester tester) async {
       final VpayCheckoutPlatform platform = VpayCheckoutPlatform.instance;
       final Completer<CheckoutWindowEvent> settled =
@@ -73,7 +82,6 @@ void main() {
         url: fixture.dismissSessionUrl,
         stopUrls: const [],
         allowInsecureUrl: true,
-        mode: CheckoutWindowMode.externalBrowser,
       );
 
       // Gives Chrome's own Custom Tab activity transition time to land in
