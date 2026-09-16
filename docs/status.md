@@ -136,11 +136,11 @@ again now, because the same day's MTN work retired
 `NotImplemented("mtn_momo::refund")` by writing the Disbursements `transfer`
 call — a different token, from a different branch, for a different reason.
 The column above is the 2026-09-16 re-run, so it reads **1**. _(It stood at
-what the gates printed on 2026-09-11 on `722e579` until 2026-09-16, when nine
-of the thirteen numbers had moved — `verify-errors` 19→20, `verify-sdk-parity`
-550/35/32→603/36/35, `verify-links` 1 600/352→1 717/374, `check-schema`
-26→27, `verify-serde` 90→96, `verify-migrations` 42→48 — and the column was a
-measurement of a tree three merges old. Re-running it was cheaper than
+what the gates printed on 2026-09-11 on `722e579` until 2026-09-16, by which
+time six of the thirteen numbers had moved — `verify-errors` 19→20,
+`verify-sdk-parity` 550/35/32→603/36/35, `verify-links` 1 600/352→1 731/375,
+`check-schema` 26→27, `verify-serde` 90→96, `verify-migrations` 42→48 — and
+the column was a measurement of a tree three merges old. Re-running it was cheaper than
 carrying the caveat.)_
 
 **And `verify-status` gained a third direction the same day, on review.** It
@@ -202,12 +202,13 @@ eight came back.
 Seven left because the code was _written_:
 `{mtn_momo,orange_money}::{submit, query_status, parse_callback}` are real
 HTTP calls now, and `mtn_momo::refund` joined them on 2026-09-15 when the
-Disbursements `transfer` call landed. The two sections below are the warning
-that goes with that seventh.
+Disbursements `transfer` call landed. The paragraph after the bullet below,
+and the section after that, are the warning that goes with that seventh.
 
 The eighth, `orange_money::refund`, left and came back, and it is the same
-token meaning two different things. It left on 2026-09-03 because it was **not unbuilt work
-in the first place**: Orange's Web Payment product documents no refund API, so
+token meaning two different things. It left on 2026-09-03 because it was
+**not unbuilt work in the first place**: Orange's Web Payment product
+documents no refund API, so
 the adapter inherited the port's `ProviderError::Unsupported` — a permanent
 capability answer the core branches on. It returned on **2026-09-15**, when
 the maintainer decided what an Orange refund _is_ (RFC-0003 § 5): an outbound
@@ -281,8 +282,9 @@ rather than a trap, and it is why each bullet above opens with a noun.
 the three landed on 2026-09-15 and the one that matters did not. The
 Disbursements keys are in `config/application.yml` (unpopulated in every
 deployment but the e2e/demo stack, whose three values are stubs aimed at a
-`wiremock/wiremock` container) and `mtn_momo::refund` is written. What is still missing is **a
-real Disbursements response that actually carries a fee**: MTN's documented
+`wiremock/wiremock` container) and `mtn_momo::refund` is written. What is
+still missing is **a real Disbursements response that actually carries a
+fee**: MTN's documented
 transfer response has no fee field, `vpay_adapter_mtn_momo::wire::Transfer`'s
 202 carries an empty body, the adapter therefore answers `fee: None`
 (asserted by `an_accepted_transfer_reports_no_fee_and_no_key_material` and by
