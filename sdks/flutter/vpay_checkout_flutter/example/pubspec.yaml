@@ -16,6 +16,11 @@ dependencies:
     sdk: flutter
   vpay_checkout_flutter:
     path: ../
+  # The example calls its OWN backend (`examples/shop`) for a session, the
+  # way a real merchant app would — so it needs an HTTP client of its own.
+  # `vpay_checkout_flutter` uses http too, but depending on it transitively
+  # would be depending on someone else's dependency.
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
