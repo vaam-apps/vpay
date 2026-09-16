@@ -979,12 +979,26 @@ jobs:
           # resolved against `sdks/stripe-compat/`.
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
         run: pnpm --filter @vaam-apps/vpay-stripe-compat compat
-      # The two merchant SDKs' OWN invoice cases against this same stack —
+      # The two merchant SDKs' OWN live cases against this same stack —
       # `just sdk-live`, split into its two halves so a failure names the SDK.
       # The step above drives the real `stripe` package; these drive
       # `sdks/rust` and `sdks/nodejs` directly, which is what
-      # docs/sdks/parity.md's "Invoices exercised against a running vpay" row
-      # asks for and what nothing did until 2026-09-08.
+      # docs/sdks/parity.md's "Invoices exercised against a running vpay" and
+      # "Refunds exercised against a running vpay" rows ask for, and what
+      # nothing did until 2026-09-08 and 2026-09-16 respectively.
+      #
+      # **`--test live_refunds` was missing until 2026-09-16 and the parity
+      # table did not know it.** `just sdk-live` names both targets; this
+      # split named only `live_invoices`, so when wave 3 added
+      # `sdks/rust/tests/live_refunds.rs` three parity rows went ✅ citing
+      # `live_refund_lifecycle` and `live_refund_destination_refusals` as
+      # their proving tests while no CI job compiled that binary.
+      # `verify-sdk-parity` proves a test NAME exists, never that anything
+      # runs it (issue #122), so nothing objected. The Node half was already
+      # covered by accident: `vitest.live.config.ts` globs
+      # `src/**/*.live.test.ts`, which picked up `refunds.live.test.ts` on the
+      # day it landed — hence the step names below, which no longer say
+      # "invoice".
       #
       # Neither suite can report a green without a stack. The Rust one is a
       # cargo target behind the `live-stack` feature, so it is not built by
@@ -994,14 +1008,14 @@ jobs:
       # `VPAY_BASE_URL`, both FAIL rather than skipping.
       #
       # `cargo test` and not `cargo nextest`: this job installs no nextest,
-      # and one integration binary does not need one.
-      - name: sdks/rust invoice lifecycle against the running stack
+      # and two integration binaries do not need one.
+      - name: sdks/rust invoice and refund lifecycles against the running stack
         env:
           VPAY_BASE_URL: http://localhost:8080
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
           VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
-        run: cargo test -p vpay-sdk --features live-stack --test live_invoices
-      - name: sdks/nodejs invoice lifecycle against the running stack
+        run: cargo test -p vpay-sdk --features live-stack --test live_invoices --test live_refunds
+      - name: sdks/nodejs invoice and refund lifecycles against the running stack
         env:
           VPAY_BASE_URL: http://localhost:8080
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
