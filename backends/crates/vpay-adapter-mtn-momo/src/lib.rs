@@ -715,10 +715,16 @@ impl ProviderAdapter for Adapter {
             // (RFC-0003 § 1), and it does so on this value rather than on
             // the string `"mtn_momo"` (ADR-0002).
             //
-            // A claim about the rail, not about this code: `refund` below is
-            // still an unbuilt `NotImplemented` token, and this declaration
-            // is what the merchant-facing validation will be derived from
-            // either way.
+            // A claim about the rail first, and since 2026-09-15 about this
+            // code too: `refund` below is the written Disbursements
+            // `transfer`, and `vpay_api::v1::refunds` reads this value to
+            // decide whether a `destination` is required, refused or parsed
+            // (`resolve_destination`). This comment said `refund` was "still
+            // an unbuilt `NotImplemented` token" until 2026-09-16, and had
+            // been wrong since the transfer call landed on 2026-09-15 —
+            // ~300 lines below it, in this same file. What has NOT changed is
+            // that MTN's Disbursements product has never been called with a
+            // real credential; the module header is where that is stated.
             refund_destination: RefundDestination::Required,
         }
     }

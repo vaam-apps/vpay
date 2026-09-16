@@ -35,10 +35,20 @@
 //! written and MTN's Disbursements product has never been called, while
 //! `orange_money::refund` is a `NotImplemented` token and neither answers
 //! `Unsupported` — and although `POST /v1/refunds` has been routed since
-//! 2026-09-16 it settles nothing, so nothing
-//! reaches `crate::Refunds::create`, and nothing schedules the nightly
-//! assertion of invariants 2-4. `docs/status.md` and `docs/flows/ledger.md` § Status carry
-//! the gaps.
+//! 2026-09-16 it settles nothing, so nothing reaches
+//! [`crate::Settlement::apply_refund_succeeded`] and the refund posting is
+//! reached by no shipping path while the capture one is, and nothing
+//! schedules the nightly assertion of invariants 2-4. `docs/status.md` and
+//! `docs/flows/ledger.md` § Status carry the gaps.
+//!
+//! _(That sentence named `crate::Refunds::create` until 2026-09-16, and wave 3
+//! made it false the day it was written: `vpay_api::v1::refunds` does reach
+//! the create — `crate::TxRepositories::create_refund_in_tx` runs
+//! [`crate::refunds::create_in_tx`], the same statements as
+//! [`crate::Refunds::create`], in the handler's own transaction — so a
+//! merchant can cause a `refunds` row from a shipping binary. What has no
+//! caller is the settlement half, which is what this paragraph was about and
+//! what `vpay_ledger`'s header and [`crate::refunds`]' header both say.)_
 //!
 //! # The transaction id is minted, and what that does and does not buy
 //!
