@@ -1437,9 +1437,20 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// that did not say so. `pending` is what an `Ok` supports. RFC-0003 open
     /// question 8 carries this, and it stays open because closing it needs a
     /// refund poll ladder that does not exist — which is work, not a doc
-    /// comment. Added on review, 2026-09-15: nothing calls `refund` today, so
-    /// this is a trap set for the `POST /v1/refunds` handler and not a live
-    /// defect.
+    /// comment.
+    ///
+    /// **The caller exists now and honours this.** `vpay_api::v1::refunds`
+    /// calls `refund` since 2026-09-16 (RFC-0003 § 2) and leaves the row
+    /// `pending` on an `Ok`; its step-7 doc is the long version of the
+    /// paragraph above, and the integration case
+    /// `a_refund_is_created_pending_and_the_rail_is_instructed` is what fails
+    /// if that changes.
+    ///
+    /// _(Added on review 2026-09-15, this read "nothing calls `refund` today,
+    /// so this is a trap set for the `POST /v1/refunds` handler and not a
+    /// live defect". The handler landed the next day and the sentence was
+    /// never re-read. It is kept here because the trap is the reason the
+    /// paragraph is worded as strongly as it is.)_
     ///
     /// # Errors
     ///
