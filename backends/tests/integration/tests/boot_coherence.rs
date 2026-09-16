@@ -131,6 +131,7 @@ fn config_with(code: &str) -> Config {
             name: "exp42-boot-coherence".to_owned(),
             livemode: false,
             public_base_url: "http://localhost:8080".to_owned(),
+            surfaces: None,
         },
         providers: vec![ProviderHost {
             code: code.to_owned(),

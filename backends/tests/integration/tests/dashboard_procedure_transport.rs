@@ -138,6 +138,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             name: "dashboard-procedure-transport".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         providers: vec![ProviderHost {
             code: PUSH_RAIL.to_owned(),

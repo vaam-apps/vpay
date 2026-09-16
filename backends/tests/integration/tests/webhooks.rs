@@ -1632,6 +1632,7 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
             name: "webhooks-cancel".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         providers: vec![vpay_config::ProviderHost {
             code: "mtn_momo".to_owned(),
@@ -1912,6 +1913,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
             name: "webhooks-test".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         providers: Vec::new(),
         currencies: vec![CurrencyEntry {

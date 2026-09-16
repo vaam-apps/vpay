@@ -377,6 +377,15 @@ pub(crate) fn router_deps(
         // Every suite but `staff_sign_in.rs` gets `None`, which is what makes
         // `/dash/v1/staff/login` a `404` in all of them.
         staff_login: staff_login_for(config, signing_key, &repositories_for_login),
+        // Derived exactly as `vpay-server`'s `main` derives it. `Config`'s
+        // own construction in these suites is not run through
+        // `Config::validate_all`, so unlike `main.rs` this can genuinely
+        // fail — a suite that wrote `deployment.surfaces: []` on purpose
+        // should see that panic rather than a silently-`ALL` router.
+        surfaces: config
+            .deployment
+            .enabled_surfaces()
+            .expect("the suite's deployment.surfaces is valid"),
     }
 }
 

@@ -342,6 +342,19 @@ pub struct RouterDeps {
     /// expressible so that "the reads are mounted" and "a human can reach
     /// them" remain two separate claims rather than one.
     pub staff_login: Option<Arc<staff::StaffLogin>>,
+    /// Which of `/v1` (business) and `/dash/v1` (management) this process
+    /// mounts (ADR-0022), resolved from `deployment.surfaces` by
+    /// [`vpay_config::Deployment::enabled_surfaces`] before this struct is
+    /// built — `router` trusts the resolution rather than re-deriving it,
+    /// so a boot-time refusal (empty or unknown value) happens once, in
+    /// `Config::validate_all`, and never as a silent default here.
+    ///
+    /// Deliberately **not** derivable from [`Self::dashboard_validator`] or
+    /// from whether any merchant is registered: a management-only process
+    /// still registers `merchant_clients` (dashboard-binding validation
+    /// requires it), so an empty merchant list is not a legal proxy for "no
+    /// business surface." See ADR-0022 § "Why it cannot be inferred."
+    pub surfaces: vpay_config::EnabledSurfaces,
 }
 
 /// Shared state for every route in this router.
@@ -1396,6 +1409,11 @@ const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 /// middleware layer must sit above:
 /// [docs/reference/vpay-api.md § the router](../../../../docs/reference/vpay-api.md#the-router).
 pub fn router(deps: RouterDeps) -> Router {
+    // Read once, up front: every mounting decision below is a `match`/`if`
+    // against these two booleans, and none of them is re-derived from
+    // `state` — see [`RouterDeps::surfaces`] for why it cannot be.
+    let surfaces = deps.surfaces;
+
     let state = AppState {
         repositories: deps.repositories,
         merchant_op: deps.merchant_op,
@@ -1518,21 +1536,26 @@ pub fn router(deps: RouterDeps) -> Router {
         // code would otherwise get to choose.
         .layer(from_fn(track_http_metrics));
 
-    // The staff surface, and the only nest that is *conditional*: a
-    // deployment with no `dashboard_client` mounts nothing here, so every
-    // `/dash/v1/...` path falls through to the outer honest 404. That is the
-    // fail-closed reading of an absent registration — the alternative, a
-    // mounted nest whose middleware refuses everything, answers 401 to a
-    // caller and invites them to go looking for a credential that this
-    // deployment could never issue.
+    // The staff surface. A deployment with no `dashboard_client` mounts
+    // nothing here, so every `/dash/v1/...` path falls through to the outer
+    // honest 404 — the fail-closed reading of an absent registration. The
+    // alternative, a mounted nest whose middleware refuses everything,
+    // answers 401 to a caller and invites them to go looking for a
+    // credential that this deployment could never issue.
     //
-    // Both halves of the condition are required and neither is redundant:
-    // the validator is what checks a token, the binding is what a query
-    // filters by, and a nest mounted with one and not the other would be a
-    // surface that authenticates and cannot answer, or one that answers and
-    // cannot authenticate.
-    let dash_is_configured =
-        state.dashboard_validator.is_some() && state.resource_config.dashboard().is_some();
+    // The first two conditions were already required and neither is
+    // redundant: the validator is what checks a token, the binding is what
+    // a query filters by, and a nest mounted with one and not the other
+    // would be a surface that authenticates and cannot answer, or one that
+    // answers and cannot authenticate. ADR-0022 adds the third: a process
+    // whose `deployment.surfaces` does not include `management` mounts
+    // nothing here regardless of `dashboard_client`, so an operator can run
+    // a business-only replica against a config file that still names a
+    // dashboard client (e.g. shared between the `-server` and
+    // `-management` Deployments).
+    let dash_is_configured = surfaces.management
+        && state.dashboard_validator.is_some()
+        && state.resource_config.dashboard().is_some();
     let dash = dash_is_configured.then(|| {
         dash::routes()
             .layer(from_fn_with_state(
@@ -1661,22 +1684,42 @@ pub fn router(deps: RouterDeps) -> Router {
     let router = Router::new()
         .route("/healthz", get(healthz))
         .fallback(not_found)
-        // **Before the two nests, and that ordering is the whole reason a
-        // `/v1` request is not counted twice**: `Router::layer` wraps the
+        // **Before every nest below, and that ordering is the whole reason
+        // a `/v1` request is not counted twice**: `Router::layer` wraps the
         // routes that exist when it is called and nothing added afterwards,
         // so this copy covers `/healthz` and the outer 404 only, while each
         // nest carries its own. Moving this line below the nests would
         // double every `/v1` count and label half of them `unmatched`.
-        .layer(from_fn(track_http_metrics))
-        .nest("/v1/oauth", oauth)
-        .nest("/v1/browser", browser)
-        .nest("/v1", v1)
-        .nest(PROVIDER_NEST, provider);
+        .layer(from_fn(track_http_metrics));
 
-    // `nest` after the fold rather than inside the chain, because the chain
-    // is not an `Option`-shaped expression — and writing it as one would
-    // need a `Router` identity to merge against, which is exactly the thing
-    // a reader would then have to check does nothing.
+    // `/v1/oauth` mounts whenever *either* surface is enabled (ADR-0022 §
+    // "The partition"): the merchant private-key-JWT grant and ADR-0017's
+    // staff authorization-code grant both terminate here, and both surfaces
+    // need JWKS. `match` after the fold rather than inside the chain, for
+    // the same reason the `dash`/`dash_procs` nests below already are — the
+    // chain is not an `Option`-shaped expression, and writing it as one
+    // would need a `Router` identity to merge against, which is exactly the
+    // thing a reader would then have to check does nothing.
+    let router = match (surfaces.business || surfaces.management).then_some(oauth) {
+        Some(oauth) => router.nest("/v1/oauth", oauth),
+        None => router,
+    };
+
+    // The business surface — `/v1/browser`, `/v1`, `/provider` — mounted
+    // only when `surfaces.business`. A management-only process falls
+    // through to the outer honest 404 for every one of these paths, the
+    // same fail-closed answer `/dash/v1` already gives an undashboarded
+    // deployment.
+    let router = match surfaces.business.then_some((browser, v1, provider)) {
+        Some((browser, v1, provider)) => router
+            .nest("/v1/browser", browser)
+            .nest("/v1", v1)
+            .nest(PROVIDER_NEST, provider),
+        None => router,
+    };
+
+    // `nest` after the fold rather than inside the chain, for the same
+    // reason as the two matches above.
     let router = match dash {
         Some(dash) => router.nest(DASH_NEST, dash),
         None => router,

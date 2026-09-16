@@ -159,6 +159,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
             name: "account-holders".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         providers: vec![
             ProviderHost {

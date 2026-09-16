@@ -276,6 +276,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn_url: &str, orange_url: &str) -
             name: "provider-callback".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         webhooks: vpay_config::WebhookPolicy::default(),
         providers: vec![

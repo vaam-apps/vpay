@@ -188,6 +188,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
             name: "test".to_owned(),
             livemode: false,
             public_base_url: public_base_url.to_owned(),
+            surfaces: None,
         },
         providers: Vec::new(),
         currencies: Vec::new(),
@@ -261,5 +262,10 @@ pub(crate) fn deps() -> RouterDeps {
         // `/dash/v1/staff/...` path in this crate's tests would answer a
         // refusal instead of the `404` an undashboarded deployment gives.
         staff_login: None,
+        // Both surfaces, matching every deployment that never wrote
+        // `deployment.surfaces` — this crate's non-surface-specific tests
+        // (everything but `lib.rs`'s own `surfaces` module) exercise the
+        // router as it behaves today, with nothing turned off.
+        surfaces: vpay_config::EnabledSurfaces::ALL,
     }
 }

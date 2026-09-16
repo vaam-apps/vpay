@@ -2737,6 +2737,7 @@ mod tests {
                 name: "payment-intents-tests".to_owned(),
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
+                surfaces: None,
             },
             providers: vec![
                 ProviderHost {

@@ -335,6 +335,7 @@ mod tests {
             name: "test".to_owned(),
             livemode: false,
             public_base_url: "https://api.vpay.test".to_owned(),
+            surfaces: None,
         };
         let host = vpay_config::ProviderHost {
             code: "mtn_momo".to_owned(),

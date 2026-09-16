@@ -231,6 +231,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
             name: "merchant-token-flow".to_owned(),
             livemode: false,
             public_base_url: base_url.clone(),
+            surfaces: None,
         },
         providers: Vec::new(),
         currencies: Vec::new(),

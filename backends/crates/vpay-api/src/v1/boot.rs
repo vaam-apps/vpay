@@ -488,6 +488,7 @@ mod tests {
                 name: "boot-tests".to_owned(),
                 livemode: false,
                 public_base_url: "http://localhost:8080".to_owned(),
+                surfaces: None,
             },
             providers: codes
                 .iter()

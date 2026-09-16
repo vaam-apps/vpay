@@ -938,6 +938,16 @@ impl Config {
             .map_err(|report| ConfigError::Validation(report.to_string()))?;
 
         let livemode = self.deployment.livemode;
+
+        // First of all: which surfaces this process even mounts (ADR-0022)
+        // is a property of the whole deployment, checked before anything
+        // that depends on *what* is being served. `enabled_surfaces` raises
+        // its own `ConfigError` for an empty or unknown list; a valid
+        // resolution is discarded here on purpose — this call exists only
+        // to fail boot early, and the router build (`vpay_api::router`) is
+        // where the resolved value is actually used.
+        self.deployment.enabled_surfaces()?;
+
         // Before any per-merchant rule, because it is not one: this is a
         // property of the whole deployment, and a file that carries it is
         // wrong however its merchants are written. Answering it first also
@@ -2633,6 +2643,7 @@ mod tests {
                 name: "test".to_owned(),
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
+                surfaces: None,
             },
             providers: Vec::new(),
             currencies: Vec::new(),
@@ -3357,6 +3368,7 @@ mod tests {
                 name: "prod".to_owned(),
                 livemode: true,
                 public_base_url: "http://api.vpay.example".to_owned(),
+                surfaces: None,
             },
             providers: vec![ProviderHost {
                 code: "mtn_momo".to_owned(),
@@ -3450,6 +3462,7 @@ mod tests {
             name: "test".to_owned(),
             livemode: false,
             public_base_url: "https://api.vpay.test/".to_owned(),
+            surfaces: None,
         };
         let mut host = ProviderHost {
             code: "orange_money".to_owned(),
@@ -3494,6 +3507,7 @@ mod tests {
             name: "test".to_owned(),
             livemode: false,
             public_base_url: "https://api.vpay.test".to_owned(),
+            surfaces: None,
         };
         let host = ProviderHost {
             code: "mtn_momo".to_owned(),

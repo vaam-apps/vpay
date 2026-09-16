@@ -167,6 +167,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
             name: "worker-recovery".to_owned(),
             livemode: false,
             public_base_url: "http://127.0.0.1:8080".to_owned(),
+            surfaces: None,
         },
         providers: vec![
             ProviderHost {

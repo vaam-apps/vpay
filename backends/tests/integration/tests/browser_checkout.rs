@@ -233,6 +233,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
             name: "browser-checkout".to_owned(),
             livemode: false,
             public_base_url: base_url.to_owned(),
+            surfaces: None,
         },
         providers: vec![ProviderHost {
             code: PUSH_RAIL.to_owned(),

@@ -377,6 +377,15 @@ async fn run() -> anyhow::Result<()> {
                 .context("projecting the validated configuration onto the /v1 request path")?,
         ),
         staff_login: booted.staff_login,
+        // Already validated by `Config::load` -> `validate_all`
+        // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
+        // failure long before this line, so re-resolving it here can only
+        // ever hit the `Ok` arm.
+        surfaces: booted
+            .config
+            .deployment
+            .enabled_surfaces()
+            .expect("validated at Config::load"),
     };
 
     let (observability, observability_shutdown_tx) =
