@@ -159,12 +159,20 @@ still reads only capture fees is an invariant that quietly stops holding.
 integrator rather than to vpay: `fee_borne_by` and `fee_settlement_ref`. vpay
 reports what the movement cost; who eats it is a marketplace decision.
 
-## Invariants (asserted nightly)
+## Invariants (intended to be asserted nightly — **none of them is**)
 
 1. Per transaction: `SUM(debit) = SUM(credit)`, per currency.
 2. Per merchant: `balance(merchant_payable) = Σ captures − Σ fees − Σ refunds`.
 3. `amount_refunded` equals the sum of succeeded refunds for that intent.
 4. Every succeeded charge has exactly one capture transaction.
+
+_(This heading read "Invariants (asserted nightly)" until 2026-09-16. Nothing
+schedules any of the four — there is no nightly job in this repository and
+`vpay_db::Ledger::merchant_payable_balance`, which is what invariant 2 would be
+read through, has no caller outside tests. Each one is asserted by cases that
+run in CI, which is a different claim, and § Status below says which. The
+heading is kept as the design's intent rather than deleted because the four
+numbered statements are still what the ledger is for.)_
 
 **Invariant 1 is deliberately not a database constraint, and won't become
 one.** `SUM(debit) = SUM(credit)` is an aggregate over every `LedgerEntry`
@@ -242,8 +250,8 @@ above. The column (`refunds.fee`, migration `0031`) and the wire field
 code writes a `refunds` row at all~~ **— corrected 2026-09-16: `POST
 /v1/refunds` writes one (RFC-0003 § 2). It does not write the `fee` column,
 and logs a warning if an adapter ever hands it one, because filling that
-column is a settlement-path change and no adapter can produce a fee anyway** —
-and no adapter can produce a fee to write.
+column is a settlement-path change** — and no adapter can produce a fee to
+write in the first place.
 
 **Updated 2026-09-16: the reservation has a live producer, and it is what the
 over-refund CHECK now refuses under real traffic.** `POST /v1/refunds`
@@ -450,9 +458,20 @@ superseded:
   nothing else. `../status.md` carries the gap.
 - Invariant 2 is computable, **not asserted nightly** — nothing schedules it.
   Neither are 1, 3 or 4.
-- **The refund posting emits no event.** `charge.refunded` and
-  `charge.refund.updated` are documented types nothing emits; the wire object
-  is `vpay-api`'s to shape and there is no caller until wave 3.
+- **The refund posting still emits no event, and this is the half wave 3 did
+  not close.** ~~`charge.refunded` and `charge.refund.updated` are documented
+  types nothing emits~~ — **corrected 2026-09-16: both have writers.**
+  `vpay_api::v1::refunds` emits `charge.refunded` when it writes the row and
+  `charge.refund.updated` on the failure, the update and the cancel, each in
+  the transaction of the write it reports. The gap that is left is narrower
+  and is on this page's own subject: `Settlement::apply_refund_succeeded`
+  takes a `refund_id` and nothing else — no `event_id`, no wire object — so
+  the settlement that posts the two legs writes **no** event, where
+  `apply_succeeded` takes an `InvoicePaidEvent` and does. A merchant told
+  `pending` at creation would therefore learn nothing when the refund
+  succeeded. Nothing provokes it today, because nothing settles a `pending`
+  refund at all; the bullet is left here so that whoever builds the refund
+  poll ladder (RFC-0003 open question 8) finds it.
 - **NOT A GAP, retracted 2026-09-15: `{transaction_id}_{index}` is injective.**
   This list carried an entry saying the derivation was "not injective in
   general", that `x` and `x_0` both derive `x_0_0`, and that closing it at
