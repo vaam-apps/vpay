@@ -57,11 +57,14 @@ the order they were measured.
   status page's guard count was wrong in three places, `NOTES.txt` printed a
   topology the release may not have, and `connection-budget` was gated in one
   direction of two (25 fixtures, 24 guards, kubeconform validates 68
-  resources in 4 renders). `just ci`'s final `deny` step fails on
-  `RUSTSEC-2026-0285`, pre-existing and unrelated — no `Cargo.lock` change on
-  this branch, and no `deny.toml` allow added. It is **not** dev-only, as the
-  page first said: `rustls 0.23.43` is in `vpay-server`'s normal graph via
-  `cratestack-pg` and via `reqwest`. Fixing it belongs on its own branch.
+  resources in 4 renders). `just ci`'s final `deny` step failed on
+  `RUSTSEC-2026-0285` for most of this branch's life — pre-existing, and
+  **not** dev-only as the page first said: `rustls 0.23.43` was in
+  `vpay-server`'s normal graph via `cratestack-pg` and via `reqwest`. **No
+  `deny.toml` allow was ever added**, and it no longer fires: the rebase onto
+  `master` brought #178's bump to `rustls 0.23.45`, so `just deny` on the
+  rebased head is `rc=0`, `advisories ok`. The fix came from somebody else's
+  branch, not this one.
 - [verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md) —
   the first CI run that compiled `--test live_refunds` went red, and what it
   had found was **not** in the SDK: a charge confirmed while the worker's
