@@ -132,12 +132,15 @@ once.
 
 ### 2. Two server Deployments from one image
 
-| Workload               | Serves                                    | Replicas    | Autoscaled    |
-| ---------------------- | ----------------------------------------- | ----------- | ------------- |
-| `<release>-server`     | `/v1`, `/v1/browser`, `/provider`         | HPA         | **yes**       |
-| `<release>-management` | `/dash/v1` and the `staff` sign-in routes | fixed **2** | **no**        |
-| `<release>-worker`     | job loop                                  | fixed (1)   | no, unchanged |
-| `<release>-dashboard`  | the admin frontend                        | fixed **2** | **no**        |
+| Workload               | Serves                                                                                                     | Replicas    | Autoscaled    |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ----------- | ------------- |
+| `<release>-server`     | `/v1`, `/v1/browser`, `/provider`, **all of `/v1/oauth`**                                                  | HPA         | **yes**       |
+| `<release>-management` | `/dash/v1`, the `staff` sign-in routes, **`/v1/oauth`'s two discovery routes but _not_ `/v1/oauth/token`** | fixed **2** | **no**        |
+| `<release>-worker`     | job loop                                                                                                   | fixed (1)   | no, unchanged |
+| `<release>-dashboard`  | the admin frontend                                                                                         | fixed **2** | **no**        |
+
+Both server rows also serve `/healthz`, and neither serves `/livez` or
+`/metrics` — those are on the observability listener, on a different port.
 
 The management tier is **not** autoscaled, and that is a decision rather than
 an omission. Its load is a small, known number of staff sessions; an HPA on it
@@ -150,6 +153,57 @@ with `/v1`. They exist only to produce the `Identity` the dashboard's
 authorization-code grant consumes (`dash/mod.rs:10`), and leaving them on the
 internet-facing tier would put the credential-stuffing surface on the
 autoscaled workload while the thing it authenticates against sits elsewhere.
+
+#### Where `/v1/oauth` goes
+
+The first draft of this ADR did not mention `/v1/oauth` at all, and the
+implementation mounted the whole nest whenever **either** surface was enabled,
+citing a section of this ADR ("The partition") that has never existed. That is
+the root cause recorded here rather than quietly fixed: a surface partition
+that omits a route leaves the implementer to guess, and the guess put a
+merchant credential-minting endpoint on the staff tier.
+
+`/v1/oauth` is not one thing. It is three routes with two different answers:
+
+| Route                                            | Mints                   | `-server` | `-management` |
+| ------------------------------------------------ | ----------------------- | --------- | ------------- |
+| `POST /v1/oauth/token`                           | a merchant access token | **yes**   | **no**        |
+| `GET /v1/oauth/jwks.json`                        | nothing                 | yes       | **yes**       |
+| `GET /v1/oauth/.well-known/openid-configuration` | nothing                 | yes       | **yes**       |
+
+**`/v1/oauth/token` is business-only.** It serves the merchant
+private-key-JWT grant. ADR-0017's staff authorization-code grant does **not**
+terminate here — it terminates at `/dash/v1/oauth/authorize` and
+`/dash/v1/oauth/token`, inside the `dash` nest
+([`staff/mod.rs:370`](../../backends/crates/vpay-api/src/staff/mod.rs)), and
+[`staff/oauth.rs:291`](../../backends/crates/vpay-api/src/staff/oauth.rs) says
+so in as many words: "This endpoint serves one grant; `/v1/oauth/token` serves
+the other." So the management tier has no use for it, and serving it there
+would mint merchant credentials on the staff tier — which is the precise
+boundary §2 exists to draw. ADR-0009's rate limit sits in front of the
+business tier's copy only, so the management tier's copy would also be the
+unthrottled one.
+
+**The two discovery routes are on both tiers.** They are public,
+unauthenticated, and mint nothing. The management tier's own `resource_auth`
+validator fetches JWKS over HTTP from a configured `jwks_url`; if that had to
+resolve to the business tier, a staff sign-in would fail whenever the business
+tier was down or its NetworkPolicy said no — which is exactly the coupling §5
+removes. Serving the key set locally on both tiers costs a route and buys the
+isolation.
+
+The nest itself therefore mounts whenever either surface is enabled; which
+routes are inside it is decided by `surfaces.business`. A management-only pod
+answers `/v1/oauth/token` with the honest 404 the rest of an unmounted surface
+already answers, not a refusal — a path a deployment does not mount is not a
+permissions question.
+
+`tests::surfaces::the_token_endpoint_is_business_only` in
+[`vpay-api/src/lib.rs`](../../backends/crates/vpay-api/src/lib.rs) pins all
+three rows. It is written out by hand rather than driven off `V1_ROUTES`
+because that table holds no `/v1/oauth` path — the OP subtree is built
+separately precisely because it is unauthenticated — and that blind spot is
+why the original defect passed two route-table test suites.
 
 ### 3. A chart guard bounding replicas against the connection budget
 

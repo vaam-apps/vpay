@@ -53,6 +53,28 @@ of this process:
 | **anything else under `/provider`**              | none                           | Its own `.fallback(not_found)`, for the OP nest's reason.                                                                                                                                                                                                                                                                             |
 | anything else                                    | none                           | The honest 404.                                                                                                                                                                                                                                                                                                                       |
 
+That table describes a process with `deployment.surfaces` **absent** — every
+surface, which is what every deployment predating ADR-0022 has. When the key
+is set, `router` mounts a subset, and the rows fall into three groups
+(ADR-0022 § "Where `/v1/oauth` goes" and § 2):
+
+- **business only** — `/v1`, `/v1/browser`, `/provider`, and
+  `POST /v1/oauth/token`. `/v1/oauth/token` mints the _merchant_ credential;
+  ADR-0017's staff grant is a different endpoint (`/dash/v1/oauth/token`), so
+  a `surfaces: [management]` process does not serve it.
+- **management only** — `/dash/v1` and the `staff` sign-in routes, which were
+  already conditional on `dashboard_client` before ADR-0022 and are now
+  conditional on both.
+- **every surface** — `/healthz`, `GET /v1/oauth/jwks.json` and
+  `GET /v1/oauth/.well-known/openid-configuration`. The discovery pair mints
+  nothing, and the management tier's own token validation reads JWKS over
+  HTTP: making it fetch that from the business tier would recreate the
+  coupling ADR-0022 removes.
+
+An unmounted path is the outer honest **404**, never a refusal — a path a
+deployment does not serve is not a permissions question.
+`tests::surfaces` in `vpay-api/src/lib.rs` pins all three groups.
+
 `/livez` and `/metrics` are **not** in that table and are not served by this
 router at all. They belong to `vpay_api::observability`, on
 `--observability-bind` (default `0.0.0.0:9090`), because `/metrics` names every

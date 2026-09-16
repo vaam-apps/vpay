@@ -1425,13 +1425,32 @@ pub fn router(deps: RouterDeps) -> Router {
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
+    //
+    // Split three ways by surface, and the split *is* the ADR-0022 boundary
+    // — see ADR-0022 § "Where `/v1/oauth` goes". The two discovery routes
+    // mint nothing and are mounted on both surfaces, because the management
+    // tier's `resource_auth` validator fetches JWKS over HTTP and must not
+    // have to reach the business tier to validate a staff token. `/token`
+    // mints the **merchant** private-key-JWT credential (ADR-0017's staff
+    // grant terminates at `/dash/v1/oauth/token`, not here — see
+    // `staff::oauth`), so it is business-only: a `surfaces: [management]`
+    // pod that served it would mint merchant credentials on the staff tier,
+    // outside ADR-0009's rate limit, which is the exact boundary this ADR
+    // exists to draw.
     let oauth = Router::new()
-        .route("/token", post(op::token::token_handler))
         .route(
             "/.well-known/openid-configuration",
             get(op::token::discovery_handler),
         )
-        .route("/jwks.json", get(op::jwks::jwks_handler))
+        .route("/jwks.json", get(op::jwks::jwks_handler));
+    let oauth = match surfaces.business {
+        true => oauth.route("/token", post(op::token::token_handler)),
+        // Not mounted at all, so the nest's own `.fallback` answers the
+        // honest 404 rather than a refusal — the same fail-closed answer
+        // `/v1` and `/dash/v1` already give a surface that is not enabled.
+        false => oauth,
+    };
+    let oauth = oauth
         // Explicit, not inherited — see this function's route table and the
         // paragraph under it.
         .fallback(not_found)
@@ -1692,14 +1711,15 @@ pub fn router(deps: RouterDeps) -> Router {
         // double every `/v1` count and label half of them `unmatched`.
         .layer(from_fn(track_http_metrics));
 
-    // `/v1/oauth` mounts whenever *either* surface is enabled (ADR-0022 §
-    // "The partition"): the merchant private-key-JWT grant and ADR-0017's
-    // staff authorization-code grant both terminate here, and both surfaces
-    // need JWKS. `match` after the fold rather than inside the chain, for
-    // the same reason the `dash`/`dash_procs` nests below already are — the
-    // chain is not an `Option`-shaped expression, and writing it as one
-    // would need a `Router` identity to merge against, which is exactly the
-    // thing a reader would then have to check does nothing.
+    // The `/v1/oauth` **nest** mounts whenever either surface is enabled
+    // (ADR-0022 § "Where `/v1/oauth` goes"), because both surfaces need the
+    // discovery pair; which routes are inside it is decided above, and
+    // `/token` is not one of them on a management-only pod. `match` after
+    // the fold rather than inside the chain, for the same reason the
+    // `dash`/`dash_procs` nests below already are — the chain is not an
+    // `Option`-shaped expression, and writing it as one would need a
+    // `Router` identity to merge against, which is exactly the thing a
+    // reader would then have to check does nothing.
     let router = match (surfaces.business || surfaces.management).then_some(oauth) {
         Some(oauth) => router.nest("/v1/oauth", oauth),
         None => router,
@@ -2886,6 +2906,13 @@ mod tests {
     /// (404, meaning "not mounted", vs. 401, meaning "mounted and
     /// authenticated"), not what a valid credential does once inside — the
     /// existing per-surface suites already cover that.
+    ///
+    /// The one exception to "drive off the tables" is
+    /// [`the_token_endpoint_is_business_only`]: [`V1_ROUTES`] holds no
+    /// `/v1/oauth` path at all — that subtree is built by hand in
+    /// [`router`] because it is unauthenticated — so the three OP paths are
+    /// written out there, and that is exactly why the surface split of the
+    /// OP went unnoticed until it was reviewed.
     mod surfaces {
         use axum::Router;
         use axum::body::Body;
@@ -2998,6 +3025,108 @@ mod tests {
                     StatusCode::UNAUTHORIZED,
                     "{path} must answer (401 without a token) when deployment.surfaces is \
                      absent; got {status}"
+                );
+            }
+        }
+
+        /// Drives a `POST` at `/v1/oauth/token`, which is the only shape
+        /// that distinguishes "mounted" from "not mounted" here: a `GET`
+        /// answers 405 on a surface that mounts it, and 405 and 404 are
+        /// both "not the handler".
+        async fn token_status(app: &Router) -> StatusCode {
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/oauth/token")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from("grant_type=client_credentials"))
+                        .expect("valid request"),
+                )
+                .await
+                .expect("router does not fail to serve")
+                .status()
+        }
+
+        /// ADR-0022 § "Where `/v1/oauth` goes" — the security boundary this
+        /// module exists to pin, and the one the route tables cannot see.
+        ///
+        /// `/v1/oauth/token` mints the **merchant** private-key-JWT
+        /// credential. ADR-0017's staff grant terminates at
+        /// `/dash/v1/oauth/token` (see `staff::oauth`), inside the `dash`
+        /// nest, so the management surface has no use for this route and
+        /// must not serve it: a `surfaces: [management]` pod that did would
+        /// mint merchant credentials on the staff tier, and ADR-0009's rate
+        /// limit sits only in front of the business tier's copy.
+        ///
+        /// The discovery pair is the other half of the same decision and is
+        /// asserted here rather than in its own test, because the value of
+        /// the assertion is the *contrast*: they mint nothing, the
+        /// management tier's own `resource_auth` validator needs JWKS to
+        /// check a staff token, and making it fetch that from the business
+        /// tier would reintroduce the coupling ADR-0022 removes. So they
+        /// answer on both surfaces while `/token` does not.
+        ///
+        /// Decisive (mutation-checked 2026-09-16): move `.route("/token",
+        /// …)` in [`router`] out of the `match surfaces.business` and onto
+        /// the unconditional builder, and this test fails with
+        /// `left: 401, right: 404` on the first assertion. A 401 there is
+        /// the token endpoint's own `invalid_client` — i.e. the handler ran
+        /// on a management-only pod, which is the defect.
+        #[tokio::test]
+        async fn the_token_endpoint_is_business_only() {
+            let management = router(deps_with_surfaces(Some(vec!["management".to_owned()])));
+            assert_eq!(
+                token_status(&management).await,
+                StatusCode::NOT_FOUND,
+                "/v1/oauth/token must not be mounted when deployment.surfaces = [management]: \
+                 it mints the merchant credential, and ADR-0009's rate limit is only in front \
+                 of the business tier's copy"
+            );
+
+            // The discovery pair, on every surface including the one above.
+            for deployment in [
+                Some(vec!["management".to_owned()]),
+                Some(vec!["business".to_owned()]),
+                None,
+            ] {
+                let label = deployment
+                    .as_ref()
+                    .map_or_else(|| "absent".to_owned(), |s| s.join("+"));
+                let app = router(deps_with_surfaces(deployment));
+
+                assert_eq!(
+                    status_of(&app, "/v1/oauth/.well-known/openid-configuration").await,
+                    StatusCode::OK,
+                    "the discovery document must answer on surfaces = {label}"
+                );
+                // Not `200`: `jwks.json` reads `oauth_signing_keys` through a
+                // pool that has never connected in this fixture, so its honest
+                // answer is the 503 `op::jwks::jwks_handler` documents — see
+                // `the_oauth_routes_are_reachable_without_a_token`, which makes
+                // the same distinction. The property here is that the request
+                // reached the handler instead of the nest's 404.
+                assert_ne!(
+                    status_of(&app, "/v1/oauth/jwks.json").await,
+                    StatusCode::NOT_FOUND,
+                    "/v1/oauth/jwks.json must be mounted on surfaces = {label}: the management \
+                     tier validates staff tokens against it and must not depend on the business \
+                     tier being up to do so"
+                );
+            }
+
+            // The mirror image, so that a change which unmounted `/token`
+            // everywhere would not pass this test by accident.
+            for deployment in [Some(vec!["business".to_owned()]), None] {
+                let label = deployment
+                    .as_ref()
+                    .map_or_else(|| "absent".to_owned(), |s| s.join("+"));
+                let app = router(deps_with_surfaces(deployment));
+                assert_eq!(
+                    token_status(&app).await,
+                    StatusCode::UNAUTHORIZED,
+                    "/v1/oauth/token must still answer on surfaces = {label} (401 \
+                     `invalid_client` from RFC 6749, not the resource-server boundary)"
                 );
             }
         }
