@@ -44,7 +44,7 @@
 //! _(That sentence named `crate::Refunds::create` until 2026-09-16, and wave 3
 //! made it false the day it was written: `vpay_api::v1::refunds` does reach
 //! the create — `crate::TxRepositories::create_refund_in_tx` runs
-//! [`crate::refunds::create_in_tx`], the same statements as
+//! `crate::refunds::create_in_tx`, the same statements as
 //! [`crate::Refunds::create`], in the handler's own transaction — so a
 //! merchant can cause a `refunds` row from a shipping binary. What has no
 //! caller is the settlement half, which is what this paragraph was about and
