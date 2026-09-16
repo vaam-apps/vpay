@@ -10594,8 +10594,16 @@ export class HolderResource {
             "payment_intents.create",
             "payment_intents.list",
             "payment_intents.retrieve",
+            // Wave 3 of RFC-0003, 2026-09-16. Three methods, both SDKs, in one
+            // PR: `refunds.update`, `refunds.list` and `refunds.cancel` landed
+            // beside the routes they call. So this list moves for the ordinary
+            // reason — a capability landed in both columns — and not for the
+            // alarming one, an enumerator going quiet.
+            "refunds.cancel",
             "refunds.create",
+            "refunds.list",
             "refunds.retrieve",
+            "refunds.update",
         ];
         for column in ["sdks/rust", "sdks/nodejs"] {
             let raw: BTreeSet<String> = sdk_methods(&root, column)
