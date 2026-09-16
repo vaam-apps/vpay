@@ -223,20 +223,26 @@ describe("refunds against a running vpay", () => {
   });
 
   /**
-   * **create → retrieve → update → list → cancel**, against a running vpay.
+   * **create → retrieve → update → list → refused cancel**, against a running
+   * vpay.
    *
    * One case for the sequence rather than five, because the states are
-   * sequential: a refund must exist to be read and must be `pending` to be
-   * cancelled.
+   * sequential: a refund must exist to be read, and what the cancel proves is
+   * about the refund the four steps before it built.
    *
    * What it pins that the stub server could not: the
    * `destination[<rail>][msisdn]` envelope this package writes is one the
    * real server strips, hands to the real `mtn_momo` adapter and accepts; a
    * created refund is **`pending`**, because nothing settles one; the update
    * really merges metadata key-wise and an empty value really deletes a key;
-   * and a cancel really releases the reservation it held against the intent.
+   * and a refund the rail has already been given is not cancelable, with its
+   * reservation still held after the refusal.
+   *
+   * The cancel that *does* fire serves the crashed-create state, which a
+   * client driving a healthy server over HTTP cannot produce;
+   * `backends/tests/integration/tests/refunds.rs` stages it directly.
    */
-  it("creates a refund with a registered payee, reads, patches, lists and cancels it", async () => {
+  it("creates a refund with a registered payee, reads, patches, lists it, and cannot cancel it", async () => {
     const intent = await aSettledIntent(5_000);
 
     const refund = await client.refunds.create({
@@ -298,20 +304,35 @@ describe("refunds against a running vpay", () => {
     expect(page.data.map((item) => item.id)).toContain(refund.id);
     expect(page.url).toBe("/v1/refunds");
 
-    const canceled = await client.refunds.cancel(refund.id);
-    expect(canceled.id).toBe(refund.id);
-    expect(canceled.status).toBe("canceled");
-
-    const again = await refusalOf(
+    // **The rail already has this instruction, so it cannot be cancelled.**
+    // `POST /v1/refunds` writes the `provider_requests` row before it sends
+    // the transfer, and `vpay_db::refunds::cancel_in_tx`'s `NOT EXISTS` reads
+    // that row as "a rail may already be moving this money". A cancel would
+    // write `canceled` — a promise that no money will move — and hand the
+    // reservation back: measured before the guard existed as two 5 000
+    // transfers on WireMock's journal against one 5 000 charge (commit
+    // 4bcf6491).
+    //
+    // This expected a `canceled` refund until 2026-09-16, as its Rust twin
+    // did. Both were written against the contract as it stood and neither was
+    // re-run against a server carrying the guard.
+    const refusal = await refusalOf(
       client.refunds.cancel(refund.id),
-      "second cancel",
+      "cancel after the rail was instructed",
     );
-    expect(again.status).toBe(409);
+    expect(refusal.status).toBe(409);
 
-    // The cancel released the reservation, so the intent can be refunded in
-    // full again — the half of a cancel that is invisible on the refund
-    // object and that only a real database can answer.
-    const full = await client.refunds.create({
+    // And the refusal cost nothing. A cancel that failed *after* releasing
+    // the reservation would be the same double refund with an error code on
+    // it, so both halves are asserted.
+    const afterRefusal = await client.refunds.retrieve(refund.id);
+    expect(afterRefusal.status).toBe("pending");
+
+    // The reservation, read the only way a merchant can: through what is left
+    // to refund. 2 000 of the 5 000 is spoken for, so a refund naming no
+    // `amount` is the remaining 3 000 — a 5 000 here would be the over-refund
+    // the reservation exists to prevent.
+    const rest = await client.refunds.create({
       payment_intent: intent,
       destination: {
         kind: "mobile_money",
@@ -319,8 +340,21 @@ describe("refunds against a running vpay", () => {
         msisdn: PAYEE_MSISDN,
       },
     });
-    expect(full.amount).toBe(5_000);
+    expect(rest.amount).toBe(3_000);
 
-    await client.refunds.cancel(full.id).catch(() => undefined);
+    // Nothing can be cancelled back, so the intent is now fully spoken for.
+    const overRefund = await refusalOf(
+      client.refunds.create({
+        payment_intent: intent,
+        amount: 1,
+        destination: {
+          kind: "mobile_money",
+          payment_method_type: "mtn_momo",
+          msisdn: PAYEE_MSISDN,
+        },
+      }),
+      "over-refund",
+    );
+    expect(overRefund.status).toBe(409);
   });
 });

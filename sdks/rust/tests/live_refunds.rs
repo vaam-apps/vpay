@@ -315,11 +315,13 @@ async fn live_refund_destination_refusals() {
     );
 }
 
-/// **create → retrieve → update → list → cancel**, against a running vpay.
+/// **create → retrieve → update → list → refused cancel**, against a running
+/// vpay.
 ///
 /// One case for the sequence rather than five, because the states are
-/// sequential: a refund must exist to be read and must be `pending` to be
-/// cancelled, so five independent cases would each rebuild the ones before.
+/// sequential: a refund must exist to be read, and what the cancel proves is
+/// about the refund the four steps before it built, so five independent cases
+/// would each rebuild the ones before.
 ///
 /// What it pins that no stub could:
 ///
@@ -331,7 +333,16 @@ async fn live_refund_destination_refusals() {
 ///   decodes, including `fee: null`;
 /// * the update really merges metadata key-wise, and an empty value really
 ///   deletes a key — a rule this SDK only documents;
-/// * a cancelled refund is `canceled` and a second cancel is a real `409`.
+/// * a refund the rail has already been given is **not** cancelable — a real
+///   `409` — and the refusal leaves both the refund and its reservation
+///   exactly where they were.
+///
+/// The cancel that *does* fire has no live case here and cannot have one: it
+/// serves the crashed-create state (a `pending` refund over a minute old with
+/// no `provider_requests` row), which a client driving a healthy server
+/// through HTTP has no way to produce. `backends/tests/integration/tests/refunds.rs`
+/// stages it directly; `docs/sdks/parity.md` says so rather than letting this
+/// file look like it covers a route it does not.
 #[tokio::test]
 async fn live_refund_lifecycle() {
     let client = live_client().await;
@@ -459,28 +470,53 @@ async fn live_refund_lifecycle() {
     );
     assert_eq!(page.url, "/v1/refunds");
 
-    let canceled = client
-        .refunds()
-        .cancel(&refund.id, RequestOptions::new())
-        .await
-        .expect("a pending refund cancels");
-    assert_eq!(canceled.id, refund.id);
-    assert_eq!(canceled.status, RefundStatus::Canceled);
-
+    // **The rail already has this instruction, so it cannot be cancelled.**
+    // `POST /v1/refunds` writes the `provider_requests` row *before* it sends
+    // the transfer, and `vpay_db::refunds::cancel_in_tx`'s `NOT EXISTS` reads
+    // that row as "a rail may already be moving this money". A cancel would
+    // write `canceled` — a promise that no money will move — and hand the
+    // reservation back: measured on this branch before the guard existed as
+    // two 5 000 transfers on WireMock's journal against one 5 000 charge
+    // (commit 4bcf6491).
+    //
+    // **This case asserted a `200 canceled` here until 2026-09-16.** It was
+    // written against the contract as it stood, the guard landed the same
+    // day, and nothing objected because no CI job compiled this binary —
+    // `verify-sdk-parity` proves a test *name* exists, never that anything
+    // runs it (issue #122). Nothing settles a refund (RFC-0003 open question
+    // 8), so every refund this route creates sits `pending` for ever with its
+    // transfer already accepted, which is what made every one of them
+    // cancelable.
     let error = client
         .refunds()
         .cancel(&refund.id, RequestOptions::new())
         .await
-        .expect_err("a canceled refund cannot be cancelled again");
-    let (status, _param) = api_refusal(&error, "second cancel");
+        .expect_err("a refund the rail has already been given cannot be cancelled");
+    let (status, _param) = api_refusal(&error, "cancel after the rail was instructed");
     assert_eq!(
         status, 409,
         "the state machine is the server's WHERE clause"
     );
 
-    // The cancel released the reservation, so the intent can be refunded in
-    // full again. This is the half of a cancel that is invisible on the refund
-    // object and that only a real database can answer.
+    // The refusal cost nothing. A cancel that failed *after* releasing the
+    // reservation would be the same double refund with an error code on it,
+    // so both halves are asserted: the refund did not move, and the money it
+    // reserved is still reserved.
+    let after_refusal = client
+        .refunds()
+        .retrieve(&refund.id)
+        .await
+        .expect("the refused cancel left the refund readable");
+    assert_eq!(
+        after_refusal.status,
+        RefundStatus::Pending,
+        "a refused cancel must not move the refund"
+    );
+
+    // The reservation, read the only way a merchant can: through what is left
+    // to refund. 2 000 of the 5 000 is spoken for, so a refund that names no
+    // `amount` is the remaining 3 000 — and a 5 000 here would be the
+    // over-refund the reservation exists to prevent.
     let again = client
         .refunds()
         .create(
@@ -495,14 +531,35 @@ async fn live_refund_lifecycle() {
             RequestOptions::new(),
         )
         .await
-        .expect("the cancelled refund's reservation went back");
+        .expect("what is left of the charge can still be refunded");
     assert_eq!(
-        again.amount, 5_000,
-        "a full refund after a cancel is the intent's whole amount"
+        again.amount, 3_000,
+        "the first refund's reservation is still held, so a full refund is what is LEFT of \
+         the charge and not the charge again"
     );
 
-    let _ = client
+    // Nothing can be cancelled back, so the intent ends this case fully spoken
+    // for — asserted rather than left implied, because it is the arithmetic a
+    // merchant's ledger has to agree with.
+    let error = client
         .refunds()
-        .cancel(&again.id, RequestOptions::new())
-        .await;
+        .create(
+            CreateRefundParams {
+                payment_intent: intent.clone(),
+                amount: Some(1),
+                destination: Some(RefundDestination::mobile_money(
+                    PaymentMethodType::MtnMomo,
+                    PAYEE_MSISDN,
+                )),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("5 000 of a 5 000 charge is reserved; there is nothing left");
+    let (status, _param) = api_refusal(&error, "over-refund");
+    assert_eq!(
+        status, 409,
+        "an over-refund is a conflict, not a validation"
+    );
 }

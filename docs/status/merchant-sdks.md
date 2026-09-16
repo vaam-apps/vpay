@@ -45,6 +45,24 @@ originals are left where they are rather than rewritten, per this page's rule:
   `backends/tests/integration`"~~ — likewise: two `live-stack` binaries drive a
   real server over TCP.
 
+**Corrected 2026-09-16: both live refund cases asserted a cancel the server
+had stopped allowing hours earlier.** `4bcf6491` made a refund the rail has
+already been instructed non-cancelable — it was measured putting **two 5 000
+transfers on the rail's journal against one 5 000 charge** — and `POST
+/v1/refunds` writes that instruction row before it sends the transfer, so no
+refund either SDK creates is cancelable any more. `live_refund_lifecycle` and
+its Node twin still expected a `200 canceled`, a released reservation and a
+second full refund of the whole charge. Nothing objected, because CI compiled
+neither binary until this branch added the step. Both now assert the `409`,
+that the refused cancel left the refund `pending`, that a refund naming no
+`amount` is the remaining **3 000** rather than 5 000, and that one more minor
+unit is a `409`. The server was not changed for this: the tests were wrong.
+The cancel that does fire has no live case in either SDK and cannot have one —
+it serves the crashed-create state, which a client driving a healthy server
+over HTTP cannot produce, and
+`backends/tests/integration/tests/refunds.rs` stages it directly. Evidence:
+[verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md).
+
 **What is still true, and is the sentence that matters:** nothing either SDK
 calls has ever refunded anybody. `orange_money::refund` is a `NotImplemented`
 token; `mtn_momo::refund` is MTN's Disbursements `transfer` and that product

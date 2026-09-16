@@ -752,8 +752,12 @@ async fn an_answered_submit_advances_the_bookkeeping_rather_than_submitting_agai
 ///
 /// `submitting` is not only the state a crash leaves. It is also the ordinary
 /// state of a **confirm that is still running** — `vpay-api` commits the
-/// charge and this very poll job in one transaction with `run_at = now()`,
-/// calls the rail, and only then compare-and-swaps `submitting → submitted`.
+/// charge and this very poll job in one transaction, calls the rail, and only
+/// then compare-and-swaps `submitting → submitted`. (Since 2026-09-16 that
+/// job is committed at `now() + POLL_AFTER_CONFIRM_GRACE` and pulled forward
+/// by the compare-and-swap, so a live confirm is no longer the ordinary way
+/// this branch is reached. It is still the branch a crashed one reaches, and
+/// the fixture below stages that directly, as it always did.)
 /// The evidence staged here is kill point 3's, byte for byte
 /// (`an_answered_submit_advances_the_bookkeeping_rather_than_submitting_again`
 /// is the same fixture aged past the window), because that is precisely the

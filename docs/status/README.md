@@ -35,6 +35,18 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-16-confirm-poll-job-latency.md](verification/2026-09-16-confirm-poll-job-latency.md) —
+  the first CI run that compiled `--test live_refunds` went red, and what it
+  had found was **not** in the SDK: a charge confirmed while the worker's
+  claim loop was busy waited up to sixty-one seconds for its first status
+  query, on every rail, in every deployment, since Step 4. Reproduced against
+  a real stack (`attempts = 1`, `run_at = created_at + 61 s`, `state =
+submitted` from six seconds in, no status query on the rail's journal),
+  fixed in `vpay-api` with a grace on the enqueue and a pull-forward in the
+  confirm's own compare-and-swap, and mutation-proven on two existing
+  `confirm_rails` cases. With settlement fixed, both live refund suites then
+  failed on a `cancel` that `4bcf6491` had deliberately made impossible;
+  the tests were wrong and were corrected, not the guard
 - [verification/2026-09-16-w3-seam.md](verification/2026-09-16-w3-seam.md) —
   RFC-0003 wave 3 / arm H, the seam pass, run after every arm and every review
   had merged. Eleven findings, of which one was not a documentation bug: **CI
