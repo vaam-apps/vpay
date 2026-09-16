@@ -288,16 +288,22 @@ exists behind it. Proven by five container-backed cases in
 `merchant_b_cannot_read_merchant_as_refund`,
 `the_api_response_and_an_events_payload_for_one_refund_are_byte_identical`,
 `a_refund_id_without_the_re_prefix_is_never_looked_up`,
-`creating_a_refund_is_still_the_honest_404`). **No merchant can create a
-refund**: `POST /v1/refunds` is unrouted until wave 3 and no rail has ever
-executed one — `mtn_momo::refund` is written and its Disbursements product has
-never been called, `orange_money::refund` is a `NotImplemented` token — so the
-rows those cases read are `INSERT`ed by the suite itself. _(That
-last clause read "because `vpay_db::Refunds` exposes one read and no write"
-until 2026-09-15, when RFC-0003 § 3 added `Refunds::create` and
-`Refunds::cancel`. The suite still seeds its own rows, deliberately, so that a
-change to the create path cannot quietly change what these cases measure; what
-did not change is that nothing reachable over `/v1` writes a refund.)_
+~~`creating_a_refund_is_still_the_honest_404`~~). ~~**No merchant can create a
+refund**: `POST /v1/refunds` is unrouted until wave 3~~ **— both corrected
+2026-09-16 (wave 3). A merchant can create a refund**: all five refund routes
+are mounted (RFC-0003 § 2), and the fifth case above was **renamed** when the
+handler landed — it is `a_refund_is_created_pending_and_the_rail_is_instructed`
+now, and it asserts a `201` and a `pending` row where its predecessor asserted
+the nest's `unknown_route`. The four read cases are unchanged and still seed
+their own rows deliberately, so that a change to the create path cannot quietly
+change what they measure. **What did not move is the sentence this paragraph
+exists for:** no rail has ever executed a refund — `mtn_momo::refund` is
+written and MTN's Disbursements product has never been called, no REAL
+credential for it exists in this project, and `orange_money::refund` is a
+`NotImplemented` token — and **nothing settles a `pending` refund** (there is
+no refund poll ladder, RFC-0003 open question 8). _(That clause read "because
+`vpay_db::Refunds` exposes one read and no write" until 2026-09-15, when
+RFC-0003 § 3 added `Refunds::create` and `Refunds::cancel`.)_
 
 **Corrected 2026-09-16 (wave 3).** Two claims in the paragraph above are now
 false and are left standing rather than rewritten: ~~"`POST /v1/refunds` is

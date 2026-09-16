@@ -54,7 +54,7 @@ ignore it.
 | `delivers_callbacks`             | `true`     | `true`         | whether to expect a notification at all. Callbacks are hints either way                                                                                                                                                                                                                                                                                             |
 | `requires_ip_allowlist`          | `true`     | `false`        | an operational fact for a deployment, not a code path                                                                                                                                                                                                                                                                                                               |
 | `supports_account_holder_lookup` | `true`     | `false`        | refuses `GET /v1/account_holders` on a rail with no such API, with a `400` naming the parameter ([account-holder-lookup.md](account-holder-lookup.md), issue #47)                                                                                                                                                                                                   |
-| `refund_destination`             | `Required` | `Required`     | whether a refund needs an explicit payee. **Declared only; no core code reads it yet** — the `POST /v1/refunds` that will is Wave 3 of [RFC-0003](../rfc/0003-refunds-destinations-and-the-first-ledger-postings.md) and is not built. Since 2026-09-15 both adapters implement `parse_destination`, so the raw map that handler will hand over has somewhere to go |
+| `refund_destination`             | `Required` | `Required`     | whether a refund needs an explicit payee. **Read by the core since 2026-09-16**, when wave 3 of [RFC-0003](../rfc/0003-refunds-destinations-and-the-first-ledger-postings.md) mounted `POST /v1/refunds`: `vpay_api::v1::refunds::resolve_target` branches on this and on no rail code (ADR-0002). _(This cell read "Declared only; no core code reads it yet … and is not built" until then.)_ |
 
 **`orange_money` declared `supports_refunds: false` until 2026-09-15**, and
 that flag — not a rail-specific branch — was what made the core refuse a refund
@@ -83,6 +83,23 @@ and says so, while a `true` that later turns out to be wrong has to be
 _withdrawn_ from merchants who integrated against it. `false` → `true` is
 additive; the reverse is a breaking change made on a guess. Flipping it
 belongs to whoever writes the transfer call against a real specification.
+
+**`mtn_momo`'s `supports_partial_refunds: true` has never been examined, and
+this sentence is the whole of the record.** It has been `true` since the
+capability existed, from a time when `mtn_momo::refund` was a
+`NotImplemented` token and the flag could not be acted on. It is now acted on:
+`vpay_api::v1::refunds` refuses a part-refund on a rail that declares `false`,
+so this flag decides what a merchant may ask MTN for. It is defensible —
+Disbursements is a documented transfer product and a transfer takes an amount
+— but it rests on the same kind of reading of a product this repository has
+never called that Orange's `false` was written to avoid, and **nobody has
+checked whether MTN's Disbursements product accepts an amount below the
+original collection, or what it does with one.** Orange's flag got a paragraph
+of justification on review; MTN's got none, and the asymmetry is the finding
+rather than the answer. **Left `true` deliberately and not silently:** changing
+it is the breaking direction (`true` → `false` withdraws a capability a
+merchant may have integrated against), so it is a maintainer's call and not a
+seam-owner's. Recorded 2026-09-16, undecided.
 
 **The last two rows are the newest and the only ones that are not
 persisted.** The five above them are columns on `providers` (migration
@@ -174,6 +191,43 @@ whether this is a port or just a folder.
 
 ## Status
 
+**Updated 2026-09-16 (RFC-0003 § 2, wave 3): the port's `refund` has a
+shipping caller for the first time, and no rail has executed one.** This
+section had no entry for the day the routes landed; the three below it each
+end with a "not built by this change" list that wave 3 is what moved.
+
+- **`ProviderAdapter::refund` is called from `vpay_api::v1::refunds::create`.**
+  Until 2026-09-16 the only callers were tests and the conformance suite. What
+  a call answers has not changed: on `mtn_momo` it is a real Disbursements
+  `transfer`, WireMock-proven and **rail-unproven** — MTN's Disbursements
+  product has never been called from this repository and no REAL credential
+  for it exists in this project — and on `orange_money` it is the
+  `NotImplemented("orange_money::refund")` token, which the handler turns into
+  a `failed` refund with its reservation released and a `501`. **Neither rail
+  answers `Unsupported`, and no rail has ever refunded anything.**
+- **`refund_destination` is read by core code**, which is what the
+  Capabilities table said was missing: `resolve_target` branches on the
+  capability and on no rail code (ADR-0002), and
+  `an_origin_rail_refuses_a_destination` is the only case in `vpay-api` that
+  fails when the branch is deleted — this workspace carries no `Origin` rail
+  for an integration suite to drive, so that one unit case is the whole guard.
+- **`parse_destination` has a caller, and the wave-1b obligation on it was
+  discharged.** The rail code is stripped before the adapter sees the map, and
+  a refusal is translated to `ApiError::invalid_param("destination", …)`
+  rather than forwarded — a `ProviderError::Malformed` would otherwise have
+  classified to `Category::Rail` and told a merchant their own typo was a rail
+  outage.
+- **Not moved by wave 3, and it is the whole of what is left:** nothing settles
+  a `pending` refund. The port has **no refund status read** — there is no
+  `query_refund_status` on this trait — so there is no refund poll ladder to
+  build one out of (RFC-0003 open question 8, open). Every refund these routes
+  create stays `pending`, and `invoices.amount_refunded` therefore never moves
+  in any deployment.
+- Evidence:
+  [verification/2026-09-16-w3-refund-routes.md](../status/verification/2026-09-16-w3-refund-routes.md),
+  [verification/2026-09-16-w3-merge.md](../status/verification/2026-09-16-w3-merge.md)
+  and [verification/2026-09-16-w3-seam.md](../status/verification/2026-09-16-w3-seam.md).
+
 **Updated 2026-09-15 (RFC-0003 § 5, wave 2): `orange_money` declares
 `supports_refunds: true`, and no rail in this workspace declares it `false`.**
 
@@ -182,7 +236,10 @@ whether this is a port or just a folder.
   an Orange refund **is** an outbound transfer back to a payee, so the rail can
   refund and it is vpay that has not built the call. The adapter overrides the
   port with `ProviderError::NotImplemented("orange_money::refund")`;
-  `verify-status` counts two tokens now, not one.
+  `verify-status` counted two tokens for the rest of that day. _(It prints
+  **1** again, and has since later on 2026-09-15: a different branch retired
+  `NotImplemented("mtn_momo::refund")` by writing the Disbursements
+  `transfer`. This bullet said "now, not one" until 2026-09-16.)_
 - **No Orange transfer wire call was written, deliberately.** No Orange
   transfer API is documented in this repository, not even reconstructed, so an
   endpoint and a body would be invented in the money path. Item 5 of
