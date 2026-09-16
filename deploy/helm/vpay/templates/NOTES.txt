@@ -1,9 +1,31 @@
 vpay {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}, release {{ .Release.Name }} in {{ .Release.Namespace }}.
 
-  image:   {{ include "vpay.image" (dict "ctx" . "component" "server") }}
-  server:  {{ .Values.server.replicaCount }} replicas (no args — serves the API)
-  worker:  {{ .Values.worker.replicaCount }} replicas (args: ["worker"] — the job loop)
-  profile: {{ .Values.config.profile }}{{ if .Values.config.createOverlayConfigMap }} (overlay ConfigMap {{ include "vpay.overlayConfigMapName" . }} -> {{ include "vpay.overlayMountPath" . }}){{ else }} (no overlay ConfigMap — the image's baked config is the whole configuration){{ end }}
+  image:      {{ include "vpay.image" (dict "ctx" . "component" "server") }}
+{{- if .Values.server.autoscaling.enabled }}
+  server:     {{ .Values.server.autoscaling.minReplicas }}-{{ .Values.server.autoscaling.maxReplicas }} replicas, governed by HorizontalPodAutoscaler/{{ include "vpay.fullname" . }}-server
+              (server.replicaCount is NOT applied: the Deployment sets no spec.replicas at all while an HPA owns it)
+{{- else }}
+  server:     {{ .Values.server.replicaCount }} replicas (no args — serves the API)
+{{- end }}
+{{- if .Values.management.enabled }}
+              surfaces: business only — /v1, /v1/browser, /provider, POST /v1/oauth/token
+  management: {{ .Values.management.replicaCount }} replicas, NOT autoscaled (ADR-0022)
+              surfaces: management only — /dash/v1 and the staff sign-in routes
+              /v1/oauth/token is NOT served here; jwks.json and the discovery document are
+{{- else }}
+              surfaces: every surface (deployment.surfaces unset) — /v1 AND /dash/v1 on one pod
+{{- end }}
+  worker:     {{ .Values.worker.replicaCount }} replicas (args: ["worker"] — the job loop)
+{{- if .Values.dashboard.enabled }}
+  dashboard:  {{ .Values.dashboard.replicaCount }} replicas, the admin frontend at {{ .Values.dashboard.publicOrigin }}
+{{- end }}
+{{- if .Values.checkout.enabled }}
+  checkout:   {{ .Values.checkout.replicaCount }} replicas, the payment page
+{{- end }}
+  profile:    {{ .Values.config.profile }}{{ if .Values.management.enabled }} (each tier mounts its OWN overlay at {{ include "vpay.overlayMountPath" . }}:
+              {{ include "vpay.fullname" . }}-server-config-overlay and {{ include "vpay.fullname" . }}-management-config-overlay,
+              both derived from config.overlay with only deployment.surfaces forced apart;
+              -worker keeps the shared {{ include "vpay.overlayConfigMapName" . }}){{ else if .Values.config.createOverlayConfigMap }} (overlay ConfigMap {{ include "vpay.overlayConfigMapName" . }} -> {{ include "vpay.overlayMountPath" . }}){{ else }} (no overlay ConfigMap — the image's baked config is the whole configuration){{ end }}
 
 READ THIS.
 
@@ -28,6 +50,33 @@ READ THIS.
 
   * Rotating the signing key is restart-based, and rolling back to a retired
     kid is exit 78, not a degraded start.
+{{ if .Values.server.autoscaling.enabled }}
+  * An HPA now owns -server's replica count. Two consequences nothing else
+    will tell you about. Every replica holds a pool of up to 10 Postgres
+    connections, so the ceiling this release can ask for is
+    ({{ .Values.server.autoscaling.maxReplicas }} + {{ if .Values.management.enabled }}{{ .Values.management.replicaCount }}{{ else }}0{{ end }} + {{ .Values.worker.replicaCount }}) x 10 = {{ mul (add (int .Values.server.autoscaling.maxReplicas) (ternary (int .Values.management.replicaCount) 0 .Values.management.enabled) (int .Values.worker.replicaCount)) 10 }} against a
+    database.maxConnections of {{ .Values.database.maxConnections }} (the "connection-budget" guard checks
+    this at template time; nothing re-checks it when the HPA actually
+    scales). And scale-down evicts pods mid-request unless
+    behavior.scaleDown.stabilizationWindowSeconds is well above the
+    process's own {{ .Values.shutdownGraceSeconds }}s drain.
+{{- end }}
+{{ if .Values.management.enabled }}
+  * This release runs the surfaces SPLIT (ADR-0022, status: Proposed).
+    -server serves the merchant API and -management serves /dash/v1; neither
+    serves the other. Two things that are easy to get wrong:
+
+      - /dash/v1 is only reachable by whatever you have pointed at
+        Service/{{ include "vpay.fullname" . }}-management.{{ if not .Values.route.enabled }} This release publishes no
+        HTTPRoute for it (route.enabled is false), so nothing outside the
+        cluster reaches it yet.{{ end }}{{ if and .Values.route.enabled .Values.networkPolicy.enabled }} The HTTPRoute publishes it AND the
+        NetworkPolicy restricts who may reach the pod — check both agree.{{ end }}
+      - POST /v1/oauth/token is served by -server ONLY. It mints the
+        MERCHANT credential; the staff grant is /dash/v1/oauth/token, on
+        -management. Both tiers serve /v1/oauth/jwks.json and the discovery
+        document, so the management tier can validate a staff token without
+        the business tier being up.
+{{- end }}
 {{ if not .Values.metrics.prometheusRule.enabled }}
   * The PrometheusRule is disabled. Enabling it installs alerts whose
     thresholds are proposed rather than measured. The metrics they query are
