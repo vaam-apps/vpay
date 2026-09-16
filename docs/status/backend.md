@@ -22,6 +22,18 @@ ladder, RFC-0003 open question 8). Nothing pins that string, so nothing else
 would have caught it. Evidence:
 [verification/2026-09-16-w3-sdk-refunds.md](verification/2026-09-16-w3-sdk-refunds.md).
 
+**Merged 2026-09-16 (wave 3, all three review branches into the refunds
+feature branch).** The banner above was rewritten twice, once by each review,
+and git could not merge the two; the resolved literal names **all five**
+refund routes — arm F's version named four, omitting `GET /v1/refunds/{id}` —
+and keeps arm G's narrowed credential clause. Migration `0048`'s "against a
+credential no deployment holds" was corrected **before** it landed, because a
+migration's bytes are immutable once they ship. One case,
+`postgres_smoke::canceling_a_pending_refund_releases_its_reservation`, was
+already red on `review/w3f-money` and is repaired by building the premise the
+new cancel rule needs, not by weakening an assertion. Evidence:
+[verification/2026-09-16-w3-merge.md](verification/2026-09-16-w3-merge.md).
+
 Several rows below still say `POST /v1/refunds` is unrouted "until wave 3".
 They are stale for the same reason and are left standing rather than rewritten
 here, per this page's rule; arm F's page is

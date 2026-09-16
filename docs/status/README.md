@@ -35,6 +35,24 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-16-w3-merge.md](verification/2026-09-16-w3-merge.md) —
+  wave 3 merged into the refunds feature branch: arm F with its money review,
+  arm F with its contract review, and arm G with its review. One conflict (the
+  boot banner, rewritten by two reviews at once) and the resolution that names
+  all five refund routes; migration `0048`'s "no deployment holds" wording
+  corrected **before** it landed, because a migration's bytes are immutable
+  once they ship; one case red on `review/w3f-money` before the merge ever
+  happened, repaired by building its premise rather than weakening it; and the
+  stale claims that only became false once both arms were in one tree — among
+  them `docs/flows/errors.md`'s "no `/v1` caller can provoke a `501` at all",
+  which a test has contradicted since arm F (806 crate + 73 integration + 67
+  conformance, **0 skipped**)
+- [verification/2026-09-16-w3-sdk-refunds.md](verification/2026-09-16-w3-sdk-refunds.md) —
+  RFC-0003 § 2 wave 3 / arm G and its review: the refund surface in both
+  merchant SDKs, driven against a real `vpay-server` over HTTP, plus the
+  `gen-demo-keys` fix without which every refund on the demo stack was a 500.
+  The `202`s in that run came from a `wiremock/wiremock` container, and no
+  refund it created ever left `pending`
 - [verification/2026-09-16-w3-refund-routes.md](verification/2026-09-16-w3-refund-routes.md) —
   RFC-0003 § 2 wave 3: the four `/v1` refund routes and the first
   `charge.refunded` / `charge.refund.updated` this repository has ever emitted
