@@ -531,15 +531,34 @@ Every ⛔ above, in one list. The cells are authoritative; this is an index.
 
 - **Not that a ✅ row is bug-free.** It claims a named test in that SDK
   fails when the capability breaks. Nothing more.
-- **Not that a capability works against a deployed vpay.** Both merchant
-  SDKs test against in-process stubs; see [`../status.md`](../status.md) for
-  what has and has not spoken to a real server.
+- **Not that any gate runs the test a ✅ row names.** `cargo xtask
+  verify-sdk-parity` reads the name and finds it in that SDK's sources; it
+  cannot tell whether a job ever executes it. Measured, 2026-09-16: the Rust
+  column's `live_refund_lifecycle` and `live_refund_destination_refusals` were
+  ✅ on three rows for a full day while `.github/workflows/ci.yml` named only
+  `--test live_invoices`, so nothing compiled that binary. The workflow now
+  names `--test live_refunds` too. **Read a ✅ as "a case exists that would
+  fail", not as "something ran it last Tuesday."**
+- **Not that a capability works against a deployed vpay.** Most of both
+  SDKs' cases run against in-process stubs. The exceptions are the live
+  suites — `sdks/rust/tests/live_{invoices,refunds}.rs` and
+  `sdks/nodejs/src/*.live.test.ts` — which drive a **real** `vpay-server` over
+  a socket and fail rather than skipping without one; `just sdk-live` is the
+  recipe. Even those prove nothing about a rail: the stack they drive answers
+  every rail call from a `wiremock/wiremock` container. See
+  [`../status.md`](../status.md) for what has and has not spoken to a real
+  rail.
 - **Not that the server offers every capability.** ~~`/v1/refunds` and
   `/v1/balance` are not mounted at all~~ **— corrected 2026-09-05 in the same
   change that added the `refunds.retrieve` row above: `GET /v1/refunds/{id}`
   is mounted (issue #45).** ~~`refunds.create` and `balance.retrieve` are the
   two SDK methods left with no route~~ **— corrected again 2026-09-16: all
   four refund routes are mounted (RFC-0003 § 2), so `balance.retrieve` is the
-  only SDK method with no route.** `refunds.create` now reaches a handler and
-  is refused by it, for the reason the `destination` row above gives — that
-  one _is_ a parity gap, because it is a shape both SDKs are missing.
+  only SDK method with no route.** ~~`refunds.create` now reaches a handler
+  and is refused by it, for the reason the `destination` row above gives —
+  that one _is_ a parity gap, because it is a shape both SDKs are missing.~~
+  **— corrected 2026-09-16 (seam pass): that stopped being true hours later.**
+  Both SDKs send `destination`, the row above is ✅/✅, and a `refunds.create`
+  from either reaches a handler that accepts it. What it gets back is a
+  `pending` refund that **nothing settles** — there is no refund poll ladder
+  (RFC-0003 open question 8) — which is a gap in vpay and not a parity gap.
