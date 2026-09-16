@@ -35,7 +35,7 @@ it.
 
 ```bash
 just verify                              # the self-checks
-just helm-check                          # helm lint + template + 15 guards + kubeconform
+just helm-check                          # helm lint + template + 24 guards + kubeconform
 helm template <release> deploy/helm/vpay -f my-values.yaml | less   # read it
 ```
 

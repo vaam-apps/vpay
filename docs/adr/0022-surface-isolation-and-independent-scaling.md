@@ -9,12 +9,27 @@
   boundary), [ADR-0017](0017-staff-authentication.md) (staff authentication
   and the per-request staff-row re-read), [ADR-0018](0018-cross-tenant-admin-reads.md)
   (the cross-tenant admin role). None of those is revisited except where named.
-- **Numbering:** `0020` is an unused gap and `0018` is used **twice**
-  (`0018-cross-tenant-admin-reads.md`, `0018-privacy-controls-and-evidence.md`).
+- **Numbering:** ~~`0020` is an unused gap and `0018` is used **twice**
+  (`0018-cross-tenant-admin-reads.md`, `0018-privacy-controls-and-evidence.md`).~~
   This ADR takes `0022` to stay monotonic above `0021` rather than filling the
   gap, because `docs/plans/2026-09-13-flutter-plugin.md:419` refers to a future
   ADR as "ADR-0020 shaped" and reusing the number would make that sentence
-  point at this one. The duplicate `0018` is a separate defect, not fixed here.
+  point at this one. ~~The duplicate `0018` is a separate defect, not fixed
+  here.~~
+
+  **Both struck 2026-09-16, hours after this ADR was written, and by someone
+  else's branch.** [#172](https://github.com/vaam-apps/vpay/pull/172) landed
+  between this ADR's merge (`9653ee94`) and the same day's follow-up, and did
+  exactly what the struck sentences said had not been done: the second `0018`
+  is now `0020-privacy-controls-and-evidence.md`. `docs/adr/` runs `0001`
+  through `0022` with **no gap and no duplicate**.
+
+  The decision this bullet records is unchanged and was right: `0022` was
+  taken because `0020` was _reserved_, not free, and #172 is the proof — it
+  claimed that number for the document that had been waiting for it. Had this
+  ADR filled the gap, #172 would have had to renumber twice. The struck
+  sentences are left visible rather than deleted because the reasoning only
+  makes sense against the tree as it stood.
 
 ## Context
 
