@@ -21,7 +21,11 @@
 //! secret, and it needs the amount, the currency, the status,
 //! `payment_method_types` (which rails to offer), `next_action` and
 //! `last_payment_error` before it can paint anything — a second round trip
-//! for that would mean two loading states instead of one.
+//! for that would mean two loading states instead of one. The session read
+//! *also* answers the rail spec (`crate::model::CheckoutSessionForPayer::rails`,
+//! built by [`build_rails`]) — what a payer sheet needs to draw each of
+//! those rails, so a native client can render one it has never heard of
+//! with no further round trip and no `if code == "mtn_momo"` of its own.
 //!
 //! The merchant surface keeps the id: a merchant already holds the intent
 //! they created, and expanding on `GET /v1/checkout/sessions` would repeat
@@ -65,6 +69,7 @@
 //! empty list protects is the *unknown* key: nobody can tell "no such
 //! deployment tenant" from "configured, embeds nowhere".
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -76,15 +81,16 @@ use vpay_core::ids;
 use vpay_db::{
     CheckoutSessionRow, CheckoutSessions, PaymentIntentRow, PaymentIntents, Repositories,
 };
+use vpay_provider::ProviderAdapter;
 
 use crate::error::ApiError;
 use crate::form::VpayQuery;
 use crate::model::{
     CheckoutSessionForPayer, CheckoutSessionObject, ExpandableIntent, PaymentIntentObject,
-    PaymentIntentWithSecret,
+    PaymentIntentWithSecret, RailDisplayName, RailSpec,
 };
-use crate::v1::ResourceConfig;
 use crate::v1::payment_intents::json_response;
+use crate::v1::{RailConfig, ResourceConfig};
 
 /// The object type this surface's 404 speaks about.
 ///
@@ -351,13 +357,62 @@ fn for_payer(
     config: &ResourceConfig,
     row: &CheckoutSessionRow,
     session: CheckoutSessionObject,
+    rails: Vec<RailSpec>,
 ) -> CheckoutSessionForPayer {
     CheckoutSessionForPayer::new(
         session,
         config
             .merchant_display_name(&row.merchant_id)
             .map(str::to_owned),
+        rails,
     )
+}
+
+/// Builds the server-driven rail spec (`crate::model::RailSpec`): one entry
+/// per code in `payment_method_types`, in that order, describing a rail with
+/// no `if code == "mtn_momo"` anywhere in the client that reads it — see
+/// that type's own doc for the wire shape and what is deliberately reduced
+/// out of it.
+///
+/// # Errors
+///
+/// [`ApiError::Internal`] if a code names no linked adapter. Not reachable
+/// through anything a payer sent: `payment_method_types` only ever holds
+/// codes that passed `config.enabled_rail(..).is_some()` when the intent was
+/// created (`crate::v1::payment_intents::resolve_rail`), and boot itself
+/// refuses to start with a configured rail and no linked adapter
+/// (`vpay_config::ConfigError::ProviderWithoutAdapter`,
+/// `crate::v1::boot::boot_seeds`) — so a miss here means that invariant
+/// failed, on `crate::v1::account_holders::retrieve`'s terms.
+fn build_rails(
+    payment_method_types: &[String],
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Result<Vec<RailSpec>, ApiError> {
+    payment_method_types
+        .iter()
+        .map(|code| {
+            let adapter = adapters.get(code.as_str()).ok_or_else(|| {
+                ApiError::Internal(format!(
+                    "payment_intents.payment_method_types names `{code}`, which has no linked \
+                     adapter; boot is supposed to have refused to start"
+                ))
+            })?;
+            Ok(RailSpec {
+                code: code.clone(),
+                // The one `Capabilities` flag a payer's sheet acts on — see
+                // `RailSpec`'s own doc for why the rest (refund flags,
+                // `requires_ip_allowlist`) stay operator-facing.
+                flow: adapter.capabilities().flow,
+                label_key: format!("rail.{code}"),
+                display_name: config
+                    .rail(code)
+                    .and_then(RailConfig::display_name)
+                    .map(RailDisplayName::from),
+                fields: adapter.payer_fields().to_vec(),
+            })
+        })
+        .collect()
 }
 
 /// `GET /v1/browser/checkout/sessions/{id}?key=…&client_secret=…`.
@@ -375,6 +430,7 @@ fn for_payer(
 pub(super) async fn retrieve(
     State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
+    State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     Path(id): Path<String>,
     VpayQuery(credential): VpayQuery<SessionCredential>,
 ) -> Result<Response, ApiError> {
@@ -401,6 +457,7 @@ pub(super) async fn retrieve(
     // read the secret on its first call, and everything it does afterwards
     // is polling with the copy it already holds.
     let intent_object = PaymentIntentObject::try_from(&intent)?;
+    let rails = build_rails(&intent_object.payment_method_types, &config, &adapters)?;
     let expanded = if session.status == crate::v1::checkout_sessions::OPEN {
         ExpandableIntent::ExpandedWithSecret(Box::new(PaymentIntentWithSecret::new(
             intent_object,
@@ -415,6 +472,7 @@ pub(super) async fn retrieve(
             &config,
             &session,
             rendered_session(&session).with_expanded_intent(expanded),
+            rails,
         ),
     )
 }
@@ -464,6 +522,14 @@ pub(super) async fn retrieve_for_return(
             &config,
             &session,
             rendered_session(&session).with_expanded_intent(expanded),
+            // No adapter map on this route (this handler takes no
+            // `State<BTreeMap<..>>`) and, more to the point, nothing to ask
+            // it: by the time a payer reaches the return page a charge
+            // already exists, `POST .../confirm` is a `409`, and there is no
+            // instrument left to collect — see this function's own doc, "It
+            // could not confirm anyway". An empty rail spec here is the
+            // honest answer, not a shortcut.
+            Vec::new(),
         ),
     )
 }
@@ -596,5 +662,245 @@ mod tests {
             "the merchant surface's object name and the payer-facing noun are two different \
              contracts and must not converge"
         );
+    }
+
+    /// A test double naming only what [`build_rails`] reads off an adapter:
+    /// `capabilities().flow` and `payer_fields()`. This is where a real
+    /// deployment caught a bug a unit test alone would not have (see
+    /// `vpay_provider::measured::tests::payer_fields_is_forwarded_…`): the
+    /// `Measured` decorator every real adapter is wrapped in before it
+    /// reaches this map did not forward `payer_fields()` and silently
+    /// answered the trait's `&[]` default. This double is unwrapped
+    /// (exactly the map shape `crate::v1::boot::boot_seeds` builds, whose
+    /// values are `Box<dyn ProviderAdapter>` — `Measured` included), so it
+    /// cannot by itself prove that forwarding is correct; it proves
+    /// `build_rails` reads the two methods it should, and the `Measured`
+    /// test proves the wrapper does not swallow the answer between here and
+    /// a real adapter.
+    #[derive(Debug)]
+    struct StubAdapter {
+        code: &'static str,
+        flow: vpay_core::ProviderFlow,
+        fields: &'static [vpay_provider::PayerField],
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderAdapter for StubAdapter {
+        fn code(&self) -> &'static str {
+            self.code
+        }
+
+        fn capabilities(&self) -> vpay_provider::Capabilities {
+            vpay_provider::Capabilities {
+                flow: self.flow,
+                supports_refunds: false,
+                supports_partial_refunds: false,
+                delivers_callbacks: false,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+                refund_destination: vpay_provider::RefundDestination::Origin,
+            }
+        }
+
+        fn payer_fields(&self) -> &'static [vpay_provider::PayerField] {
+            self.fields
+        }
+
+        async fn submit(
+            &self,
+            _charge: &vpay_provider::ChargeRef,
+            _config: &vpay_provider::ProviderConfig,
+        ) -> Result<vpay_provider::Submitted, vpay_provider::ProviderError> {
+            panic!("this rail-spec test double is never asked to drive a charge")
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &vpay_provider::ChargeRef,
+            _config: &vpay_provider::ProviderConfig,
+        ) -> Result<vpay_provider::ChargeStatus, vpay_provider::ProviderError> {
+            panic!("this rail-spec test double is never asked to drive a charge")
+        }
+
+        fn parse_callback(
+            &self,
+            _body: &[u8],
+        ) -> Result<vpay_provider::CallbackRef, vpay_provider::ProviderError> {
+            panic!("this rail-spec test double is never asked to drive a charge")
+        }
+    }
+
+    const MTN_FIELDS: &[vpay_provider::PayerField] = &[vpay_provider::PayerField {
+        name: "msisdn",
+        kind: vpay_provider::PayerFieldKind::Phone {
+            region: "CM",
+            phone_type: vpay_provider::PhonePayerType::Mobile,
+        },
+        required: true,
+        label_key: "msisdn.label",
+    }];
+
+    /// A minimal, self-contained `Config` naming `mtn_momo` and
+    /// `orange_money` — deliberately not `crate::v1::tests::config()`
+    /// (that fixture's module is private to `v1` and unreachable from
+    /// `crate::browser`, and this test wants to vary exactly one field
+    /// anyway: `mtn_momo`'s `display_name`).
+    fn rail_spec_test_config(
+        mtn_display_name: Option<vpay_config::RailDisplayName>,
+    ) -> vpay_config::Config {
+        vpay_config::Config {
+            deployment: vpay_config::Deployment {
+                name: "test".to_owned(),
+                livemode: false,
+                public_base_url: "https://api.vpay.test".to_owned(),
+                surfaces: None,
+            },
+            providers: vec![
+                vpay_config::ProviderHost {
+                    code: "mtn_momo".to_owned(),
+                    enabled: true,
+                    host: vpay_config::HostEntry {
+                        url: "https://mtn.example".to_owned(),
+                        label: "mtn".to_owned(),
+                    },
+                    settings: std::collections::BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
+                    credentials: std::collections::BTreeMap::new(),
+                    display_name: mtn_display_name,
+                },
+                vpay_config::ProviderHost {
+                    code: "orange_money".to_owned(),
+                    enabled: true,
+                    host: vpay_config::HostEntry {
+                        url: "https://orange.example".to_owned(),
+                        label: "orange".to_owned(),
+                    },
+                    settings: std::collections::BTreeMap::new(),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
+                    credentials: std::collections::BTreeMap::new(),
+                    display_name: None,
+                },
+            ],
+            currencies: vec![vpay_config::CurrencyEntry {
+                code: "XAF".to_owned(),
+                exponent: 0,
+            }],
+            merchant_clients: vec![crate::test_fixtures::merchant(
+                "acme-cameroon",
+                &["payments:write"],
+            )],
+            webhooks: vpay_config::WebhookPolicy::default(),
+            checkout: vpay_config::CheckoutConfig::default(),
+            dashboard_client: None,
+            staff_auth: vpay_config::StaffAuth::default(),
+        }
+    }
+
+    fn rail_test_adapters() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+        let mut adapters: BTreeMap<String, Box<dyn ProviderAdapter>> = BTreeMap::new();
+        adapters.insert(
+            "mtn_momo".to_owned(),
+            Box::new(StubAdapter {
+                code: "mtn_momo",
+                flow: vpay_core::ProviderFlow::Push,
+                fields: MTN_FIELDS,
+            }),
+        );
+        adapters.insert(
+            "orange_money".to_owned(),
+            Box::new(StubAdapter {
+                code: "orange_money",
+                flow: vpay_core::ProviderFlow::Redirect,
+                fields: &[],
+            }),
+        );
+        adapters
+    }
+
+    /// The rail spec, end to end: a push rail's declared field survives
+    /// into the wire type, a redirect rail's is the empty array Stripe-style
+    /// "every key, every time" would render as `[]` rather than an absent
+    /// key, and a rail with no configured `display_name` omits the key
+    /// entirely (`crate::model::RailSpec::display_name`'s own doc) rather
+    /// than rendering `null` — a client falls back to `label_key`.
+    #[test]
+    fn build_rails_renders_flow_fields_and_the_configured_display_name() {
+        let config = rail_spec_test_config(Some(vpay_config::RailDisplayName {
+            en: Some("MTN Mobile Money".to_owned()),
+            fr: None,
+        }));
+        let resource_config =
+            ResourceConfig::from_config(&config).expect("the fixture config is valid");
+
+        let rails = build_rails(
+            &["mtn_momo".to_owned(), "orange_money".to_owned()],
+            &resource_config,
+            &rail_test_adapters(),
+        )
+        .expect("both codes have a linked test adapter");
+
+        // A slice pattern rather than `rails[0]`/`rails[1]`:
+        // `clippy::indexing_slicing` is denied workspace-wide and, unlike
+        // unwrap/expect/panic, has no test exemption (clippy.toml,
+        // docs/adr/0007-lint-policy.md). It also states the arity once.
+        let [mtn, orange] = rails.as_slice() else {
+            panic!("build_rails must answer exactly the two codes it was given");
+        };
+
+        assert_eq!(mtn.code, "mtn_momo");
+        assert_eq!(mtn.flow, vpay_core::ProviderFlow::Push);
+        assert_eq!(mtn.label_key, "rail.mtn_momo");
+        assert_eq!(mtn.fields.len(), 1);
+        let msisdn = mtn
+            .fields
+            .first()
+            .expect("asserted exactly one field just above");
+        assert_eq!(msisdn.name, "msisdn");
+        let display_name = mtn
+            .display_name
+            .as_ref()
+            .expect("mtn_momo was configured with a display_name in this test");
+        assert_eq!(display_name.en.as_deref(), Some("MTN Mobile Money"));
+        assert_eq!(display_name.fr, None);
+
+        assert_eq!(orange.code, "orange_money");
+        assert_eq!(orange.flow, vpay_core::ProviderFlow::Redirect);
+        assert_eq!(orange.label_key, "rail.orange_money");
+        assert!(
+            orange.fields.is_empty(),
+            "a redirect rail collects no instrument"
+        );
+        assert!(
+            orange.display_name.is_none(),
+            "orange_money was not configured with a display_name in this test"
+        );
+
+        assert_eq!(
+            serde_json::to_value(orange)
+                .expect("a wire DTO always serialises")
+                .get("display_name"),
+            None,
+            "an unconfigured display_name must be an absent key, never `null`"
+        );
+    }
+
+    /// A code that names no linked adapter is our own invariant failing
+    /// (boot is supposed to have refused to start), never a caller's
+    /// mistake — see [`build_rails`]'s own doc.
+    #[test]
+    fn a_code_with_no_linked_adapter_is_an_internal_error() {
+        let config = rail_spec_test_config(None);
+        let resource_config =
+            ResourceConfig::from_config(&config).expect("the fixture config is valid");
+
+        let error = build_rails(
+            &["a_rail_nothing_links".to_owned()],
+            &resource_config,
+            &rail_test_adapters(),
+        )
+        .expect_err("no adapter is linked for this code");
+        assert!(matches!(error, ApiError::Internal(_)));
     }
 }

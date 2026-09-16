@@ -854,21 +854,105 @@ pub struct CheckoutSessionForPayer {
     /// `display_name`, never an internal identifier in its place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merchant: Option<CheckoutMerchantObject>,
+    /// The server-driven rail spec: one entry per code in the intent's
+    /// `payment_method_types`, in that order, and everything a native payer
+    /// sheet needs to render an unfamiliar rail with no `if code ==
+    /// "mtn_momo"` anywhere in the client — the Flutter payment sheet this
+    /// surface was built for is exactly that client.
+    ///
+    /// Always present, even when empty — unlike [`Self::merchant`], this is
+    /// not "the merchant configured nothing", it is "here is what to render
+    /// a picker from", and an absent array would read as "the server forgot
+    /// to say" rather than "there is nothing to offer".
+    pub rails: Vec<RailSpec>,
 }
 
 impl CheckoutSessionForPayer {
-    /// Pairs a rendered session with the name a payer is shown.
+    /// Pairs a rendered session with the name a payer is shown and the
+    /// rails they may pay with.
     ///
-    /// Takes the name rather than a `ResourceConfig`, for
-    /// [`CheckoutSessionWithSecret::new`]'s reason: this module renders, and a
-    /// model type that could read deployment configuration is a model type
-    /// that can grow a second answer to a question the boundary already
-    /// decided.
+    /// Takes the name and the rails rather than a `ResourceConfig` and an
+    /// adapter map, for [`CheckoutSessionWithSecret::new`]'s reason: this
+    /// module renders, and a model type that could reach into deployment
+    /// configuration or the adapter registry is a model type that can grow
+    /// a second answer to a question the boundary already decided. Building
+    /// `rails` is `crate::browser::checkout_sessions`'s job — see
+    /// `build_rails` there.
     #[must_use]
-    pub fn new(session: CheckoutSessionObject, name: Option<String>) -> Self {
+    pub fn new(session: CheckoutSessionObject, name: Option<String>, rails: Vec<RailSpec>) -> Self {
         Self {
             session,
             merchant: name.map(|name| CheckoutMerchantObject { name }),
+            rails,
+        }
+    }
+}
+
+/// One rail a payer may confirm this session against — the payer-facing
+/// projection of [`vpay_provider::Capabilities`] and
+/// [`vpay_provider::ProviderAdapter::payer_fields`], reduced to what a
+/// payment sheet needs and nothing an operator would care about.
+///
+/// # What is deliberately not here
+///
+/// [`vpay_provider::Capabilities`] carries `requires_ip_allowlist` and the
+/// refund flags (`supports_refunds`, `supports_partial_refunds`,
+/// `refund_destination`) — every one of them a fact about how *vpay*
+/// operates this rail, never a fact a payer's sheet acts on. Shipping them
+/// would be this module's own rule broken twice over: `crate::browser`'s
+/// header says every route on this surface renders the least that answers
+/// the question in front of it, and `checkout_sessions`'s reduction from a
+/// merchant's full session to [`CheckoutSessionForPayer`] is the same
+/// discipline one level up. `flow` is the one capability a sheet *does* act
+/// on — it decides whether to collect [`Self::fields`] and submit inline or
+/// to expect a redirect — so it is the only one that crosses.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RailSpec {
+    /// `providers.code` — `payment_method_data[type]` on confirm.
+    pub code: String,
+    /// Whether this rail is collected inline (`push`) or finishes on the
+    /// rail's own page (`redirect`) — see [`vpay_provider::Capabilities::flow`].
+    pub flow: vpay_core::ProviderFlow,
+    /// The i18n key for this rail's own name, mechanically `"rail.{code}"`.
+    /// A client with no translation for it falls back to
+    /// [`Self::display_name`], and past that to [`Self::code`] itself
+    /// (`docs/reference/rails.md`).
+    pub label_key: String,
+    /// This deployment's own name for the rail
+    /// (`providers[].display_name`), when it configured one. Omitted rather
+    /// than `null` when absent, matching [`CheckoutSessionForPayer::merchant`]'s
+    /// convention on this same payer-facing type — see that field for why
+    /// this module's usual "every key, every time" rule does not apply
+    /// here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<RailDisplayName>,
+    /// What the payer must fill in before this rail can be confirmed
+    /// against, verbatim from [`vpay_provider::ProviderAdapter::payer_fields`]
+    /// — empty for a redirect rail, which collects nothing.
+    pub fields: Vec<vpay_provider::PayerField>,
+}
+
+/// [`RailSpec::display_name`]'s two languages. Both optional, mirroring
+/// [`vpay_config::RailDisplayName`] — this is its wire projection rather
+/// than the same type reused directly, on `crate::v1::WebhookEndpointConfig`'s
+/// reason: what crosses this module's boundary is exactly what the wire
+/// contract promises, not whatever the configuration type happens to carry
+/// next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RailDisplayName {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub en: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fr: Option<String>,
+}
+
+impl From<&vpay_config::RailDisplayName> for RailDisplayName {
+    fn from(value: &vpay_config::RailDisplayName) -> Self {
+        Self {
+            en: value.en.clone(),
+            fr: value.fr.clone(),
         }
     }
 }

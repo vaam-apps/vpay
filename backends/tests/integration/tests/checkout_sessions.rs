@@ -216,6 +216,7 @@ fn config_with(
                 ),
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
+            display_name: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

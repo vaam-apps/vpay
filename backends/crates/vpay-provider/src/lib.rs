@@ -198,6 +198,93 @@ impl Capabilities {
     }
 }
 
+/// A phone number [`PayerField`] must be a valid number of, and the kind a
+/// rail's product actually asks the payer for.
+///
+/// Only [`Mobile`](Self::Mobile) exists today because MTN Collections is the
+/// only rail that declares a payer field at all — this is not "every kind
+/// libphonenumber knows about", it is "the kinds a rail's payer field has
+/// been proven to need". Add a variant when a second rail proves it needs
+/// one, on `docs/status.md`'s rule against building ahead of a real caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhonePayerType {
+    /// A handset the rail can prompt or dial — the only kind a mobile-money
+    /// collection has ever needed.
+    Mobile,
+}
+
+/// What a [`PayerField`] demands of the value at that key, and the data a
+/// generic validator needs to enforce it without knowing which rail it is
+/// looking at (ADR-0002 again, applied to a payer field rather than to a
+/// provider code).
+///
+/// `#[serde(tag = "type")]` on this and `#[serde(flatten)]` on the field
+/// that carries it (see [`PayerField::kind`]) is what produces the flat wire
+/// shape `docs/reference/rails.md` documents —
+/// `{"type": "phone", "region": "CM", "phone_type": "mobile"}` merged into
+/// the same object as `name`, `required` and `label_key` — rather than a
+/// nested nested object a client would have to know to unwrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PayerFieldKind {
+    /// A phone number, validated with `phonenumber` against `region` (an
+    /// ISO 3166-1 alpha-2 country code, e.g. `"CM"`) and required to be of
+    /// `phone_type`.
+    ///
+    /// `region` is on the *field*, never in `vpay_api` as a literal: the
+    /// adapter is the only thing that knows which country a rail's product
+    /// serves, and a market-agnostic validator that read a country off
+    /// anything else would be the next rail's country silently assumed —
+    /// [`RefundTarget::mobile_money`]'s reasoning, applied to a payer rather
+    /// than a payee.
+    Phone {
+        /// ISO 3166-1 alpha-2, e.g. `"CM"`. `&'static str` because every
+        /// caller of this type today is a `const` declared in an adapter
+        /// crate; a deployment cannot override it (that would be exactly
+        /// the YAML-claims-a-capability hazard `vpay_config::ProviderHost`'s
+        /// own `enabled` field doc warns about, transplanted to a field).
+        region: &'static str,
+        phone_type: PhonePayerType,
+    },
+}
+
+/// One field a payer must (or may) fill in before a rail can be confirmed
+/// against, declared by the adapter and enforced generically by
+/// `vpay_api::v1::payment_intents`'s confirm path.
+///
+/// This is the whole "rail spec" the payer-facing checkout session response
+/// is built from (`vpay_api::model::RailSpec`) — a native client renders
+/// `fields` with no `if code == "mtn_momo"` anywhere in it, and the server
+/// enforces exactly the same declaration at confirm, so the two can never
+/// drift apart the way a hand-maintained client-side form and a hand-checked
+/// server-side one could.
+///
+/// Every field is `&'static str`/`Copy`: an adapter declares its fields as a
+/// `const` slice (see `vpay-adapter-mtn-momo::PAYER_FIELDS`), never builds
+/// one from deployment configuration — a payer field is a fact about the
+/// rail's product, exactly like [`Capabilities`], not a fact a YAML file
+/// could plausibly override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PayerField {
+    /// The key under `payment_method_data[<rail code>][<name>]` this field
+    /// reads — `"msisdn"` for MTN's payer number.
+    pub name: &'static str,
+    #[serde(flatten)]
+    pub kind: PayerFieldKind,
+    /// Whether confirm must refuse a missing or blank value. Every field
+    /// declared today is required — there is no rail with an optional
+    /// payer field yet — but the type carries the flag rather than assuming
+    /// it, because "every field so far is required" is a fact about today's
+    /// two rails and not a rule the port should encode structurally.
+    pub required: bool,
+    /// The i18n key a client looks up to label this field's input —
+    /// `"msisdn.label"`, never rendered text, so the payer sheet can
+    /// localise it without a round trip to vpay.
+    pub label_key: &'static str,
+}
+
 /// Rail-supplied key material the core must persist to query status later —
 /// Orange's `pay_token`, for instance. Opaque to the core.
 pub type RefExtra = BTreeMap<String, String>;
@@ -1523,6 +1610,27 @@ pub trait ProviderAdapter: Debug + Send + Sync {
         _config: &ProviderConfig,
     ) -> Result<Option<AccountHolder>, ProviderError> {
         Err(ProviderError::Unsupported)
+    }
+
+    /// What a payer must fill in before this rail can be confirmed against —
+    /// the whole payer-facing "rail spec" (`vpay_api::model::RailSpec`) and
+    /// the whole confirm-time validation, both driven off this one
+    /// declaration so the two cannot drift apart.
+    ///
+    /// The default is the empty slice, so every existing adapter keeps
+    /// compiling without an override — and the empty slice is also the
+    /// *correct* answer for a redirect rail: `orange_money` authenticates
+    /// the payer on its own hosted page and vpay never collects an
+    /// instrument for it, so it declares no fields rather than overriding
+    /// this to return `&[]` explicitly.
+    ///
+    /// `&'static [PayerField]` rather than `Vec<PayerField>`: every
+    /// implementor declares this as a `const`, because a payer field is a
+    /// fact about the rail's *product* and never about one deployment's
+    /// configuration — [`PayerFieldKind::Phone`]'s `region` doc says why a
+    /// value here must never be read out of `ProviderConfig`.
+    fn payer_fields(&self) -> &'static [PayerField] {
+        &[]
     }
 }
 

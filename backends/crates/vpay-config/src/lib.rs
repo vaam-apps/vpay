@@ -25,8 +25,8 @@ pub mod oauth;
 pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
 pub use config::{
-    CheckoutConfig, Config, CurrencyEntry, ProviderHost, RateLimitPolicy, RateLimits, StaffAuth,
-    WebhookPolicy,
+    CheckoutConfig, Config, CurrencyEntry, ProviderHost, RailDisplayName, RateLimitPolicy,
+    RateLimits, StaffAuth, WebhookPolicy,
 };
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
@@ -841,6 +841,25 @@ pub enum ConfigError {
         /// The value as written.
         display_name: String,
         /// Which of `validate_display_name`'s rules it broke.
+        reason: &'static str,
+    },
+    /// A `providers[].display_name.{en,fr}` is blank or too long — the same
+    /// two rules [`Self::MalformedDisplayName`] enforces on a merchant's
+    /// name, applied to a rail's, and its own variant rather than a shared
+    /// one for the same reason `checkout_sessions`' two 404 nouns stay two
+    /// constants: `client_id` there is a merchant's, `code` here is a rail's,
+    /// and collapsing the two would make a future field rename on one
+    /// silently rename the other's error too.
+    #[error("provider {code} declares display_name.{language} `{display_name}`: {reason}")]
+    MalformedProviderDisplayName {
+        /// The rail the name belongs to.
+        code: String,
+        /// `"en"` or `"fr"` — which half of [`crate::config::RailDisplayName`]
+        /// broke.
+        language: &'static str,
+        /// The value as written.
+        display_name: String,
+        /// Which of `validate_provider_display_name`'s rules it broke.
         reason: &'static str,
     },
     /// A `merchant_clients[].checkout_origins` entry is not an origin.

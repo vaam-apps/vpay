@@ -348,6 +348,7 @@ mod tests {
             callback_url: None,
             currency: "EUR".to_owned(),
             credentials: BTreeMap::new(),
+            display_name: None,
         };
 
         let mounted = format!(

@@ -176,6 +176,17 @@ time.workspace = true
 # and no new feature in any graph: this is the same workspace pin `vpay-db`
 # and tower-http's `request-id` feature already resolve.
 uuid.workspace = true
+# `v1::payer_fields`: real E.164 validation of a payer's phone number at
+# confirm, against the region and phone kind the rail's adapter declared
+# (`vpay_provider::PayerFieldKind::Phone`) — replacing a bare
+# `!msisdn.trim().is_empty()` check on the number that gets charged. A real
+# libphonenumber port rather than a hand-rolled regex because a regex proves
+# a string is *shaped* like a number and this needs to know it is one: valid
+# length, valid prefix, and — the property no regex over digits can express —
+# *mobile* rather than fixed-line, for the rail whose product only prompts a
+# handset. Apache-2.0, already allowed in `deny.toml`. Not a workspace pin:
+# this crate is its only consumer.
+phonenumber = "0.3"
 
 [dev-dependencies]
 # Test-only again as of 2026-09-05, and back where it was before the OP work.

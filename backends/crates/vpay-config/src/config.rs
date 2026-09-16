@@ -183,6 +183,44 @@ pub struct ProviderHost {
     #[garde(skip)]
     #[serde(default)]
     pub credentials: BTreeMap<String, String>,
+    /// What a payer is told this rail is called, in the languages this
+    /// deployment's checkout renders.
+    ///
+    /// **A presentation fact, not a capability**, which is why it lives here
+    /// and `flow`/`supports_refunds`/the rest never will — see this
+    /// struct's own header. A deployment cannot make `mtn_momo` push money
+    /// through a claim in YAML, but it can absolutely be the one place that
+    /// knows whether its payers read French, and nothing downstream of this
+    /// struct has any other source for that.
+    ///
+    /// Absent — the common case — means the rail spec omits `display_name`
+    /// entirely (`vpay_api::model::RailSpec`) rather than rendering `null`,
+    /// so a client falls back to `label_key`, and past that to the raw
+    /// code. This retires `vpay_api::v1::boot::display_name_for`'s
+    /// mechanical `mtn_momo` -> `"Mtn Momo"` derivation *as a display
+    /// source* — that function still runs, because `providers.display_name`
+    /// (migration `0002`) is an operator-facing DB seed column with its own
+    /// reconcile path, unrelated to what a payer's browser renders.
+    #[garde(dive)]
+    #[serde(default)]
+    pub display_name: Option<RailDisplayName>,
+}
+
+/// [`ProviderHost::display_name`]'s two languages, both optional so a
+/// deployment can supply French only, English only, or both — whichever the
+/// operator actually has a translation for. Bounded and non-blank like
+/// [`crate::oauth::MerchantClient::display_name`] (`DISPLAY_NAME_MAX_CHARS`),
+/// for the same rendering reason: this string is painted into a payer
+/// sheet, not stored for its own sake.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RailDisplayName {
+    #[garde(skip)]
+    #[serde(default)]
+    pub en: Option<String>,
+    #[garde(skip)]
+    #[serde(default)]
+    pub fr: Option<String>,
 }
 
 /// `#[serde(default)]` for a `bool` yields `false`; [`ProviderHost::enabled`]
@@ -1009,6 +1047,7 @@ impl Config {
             Currency::from_code(&provider.currency.to_ascii_uppercase())
                 .map_err(|_| ConfigError::UnknownCurrency(provider.currency.clone()))?;
             validate_required_rail_keys(provider)?;
+            validate_provider_display_name(provider)?;
         }
 
         let mut seen_currencies = BTreeSet::new();
@@ -1738,6 +1777,45 @@ fn validate_display_name(merchant: &MerchantClient) -> Result<(), ConfigError> {
             "it must be at most 80 characters; it is painted into a heading on a phone-sized \
              page",
         ));
+    }
+    Ok(())
+}
+
+/// [`validate_display_name`]'s two rules — present means non-blank and at
+/// most [`DISPLAY_NAME_MAX_CHARS`] characters — applied to each language of
+/// a `providers[].display_name` independently, so a valid English name and a
+/// blank French one is reported as the French field's mistake rather than
+/// refusing the whole rail on an error that names the wrong language.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedProviderDisplayName`] for each rule, once per
+/// offending language.
+fn validate_provider_display_name(provider: &ProviderHost) -> Result<(), ConfigError> {
+    let Some(names) = provider.display_name.as_ref() else {
+        return Ok(());
+    };
+
+    for (language, value) in [("en", names.en.as_deref()), ("fr", names.fr.as_deref())] {
+        let Some(display_name) = value else { continue };
+
+        let malformed = |reason: &'static str| ConfigError::MalformedProviderDisplayName {
+            code: provider.code.clone(),
+            language,
+            display_name: display_name.to_owned(),
+            reason,
+        };
+
+        if display_name.trim().is_empty() {
+            return Err(malformed(
+                "it must not be blank; omit the key entirely to fall back to label_key",
+            ));
+        }
+        if display_name.chars().count() > DISPLAY_NAME_MAX_CHARS {
+            return Err(malformed(
+                "it must be at most 80 characters; it is painted into a payer's rail picker",
+            ));
+        }
     }
     Ok(())
 }
@@ -3323,6 +3401,7 @@ mod tests {
             callback_url: None,
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
+            display_name: None,
         };
         assert_eq!(validate_required_rail_keys(&host), Ok(()));
     }
@@ -3387,6 +3466,7 @@ mod tests {
                     ("subscription_key".to_owned(), "${K}".to_owned()),
                     ("api_key".to_owned(), "${A}".to_owned()),
                 ]),
+                display_name: None,
             }],
             currencies: Vec::new(),
             webhooks: WebhookPolicy::default(),
@@ -3475,6 +3555,7 @@ mod tests {
             callback_url: None,
             currency: "xaf".to_owned(),
             credentials: BTreeMap::new(),
+            display_name: None,
         };
 
         assert_eq!(
@@ -3520,6 +3601,7 @@ mod tests {
             callback_url: None,
             currency: "GBP".to_owned(),
             credentials: BTreeMap::new(),
+            display_name: None,
         };
 
         assert_eq!(
@@ -3607,6 +3689,7 @@ mod tests {
                 "api_key".to_owned(),
                 "super-secret-live-mtn-key".to_owned(),
             )]),
+            display_name: None,
         };
 
         let formatted = format!("{host:?}");
@@ -3640,6 +3723,7 @@ mod tests {
                 "api_key".to_owned(),
                 "super-secret-live-mtn-key".to_owned(),
             )]),
+            display_name: None,
         };
 
         let formatted = format!("{host:?}");

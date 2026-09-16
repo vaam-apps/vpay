@@ -274,6 +274,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
                 ),
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
+            display_name: None,
         }],
         currencies: vec![CurrencyEntry {
             code: CURRENCY.to_ascii_uppercase(),

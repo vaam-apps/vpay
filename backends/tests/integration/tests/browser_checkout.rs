@@ -258,6 +258,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
                 ),
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
+            display_name: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

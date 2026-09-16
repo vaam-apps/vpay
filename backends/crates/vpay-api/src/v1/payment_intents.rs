@@ -45,6 +45,7 @@ use crate::model::{
     ListObject, NextAction, PaymentIntentObject, PaymentIntentWithSecret, RedirectToUrl,
 };
 use crate::v1::paging::{self, CursorKind};
+use crate::v1::payer_fields;
 use crate::v1::return_trip;
 use crate::v1::{MerchantScope, RailConfig, ResourceConfig};
 
@@ -1112,7 +1113,14 @@ fn resolve_rail<'a>(
     currencies_agree(rail, &intent.currency_code)?;
 
     let flow = adapter.capabilities().flow;
-    let (payer_ref, return_url) = payer_instrument(flow, code, data, params, session_return_page)?;
+    let (payer_ref, return_url) = payer_instrument(
+        flow,
+        code,
+        adapter.as_ref(),
+        data,
+        params,
+        session_return_page,
+    )?;
     let currency = Currency::from_code(&intent.currency_code)?;
     let amount = Money::new(intent.amount, currency)?;
 
@@ -1140,32 +1148,47 @@ fn resolve_rail<'a>(
 ///
 /// # Errors
 ///
-/// [`ApiError::InvalidParam`] naming `payment_method_data` for a push rail with
-/// no usable `msisdn`, or `return_url` for a redirect rail with none — or
-/// whatever [`checked_return_url`] refuses that URL for.
+/// [`ApiError::InvalidParam`] from [`payer_fields::resolve_payer_fields`] for
+/// any declared field the adapter refuses — missing, blank, unparseable, or
+/// a key the adapter did not declare at all (the closed-schema rule; see
+/// that module's own doc) — checked for **every** flow, not only push: a
+/// redirect rail with no declared fields still refuses a caller who sends
+/// one. [`ApiError::InvalidParam`] naming `return_url` for a redirect rail
+/// with none, or whatever [`checked_return_url`] refuses that URL for.
 fn payer_instrument(
     flow: ProviderFlow,
     code: &str,
+    adapter: &dyn ProviderAdapter,
     data: &Map<String, Value>,
     params: &ConfirmParams,
     session_return_page: Option<&str>,
 ) -> Result<(Option<String>, Option<String>), ApiError> {
+    // Run before the flow branch below, and unconditionally: the closed-
+    // schema check this enforces (`payer_fields::resolve_payer_fields`) is
+    // not a push-rail-only rule. A redirect confirm under an open checkout
+    // session returns early, with no `payment_method_data` read at all, on
+    // the branch below — so this has to happen first, or a caller who both
+    // sends a stray `payment_method_data[orange_money][msisdn]` *and* rides
+    // a session's own return page would never be told about it.
+    let instrument = data.get(code).and_then(Value::as_object);
+    let fields = payer_fields::resolve_payer_fields(code, adapter.payer_fields(), instrument)?;
+
     match flow {
         ProviderFlow::Push => {
-            let msisdn = data
-                .get(code)
-                .and_then(Value::as_object)
-                .and_then(|instrument| instrument.get("msisdn"))
-                .and_then(Value::as_str)
-                .filter(|msisdn| !msisdn.trim().is_empty())
-                .ok_or_else(|| {
-                    ApiError::invalid_param(
-                        "payment_method_data",
-                        "This payment method needs the payer's number, sent as \
-                         `payment_method_data[<type>][msisdn]`.",
-                    )
-                })?;
-            Ok((Some(msisdn.to_owned()), None))
+            // The port's `ChargeRef::payer_ref` is one `Option<String>`, so
+            // today's single push field (`msisdn`) is the value it carries.
+            // `resolve_payer_fields` has already enforced `required` and
+            // normalised it, so a miss here only happens if a future push
+            // adapter declares fields under a different name — which is a
+            // real redesign this line is not attempting, not a caller
+            // mistake, hence `Internal` rather than another `InvalidParam`.
+            let msisdn = fields.get("msisdn").cloned().ok_or_else(|| {
+                ApiError::Internal(format!(
+                    "provider adapter for `{code}` is a push rail whose payer_fields() names no \
+                     `msisdn` field; payer_instrument has no other source for ChargeRef::payer_ref"
+                ))
+            })?;
+            Ok((Some(msisdn), None))
         }
         ProviderFlow::Redirect => {
             // A checkout session wins, and its page is where the payer must
@@ -2751,6 +2774,7 @@ mod tests {
                     callback_url: None,
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
+                    display_name: None,
                 },
                 ProviderHost {
                     code: "orange_money".to_owned(),
@@ -2763,6 +2787,7 @@ mod tests {
                     callback_url: None,
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
+                    display_name: None,
                 },
             ],
             currencies: vec![CurrencyEntry {
@@ -3138,6 +3163,90 @@ mod tests {
         assert!(poll_dedupe_key("ch_abc").starts_with("poll:"));
     }
 
+    /// A test double naming only what `payer_instrument` reads off an
+    /// adapter — `payer_fields()` — so these tests can exercise the
+    /// function directly without a real rail. Every other method panics if
+    /// called, which is itself a check: `payer_instrument` must never touch
+    /// `submit`/`query_status`/anything network-shaped.
+    #[derive(Debug)]
+    struct FieldsOnlyAdapter {
+        fields: &'static [vpay_provider::PayerField],
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderAdapter for FieldsOnlyAdapter {
+        fn code(&self) -> &'static str {
+            panic!("payer_instrument takes the code as its own parameter")
+        }
+
+        fn capabilities(&self) -> vpay_provider::Capabilities {
+            panic!("payer_instrument takes the flow as its own parameter")
+        }
+
+        fn payer_fields(&self) -> &'static [vpay_provider::PayerField] {
+            self.fields
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &vpay_provider::ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            panic!("this payer-field test double is never asked to drive a charge")
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &vpay_provider::ProviderConfig,
+        ) -> Result<vpay_provider::ChargeStatus, ProviderError> {
+            panic!("this payer-field test double is never asked to drive a charge")
+        }
+
+        fn parse_callback(
+            &self,
+            _body: &[u8],
+        ) -> Result<vpay_provider::CallbackRef, ProviderError> {
+            panic!("this payer-field test double is never asked to drive a charge")
+        }
+
+        fn parse_destination(
+            &self,
+            _raw: &Map<String, Value>,
+        ) -> Result<vpay_provider::RefundTarget, ProviderError> {
+            panic!("this payer-field test double is never asked to drive a charge")
+        }
+
+        async fn account_holder_name(
+            &self,
+            _msisdn: &str,
+            _config: &vpay_provider::ProviderConfig,
+        ) -> Result<Option<vpay_provider::AccountHolder>, ProviderError> {
+            panic!("this payer-field test double is never asked to drive a charge")
+        }
+    }
+
+    /// [`FieldsOnlyAdapter`] declaring no payer fields — `orange_money`'s
+    /// real shape (a redirect rail collects nothing).
+    fn no_fields_adapter() -> FieldsOnlyAdapter {
+        FieldsOnlyAdapter { fields: &[] }
+    }
+
+    /// [`FieldsOnlyAdapter`] declaring `mtn_momo`'s real shape: one
+    /// required CM mobile `msisdn`.
+    fn msisdn_field_adapter() -> FieldsOnlyAdapter {
+        const FIELDS: &[vpay_provider::PayerField] = &[vpay_provider::PayerField {
+            name: "msisdn",
+            kind: vpay_provider::PayerFieldKind::Phone {
+                region: "CM",
+                phone_type: vpay_provider::PhonePayerType::Mobile,
+            },
+            required: true,
+            label_key: "msisdn.label",
+        }];
+        FieldsOnlyAdapter { fields: FIELDS }
+    }
+
     /// A redirect confirm on an intent an **open checkout session** drives
     /// needs no `return_url`, and ignores one that is sent.
     ///
@@ -3173,6 +3282,7 @@ mod tests {
         let error = payer_instrument(
             ProviderFlow::Redirect,
             "orange_money",
+            &no_fields_adapter(),
             &data,
             &params(None),
             None,
@@ -3184,6 +3294,7 @@ mod tests {
         let (payer_ref, return_url) = payer_instrument(
             ProviderFlow::Redirect,
             "orange_money",
+            &no_fields_adapter(),
             &data,
             &params(None),
             Some(SESSION),
@@ -3196,6 +3307,7 @@ mod tests {
         let (_payer_ref, return_url) = payer_instrument(
             ProviderFlow::Redirect,
             "orange_money",
+            &no_fields_adapter(),
             &data,
             &params(Some(MERCHANT)),
             Some(SESSION),
@@ -3218,6 +3330,7 @@ mod tests {
         let (payer_ref, return_url) = payer_instrument(
             ProviderFlow::Push,
             "mtn_momo",
+            &msisdn_field_adapter(),
             &push_data,
             &params(None),
             Some(SESSION),

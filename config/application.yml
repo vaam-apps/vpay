@@ -21,7 +21,9 @@ deployment:
 # that rail while keeping its host and credentials loaded for the charges
 # already on it (boot step 4 writes it to `providers.enabled`). Absent means
 # `true`. Capabilities — flow, refund support — are NOT configurable here:
-# they belong to the adapter (ADR-0002).
+# they belong to the adapter (ADR-0002). `display_name` is the one exception
+# to that rule, and deliberately so: it is a presentation fact this
+# deployment owns, not a capability — see `vpay_config::ProviderHost::display_name`.
 providers:
   - code: mtn_momo
     host:
@@ -32,6 +34,12 @@ providers:
       # never been started (docs/status.md, Infrastructure).
       url: http://wiremock-mtn:8080
       label: mtn-sandbox-wiremock
+    # What a payer's rail picker shows for this rail
+    # (`vpay_api::model::RailSpec::display_name`) — omit either language, or
+    # the whole key, and the client falls back to `label_key`.
+    display_name:
+      en: MTN Mobile Money
+      fr: MTN Mobile Money
     # EUR, not XAF: MTN's sandbox rejects XAF and accepts EUR only
     # (docs/flows/money.md). That is a property of this *profile*, expressed
     # as a config value — never a code branch (ADR-0003). Amounts against a

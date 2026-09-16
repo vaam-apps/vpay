@@ -131,7 +131,35 @@ const MSISDN: &str = "237670000000";
 /// choose — `provider_reference_id` is minted inside the handler — so it is
 /// the only way to reach a rail's decline branch from the API without a test
 /// seam in shipping code.
-const UNKNOWN_PAYER_MSISDN: &str = "237600000400";
+/// A syntactically real Cameroon mobile number (region `CM`, prefix `67`,
+/// which `phonenumber` resolves to a valid `Mobile`) that the MTN WireMock
+/// stub still treats as unregistered — see
+/// `backends/tests/conformance/wiremock/mtn/mappings/requesttopay.json`'s
+/// `"a payer the rail does not know"` mapping.
+///
+/// **Was `"237600000400"`** — a synthetic "documentation MSISDN" in the
+/// `2376000000xx` block the wider conformance/demo-walk steering scheme
+/// uses. That block predates real phone validation and is not a valid
+/// number under any real Cameroon numbering plan (`phonenumber` answers
+/// `is_valid() == false` for the whole `2376000000xx` family, hex letters or
+/// not) — server-enforced real validation
+/// (`vpay_api::v1::payer_fields::resolve_payer_fields`) now refuses it
+/// *before* the rail is ever asked, which turned this test's expected `409`
+/// (a rail decline) into a `400` (a format refusal) the day that validation
+/// landed.
+///
+/// **This is not the only place the same block breaks.** `examples/merchant-
+/// demo`'s step 4 and `backends/tests/conformance/wiremock/mtn/mappings/
+/// demo-outcomes.json` / `requesttopay-scenario.json` steer MTN's settle /
+/// decline / timeout scenarios by MSISDN through this same real confirm
+/// path, using the same `2376000000xx` block (some entries with hex
+/// letters, which do not even parse as a number at all). Those are left
+/// exactly as they were: redesigning that whole steering scheme — new
+/// real-shaped numbers, updated WireMock mappings in more than one file,
+/// updated prose in several places, a re-walked `just demo-walk` — is a
+/// separate, deliberately deferred piece of work, not folded into this
+/// one-number fix.
+const UNKNOWN_PAYER_MSISDN: &str = "237670000400";
 
 /// Where the merchant asks Orange to send the payer back.
 const RETURN_URL: &str = "https://shop.example/order/1234/return";
@@ -307,6 +335,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
                     ("subscription_key".to_owned(), mtn.subscription_key.clone()),
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
+                display_name: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -326,6 +355,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
                     ("client_id".to_owned(), "stub-client-id".to_owned()),
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
+                display_name: None,
             },
         ],
         currencies: vec![

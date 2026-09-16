@@ -193,6 +193,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
                     ),
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
+                display_name: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -212,6 +213,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
                     ("client_id".to_owned(), "stub-client-id".to_owned()),
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
+                display_name: None,
             },
         ],
         currencies: vec![CurrencyEntry {

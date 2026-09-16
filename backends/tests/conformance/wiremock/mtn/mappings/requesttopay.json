@@ -94,7 +94,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "equalTo": "237600000400"
+              "equalTo": "237670000400"
             }
           }
         ]
@@ -126,8 +126,15 @@
           "winning for the conformance suite whatever payer they carry, and above the",
           "catch-all 202 (priority 10) that answers every other confirm here.",
           "",
-          "237600000400 is a documentation MSISDN in the same 2376000000xx block the",
-          "conformance charges use, with the 0400 suffix naming the 400 it provokes."
+          "237670000400, not the 2376000000xx documentation block the rest of this file",
+          "and the demo-walk steering scheme use: that block is not a valid Cameroon",
+          "mobile number under any real numbering plan, and vpay_api now validates a",
+          "payer's MSISDN for real (vpay_api::v1::payer_fields) before this rail is ever",
+          "asked -- so a documentation MSISDN would be refused with a 400 of vpay's own",
+          "before it could reach this mapping at all, which defeats the point of a case",
+          "that is supposed to prove the RAIL'S decline reaches the merchant. 237 + 67 is",
+          "a real, valid Cameroon mobile prefix; the 0400 suffix keeps naming the 400 it",
+          "provokes."
         ]
       }
     },

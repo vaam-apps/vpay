@@ -503,6 +503,7 @@ mod tests {
                     callback_url: None,
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
+                    display_name: None,
                 })
                 .collect(),
             currencies: vec![CurrencyEntry {

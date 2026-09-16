@@ -1657,6 +1657,7 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
                 ),
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
+            display_name: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -1694,8 +1695,10 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
 /// The payer is the only part of a confirm's rail request a merchant can
 /// choose, so it is the only way to reach a rail's decline branch from the
 /// API without a test seam in shipping code —
-/// `confirm_rails::UNKNOWN_PAYER_MSISDN`'s reason, and the same number.
-const UNKNOWN_PAYER_MSISDN: &str = "237600000400";
+/// `confirm_rails::UNKNOWN_PAYER_MSISDN`'s reason, and the same number —
+/// including why it is `"237670000400"` and not the `2376000000xx`
+/// documentation block: see that constant's own doc.
+const UNKNOWN_PAYER_MSISDN: &str = "237670000400";
 
 /// The `wiremock/{rail}` root the conformance suite and `compose.yml` both
 /// mount, so a stub fixed in one place is fixed everywhere.

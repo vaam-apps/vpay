@@ -144,6 +144,7 @@ fn config_with(code: &str) -> Config {
             callback_url: None,
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
+            display_name: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

@@ -38,8 +38,9 @@ use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::RwLock;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, PayerField, PayerFieldKind,
+    PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination,
+    RefundTarget, Refunded, Submitted,
 };
 
 use crate::token::{Credentials, Product, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -57,6 +58,35 @@ const REFERENCE_ID_HEADER: HeaderName = HeaderName::from_static("x-reference-id"
 /// by whoever builds the `transfer` body, and the two are free to differ
 /// precisely because this adapter is the only thing that sees both.
 const DESTINATION_MSISDN_KEY: &str = "msisdn";
+
+/// This rail's whole payer-facing rail spec (`vpay_api::model::RailSpec`,
+/// `ProviderAdapter::payer_fields`): one required phone field, read at
+/// confirm from `payment_method_data[mtn_momo][msisdn]`.
+///
+/// Same wire key as [`DESTINATION_MSISDN_KEY`] — both are "the field called
+/// `msisdn`" — but the two exist for opposite parties (the payer who is
+/// charged vs. the payee a refund is sent to) and are validated by two
+/// different callers (`vpay_api::v1::payment_intents`'s confirm path here,
+/// `RefundTarget::mobile_money` there), so one constant is not shared
+/// between them: a rename of one must not silently rename the other.
+///
+/// `region: "CM"` because every deployment this adapter has ever been
+/// configured for transacts with Cameroonian payers — the same market
+/// `vpay_api::v1::account_holders`'s `CM_COUNTRY_CODE` hardcodes for the
+/// same reason, stated there at length. If MTN Collections is ever deployed
+/// for a second country's payers, this becomes a fact `ProviderConfig` would
+/// have to carry per-deployment; it is a `const` today because no such
+/// deployment exists yet (AGENTS.md's rule against building ahead of a real
+/// caller).
+const PAYER_FIELDS: &[PayerField] = &[PayerField {
+    name: DESTINATION_MSISDN_KEY,
+    kind: PayerFieldKind::Phone {
+        region: "CM",
+        phone_type: PhonePayerType::Mobile,
+    },
+    required: true,
+    label_key: "msisdn.label",
+}];
 
 /// Per-request, and its host must match the `providerCallbackHost` registered
 /// with the API user — a mismatch is one of the 500s
@@ -727,6 +757,10 @@ impl ProviderAdapter for Adapter {
             // real credential; the module header is where that is stated.
             refund_destination: RefundDestination::Required,
         }
+    }
+
+    fn payer_fields(&self) -> &'static [PayerField] {
+        PAYER_FIELDS
     }
 
     /// `POST /collection/v1_0/requesttopay`.

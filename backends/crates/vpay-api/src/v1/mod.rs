@@ -91,6 +91,10 @@ pub mod invoices;
 // doctest links the library as an external crate, so a `pub(crate)` helper
 // cannot be called from one. Nothing here reaches a database or a rail.
 pub mod paging;
+/// Generic, adapter-declared validation of `payment_method_data[<type>][…]`
+/// at confirm — `pub(crate)` because it is `payment_intents`'s own
+/// implementation detail and no other module calls it.
+pub(crate) mod payer_fields;
 pub mod payment_intents;
 /// The Refund resource — five methods over three paths: the read issue #45
 /// shipped first, and the create, update, list and cancel RFC-0003 § 2 added
@@ -522,6 +526,12 @@ pub struct RailConfig {
     /// [`RailConfig::provider_config`] for why the projection lives there and
     /// not here.
     provider_config: ProviderConfig,
+    /// `providers[].display_name`, verbatim — see
+    /// [`vpay_config::ProviderHost::display_name`] for why this is a
+    /// presentation fact rather than a capability and lives in configuration
+    /// at all. Read only by the payer-facing rail spec
+    /// (`crate::model::RailSpec`); nothing merchant-facing renders it.
+    display_name: Option<vpay_config::RailDisplayName>,
 }
 
 impl RailConfig {
@@ -529,6 +539,13 @@ impl RailConfig {
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
+    }
+
+    /// `providers[].display_name`, or `None` when the deployment configured
+    /// none — see [`vpay_config::ProviderHost::display_name`].
+    #[must_use]
+    pub fn display_name(&self) -> Option<&vpay_config::RailDisplayName> {
+        self.display_name.as_ref()
     }
 
     /// The currency this rail settles in, from `providers[].currency`.
@@ -861,6 +878,7 @@ impl ResourceConfig {
                     code: provider.code.clone(),
                     enabled: provider.enabled,
                     provider_config: provider.to_provider_config(&config.deployment)?,
+                    display_name: provider.display_name.clone(),
                 };
                 Ok((provider.code.clone(), rail))
             })
@@ -1236,6 +1254,7 @@ mod tests {
                     callback_url: None,
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::from([("api_key".to_owned(), "secret".to_owned())]),
+                    display_name: None,
                 },
                 ProviderHost {
                     code: "orange_money".to_owned(),
@@ -1248,6 +1267,7 @@ mod tests {
                     callback_url: None,
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
+                    display_name: None,
                 },
             ],
             currencies: vec![CurrencyEntry {

@@ -58,7 +58,7 @@ use vpay_core::metrics::{
 };
 
 use crate::{
-    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
+    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, PayerField, ProviderAdapter,
     ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
 };
 
@@ -141,6 +141,19 @@ impl ProviderAdapter for Measured {
 
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
+    }
+
+    /// Forwarded, not defaulted. `ProviderAdapter::payer_fields`'s default
+    /// is `&[]`, and every adapter this crate ships is wrapped in
+    /// `Measured` before `vpay_api` ever sees it (`Measured::wrap`,
+    /// `crate::v1::boot::boot_seeds`) — so leaving this unoverridden would
+    /// silently mask every adapter's real declaration behind the trait's
+    /// default, exactly the way `code()` and `capabilities()` above would if
+    /// they were not forwarded either. Caught by running the rail spec
+    /// against the live demo stack and finding `mtn_momo`'s `fields` empty
+    /// when the adapter itself declares one.
+    fn payer_fields(&self) -> &'static [PayerField] {
+        self.inner.payer_fields()
     }
 
     async fn submit(
@@ -271,6 +284,19 @@ mod tests {
     impl ProviderAdapter for Answering {
         fn code(&self) -> &'static str {
             self.code
+        }
+
+        fn payer_fields(&self) -> &'static [PayerField] {
+            const FIELDS: &[PayerField] = &[PayerField {
+                name: "msisdn",
+                kind: crate::PayerFieldKind::Phone {
+                    region: "CM",
+                    phone_type: crate::PhonePayerType::Mobile,
+                },
+                required: true,
+                label_key: "msisdn.label",
+            }];
+            FIELDS
         }
 
         fn capabilities(&self) -> Capabilities {
@@ -442,6 +468,32 @@ mod tests {
             !scrape.contains("vpay_provider_requests_total"),
             "parse_callback reaches no rail and must record nothing: {scrape}"
         );
+    }
+
+    /// `payer_fields()` is forwarded to the inner adapter, exactly as
+    /// `code()` and `capabilities()` are — and not defaulted. Every adapter
+    /// this crate ships reaches `vpay_api` only through `Measured::wrap`
+    /// (`crate::v1::boot::boot_seeds` in `vpay-api`), so an unoverridden
+    /// `payer_fields()` here would silently answer the trait's `&[]`
+    /// default for every real rail regardless of what it declared — which
+    /// is exactly the bug this test was added to catch after it reached a
+    /// running deployment (`GET /v1/browser/checkout/sessions/{id}`
+    /// rendered `mtn_momo`'s `fields` as `[]` although the adapter declares
+    /// one).
+    #[test]
+    fn payer_fields_is_forwarded_to_the_inner_adapter_and_not_defaulted() {
+        let adapter = Measured::wrap(Box::new(Answering {
+            code: "mtn_momo",
+            error: None,
+        }));
+
+        let fields = adapter.payer_fields();
+        assert_eq!(fields.len(), 1, "the inner adapter's own declaration");
+        // `.first()`, not `fields[0]`: `clippy::indexing_slicing` is denied
+        // workspace-wide and has no test exemption, unlike unwrap/expect/panic
+        // (clippy.toml, docs/adr/0007-lint-policy.md).
+        let first = fields.first().expect("asserted non-empty just above");
+        assert_eq!(first.name, "msisdn");
     }
 
     /// The `operation` labels are the port's method names. `vpay-core`
