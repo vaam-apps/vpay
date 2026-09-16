@@ -3,7 +3,8 @@
 {{- $fullName := include "vpay.fullname" . -}}
 # Requires the prometheus-operator CRDs. Two ServiceMonitors because there are
 # two Services: the server's, and the headless one that exists only so the
-# worker can be scraped at all.
+# worker can be scraped at all — three once ADR-0022's management tier is
+# templated, see the third object below.
 #
 # Both workloads serve /metrics on the observability port as of 2026-09-03
 # (step-6 blocks A and C) — "both binaries" until issue #77 made them one
@@ -48,4 +49,41 @@ spec:
       path: {{ .Values.observability.metricsPath }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- if .Values.management.enabled }}
+---
+# ADR-0022's management tier, gated the way every other `-management` object
+# is. Added 2026-09-16 in review: `deployment-management.yaml` gives that
+# Service a `metrics` port and `networkpolicy.yaml` opens the monitoring
+# namespace to it, but the two objects above select `component: server` and
+# `component: worker` only — so until this existed, every staff sign-in and
+# every `/dash/v1` read on the new tier emitted `vpay_http_requests_total`
+# and `vpay_alert_events_total` into a port nothing scraped, and
+# `prometheusrule.yaml`'s `VpayPageableErrorEvents` could never fire for the
+# tier that serves the admin surface.
+#
+# NOT added for `-dashboard`, and that is a decision rather than an
+# oversight: that workload is a Next.js app. It exports no Prometheus
+# metrics, its Service carries no `metrics` port, and a ServiceMonitor
+# pointed at it would select a target that answers nothing — a scrape error
+# in Prometheus rather than an absence of data, which is worse than the
+# honest gap.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullName }}-management
+  labels:
+    {{- include "vpay.componentLabels" (dict "ctx" . "component" "management") | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "vpay.componentSelectorLabels" (dict "ctx" . "component" "management") | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.observability.metricsPath }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}
 {{- end }}

@@ -3055,8 +3055,11 @@ helm-check:
         grep -n -- '-checkout' "$out/default.yaml" >&2
         exit 1
     fi
+    # Captured, not piped — see the management block below for the pipefail
+    # race this avoids.
+    checkout_window="$(grep -B20 "^  name: vpay-checkout$" "$out/full.yaml" || true)"
     for kind in Deployment Service Ingress; do
-        if ! grep -B20 "^  name: vpay-checkout$" "$out/full.yaml" | grep -q "^kind: $kind$"; then
+        if ! printf '%s' "$checkout_window" | grep -q "^kind: $kind$"; then
             echo "helm-check: FAIL — ci/values-full.yaml enables the checkout page but rendered no $kind for it" >&2
             exit 1
         fi
@@ -3075,9 +3078,20 @@ helm-check:
             exit 1
         fi
     done
+    # The producer's output is captured BEFORE it is searched, not piped into
+    # `grep -q`. Under `set -o pipefail` — which this recipe sets — `grep -q`
+    # exits on its first match and SIGPIPEs the producer, and the pipeline
+    # then reports 141 for a search that SUCCEEDED. It is a race on how much
+    # fits in the pipe buffer, so it passed for as long as the render was
+    # short: adding the third ServiceMonitor below lengthened the `-B20`
+    # window and it failed once, claiming `ci/values-full.yaml` "rendered no
+    # Deployment for vpay-management" against a file that plainly contained
+    # one (measured 2026-09-16). Same shape as the checkout block above,
+    # which has the same latent race and the same fix applied.
     for name in vpay-management vpay-dashboard; do
         for kind in Deployment Service; do
-            if ! grep -B20 "^  name: $name$" "$out/full.yaml" | grep -q "^kind: $kind$"; then
+            window="$(grep -B20 "^  name: $name$" "$out/full.yaml" || true)"
+            if ! printf '%s' "$window" | grep -q "^kind: $kind$"; then
                 echo "helm-check: FAIL — ci/values-full.yaml enables management and dashboard but rendered no $kind for $name" >&2
                 exit 1
             fi
@@ -3087,6 +3101,31 @@ helm-check:
         echo "helm-check: FAIL — ci/values-full.yaml enables server.autoscaling but rendered no HorizontalPodAutoscaler" >&2
         exit 1
     fi
+    # The management tier's metrics, which nothing else here would notice.
+    # `deployment-management.yaml` gives that Service a `metrics` port and
+    # `networkpolicy.yaml` opens the monitoring namespace to it; until
+    # 2026-09-16 `servicemonitor.yaml` selected `component: server` and
+    # `component: worker` only, so the port existed, was reachable, and was
+    # scraped by nobody. An absence again — no `fail` guard can assert it.
+    #
+    # `-dashboard` is asserted ABSENT in the same breath, deliberately: that
+    # workload is a Next.js app exporting no Prometheus metrics, so a
+    # ServiceMonitor for it would select a target that answers nothing. The
+    # gap is a decision, and this is where it is written down as one.
+    sm="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/servicemonitor.yaml)"
+    for component in server worker management; do
+        printf '%s' "$sm" | grep -q "^  name: vpay-$component$" \
+            || { echo "helm-check: FAIL — ci/values-full.yaml rendered no ServiceMonitor for vpay-$component; its /metrics port would be scraped by nothing" >&2; exit 1; }
+    done
+    # Anchored on an indented YAML line, not a bare substring: the template's
+    # own comment explains why the dashboard has no ServiceMonitor, and a
+    # plain grep for "-dashboard" matched that comment (found here, 2026-09-16
+    # — the check failed on the prose that documented it).
+    if printf '%s' "$sm" | grep -qE '^[[:space:]]+(name: vpay-dashboard|app\.kubernetes\.io/component: dashboard)$'; then
+        echo "helm-check: FAIL — a ServiceMonitor names -dashboard, but that workload exports no Prometheus metrics and its Service carries no metrics port; the scrape would error rather than return nothing" >&2
+        exit 1
+    fi
+    echo "    ServiceMonitors: server, worker, management (not dashboard — it exports no metrics)"
     echo "    default: no -management or -dashboard object, no HPA; ci/values-full.yaml: both Deployments + Services, HPA"
 
     # ADR-0009 assumes a rate limit exists in front of the token endpoint.
