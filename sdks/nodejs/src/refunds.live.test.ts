@@ -54,10 +54,19 @@ import { VpayApiError } from "./errors.js";
 import { readLiveEnv } from "./testing/live-env.js";
 
 /**
- * The payer the demo MTN stub settles for, and whose number the same stub
- * knows a holder for (`wiremock/mtn/mappings/basicuserinfo.json`).
+ * The payer the demo MTN stub settles for —
+ * `wiremock/mtn/mappings/requesttopay-scenario.json`'s `mtn-e2e-poll` walk,
+ * `PENDING` then `SUCCESSFUL`.
+ *
+ * **Moved off `237600000100` on 2026-09-17.** Unlike the payee constants
+ * below, this one is the **confirm**, and issue #186 put real phone
+ * validation on that path: the old number earned a `400` —
+ * "`payment_method_data[mtn_momo][msisdn]` must be a valid phone number" —
+ * before the rail was asked. `60` is not a Cameroon mobile prefix, so
+ * nothing in the `2376000000xx` block validates. `237670000900` does, and is
+ * already in that scenario's own `payer.partyId` matcher.
  */
-const PAYER_MSISDN = "237600000100";
+const PAYER_MSISDN = "237670000900";
 
 /**
  * The payee, **in the form the refund path requires** — international, with a

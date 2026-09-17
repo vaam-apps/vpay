@@ -67,9 +67,19 @@ use vpay_sdk::refunds::{
 };
 use vpay_sdk::{Client, Credentials, Error, IntentStatus, RefundStatus, RequestOptions};
 
-/// The payer the demo MTN stub settles for, and whose refund destination the
-/// same stub knows a holder for (`wiremock/mtn/mappings/basicuserinfo.json`).
-const PAYER_MSISDN: &str = "237600000100";
+/// The payer the demo MTN stub settles for — `wiremock/mtn/mappings/`
+/// `requesttopay-scenario.json`'s `mtn-e2e-poll` walk, `PENDING` then
+/// `SUCCESSFUL`, which is what [`SETTLE_WINDOW`] below waits out.
+///
+/// **Moved off `237600000100` on 2026-09-17.** Unlike the payee constants
+/// under it, this one is the **confirm**, and issue #186 put real phone
+/// validation on that path (`vpay-api`'s `v1/payer_fields.rs`): the old
+/// number earned a `400` — "`payment_method_data[mtn_momo][msisdn]` must be
+/// a valid phone number" — before the rail was ever asked. `60` is not a
+/// Cameroon mobile prefix, so nothing in the `2376000000xx` block validates.
+/// `237670000900` does, and is already in that scenario's own `payer.partyId`
+/// matcher, so the walk is unchanged.
+const PAYER_MSISDN: &str = "237670000900";
 
 /// The payee, **in the form the refund path requires** — international, with
 /// a `+`. `wiremock/mtn/mappings/basicuserinfo.json` answers a named holder
