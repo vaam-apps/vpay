@@ -327,6 +327,37 @@ in the sheet's own code path can represent a card field even by mistake.
 See [`../flows/mobile-checkout.md`](../flows/mobile-checkout.md)'s own
 2026-09-17 addition for the walk this rests on.
 
+### 2026-09-17 — what a merchant may restyle, and what they may not add
+
+Asked in review: can a merchant have "the same UI, just different colours
+and radius", and custom form fields?
+
+**Colours and shape: yes, and mostly already true.** The sheet holds no
+hardcoded colour — every one comes from `Theme.of(context)` — so a
+merchant's own `ColorScheme` already applies. The sheet's corner radius is
+a parameter; its inner radii are not yet, and a scoped `VpayCheckoutTheme`
+carrying them is designed and unbuilt. That gap is stated in the package
+README rather than implied away.
+
+**Merchant-supplied form fields: no.** The field set is declared by the
+server (`ProviderAdapter::payer_fields`, #186) precisely so the sheet can
+render a rail it has never heard of. A field injected by the host app
+breaks that contract, and puts the sheet in the position of collecting
+input vpay never declared and cannot validate. Merchant-specific data
+belongs in the merchant's own UI before the sheet opens, or in the payment
+intent's `metadata`, which travels with the payment server-side.
+
+This is the same boundary the card paragraph above draws, approached from
+the other side: that one says vpay must not *render* a PAN field, this one
+says a merchant must not be able to *add* one. Both hold the sheet's input
+surface to what the server declared.
+
+**A country picker is not blocked by the UI.** A phone field's `region` is
+singular in the rail spec and enforced server-side, so a picker today would
+offer one country or let a payer enter a number the server then refuses.
+It becomes possible when the spec carries `regions` as a list — a change in
+`vpay-provider`, not in the sheet.
+
 ## See also
 
 - [`docs/plans/2026-09-13-flutter-plugin.md`](../plans/2026-09-13-flutter-plugin.md)

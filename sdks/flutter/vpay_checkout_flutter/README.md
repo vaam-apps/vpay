@@ -34,23 +34,31 @@ left your control. Your own server does it and returns the session `url`:
 
 That URL's fragment is the session's `client_secret`. Treat it like one.
 
-### 3. Start the checkout
+### 3. Open the sheet
 
 ```dart
 import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
-final checkout = VpayCheckout(
+final VpayCheckoutResult result = await showVpayCheckoutSheet(
+  context,
+  sessionUrl: sessionUrl,
   baseUrl: 'https://api.vpay.example',
   publishableKey: 'pk_test_…',
+  merchantName: 'Njangi Store',
 );
-
-final VpayCheckoutResult result = await checkout.start(sessionUrl);
 ```
 
-`start` returns when the outcome is known — not when the payer closes the
-sheet. It opens the browser, waits, then polls
-`GET /v1/browser/payment_intents/{id}` until the intent reaches a terminal
-state or the budget runs out.
+A native bottom sheet rises over your app — your UI stays visible behind
+it. It returns when the outcome is known, not when the payer closes the
+sheet: it confirms, then polls `GET /v1/browser/payment_intents/{id}` until
+the intent reaches a terminal state or the budget runs out.
+
+Rails that need the payer to authenticate on the rail's own site (Orange
+Money) hand off to a browser sheet and come back to this one. You do not
+choose that — the server's rail spec does.
+
+`showVpayCheckoutSheetRoute` is the same thing as a full-screen route, for
+apps where a sheet does not fit.
 
 ### 4. Handle every outcome
 
@@ -160,6 +168,52 @@ select between.
   this side.
 - **No real rail.** WireMock behind everything, as everywhere else here.
 - **No CI gate runs any Flutter recipe** (D-M3). A human runs them.
+
+## Customising it
+
+The sheet inherits your app. There are **no hardcoded colours in it** —
+every colour comes from `Theme.of(context)`, so if your app sets a
+`ColorScheme`, the sheet already uses it. Nothing to configure.
+
+What you can pass today:
+
+| Parameter | Effect |
+|---|---|
+| `merchantName` | named in the summary and the outcome copy |
+| `locale` | `VpayLocale.fr` / `.en`; **French is the default** |
+| `allowedMethods` | narrows the rails on offer — it can only ever narrow what the server already allows |
+| `borderRadius` | the sheet's top corners; defaults to `kVpayCheckoutSheetCornerRadius` (28) |
+
+28 rather than Material's default because this sheet is often *replaced on
+screen* by a system browser sheet when the payer picks a redirect rail, and
+a squarer sheet handing over to a much rounder system one reads as a
+glitch. Override it if your app's surfaces speak a different language.
+
+Buttons have a 52pt minimum tap target — above both Material's 48dp and
+Apple's 44pt, because this is a small surface used once, usually
+one-handed, by someone anxious about money.
+
+### What you cannot customise yet, and why
+
+- **The inner radii** (summary card, fields, drag handle) are still
+  hardcoded. Only the sheet's own corner is configurable. A scoped
+  `VpayCheckoutTheme` carrying all of them is designed but not built —
+  today, restyling those means restyling your app's `ThemeData`.
+- **The country on a phone field.** The rail spec declares exactly one
+  `region` per field (`"CM"` for MTN Cameroon) and the server enforces it,
+  so there is nothing for a country picker to pick. A picker would either
+  offer one country or let a payer enter a number the server then refuses.
+  Making it real means the spec carrying `regions` as a list first — a
+  backend change, not a widget.
+- **Your own form fields.** Deliberately not supported. The field set is
+  declared by the server so the sheet can render a rail it has never heard
+  of; a field injected by the app breaks the contract that makes that work,
+  and the sheet would be collecting data vpay never declared and cannot
+  validate. Put merchant-specific input in **your own UI before opening the
+  sheet**, or in the payment intent's `metadata`, which travels with the
+  payment server-side. This matters more as card rails arrive: a
+  merchant-supplied field inside a payment sheet is the shape that turns
+  into a PCI question.
 
 ## What this is not
 
