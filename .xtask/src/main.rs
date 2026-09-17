@@ -7838,26 +7838,32 @@ fn release_please_extra_files(config: &str) -> Result<(Vec<String>, Vec<String>)
         }
         let trimmed = line.trim().trim_end_matches(',');
 
+        // A whole object on one line: `{ "type": "generic", "path": "..." }`.
+        // A parser that only understood the multi-line spelling would silently
+        // skip the compact one and then report "no generic entries" instead of
+        // checking them.
+        if trimmed.contains("\"type\":") && trimmed.contains("\"path\":") {
+            if let (Some(ty), Some(path)) = (
+                value_after(trimmed, "\"type\":"),
+                value_after(trimmed, "\"path\":"),
+            ) {
+                classify_extra_file(ty.as_str(), path, &mut generic, &mut json_paths)?;
+            }
+            continue;
+        }
+
         if let Some(rest) = trimmed.strip_prefix("\"type\":") {
             pending_type = unquote(rest.trim());
         } else if let Some(rest) = trimmed.strip_prefix("\"path\":") {
             let Some(path) = unquote(rest.trim()) else {
                 continue;
             };
-            match pending_type.take().as_deref() {
-                Some("generic") => generic.push(path),
-                Some("json") => json_paths.push(path),
-                Some(other) => {
-                    return Err(format!(
-                        "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has type {other:?}. Only \"generic\" and \"json\" are used here; anything else either reparses the file or needs this check taught about it"
-                    ));
-                }
-                None => {
-                    return Err(format!(
-                        "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has no \"type\". It must be declared explicitly — see this function's own doc comment"
-                    ));
-                }
-            }
+            let Some(ty) = pending_type.take() else {
+                return Err(format!(
+                    "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has no \"type\". It must be declared explicitly — see this function's own doc comment"
+                ));
+            };
+            classify_extra_file(ty.as_str(), path, &mut generic, &mut json_paths)?;
         } else if !trimmed.contains(':') && trimmed.matches('"').count() == 2 {
             let path = unquote(trimmed).unwrap_or_else(|| trimmed.to_owned());
             return Err(format!(
@@ -7877,6 +7883,32 @@ fn release_please_extra_files(config: &str) -> Result<(Vec<String>, Vec<String>)
         ));
     }
     Ok((generic, json_paths))
+}
+
+/// Route one `extra-files` entry to its bucket, refusing a type this check has
+/// not been taught — a skipped entry is an unchecked file.
+fn classify_extra_file(
+    ty: &str,
+    path: String,
+    generic: &mut Vec<String>,
+    json_paths: &mut Vec<String>,
+) -> Result<(), String> {
+    match ty {
+        "generic" => generic.push(path),
+        "json" => json_paths.push(path),
+        other => {
+            return Err(format!(
+                "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has type {other:?}. Only \"generic\" and \"json\" are used here; anything else either reparses the file or needs this check taught about it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first quoted value following `key` on a line.
+fn value_after(line: &str, key: &str) -> Option<String> {
+    let idx = line.find(key)?;
+    unquote(line.get(idx + key.len()..)?.trim_start())
 }
 
 /// `"text"` -> `text`, and anything else -> `None`.
