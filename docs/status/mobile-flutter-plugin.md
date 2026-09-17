@@ -377,13 +377,13 @@ verification page. Evidence:
 - **Android's browser-cutover architecture itself (the redirect hand-off's
   Custom Tab) has been run for real, on `emulator-5554`, as of issue #189
   lane 2 (2026-09-17) — see that section above.** What is still true: it
-  was run driving the *native sheet's* redirect hand-off, not the older
+  was run driving the _native sheet's_ redirect hand-off, not the older
   `VpayCheckout.start` full-checkout browser flow this document's earlier
   sections describe; that path last ran on an emulator against the
   WebView-based modal sheet the "Modal checkout sheet" section below
   describes, which "Browser, not WebView" has since replaced, and has not
   been re-driven against the current architecture. `flutter build apk
-  --debug`/`--release` on `example/` both still exit 0.
+--debug`/`--release` on `example/` both still exit 0.
 - **D8's tier 1** (Android App Links / iOS 17.4+ Associated Domains) is not
   implemented on any platform — see the D8 section above. Since the browser
   cutover this is no longer only a UX upgrade: tier 1 is what

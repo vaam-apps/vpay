@@ -162,12 +162,30 @@ const AMOUNT: i64 = 5000;
 
 /// The documentation MSISDN that arms `mtn-kill9-slow-status`: the confirm is
 /// answered normally, and the **status query** that follows takes 30 s.
-const SLOW_STATUS_MSISDN: &str = "237600000ce9";
+///
+/// **Was `"237600000ce9"`** until issue #189: #186's server-side phone
+/// validation (`vpay_api::v1::payer_fields::resolve_payer_fields`) refuses
+/// the whole `2376000000xx` block — hex letters or not, it is not a valid
+/// number under any real Cameroon numbering plan — so a real confirm with it
+/// now gets a `400` before the rail is ever asked. `237670000909` is a real
+/// CM mobile number (region `CM`, prefix `67`, `phonenumber` resolves it to
+/// a valid `Mobile`) that continues the OLD suffix convention in decimal:
+/// `worker_e2e.rs`'s `SETTLING_MSISDN` moved the shared root from `ce0` to
+/// `900`, and this file's three chaos MSISDNs vary only the last two or
+/// three digits from that root, the same way `ce9`/`cf9`/`c15` varied from
+/// `ce0`.
+const SLOW_STATUS_MSISDN: &str = "237670000909";
 
 /// The documentation MSISDN whose **submit** takes 30 s to answer. What
 /// stages `docs/flows/crash-safety.md`'s kill point 2 against the shipping
 /// server.
-const SLOW_SUBMIT_MSISDN: &str = "237600000cf9";
+///
+/// **Was `"237600000cf9"`** — see [`SLOW_STATUS_MSISDN`]'s doc for why and
+/// for the new family. `237670000919` is its submit-side twin, exactly as
+/// `...cf9` was `...ce9`'s: same trailing `9` for the signal
+/// (`worker_kill9.rs` sends `SIGKILL`), a different middle digit for "this
+/// one is the submit, not the status, mapping".
+const SLOW_SUBMIT_MSISDN: &str = "237670000919";
 
 /// The documentation MSISDN the SIGTERM scenario confirms with, and the only
 /// one in this file that arms **nothing**.
@@ -177,11 +195,13 @@ const SLOW_SUBMIT_MSISDN: &str = "237600000cf9";
 /// `requesttopay-status.json`'s catch-all — because the thing made slow in
 /// that scenario is the *merchant's receiver*, and a rail that also dawdled
 /// would put a second unbounded wait inside the same test. It continues the
-/// `0ce9`/`0cf9` convention of the two above, with `c15` naming the signal
-/// (SIGTERM is 15) rather than a rail behaviour; no mapping mentions it, and
+/// `909`/`919` convention of the two above (itself the decimal replacement
+/// for the old `ce9`/`cf9` — see [`SLOW_STATUS_MSISDN`]'s doc), with `915`
+/// naming the signal (SIGTERM is 15) rather than a rail behaviour, the same
+/// way `c15` did; no mapping mentions it, and
 /// [`the_sigterm_scenarios_confirm_with_an_msisdn_that_arms_no_rail_mapping`]
 /// is what keeps that true if one ever does.
-const SIGTERM_MSISDN: &str = "237600000c15";
+const SIGTERM_MSISDN: &str = "237670000915";
 
 /// The endpoint id and secret the SIGTERM scenario's receiver is registered
 /// under in `merchant_clients[].webhooks[]`.

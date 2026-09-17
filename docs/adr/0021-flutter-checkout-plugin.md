@@ -229,7 +229,7 @@ be inspected that way from the host app at all, and the payer additionally
 gets a real, checkable URL bar — something a `WebView` never offered and a
 phished payer has no way to demand. This is a strictly stronger security
 property than D3 (no JavaScript bridge) alone ever bought: D3 kept the
-*plugin's own* code off the page; this removes the page from the merchant's
+_plugin's own_ code off the page; this removes the page from the merchant's
 process altogether.
 
 **The cost, stated rather than buried.** With the page in a separate

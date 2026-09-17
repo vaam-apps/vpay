@@ -12,7 +12,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "matches": "237600000(f01|101)"
+              "matches": "237600000(f01|101)|237670000101"
             }
           }
         ]
@@ -69,7 +69,18 @@
           "",
           "202, the ordinary accepted submit, because this mapping exists to MOVE THE",
           "SCENARIO and not to change what a confirm sees: the demo asserts this confirm is",
-          "indistinguishable from the settling one right up to the point the worker polls."
+          "indistinguishable from the settling one right up to the point the worker polls.",
+          "",
+          "237670000101 ADDED for issue #189 (2026-09-17): #186's server-side phone",
+          "validation (vpay_api::v1::payer_fields::resolve_payer_fields) refuses the whole",
+          "2376000000xx block before a real confirm ever reaches this stub, so",
+          "examples/shop's test-number panel -- which drives a real confirm -- could not",
+          "use 237600000101 any more. 237670000101 is a real, phonenumber-valid CM mobile",
+          "number (prefix 67, continuing the decimal suffix convention 237670000900 already",
+          "set for the chaos tests) that reaches this SAME scenario. Neither existing family",
+          "is touched: adapter_conformance.rs's case_2_insufficient_funds still drives",
+          "237600000101 directly against the adapter, not the validating API route, so it",
+          "is unaffected."
         ]
       }
     },
@@ -141,7 +152,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "matches": "237600000(f02|102)"
+              "matches": "237600000(f02|102)|237670000102"
             }
           }
         ]
@@ -186,7 +197,14 @@
           "number demonstrates on the strength of no new evidence -- and note that",
           "COULD_NOT_PERFORM_TRANSACTION is itself one of the two strings MTN does NOT",
           "publish (vpay_adapter_mtn_momo::UNPUBLISHED_REASONS). Both land on the SAME core",
-          "code, payer_timeout, which is the thing a merchant integrates against."
+          "code, payer_timeout, which is the thing a merchant integrates against.",
+          "",
+          "237670000102 ADDED for issue #189 (2026-09-17), for the same reason as the",
+          "decline pair's 237670000101 above: #186's server-side phone validation refuses",
+          "the whole 2376000000xx block, so examples/shop's test-number panel needed a",
+          "real, phonenumber-valid CM number that still reaches this scenario. Continues",
+          "the decimal suffix convention; adapter_conformance.rs's case_3_payer_timeout",
+          "still drives 237600000102 directly against the adapter, unaffected."
         ]
       }
     },
@@ -234,7 +252,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "matches": "237600000503"
+              "matches": "237600000503|237670000503"
             }
           }
         ]
@@ -266,7 +284,13 @@
           "",
           "No requiredScenarioState, and the same strictly-sequential coupling: see",
           "the decline pair's comment above, which explains all four properties in",
-          "full."
+          "full.",
+          "",
+          "237670000503 ADDED for issue #189 (2026-09-17): #186's server-side phone",
+          "validation refuses 237600000503 before a real confirm reaches this stub, so",
+          "examples/shop's test-number panel moved to this real, phonenumber-valid CM",
+          "number, keeping the `503` suffix. adapter_conformance.rs's",
+          "case::provider_unavailable still drives 237600000503 directly, unaffected."
         ]
       }
     },
@@ -320,7 +344,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.payer.partyId",
-              "matches": "237600000103"
+              "matches": "237600000103|237670000103"
             }
           }
         ]
@@ -358,7 +382,13 @@
           "longer than its neighbour is a name that cannot be grepped for: `grep",
           "mtn-demo-decline` matches both, and the two scenarios mean different things to a",
           "payer. 'Refused' is also what the shop's copy and the runbook already say for",
-          "this outcome."
+          "this outcome.",
+          "",
+          "237670000103 ADDED for issue #189 (2026-09-17): #186's server-side phone",
+          "validation refuses 237600000103 before a real confirm reaches this stub, so",
+          "examples/shop's test-number panel moved to this real, phonenumber-valid CM",
+          "number, keeping the `103` suffix. adapter_conformance.rs's",
+          "case::payer_declined still drives 237600000103 directly, unaffected."
         ]
       }
     },

@@ -86,3 +86,16 @@ sdks/flutter/**/.dart_tool/
 # no `.claude/worktrees/` — so it is a local papercut, not a CI failure, and
 # it is real for anyone who uses `git worktree` under `.claude/`.
 .claude/worktrees/
+
+# Vendored agent skills (`.agents/skills/**`), installed by #188 from
+# `cratestack/cratestack-skills` and pinned in `skills-lock.json` by a
+# per-skill `computedHash`. Prettier CAN parse this markdown and MUST NOT
+# rewrite it: reformatting a vendored copy changes the bytes the lock file
+# hashes, so the next install or drift check would disagree with what is on
+# disk, and the change would be reverted by the next sync anyway. Formatting
+# is the upstream repository's business, not this one's.
+#
+# Measured 2026-09-16: `just fmt-check-web` flagged 29 files on master, of
+# which 17 were these. `just ci` runs `fmt-check` first, so master's whole
+# gate was red on vendored content nobody here should be rewriting.
+.agents/skills/

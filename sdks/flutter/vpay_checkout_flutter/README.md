@@ -129,12 +129,12 @@ Driven by hand against a real `just demo-up` stack, a real session and a real
 MTN push, on both platforms — the merchant's own database read `paid` via its
 HMAC-verified webhook, and the SDK answered `VpayCheckoutSucceeded`:
 
-| Platform | Surface | Verified |
-|---|---|---|
-| **iOS** | `SFSafariViewController`, `.large()` detent | Driven end to end on iPhone 17 Pro / iOS 26.5 |
-| **Android** | Partial (bottom sheet) Custom Tab, `androidx.browser` | Driven end to end on an emulator |
-| **macOS** | `NSWorkspace.open` — the payer's default browser | Compiles; not driven |
-| **Web** | `window.open` popup | `flutter build web`; unit-tested in real Chrome |
+| Platform    | Surface                                               | Verified                                        |
+| ----------- | ----------------------------------------------------- | ----------------------------------------------- |
+| **iOS**     | `SFSafariViewController`, `.large()` detent           | Driven end to end on iPhone 17 Pro / iOS 26.5   |
+| **Android** | Partial (bottom sheet) Custom Tab, `androidx.browser` | Driven end to end on an emulator                |
+| **macOS**   | `NSWorkspace.open` — the payer's default browser      | Compiles; not driven                            |
+| **Web**     | `window.open` popup                                   | `flutter build web`; unit-tested in real Chrome |
 
 There is no mode to choose. `VpayCheckoutMode` and the wire-level
 `CheckoutWindowMode` were deleted with the WebView — one surface, nothing to
@@ -280,6 +280,6 @@ that fix.
 One note for anyone reading the native code: `show`/`dismiss` on the Apple
 hosts are `@MainActor`, and that is load-bearing. Pigeon's generated
 dispatcher wraps the call in `Task { @MainActor in … }`, but the protocol
-requirement is *nonisolated* `async`, so Swift hops straight back off the
+requirement is _nonisolated_ `async`, so Swift hops straight back off the
 main actor — without the annotation the first real tap dies on
 `NSInternalInconsistencyException: Call must be made on main thread`.
