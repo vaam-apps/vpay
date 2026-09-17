@@ -152,16 +152,23 @@ abandoned (hardware back) **before ever pressing Pay or Cancel on the
 rail's own page** — genuinely mid-flight, not a race against an
 already-settled intent (Orange's WireMock stub guarantees `PENDING` for a
 bounded window from confirm regardless of payer interaction, so this is
-deterministic, unlike MTN's near-instant settlement in this demo). Result:
-the sheet returned to its **waiting** screen ("Consultez votre téléphone" —
-D4's dismissal-then-poll, not a fabricated outcome) and stayed there for
-the whole observed window; `examples/shop`'s own `orders.get` for
-`cs_narecnxq71791f0k1ak7c7wj` / `pi_yvxcfgzkeh5mhb87vst7h3ry` read `unpaid`
-at every check — never `canceled`, never `failed`. The identical property
-is pinned deterministically (not timing-dependent) by
-`test/sheet/sheet_controller_test.dart`'s `'mid-payment (after confirm,
-still moving) resolves Pending — never canceled'` and `'before any confirm,
-resolves Unresolved — never canceled'`.
+deterministic, unlike MTN's near-instant settlement in this demo). At the
+moment of dismissal and for the whole window this was observed live, the
+sheet stayed on its **waiting** screen ("Consultez votre téléphone" — D4's
+dismissal-then-poll, not a fabricated outcome) and `examples/shop`'s own
+`orders.get` for `cs_narecnxq71791f0k1ak7c7wj` / `pi_yvxcfgzkeh5mhb87vst7h3ry`
+read `unpaid` at every check. Checked again after this document was
+otherwise finished: the order has since reached its **own** terminal state
+— `failed`, `payer_timeout`, `"The payment was declined (payer_timeout)."`
+— because nobody ever answered the rail's page and it expired on its own
+documented schedule (`examples/shop/README.md`'s Orange table: "the payment
+window expires" → `payer_timeout`). That is the correct, honest ending:
+a real fact the rail eventually reported, never a `canceled` this SDK
+invented at the moment of dismissal. The identical property is pinned
+deterministically (not timing-dependent, and without waiting for a real
+expiry) by `test/sheet/sheet_controller_test.dart`'s `'mid-payment (after
+confirm, still moving) resolves Pending — never canceled'` and `'before any
+confirm, resolves Unresolved — never canceled'`.
 
 **A stale test number, found along the way.** `examples/shop/README.md`'s
 own MTN table documents `237600000000` as "pays, any number not listed

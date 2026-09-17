@@ -485,8 +485,10 @@ WireMock stub's own page, and returned through vpay's hosted return page to
 `Paiement reçu` — `cs_dd94vfqvb51kh5m28136h165`/`pi_y2bshj0sah3tn51gsbanv5g9`,
 `paid`. The mid-payment dismissal abandoned the Custom Tab before ever
 pressing Pay or Cancel on the rail's own page — the sheet kept polling
-("Consultez votre téléphone") for the whole observed window, and the
-order stayed `unpaid` at every read, never a fabricated `canceled` —
+("Consultez votre téléphone") for the whole observed window; the order
+later reached its own real terminal state (`failed`, `payer_timeout` — the
+rail's page expiring unanswered, on its own documented schedule), never a
+fabricated `canceled` at the moment of dismissal —
 `cs_narecnxq71791f0k1ak7c7wj`/`pi_yvxcfgzkeh5mhb87vst7h3ry`. Evidence,
 screenshots included:
 [`../status/verification/2026-09-17-flutter-native-sheet.md`](../status/verification/2026-09-17-flutter-native-sheet.md).
