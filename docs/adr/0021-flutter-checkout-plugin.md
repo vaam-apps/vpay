@@ -348,8 +348,8 @@ belongs in the merchant's own UI before the sheet opens, or in the payment
 intent's `metadata`, which travels with the payment server-side.
 
 This is the same boundary the card paragraph above draws, approached from
-the other side: that one says vpay must not *render* a PAN field, this one
-says a merchant must not be able to *add* one. Both hold the sheet's input
+the other side: that one says vpay must not _render_ a PAN field, this one
+says a merchant must not be able to _add_ one. Both hold the sheet's input
 surface to what the server declared.
 
 **A country picker is not blocked by the UI.** A phone field's `region` is

@@ -177,15 +177,15 @@ every colour comes from `Theme.of(context)`, so if your app sets a
 
 What you can pass today:
 
-| Parameter | Effect |
-|---|---|
-| `merchantName` | named in the summary and the outcome copy |
-| `locale` | `VpayLocale.fr` / `.en`; **French is the default** |
+| Parameter        | Effect                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| `merchantName`   | named in the summary and the outcome copy                                           |
+| `locale`         | `VpayLocale.fr` / `.en`; **French is the default**                                  |
 | `allowedMethods` | narrows the rails on offer — it can only ever narrow what the server already allows |
-| `borderRadius` | the sheet's top corners; defaults to `kVpayCheckoutSheetCornerRadius` (28) |
+| `borderRadius`   | the sheet's top corners; defaults to `kVpayCheckoutSheetCornerRadius` (28)          |
 
-28 rather than Material's default because this sheet is often *replaced on
-screen* by a system browser sheet when the payer picks a redirect rail, and
+28 rather than Material's default because this sheet is often _replaced on
+screen_ by a system browser sheet when the payer picks a redirect rail, and
 a squarer sheet handing over to a much rounder system one reads as a
 glitch. Override it if your app's surfaces speak a different language.
 
