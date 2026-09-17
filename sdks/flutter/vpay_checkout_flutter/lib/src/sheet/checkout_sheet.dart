@@ -473,14 +473,21 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
 
   /// Every screen's title.
   ///
-  /// `headlineSmall` bare — no `fontWeight` override. The weight used to
-  /// be hardcoded here, which is exactly the habit that makes a sheet
-  /// ignore a host app's typography: M3's type scale already encodes
-  /// "this is a screen title", and a host that supplies its own
-  /// [TextTheme] should be able to change it.
+  /// `titleLarge` bare — no `fontWeight` override. The weight used to be
+  /// hardcoded here, which is exactly the habit that makes a sheet ignore
+  /// a host app's typography: M3's type scale already encodes "this is a
+  /// title", and a host supplying its own [TextTheme] should be able to
+  /// change it.
+  ///
+  /// `titleLarge` and not `headlineSmall`, which this briefly was: M3
+  /// gives a sheet or dialog a *title*, not a headline, and on a 402pt
+  /// surface the headline wrapped "Choisissez votre moyen de paiement"
+  /// onto two lines and out-shouted the amount. The amount is the one
+  /// number a payer must not misread, so it keeps `displaySmall` and
+  /// stays the largest thing here.
   Widget _heading(BuildContext context, String text) => Focus(
     focusNode: _headingFocusNode,
-    child: Text(text, style: Theme.of(context).textTheme.headlineSmall),
+    child: Text(text, style: Theme.of(context).textTheme.titleLarge),
   );
 
   /// The test-mode marker, as an M3 tonal badge rather than a line of
@@ -498,13 +505,19 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: theme.colorScheme.tertiaryContainer,
+            // `secondaryContainer`, not `tertiaryContainer`. Tertiary is
+            // M3's free-floating accent, and from an amber seed it lands
+            // on green — a "no real money moves here" badge that reads as
+            // a success tick is worse than no badge. Secondary tracks the
+            // seed, so it stays part of the same palette without
+            // borrowing another signal's colour.
+            color: theme.colorScheme.secondaryContainer,
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
             _t.t('page.testmode'),
             style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onTertiaryContainer,
+              color: theme.colorScheme.onSecondaryContainer,
             ),
           ),
         ),
@@ -1016,7 +1029,13 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
         decoration: InputDecoration(
           labelText: _t.t('msisdn.label'),
           helperText: _t.t('msisdn.hint'),
+          // `helperText` is ONE line by default, and the French hint —
+          // "Votre numéro MTN camerounais, par exemple +237 6…" — is
+          // longer than 402pt. It rendered ellipsised, hiding the example
+          // number, which is the only part of the hint that helps.
+          helperMaxLines: 3,
           errorText: problem == null ? null : _t.t(problem),
+          errorMaxLines: 3,
           prefixIcon: const Icon(Icons.phone_outlined),
         ),
       ),
