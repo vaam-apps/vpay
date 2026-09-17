@@ -67,6 +67,25 @@ final class VpayCheckoutExternalBrowserSession: NSObject {
 
   func present(from presenter: UIViewController) {
     presenter.present(safari, animated: true)
+    // **The swipe-away signal, and why it is not the delegate below.**
+    //
+    // `SFSafariViewControllerDelegate.safariViewControllerDidFinish` fires
+    // when the payer taps *Done*. It does NOT fire when they drag the
+    // sheet down — an interactive dismissal is reported by UIKit's
+    // presentation machinery, not by Safari's own delegate. With
+    // `.pageSheet` and a grabber (set below, D5), dragging it away is the
+    // obvious gesture, so the common case was the unreported one.
+    //
+    // Measured on an iPhone 17 Pro simulator on 2026-09-17: the Dart side
+    // awaits this event with no timeout, so a swipe-away left
+    // `SheetController._handOffToBrowser` suspended forever and the sheet
+    // spun on "Redirection vers Orange Money" indefinitely — the payer's
+    // money could already have moved and the app would never say so.
+    //
+    // `presentationController` exists as soon as the presentation is
+    // requested, which is the same reasoning the detent configuration
+    // below relies on, so it is safe to read on the line after `present`.
+    safari.presentationController?.delegate = self
     // The maintainer's explicit "large detent, draggable to full height"
     // decision (D5, revised 2026-09-16) — the same one the deleted
     // `VpayCheckoutViewController` applied to its own `.pageSheet` via
@@ -118,10 +137,22 @@ final class VpayCheckoutExternalBrowserSession: NSObject {
 
 extension VpayCheckoutExternalBrowserSession: SFSafariViewControllerDelegate {
   func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-    // The payer tapped "Done" — the only dismissal signal this class has
-    // of its own (see this file's header). No navigation delegate exists
-    // to watch a stop URL against; that only ever arrives as a Universal
-    // Link, above.
+    // The payer tapped "Done". This covers ONE of the two ways out; the
+    // other is a swipe, which arrives at
+    // `presentationControllerDidDismiss` below. No navigation delegate
+    // exists to watch a stop URL against; that only ever arrives as a
+    // Universal Link, above.
+    reportDismissedIfNeeded()
+  }
+}
+
+extension VpayCheckoutExternalBrowserSession: UIAdaptivePresentationControllerDelegate {
+  /// The payer dragged the sheet away rather than tapping *Done*.
+  ///
+  /// UIKit calls this only for an *interactive* dismissal that has already
+  /// completed, so it cannot double-report against a programmatic
+  /// `dismiss()` — and `report` is idempotent regardless (`reported`).
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
     reportDismissedIfNeeded()
   }
 }
