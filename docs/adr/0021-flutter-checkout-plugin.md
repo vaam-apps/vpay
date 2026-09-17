@@ -304,6 +304,29 @@ genuine need for the page to speak to a native host arrives; that would be
 its own decision, with its own origin-gating rule, not a quiet extension of
 this one.
 
+**2026-09-17 — issue #189 lane 2, the native checkout sheet: two decisions
+recorded, not silently dropped.** First, `frame.ts`/`origins.ts`/`csp.ts`/
+`entry.ts` — the hosted page's D4/D8 iframe-embedding refusal and the
+parent `postMessage` protocol — have **no native analogue** in
+`VpayCheckoutSheet` and are not ported: a Flutter widget tree has no iframe
+to be embedded in, no parent frame to police an origin against, and no
+`postMessage` channel to gate. Those files continue to gate a real security
+property for the hosted page this ADR's D3/D4 already cover; the sheet is a
+different surface with a different threat model (a merchant's own app
+process, not an arbitrary embedding site), and its own boundary is D6
+(no session credential in a log, a generated `toString`, or anything that
+outlives the sheet) plus D3's continued refusal of a native-to-page bridge
+— both already stated above, both unchanged by the sheet's existence.
+Second, **cards remain out of scope**, structurally rather than by
+convention: `models.dart`'s `RailFieldKind.fromJson` decodes any field type
+it does not recognise — `"card"` included — to `RailFieldKindUnknown`, and
+`rails.dart`'s `railChoices` (Lane 1, #189) already refuses to render a rail
+carrying one (D9). A native PAN field would move the integration from PCI
+SAQ-A to SAQ-D; nothing added in Lane 2 changes that boundary, and nothing
+in the sheet's own code path can represent a card field even by mistake.
+See [`../flows/mobile-checkout.md`](../flows/mobile-checkout.md)'s own
+2026-09-17 addition for the walk this rests on.
+
 ## See also
 
 - [`docs/plans/2026-09-13-flutter-plugin.md`](../plans/2026-09-13-flutter-plugin.md)

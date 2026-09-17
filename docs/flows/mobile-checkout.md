@@ -432,3 +432,90 @@ reverted. **Not done:** the sheet widget, i18n, "remember this number", the
 test-mode banner, focus management, the `redirect` hand-off, and wiring the
 new jittered-poll primitive into a controller. Evidence:
 [`../status/verification/2026-09-16-flutter-rail-spec-screen-machine.md`](../status/verification/2026-09-16-flutter-rail-spec-screen-machine.md).
+
+**Added 2026-09-17 — issue #189 lane 2: the native checkout sheet itself,
+built on lane 1's reducer.** The browser this whole document describes now
+renders `mtn_momo` and `orange_money` as `VpayCheckoutSheet` — a Flutter
+widget tree, not a page — reachable through `showVpayCheckoutSheet` (a
+large-detent, draggable `showModalBottomSheet`) or `showVpayCheckoutSheetRoute`
+(a full route); both inherit the host app's own `ThemeData`, never a fixed
+vpay palette. `lib/src/sheet/sheet_controller.dart`'s `SheetController` is
+the impure half `checkout_screen.dart`'s reducer was always missing: it
+reads the session, confirms through `BrowserClient.confirmPaymentIntent`
+(new — the sheet drives a rail directly, rather than only reading the
+outcome of a confirm the hosted page performed), polls with lane 1's
+jittered delay, and hands a `redirect` rail off to the _same_
+`VpayCheckoutPlatform` this document's browser cutover built — the browser
+stays the redirect handler, never the checkout, exactly the shape the
+maintainer specified for #189. All 13 screens the issue's own bar names
+have a widget or a recorded decision (`lib/src/sheet/checkout_sheet.dart`'s
+own doc comments name each one); the i18n catalogue
+(`lib/src/sheet/i18n.dart`) carries the same 72 keys as
+`frontends/apps/checkout/src/i18n/{en,fr}.ts`, French default; "remember
+this number" (`lib/src/sheet/remember_msisdn.dart`) is opt-in,
+`shared_preferences`-backed, 90-day TTL enforced on read, written only on a
+real accepted submit, no PIN ever, with a "Forget" affordance; the warning
+is folded into `CheckboxListTile`'s own merged semantics label, not a
+tooltip.
+
+**A real defect this lane's own gate caught, not a unit test.** Every
+confirm from the sheet was refused by the real server —
+`payment_method_data[type]` never arrived — because the form encoder
+percent-encoded the bracket syntax's own structural characters
+(`payment_method_data%5Btype%5D`), and `vpay-api`'s form parser splits a
+raw key on the _literal_ `[` before decoding anything. Every `MockClient`
+assertion in `test/browser_client_test.dart` had passed regardless, because
+they read the request back through `Uri.splitQueryString`, which decodes
+the whole key before an assertion ever sees it. Found only once this lane's
+own gate — the hand-driven walk on `emulator-5554` against the rebuilt
+`vpay-demo` stack — actually tried to pay. Fixed
+(`BrowserClient._bracketKey`, `lib/src/browser_client.dart`); the test now
+also asserts the literal wire bytes, and reverting the fix is confirmed to
+fail it.
+
+**Driven by hand, on `emulator-5554`, against a real, freshly rebuilt
+`vpay-demo` stack — three cold launches to `paid`, one Orange redirect
+hand-off and back, one mid-payment dismissal.** All three MTN cold launches
+reached `examples/shop`'s own `orders.get`, `status: "paid"`, via a real
+signed webhook — `cs_xdsgjxgnms125191q5fbt46j`/`pi_8ge830rszs2a7597m3ef4ntr`,
+`cs_55sfavjrss5v149zxjm19sb6`/`pi_fzjs43a3q14ns6bfa8fsnknk`,
+`cs_hxmzrr3f1h39bea1fpsehs8e`/`pi_vfc05aw6157pd8247zt06sa1`. The Orange walk
+handed off to the same Custom Tab the browser cutover built, paid on the
+WireMock stub's own page, and returned through vpay's hosted return page to
+`Paiement reçu` — `cs_dd94vfqvb51kh5m28136h165`/`pi_y2bshj0sah3tn51gsbanv5g9`,
+`paid`. The mid-payment dismissal abandoned the Custom Tab before ever
+pressing Pay or Cancel on the rail's own page — the sheet kept polling
+("Consultez votre téléphone") for the whole observed window, and the
+order stayed `unpaid` at every read, never a fabricated `canceled` —
+`cs_narecnxq71791f0k1ak7c7wj`/`pi_yvxcfgzkeh5mhb87vst7h3ry`. Evidence,
+screenshots included:
+[`../status/verification/2026-09-17-flutter-native-sheet.md`](../status/verification/2026-09-17-flutter-native-sheet.md).
+
+**Dropped, deliberately — no native analogue.** `frame.ts`, `origins.ts`,
+`csp.ts` and `entry.ts` implement the hosted page's D4/D8 iframe-embedding
+refusal and the parent `postMessage` protocol; both are web-platform
+concepts a native sheet has no equivalent surface for (there is no iframe,
+no parent frame, no `postMessage` channel to police). This is an ADR line,
+not an oversight — see
+[ADR-0021](../adr/0021-flutter-checkout-plugin.md)'s addition for
+2026-09-17.
+
+**Cards remain explicitly out of scope.** The sheet collects a phone number
+for a push rail and nothing else; a native PAN field would move the
+integration from PCI SAQ-A to SAQ-D, and nothing in `lib/src/models.dart`'s
+`RailFieldKind` can represent one (an unrecognised field type, `"card"`
+included, decodes to `RailFieldKindUnknown` and is never rendered — see
+that type's own doc comment). Cards, when they arrive, need the hosted page
+or a tokenising field that never lets a PAN reach this SDK.
+
+**Not done, honestly:** the redirect hand-off's own stop-URL matching is
+still the same unverified-on-every-platform deep-link signal the browser
+cutover section above describes — every Orange walk in this lane also ended
+in `dismissed`, never `stopUrlReached`, and D4's poll is what made it
+correct anyway. iOS/macOS were not touched by this lane (Android only, on
+the maintainer's own `emulator-5554`). The "remember Orange Money on this
+device" checkbox renders and its `CheckboxListTile` label reads correctly,
+but only the MSISDN half of page memory has a persistence layer
+(`VpayRememberedMsisdn`) — no record is actually written for a redirect
+rail's own "remember" checkbox, a smaller gap than the hosted page's own
+`PageMemory.rail` but a real one, named here rather than silently dropped.
