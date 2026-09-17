@@ -77,8 +77,13 @@ const Map<String, String> _en = <String, String>{
   'outcome.failed_title': 'Payment not completed',
   'outcome.canceled_title': 'Payment canceled',
   'outcome.canceled_body': 'This payment was canceled. Nothing was taken.',
-  'outcome.back_to': 'Back to {merchant}',
-  'outcome.back_to_unnamed': 'Back to the shop',
+  // "Done", not "Back to {merchant}": the payer never left. This is a
+  // native sheet over the merchant's own app, so "back to the shop" names a
+  // journey that did not happen — it is the hosted *web* page's wording,
+  // where the payer really was on another origin and really did have to
+  // travel back. Dismissing the sheet reveals the app that was behind it
+  // the whole time. `{merchant}` is therefore unused here on purpose.
+  'outcome.done': 'Done',
   'outcome.no_destination':
       'This payment is finished. You can close this page.',
   'outcome.provider_said': 'What the payment provider said',
@@ -189,8 +194,8 @@ const Map<String, String> _fr = <String, String>{
   'outcome.failed_title': 'Paiement non abouti',
   'outcome.canceled_title': 'Paiement annulé',
   'outcome.canceled_body': 'Ce paiement a été annulé. Rien n’a été prélevé.',
-  'outcome.back_to': 'Retour vers {merchant}',
-  'outcome.back_to_unnamed': 'Retour à la boutique',
+  // See the English entry: the payer never left the app.
+  'outcome.done': 'Conclure',
   'outcome.no_destination':
       'Ce paiement est terminé. Vous pouvez fermer cette page.',
   'outcome.provider_said': 'Ce qu’a répondu l’opérateur',

@@ -110,6 +110,21 @@ class VpayCheckoutSheet extends StatefulWidget {
 /// the payer dismissing the sheet (a swipe-away, tapping outside, the
 /// system back gesture), in which case [SheetController.dismiss] decides
 /// the answer (D4).
+/// The sheet's top corner radius.
+///
+/// 28, not the Material default: this sheet is frequently *replaced on
+/// screen* by a system browser sheet — `SFSafariViewController` on iOS, a
+/// partial Custom Tab on Android — when the payer picks a redirect rail
+/// like Orange Money. Both of those are drawn by the OS with a much
+/// rounder corner than Material's, and a squarer vpay sheet handing over
+/// to a rounder system one reads as a glitch rather than a transition.
+/// 28 sits close enough to both that the swap is not jarring.
+///
+/// Override it with `borderRadius` when the host app's own surfaces have a
+/// different language — a merchant whose app is square everywhere should
+/// not get one rounded rectangle in the middle of it.
+const double kVpayCheckoutSheetCornerRadius = 28;
+
 Future<VpayCheckoutResult> showVpayCheckoutSheet(
   BuildContext context, {
   required String sessionUrl,
@@ -119,6 +134,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
   String? merchantName,
   List<String>? allowedMethods,
   VpayLocale locale = VpayLocale.fallback,
+  BorderRadiusGeometry? borderRadius,
 }) async {
   final GlobalKey<_VpayCheckoutSheetState> sheetKey =
       GlobalKey<_VpayCheckoutSheetState>();
@@ -127,8 +143,19 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
         context: context,
         isScrollControlled: true,
         useSafeArea: true,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        // Load-bearing, and its absence is why this sheet had square
+        // corners despite already setting `shape`: `showModalBottomSheet`
+        // does not clip its child to `shape` unless asked. The sheet's own
+        // `Material` then paints an opaque rectangle straight over the
+        // rounded outline, so the radius exists in the widget tree and
+        // never on screen.
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius:
+              borderRadius ??
+              const BorderRadius.vertical(
+                top: Radius.circular(kVpayCheckoutSheetCornerRadius),
+              ),
         ),
         builder: (BuildContext sheetContext) => DraggableScrollableSheet(
           initialChildSize: 0.9,
@@ -303,25 +330,60 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     Navigator.of(context).maybePop(result);
   }
 
+  static ThemeData _fingerFriendly(ThemeData base) {
+    const Size minimum = Size.fromHeight(52);
+    ButtonStyle grow(ButtonStyle? style) => (style ?? const ButtonStyle())
+        .copyWith(minimumSize: const WidgetStatePropertyAll<Size>(minimum));
+    return base.copyWith(
+      materialTapTargetSize: MaterialTapTargetSize.padded,
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: grow(base.elevatedButtonTheme.style),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: grow(base.outlinedButtonTheme.style),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: grow(base.filledButtonTheme.style),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: grow(base.textButtonTheme.style),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: SafeArea(
-        top: false,
-        child: Semantics(
-          // Present from first render, never unmounted — a live region
-          // created together with its own text is not announced.
-          container: true,
-          liveRegion: true,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                if (widget.showDragHandle) _dragHandle(context),
-                _buildScreen(context),
-              ],
+    return Theme(
+      // Finger-friendly by default, on top of whatever the merchant's
+      // `ThemeData` says. A checkout sheet is a small surface a payer uses
+      // once, often one-handed, often on a cheap phone, and usually while
+      // slightly anxious about money — the wrong tap here costs a payment,
+      // not a scroll position.
+      //
+      // 52 is above both floors (Material's 48dp and Apple's 44pt) rather
+      // than exactly at either, because the numbers are minimums for
+      // *reachable* targets and these sit in a scrolling column near the
+      // bottom edge. Set on the sheet's own `Theme`, not on each call site,
+      // so a new button cannot be added later without inheriting it.
+      data: _fingerFriendly(Theme.of(context)),
+      child: Material(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        child: SafeArea(
+          top: false,
+          child: Semantics(
+            // Present from first render, never unmounted — a live region
+            // created together with its own text is not announced.
+            container: true,
+            liveRegion: true,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  if (widget.showDragHandle) _dragHandle(context),
+                  _buildScreen(context),
+                ],
+              ),
             ),
           ),
         ),
@@ -789,13 +851,9 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
         // item. One button, and the payer decides when to press it.
         ElevatedButton(
           onPressed: _controller.returnToMerchant,
-          child: Text(
-            _merchantLine(
-              outcome.context.merchantName,
-              'outcome.back_to',
-              'outcome.back_to_unnamed',
-            ),
-          ),
+          // Not `_merchantLine`: the button no longer names the merchant,
+          // because the payer is already in the merchant's app.
+          child: Text(_t.t('outcome.done')),
         ),
       ],
     );

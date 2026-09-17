@@ -10,11 +10,34 @@ import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 /// type system alone.
 void main() {
   group('i18n completeness', () {
-    test('both dictionaries carry the same 72 keys as en.ts/fr.ts', () {
-      expect(vpayCheckoutMessageKeys.length, 72);
-      expect(vpayCheckoutMessageKeysFr.length, 72);
-      expect(vpayCheckoutMessageKeys, vpayCheckoutMessageKeysFr);
-    });
+    // 71, not the web page's 72, and the difference is deliberate rather
+    // than a key that went missing. `en.ts`/`fr.ts` carry
+    // `outcome.back_to` and `outcome.back_to_unnamed`; this sheet carries
+    // one `outcome.done` in their place. On the hosted page the payer
+    // really is on another origin and really does have to travel back to
+    // the merchant, so naming the merchant on that button is the right
+    // sentence. In a native sheet drawn over the merchant's own app the
+    // payer never left, so "Back to {merchant}" describes a journey that
+    // did not happen — dismissing the sheet just reveals the app that was
+    // behind it. Two keys collapse into one.
+    //
+    // The parity check below still runs against everything else, so a key
+    // genuinely lost in the port is still caught; only this one divergence
+    // is exempt, and it is named here rather than absorbed into a number.
+    test(
+      'both dictionaries carry the same keys, with one stated divergence',
+      () {
+        expect(vpayCheckoutMessageKeys.length, 71);
+        expect(vpayCheckoutMessageKeysFr.length, 71);
+        expect(vpayCheckoutMessageKeys, contains('outcome.done'));
+        expect(vpayCheckoutMessageKeys, isNot(contains('outcome.back_to')));
+        expect(
+          vpayCheckoutMessageKeys,
+          isNot(contains('outcome.back_to_unnamed')),
+        );
+        expect(vpayCheckoutMessageKeys, vpayCheckoutMessageKeysFr);
+      },
+    );
 
     test('every {placeholder} in the English string also appears in the French one, and vice versa', () {
       final RegExp placeholder = RegExp(r'\{([a-z]+)\}');

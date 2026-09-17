@@ -88,7 +88,11 @@ export 'src/sheet/checkout_screen.dart'
         reduceCheckoutScreen,
         stateForContext;
 export 'src/sheet/checkout_sheet.dart'
-    show VpayCheckoutSheet, showVpayCheckoutSheet, showVpayCheckoutSheetRoute;
+    show
+        VpayCheckoutSheet,
+        kVpayCheckoutSheetCornerRadius,
+        showVpayCheckoutSheet,
+        showVpayCheckoutSheetRoute;
 export 'src/sheet/failures.dart' show maxProviderReasonLength, providerReason;
 export 'src/sheet/i18n.dart'
     show
