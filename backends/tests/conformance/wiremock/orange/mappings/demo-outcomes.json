@@ -121,7 +121,7 @@
         "urlPathPattern": "/stub-hosted-page/[^/]+/pay",
         "queryParameters": {
           "msisdn": {
-            "equalTo": "237600000102"
+            "matches": "237600000102|237690000102"
           }
         }
       },
@@ -166,7 +166,18 @@
           "",
           "STRICTLY SEQUENTIAL, like MTN's. One scenario per container means two Orange",
           "charges in flight against one stub share it, and the wrong one could be",
-          "failed. The demo drives one payment at a time."
+          "failed. The demo drives one payment at a time.",
+          "",
+          "237690000102 ADDED for issue #189 (2026-09-17). Unlike MTN's msisdn, this",
+          "one is never read by vpay's own server -- Orange declares no payer fields",
+          "(vpay_api::v1::payer_fields::resolve_payer_fields is passed an empty",
+          "`declared` for orange_money), so #186's validation never touches it. It",
+          "moves anyway, for the same reason the table it steers moved: keeping a",
+          "2376000000xx-shaped number in examples/shop's documented panel next to",
+          "MTN's now-real ones would read as a typo, not a deliberate difference, and",
+          "a real Orange mobile number costs nothing to use here. adapter_conformance.rs's",
+          "case::payer_timeout still drives 237600000102 directly on this same page,",
+          "unaffected."
         ]
       }
     },
@@ -180,7 +191,7 @@
         "urlPathPattern": "/stub-hosted-page/[^/]+/pay",
         "queryParameters": {
           "msisdn": {
-            "equalTo": "237600000400"
+            "matches": "237600000400|237690000400"
           }
         }
       },
@@ -225,7 +236,14 @@
           "",
           "STRICTLY SEQUENTIAL, like MTN's. One scenario per container means two Orange",
           "charges in flight against one stub share it, and the wrong one could be",
-          "failed. The demo drives one payment at a time."
+          "failed. The demo drives one payment at a time.",
+          "",
+          "237690000400 ADDED for issue #189 (2026-09-17), for the same reason as",
+          "237690000102 above: this field is never read by vpay's server (Orange",
+          "declares no payer fields), so it moves for consistency with the rest of",
+          "examples/shop's now-real documentation MSISDNs, not because anything here",
+          "validates it. adapter_conformance.rs's case::refused still drives",
+          "237600000400 directly on this same page, unaffected."
         ]
       }
     },

@@ -2,9 +2,8 @@
  * The fake mobile-money numbers the **demo stack** honours, and what each one
  * makes happen.
  *
- * None of these is a phone number. They are documentation MSISDNs from the
- * `2376000000xx` block, and they mean something only because
- * `demo-outcomes.json` under
+ * None of these is a real subscriber's number. They are documentation
+ * MSISDNs, and they mean something only because `demo-outcomes.json` under
  * `backends/tests/conformance/wiremock/mtn` and `.../orange` — the
  * WireMock hosts that stand in for MTN and Orange in `compose.yml` — are
  * configured to answer particular things for them. **There is no branch on
@@ -12,6 +11,27 @@
  * steering lives in the stub's configuration, exactly where AGENTS.md's
  * first rule puts it, and against a real rail these numbers do nothing at
  * all.
+ *
+ * **Moved off the `2376000000xx` block on 2026-09-17 (issue #189).** That
+ * block used prefix `60`, which is not a Cameroon mobile prefix under any
+ * real numbering plan, and until #186 nothing checked it — a documentation
+ * MSISDN in that block worked only because vpay never validated what a payer
+ * typed. #186 (2026-09-15) added server-side phone validation
+ * (`vpay_api::v1::payer_fields::resolve_payer_fields`), so a real confirm
+ * carrying one of those numbers now gets vpay's own `400` before the rail is
+ * ever asked — the outcome this table exists to demonstrate would never be
+ * reached. Every MTN row below now uses a real, `phonenumber`-valid CM
+ * mobile number in the `67x` block, keeping its old suffix (`101`, `102`,
+ * `103`, `400`, `503`) so the table stays self-documenting; the WireMock
+ * mappings that steer them gained the new number as an alternate match
+ * without losing the old one, which several Rust conformance and unit tests
+ * outside this shop still drive directly against the adapter (out of scope
+ * for this move — `confirm_rails.rs`'s `UNKNOWN_PAYER_MSISDN` doc records
+ * that wider redesign as deliberately deferred). Orange's numbers moved too,
+ * to the `69x` block, for consistency, even though none of them is ever read
+ * by vpay's own server: `orange_money` declares no payer fields, so the
+ * number a payer types on the rail's hosted page never reaches
+ * `resolve_payer_fields` at all.
  *
  * The two rails do not offer the same outcomes, and that is the single most
  * useful thing this table shows a merchant. MTN's `FAILED` bodies carry a
@@ -38,7 +58,13 @@ import type { FailureCode } from "./failures";
 export type RailCode = "mtn_momo" | "orange_money";
 
 export interface TestNumber {
-  /** The canonical `2376XXXXXXXX` a payer types. Digits only — vpay's checkout page refuses letters. */
+  /**
+   * The canonical `2376XXXXXXXX` a payer types. Digits only — vpay's
+   * checkout page refuses letters. Since issue #189 (2026-09-17) this is a
+   * real, `phonenumber`-valid CM mobile number, not merely a twelve-digit
+   * shape — `test-numbers.test.ts` checks it against the same rule
+   * `vpay_api::v1::payer_fields::resolve_payer_fields` enforces server-side.
+   */
   msisdn: string;
   /** The same value grouped the way a Cameroonian reads it. Display only. */
   display: string;
@@ -50,7 +76,8 @@ export interface TestNumber {
    * `unpaid` is kept in the union although **no row is in it today**, and
    * that is deliberate rather than dead code: it is what an outcome vpay
    * emits no event for leaves an order as, and this table has held such a
-   * row before. MTN's `237600000400` was `unpaid` until 2026-09-10, because
+   * row before. MTN's invalid-payer row (`237600000400` at the time, moved
+   * to `237670000400` by issue #189) was `unpaid` until 2026-09-10, because
    * a decline at submit emitted nothing (vpay issue #57); it is `failed` now
    * that the transition emits, and no code in this shop changed. A shop that
    * settles only from signed events — the whole argument of this example —
@@ -102,40 +129,49 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
       "on vpay's checkout page, in the mobile-money field — MTN is a push rail, so vpay prompts the handset",
     numbers: [
       {
-        msisdn: "237600000000",
-        display: "+237 6 00 00 00 00",
+        msisdn: "237670000000",
+        display: "+237 6 70 00 00 00",
         outcome: "Pays. Any number not listed below does the same.",
         orderStatus: "paid",
         failureCode: null,
         railReason: "SUCCESSFUL",
       },
       {
-        msisdn: "237600000101",
-        display: "+237 6 00 00 01 01",
+        // Was `237600000101` until issue #189 (2026-09-17) — see this
+        // module's header doc.
+        msisdn: "237670000101",
+        display: "+237 6 70 00 01 01",
         outcome: "Declined — the wallet has too little money",
         orderStatus: "failed",
         failureCode: "insufficient_funds",
         railReason: "NOT_ENOUGH_FUNDS",
       },
       {
-        msisdn: "237600000102",
-        display: "+237 6 00 00 01 02",
+        // Was `237600000102` until issue #189 (2026-09-17).
+        msisdn: "237670000102",
+        display: "+237 6 70 00 01 02",
         outcome: "The prompt expires — nobody enters the PIN",
         orderStatus: "failed",
         failureCode: "payer_timeout",
         railReason: "COULD_NOT_PERFORM_TRANSACTION",
       },
       {
-        msisdn: "237600000103",
-        display: "+237 6 00 00 01 03",
+        // Was `237600000103` until issue #189 (2026-09-17).
+        msisdn: "237670000103",
+        display: "+237 6 70 00 01 03",
         outcome: "Refused on the handset — the payer said no",
         orderStatus: "failed",
         failureCode: "payer_declined",
         railReason: "PAYMENT_NOT_APPROVED",
       },
       {
-        msisdn: "237600000400",
-        display: "+237 6 00 00 04 00",
+        // Was `237600000400` until issue #189 (2026-09-17). Already the
+        // MSISDN `backends/tests/conformance/wiremock/mtn/mappings/
+        // requesttopay.json`'s "a payer the rail does not know" mapping
+        // matched, for confirm_rails.rs's own #186 fixup — no WireMock
+        // change was needed for this row.
+        msisdn: "237670000400",
+        display: "+237 6 70 00 04 00",
         outcome:
           "Refused at submit — the rail has no such account, before any charge is polled",
         orderStatus: "failed",
@@ -143,8 +179,9 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
         railReason: "PAYER_NOT_FOUND (HTTP 400)",
       },
       {
-        msisdn: "237600000503",
-        display: "+237 6 00 00 05 03",
+        // Was `237600000503` until issue #189 (2026-09-17).
+        msisdn: "237670000503",
+        display: "+237 6 70 00 05 03",
         outcome: "The rail is unavailable",
         orderStatus: "failed",
         failureCode: "provider_unavailable",
@@ -164,27 +201,33 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
     where:
       "on the rail's own payment page, after vpay redirects you — Orange is a redirect rail, so vpay never sees the number",
     caveat:
-      "You have to be quick-ish, and you have to use this page's own buttons. The rail's page answers vpay PENDING while you are on it, for four polls of the worker's ladder — about 105 seconds — and then expires the payment; leave the tab and the order comes back failed with payer_timeout, which is the rail's only word for a page nobody finished. Clicking Pay or Cancel decides it immediately instead. None of that is Orange: it is what backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json is configured to do, so that a payer gets a turn at all. Until 2026-09-10 they did not — the stub answered the first status query SUCCESS about 449 ms after the submit, and a run that typed 237600000400 came back paid (vpay issue #58). One payment at a time: the rail stub's page is a single WireMock scenario keyed on nothing per charge, so with two Orange charges in flight the second loses its window and a Pay or Cancel click on one decides whichever charge the worker asks about next — see examples/shop/README.md.",
+      "You have to be quick-ish, and you have to use this page's own buttons. The rail's page answers vpay PENDING while you are on it, for four polls of the worker's ladder — about 105 seconds — and then expires the payment; leave the tab and the order comes back failed with payer_timeout, which is the rail's only word for a page nobody finished. Clicking Pay or Cancel decides it immediately instead. None of that is Orange: it is what backends/tests/conformance/wiremock/orange/mappings/stub-hosted-page.json is configured to do, so that a payer gets a turn at all. Until 2026-09-10 they did not — the stub answered the first status query SUCCESS about 449 ms after the submit, and a run that typed the old invalid-payer number came back paid (vpay issue #58). One payment at a time: the rail stub's page is a single WireMock scenario keyed on nothing per charge, so with two Orange charges in flight the second loses its window and a Pay or Cancel click on one decides whichever charge the worker asks about next — see examples/shop/README.md.",
     numbers: [
       {
-        msisdn: "237600000000",
-        display: "+237 6 00 00 00 00",
+        // Was `237600000000` until issue #189 (2026-09-17) — see this
+        // module's header doc. Never read by vpay's own server (Orange
+        // declares no payer fields), so it moved only for consistency with
+        // the MTN rows above.
+        msisdn: "237690000000",
+        display: "+237 6 90 00 00 00",
         outcome: "Pays. Any number not listed below does the same.",
         orderStatus: "paid",
         failureCode: null,
         railReason: "SUCCESS",
       },
       {
-        msisdn: "237600000102",
-        display: "+237 6 00 00 01 02",
+        // Was `237600000102` until issue #189 (2026-09-17); same rationale.
+        msisdn: "237690000102",
+        display: "+237 6 90 00 01 02",
         outcome: "The payment window expires",
         orderStatus: "failed",
         failureCode: "payer_timeout",
         railReason: "EXPIRED",
       },
       {
-        msisdn: "237600000400",
-        display: "+237 6 00 00 04 00",
+        // Was `237600000400` until issue #189 (2026-09-17); same rationale.
+        msisdn: "237690000400",
+        display: "+237 6 90 00 04 00",
         outcome: "Refused, with no reason the rail will name",
         orderStatus: "failed",
         failureCode: "provider_error",
@@ -194,7 +237,7 @@ export const TEST_NUMBERS: readonly RailTestNumbers[] = [
     cannotExpress: [
       {
         outcome: "payer_declined",
-        why: "A payer who clicks Cancel on Orange's page ends the payment, and what the rail then reports is EXPIRED — so it arrives as `payer_timeout`, exactly as an abandoned page does. Orange documents five statuses and CANCELLED is not one of them, so the distinction between 'said no' and 'never answered' is one this rail does not make and this repository will not invent. MTN's `237600000103` is where you see `payer_declined`.",
+        why: "A payer who clicks Cancel on Orange's page ends the payment, and what the rail then reports is EXPIRED — so it arrives as `payer_timeout`, exactly as an abandoned page does. Orange documents five statuses and CANCELLED is not one of them, so the distinction between 'said no' and 'never answered' is one this rail does not make and this repository will not invent. MTN's `237670000103` is where you see `payer_declined`.",
       },
       {
         outcome: "insufficient_funds",

@@ -99,8 +99,15 @@ describe("the README and the panel show the same numbers", () => {
  * mapping's `request` — a number named in a `metadata.why` comment is
  * documentation, not steering, and a table that matched against prose would
  * pass for a mapping somebody had deleted. Leaves are filtered to the
- * `23760…` block so that a catch-all pattern (`.*`) cannot make the
+ * `2376…` block so that a catch-all pattern (`.*`) cannot make the
  * assertion below vacuous.
+ *
+ * Widened from `23760…` to `2376…` by issue #189 (2026-09-17): the shop's
+ * demo numbers moved off the `237600000xxx` documentation block (not a real
+ * Cameroon mobile prefix) onto real `237670000xxx`/`237690000xxx` ones, and
+ * the old, narrower prefix would have silently excluded every one of them
+ * from `found` — passing this check not because the mappings were wired
+ * correctly, but because the filter no longer saw them at all.
  */
 function steeringPatterns(rail: "mtn" | "orange"): string[] {
   const dir = fileURLToPath(
@@ -112,7 +119,7 @@ function steeringPatterns(rail: "mtn" | "orange"): string[] {
   const found: string[] = [];
   const walk = (node: unknown): void => {
     if (typeof node === "string") {
-      if (node.includes("23760")) {
+      if (node.includes("2376")) {
         found.push(node);
       }
       return;
@@ -343,13 +350,29 @@ describe("the table itself", () => {
     }
   });
 
-  it("uses documentation MSISDNs only — 237600000xxx, digits, twelve long", () => {
+  it("uses documentation MSISDNs the server's own phone validator would accept", () => {
+    // Until issue #189 (2026-09-17) this asserted the OLD rule — every
+    // number in the `237600000xxx` block, digits, twelve long. That rule was
+    // itself the bug: `237600000xxx` uses prefix `60`, which is not a
+    // Cameroon mobile prefix under any real numbering plan, so a real
+    // confirm carrying one of those numbers now gets `400` from
+    // `vpay_api::v1::payer_fields::resolve_payer_fields` (added by #186)
+    // before the rail is ever asked — the exact outcome this table exists to
+    // demonstrate would never be reached.
+    //
+    // The real rule vpay enforces is CM, Mobile, and `phonenumber`-valid.
+    // This repeats it as a regex rather than pulling in a phone-number
+    // library for one test: the valid mobile blocks are `67x` and `650-654`
+    // (MTN) and `69x` and `655-659` (Orange) — together, `6[579]` as the
+    // second and third digit of a nine-digit CM mobile national number. Kept
+    // as strict as the twelve-digit rule it replaces: a mutation back to
+    // `237600000xxx` fails this exactly as it failed the old one.
     for (const entry of TEST_NUMBERS) {
       for (const number of entry.numbers) {
         // Digits only, because vpay's checkout page refuses letters: the
         // hex-suffixed steering numbers (`237600000f01`) are unusable from a
         // form (`frontends/apps/checkout/src/lib/msisdn.ts`).
-        expect(number.msisdn).toMatch(/^237600000\d{3}$/u);
+        expect(number.msisdn).toMatch(/^2376[579]\d{7}$/u);
         expect(number.msisdn).toHaveLength(12);
       }
     }

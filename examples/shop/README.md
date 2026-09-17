@@ -111,8 +111,10 @@ A demo that can only show a payment working is showing the easy half. Every
 outcome below is reachable from this shop, on the demo stack, by paying with
 a documented fake number — and what the shop does about each is the point.
 **Every outcome in the table below is now reachable**, which it was not until
-2026-09-10: `cancelled` and MTN's `237600000400` were both unreachable because
-vpay emitted no event for either transition
+2026-09-10: `cancelled` and MTN's invalid-payer number (`237600000400` at the
+time, moved to `237670000400` by [issue
+#189](https://github.com/vaam-apps/vpay/issues/189)) were both unreachable
+because vpay emitted no event for either transition
 ([issue #57](https://github.com/vaam-apps/vpay/issues/57)). Both now emit, in
 the transaction of the transition they describe, and this shop settles both
 from the signed event exactly as it always settled the others — no code in
@@ -161,13 +163,27 @@ status and its empty failure columns.
 
 ### The test numbers
 
-Nothing below is a phone number. They are documentation MSISDNs from the
-`2376000000xx` block, and they mean something only because the demo stack's
-WireMock rail stubs are _configured_ to answer particular things for them
+Nothing below is a real subscriber's phone number, but every one of them is a
+real, valid Cameroon mobile number as far as a phone-number parser is
+concerned — they are documentation MSISDNs, and they mean something only
+because the demo stack's WireMock rail stubs are _configured_ to answer
+particular things for them
 (`backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json` and
 its Orange counterpart). **There is no branch on any of these values in
 vpay, in this shop, or in either adapter.** Against a real rail they do
 nothing at all.
+
+**Moved off the `2376000000xx` block on 2026-09-17** ([issue
+#189](https://github.com/vaam-apps/vpay/issues/189)). That block used prefix
+`60`, which is not a Cameroon mobile prefix under any real numbering plan,
+and it worked only because nothing checked it. [Issue
+#186](https://github.com/vaam-apps/vpay/issues/186) added server-side phone
+validation (`vpay_api::v1::payer_fields::resolve_payer_fields`), so a real
+confirm carrying one of those numbers now gets vpay's own `400` before the
+rail is ever asked — which defeats the point of a demo number. Every number
+below now falls in a real CM mobile block (`67x` for MTN, `69x` for Orange),
+keeping its old suffix (`101`, `102`, `103`, `400`, `503`) so the table
+reads the same way it always did.
 
 `src/lib/test-numbers.ts` holds the same table, and
 `src/lib/test-numbers.test.ts` fails if this document and that module
@@ -181,14 +197,14 @@ handset.
 
 | Number         | What happens                                                                  | Order    | vpay code              | The rail said                   |
 | -------------- | ----------------------------------------------------------------------------- | -------- | ---------------------- | ------------------------------- |
-| `237600000000` | Pays. Any number not listed below does the same.                              | `paid`   | —                      | `SUCCESSFUL`                    |
-| `237600000101` | Declined — the wallet has too little money                                    | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
-| `237600000102` | The prompt expires — nobody enters the PIN                                    | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
-| `237600000103` | Refused on the handset — the payer said no                                    | `failed` | `payer_declined`       | `PAYMENT_NOT_APPROVED`          |
-| `237600000400` | Refused at submit — the rail has no such account, before any charge is polled | `failed` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
-| `237600000503` | The rail is unavailable                                                       | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
+| `237670000000` | Pays. Any number not listed below does the same.                              | `paid`   | —                      | `SUCCESSFUL`                    |
+| `237670000101` | Declined — the wallet has too little money                                    | `failed` | `insufficient_funds`   | `NOT_ENOUGH_FUNDS`              |
+| `237670000102` | The prompt expires — nobody enters the PIN                                    | `failed` | `payer_timeout`        | `COULD_NOT_PERFORM_TRANSACTION` |
+| `237670000103` | Refused on the handset — the payer said no                                    | `failed` | `payer_declined`       | `PAYMENT_NOT_APPROVED`          |
+| `237670000400` | Refused at submit — the rail has no such account, before any charge is polled | `failed` | `invalid_payer`        | `PAYER_NOT_FOUND (HTTP 400)`    |
+| `237670000503` | The rail is unavailable                                                       | `failed` | `provider_unavailable` | `SERVICE_UNAVAILABLE`           |
 
-> **`237600000400` reaches `failed` through a different path from the other
+> **`237670000400` reaches `failed` through a different path from the other
 > four, and it did not reach it at all until 2026-09-10.** MTN refuses this
 > MSISDN on the **submit**, before any charge is polled, so vpay commits the
 > failure through `vpay_api::v1::payment_intents::persist_decline` rather
@@ -213,8 +229,10 @@ row moves. Pinned by`a_payer_the_rail_does_not_know_is_a_decline_the_merchant_ca
 `events` table stays empty" to an exact one-element list — the mutation it
 > is armed against is the insert being dropped again.
 
-**`237600000103` is new on 2026-09-10, and it closes the one gap this table
-used to describe.** Until then this paragraph said that no number produced
+**`237670000103` (`237600000103` before [issue
+#189](https://github.com/vaam-apps/vpay/issues/189)) is new on 2026-09-10, and
+it closes the one gap this table used to describe.** Until then this
+paragraph said that no number produced
 `payer_declined`, that MTN documented no reason for a payer who answered the
 prompt and refused it, and that `FailureCode::PayerDeclined` was "produced by
 no adapter in this repository". The last of those was true. The middle one
@@ -291,9 +309,9 @@ a redirect rail, so vpay never sees the number.
 
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |
-| `237600000000` | Pays. Any number not listed below does the same. | `paid`   | —                | `SUCCESS`     |
-| `237600000102` | The payment window expires                       | `failed` | `payer_timeout`  | `EXPIRED`     |
-| `237600000400` | Refused, with no reason the rail will name       | `failed` | `provider_error` | `FAILED`      |
+| `237690000000` | Pays. Any number not listed below does the same. | `paid`   | —                | `SUCCESS`     |
+| `237690000102` | The payment window expires                       | `failed` | `payer_timeout`  | `EXPIRED`     |
+| `237690000400` | Refused, with no reason the rail will name       | `failed` | `provider_error` | `FAILED`      |
 
 Four outcomes this rail **cannot** express, stated rather than faked:
 
@@ -302,7 +320,7 @@ Four outcomes this rail **cannot** express, stated rather than faked:
   exactly as an abandoned page does. Orange documents five statuses and
   `CANCELLED` is not one, so "said no" and "never answered" are a distinction
   this rail does not make and this repository will not invent.
-  `237600000103` on MTN is where you see `payer_declined`.
+  `237670000103` on MTN is where you see `payer_declined`.
 - `insufficient_funds` — Orange's documented statuses are `INITIATED`,
   `PENDING`, `SUCCESS`, `EXPIRED` and `FAILED`, and it documents no
   sub-reason for `FAILED`. A stub answering `NOT_ENOUGH_FUNDS` would be this
@@ -317,7 +335,7 @@ Four outcomes this rail **cannot** express, stated rather than faked:
 **`cancelled` is reachable from no number at all, and never was — it is not a
 rail outcome.** Clicking "cancel" on the rail's page ends the payment, but
 what the rail then reports is `EXPIRED`, so the order becomes **`failed`**
-with `payer_timeout`, exactly as the `237600000102` row does. (Until
+with `payer_timeout`, exactly as the `237690000102` row does. (Until
 2026-09-10 it did not even do that: the Cancel link went straight back to the
 merchant, the stub never learned the payer had clicked it, and the charge
 settled `paid` anyway.) The order becomes `cancelled` when the _shop_ cancels

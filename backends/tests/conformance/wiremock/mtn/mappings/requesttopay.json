@@ -134,7 +134,14 @@
           "before it could reach this mapping at all, which defeats the point of a case",
           "that is supposed to prove the RAIL'S decline reaches the merchant. 237 + 67 is",
           "a real, valid Cameroon mobile prefix; the 0400 suffix keeps naming the 400 it",
-          "provokes."
+          "provokes.",
+          "",
+          "REUSED BY examples/shop since issue #189 (2026-09-17): this is the same",
+          "PAYER_NOT_FOUND 400 the shop's test-number panel documents as `invalid_payer`",
+          "(examples/shop/src/lib/test-numbers.ts), which needed a real confirm to reach",
+          "it for the same reason confirm_rails.rs's case does. No change to this mapping",
+          "was needed -- it already matched on the MSISDN a real confirm carries, and it",
+          "was already the right value."
         ]
       }
     },

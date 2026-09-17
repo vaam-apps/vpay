@@ -34,14 +34,32 @@ export const shopPublishableKey = (): string =>
  * twins (`237600000ce0`, `…f01`, `…f02`) — correctly: a form that accepted
  * letters as a phone number would accept them for every payer. See
  * `docs/plans/step9-notes/lane-3.md` §4c.
+ *
+ * **Moved off the `2376000000xx` block on 2026-09-17** ([issue
+ * #189](https://github.com/vaam-apps/vpay/issues/189)): that block uses
+ * prefix `60`, not a real Cameroon mobile prefix, and since [issue
+ * #186](https://github.com/vaam-apps/vpay/issues/186) landed server-side
+ * phone validation (`vpay_api::v1::payer_fields::resolve_payer_fields`) a
+ * real confirm carrying one of those numbers gets vpay's own `400` before
+ * the rail is ever asked — exactly what these specs drive through vpay's own
+ * checkout page. Every value below is now a real, `phonenumber`-valid CM
+ * mobile number in the `67x` block, matching `examples/shop/README.md` and
+ * `examples/shop/src/lib/test-numbers.ts`.
  */
 export const MTN = {
-  /** `PENDING` on the first status query, `SUCCESSFUL` on the next. */
-  succeeds: "237600000100",
+  /**
+   * `PENDING` on the first status query, `SUCCESSFUL` on the next.
+   *
+   * Was `237600000100` until issue #189; `237670000900` is the same
+   * `mtn-e2e-poll` walk `backends/tests/integration/tests/worker_e2e.rs`'s
+   * `SETTLING_MSISDN` already drives, reused here rather than a fifth new
+   * number.
+   */
+  succeeds: "237670000900",
   /** Arms `FAILED / NOT_ENOUGH_FUNDS` on the next status query. */
-  insufficientFunds: "237600000101",
+  insufficientFunds: "237670000101",
   /** Arms `FAILED / COULD_NOT_PERFORM_TRANSACTION` — the payer let it expire. */
-  payerTimeout: "237600000102",
+  payerTimeout: "237670000102",
   /**
    * Refused on the **submit**, before any charge is polled:
    * `requesttopay.json` answers `400 PAYER_NOT_FOUND` to this `partyId`.
@@ -52,7 +70,7 @@ export const MTN = {
    * webhook-driven shop's order `unpaid` for ever, until vpay issue #57
    * (2026-09-10).
    */
-  unknownPayer: "237600000400",
+  unknownPayer: "237670000400",
 } as const;
 
 /** Products from the seeded catalogue (`prisma/migrations/…_seed_catalogue`). */
