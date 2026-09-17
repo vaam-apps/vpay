@@ -70,15 +70,21 @@
 ///   automate from a Dart test process. That is `pigeons/checkout.dart`
 ///   territory and stays unproven here, exactly as `docs/sdks/parity.md`'s
 ///   dated ⛔ rows already say.
-/// - **The one HTTP call not on [BrowserClient]: the confirm.** The package
-///   has no `confirm` method by design — D3 of
-///   `docs/plans/2026-09-13-flutter-plugin.md` is that vpay's own hosted
-///   PAGE submits the confirm, never this package, and no JavaScript bridge
-///   exists for it to do otherwise. So `_rawConfirm` below makes that one
-///   `POST /v1/browser/payment_intents/{id}/confirm` directly with
-///   `package:http`, standing in for what a payer's browser submits on that
-///   page. Every other request in this file goes through the package's own
-///   [BrowserClient].
+/// - **The one HTTP call not on [BrowserClient]: the confirm.** This lane
+///   predates issue #189 Lane 2's `BrowserClient.confirmPaymentIntent` —
+///   until 2026-09-17 the package had no `confirm` method at all, by
+///   design: D3 of `docs/plans/2026-09-13-flutter-plugin.md` is that vpay's
+///   own hosted PAGE submits the confirm, never this package, and no
+///   JavaScript bridge exists for it to do otherwise. Lane 2 added a
+///   confirm method for the *native sheet* (issue #189), which drives a
+///   rail directly rather than through the hosted page — its own
+///   `test/browser_client_test.dart` covers that method's wire format.
+///   `_rawConfirm` below stays its own `package:http` call rather than
+///   switching to it: this file's job is proving the read/poll half
+///   ([BrowserClient]/[CheckoutController]) against a real server, with the
+///   confirm standing in for whatever submitted it (the hosted page, or now
+///   the sheet) — coupling this test to a second method would let a change
+///   to either one break both suites at once.
 library;
 
 import 'dart:convert';
