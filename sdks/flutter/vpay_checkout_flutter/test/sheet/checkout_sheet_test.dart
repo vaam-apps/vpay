@@ -294,6 +294,48 @@ void main() {
     },
   );
 
+  testWidgets(
+    "a failed outcome shows the rail's own providerReason beside the translated failure line, never instead of it",
+    (WidgetTester tester) async {
+      final client = MockClient(
+        (http.Request request) async => _json(
+          _sessionJson(
+            rails: [_mtnRailJson()],
+            intent: _intentJson(
+              status: 'requires_payment_method',
+              lastPaymentError: {
+                'code': 'insufficient_funds',
+                'message': 'MTN-4001: solde insuffisant',
+              },
+            ),
+          ),
+        ),
+      );
+
+      await _pump(
+        tester,
+        VpayCheckoutSheet(
+          sessionUrl: _sessionUrl,
+          baseUrl: 'https://api.example',
+          publishableKey: 'pk_test_1',
+          httpClient: client,
+          locale: VpayLocale.en,
+        ),
+      );
+
+      // The translated line — never dropped in favour of the raw reason.
+      expect(
+        find.text('There was not enough money in the account.'),
+        findsOneWidget,
+      );
+      // The rail's own words — shown BESIDE it, as data.
+      expect(
+        find.textContaining('MTN-4001: solde insuffisant'),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('the live region is present on the very first frame', (
     WidgetTester tester,
   ) async {
