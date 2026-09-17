@@ -16,16 +16,38 @@
  * difference to anything asserted here, and every difference to whether
  * `dashboard.cy.ts` can find the intent afterwards.
  *
- * `237600000ce0` is `examples/merchant-demo/src/main.rs`'s `DEMO_MSISDN`: a
- * documentation number that keys WireMock scenario `mtn-e2e-poll`
- * (priority 5) to answer `PENDING` on the first `requesttopay` status query
- * and `SUCCESSFUL` on the next, so this spec's wait for `succeeded` exercises
- * the real poll ladder rather than a rail that succeeds on the first try.
- * `vpay-worker` — running in the compose stack, not stubbed — is what drives
- * that poll and settles the charge; nothing in this spec pushes the status
- * forward itself.
+ * `237670000900` keys WireMock scenario `mtn-e2e-poll` (priority 5) to
+ * answer `PENDING` on the first `requesttopay` status query and `SUCCESSFUL`
+ * on the next, so this spec's wait for `succeeded` exercises the real poll
+ * ladder rather than a rail that succeeds on the first try. `vpay-worker` —
+ * running in the compose stack, not stubbed — is what drives that poll and
+ * settles the charge; nothing in this spec pushes the status forward itself.
+ *
+ * **Moved off `237600000ce0` on 2026-09-17**, the same migration
+ * `cypress/support/shop.ts` already made for the demo numbers ([issue
+ * #189]). That number was a hex *steering code*, not a phone number — the
+ * `ce0` suffix named the outcome — and since [issue #186] landed real
+ * server-side phone validation (`vpay-api`'s `v1/payer_fields.rs`, on
+ * libphonenumber), a confirm carrying one gets vpay's own `400` before the
+ * rail is ever asked, so the intent never leaves `requires_payment_method`
+ * and this spec times out waiting for `processing`.
+ *
+ * It does not fail as *malformed*, which is worth knowing before writing
+ * another one: libphonenumber applies its alphanumeric-keypad mapping, so
+ * `…ce0` parses fine as `+237600000230` and is then rejected for being
+ * `is_valid() == false` with type `Unknown` rather than `Mobile`. The whole
+ * `2376000000xx` block fails that way — prefix `60` is not a Cameroon mobile
+ * prefix, so even the digits-only `237600000100` is invalid.
+ *
+ * `237670000900` validates (`+237670000900`, `Mobile`), it is already in
+ * this scenario's own `payer.partyId` matcher, and `shop.ts` documents it as
+ * driving the identical walk that `worker_e2e.rs`'s `SETTLING_MSISDN`
+ * drives.
+ *
+ * [issue #186]: https://github.com/vaam-apps/vpay/issues/186
+ * [issue #189]: https://github.com/vaam-apps/vpay/issues/189
  */
-const MTN_E2E_POLL_MSISDN = "237600000ce0";
+const MTN_E2E_POLL_MSISDN = "237670000900";
 
 describe("checkout-browser", () => {
   it("confirms an MTN MoMo push through @vaam-apps/vpay-stripe-js and settles to succeeded", () => {
