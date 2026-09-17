@@ -370,6 +370,138 @@ void main() {
       });
     },
   );
+
+  group('BrowserClient.confirmPaymentIntent', () {
+    test('POSTs form-encoded key, client_secret, payment_method_data[type] and the nested field', () async {
+      Uri? seenUri;
+      String? seenBody;
+      String? seenContentType;
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          seenUri = request.url;
+          seenBody = request.body;
+          seenContentType = request.headers['Content-Type'];
+          return _json(_paymentIntentJson());
+        }),
+      );
+
+      final result = await client.confirmPaymentIntent(
+        _piSecret,
+        railCode: 'mtn_momo',
+        payerFields: const {'msisdn': '237690000000'},
+      );
+
+      expect(result.isError, isFalse);
+      expect(seenUri!.path, '/v1/browser/payment_intents/pi_123/confirm');
+      expect(seenContentType, 'application/x-www-form-urlencoded');
+      final Map<String, String> form = Uri.splitQueryString(seenBody!);
+      expect(form['key'], 'pk_test_1');
+      expect(form['client_secret'], _piSecret);
+      expect(form['payment_method_data[type]'], 'mtn_momo');
+      expect(form['payment_method_data[mtn_momo][msisdn]'], '237690000000');
+    });
+
+    test('sends no return_url field when none is given', () async {
+      String? seenBody;
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          seenBody = request.body;
+          return _json(_paymentIntentJson());
+        }),
+      );
+
+      await client.confirmPaymentIntent(_piSecret, railCode: 'orange_money');
+
+      expect(
+        Uri.splitQueryString(seenBody!).containsKey('return_url'),
+        isFalse,
+      );
+    });
+
+    test('includes return_url when given, for a redirect rail', () async {
+      String? seenBody;
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          seenBody = request.body;
+          return _json(_paymentIntentJson());
+        }),
+      );
+
+      await client.confirmPaymentIntent(
+        _piSecret,
+        railCode: 'orange_money',
+        returnUrl: 'https://example.com/return?a=b',
+      );
+
+      final Map<String, String> form = Uri.splitQueryString(seenBody!);
+      expect(form['return_url'], 'https://example.com/return?a=b');
+    });
+
+    test('refuses a malformed clientSecret without sending anything', () async {
+      bool sent = false;
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          sent = true;
+          return _json(_paymentIntentJson());
+        }),
+      );
+
+      final result = await client.confirmPaymentIntent(
+        'not-a-secret',
+        railCode: 'mtn_momo',
+      );
+
+      expect(result.isError, isTrue);
+      expect(sent, isFalse);
+    });
+
+    test('maps the uniform 404 the same way the reads do', () async {
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient(
+          (request) async => _json({
+            'error': {'code': 'resource_missing', 'message': 'x'},
+          }, status: 404),
+        ),
+      );
+
+      final result = await client.confirmPaymentIntent(
+        _piSecret,
+        railCode: 'mtn_momo',
+        payerFields: const {'msisdn': '237690000000'},
+      );
+
+      expect(result.isError, isTrue);
+    });
+
+    test('reports a refused connection as api_connection_error', () async {
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient(
+          (request) async => throw const SocketExceptionStub(),
+        ),
+      );
+
+      final result = await client.confirmPaymentIntent(
+        _piSecret,
+        railCode: 'mtn_momo',
+        payerFields: const {'msisdn': '237690000000'},
+      );
+
+      expect(result.isError, isTrue);
+      expect(result.error!.type, 'api_connection_error');
+    });
+  });
 }
 
 /// A stand-in for whatever `http.Client.get` throws on a refused connection

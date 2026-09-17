@@ -83,12 +83,24 @@ export 'src/sheet/checkout_screen.dart'
         OutcomeKind,
         RefusalReason,
         checkoutInitialState,
+        contextOfCheckoutScreen,
         intentOutcome,
         reduceCheckoutScreen,
         stateForContext;
+export 'src/sheet/checkout_sheet.dart'
+    show VpayCheckoutSheet, showVpayCheckoutSheet, showVpayCheckoutSheetRoute;
 export 'src/sheet/failures.dart' show maxProviderReasonLength, providerReason;
+export 'src/sheet/i18n.dart'
+    show
+        VpayCheckoutStrings,
+        VpayLocale,
+        failureMessageKey,
+        railLabelFor,
+        vpayCheckoutMessageKeys,
+        vpayCheckoutMessageKeysFr;
 export 'src/sheet/money.dart'
     show currencyExponent, minorUnitsToDecimalString, toDecimalString;
+export 'src/sheet/money_format.dart' show formatAmountForDisplay;
 export 'src/sheet/msisdn.dart'
     show formatCameroonMsisdn, normalizeCameroonMsisdn;
 export 'src/sheet/poll_jitter.dart'
@@ -108,6 +120,13 @@ export 'src/sheet/rails.dart'
         UnsupportedRail,
         UnsupportedRailReason,
         railChoices;
+export 'src/sheet/remember_msisdn.dart'
+    show
+        RememberedMsisdnRecord,
+        SharedPreferencesRememberedMsisdnStore,
+        VpayRememberedMsisdn,
+        VpayRememberedMsisdnStore,
+        rememberedMsisdnTtl;
 export 'src/sheet/return_screen.dart'
     show
         ReturnContext,
@@ -127,4 +146,5 @@ export 'src/sheet/return_screen.dart'
         reduceReturn,
         returnInitialState,
         stateForReturn;
+export 'src/sheet/sheet_controller.dart' show SheetController, errorMessageKey;
 export 'src/vpay_checkout.dart' show VpayCheckout;

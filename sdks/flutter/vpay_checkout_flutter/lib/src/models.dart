@@ -84,6 +84,7 @@ final class PaymentIntent {
     required this.created,
     required this.livemode,
     required this.clientSecret,
+    this.redirectUrl,
   });
 
   /// `pi_…`.
@@ -115,6 +116,20 @@ final class PaymentIntent {
   /// `pi_…_secret_…`. Never log this — see [toString].
   final String clientSecret;
 
+  /// The rail's own page a redirect flow must send the payer to next —
+  /// `next_action.redirect_to_url.url` when [PaymentIntentStatus] names a
+  /// redirect rail still in flight, `null` otherwise (including for every
+  /// push rail, which has nothing for a browser to do). Added for issue
+  /// #189 (Lane 2): the browser-cutover era only ever read this off the
+  /// hosted page's own confirm answer, never off a Dart-parsed intent, so
+  /// Lane 1's model carried no field for it. Parsed the same way
+  /// `frontends/apps/checkout/src/lib/controller.ts`'s `redirectUrlOf`
+  /// does — an absolute `http:`/`https:` URL only; a relative value or a
+  /// `javascript:`/`data:` scheme (the rail chose this string; vpay only
+  /// echoed it) decodes to `null` rather than something a caller might hand
+  /// to a browser host unchecked.
+  final String? redirectUrl;
+
   /// `true` once the intent will not change again without a new request.
   /// The Dart port of `sdks/stripe-js/src/client.ts`'s `hasStoppedMoving`:
   /// `requiresPaymentMethod` is terminal **only** with a [lastPaymentError]
@@ -144,6 +159,7 @@ final class PaymentIntent {
     created: json['created']! as int,
     livemode: json['livemode']! as bool,
     clientSecret: json['client_secret']! as String,
+    redirectUrl: _redirectUrlFromNextAction(json['next_action']),
   );
 
   static bool isPaymentIntentJson(Object? body) =>
@@ -155,6 +171,26 @@ final class PaymentIntent {
   String toString() =>
       'PaymentIntent(id: $id, status: $status, clientSecret: '
       '${redacted(clientSecret)})';
+}
+
+/// [PaymentIntent.redirectUrl]'s own parser — see that field's doc comment.
+String? _redirectUrlFromNextAction(Object? nextAction) {
+  if (nextAction is! Map || nextAction['type'] != 'redirect_to_url') {
+    return null;
+  }
+  final Object? redirect = nextAction['redirect_to_url'];
+  if (redirect is! Map) {
+    return null;
+  }
+  final Object? url = redirect['url'];
+  if (url is! String || url.isEmpty) {
+    return null;
+  }
+  final Uri? parsed = Uri.tryParse(url);
+  if (parsed == null || (parsed.scheme != 'http' && parsed.scheme != 'https')) {
+    return null;
+  }
+  return url;
 }
 
 /// `open`, `complete` or `expired` (D10).

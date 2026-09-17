@@ -43,6 +43,18 @@ abstract final class VpayClientErrorCodes {
   /// Distinct from every status this package reads off an intent: it means
   /// the *window* failed, so nothing was observed either way.
   static const String platformWindowFailed = 'platform_window_failed';
+
+  /// The payer closed the checkout sheet (a swipe-away, a system back press,
+  /// tapping outside a modal) before it ever reached a terminal state, and
+  /// before any confirm was even sent — issue #189's sheet. Distinct from
+  /// [VpayCheckoutCanceled] (`result.dart`): that type reports a payment
+  /// intent the API itself says is `canceled`, a fact read off the wire,
+  /// never inferred from a widget being removed from the tree. A dismissal
+  /// **after** a confirm was sent is never reported this way — see
+  /// `sheet_controller.dart`'s `dismiss`, which polls first (D4) and answers
+  /// `VpayCheckoutPending`/`VpayCheckoutUnresolved` instead.
+  static const String sheetDismissedBeforeConfirm =
+      'sheet_dismissed_before_confirm';
 }
 
 /// vpay's error envelope (`vpay_api::error_envelope_with_param`), narrowed to
@@ -113,6 +125,14 @@ final class VpayError {
     message:
         'The native checkout window could not be opened, or closed without '
         'reporting an outcome.',
+  );
+
+  /// The payer closed the checkout sheet before any confirm was sent — see
+  /// [VpayClientErrorCodes.sheetDismissedBeforeConfirm].
+  factory VpayError.sheetDismissedBeforeConfirm() => const VpayError(
+    type: 'api_error',
+    code: VpayClientErrorCodes.sheetDismissedBeforeConfirm,
+    message: 'The payer closed the checkout sheet before starting a payment.',
   );
 
   /// The polling budget elapsed before the intent reached a terminal state,

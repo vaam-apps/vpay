@@ -567,6 +567,17 @@ CheckoutScreenState _afterIntentUpdate(
   return CheckoutWaiting(context: next, rail: rail, notice: null);
 }
 
+/// The context on any state that carries one, or `null` — the public name
+/// for [_contextOfAny], exposed for issue #189 Lane 2's `SheetController`
+/// (`sheet/sheet_controller.dart`), which needs the same "does this state
+/// have a session on it" question `reduceCheckoutScreen`'s own
+/// [CheckoutRefuse] transition asks, to decide what a mid-payment dismissal
+/// should report. A thin wrapper rather than making [_contextOfAny] itself
+/// public: the underlying `switch` stays private and this file's own
+/// exhaustiveness check still catches a state added without updating it.
+CheckoutContext? contextOfCheckoutScreen(CheckoutScreenState state) =>
+    _contextOfAny(state);
+
 /// The context on any state that carries one, or `null` — used only by the
 /// [CheckoutRefuse] transition, which is reachable from every state.
 CheckoutContext? _contextOfAny(CheckoutScreenState state) => switch (state) {

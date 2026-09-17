@@ -2,10 +2,10 @@
 ///
 /// **The payer never sees, types or pastes a session URL.** Tapping "Buy"
 /// asks this app's own backend for one, exactly as a real shop's app would,
-/// and hands the answer straight to [VpayCheckout.start]. A session URL in a
-/// text field was a testing affordance that modelled nothing real — no
-/// merchant ships that, and an example that shows one teaches the wrong
-/// integration.
+/// and hands the answer straight to [showVpayCheckoutSheet] (issue #189,
+/// Lane 2 — the native Flutter checkout sheet). A session URL in a text
+/// field was a testing affordance that modelled nothing real — no merchant
+/// ships that, and an example that shows one teaches the wrong integration.
 ///
 /// The invariant still holds (design doc, "The invariant"): this app does
 /// **not** create the session itself. `POST /v1/checkout/sessions` needs a
@@ -18,7 +18,8 @@
 /// So the flow here is the real one, end to end:
 ///
 ///   tap Buy → this app → shop's `orders.create` → vpay `POST /v1/…` → url
-///           → VpayCheckout.start(url) → browser → poll → typed result
+///           → showVpayCheckoutSheet(url) → sheet rises over this app →
+///           select rail → confirm → poll → typed result
 ///
 /// # Running it
 ///
@@ -98,17 +99,22 @@ class _ShopPageState extends State<_ShopPage> {
       //    app never does. Its answer carries the session `url`.
       final String sessionUrl = await _createOrderOnOurServer();
 
-      // 2. Hand it straight to the plugin. The payer sees a browser sheet,
-      //    never this string.
+      // 2. Open the native checkout sheet. It rises over THIS screen — the
+      //    payer never leaves the app, and never sees this URL string.
+      if (!mounted) {
+        return;
+      }
       setState(() => _status = 'Opening checkout…');
-      final VpayCheckout checkout = VpayCheckout(
+      final VpayCheckoutResult result = await showVpayCheckoutSheet(
+        context,
+        sessionUrl: sessionUrl,
         baseUrl: _vpayBaseUrl,
         publishableKey: _publishableKey,
         // The demo stack is plain http:// — named opt-in, never inferred
         // from a debug build.
         allowInsecureBaseUrl: true,
+        merchantName: 'Njangi Store',
       );
-      final VpayCheckoutResult result = await checkout.start(sessionUrl);
 
       // 3. Every arm handled — the compiler insists, because
       //    `VpayCheckoutResult` is sealed.

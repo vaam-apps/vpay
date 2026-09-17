@@ -156,6 +156,44 @@ void main() {
         contains('[${intent.clientSecret.length} chars redacted]'),
       );
     });
+
+    test('redirectUrl is null when next_action is null', () {
+      final intent = PaymentIntent.fromJson(_samplePaymentIntentJson());
+      expect(intent.redirectUrl, isNull);
+    });
+
+    test('redirectUrl reads next_action.redirect_to_url.url', () {
+      final json = _samplePaymentIntentJson(status: 'requires_action');
+      json['next_action'] = <String, Object?>{
+        'type': 'redirect_to_url',
+        'redirect_to_url': <String, Object?>{
+          'url': 'https://rail.example/pay/abc',
+          'return_url': null,
+        },
+      };
+      final intent = PaymentIntent.fromJson(json);
+      expect(intent.redirectUrl, 'https://rail.example/pay/abc');
+    });
+
+    test('redirectUrl refuses a javascript: URL the rail supplied', () {
+      final json = _samplePaymentIntentJson(status: 'requires_action');
+      json['next_action'] = <String, Object?>{
+        'type': 'redirect_to_url',
+        'redirect_to_url': <String, Object?>{
+          'url': 'javascript:alert(1)',
+          'return_url': null,
+        },
+      };
+      final intent = PaymentIntent.fromJson(json);
+      expect(intent.redirectUrl, isNull);
+    });
+
+    test('redirectUrl is null for an unrecognised next_action type', () {
+      final json = _samplePaymentIntentJson(status: 'requires_action');
+      json['next_action'] = <String, Object?>{'type': 'something_else'};
+      final intent = PaymentIntent.fromJson(json);
+      expect(intent.redirectUrl, isNull);
+    });
   });
 
   group('CheckoutSession', () {
