@@ -48,6 +48,7 @@ import {
   PaymentSummary,
   RailSelector,
   RedirectPrompt,
+  ResumeRedirectPanel,
   StatusPanel,
   SupportLine,
   merchantLine,
@@ -60,6 +61,8 @@ export interface CheckoutViewHandlers {
   onSubmitMsisdn: (msisdn: string) => void;
   onStartRedirect: () => void;
   onRetryPoll: () => void;
+  /** The `resume_redirect` screen's primary action: reopen the rail's page. */
+  onResumeRedirect: () => void;
   /** The outcome screen's one control. Named for what it does: there is no timer behind it. */
   onReturnToMerchant: () => void;
   onLocaleChange: (locale: Locale) => void;
@@ -249,6 +252,16 @@ function renderScreen(
           body={t("state.waiting_body", { amount })}
           notice={state.notice}
           onRetry={state.notice === null ? undefined : props.onRetryPoll}
+        />
+      );
+
+    case "resume_redirect":
+      return (
+        <ResumeRedirectPanel
+          t={t}
+          canChooseAnother={state.rails.supported.length > 1}
+          onResume={props.onResumeRedirect}
+          onChooseAnother={props.onBack}
         />
       );
 

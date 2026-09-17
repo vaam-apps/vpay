@@ -172,6 +172,24 @@ export type CheckoutState =
       notice: MessageKey | null;
     }
   | {
+      name: "resume_redirect";
+      context: CheckoutContext;
+      /** So the secondary "choose another method" action can offer one, same as `ready_redirect`. */
+      rails: RailChoices;
+      /**
+       * Not recoverable from a bare intent — same reason `waiting` carries
+       * `null` here. Reachable from a fresh read (a reload, or the payer
+       * coming back to the tab) as well as from a poll while the rail was
+       * known, so it stays optional rather than being widened to always-known.
+       */
+      rail: SupportedRail | null;
+      /**
+       * `redirectUrlOf(intent)`, resolved once here rather than re-parsed by
+       * every screen that shows it.
+       */
+      url: string;
+    }
+  | {
       name: "redirecting";
       context: CheckoutContext;
       rail: SupportedRail;
@@ -240,6 +258,42 @@ export function intentOutcome(
 }
 
 /**
+ * The absolute URL a `next_action.redirect_to_url` names, or `null`.
+ *
+ * Lives here rather than in `controller.ts` (which called this — and only
+ * this — before 2026-09-17) because `stateForContext` below is pure and
+ * needs it too: `requires_action` means a redirect exists that the payer
+ * has not completed, and the reducer that decides what a freshly-read
+ * session shows has to be able to read it off the intent without reaching
+ * for a `fetch` or a DOM API. `controller.ts` re-exports it unchanged for
+ * `startRedirect`.
+ */
+export function redirectUrlOf(
+  intent: PaymentIntent | PublicPaymentIntent,
+): string | null {
+  const nextAction = intent.next_action;
+  if (nextAction === null || nextAction.type !== "redirect_to_url") {
+    return null;
+  }
+  const url = nextAction.redirect_to_url.url;
+  if (typeof url !== "string" || url.length === 0) {
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  // The rail chose this string; vpay echoed it. `javascript:` here would be
+  // script execution on vpay's own origin, and a relative one would resolve
+  // against this page rather than the rail.
+  return parsed.protocol === "http:" || parsed.protocol === "https:"
+    ? url
+    : null;
+}
+
+/**
  * The state a freshly-read session lands in.
  *
  * The session's own `status` wins where it is terminal, because the worker
@@ -287,11 +341,33 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
 
   const rails = railChoices(intent, context.allowedMethods);
 
-  if (intent.status === "processing" || intent.status === "requires_action") {
-    // Already confirmed — a reload, or a payer coming back to the tab. The
-    // rail that was chosen is not recoverable from the intent (a confirmed
-    // intent does not name it), so the waiting screen shows without one.
+  if (intent.status === "processing") {
+    // Already confirmed and moving on its own — a reload, or a payer coming
+    // back to the tab. The rail that was chosen is not recoverable from the
+    // intent (a confirmed intent does not name it), so the waiting screen
+    // shows without one.
     return { name: "waiting", context, rail: null, notice: null };
+  }
+
+  if (intent.status === "requires_action") {
+    // The rail is not the one still moving here — the PAYER is. They have a
+    // redirect to complete on the rail's own page, and if they abandoned it
+    // (closed the tab, hit back) nothing about this intent changes until
+    // they go back to it. `waiting`'s spinner would be both false (nothing
+    // is "on their phone" — a redirect rail never sees a payer's number) and
+    // unresolvable, until the poll budget dies.
+    //
+    // `payment_intents.rs`'s `rendered_intent` reconstructs `next_action`
+    // from the stored charge row on every read of a `requires_action`
+    // intent and hard-errors when it cannot, so a redirect URL is here
+    // unless the server itself is broken — in which case falling back to
+    // `waiting` is the same "this page has learnt nothing that says
+    // otherwise" answer the rest of this file gives a claim it cannot
+    // support, not a state invented for the occasion.
+    const url = redirectUrlOf(intent);
+    return url === null
+      ? { name: "waiting", context, rail: null, notice: null }
+      : { name: "resume_redirect", context, rails, rail: null, url };
   }
 
   if (rails.supported.length === 0) {
@@ -363,7 +439,9 @@ export function reduce(
         : state;
 
     case "back":
-      return state.name === "collect_msisdn" || state.name === "ready_redirect"
+      return state.name === "collect_msisdn" ||
+        state.name === "ready_redirect" ||
+        state.name === "resume_redirect"
         ? backStateFor(state.context, state.rails)
         : state;
 
@@ -410,6 +488,22 @@ export function reduce(
           failure: outcome.failure,
           reason: outcome.reason,
         };
+      }
+      if (event.intent.status === "requires_action") {
+        // Same split as `stateForContext`: a poll (or a confirm that
+        // answered without navigating) can land here too, and a payer who
+        // abandons the rail's page mid-poll must not be left on a spinner
+        // that will never resolve itself.
+        const url = redirectUrlOf(event.intent);
+        if (url !== null) {
+          return {
+            name: "resume_redirect",
+            context,
+            rails: railChoices(context.intent, context.allowedMethods),
+            rail: state.rail,
+            url,
+          };
+        }
       }
       return { name: "waiting", context, rail: state.rail, notice: null };
     }

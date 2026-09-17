@@ -60,6 +60,17 @@ export const en = {
     "Approve {amount} on your handset. This page updates on its own.",
   "state.redirecting_title": "Taking you to Orange Money",
   "state.redirecting_body": "You will come back here once you have paid.",
+  /*
+   * `requires_action`: the payer has a redirect to finish on the rail's own
+   * page and abandoned it (closed the tab, hit back). Distinct from
+   * `state.waiting_*` on purpose — that pair claims the payment is moving on
+   * its own, which is false here and unresolvable without the payer's own
+   * next step, so this screen offers one instead of a spinner.
+   */
+  "state.resume_redirect_title": "Payment not completed",
+  "state.resume_redirect_body":
+    "You did not finish this payment on the provider's page. Nothing has been taken.",
+  "state.resume_redirect_continue": "Return to the payment page",
 
   "outcome.succeeded_title": "Payment received",
   "outcome.succeeded_body": "{merchant} has been told you paid {amount}.",

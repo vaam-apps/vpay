@@ -50,6 +50,7 @@ function Screen({ state, locale }: { state: CheckoutState; locale: Locale }) {
       onSubmitMsisdn={NOOP}
       onStartRedirect={NOOP}
       onRetryPoll={NOOP}
+      onResumeRedirect={NOOP}
       onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />
@@ -87,6 +88,10 @@ export const OrangeReady: Story = story("ready_redirect");
 export const Confirming: Story = story("confirming");
 export const WaitingForThePayer: Story = story("waiting");
 export const WaitingWithAFailedPoll: Story = story("waiting_notice");
+export const AbandonedRedirect: Story = story("resume_redirect");
+export const AbandonedRedirectSingleRail: Story = story(
+  "resume_redirect_single_rail",
+);
 export const RedirectingToTheRail: Story = story("redirecting");
 export const Succeeded: Story = story("outcome_succeeded");
 export const Failed: Story = story("outcome_failed");

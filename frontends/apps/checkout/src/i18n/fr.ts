@@ -48,6 +48,10 @@ export const fr: Record<MessageKey, string> = {
   "state.redirecting_title": "Redirection vers Orange Money",
   "state.redirecting_body":
     "Vous reviendrez ici une fois le paiement effectué.",
+  "state.resume_redirect_title": "Paiement non abouti",
+  "state.resume_redirect_body":
+    "Vous n’avez pas terminé ce paiement sur la page de l’opérateur. Rien n’a été prélevé.",
+  "state.resume_redirect_continue": "Retourner à la page de paiement",
 
   "outcome.succeeded_title": "Paiement reçu",
   "outcome.succeeded_body":

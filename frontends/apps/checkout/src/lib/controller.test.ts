@@ -233,6 +233,89 @@ describe("the Orange redirect", () => {
     ]);
     expect(h.stub.requests.filter((r) => r.method === "POST")).toHaveLength(1);
   });
+
+  it("lands on resume_redirect — not the old 'check your phone' waiting screen — for a payer who reloads after abandoning the rail's page, and reopens it on request", async () => {
+    // The bug, reproduced end to end: `requires_action` is exactly the
+    // status a payer who closed Orange's hosted page and came back (or
+    // reloaded) sits in, forever — nothing about the stored intent moves on
+    // its own from there. A second controller against the same session is
+    // this page after a reload; `stub`'s session route serves the live
+    // intent every read, with no poll budget to run out.
+    const h = await harness({
+      paymentMethodTypes: ["orange_money"],
+      redirectUrl: "https://rail.example/stub-hosted-page/tok_abc",
+    });
+    await h.controller.start();
+    await h.controller.startRedirect();
+    expect(h.controller.state.name).toBe("redirecting");
+
+    const stripe = await loadStripe(h.stub.publishableKey, {
+      baseUrl: h.stub.url,
+    });
+    const navigated: string[] = [];
+    const resumed = new CheckoutController({
+      sessionId: h.stub.sessionId,
+      credentials: {
+        key: h.stub.publishableKey,
+        clientSecret: h.stub.sessionSecret,
+      },
+      api: new BrowserCheckoutApi({ baseUrl: h.stub.url }),
+      stripe,
+      navigate: (url) => navigated.push(url),
+      channel: null,
+    });
+    await resumed.start();
+    expect(resumed.state).toMatchObject({
+      name: "resume_redirect",
+      url: "https://rail.example/stub-hosted-page/tok_abc",
+    });
+
+    resumed.resumeRedirect();
+    expect(navigated).toEqual([
+      "https://rail.example/stub-hosted-page/tok_abc",
+    ]);
+  });
+
+  it("asks the parent to reopen the redirect too, when the resume happens inside a frame", async () => {
+    const h = await harness({ paymentMethodTypes: ["orange_money"] });
+    await h.controller.start();
+    await h.controller.startRedirect();
+
+    const stripe = await loadStripe(h.stub.publishableKey, {
+      baseUrl: h.stub.url,
+    });
+    const posted: ChildMessage[] = [];
+    const channel: FrameChannel = {
+      peer: "parent",
+      parentOrigin: "https://shop.example",
+      post: (message) => posted.push(message),
+      postHeight: () => undefined,
+      dispose: () => undefined,
+    };
+    const resumed = new CheckoutController({
+      sessionId: h.stub.sessionId,
+      credentials: {
+        key: h.stub.publishableKey,
+        clientSecret: h.stub.sessionSecret,
+      },
+      api: new BrowserCheckoutApi({ baseUrl: h.stub.url }),
+      stripe,
+      navigate: () => {
+        throw new Error("must not navigate itself while framed");
+      },
+      channel,
+    });
+    await resumed.start();
+    expect(resumed.state.name).toBe("resume_redirect");
+
+    resumed.resumeRedirect();
+    expect(posted).toEqual([
+      {
+        type: "vpay:redirect",
+        url: "https://rail.example/stub-hosted-page/tok_123",
+      },
+    ]);
+  });
 });
 
 describe("the confirm’s return_url, as the server rules on it", () => {

@@ -54,6 +54,7 @@ function renderState(
     onSubmitMsisdn: NOOP,
     onStartRedirect: NOOP,
     onRetryPoll: NOOP,
+    onResumeRedirect: NOOP,
     onReturnToMerchant: NOOP,
     onLocaleChange: NOOP,
     ...overrides,
@@ -95,6 +96,8 @@ const EXPECTED_SCREEN: Record<string, string> = {
   confirming: "confirming",
   waiting: "waiting",
   waiting_notice: "waiting",
+  resume_redirect: "resume_redirect",
+  resume_redirect_single_rail: "resume_redirect",
   redirecting: "redirecting",
   outcome_succeeded: "outcome",
   outcome_failed: "outcome",
@@ -137,6 +140,7 @@ describe("the copy on screen is the chosen locale’s, not the other one’s", (
     ["confirming", "state.confirming"],
     ["waiting", "state.waiting_title"],
     ["waiting_notice", "error.network"],
+    ["resume_redirect", "state.resume_redirect_title"],
     ["redirecting", "state.redirecting_title"],
     ["outcome_succeeded", "outcome.succeeded_title"],
     ["outcome_failed", "failure.insufficient_funds"],
@@ -485,6 +489,46 @@ describe("the controls do what the screen says", () => {
     const unsupported = screen.getByTestId("unsupported-rails");
     expect(within(unsupported).getByText(/zzz_pay/)).toBeTruthy();
     unmount();
+  });
+
+  it("reopens the rail's page on the resume-redirect screen's primary action, with no spinner", () => {
+    const onResumeRedirect = vi.fn();
+    const { container, unmount } = renderState(
+      CHECKOUT_SCREENS["resume_redirect"] as CheckoutState,
+      "en",
+      { onResumeRedirect },
+    );
+    // The defect this replaced: `requires_action` fell into the same
+    // `StatusPanel` `waiting` renders, spinner and all
+    // (`@vaam-apps/ui`'s `Spinner` renders `.loading-spinner`), for a status
+    // only the payer — never the rail — can move on.
+    expect(container.querySelector(".loading-spinner")).toBeNull();
+    fireEvent.click(screen.getByTestId("resume-redirect"));
+    expect(onResumeRedirect).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("offers a second way to pay only when the intent still offers more than one rail", () => {
+    const onBack = vi.fn();
+    const { unmount } = renderState(
+      CHECKOUT_SCREENS["resume_redirect"] as CheckoutState,
+      "en",
+      { onBack },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Choose another payment method" }),
+    );
+    expect(onBack).toHaveBeenCalledTimes(1);
+    unmount();
+
+    const single = renderState(
+      CHECKOUT_SCREENS["resume_redirect_single_rail"] as CheckoutState,
+      "en",
+    );
+    expect(
+      single.queryByRole("button", { name: "Choose another payment method" }),
+    ).toBeNull();
+    single.unmount();
   });
 
   it("offers one named button back to the merchant, and no timer", () => {

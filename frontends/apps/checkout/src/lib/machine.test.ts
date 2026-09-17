@@ -106,10 +106,45 @@ describe("the state a freshly-read session lands in", () => {
     expect(state).toMatchObject({ rails: { unsupported: ["zzz_pay"] } });
   });
 
-  it("returns to the waiting screen for an intent that is already in flight", () => {
+  it("returns to the waiting screen for a processing intent, still moving on its own", () => {
     expect(
       stateForContext(makeContext({}, { status: "processing" })).name,
     ).toBe("waiting");
+  });
+
+  it("offers to resume the redirect for a requires_action intent, rather than a false and unresolvable “check your phone”", () => {
+    // The bug this pins: `processing` and `requires_action` used to share
+    // the `waiting` branch above. They are opposites — `processing` means
+    // the rail is still moving; `requires_action` means the PAYER has a
+    // redirect to finish and, if they abandoned it, nothing here changes
+    // again until they do.
+    const state = stateForContext(
+      makeContext(
+        {},
+        {
+          status: "requires_action",
+          payment_method_types: ["orange_money"],
+          next_action: {
+            type: "redirect_to_url",
+            redirect_to_url: {
+              url: "https://rail.example/stub-hosted-page/tok_abc",
+              return_url: null,
+            },
+          },
+        },
+      ),
+    );
+    expect(state).toMatchObject({
+      name: "resume_redirect",
+      rail: null,
+      url: "https://rail.example/stub-hosted-page/tok_abc",
+    });
+    expect(state).toMatchObject({
+      rails: { supported: [{ code: "orange_money" }] },
+    });
+  });
+
+  it("falls back to waiting for a requires_action intent that somehow carries no redirect (defensive — the API is supposed to guarantee one)", () => {
     expect(
       stateForContext(makeContext({}, { status: "requires_action" })).name,
     ).toBe("waiting");
@@ -279,6 +314,41 @@ describe("the Orange path", () => {
       },
     );
     expect(state.name).toBe("ready_redirect");
+  });
+
+  it("offers to resume the redirect when a poll reveals one the payer still has to finish, and back offers another rail", () => {
+    const bothRailsContext = makeContext(
+      {},
+      { payment_method_types: ["mtn_momo", "orange_money"] },
+    );
+    let state: CheckoutState = reduce(INITIAL_STATE, {
+      type: "loaded",
+      context: bothRailsContext,
+    });
+    state = reduce(state, { type: "choose_rail", rail: ORANGE });
+    state = reduce(state, { type: "confirm_started" });
+    state = reduce(state, {
+      type: "intent_updated",
+      intent: makeIntent({
+        status: "requires_action",
+        payment_method_types: ["mtn_momo", "orange_money"],
+        next_action: {
+          type: "redirect_to_url",
+          redirect_to_url: {
+            url: "https://rail.example/pay",
+            return_url: null,
+          },
+        },
+      }),
+    });
+    expect(state).toMatchObject({
+      name: "resume_redirect",
+      rail: { code: "orange_money" },
+      url: "https://rail.example/pay",
+    });
+
+    state = reduce(state, { type: "back" });
+    expect(state.name).toBe("select_rail");
   });
 });
 

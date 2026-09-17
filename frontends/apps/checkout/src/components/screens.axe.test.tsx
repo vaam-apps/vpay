@@ -64,6 +64,7 @@ function renderCheckout(state: CheckoutState, locale: Locale) {
     onSubmitMsisdn: NOOP,
     onStartRedirect: NOOP,
     onRetryPoll: NOOP,
+    onResumeRedirect: NOOP,
     onReturnToMerchant: NOOP,
     onLocaleChange: NOOP,
   };

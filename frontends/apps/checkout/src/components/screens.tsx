@@ -717,6 +717,57 @@ export function RedirectPrompt({
   );
 }
 
+/**
+ * `requires_action`: the payer left the rail's redirect page without
+ * finishing it. Nothing about this intent moves on its own from here — no
+ * `Spinner`, unlike every other status screen — so the one thing this
+ * screen owns is a way forward: reopen the page the payer was on, or, where
+ * the intent offers more than one rail, start over on a different one.
+ */
+export function ResumeRedirectPanel({
+  t,
+  canChooseAnother,
+  onResume,
+  onChooseAnother,
+}: {
+  t: Translate;
+  /** `rails.supported.length > 1` — same gate `ready_redirect`/`collect_msisdn` use for `onBack`. */
+  canChooseAnother: boolean;
+  onResume: () => void;
+  onChooseAnother: () => void;
+}) {
+  return (
+    <section>
+      <div className="flex flex-col gap-4">
+        <ScreenHeading screen="resume_redirect">
+          {t("state.resume_redirect_title")}
+        </ScreenHeading>
+        <p className="text-muted-foreground">
+          {t("state.resume_redirect_body")}
+        </p>
+        <Button
+          type="button"
+          className="w-full"
+          data-testid="resume-redirect"
+          onClick={onResume}
+        >
+          {t("state.resume_redirect_continue")}
+        </Button>
+        {canChooseAnother ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onChooseAnother}
+          >
+            {t("msisdn.back")}
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 /** Confirming, waiting for the payer, or on the way to a rail's page. */
 export function StatusPanel({
   t,

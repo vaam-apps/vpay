@@ -326,6 +326,7 @@ export function CheckoutClient(props: CheckoutClientProps) {
       onSubmitMsisdn={onSubmitMsisdn}
       onStartRedirect={onStartRedirect}
       onRetryPoll={() => void controllerRef.current?.retryPoll()}
+      onResumeRedirect={() => controllerRef.current?.resumeRedirect()}
       onReturnToMerchant={onReturnToMerchant}
       onLocaleChange={setLocale}
     />

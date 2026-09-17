@@ -86,6 +86,47 @@ export const CHECKOUT_SCREENS: Record<string, CheckoutState> = {
     rail: MTN,
     notice: "error.network",
   },
+  resume_redirect: {
+    name: "resume_redirect",
+    context: makeContext(
+      {},
+      {
+        ...BOTH_RAILS,
+        status: "requires_action",
+        next_action: {
+          type: "redirect_to_url",
+          redirect_to_url: {
+            url: "https://rail.example/stub-hosted-page/tok_1",
+            return_url: null,
+          },
+        },
+      },
+    ),
+    rails: { supported: [...RAILS.supported], unsupported: [] },
+    rail: null,
+    url: "https://rail.example/stub-hosted-page/tok_1",
+  },
+  /** Only one rail on offer: the "choose another method" action has nowhere to send the payer. */
+  resume_redirect_single_rail: {
+    name: "resume_redirect",
+    context: makeContext(
+      {},
+      {
+        payment_method_types: ["orange_money"],
+        status: "requires_action",
+        next_action: {
+          type: "redirect_to_url",
+          redirect_to_url: {
+            url: "https://rail.example/stub-hosted-page/tok_1",
+            return_url: null,
+          },
+        },
+      },
+    ),
+    rails: { supported: [ORANGE], unsupported: [] },
+    rail: null,
+    url: "https://rail.example/stub-hosted-page/tok_1",
+  },
   redirecting: {
     name: "redirecting",
     context: makeContext({}, BOTH_RAILS),

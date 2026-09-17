@@ -24,6 +24,7 @@ import { normalizeCameroonMsisdn } from "./msisdn";
 import {
   INITIAL_STATE,
   contextOf,
+  redirectUrlOf,
   reduce,
   type CheckoutEvent,
   type CheckoutState,
@@ -261,6 +262,26 @@ export class CheckoutController {
   }
 
   /**
+   * The `resume_redirect` screen's primary action: send the payer back to
+   * the rail's page they abandoned.
+   *
+   * No confirm, no dispatch — the URL was already resolved from a stored
+   * charge row on the read that put this state on screen
+   * (`redirectUrlOf`/`stateForContext` in `machine.ts`), so there is
+   * nothing to attempt again, only somewhere to go back to. Goes through
+   * the same `#navigateTopLevel` the initial redirect uses, so the
+   * framed/popup/top-level split stays decided in the one place that owns
+   * it (D8).
+   */
+  resumeRedirect(): void {
+    const state = this.#state;
+    if (state.name !== "resume_redirect") {
+      return;
+    }
+    this.#navigateTopLevel(state.url);
+  }
+
+  /**
    * Sends the payer back to the merchant. No-op unless an outcome is on
    * screen.
    *
@@ -441,26 +462,5 @@ export class CheckoutController {
   }
 }
 
-/** The absolute URL a `next_action.redirect_to_url` names, or `null`. */
-export function redirectUrlOf(intent: PaymentIntent): string | null {
-  const nextAction = intent.next_action;
-  if (nextAction === null || nextAction.type !== "redirect_to_url") {
-    return null;
-  }
-  const url = nextAction.redirect_to_url.url;
-  if (typeof url !== "string" || url.length === 0) {
-    return null;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  // The rail chose this string; vpay echoed it. `javascript:` here would be
-  // script execution on vpay's own origin, and a relative one would resolve
-  // against this page rather than the rail.
-  return parsed.protocol === "http:" || parsed.protocol === "https:"
-    ? url
-    : null;
-}
+/** Re-exported from `machine.ts`, which now owns it — see that export's own doc comment. */
+export { redirectUrlOf };
