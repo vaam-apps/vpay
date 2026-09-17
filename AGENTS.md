@@ -412,7 +412,10 @@ maintainer's call.
 
 **Setup this needs once**: a GitHub App with `contents: write` and
 `pull-requests: write` on this repository, its id and private key stored as
-`RELEASE_PLEASE_APP_ID` / `RELEASE_PLEASE_APP_PRIVATE_KEY`. Not optional and
+`RELEASE_PLEASE_APP_CLIENT_ID` — the App's **Client ID** (`Iv23li…`), not its
+numeric App ID; `actions/create-github-app-token` deprecated the `app-id` input
+in favour of `client-id`, and the two are different values on the same settings
+page — and `RELEASE_PLEASE_APP_PRIVATE_KEY`. Not optional and
 not a fallback: GitHub raises no workflow events for anything done with the
 default `GITHUB_TOKEN`, so with it the tag would be created and `release.yml`
 would never run — no image built, none signed, and nothing failing to say so.
