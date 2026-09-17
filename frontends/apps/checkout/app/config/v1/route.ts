@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { runtimeConfig } from "../../../src/config/runtime";
+import { checkoutPageConfigDocument } from "../../../src/config/public-document";
 
 /**
  * `GET /config/v1` — what this container actually loaded.
@@ -29,20 +29,10 @@ import { runtimeConfig } from "../../../src/config/runtime";
 export const dynamic = "force-dynamic";
 
 export function GET(): NextResponse {
-  const { branding, checkout } = runtimeConfig();
-  return NextResponse.json({
-    object: "checkout_page_config",
-    version: 1,
-    branding: {
-      display_name: branding.displayName,
-      logo_url: branding.logoUrl,
-      primary_color: branding.primaryColor,
-      support_contact: branding.supportContact,
-    },
-    checkout: {
-      public_base_url: checkout.publicBaseUrl,
-      allowed_methods: checkout.allowedMethods,
-      features: { page_memory: checkout.features.pageMemory },
-    },
-  });
+  // The same document `/.well-known/vpay-checkout` serves (#193), so an
+  // operator checking this surface cannot be reading something the SDK's
+  // contract would not say. The two routes differ in audience and in what
+  // they promise about shape — see `src/config/public-document.ts` — never
+  // in content.
+  return NextResponse.json(checkoutPageConfigDocument());
 }

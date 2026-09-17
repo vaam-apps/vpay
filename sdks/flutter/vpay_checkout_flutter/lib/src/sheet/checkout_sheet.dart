@@ -21,6 +21,7 @@ import 'package:flutter/semantics.dart';
 import 'package:http/http.dart' as http;
 
 import '../browser_client.dart';
+import '../config/checkout_page_config.dart';
 import '../errors.dart';
 import '../models.dart';
 import '../result.dart';
@@ -64,6 +65,7 @@ class VpayCheckoutSheet extends StatefulWidget {
     this.allowInsecureBaseUrl = false,
     this.merchantName,
     this.allowedMethods,
+    this.configStore,
     this.locale = VpayLocale.fallback,
     this.showDragHandle = false,
     this.httpClient,
@@ -79,7 +81,23 @@ class VpayCheckoutSheet extends StatefulWidget {
   /// A caller-supplied merchant display name — [CheckoutContext.merchantName]'s
   /// own doc comment: `CheckoutSession` carries none today.
   final String? merchantName;
+
+  /// A caller's own rail allow-list. Issue #193: this is no longer the
+  /// final word — it is narrowed further against
+  /// `checkout.allowed_methods`, the operator's own floor, read out of the
+  /// locally-cached [CheckoutPageConfig] before this sheet's controller is
+  /// started (see `_bootstrap` below and [narrowAllowedMethods]). `null`
+  /// here means "this caller has no opinion", not "allow everything" —
+  /// the operator's floor still applies.
   final List<String>? allowedMethods;
+
+  /// Where the cached [CheckoutPageConfig] [prepareCheckout] wrote is read
+  /// from. `null` uses [defaultCheckoutPageConfigStore] — the same
+  /// package-level in-memory store a `prepareCheckout` call made with no
+  /// `store` argument writes to, so the zero-configuration path (call
+  /// `prepareCheckout()`, then open this sheet, neither naming a store)
+  /// shares one cache without a caller wiring anything together itself.
+  final VpayCheckoutConfigStore? configStore;
 
   /// French by default (issue #189: "French is Cameroon's and Orange's
   /// language — defaulting to English would be a regression").
@@ -133,6 +151,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
   bool allowInsecureBaseUrl = false,
   String? merchantName,
   List<String>? allowedMethods,
+  VpayCheckoutConfigStore? configStore,
   VpayLocale locale = VpayLocale.fallback,
   BorderRadiusGeometry? borderRadius,
 }) async {
@@ -171,6 +190,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
                 allowInsecureBaseUrl: allowInsecureBaseUrl,
                 merchantName: merchantName,
                 allowedMethods: allowedMethods,
+                configStore: configStore,
                 locale: locale,
                 showDragHandle: true,
               ),
@@ -206,6 +226,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheetRoute(
   bool allowInsecureBaseUrl = false,
   String? merchantName,
   List<String>? allowedMethods,
+  VpayCheckoutConfigStore? configStore,
   VpayLocale locale = VpayLocale.fallback,
 }) async {
   final GlobalKey<_VpayCheckoutSheetState> sheetKey =
@@ -220,6 +241,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheetRoute(
         allowInsecureBaseUrl: allowInsecureBaseUrl,
         merchantName: merchantName,
         allowedMethods: allowedMethods,
+        configStore: configStore,
         locale: locale,
       ),
     ),
@@ -247,6 +269,12 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
   String? _lastAnnouncedScreen;
   bool _popRequested = false;
 
+  /// `branding.support_contact`, read out of the locally-cached
+  /// [CheckoutPageConfig] by [_bootstrap] — `null` until that read settles
+  /// (almost always within the same frame; it is a local cache read, never
+  /// a network call) and whenever the document carries none.
+  String? _supportContact;
+
   bool get _frenchLocale => widget.locale == VpayLocale.fr;
 
   @override
@@ -265,7 +293,35 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
       allowedMethods: widget.allowedMethods,
     );
     _controller.addListener(_onControllerChanged);
-    unawaited(_controller.start());
+    unawaited(_bootstrap());
+  }
+
+  /// Resolves the cached [CheckoutPageConfig] and applies it — narrowing
+  /// [SheetController.allowedMethods] to the operator's own floor,
+  /// picking up `support_contact` for [_supportContact] — **before**
+  /// [SheetController.start] ever reads either, and only then starts it.
+  ///
+  /// [resolveCheckoutPageConfig] only ever reads a local cache
+  /// ([widget.configStore] or the package's shared in-memory default); it
+  /// never touches the network — `prepareCheckout` is this SDK's one and
+  /// only network fetch for this document (issue #193's governing rule:
+  /// the sheet must still work with an empty cache and no network at all,
+  /// which holds here because this `await` cannot fail on either). A
+  /// caller that never called `prepareCheckout` simply gets
+  /// [CheckoutPageConfig.defaults] back, promptly.
+  Future<void> _bootstrap() async {
+    final CheckoutPageConfig config = await resolveCheckoutPageConfig(
+      store: widget.configStore,
+    );
+    if (!mounted) {
+      return;
+    }
+    _supportContact = config.branding.supportContact;
+    _controller.allowedMethods = narrowAllowedMethods(
+      explicit: widget.allowedMethods,
+      operatorFloor: config.checkout.allowedMethods,
+    );
+    await _controller.start();
   }
 
   @override
@@ -382,6 +438,7 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
                 children: <Widget>[
                   if (widget.showDragHandle) _dragHandle(context),
                   _buildScreen(context),
+                  _supportLine(),
                 ],
               ),
             ),
@@ -424,6 +481,27 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
         _t.t('page.testmode'),
         style: Theme.of(context).textTheme.bodySmall
             ?.copyWith(fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
+  /// `page.support` — `i18n.dart`'s own doc comment named this a "dead
+  /// translation key, because the sheet had no way to learn the contact"
+  /// before issue #193. Rendered once, at the bottom of every screen
+  /// (mirroring `screens.tsx`'s `SupportLine`, which the hosted page shows
+  /// wherever branding shows), and only when [_supportContact] is
+  /// non-null — never a blank caption reserving space for nothing.
+  Widget _supportLine() {
+    final String? contact = _supportContact;
+    if (contact == null) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Text(
+        _t.t('page.support', {'contact': contact}),
+        style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
     );
   }

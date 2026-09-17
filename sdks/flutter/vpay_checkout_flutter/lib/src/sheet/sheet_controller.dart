@@ -110,7 +110,17 @@ final class SheetController extends ChangeNotifier {
   /// today), never derived from anything this controller reads itself.
   final String? merchantName;
 
-  final List<String>? allowedMethods;
+  /// The effective rail allow-list, or `null` for "no restriction".
+  ///
+  /// Not `final`: [VpayCheckoutSheet] resolves the operator's own floor
+  /// (`checkout.allowed_methods`, issue #193) from a locally-cached
+  /// [CheckoutPageConfig] — a `Future`-returning read — and this field is
+  /// where it writes the narrowed result, **before** [start] is called and
+  /// never after. [start] is the only place this field is read, so a
+  /// caller that skips the narrowing step entirely (this package's own
+  /// tests that construct a [SheetController] directly) gets exactly
+  /// today's behaviour: whatever it was constructed with, unmodified.
+  List<String>? allowedMethods;
 
   final VpayRememberedMsisdn remembered;
   final VpayCheckoutPlatform _platform;

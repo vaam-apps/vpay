@@ -364,4 +364,293 @@ void main() {
     expect(liveRegions, isNotEmpty);
     await tester.pumpAndSettle();
   });
+
+  group('issue #193 — deployment-config discovery', () {
+    // A dedicated `_json` that names `application/json` explicitly, so a
+    // non-ASCII fixture (an em dash in a support contact, say) round-trips
+    // through `http.Response.body` as utf8 rather than the package's own
+    // latin1 default for headerless responses.
+    http.Response configJson(Object body, {int status = 200}) => http.Response(
+      jsonEncode(body),
+      status,
+      headers: const {'content-type': 'application/json'},
+    );
+
+    Map<String, Object?> documentJson({
+      String? supportContact = 'support@vaam.example',
+      List<Object?>? allowedMethods,
+    }) => {
+      'object': 'checkout_page_config',
+      'version': 1,
+      'branding': {
+        'display_name': 'Vaam Payments',
+        'logo_url': null,
+        'primary_color': '#f3c623',
+        'support_contact': supportContact,
+      },
+      'checkout': {
+        'public_base_url': null,
+        'allowed_methods': allowedMethods,
+        'features': {'page_memory': true},
+      },
+    };
+
+    testWidgets(
+      'an empty cache and a MockClient that fails every config fetch — the checkout still works',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+
+        // `prepareCheckout` is an optimisation a merchant may call, and here
+        // it fails outright — no network at all for the config endpoint.
+        final http.Client failingConfigClient = MockClient(
+          (http.Request request) async =>
+              throw http.ClientException('no network'),
+        );
+        final bool prepared = await prepareCheckout(
+          checkoutBaseUrl: 'https://checkout.example',
+          store: store,
+          httpClient: failingConfigClient,
+        );
+        expect(prepared, false);
+        // The cache is still empty — `resolveCheckoutPageConfig` must
+        // degrade to defaults, not throw, when the sheet reads it.
+        final CheckoutPageConfig config = await resolveCheckoutPageConfig(
+          store: store,
+        );
+        expect(config, same(CheckoutPageConfig.defaults));
+
+        // The sheet itself never touches the config endpoint — only the
+        // session/intent one, which works normally here — so a payer can
+        // still pay with nothing cached and no way to fetch it.
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+          ),
+        );
+
+        expect(find.text('MTN Mobile Money'), findsOneWidget);
+        expect(find.byType(TextField), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'allowed_methods: the operator floor narrows a wider caller list',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+        final http.Client configClient = MockClient(
+          (http.Request request) async =>
+              configJson(documentJson(allowedMethods: ['mtn_momo'])),
+        );
+        expect(
+          await prepareCheckout(
+            checkoutBaseUrl: 'https://checkout.example',
+            store: store,
+            httpClient: configClient,
+          ),
+          true,
+        );
+
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson(), _orangeRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+            // The caller asks for both — wider than the operator's floor.
+            allowedMethods: const ['mtn_momo', 'orange_money'],
+          ),
+        );
+
+        // Narrowed to the one rail the operator's floor allows — the
+        // session's own single-supported-rail path (same as the plain
+        // "one supported rail" test above), never the two-rail selector.
+        expect(find.text('MTN Mobile Money'), findsOneWidget);
+        expect(find.byType(TextField), findsOneWidget);
+        expect(find.text('Orange Money'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'allowed_methods: a caller list already narrower than the operator floor is not widened back',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+        final http.Client configClient = MockClient(
+          (http.Request request) async => configJson(
+            // The operator's own floor is permissive — both rails.
+            documentJson(allowedMethods: ['mtn_momo', 'orange_money']),
+          ),
+        );
+        expect(
+          await prepareCheckout(
+            checkoutBaseUrl: 'https://checkout.example',
+            store: store,
+            httpClient: configClient,
+          ),
+          true,
+        );
+
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson(), _orangeRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+            // The caller's own narrowing is stricter than the operator's
+            // floor — the operator's wider list must not widen it back.
+            allowedMethods: const ['mtn_momo'],
+          ),
+        );
+
+        expect(find.text('MTN Mobile Money'), findsOneWidget);
+        expect(find.byType(TextField), findsOneWidget);
+        expect(find.text('Orange Money'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a malformed cached document degrades to defaults — the sheet still works, unrestricted',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+        // Passes `prepareCheckout`'s own coarse shape check (it is a map
+        // naming the right `object`) but `allowed_methods` is not a list —
+        // `CheckoutPageConfig.fromJson` must degrade just that field to
+        // `null`, not throw and not corrupt the rest of the sheet.
+        final http.Client configClient = MockClient(
+          (http.Request request) async => configJson({
+            'object': 'checkout_page_config',
+            'version': 1,
+            'branding': {'support_contact': 'support@vaam.example'},
+            'checkout': {'allowed_methods': 'mtn_momo, orange_money'},
+          }),
+        );
+        expect(
+          await prepareCheckout(
+            checkoutBaseUrl: 'https://checkout.example',
+            store: store,
+            httpClient: configClient,
+          ),
+          true,
+        );
+
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson(), _orangeRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+            locale: VpayLocale.en,
+          ),
+        );
+
+        // `allowed_methods` degraded to "no opinion" — both rails still
+        // offered, so the sheet shows the selector rather than a single
+        // pre-picked rail.
+        expect(find.text('Choose how you want to pay'), findsOneWidget);
+        expect(find.text('MTN Mobile Money'), findsOneWidget);
+        expect(find.text('Orange Money'), findsOneWidget);
+        // `support_contact` still parsed fine — one malformed field never
+        // takes the rest of the document down with it.
+        expect(find.textContaining('support@vaam.example'), findsOneWidget);
+      },
+    );
+
+    testWidgets('support_contact renders through page.support once cached', (
+      WidgetTester tester,
+    ) async {
+      final InMemoryVpayCheckoutConfigStore store =
+          InMemoryVpayCheckoutConfigStore();
+      final http.Client configClient = MockClient(
+        (http.Request request) async =>
+            configJson(documentJson(supportContact: 'support@vaam.example')),
+      );
+      expect(
+        await prepareCheckout(
+          checkoutBaseUrl: 'https://checkout.example',
+          store: store,
+          httpClient: configClient,
+        ),
+        true,
+      );
+
+      final http.Client sessionClient = MockClient(
+        (http.Request request) async =>
+            _json(_sessionJson(rails: [_mtnRailJson()])),
+      );
+
+      await _pump(
+        tester,
+        VpayCheckoutSheet(
+          sessionUrl: _sessionUrl,
+          baseUrl: 'https://api.example',
+          publishableKey: 'pk_test_1',
+          httpClient: sessionClient,
+          configStore: store,
+          locale: VpayLocale.en,
+        ),
+      );
+
+      expect(find.text('Support: support@vaam.example'), findsOneWidget);
+    });
+
+    testWidgets(
+      'no configStore given, prepareCheckout not called — no support line, unrestricted rails',
+      (WidgetTester tester) async {
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson(), _orangeRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            locale: VpayLocale.en,
+          ),
+        );
+
+        expect(find.text('Choose how you want to pay'), findsOneWidget);
+        expect(find.text('MTN Mobile Money'), findsOneWidget);
+        expect(find.text('Orange Money'), findsOneWidget);
+        expect(find.textContaining('Support:'), findsNothing);
+      },
+    );
+  });
 }

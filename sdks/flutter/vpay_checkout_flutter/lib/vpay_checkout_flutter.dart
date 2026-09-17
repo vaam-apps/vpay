@@ -10,6 +10,18 @@ library;
 
 export 'src/browser_client.dart'
     show BrowserClient, CheckoutSessionResult, PaymentIntentResult;
+export 'src/config/checkout_page_config.dart'
+    show
+        CheckoutPageBranding,
+        CheckoutPageCheckoutSettings,
+        CheckoutPageConfig,
+        InMemoryVpayCheckoutConfigStore,
+        VpayCheckoutConfigStore,
+        checkoutPageConfigTtl,
+        defaultCheckoutPageConfigStore,
+        narrowAllowedMethods,
+        prepareCheckout,
+        resolveCheckoutPageConfig;
 export 'src/checkout_controller.dart'
     show
         CheckoutController,

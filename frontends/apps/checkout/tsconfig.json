@@ -18,7 +18,14 @@
     "app",
     "src",
     "next-env.d.ts",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    // `app/.well-known/` is a dot-directory, and TypeScript's `**` glob skips
+    // those by design (the same rule that keeps `.git` and `.next` out). The
+    // `"app"` entry above does not rescue it either. Without this line the
+    // route in there is silently NOT typechecked — `tsc --noEmit` passes
+    // while the file contains errors, which is how it was found: a planted
+    // `const x: number = "…"` produced no diagnostic at all (#193).
+    "app/.well-known/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }
