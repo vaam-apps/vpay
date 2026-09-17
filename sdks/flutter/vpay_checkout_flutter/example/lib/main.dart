@@ -38,6 +38,7 @@
 /// `http://10.0.2.2:…`.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -58,6 +59,16 @@ const String _shopUrl = String.fromEnvironment(
   defaultValue: 'http://localhost:3001',
 );
 
+/// The **hosted checkout page**'s origin — where
+/// `/.well-known/vpay-checkout` lives. Not the API: this is the surface
+/// that describes the deployment (issue #193), and `prepareCheckout`
+/// below caches its answer so the sheet can render the operator's
+/// support contact and brand colour without a network hop mid-payment.
+const String _checkoutUrl = String.fromEnvironment(
+  'VPAY_CHECKOUT_URL',
+  defaultValue: 'http://localhost:3080',
+);
+
 const String _publishableKey = String.fromEnvironment(
   'VPAY_PUBLISHABLE_KEY',
   defaultValue: 'pk_test_shopmerchantsandbox1',
@@ -73,6 +84,19 @@ class VpayCheckoutExampleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'vpay_checkout_flutter example',
+    // A real Material 3 host theme, so the example shows what a merchant
+    // app actually looks like rather than Flutter's bare default. The
+    // sheet inherits this: typography, density and — unless the
+    // deployment publishes its own brand colour — the scheme too.
+    theme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7D6F)),
+    ),
+    darkTheme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xFF2E7D6F),
+        brightness: Brightness.dark,
+      ),
+    ),
     home: const _ShopPage(),
   );
 }
@@ -87,6 +111,16 @@ class _ShopPage extends StatefulWidget {
 class _ShopPageState extends State<_ShopPage> {
   String _status = 'Tap Buy to start a real checkout.';
   bool _running = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Warm the deployment-config cache once, at a moment the payer is not
+    // waiting on it. Everything it fetches is presentational, so a
+    // failure here costs a support line and a brand colour, never a
+    // payment — which is why nothing below checks the result.
+    unawaited(prepareCheckout(checkoutBaseUrl: _checkoutUrl));
+  }
 
   /// What a real merchant app does, in order.
   Future<void> _buy() async {
@@ -114,6 +148,15 @@ class _ShopPageState extends State<_ShopPage> {
         // from a debug build.
         allowInsecureBaseUrl: true,
         merchantName: 'Njangi Store',
+        // Everything here is optional — `const VpayCheckoutTheme()` is
+        // the stock Material 3 sheet. This one only softens the shapes,
+        // to show where the knobs are. Colour is deliberately NOT set,
+        // so the demo deployment's own `primary_color` seeds the scheme
+        // and you can see that path working.
+        theme: const VpayCheckoutTheme(
+          sheetCornerRadius: 32,
+          surfaceCornerRadius: 20,
+        ),
       );
 
       // 3. Every arm handled — the compiler insists, because
@@ -186,12 +229,17 @@ class _ShopPageState extends State<_ShopPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const Text(
+          Text(
             'Njangi tote bag',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 4),
-          const Text('FCFA 12,000'),
+          Text(
+            'FCFA 12,000',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: 24),
           FilledButton(
             onPressed: _running ? null : _buy,
@@ -204,8 +252,10 @@ class _ShopPageState extends State<_ShopPage> {
           Text(_status),
           const Spacer(),
           Text(
-            'shop: $_shopUrl\nvpay: $_vpayBaseUrl',
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
+            'shop: $_shopUrl\nvpay: $_vpayBaseUrl\ncheckout: $_checkoutUrl',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),

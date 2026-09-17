@@ -171,34 +171,55 @@ select between.
 
 ## Customising it
 
-The sheet inherits your app. There are **no hardcoded colours in it** —
-every colour comes from `Theme.of(context)`, so if your app sets a
-`ColorScheme`, the sheet already uses it. Nothing to configure.
+The sheet still has no palette of its own — every colour is a
+`ColorScheme` role, never a hardcoded `Color`. What changed on 2026-09-17
+is _whose_ colour wins. Pass a `VpayCheckoutTheme`
+(`lib/src/sheet/checkout_theme.dart`) to `showVpayCheckoutSheet`,
+`showVpayCheckoutSheetRoute` or `VpayCheckoutSheet`:
 
-What you can pass today:
+```dart
+await showVpayCheckoutSheet(
+  context,
+  sessionUrl: sessionUrl,
+  baseUrl: 'https://api.vpay.example',
+  publishableKey: 'pk_test_…',
+  merchantName: 'Njangi Store',
+  theme: const VpayCheckoutTheme(seedColor: Colors.teal),
+);
+```
+
+Colour precedence, highest first: (1) `theme.colorScheme`, used verbatim;
+(2) `theme.seedColor`, via `ColorScheme.fromSeed`; (3) the deployment's own
+`primary_color` from `/.well-known/vpay-checkout`, fetched by
+`prepareCheckout`, unless `theme.useDeploymentBrandColor: false`; (4) the
+host app's own `ThemeData`, exactly as before. Pass nothing and deploy no
+brand colour, and the sheet looks exactly as it did before this pass.
+
+`VpayCheckoutTheme` also carries the corner radii (sheet, cards, fields,
+buttons), the minimum tap target, content padding, filled-vs-outlined
+fields, and an optional `TextTheme` override — see the class's own doc
+comments for each field's default and reasoning.
+
+Other parameters you can pass:
 
 | Parameter        | Effect                                                                              |
 | ---------------- | ----------------------------------------------------------------------------------- |
 | `merchantName`   | named in the summary and the outcome copy                                           |
 | `locale`         | `VpayLocale.fr` / `.en`; **French is the default**                                  |
 | `allowedMethods` | narrows the rails on offer — it can only ever narrow what the server already allows |
-| `borderRadius`   | the sheet's top corners; defaults to `kVpayCheckoutSheetCornerRadius` (28)          |
+| `borderRadius`   | (`showVpayCheckoutSheet` only) wins over `theme.sheetCornerRadius` when passed      |
 
-28 rather than Material's default because this sheet is often _replaced on
-screen_ by a system browser sheet when the payer picks a redirect rail, and
-a squarer sheet handing over to a much rounder system one reads as a
-glitch. Override it if your app's surfaces speak a different language.
+### Material 3
 
-Buttons have a 52pt minimum tap target — above both Material's 48dp and
-Apple's 44pt, because this is a small surface used once, usually
-one-handed, by someone anxious about money.
+`useMaterial3` is not set anywhere — it has defaulted to `true` since
+Flutter 3.16, and this package's floor is `>=3.47.0`. What this pass added:
+`FilledButton` for primary actions, M3 filled text fields via an installed
+`InputDecorationTheme`, tonal `surfaceContainer*` roles instead of
+elevation shadows, and M3 `TextTheme` roles instead of hardcoded font
+weights.
 
 ### What you cannot customise yet, and why
 
-- **The inner radii** (summary card, fields, drag handle) are still
-  hardcoded. Only the sheet's own corner is configurable. A scoped
-  `VpayCheckoutTheme` carrying all of them is designed but not built —
-  today, restyling those means restyling your app's `ThemeData`.
 - **The country on a phone field.** The rail spec declares exactly one
   `region` per field (`"CM"` for MTN Cameroon) and the server enforces it,
   so there is nothing for a country picker to pick. A picker would either

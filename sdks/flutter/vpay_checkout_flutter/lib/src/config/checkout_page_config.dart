@@ -68,14 +68,15 @@ final class CheckoutPageBranding {
   /// else — wrong length, non-hex digits, not a string at all — parses to
   /// `null` rather than throwing a [FormatException] into a payment flow.
   ///
-  /// **Not wired into [VpayCheckoutSheet]'s own rendering.** That widget's
-  /// module doc comment states a locked-in contract — "every colour comes
-  /// from `Theme.of(context)`" — so a payer's checkout always matches the
-  /// host app's own theme rather than an operator's. Overriding that would
-  /// be a real theme system, which this issue explicitly asks not to
-  /// invent; a caller that wants this colour applies it to its own
-  /// `ThemeData` before opening the sheet, exactly as it would any other
-  /// brand colour it already owns.
+  /// **Wired into [VpayCheckoutSheet]'s rendering since 2026-09-17**, as the
+  /// lowest-precedence seed for [VpayCheckoutTheme.resolve]'s
+  /// [ColorScheme]: an explicit `theme.colorScheme` or `theme.seedColor`
+  /// still outranks it, and it is skipped entirely when
+  /// `theme.useDeploymentBrandColor` is `false`. Below all of those, it
+  /// falls back to the host app's own `ThemeData`, unchanged. See
+  /// [VpayCheckoutTheme] for the full precedence order and the reasoning
+  /// behind the reversal — this field used to be parsed and deliberately
+  /// left unrendered; it no longer is.
   final Color? primaryColor;
 
   /// `branding.support_contact` — free text (an email, a phone number, an

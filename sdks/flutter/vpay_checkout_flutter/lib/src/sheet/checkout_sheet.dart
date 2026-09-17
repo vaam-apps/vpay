@@ -3,10 +3,18 @@
 /// presentation helpers the maintainer asked for ("both" — a
 /// `showModalBottomSheet` at a large detent *and* a full-route push).
 ///
-/// **Theming: inherits `ThemeData`.** Nothing here reads a
-/// `VpayCheckoutTheme` or paints a fixed vpay palette — every colour comes
-/// from `Theme.of(context)` (`Material`/`Text`/`ElevatedButton` defaults),
-/// so the sheet looks like the host app.
+/// **Theming: Material 3, through [VpayCheckoutTheme].** The sheet still
+/// paints no vpay palette of its own — there is no brand colour anywhere
+/// in this file, and every colour it draws is a [ColorScheme] role or a
+/// [TextTheme] role resolved from the ambient theme.
+///
+/// What changed on 2026-09-17 is only *whose* colour wins. This comment
+/// used to say "nothing here reads a `VpayCheckoutTheme`"; one now exists,
+/// and a deployment's `primary_color` may seed the scheme. The precedence
+/// — explicit scheme, explicit seed, deployment colour, then the host
+/// app's own `ThemeData` unchanged — is written out in
+/// [VpayCheckoutTheme.resolve]. A host that passes no theme and deploys no
+/// brand colour gets the inherited appearance it always got.
 ///
 /// **No rail code is branched on here either** — `test/sheet/no_rail_code_branching_test.dart`
 /// scans this file the same way it scans every other one under `lib/`.
@@ -26,6 +34,7 @@ import '../errors.dart';
 import '../models.dart';
 import '../result.dart';
 import 'checkout_screen.dart';
+import 'checkout_theme.dart';
 import 'i18n.dart';
 import 'money_format.dart';
 import 'rails.dart';
@@ -68,6 +77,7 @@ class VpayCheckoutSheet extends StatefulWidget {
     this.configStore,
     this.locale = VpayLocale.fallback,
     this.showDragHandle = false,
+    this.theme = const VpayCheckoutTheme(),
     this.httpClient,
   });
 
@@ -109,6 +119,12 @@ class VpayCheckoutSheet extends StatefulWidget {
   /// dismissed".
   final bool showDragHandle;
 
+  /// How the sheet looks: the Material 3 colour, shape and density
+  /// surface. The default is the stock M3 sheet, seeded by the
+  /// deployment's `primary_color` when one is published — see
+  /// [VpayCheckoutTheme.resolve] for the precedence.
+  final VpayCheckoutTheme theme;
+
   /// Injectable, exactly as [VpayCheckout]'s own constructor takes one —
   /// `null` builds a real `http.Client()`. A widget test substitutes a
   /// `MockClient` here rather than this widget ever reaching the network.
@@ -128,21 +144,6 @@ class VpayCheckoutSheet extends StatefulWidget {
 /// the payer dismissing the sheet (a swipe-away, tapping outside, the
 /// system back gesture), in which case [SheetController.dismiss] decides
 /// the answer (D4).
-/// The sheet's top corner radius.
-///
-/// 28, not the Material default: this sheet is frequently *replaced on
-/// screen* by a system browser sheet — `SFSafariViewController` on iOS, a
-/// partial Custom Tab on Android — when the payer picks a redirect rail
-/// like Orange Money. Both of those are drawn by the OS with a much
-/// rounder corner than Material's, and a squarer vpay sheet handing over
-/// to a rounder system one reads as a glitch rather than a transition.
-/// 28 sits close enough to both that the swap is not jarring.
-///
-/// Override it with `borderRadius` when the host app's own surfaces have a
-/// different language — a merchant whose app is square everywhere should
-/// not get one rounded rectangle in the middle of it.
-const double kVpayCheckoutSheetCornerRadius = 28;
-
 Future<VpayCheckoutResult> showVpayCheckoutSheet(
   BuildContext context, {
   required String sessionUrl,
@@ -153,6 +154,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
   List<String>? allowedMethods,
   VpayCheckoutConfigStore? configStore,
   VpayLocale locale = VpayLocale.fallback,
+  VpayCheckoutTheme theme = const VpayCheckoutTheme(),
   BorderRadiusGeometry? borderRadius,
 }) async {
   final GlobalKey<_VpayCheckoutSheetState> sheetKey =
@@ -170,10 +172,13 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
         // never on screen.
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(
+          // `borderRadius` stays the sharper override of the two: a
+          // caller that passes it is naming the exact geometry, so it
+          // wins over the theme's scalar.
           borderRadius:
               borderRadius ??
-              const BorderRadius.vertical(
-                top: Radius.circular(kVpayCheckoutSheetCornerRadius),
+              BorderRadius.vertical(
+                top: Radius.circular(theme.sheetCornerRadius),
               ),
         ),
         builder: (BuildContext sheetContext) => DraggableScrollableSheet(
@@ -193,6 +198,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheet(
                 configStore: configStore,
                 locale: locale,
                 showDragHandle: true,
+                theme: theme,
               ),
         ),
       );
@@ -228,6 +234,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheetRoute(
   List<String>? allowedMethods,
   VpayCheckoutConfigStore? configStore,
   VpayLocale locale = VpayLocale.fallback,
+  VpayCheckoutTheme theme = const VpayCheckoutTheme(),
 }) async {
   final GlobalKey<_VpayCheckoutSheetState> sheetKey =
       GlobalKey<_VpayCheckoutSheetState>();
@@ -243,6 +250,7 @@ Future<VpayCheckoutResult> showVpayCheckoutSheetRoute(
         allowedMethods: allowedMethods,
         configStore: configStore,
         locale: locale,
+        theme: theme,
       ),
     ),
   );
@@ -274,6 +282,17 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
   /// (almost always within the same frame; it is a local cache read, never
   /// a network call) and whenever the document carries none.
   String? _supportContact;
+
+  /// `branding.primary_color` from the same cached [CheckoutPageConfig]
+  /// [_bootstrap] reads, or `null` when the deployment published none.
+  /// Seeds the M3 [ColorScheme] unless the caller's [VpayCheckoutTheme]
+  /// outranks it — [VpayCheckoutTheme.resolve] owns that decision.
+  ///
+  /// Null on the first frame, like [_supportContact]: the config read is
+  /// a local cache hit but still a `Future`, so the very first paint uses
+  /// the host app's own scheme and the branded one arrives with the
+  /// `setState` below. A payer sees a theme settle, never a blank sheet.
+  Color? _brandSeed;
 
   bool get _frenchLocale => widget.locale == VpayLocale.fr;
 
@@ -317,6 +336,7 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
       return;
     }
     _supportContact = config.branding.supportContact;
+    _brandSeed = config.branding.primaryColor;
     _controller.allowedMethods = narrowAllowedMethods(
       explicit: widget.allowedMethods,
       operatorFloor: config.checkout.allowedMethods,
@@ -386,44 +406,28 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     Navigator.of(context).maybePop(result);
   }
 
-  static ThemeData _fingerFriendly(ThemeData base) {
-    const Size minimum = Size.fromHeight(52);
-    ButtonStyle grow(ButtonStyle? style) => (style ?? const ButtonStyle())
-        .copyWith(minimumSize: const WidgetStatePropertyAll<Size>(minimum));
-    return base.copyWith(
-      materialTapTargetSize: MaterialTapTargetSize.padded,
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: grow(base.elevatedButtonTheme.style),
-      ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: grow(base.outlinedButtonTheme.style),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: grow(base.filledButtonTheme.style),
-      ),
-      textButtonTheme: TextButtonThemeData(
-        style: grow(base.textButtonTheme.style),
-      ),
-    );
-  }
+  /// The sheet's own Material 3 theme, resolved once per build.
+  ///
+  /// Everything below takes its `BuildContext` from the [Builder] under
+  /// this [Theme], never from [State.context]. That is not a style
+  /// preference: `State.context` sits *above* the `Theme` this method
+  /// installs, so a helper reading `Theme.of(this.context)` would quietly
+  /// get the host app's scheme and ignore the seeded one — the sheet
+  /// would look themed in the widget tree and unthemed on screen.
+  ThemeData _sheetTheme(BuildContext context) =>
+      widget.theme.resolve(Theme.of(context), deploymentBrandColor: _brandSeed);
 
   @override
   Widget build(BuildContext context) {
+    final ThemeData theme = _sheetTheme(context);
     return Theme(
-      // Finger-friendly by default, on top of whatever the merchant's
-      // `ThemeData` says. A checkout sheet is a small surface a payer uses
-      // once, often one-handed, often on a cheap phone, and usually while
-      // slightly anxious about money — the wrong tap here costs a payment,
-      // not a scroll position.
-      //
-      // 52 is above both floors (Material's 48dp and Apple's 44pt) rather
-      // than exactly at either, because the numbers are minimums for
-      // *reachable* targets and these sit in a scrolling column near the
-      // bottom edge. Set on the sheet's own `Theme`, not on each call site,
-      // so a new button cannot be added later without inheriting it.
-      data: _fingerFriendly(Theme.of(context)),
+      data: theme,
       child: Material(
-        color: Theme.of(context).scaffoldBackgroundColor,
+        // `surfaceContainerLow`, not `scaffoldBackgroundColor`: M3 gives
+        // a bottom sheet a container role a step up the tonal ladder from
+        // the page behind it, which is what separates the two surfaces
+        // without a border or a shadow.
+        color: theme.colorScheme.surfaceContainerLow,
         child: SafeArea(
           top: false,
           child: Semantics(
@@ -431,15 +435,17 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
             // created together with its own text is not announced.
             container: true,
             liveRegion: true,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  if (widget.showDragHandle) _dragHandle(context),
-                  _buildScreen(context),
-                  _supportLine(),
-                ],
+            child: Builder(
+              builder: (BuildContext inner) => SingleChildScrollView(
+                padding: widget.theme.contentPadding,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    if (widget.showDragHandle) _dragHandle(inner),
+                    _buildScreen(inner),
+                    _supportLine(inner),
+                  ],
+                ),
               ),
             ),
           ),
@@ -448,39 +454,60 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     );
   }
 
+  /// M3's own drag-handle geometry: 32×4, `onSurfaceVariant` at the
+  /// opacity the framework's `BottomSheet` uses for its built-in handle.
   Widget _dragHandle(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.only(bottom: 16),
     child: Center(
       child: Container(
-        width: 36,
+        width: 32,
         height: 4,
         decoration: BoxDecoration(
-          color: Theme.of(context).dividerColor,
+          color: Theme.of(context).colorScheme.onSurfaceVariant
+              .withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(2),
         ),
       ),
     ),
   );
 
-  Widget _heading(String text) => Focus(
+  /// Every screen's title.
+  ///
+  /// `headlineSmall` bare — no `fontWeight` override. The weight used to
+  /// be hardcoded here, which is exactly the habit that makes a sheet
+  /// ignore a host app's typography: M3's type scale already encodes
+  /// "this is a screen title", and a host that supplies its own
+  /// [TextTheme] should be able to change it.
+  Widget _heading(BuildContext context, String text) => Focus(
     focusNode: _headingFocusNode,
-    child: Text(
-      text,
-      style: Theme.of(context).textTheme.titleLarge
-          ?.copyWith(fontWeight: FontWeight.w600),
-    ),
+    child: Text(text, style: Theme.of(context).textTheme.headlineSmall),
   );
 
-  Widget _testModeBanner(bool livemode) {
+  /// The test-mode marker, as an M3 tonal badge rather than a line of
+  /// bold text — a payer glances at this once and should be able to tell
+  /// it apart from the merchant's own copy without reading it.
+  Widget _testModeBanner(BuildContext context, bool livemode) {
     if (livemode) {
       return const SizedBox.shrink();
     }
+    final ThemeData theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        _t.t('page.testmode'),
-        style: Theme.of(context).textTheme.bodySmall
-            ?.copyWith(fontWeight: FontWeight.w600),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.tertiaryContainer,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            _t.t('page.testmode'),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onTertiaryContainer,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -491,57 +518,73 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
   /// (mirroring `screens.tsx`'s `SupportLine`, which the hosted page shows
   /// wherever branding shows), and only when [_supportContact] is
   /// non-null — never a blank caption reserving space for nothing.
-  Widget _supportLine() {
+  Widget _supportLine(BuildContext context) {
     final String? contact = _supportContact;
     if (contact == null) {
       return const SizedBox.shrink();
     }
+    final ThemeData theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.only(top: 24),
       child: Text(
         _t.t('page.support', {'contact': contact}),
-        style: Theme.of(context).textTheme.bodySmall
-            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        textAlign: TextAlign.center,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
 
-  Widget _summary(CheckoutContext context) {
-    final CheckoutSession session = context.session;
-    final PaymentIntent intent = context.intent;
+  /// What is being paid, and to whom — the one block on screen for the
+  /// whole checkout.
+  ///
+  /// `Card.filled` on `surfaceContainerHigh`: a tonal step above the
+  /// sheet, which is how M3 separates a container from its background
+  /// without the drop shadow an elevated card would add inside an
+  /// already-raised sheet.
+  Widget _summary(BuildContext context, CheckoutContext checkout) {
+    final CheckoutSession session = checkout.session;
+    final PaymentIntent intent = checkout.intent;
+    final ThemeData theme = Theme.of(context);
     final String amount = formatAmountForDisplay(
       intent.amount,
       intent.currency,
       _frenchLocale,
     );
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            _testModeBanner(session.livemode),
-            Text(
-              _merchantLine(
-                context.merchantName,
-                'page.pay_to',
-                'page.pay_to_unnamed',
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Card.filled(
+        color: theme.colorScheme.surfaceContainerHigh,
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              _testModeBanner(context, session.livemode),
+              Text(
+                _merchantLine(
+                  checkout.merchantName,
+                  'page.pay_to',
+                  'page.pay_to_unnamed',
+                ),
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-              style: Theme.of(this.context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              amount,
-              style: Theme.of(this.context).textTheme.headlineSmall
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${_t.t('page.reference_label')}: ${session.id}',
-              style: Theme.of(this.context).textTheme.bodySmall,
-            ),
-          ],
+              const SizedBox(height: 6),
+              // The largest thing on the sheet, deliberately: the amount
+              // is the one fact a payer must not misread.
+              Text(amount, style: theme.textTheme.displaySmall),
+              const SizedBox(height: 10),
+              Text(
+                '${_t.t('page.reference_label')}: ${session.id}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -562,13 +605,15 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        if (ctx != null) _summary(ctx),
+        if (ctx != null) _summary(context, ctx),
         switch (s) {
           CheckoutLoading() => _statusPanel(
+            context,
             title: _t.t('state.loading'),
             body: null,
           ),
           CheckoutLoadError(:final error) => _noticePanel(
+            context,
             title: _t.t('error.title'),
             body: _t.t(errorMessageKey(error)),
             code: error.code,
@@ -576,14 +621,17 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
           CheckoutRefused(:final reason) =>
             reason == RefusalReason.embedNotAllowed
                 ? _noticePanel(
+                    context,
                     title: _t.t('refusal.embed_title'),
                     body: _t.t('refusal.embed_body'),
                   )
                 : _noticePanel(
+                    context,
                     title: _t.t('error.title'),
                     body: _t.t('rail.none'),
                   ),
           CheckoutExpired() => _noticePanel(
+            context,
             title: _t.t('expired.title'),
             body: _merchantLine(
               ctx?.merchantName,
@@ -591,20 +639,21 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
               'expired.body_unnamed',
             ),
           ),
-          CheckoutSelectRail(:final rails) => _railSelector(rails),
+          CheckoutSelectRail(:final rails) => _railSelector(context, rails),
           CheckoutCollectMsisdn(
             :final rail,
             :final rails,
             :final problem,
-            :final context,
+            context: final checkout,
           ) =>
             _msisdnForm(
+              context,
               rail: rail,
               problem: problem,
               canGoBack: rails.supported.length > 1,
               amount: formatAmountForDisplay(
-                context.intent.amount,
-                context.intent.currency,
+                checkout.intent.amount,
+                checkout.intent.currency,
                 _frenchLocale,
               ),
             ),
@@ -612,40 +661,46 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
             :final rail,
             :final rails,
             :final problem,
-            :final context,
+            context: final checkout,
           ) =>
             _redirectPrompt(
+              context,
               rail: rail,
               problem: problem,
               canGoBack: rails.supported.length > 1,
               amount: formatAmountForDisplay(
-                context.intent.amount,
-                context.intent.currency,
+                checkout.intent.amount,
+                checkout.intent.currency,
                 _frenchLocale,
               ),
             ),
           CheckoutConfirming() => _statusPanel(
+            context,
             title: _t.t('state.confirming'),
             body: null,
           ),
-          CheckoutWaiting(:final notice, :final context) => _statusPanel(
-            title: _t.t('state.waiting_title'),
-            body: _t.t('state.waiting_body', {
-              'amount': formatAmountForDisplay(
-                context.intent.amount,
-                context.intent.currency,
-                _frenchLocale,
-              ),
-            }),
-            notice: notice,
-            onRetry: notice == null ? null : _controller.retryPoll,
-          ),
+          CheckoutWaiting(:final notice, context: final checkout) =>
+            _statusPanel(
+              context,
+              title: _t.t('state.waiting_title'),
+              body: _t.t('state.waiting_body', {
+                'amount': formatAmountForDisplay(
+                  checkout.intent.amount,
+                  checkout.intent.currency,
+                  _frenchLocale,
+                ),
+              }),
+              notice: notice,
+              onRetry: notice == null ? null : _controller.retryPoll,
+            ),
           CheckoutRedirecting() => _statusPanel(
+            context,
             title: _t.t('state.redirecting_title'),
             body: _t.t('state.redirecting_body'),
           ),
-          CheckoutOutcome() => _outcomePanel(s),
+          CheckoutOutcome() => _outcomePanel(context, s),
           CheckoutForwarding() => _statusPanel(
+            context,
             title: _t.t('state.forwarding_title'),
             body: _merchantLine(
               ctx?.merchantName,
@@ -658,82 +713,216 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     );
   }
 
-  Widget _statusPanel({
+  /// Anything the payer waits through: loading, confirming, polling,
+  /// redirecting, forwarding.
+  ///
+  /// Centred rather than left-aligned, unlike every other screen. A
+  /// waiting screen has no content to read and no control to reach for —
+  /// centring it stops the sheet looking like a form that failed to load.
+  Widget _statusPanel(
+    BuildContext context, {
     required String title,
     required String? body,
     String? notice,
     VoidCallback? onRetry,
-  }) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: <Widget>[
-      _heading(title),
-      const SizedBox(height: 12),
-      if (body != null) Text(body),
-      const SizedBox(height: 16),
-      const Center(child: CircularProgressIndicator()),
-      if (notice != null) ...<Widget>[
-        const SizedBox(height: 16),
-        Semantics(
-          liveRegion: true,
-          child: Text(
-            _t.t(notice),
-            style: const TextStyle(fontWeight: FontWeight.w600),
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: _heading(context, title),
+        ),
+        const SizedBox(height: 24),
+        Center(
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: CircularProgressIndicator(
+              strokeWidth: 4,
+              // M3 draws the unfilled part of the track too; without it
+              // a thin indicator on a tonal surface reads as an artefact.
+              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            ),
           ),
         ),
-        const SizedBox(height: 8),
-        if (onRetry != null)
-          OutlinedButton(onPressed: onRetry, child: Text(_t.t('error.retry'))),
+        if (body != null) ...<Widget>[
+          const SizedBox(height: 24),
+          Text(
+            body,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+        if (notice != null) ...<Widget>[
+          const SizedBox(height: 24),
+          Semantics(
+            liveRegion: true,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(
+                  widget.theme.surfaceCornerRadius,
+                ),
+              ),
+              child: Text(
+                _t.t(notice),
+                textAlign: TextAlign.center,
+                // Was a bare `TextStyle(fontWeight: w600)`, which dropped
+                // the host app's font entirely — a literal `TextStyle` with
+                // no `textTheme` base inherits nothing.
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSecondaryContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          if (onRetry != null) ...<Widget>[
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: onRetry,
+              child: Text(_t.t('error.retry')),
+            ),
+          ],
+        ],
       ],
-    ],
-  );
+    );
+  }
 
-  Widget _noticePanel({
+  /// A dead end the payer cannot act on: a load error, a refusal, an
+  /// expired session.
+  Widget _noticePanel(
+    BuildContext context, {
     required String title,
     required String body,
     String? code,
-  }) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: <Widget>[
-      _heading(title),
-      const SizedBox(height: 12),
-      Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.errorContainer,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          body,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onErrorContainer,
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _heading(context, title),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(
+              widget.theme.surfaceCornerRadius,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(
+                Icons.error_outline,
+                size: 22,
+                color: theme.colorScheme.onErrorContainer,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  body,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 
-  Widget _railSelector(RailChoices rails) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: <Widget>[
-      _heading(_t.t('rail.legend')),
-      const SizedBox(height: 12),
-      for (final SupportedRail rail in rails.supported) ...<Widget>[
-        OutlinedButton(
-          onPressed: () => _controller.chooseRail(rail),
-          child: Text(_labelFor(rail)),
-        ),
-        const SizedBox(height: 8),
-      ],
-      if (rails.unsupported.isNotEmpty) ...<Widget>[
-        const SizedBox(height: 8),
-        for (final UnsupportedRail u in rails.unsupported)
-          Text(
-            _t.t('rail.unsupported', {'rail': u.code}),
-            style: Theme.of(context).textTheme.bodySmall,
+  /// How the payer picks a rail.
+  ///
+  /// Tappable M3 tiles rather than a column of `OutlinedButton`s: each
+  /// row now carries a leading icon and a chevron, which is what tells a
+  /// payer that choosing it goes somewhere rather than paying at once.
+  ///
+  /// The icon is chosen from [RailSpec.flow] — **not** from the rail
+  /// code. `test/sheet/no_rail_code_branching_test.dart` scans this file
+  /// for exactly that, and the flow is the honest signal anyway: it says
+  /// whether the payer is about to leave the app, which is the one thing
+  /// the two rails genuinely differ on from here.
+  Widget _railSelector(BuildContext context, RailChoices rails) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _heading(context, _t.t('rail.legend')),
+        const SizedBox(height: 16),
+        for (final SupportedRail rail in rails.supported) ...<Widget>[
+          Card.outlined(
+            margin: EdgeInsets.zero,
+            // Without this the `InkWell` below splashes past the rounded
+            // corners — `Card`'s own default is `Clip.none`, and the ink
+            // is painted by the Material underneath, not by the shape.
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(
+                widget.theme.surfaceCornerRadius,
+              ),
+              side: BorderSide(color: theme.colorScheme.outlineVariant),
+            ),
+            child: InkWell(
+              onTap: () => _controller.chooseRail(rail),
+              borderRadius: BorderRadius.circular(
+                widget.theme.surfaceCornerRadius,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      rail.spec.flow == RailFlow.redirect
+                          ? Icons.open_in_new
+                          : Icons.smartphone,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        _labelFor(rail),
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    Icon(
+                      Icons.chevron_right,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
+          const SizedBox(height: 12),
+        ],
+        if (rails.unsupported.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 4),
+          for (final UnsupportedRail u in rails.unsupported)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                _t.t('rail.unsupported', {'rail': u.code}),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
       ],
-    ],
-  );
+    );
+  }
 
   /// [RailSpec.labelKey] resolved through the catalogue, falling back to
   /// the deployment's own [RailDisplayName] and then the raw code — never
@@ -747,48 +936,64 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     configuredFr: rail.spec.displayName?.fr,
   );
 
-  Widget _rememberControl({required String label}) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: <Widget>[
-      // `CheckboxListTile` merges its `title`/`subtitle` into ONE
-      // semantics node's accessible label (Flutter's own
-      // `ListTile`/`MergeSemantics` behaviour) — this is how the
-      // shared-phone warning ends up *inside* the accessible label
-      // rather than as a separate, easily-missed description, the same
-      // property `screens.tsx`'s own `CheckboxField` composition
-      // documents choosing for the same reason.
-      CheckboxListTile(
-        value: _controller.rememberChecked,
-        onChanged: (bool? value) =>
-            _controller.setRememberChecked(value ?? false),
-        controlAffinity: ListTileControlAffinity.leading,
-        contentPadding: EdgeInsets.zero,
-        title: Text(label),
-        subtitle: Text(_t.t('memory.warning')),
-      ),
-      if (_controller.hasRememberedRecord)
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton(
-            onPressed: () async {
-              await _controller.forgetRemembered();
-              setState(() {});
-            },
-            child: Text(_t.t('memory.forget')),
+  Widget _rememberControl(BuildContext context, {required String label}) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        // `CheckboxListTile` merges its `title`/`subtitle` into ONE
+        // semantics node's accessible label (Flutter's own
+        // `ListTile`/`MergeSemantics` behaviour) — this is how the
+        // shared-phone warning ends up *inside* the accessible label
+        // rather than as a separate, easily-missed description, the same
+        // property `screens.tsx`'s own `CheckboxField` composition
+        // documents choosing for the same reason.
+        CheckboxListTile(
+          value: _controller.rememberChecked,
+          onChanged: (bool? value) =>
+              _controller.setRememberChecked(value ?? false),
+          controlAffinity: ListTileControlAffinity.leading,
+          contentPadding: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(
+              widget.theme.surfaceCornerRadius,
+            ),
+          ),
+          title: Text(label, style: theme.textTheme.bodyMedium),
+          subtitle: Text(
+            _t.t('memory.warning'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
-      if (_controller.forgotten)
-        Padding(
-          padding: const EdgeInsets.only(left: 12),
-          child: Text(
-            _t.t('memory.forgotten'),
-            style: Theme.of(context).textTheme.bodySmall,
+        if (_controller.hasRememberedRecord)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: () async {
+                await _controller.forgetRemembered();
+                setState(() {});
+              },
+              child: Text(_t.t('memory.forget')),
+            ),
           ),
-        ),
-    ],
-  );
+        if (_controller.forgotten)
+          Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: Text(
+              _t.t('memory.forgotten'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 
-  Widget _msisdnForm({
+  Widget _msisdnForm(
+    BuildContext context, {
     required SupportedRail rail,
     required String? problem,
     required bool canGoBack,
@@ -796,8 +1001,13 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
   }) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: <Widget>[
-      _heading(_labelFor(rail)),
-      const SizedBox(height: 12),
+      _heading(context, _labelFor(rail)),
+      const SizedBox(height: 16),
+      // Still a `TextField`. Its Material 3 look now comes from the
+      // `InputDecorationTheme` `VpayCheckoutTheme.resolve` installs
+      // (filled, real shape) rather than from whatever the host app
+      // happened to set — which, for a host with no theme at all, was
+      // M2's underline.
       TextField(
         controller: _msisdnController,
         keyboardType: TextInputType.phone,
@@ -807,12 +1017,16 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
           labelText: _t.t('msisdn.label'),
           helperText: _t.t('msisdn.hint'),
           errorText: problem == null ? null : _t.t(problem),
+          prefixIcon: const Icon(Icons.phone_outlined),
         ),
       ),
-      const SizedBox(height: 12),
-      _rememberControl(label: _t.t('memory.remember_number')),
-      const SizedBox(height: 12),
-      ElevatedButton(
+      const SizedBox(height: 16),
+      _rememberControl(context, label: _t.t('memory.remember_number')),
+      const SizedBox(height: 20),
+      // `FilledButton`, not `ElevatedButton`: M3's highest-emphasis
+      // button is the filled one, and this is the only action on screen
+      // that moves money.
+      FilledButton(
         onPressed: () => _controller.submitMsisdn(_msisdnController.text),
         child: Text(_t.t('msisdn.submit', {'amount': amount})),
       ),
@@ -826,44 +1040,57 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     ],
   );
 
-  Widget _redirectPrompt({
+  Widget _redirectPrompt(
+    BuildContext context, {
     required SupportedRail rail,
     required String? problem,
     required bool canGoBack,
     required String amount,
-  }) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: <Widget>[
-      _heading(_labelFor(rail)),
-      const SizedBox(height: 8),
-      Text(_t.t('state.redirecting_body')),
-      if (problem != null) ...<Widget>[
-        const SizedBox(height: 8),
+  }) {
+    final ThemeData theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        _heading(context, _labelFor(rail)),
+        const SizedBox(height: 12),
         Text(
-          _t.t(problem),
-          style: TextStyle(color: Theme.of(context).colorScheme.error),
+          _t.t('state.redirecting_body'),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
-      ],
-      const SizedBox(height: 12),
-      _rememberControl(
-        label: _t.t('memory.remember_method', {'rail': _labelFor(rail)}),
-      ),
-      const SizedBox(height: 12),
-      ElevatedButton(
-        onPressed: _controller.startRedirect,
-        child: Text(_t.t('msisdn.submit', {'amount': amount})),
-      ),
-      if (canGoBack) ...<Widget>[
-        const SizedBox(height: 8),
-        TextButton(
-          onPressed: _controller.back,
-          child: Text(_t.t('msisdn.back')),
+        if (problem != null) ...<Widget>[
+          const SizedBox(height: 12),
+          Text(
+            _t.t(problem),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.error,
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        _rememberControl(
+          context,
+          label: _t.t('memory.remember_method', {'rail': _labelFor(rail)}),
         ),
+        const SizedBox(height: 20),
+        FilledButton(
+          onPressed: _controller.startRedirect,
+          child: Text(_t.t('msisdn.submit', {'amount': amount})),
+        ),
+        if (canGoBack) ...<Widget>[
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: _controller.back,
+            child: Text(_t.t('msisdn.back')),
+          ),
+        ],
       ],
-    ],
-  );
+    );
+  }
 
-  Widget _outcomePanel(CheckoutOutcome outcome) {
+  Widget _outcomePanel(BuildContext context, CheckoutOutcome outcome) {
+    final ThemeData theme = Theme.of(context);
     final String title = switch (outcome.kind) {
       OutcomeKind.succeeded => _t.t('outcome.succeeded_title'),
       OutcomeKind.canceled => _t.t('outcome.canceled_title'),
@@ -887,32 +1114,52 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
       ),
     };
     final String? reason = outcome.reason;
+    final (Color container, Color onContainer, IconData icon) = _outcomeRole(
+      theme.colorScheme,
+      outcome.kind,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        _heading(title),
-        const SizedBox(height: 12),
+        _heading(context, title),
+        const SizedBox(height: 16),
         Semantics(
           liveRegion: true,
           child: Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: _outcomeColor(context, outcome.kind),
-              borderRadius: BorderRadius.circular(8),
+              color: container,
+              borderRadius: BorderRadius.circular(
+                widget.theme.surfaceCornerRadius,
+              ),
             ),
-            child: Text(body),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(icon, size: 32, color: onContainer),
+                const SizedBox(height: 12),
+                Text(
+                  body,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: onContainer,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
         // `providerReason` is shown BESIDE, never instead of, the
         // translated failure line above — issue #189's own bar item.
         if (reason != null) ...<Widget>[
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           Text(
             '${_t.t('outcome.provider_said')}: $reason',
-            style: Theme.of(context).textTheme.bodySmall,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
         // The hosted page's "outcome with no destination" screen
         // (`outcome.no_destination`, shown when neither `success_url` nor
         // `cancel_url` is configured, so the page has genuinely nowhere to
@@ -927,7 +1174,7 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
         //
         // No countdown timer beside this either — issue #189's own bar
         // item. One button, and the payer decides when to press it.
-        ElevatedButton(
+        FilledButton(
           onPressed: _controller.returnToMerchant,
           // Not `_merchantLine`: the button no longer names the merchant,
           // because the payer is already in the merchant's app.
@@ -937,14 +1184,29 @@ class _VpayCheckoutSheetState extends State<VpayCheckoutSheet> {
     );
   }
 
-  Color _outcomeColor(BuildContext context, OutcomeKind kind) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    return switch (kind) {
-      OutcomeKind.succeeded => scheme.primaryContainer,
-      OutcomeKind.canceled => scheme.surfaceContainerHighest,
-      OutcomeKind.failed => scheme.errorContainer,
-    };
-  }
+  /// The container/label/icon triple for an outcome.
+  ///
+  /// `primaryContainer` for success rather than a hardcoded green: the
+  /// sheet has no palette of its own, and on a seeded scheme the
+  /// merchant's own brand colour is the right "this worked" surface.
+  (Color, Color, IconData) _outcomeRole(ColorScheme scheme, OutcomeKind kind) =>
+      switch (kind) {
+        OutcomeKind.succeeded => (
+          scheme.primaryContainer,
+          scheme.onPrimaryContainer,
+          Icons.check_circle_outline,
+        ),
+        OutcomeKind.canceled => (
+          scheme.surfaceContainerHighest,
+          scheme.onSurfaceVariant,
+          Icons.cancel_outlined,
+        ),
+        OutcomeKind.failed => (
+          scheme.errorContainer,
+          scheme.onErrorContainer,
+          Icons.error_outline,
+        ),
+      };
 }
 
 /// A stable identity per screen state, for [_VpayCheckoutSheetState]'s own

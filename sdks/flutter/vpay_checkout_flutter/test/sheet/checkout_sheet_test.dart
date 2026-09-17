@@ -290,7 +290,21 @@ void main() {
 
       expect(find.text('Payment received'), findsOneWidget);
       // Exactly one button on this screen — no countdown, no timer widget.
-      expect(find.byType(ElevatedButton), findsOneWidget);
+      //
+      // Any Material button family, via `ButtonStyleButton`, their shared
+      // base. This assertion is about the *count* — "one control, and
+      // nothing counting down beside it" — and pinning `ElevatedButton`
+      // made it fail for the unrelated reason that the M3 pass moved this
+      // CTA to `FilledButton`. Written this way it also catches a stray
+      // `TextButton` or `OutlinedButton`, which the old form missed.
+      //
+      // `byWidgetPredicate`, not `byType`: `find.byType` compares
+      // `runtimeType` exactly and so matches no subclass at all — a
+      // `byType(ButtonStyleButton)` here finds zero widgets, not one.
+      expect(
+        find.byWidgetPredicate((Widget w) => w is ButtonStyleButton),
+        findsOneWidget,
+      );
     },
   );
 
@@ -626,6 +640,103 @@ void main() {
 
       expect(find.text('Support: support@vaam.example'), findsOneWidget);
     });
+
+    /// The end of the wire issue #193 left disconnected: a deployment
+    /// publishes `primary_color`, and the sheet is actually painted with
+    /// it. Asserting on the *rendered* theme rather than on the parsed
+    /// config, because the parse already had a test and the rendering is
+    /// the part that was missing.
+    testWidgets(
+      'primary_color from the cached document seeds the rendered M3 scheme',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+        final http.Client configClient = MockClient(
+          (http.Request request) async => configJson(documentJson()),
+        );
+        expect(
+          await prepareCheckout(
+            checkoutBaseUrl: 'https://checkout.example',
+            store: store,
+            httpClient: configClient,
+          ),
+          true,
+        );
+
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+            locale: VpayLocale.en,
+          ),
+        );
+
+        // Read the theme from INSIDE the sheet — the sheet installs its
+        // own `Theme` below the host's, so an element above it would
+        // report the host scheme and pass no matter what this does.
+        final ColorScheme rendered = Theme.of(
+          tester.element(find.byType(TextField)),
+        ).colorScheme;
+        final ColorScheme expected = ColorScheme.fromSeed(
+          // `#f3c623`, the colour `documentJson` publishes.
+          seedColor: const Color(0xFFF3C623),
+          brightness: Brightness.light,
+        );
+        expect(rendered, expected);
+        // And it is genuinely different from what the host app alone
+        // would have given, so the assertion above cannot pass vacuously.
+        expect(rendered.primary, isNot(const ColorScheme.light().primary));
+      },
+    );
+
+    testWidgets(
+      'useDeploymentBrandColor: false keeps the host app scheme even when a colour is published',
+      (WidgetTester tester) async {
+        final InMemoryVpayCheckoutConfigStore store =
+            InMemoryVpayCheckoutConfigStore();
+        final http.Client configClient = MockClient(
+          (http.Request request) async => configJson(documentJson()),
+        );
+        expect(
+          await prepareCheckout(
+            checkoutBaseUrl: 'https://checkout.example',
+            store: store,
+            httpClient: configClient,
+          ),
+          true,
+        );
+
+        final http.Client sessionClient = MockClient(
+          (http.Request request) async =>
+              _json(_sessionJson(rails: [_mtnRailJson()])),
+        );
+
+        await _pump(
+          tester,
+          VpayCheckoutSheet(
+            sessionUrl: _sessionUrl,
+            baseUrl: 'https://api.example',
+            publishableKey: 'pk_test_1',
+            httpClient: sessionClient,
+            configStore: store,
+            locale: VpayLocale.en,
+            theme: const VpayCheckoutTheme(useDeploymentBrandColor: false),
+          ),
+        );
+
+        final BuildContext inside = tester.element(find.byType(TextField));
+        expect(Theme.of(inside).colorScheme, ThemeData().colorScheme);
+      },
+    );
 
     testWidgets(
       'no configStore given, prepareCheckout not called — no support line, unrestricted rails',

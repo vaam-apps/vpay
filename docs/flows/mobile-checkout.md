@@ -438,8 +438,13 @@ built on lane 1's reducer.** The browser this whole document describes now
 renders `mtn_momo` and `orange_money` as `VpayCheckoutSheet` — a Flutter
 widget tree, not a page — reachable through `showVpayCheckoutSheet` (a
 large-detent, draggable `showModalBottomSheet`) or `showVpayCheckoutSheetRoute`
-(a full route); both inherit the host app's own `ThemeData`, never a fixed
-vpay palette. `lib/src/sheet/sheet_controller.dart`'s `SheetController` is
+(a full route); both inherited the host app's own `ThemeData`, never a fixed
+vpay palette — **reversed 2026-09-17**, in the same lane's Material 3 pass:
+a deployment's `primary_color` now seeds the sheet's `ColorScheme` via the
+new `VpayCheckoutTheme` (`lib/src/sheet/checkout_theme.dart`), ranked below
+an explicit `colorScheme` or `seedColor` and above the host app's theme,
+which still wins when neither is set and no brand colour is deployed.
+`lib/src/sheet/sheet_controller.dart`'s `SheetController` is
 the impure half `checkout_screen.dart`'s reducer was always missing: it
 reads the session, confirms through `BrowserClient.confirmPaymentIntent`
 (new — the sheet drives a rail directly, rather than only reading the
