@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": false,
+  "bootstrap-sha": "164d566b70b4b68d141350e5d79a9a1f5015d18a",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance"
+        },
+        {
+          "type": "deps",
+          "section": "Dependencies"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "refactor",
+          "section": "Refactoring"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        },
+        {
+          "type": "chore",
+          "section": "Chores"
+        },
+        {
+          "type": "style",
+          "section": "Styles",
+          "hidden": true
+        }
+      ],
+      "extra-files": [
+        "Cargo.toml",
+        "backends/tests/integration/Cargo.toml",
+        "backends/crates/vpay-worker/Cargo.toml",
+        "backends/crates/vpay-api/Cargo.toml",
+        "deploy/helm/vpay/Chart.yaml",
+        "sdks/flutter/vpay_checkout_flutter/pubspec.yaml",
+        "sdks/nodejs/src/version.ts",
+        {
+          "type": "json",
+          "path": "sdks/nodejs/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "sdks/stripe-js/package.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}

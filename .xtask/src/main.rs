@@ -113,6 +113,7 @@ fn main() -> ExitCode {
         "verify-repositories" => verify_repositories(&root),
         "verify-toolchain" => verify_toolchain(&root),
         "verify-migrations" => verify_migrations(&root),
+        "verify-versions" => verify_versions(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -126,7 +127,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_serde(&root))
             .and_then(|()| verify_repositories(&root))
             .and_then(|()| verify_toolchain(&root))
-            .and_then(|()| verify_migrations(&root)),
+            .and_then(|()| verify_migrations(&root))
+            .and_then(|()| verify_versions(&root)),
         // Not `Result`-shaped like the three gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -140,7 +142,7 @@ fn main() -> ExitCode {
                 "usage: cargo xtask \
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
-                 |verify-toolchain|verify-migrations|verify-all>\n\
+                 |verify-toolchain|verify-migrations|verify-versions|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -7652,6 +7654,267 @@ fn strip_code_noise(text: &str) -> String {
         i += 1;
     }
     out
+}
+
+// --------------------------------------------------------------------- versions ---
+
+/// release-please's own config, which is also the list of files this check
+/// reads. Restating that list here would be a second copy of one fact — the
+/// exact shape this check exists to catch.
+const RELEASE_PLEASE_CONFIG: &str = "release-please-config.json";
+/// release-please's record of the current version.
+const RELEASE_PLEASE_MANIFEST: &str = ".release-please-manifest.json";
+/// The comment `src/updaters/generic.ts` looks for. It must be on the SAME
+/// line as the version, and only the first semver-shaped substring on that
+/// line is replaced.
+const RELEASE_PLEASE_ANNOTATION: &str = "x-release-please-version";
+
+/// Every version release-please owns agrees, and every line it must rewrite
+/// still carries its annotation.
+///
+/// # Why this exists
+///
+/// `release.yml` derives the Docker tag straight from the git ref
+/// (`docker/metadata-action`'s `type=semver`) and never compares it against
+/// any manifest — so nothing anywhere checks that the tree's version and the
+/// tag agree, before or after a release.
+///
+/// The regression this is actually built for is quieter than a mismatch.
+/// `deny.toml`'s `[bans] wildcards = "deny"` forces every internal Cargo
+/// dependency to carry `version = "X.Y.Z"` beside its `path`, and a bare
+/// `"0.1.0"` is `^0.1.0`, which for a 0.x version does not cross a minor
+/// boundary. There are FOURTEEN such pins — eleven in the root manifest and,
+/// found only by running `cargo metadata` rather than by reading, three more
+/// in member manifests. Miss one and the release pull request does not merely
+/// look untidy, it fails to resolve:
+///
+/// ```text
+/// error: failed to select a version for the requirement `vpay-core = "^0.1.0"`
+/// candidate versions found which didn't match: 0.2.0
+/// ```
+///
+/// Adding a fifteenth internal dependency is an ordinary thing to do, and
+/// nothing about it suggests you have just armed that failure for the next
+/// release. This check is what says so.
+///
+/// # Deliberately not checked
+///
+/// An annotated line in a file the config does not list — that needs a
+/// whole-tree walk and requires writing an annotation while never touching
+/// the config. Named rather than left to look like an oversight.
+fn verify_versions(root: &Path) -> Result<(), String> {
+    let config = fs::read_to_string(root.join(RELEASE_PLEASE_CONFIG))
+        .map_err(|e| format!("{RELEASE_PLEASE_CONFIG}: {e}"))?;
+    let (generic_paths, json_paths) = release_please_extra_files(&config)?;
+
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+
+    let manifest = fs::read_to_string(root.join(RELEASE_PLEASE_MANIFEST))
+        .map_err(|e| format!("{RELEASE_PLEASE_MANIFEST}: {e}"))?;
+    match json_string_field(&manifest, ".") {
+        Some(v) => found.push((format!("{RELEASE_PLEASE_MANIFEST} (\".\")"), v)),
+        None => problems.push(format!("  {RELEASE_PLEASE_MANIFEST}: no \".\" entry")),
+    }
+
+    for rel in &json_paths {
+        let text = fs::read_to_string(root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        match json_string_field(&text, "version") {
+            Some(v) => found.push((format!("{rel} ($.version)"), v)),
+            None => problems.push(format!("  {rel}: no \"version\" field")),
+        }
+    }
+
+    for rel in &generic_paths {
+        let text = fs::read_to_string(root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        let mut annotated = 0;
+        for (n, line) in text.lines().enumerate() {
+            if !line.contains(RELEASE_PLEASE_ANNOTATION) {
+                continue;
+            }
+            annotated += 1;
+            match first_semver(line) {
+                Some(v) => found.push((format!("{rel}:{}", n + 1), v)),
+                None => problems.push(format!(
+                    "  {rel}:{}: carries {RELEASE_PLEASE_ANNOTATION} but no version to replace, so release-please rewrites nothing on it",
+                    n + 1
+                )),
+            }
+        }
+        if annotated == 0 {
+            problems.push(format!(
+                "  {rel}: listed in {RELEASE_PLEASE_CONFIG}'s extra-files but carries no {RELEASE_PLEASE_ANNOTATION} line, so release-please will never change it"
+            ));
+        }
+    }
+
+    // The direction that catches the caret-range break: an internal Cargo
+    // dependency pin with no annotation. Every `Cargo.toml` in the tree, not
+    // only the ones already listed, because adding a pin to a NEW member
+    // manifest is exactly how the three in `vpay-api`, `vpay-worker` and
+    // `backends/tests/integration` came to be missed.
+    for rel in cargo_manifests(root) {
+        let text = match fs::read_to_string(root.join(&rel)) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for (n, line) in text.lines().enumerate() {
+            if is_internal_pin(line) && !line.contains(RELEASE_PLEASE_ANNOTATION) {
+                problems.push(format!(
+                    "  {rel}:{}: an internal `version = \"…\"` pin with no {RELEASE_PLEASE_ANNOTATION} comment. A bare \"X.Y.Z\" is `^X.Y.Z`, which for a 0.x version does not cross a minor boundary — leave this behind and the next release fails to resolve (`failed to select a version for the requirement …`), not merely looks stale. Annotate it and add its file to {RELEASE_PLEASE_CONFIG}'s extra-files",
+                    n + 1
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        let mut versions: Vec<&str> = found.iter().map(|(_, v)| v.as_str()).collect();
+        versions.sort_unstable();
+        versions.dedup();
+        if let [one] = versions.as_slice() {
+            println!(
+                "verify-versions: ok — {} version references all say {one}",
+                found.len()
+            );
+            return Ok(());
+        }
+        for (place, v) in &found {
+            problems.push(format!("  {place}: {v}"));
+        }
+    }
+
+    Err(format!(
+        "release version references disagree, or a release-please annotation is missing:\n{}\n\nEvery line above is one release-please owns. They must all hold the same version, and every file in {RELEASE_PLEASE_CONFIG}'s extra-files must keep at least one `{RELEASE_PLEASE_ANNOTATION}` comment for it to act on.",
+        problems.join("\n")
+    ))
+}
+
+/// The `extra-files` entries: bare-string paths, and every object-form `path`.
+///
+/// Parsed line by line rather than with a JSON library, matching the rest of
+/// this file. A reformat that collapses the array finds nothing and is
+/// reported as an error rather than passing vacuously.
+fn release_please_extra_files(config: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut generic = Vec::new();
+    let mut json_paths = Vec::new();
+    let mut inside = false;
+    for line in config.lines() {
+        if line.contains("\"extra-files\"") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if line.trim_start().starts_with(']') {
+            break;
+        }
+        let trimmed = line.trim().trim_end_matches(',');
+        if let Some(rest) = trimmed.strip_prefix("\"path\":") {
+            if let Some(v) = unquote(rest.trim()) {
+                json_paths.push(v);
+            }
+        } else if !trimmed.contains(':') && trimmed.matches('"').count() == 2 {
+            // A bare-string entry is a whole line that is nothing but one
+            // quoted path. Without the `:` test this also matched the object
+            // form's own `"type": "json"` key and tried to open a file called
+            // `type` — caught by running it, not by reading it.
+            if let Some(v) = unquote(trimmed) {
+                generic.push(v);
+            }
+        }
+    }
+    if generic.is_empty() {
+        return Err(format!(
+            "{RELEASE_PLEASE_CONFIG}: found no bare-string extra-files entries. This parser is line-based; if the config was reformatted, reformat it back or teach the parser the new shape — do not leave the check passing vacuously"
+        ));
+    }
+    if json_paths.is_empty() {
+        return Err(format!(
+            "{RELEASE_PLEASE_CONFIG}: found no object-form extra-files entry with a \"path\""
+        ));
+    }
+    Ok((generic, json_paths))
+}
+
+/// `"text"` -> `text`, and anything else -> `None`.
+fn unquote(s: &str) -> Option<String> {
+    let inner = s.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    if inner[..end].is_empty() {
+        return None;
+    }
+    Some(inner[..end].to_owned())
+}
+
+/// The string value of a top-level `"<key>": "<value>"` pair.
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":");
+    let after = text.lines().find_map(|l| l.trim().strip_prefix(&needle))?;
+    unquote(after.trim_start())
+}
+
+/// The first `X.Y.Z` on a line — the substring release-please's generic
+/// updater replaces, and only the first.
+///
+/// Written without indexing because this workspace denies
+/// `clippy::indexing_slicing`. Splitting on "not a digit and not a dot"
+/// yields tokens of digits and dots only, so `windows(3)` over their dot
+/// segments finds the first genuine triple: it steps past the empty leading
+/// segments of something like `..1.2.3`, and it stops at the first three of
+/// `0.3.10+9.0.33` (the `+` is a token boundary) exactly as the regex does.
+fn first_semver(line: &str) -> Option<String> {
+    for token in line.split(|c: char| !c.is_ascii_digit() && c != '.') {
+        let segments: Vec<&str> = token.split('.').collect();
+        for window in segments.windows(3) {
+            if let [major, minor, patch] = window
+                && !major.is_empty()
+                && !minor.is_empty()
+                && !patch.is_empty()
+            {
+                return Some(format!("{major}.{minor}.{patch}"));
+            }
+        }
+    }
+    None
+}
+
+/// `name = { path = "...", version = "X.Y.Z" }` — an internal dependency
+/// carrying the version pin `deny.toml`'s wildcard ban forces on it.
+fn is_internal_pin(line: &str) -> bool {
+    let t = line.trim_start();
+    !t.starts_with('#') && t.contains("path = \"") && t.contains("version = \"") && t.contains('{')
+}
+
+/// Every tracked `Cargo.toml`, from `git ls-files` rather than a directory
+/// walk.
+///
+/// A filesystem walk was the first attempt and it was wrong in a way only
+/// running it showed: this repository has sibling checkouts of ITSELF under
+/// `.claude/worktrees/`, so the walk found every other session's copy of
+/// `Cargo.toml` and reported each of their fourteen pins as a finding. Ninety
+/// false positives naming files that are not in this tree.
+///
+/// `git ls-files` is the definition this check actually wants — tracked, in
+/// this working tree, ignoring `target/`, `node_modules/` and every nested
+/// checkout for free — and it is the same command `release-please.yml` uses
+/// to find the lockfiles it refreshes.
+fn cargo_manifests(root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .args(["ls-files", "*Cargo.toml"])
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 #[cfg(test)]

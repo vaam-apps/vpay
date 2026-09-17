@@ -1505,12 +1505,27 @@ audit-web:
 # `verify-npm-scope` (its nearest relative in subject, not in date) for the
 # same reason every gate above it is where it is: the list is chronological.
 #
-# The twelve self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-docs
-    @echo "verify: ok — the twelve gates above passed; the verify-docs report is advisory"
+# The thirteen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-docs
+    @echo "verify: ok — the thirteen gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
+
+# Every version release-please owns agrees, and every line it must rewrite
+# still carries its `x-release-please-version` comment.
+#
+# The one that matters is not the obvious one. `deny.toml`'s `[bans]
+# wildcards = "deny"` forces every internal Cargo dependency to carry a
+# `version = "X.Y.Z"` beside its `path`, a bare "0.1.0" is `^0.1.0`, and a 0.x
+# caret range does not cross a minor boundary. There are FOURTEEN such pins —
+# eleven in the root manifest and three in member manifests, the latter found
+# only by running `cargo metadata`, not by reading. Miss one and the release
+# PR fails to resolve rather than merely looking stale. Adding a fifteenth
+# internal dependency is an ordinary thing to do and gives no hint that it has
+# armed that failure; this is what says so.
+verify-versions:
+    cargo xtask verify-versions
 
 # AGENTS.md rule 2: every `ProviderError::NotImplemented("…")` token in
 # shipping code is declared in docs/status.md, and every token declared there

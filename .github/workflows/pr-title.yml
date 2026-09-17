@@ -1,0 +1,97 @@
+name: pr-title
+
+# The pull request title must be a conventional commit.
+#
+# `AGENTS.md` § "Commits and PRs" has required conventional commits since
+# long before this file existed — one line, no enforcement. Adoption is
+# genuinely high (677 of 790 subjects, 86%), so this is formalising a
+# convention rather than introducing one. What changed is that the
+# convention is now load-bearing: `release-please.yml` reads commit subjects
+# and nothing else to decide whether there is a release and how big it is.
+#
+# A non-conventional subject is not rejected by release-please, it is
+# IGNORED. So a release containing it describes less than it shipped, and
+# the 14 subjects in the last 60 that do not match (`merge:`, `wip(scope):`,
+# raw `Merge pull request #N`) contribute nothing to any changelog.
+#
+# `wip` is deliberately NOT in the type list below. It is a real, repeated
+# convention for commits INSIDE a branch, and this check never looks at
+# those — only at the pull request title, which should never be `wip:`.
+#
+# Separate workflow rather than a job in `ci.yml`: a title is changed by
+# editing it, which raises `edited` and not `synchronize`, and teaching
+# `ci.yml` to listen for `edited` would re-run the Rust build, the web
+# build and the compose e2e suite every time somebody fixes a typo.
+#
+# A regex rather than a marketplace action, so there is no unpinned moving
+# dependency inside the gate.
+#
+# KNOWN GAP, stated rather than left to be discovered: this repository also
+# allows merge commits, and `merge_commit_title` is `MERGE_MESSAGE` — so a
+# PR merged that way lands as `Merge pull request #N from ...`, which this
+# check cannot influence and release-please ignores. For a merge-commit PR
+# it is the individual commit subjects that reach release-please. Squash
+# merging (title mode `PR_TITLE`) is the path this check actually covers.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    name: title is a conventional commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        env:
+          # Via the environment, never interpolated into the script body: a
+          # PR title is attacker-controlled text and `${{ }}` inside a `run:`
+          # is textual substitution, so a title with a quote and a semicolon
+          # would execute.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # The type list is exactly the one `release-please-config.json`
+          # declares changelog sections for. `feat` bumps the minor, `fix`
+          # and everything else the patch, `!` (or a `BREAKING CHANGE:`
+          # footer) the major — or the minor while the version is still 0.x,
+          # which is what `bump-minor-pre-major` selects.
+          PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9,._/ -]+\))?!?: .+'
+
+          if printf '%s' "$TITLE" | grep -qE "$PATTERN"; then
+            echo "OK — $TITLE"
+            exit 0
+          fi
+
+          {
+            echo "### Pull request title is not a conventional commit"
+            echo
+            echo '```'
+            echo "$TITLE"
+            echo '```'
+            echo
+            echo "It must start with one of \`feat\` \`fix\` \`docs\` \`style\`"
+            echo "\`refactor\` \`perf\` \`test\` \`build\` \`ci\` \`chore\` \`revert\`,"
+            echo "an optional \`(scope)\`, an optional \`!\` for a breaking change,"
+            echo "then \`: \` and a subject — the convention AGENTS.md already"
+            echo "requires. Scopes in use here include \`sdks/flutter\`,"
+            echo "\`checkout\`, \`dashboard\`, \`db\`, \`xtask\`; multi-scope works too."
+            echo
+            echo '```'
+            echo "fix(sdks/flutter,checkout): a swiped-away browser hung the sheet forever"
+            echo "feat(sdks/flutter)!: the checkout sheet is Material 3"
+            echo "ci: run each job only when its inputs change"
+            echo '```'
+            echo
+            echo "\`wip:\` is fine on a commit inside your branch; it is not a"
+            echo "pull request title. This title becomes the commit subject on"
+            echo "\`master\`, and it is the only thing release-please reads to"
+            echo "decide the next version. Edit it and this check re-runs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error title=Non-conventional PR title::${TITLE}"
+          exit 1

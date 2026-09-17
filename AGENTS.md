@@ -355,7 +355,12 @@ npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
 
 ## Commits and PRs
 
-- Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`).
+- Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`) — and
+  since release-please landed, the **pull request title** is the one that
+  matters, because this repository squash-merges with `PR_TITLE` and that
+  title becomes the commit subject on `master`. `.github/workflows/pr-title.yml`
+  enforces it. `wip:` stays fine on a commit inside your branch; it is not a
+  PR title.
 - A PR that changes behaviour updates the status pages and the relevant flow doc
   in the same PR. `docs/status.md` § "Where a new row goes" names the page for
   each kind of change; [docs/README.md](docs/README.md) is the index of the
@@ -364,6 +369,58 @@ npx skills add https://github.com/vaam-apps/vpay-skills --skill vpay
   against [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills) and
   links the two. See § "Docs↔skills parity" above for which skill.
 - `just ci` must pass locally before review.
+
+## Releasing
+
+Nobody hand-edits a version. Every merge to `master` updates a standing
+`chore: release X.Y.Z` pull request; merging it creates the `vX.Y.Z` tag, which
+is what `release.yml`'s `type=semver` path triggers on — a path that, until
+this existed, had never once been taken.
+
+**The trap, if you are ever tempted to bump a version by hand.** `deny.toml`'s
+`[bans] wildcards = "deny"` forces every internal Cargo dependency to carry a
+`version = "X.Y.Z"` beside its `path`. A bare `"0.1.0"` is `^0.1.0`, and a 0.x
+caret range does **not** cross a minor boundary — so moving
+`[workspace.package].version` to `0.2.0` while those stay behind does not look
+untidy, it fails to resolve:
+
+```
+error: failed to select a version for the requirement `vpay-core = "^0.1.0"`
+candidate versions found which didn't match: 0.2.0
+```
+
+There are **fourteen** such pins: eleven in the root manifest, and three more in
+`vpay-api`, `vpay-worker` and `backends/tests/integration` that were found only
+by running `cargo metadata`, not by reading. All eighteen version lines this
+repository owns carry an `x-release-please-version` comment, and
+`just verify-versions` (in `just ci`, via `verify`) fails if any is missing —
+including on a *new* internal dependency, which is the realistic way this gets
+armed for the next person.
+
+Deliberately not bumped, each for a stated reason: `Chart.yaml`'s own
+`version:` (the chart's separate lifecycle — its comment says "bumped by hand",
+and it is already ahead of the app), every `0.0.0` private package, the Flutter
+plugin's podspec/gradle boilerplate (`0.0.1` / `1.0-SNAPSHOT`, never wired to
+`pubspec.yaml` and already inconsistent with each other), and the Flutter
+example's `pubspec.lock` (nothing enforces it; `flutter pub get` rewrites it).
+
+**The first tag.** `.release-please-manifest.json` seeds `0.1.0` — what every
+manifest already says while unreleased — so the next release is `0.1.1` or
+`0.2.0`, *not* `0.1.0`. To make the first tag exactly `v0.1.0`, put
+`Release-As: 0.1.0` in a commit footer; release-please honours it. That is a
+maintainer's call.
+
+**Setup this needs once**: a GitHub App with `contents: write` and
+`pull-requests: write` on this repository, its id and private key stored as
+`RELEASE_PLEASE_APP_ID` / `RELEASE_PLEASE_APP_PRIVATE_KEY`. Not optional and
+not a fallback: GitHub raises no workflow events for anything done with the
+default `GITHUB_TOKEN`, so with it the tag would be created and `release.yml`
+would never run — no image built, none signed, and nothing failing to say so.
+
+**Known gap**: merge commits are still enabled, and `merge_commit_title` is
+`MERGE_MESSAGE`, so a PR merged that way lands as `Merge pull request #N …`,
+which release-please ignores; its individual commit subjects are what count.
+Squash is the path `pr-title.yml` actually covers.
 
 ## Before you open a PR
 

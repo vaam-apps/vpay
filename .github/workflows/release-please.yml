@@ -1,0 +1,191 @@
+name: release-please
+
+# Proposes the next release as a pull request, and cuts the tag when that
+# pull request merges. `release.yml` owns everything downstream of the tag.
+#
+# vpay has never been released: `git tag` was empty and `gh release list`
+# returned nothing when this landed, and `release.yml`'s own `type=semver`
+# path has therefore never been taken. This workflow is what makes that
+# path reachable without anyone hand-editing eighteen version lines.
+#
+# ---------------------------------------------------------------------------
+# What it bumps, and the one that breaks the build if you miss it
+# ---------------------------------------------------------------------------
+# Eighteen annotated lines, and twelve of them are not "the version" in the
+# obvious sense:
+#
+#   Cargo.toml:23                      [workspace.package] version
+#   Cargo.toml:453-462,468             ELEVEN internal dependency pins
+#   {vpay-api,vpay-worker,tests/integration}/Cargo.toml   three more pins
+#   deploy/helm/vpay/Chart.yaml:33     appVersion — NOT `version:` (see below)
+#   sdks/flutter/.../pubspec.yaml:7    the plugin version
+#   sdks/nodejs/src/version.ts:12      a hand-maintained duplicate
+#
+# The fourteen dependency pins are load-bearing. `deny.toml`'s `[bans]
+# wildcards = "deny"` forbids a path-only dependency, so every internal dep
+# carries `version = "0.1.0"` alongside its `path`. A bare `"0.1.0"` is
+# Cargo shorthand for `^0.1.0`, and a 0.x caret range does NOT cross a minor
+# boundary — so bumping the workspace version to 0.2.0 while those stay at
+# 0.1.0 does not merely look untidy, it fails to resolve:
+#
+#   error: failed to select a version for the requirement `vpay-core = "^0.1.0"`
+#   candidate versions found which didn't match: 0.2.0
+#
+# That was reproduced deliberately (`cargo metadata` exit 101) before these
+# annotations were written, and reproduced a second time when only the root
+# manifest's eleven were annotated and the three in member manifests were
+# not. With all fourteen annotated, the same simulated bump resolves cleanly.
+#
+# ---------------------------------------------------------------------------
+# Deliberately NOT bumped
+# ---------------------------------------------------------------------------
+#   - `deploy/helm/vpay/Chart.yaml`'s `version:` (line 28, currently 0.2.0).
+#     That is the CHART's own version on its own lifecycle — its own comment
+#     says "Bumped by hand", and it is already ahead of the app because the
+#     rendered output changed at issue #77 without the app moving. Only
+#     `appVersion` tracks a release.
+#   - Every `0.0.0` private package (`frontends/**`, `examples/**`,
+#     `sdks/stripe-compat`). They are `private: true` and nothing consumes
+#     their version; the container images they become are tagged from the git
+#     ref by `release.yml`, not from these manifests.
+#   - The Flutter plugin's `ios/macos` podspecs (`0.0.1`) and
+#     `android/build.gradle.kts` (`1.0-SNAPSHOT`). These are stock
+#     `flutter create --template=plugin` boilerplate, never wired to
+#     `pubspec.yaml`, and mutually inconsistent with each other already.
+#     Whether a release should touch them is a real question nobody has
+#     answered; guessing here would be the wrong kind of tidy.
+#   - `sdks/flutter/.../example/pubspec.lock`, which pins the plugin as a
+#     path dependency at its version. Nothing enforces it (no
+#     `--enforce-lockfile` anywhere) and `flutter pub get` rewrites it, so it
+#     self-heals on the next run. Syncing it here would mean installing the
+#     Flutter SDK in this workflow for one line.
+#
+# ---------------------------------------------------------------------------
+# Why a GitHub App token and not GITHUB_TOKEN
+# ---------------------------------------------------------------------------
+# GitHub raises no workflow events for anything done with the default
+# `GITHUB_TOKEN`. `release.yml` triggers on `push: tags: ["v*"]`, so with
+# `GITHUB_TOKEN` the tag would be created and **no image would ever be built
+# or signed** — and nothing would fail to say so. The release PR would also
+# get no `ci.yml` run. There is deliberately no fallback: a fallback
+# produces exactly that silent publish-nothing release.
+#
+# The App needs, on this repository only: `contents: write` and
+# `pull-requests: write`. Secrets: RELEASE_PLEASE_APP_ID,
+# RELEASE_PLEASE_APP_PRIVATE_KEY.
+#
+# ---------------------------------------------------------------------------
+# The first release
+# ---------------------------------------------------------------------------
+# `bootstrap-sha` in `release-please-config.json` is master's HEAD at
+# adoption. Without it, release-please finds no prior tag and scans back
+# `commit-search-depth` (500) commits — vpay has 790, 677 of them
+# conventional — producing an unreadable first changelog. With it, the first
+# release PR describes what landed after adoption, and the history before it
+# stays in `docs/`.
+#
+# `.release-please-manifest.json` seeds `0.1.0`, the version every manifest
+# already carries while unreleased. The next release is therefore 0.1.1 or
+# 0.2.0 depending on the commits, NOT 0.1.0. If the first tag should be
+# exactly `v0.1.0`, put `Release-As: 0.1.0` in a commit footer — release-please
+# honours it (`DefaultVersioningStrategy.determineReleaseType` looks for a
+# `RELEASE AS` note and returns a `CustomVersionUpdate`). That is a
+# maintainer's call, not this workflow's.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+# Never cancel a run that may be mid-way through force-pushing the release
+# branch and then pushing a lockfile onto it. Same reasoning `release.yml`'s
+# own `cancel-in-progress: false` gives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# The App token carries every write below; the workflow's own GITHUB_TOKEN
+# needs nothing beyond reading a checkout.
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: propose the next release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+      - name: Open or update the release PR
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Cargo.lock records all sixteen first-party crates at the workspace
+      # version. It cannot be annotated — it is generated, and third-party
+      # crates sit at the same version string, so a blind rewrite corrupts it.
+      #
+      # `ci.yml` does NOT gate on this today (`--locked` appears only on
+      # `cargo install` lines, and `backends/Dockerfile` documents why the
+      # real build skips it), so a stale lockfile would not go red — it would
+      # drift silently until someone's local build rewrote it into an
+      # unrelated PR. That is a worse failure than a red check, not a better
+      # one, which is why this step exists even without a gate demanding it.
+      #
+      # `prs_created` is true for an UPDATED release PR as well as a new one
+      # (the action sets it from `prs.length > 0`), which matters because
+      # release-please force-pushes that branch every run and would otherwise
+      # drop the previous run's lockfile commit.
+      - name: Check out the release branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          # Same App token, so the push below raises an event and the release
+          # PR gets a real ci.yml run.
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Rust
+        if: steps.release.outputs.prs_created == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.release.outputs.prs_created == 'true'
+
+      # Found only by running this, not by reading: `cargo metadata` is also
+      # what proves the fourteen dependency pins moved correctly. If any were
+      # missed it exits 101 here rather than at somebody's next `cargo build`.
+      - name: Refresh Cargo.lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          git ls-files '*Cargo.lock' | while read -r lock; do
+            dir="$(dirname "$lock")"
+            echo "::group::cargo metadata in ${dir}"
+            (cd "$dir" && cargo metadata --format-version 1 > /dev/null)
+            echo "::endgroup::"
+          done
+
+      - name: Commit the lockfile, if the version bump moved it
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- '*Cargo.lock'; then
+            echo "no lockfile changed — nothing to push"
+            exit 0
+          fi
+          git config user.name  'release-please[bot]'
+          git config user.email 'release-please[bot]@users.noreply.github.com'
+          git add -- '*Cargo.lock'
+          git commit -m 'chore: sync Cargo.lock with the release version'
+          git push
+          echo "### Lockfile synced" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"

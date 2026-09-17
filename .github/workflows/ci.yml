@@ -496,6 +496,15 @@ jobs:
       # recipe and this workflow from drifting.
       - name: verify-migrations (applied migrations are immutable)
         run: just verify-migrations
+
+      # Every version release-please owns agrees, and every annotated line it
+      # must rewrite still carries its comment. Nothing else checks this:
+      # `release.yml` derives its Docker tag from the git ref and never
+      # compares it against a manifest, so a half-bumped tree is invisible
+      # until a release actually breaks. See .xtask/src/main.rs's
+      # `verify_versions`.
+      - name: verify-versions (release-please's bump is complete)
+        run: just verify-versions
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,
