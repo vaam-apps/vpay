@@ -370,14 +370,24 @@ the value to `@vaam-apps/vpay-stripe-js` in the browser and never logs it.
   against the real compose stack: mints an intent server-side (Node, the
   `demo-merchant` OAuth keypair, never in the browser) via
   `cy.task('mintCheckoutPaymentIntent')`, visits the page, confirms an MTN
-  push with MSISDN `237600000ce0` (the same number `examples/merchant-demo`
-  uses for its first outcome — `Steering::Msisdn("237600000ce0")` in
-  `OUTCOMES[0]` since Step 8; the constant was called `DEMO_MSISDN` until then,
-  and only the name changed — keying WireMock scenario `mtn-e2e-poll`), and asserts the
-  rendered status reaches `succeeded` once `vpay-worker` — running in the
-  stack, not stubbed — settles the charge. Added to `.github/workflows/ci.yml`'s
-  `e2e` job. See `docs/status.md` for whether this run's own output is
-  attached to the current pass or still pending.
+  push with MSISDN `237670000900` (keying WireMock scenario `mtn-e2e-poll`),
+  and asserts the rendered status reaches `succeeded` once `vpay-worker` —
+  running in the stack, not stubbed — settles the charge. Added to
+  `.github/workflows/ci.yml`'s `e2e` job. See `docs/status.md` for whether
+  this run's own output is attached to the current pass or still pending.
+
+  **The number changed on 2026-09-17**, and the reason outlives the edit. It
+  was `237600000ce0`, a hex steering code shared with
+  `examples/merchant-demo`'s `OUTCOMES[0]`, and since
+  [#186](https://github.com/vaam-apps/vpay/issues/186) put real phone
+  validation on the confirm path, nothing in the `2376000000xx` block
+  survives it — `60` is not a Cameroon mobile prefix, and the letters are a
+  red herring, because libphonenumber's keypad mapping turns `ce0` into
+  `230`, so the number parses and is then refused as _not valid_ rather than
+  as malformed. The same change moved `sdks/rust/tests/live_refunds.rs` and
+  `sdks/nodejs/src/refunds.live.test.ts`, whose `PAYER_MSISDN` is also a
+  confirm. `examples/merchant-demo` still carries the old codes and is
+  expected to fail the same way; nothing in CI runs it.
 
 Nothing above has ever taken real money: both rails are WireMock hosts on a
 compose network, same as everywhere else in this repository. That is as true of
