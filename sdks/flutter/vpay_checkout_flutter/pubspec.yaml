@@ -1,18 +1,16 @@
 name: vpay_checkout_flutter
 description: >-
-  A payer-facing checkout surface for vpay: opens the hosted checkout page
-  in a native window and reports a typed result once a payment intent
-  actually settles. Not a way to unlock in-app content — see the README's
-  App Store / Play Store section before using externalBrowser mode.
-version: 0.1.0 # x-release-please-version
+  A payer-facing checkout surface for vpay: opens the hosted checkout page in a
+  native window and reports a typed result once a payment intent actually
+  settles. Not a way to unlock in-app content — see the README's App Store /
+  Play Store section before using externalBrowser mode.
+version: 0.1.1
 homepage: https://github.com/vaam-apps/vpay
 repository: https://github.com/vaam-apps/vpay
-publish_to: none # not published yet (2026-09-13) — see docs/sdks/parity.md
-
+publish_to: none
 environment:
   sdk: ^3.13.0
-  flutter: ">=3.47.0"
-
+  flutter: '>=3.47.0'
 dependencies:
   flutter:
     sdk: flutter
@@ -21,24 +19,11 @@ dependencies:
   http: ^1.2.0
   web: ^1.0.0
   shared_preferences: ^2.3.0
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
   pigeon: ^29.0.0
-
-# Lane C (docs/plans/2026-09-13-flutter-plugin-brief.md) built
-# `android/`, `ios/`, `macos/` and the web implementation, so this block now
-# names them. One Dart class — `MethodChannelVpayCheckoutPlatform`
-# (`lib/src/platform/method_channel_checkout_platform.dart`) — answers
-# android/ios/macos alike: the channel it speaks
-# (`pigeons/checkout.dart`) is identical on each, and what differs
-# (`VpayCheckoutActivity` vs. `VpayCheckoutViewController`, design doc D5)
-# lives entirely on the native side of it. Web gets its own implementation
-# (`lib/src/platform/web_checkout_platform.dart`) because there is no native
-# window there at all — `window.open` and the popup path (design doc D5,
-# "Web").
 flutter:
   plugin:
     platforms:

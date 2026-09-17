@@ -143,4 +143,4 @@ sqlx.workspace = true
 # `[workspace.dependencies]` does not list it. `version` is required
 # alongside `path` because `deny.toml` sets `wildcards = "deny"` and a
 # path-only requirement fails that gate.
-vpay-sdk = { path = "../../../sdks/rust", version = "0.1.0" } # x-release-please-version
+vpay-sdk = { path = "../../../sdks/rust", version = "0.1.1" } # x-release-please-version
