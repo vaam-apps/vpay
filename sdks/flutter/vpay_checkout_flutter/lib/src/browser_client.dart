@@ -248,9 +248,10 @@ final class BrowserClient {
       '$baseUrl/v1/browser/payment_intents/${Uri.encodeComponent(parsed.id)}/confirm',
     );
     final Map<String, String> paymentMethodData = <String, String>{
-      'payment_method_data[type]': railCode,
+      _bracketKey(<String>['payment_method_data', 'type']): railCode,
       for (final MapEntry<String, String> field in payerFields.entries)
-        'payment_method_data[$railCode][${field.key}]': field.value,
+        _bracketKey(<String>['payment_method_data', railCode, field.key]):
+            field.value,
     };
     final String body = _encodeForm(<String, String>{
       'key': publishableKey,
@@ -335,16 +336,47 @@ final class BrowserClient {
     );
   }
 
-  /// `application/x-www-form-urlencoded`, percent-encoding both the key and
-  /// the value of every already-bracketed field — `form.ts`'s own table,
-  /// restated for the flat `Map<String, String>` [confirmPaymentIntent]
-  /// already has by the time it calls this (the bracket nesting is built by
-  /// hand there, not by this function, since the only nested shape this
-  /// package ever sends is one level of `payment_method_data[…][…]`).
+  /// A nested field name in `form.ts`'s bracket syntax — three path
+  /// [segments] (`payment_method_data`, a rail code, a field name) become
+  /// `payment_method_data[<rail code>][<field name>]`.
+  ///
+  /// **The brackets are structural and must reach the wire literal,
+  /// unencoded; only each segment's own content is percent-encoded.**
+  /// `backends/crates/vpay-api/src/form.rs`'s own parser splits a raw key on
+  /// literal `[`/`]` *before* percent-decoding anything (its module doc:
+  /// "the split happens before any decoding") — the same rule
+  /// `form.ts`'s own doc states for the encoder's side of this contract.
+  /// Percent-encoding the brackets themselves (`%5B`/`%5D`) was a real bug
+  /// here until 2026-09-17, found on a real device against a real server: the
+  /// server's parser saw one flat key
+  /// (`payment_method_data%5Btype%5D`, decoded to the single string
+  /// `payment_method_data[type]`) instead of a nested `payment_method_data
+  /// -> type` path, and refused the confirm with "A confirm needs the
+  /// payment method to use, sent as `payment_method_data[type]`." —
+  /// `test/browser_client_test.dart`'s own coverage had used
+  /// `Uri.splitQueryString` to read the request back, which decodes the
+  /// whole key *before* handing it to the assertion and so could not have
+  /// caught this; the fixed test now also asserts on the literal wire bytes
+  /// (`request.body`) directly.
+  String _bracketKey(List<String> segments) {
+    final String head = Uri.encodeQueryComponent(segments.first);
+    final String rest = segments
+        .skip(1)
+        .map((String s) => '[${Uri.encodeQueryComponent(s)}]')
+        .join();
+    return '$head$rest';
+  }
+
+  /// `application/x-www-form-urlencoded`. [fields]' keys are already
+  /// wire-ready — either a plain identifier (`key`, `client_secret`,
+  /// `return_url`) or the output of [_bracketKey] — so only the *value* is
+  /// percent-encoded here; encoding the key a second time would re-encode
+  /// (or, for a [_bracketKey] result, corrupt) it. See [_bracketKey]'s own
+  /// doc comment for why the two cannot share one encoding step.
   String _encodeForm(Map<String, String> fields) => fields.entries
       .map(
         (MapEntry<String, String> e) =>
-            '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+            '${e.key}=${Uri.encodeQueryComponent(e.value)}',
       )
       .join('&');
 

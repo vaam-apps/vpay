@@ -396,6 +396,24 @@ void main() {
       expect(result.isError, isFalse);
       expect(seenUri!.path, '/v1/browser/payment_intents/pi_123/confirm');
       expect(seenContentType, 'application/x-www-form-urlencoded');
+
+      // The DECISIVE assertion, on the literal wire bytes: the structural
+      // brackets must reach the server unencoded — `payment_method_data[type]`,
+      // never `payment_method_data%5Btype%5D`. `Uri.splitQueryString` below
+      // decodes the whole key before an assertion ever sees it, so it
+      // cannot tell the two apart; that gap was measured for real on
+      // 2026-09-17 (`_bracketKey`'s own doc comment) — every assertion in
+      // this test passed against a MockClient while the real server refused
+      // every confirm with "A confirm needs the payment method to use,
+      // sent as `payment_method_data[type]`.". This line is what closes it.
+      expect(seenBody, contains('payment_method_data[type]=mtn_momo'));
+      expect(
+        seenBody,
+        contains('payment_method_data[mtn_momo][msisdn]=237690000000'),
+      );
+      expect(seenBody, isNot(contains('%5B')));
+      expect(seenBody, isNot(contains('%5D')));
+
       final Map<String, String> form = Uri.splitQueryString(seenBody!);
       expect(form['key'], 'pk_test_1');
       expect(form['client_secret'], _piSecret);
