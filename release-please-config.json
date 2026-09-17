@@ -62,13 +62,34 @@
         }
       ],
       "extra-files": [
-        "Cargo.toml",
-        "backends/tests/integration/Cargo.toml",
-        "backends/crates/vpay-worker/Cargo.toml",
-        "backends/crates/vpay-api/Cargo.toml",
-        "deploy/helm/vpay/Chart.yaml",
-        "sdks/flutter/vpay_checkout_flutter/pubspec.yaml",
-        "sdks/nodejs/src/version.ts",
+        {
+          "type": "generic",
+          "path": "Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "backends/tests/integration/Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "backends/crates/vpay-worker/Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "backends/crates/vpay-api/Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "deploy/helm/vpay/Chart.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "sdks/flutter/vpay_checkout_flutter/pubspec.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "sdks/nodejs/src/version.ts"
+        },
         {
           "type": "json",
           "path": "sdks/nodejs/package.json",

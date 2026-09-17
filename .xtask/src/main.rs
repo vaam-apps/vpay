@@ -7790,15 +7790,41 @@ fn verify_versions(root: &Path) -> Result<(), String> {
     ))
 }
 
-/// The `extra-files` entries: bare-string paths, and every object-form `path`.
+/// The `extra-files` entries, split by updater type — and a hard refusal of
+/// the bare-string form.
 ///
-/// Parsed line by line rather than with a JSON library, matching the rest of
-/// this file. A reformat that collapses the array finds nothing and is
-/// reported as an error rather than passing vacuously.
+/// # Why a bare string is refused rather than accepted
+///
+/// It looks like the obvious spelling and it is a trap. release-please's
+/// `base.ts` does NOT give a bare string the Generic (annotation-only)
+/// updater; it infers an updater from the file extension:
+///
+/// ```text
+/// .json        -> CompositeUpdater(GenericJson('$.version'),  Generic)
+/// .yaml/.yml   -> CompositeUpdater(GenericYaml('$.version'),  Generic)
+/// .toml        -> CompositeUpdater(GenericToml('$.version'),  Generic)
+/// .xml         -> CompositeUpdater(GenericXml('/*/version'),  Generic)
+/// anything else-> Generic
+/// ```
+///
+/// `GenericYaml` reparses the document and re-serialises it. On the v0.1.1
+/// release that turned `deploy/helm/vpay/Chart.yaml` from 48 lines into 13 —
+/// every comment destroyed, including the one explaining that `version:` is
+/// the chart's own hand-bumped lifecycle. It then set that `version:` (0.2.0
+/// -> 0.1.1, a downgrade) because `$.version` is the top-level key, and left
+/// `appVersion` — the field actually annotated — untouched, because the
+/// annotation had just been serialised away. `pubspec.yaml` lost its comments
+/// the same way.
+///
+/// `{"type": "generic", "path": …}` routes to `case 'generic'` and runs the
+/// Generic updater alone. That is the only form this repository allows, so
+/// the next `.yaml` file added here cannot repeat it.
 fn release_please_extra_files(config: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let mut generic = Vec::new();
     let mut json_paths = Vec::new();
+    let mut pending_type: Option<String> = None;
     let mut inside = false;
+
     for line in config.lines() {
         if line.contains("\"extra-files\"") {
             inside = true;
@@ -7811,28 +7837,43 @@ fn release_please_extra_files(config: &str) -> Result<(Vec<String>, Vec<String>)
             break;
         }
         let trimmed = line.trim().trim_end_matches(',');
-        if let Some(rest) = trimmed.strip_prefix("\"path\":") {
-            if let Some(v) = unquote(rest.trim()) {
-                json_paths.push(v);
+
+        if let Some(rest) = trimmed.strip_prefix("\"type\":") {
+            pending_type = unquote(rest.trim());
+        } else if let Some(rest) = trimmed.strip_prefix("\"path\":") {
+            let Some(path) = unquote(rest.trim()) else {
+                continue;
+            };
+            match pending_type.take().as_deref() {
+                Some("generic") => generic.push(path),
+                Some("json") => json_paths.push(path),
+                Some(other) => {
+                    return Err(format!(
+                        "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has type {other:?}. Only \"generic\" and \"json\" are used here; anything else either reparses the file or needs this check taught about it"
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} has no \"type\". It must be declared explicitly — see this function's own doc comment"
+                    ));
+                }
             }
         } else if !trimmed.contains(':') && trimmed.matches('"').count() == 2 {
-            // A bare-string entry is a whole line that is nothing but one
-            // quoted path. Without the `:` test this also matched the object
-            // form's own `"type": "json"` key and tried to open a file called
-            // `type` — caught by running it, not by reading it.
-            if let Some(v) = unquote(trimmed) {
-                generic.push(v);
-            }
+            let path = unquote(trimmed).unwrap_or_else(|| trimmed.to_owned());
+            return Err(format!(
+                "{RELEASE_PLEASE_CONFIG}: extra-files entry {path} is a BARE STRING. release-please picks an updater from the file extension for those, and a .yaml/.yml one gets GenericYaml('$.version'), which reparses and re-serialises the document — it destroyed this repo's Chart.yaml (48 lines -> 13, every comment gone) on the v0.1.1 release. Write it as {{\"type\": \"generic\", \"path\": \"{path}\"}} instead"
+            ));
         }
     }
+
     if generic.is_empty() {
         return Err(format!(
-            "{RELEASE_PLEASE_CONFIG}: found no bare-string extra-files entries. This parser is line-based; if the config was reformatted, reformat it back or teach the parser the new shape — do not leave the check passing vacuously"
+            "{RELEASE_PLEASE_CONFIG}: found no `type: generic` extra-files entries. This parser is line-based; if the config was reformatted, reformat it back or teach the parser the new shape — do not leave the check passing vacuously"
         ));
     }
     if json_paths.is_empty() {
         return Err(format!(
-            "{RELEASE_PLEASE_CONFIG}: found no object-form extra-files entry with a \"path\""
+            "{RELEASE_PLEASE_CONFIG}: found no `type: json` extra-files entry"
         ));
     }
     Ok((generic, json_paths))

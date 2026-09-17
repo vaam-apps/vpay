@@ -420,6 +420,28 @@ not a fallback: GitHub raises no workflow events for anything done with the
 default `GITHUB_TOKEN`, so with it the tag would be created and `release.yml`
 would never run — no image built, none signed, and nothing failing to say so.
 
+**A bare-string `extra-files` entry is a trap, and it cost this repo its
+Chart.yaml once.** release-please does not give a bare string the
+annotation-only Generic updater — `base.ts` infers an updater from the file
+extension, and `.yaml`/`.yml` gets
+`CompositeUpdater(GenericYaml('$.version'), Generic)`. `GenericYaml` reparses
+and re-serialises the document. On the **v0.1.1** release that turned
+`deploy/helm/vpay/Chart.yaml` from 48 lines into 13 — every comment gone,
+including the one explaining that `version:` is the chart's own hand-bumped
+lifecycle — then set that `version:` from 0.2.0 to 0.1.1 (a downgrade) because
+`$.version` is the top-level key, and left `appVersion` untouched because the
+`x-release-please-version` annotation had just been serialised away.
+`sdks/flutter/.../pubspec.yaml` lost its comments the same way.
+
+`vsms` escaped only by luck: its two `.yaml` extra-files are compose files,
+which have no top-level `version:` key, so `GenericYaml` found nothing to
+change and left them alone.
+
+Every entry is therefore written as `{"type": "generic", "path": …}`, which
+routes to release-please's `case 'generic'` and runs the Generic updater
+alone. `cargo xtask verify-versions` **refuses** a bare string outright, naming
+this incident, so the next `.yaml` file added here cannot repeat it.
+
 **Known gap**: merge commits are still enabled, and `merge_commit_title` is
 `MERGE_MESSAGE`, so a PR merged that way lands as `Merge pull request #N …`,
 which release-please ignores; its individual commit subjects are what count.
