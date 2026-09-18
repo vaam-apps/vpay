@@ -432,7 +432,33 @@ final class SheetController extends ChangeNotifier {
     // for — see this file's own module doc comment for why the two-machine
     // web design never needed one.
     _resumePollingAfterRedirectReturn(redirecting);
-    await _pollLoop();
+
+    // Ask once, then let the reducer decide, instead of assuming "waiting"
+    // and looping. `_pollUntilTerminal` does not treat `requires_action` as
+    // terminal — correctly, since it is not an outcome — so a payer who
+    // came back WITHOUT finishing would otherwise sit on the waiting
+    // spinner for the whole poll budget while the one status that mattered
+    // was already known. One read answers "did they actually pay?", and
+    // `_afterIntentResult` turns it into the honest screen: an outcome if
+    // the rail settled, [CheckoutResumeRedirect] if the payer still has the
+    // redirect to finish, [CheckoutWaiting] only when the rail really is
+    // still moving.
+    //
+    // D1 is preserved: the answer still comes from a status read, never
+    // from the navigation or the dismissal.
+    final PaymentIntentResult onReturn = await client.retrievePaymentIntent(
+      redirecting.context.intent.clientSecret,
+    );
+    if (onReturn.isError) {
+      // Learnt nothing — fall through to the poll loop, which is the same
+      // "keep asking" answer this file gives any unanswered read.
+      await _pollLoop();
+      return;
+    }
+    await _afterIntentResult(onReturn.paymentIntent!);
+    if (_state is CheckoutWaiting) {
+      await _pollLoop();
+    }
   }
 
   /// Constructs a [CheckoutWaiting] directly from [redirecting] rather than

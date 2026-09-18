@@ -642,6 +642,25 @@ CheckoutScreenState _afterIntentUpdate(
       reason: outcome.reason,
     );
   }
+  // A poll that comes back `requires_action` means the payer still has a
+  // redirect to finish — the same reasoning as `stateForContext`'s own
+  // branch, and it has to be repeated here because this function is how a
+  // POLL result becomes a screen. Without it the reducer's split only
+  // reached a fresh read, and a payer returning from the rail's page fell
+  // into the waiting spinner anyway — which is exactly what happened on a
+  // device on 2026-09-18, with the unit tests green.
+  final String? url = intent.redirectUrl;
+  if (intent.status == PaymentIntentStatus.requiresAction && url != null) {
+    return CheckoutResumeRedirect(
+      context: next,
+      rails: railChoices(
+        next.session.rails,
+        allowedMethods: next.allowedMethods,
+      ),
+      url: url,
+      rail: rail,
+    );
+  }
   return CheckoutWaiting(context: next, rail: rail, notice: null);
 }
 
