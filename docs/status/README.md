@@ -48,7 +48,13 @@ the order they were measured.
   `/__admin/health` at the pinned 3.9.2 tag returns a hardcoded 200 and proves
   nothing about the stub tree — `start_wiremock` now waits for a positive
   `meta.total` on the mapped host port, and `compose.yml`'s claim to the
-  contrary is struck through. No assertion weakened, nothing ignored.
+  contrary is struck through. No assertion weakened, nothing ignored. With
+  the aliases in place `just test-rust` then reached **2002 passed, 0
+  skipped, exit 0** — the recipe verbatim, which it could not do before. A
+  **fourth** defect surfaced on the way and is named rather than half-fixed:
+  testcontainers' `PortNotExposed`, about once per full run, whose Postgres
+  half lives at fourteen-plus call sites and would need the sweep AGENTS.md
+  forbids.
 - [verification/2026-09-16-privacy-inventory-gate.md](verification/2026-09-16-privacy-inventory-gate.md) —
   the personal-data inventory of issue #144 and `verify-privacy-inventory`, the
   fourteenth gate; amended 2026-09-17 with the `DROP TABLE` hole that let both

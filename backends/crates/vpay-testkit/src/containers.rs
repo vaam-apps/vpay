@@ -249,10 +249,54 @@ pub async fn start_wiremock(
     })
     .await?;
 
-    let port = container.get_host_port_ipv4(WIREMOCK_PORT).await?;
+    let port = mapped_port(&container).await?;
     wait_for_mappings_loaded(port).await?;
 
     Ok(container)
+}
+
+/// The container's host port for [`WIREMOCK_PORT`], waiting out a mapping
+/// that Docker has not published yet rather than failing on it.
+///
+/// # Why this is not a bare `get_host_port_ipv4`
+///
+/// `ContainerAsync::get_host_port_ipv4` reads the port map out of a fresh
+/// `docker inspect` and answers `PortNotExposed` when the port is not in it.
+/// That is a **momentary** state on a loaded Docker Desktop VM: the container
+/// is up — its own healthcheck has already passed by the time this runs — and
+/// the published binding is simply not in the daemon's answer yet. Measured
+/// on this repository's own suite, 2026-09-18: across five full
+/// `cargo nextest run --workspace` invocations, three separate cases died on
+/// `PortNotExposed`/`container port`, two of them for `Tcp(8080)` here and one
+/// for Postgres' `Tcp(5432)` elsewhere. `.config/nextest.toml`'s own comments
+/// have been bounding this family of failure since the file was written.
+///
+/// It matters more here than it did before this function existed, and that is
+/// the honest reason it exists: until 2026-09-18 `start_wiremock` handed the
+/// container back and every caller asked for the port itself, a little later
+/// and with no retry at all. Asking for it *inside* `start_wiremock` — which
+/// [`wait_for_mappings_loaded`] needs — moves the question earlier, into
+/// exactly the window where the answer is most likely to be missing. Retrying
+/// closes that window for every caller at once instead of reopening it for
+/// each.
+///
+/// Bounded by the same deadline and cadence as the mappings probe below, for
+/// the same reason: a container whose port is still unpublished seconds after
+/// its healthcheck passed has a real problem, and the deadline lets that
+/// through instead of hiding it.
+///
+/// # Errors
+///
+/// The last error the port lookup gave, once the deadline has passed.
+async fn mapped_port(container: &ContainerAsync<GenericImage>) -> Result<u16, TestcontainersError> {
+    let started = Instant::now();
+    loop {
+        match container.get_host_port_ipv4(WIREMOCK_PORT).await {
+            Ok(port) => return Ok(port),
+            Err(error) if started.elapsed() >= MAPPINGS_READY_DEADLINE => return Err(error),
+            Err(_) => tokio::time::sleep(MAPPINGS_POLL_INTERVAL).await,
+        }
+    }
 }
 
 /// Blocks until `port`'s `/__admin/mappings` reports at least one loaded

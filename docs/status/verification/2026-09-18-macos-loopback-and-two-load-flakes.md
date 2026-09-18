@@ -1,27 +1,34 @@
-# 2026-09-18 — `just test-rust` on a Mac: four deterministic failures and two load flakes
+# 2026-09-18 — `just test-rust` on a Mac: four deterministic failures, two load flakes, and a third left named
 
-**No capability moved, and no assertion was weakened.** Three separate defects
-in how this repository's Rust suite runs, found by running
-`cargo nextest run --workspace` three times on a macOS developer machine on
-2026-09-18. The branch they were found on touches no file under `backends/`, so
-none of them is caused by the code under review — they were always there, and
-CI cannot see any of them.
+**No capability moved, and no assertion was weakened.** Three defects in how
+this repository's Rust suite runs, fixed; and a **fourth**, found only once the
+first three were out of the way, named in § 4 and deliberately not fixed. All
+found by running `cargo nextest run --workspace` on a macOS developer machine on
+2026-09-18 — seven full invocations by the end. The branch they were found on
+touches no file under `backends/`, so none of them is caused by the code under
+review — they were always there, and CI cannot see any of them.
+
+**`just test-rust` now reaches `2002 tests run: 2002 passed, 0 skipped` on this
+machine**, the recipe verbatim, which it could not do when this started. It took
+one host-setup command (`just loopback-aliases`) that this change also adds.
 
 Nothing here is `#[ignore]`d. `just verify-ignored`'s `expected_ignored` is
 still `0` and this page does not move it.
 
-## The three, and what they have in common
+## The four, and what they have in common
 
 | #   | Shape                                 | Where                                                     | Visible in CI?   |
 | --- | ------------------------------------- | --------------------------------------------------------- | ---------------- |
 | 1   | four **deterministic** macOS failures | `backends/tests/integration/tests/staff_sign_in.rs`       | no — CI is Linux |
 | 2   | one **load** flake, ~1 run in 3       | `backends/tests/integration/tests/checkout_sessions.rs`   | not yet seen     |
 | 3   | one **load** flake, ~1 run in 3       | `backends/tests/conformance/tests/adapter_conformance.rs` | not yet seen     |
+| 4   | `PortNotExposed`, ~1 per full run     | testcontainers' port map, workspace-wide                  | not yet seen     |
 
-All three are the same species: **a test asked a question whose answer depended
+All four are the same species: **a test asked a question whose answer depended
 on something it had not actually waited for, or had not actually got.** Two
-waited on a clock or a container; one waited on a network interface that was
-never going to appear.
+waited on a clock or a container, one on a port map, and one on a network
+interface that was never going to appear. Only the fourth is left standing, for
+the reason § 4 gives.
 
 ---
 
@@ -291,28 +298,83 @@ satisfiable everywhere it is used.
 
 ---
 
+## 4. A fourth defect, found by fixing the first three, and NOT fixed here
+
+Once the four macOS cases could pass, `just test-rust` still could not reach a
+total — for a reason that has nothing to do with any of the three above.
+Across runs 4, 5 and 6, three different tests died on the **same** testcontainers
+error:
+
+```text
+Error: container port
+
+Caused by:
+    container '…' does not expose port 5432/tcp
+```
+
+`PortNotExposed`. The container is up — for Postgres, `start_postgres_with_retry`
+has already waited for it — and the published port binding is simply not in the
+daemon's `inspect` answer yet on a loaded Docker Desktop VM. It is the family
+`.config/nextest.toml`'s comments have been bounding since that file was
+written, and it is **pre-existing**: it is reached through
+`container.get_host_port_ipv4(5432)`, which this change does not touch.
+
+### What was fixed, and why only half
+
+`start_wiremock` hit the same thing on `Tcp(8080)` — twice, in runs 2 and 4 —
+and there the fix was cheap and belonged here, because **this change is what
+moved the question earlier**. Until 2026-09-18 `start_wiremock` handed the
+container back and each caller asked for the port itself, later and with no
+retry; [`wait_for_mappings_loaded`] needs the port inside `start_wiremock`, which
+puts the lookup in exactly the window where the answer is most often missing.
+`mapped_port` now retries it on the same deadline and cadence as the mappings
+probe. No `Tcp(8080)` failure has been seen since, across runs 6 and 7.
+
+### Why the Postgres half is left alone
+
+There is no chokepoint to fix. Postgres' port is resolved by
+`container.get_host_port_ipv4(5432)` at **fourteen-plus call sites** across
+`vpay-db`'s own test modules and test files — `ledger.rs`,
+`config_reconcile.rs`, five `schema/search_*.rs` modules, `tests/postgres.rs`,
+`tests/repositories.rs` and more — each with its own container handle. Giving
+them a shared retry means either changing `start_postgres_with_retry`'s
+signature or editing every one of them, and [AGENTS.md](../../../AGENTS.md)'s
+migration rule is explicit: existing code is migrated **as it is touched**, and
+**"Do not open a sweep."** This change touches none of those files.
+
+So it is named here rather than half-fixed: a real, reproducible, pre-existing
+flake, hit roughly once per full-workspace run on this machine, with a known
+mechanism and a known shape of fix. **Run 7 was green with it still present** —
+it is a flake, not a certainty — and it is the next thing to fix if a green
+local run needs to be dependable rather than likely.
+
+---
+
 ## Evidence
 
 All on this branch, macOS (Darwin 25.6.0), Docker Desktop, 2026-09-18.
 
 ### The gates
 
-| Command                                                      | Result                                                                              |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| `cargo fmt --all -- --check`                                 | clean                                                                               |
-| `just clippy`                                                | `--workspace --all-targets -- -D warnings`, no warnings                             |
-| `just verify`                                                | `ok — the thirteen gates above passed; the verify-docs report is advisory`          |
-| `cargo xtask verify-status`                                  | `ok — 1 unimplemented item(s)` — **unchanged**; this retires no token               |
-| `cargo xtask verify-links`                                   | `ok — 1720 repository link(s) in 400 tracked markdown file(s)`                      |
-| `just verify-ignored`                                        | `0 ignored (expected 0), 48 test binaries (expected 48), 2002 total (minimum 1080)` |
-| `just test-doc`                                              | **121 passed, 0 failed, 1 ignored** — a separate runner from nextest                |
-| `node tools/verify-coverage.mjs` (vpay-skills, companion PR) | exit 0 — `20 skills, 205 vpay paths claimed, 45 feature pages, 0 exempt`            |
+| Command                                                      | Result                                                                                                 |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `cargo fmt --all -- --check`                                 | clean                                                                                                  |
+| `just clippy`                                                | `--workspace --all-targets -- -D warnings`, no warnings                                                |
+| `just verify`                                                | `ok — the thirteen gates above passed; the verify-docs report is advisory`                             |
+| `cargo xtask verify-status`                                  | `ok — 1 unimplemented item(s)` — **unchanged**; this retires no token                                  |
+| `cargo xtask verify-links`                                   | `ok — 1720 repository link(s) in 400 tracked markdown file(s)`                                         |
+| `just verify-ignored`                                        | `0 ignored (expected 0), 48 test binaries (expected 48), 2002 total (minimum 1080)`                    |
+| `just test-doc`                                              | **121 passed, 0 failed, 1 ignored** — a separate runner from nextest                                   |
+| `just loopback-aliases`                                      | added all ten addresses to `lo0`; `ifconfig lo0` then listed `127.0.0.1` plus `.2 .3 .4 .20 .30`–`.35` |
+| `node tools/verify-coverage.mjs` (vpay-skills, companion PR) | exit 0 — `20 skills, 205 vpay paths claimed, 45 feature pages, 0 exempt`                               |
 
 ### The runs
 
-`just test-rust` is `cargo nextest run --workspace`, which **fails fast**. With
-four cases red by design on an unaliased Mac it therefore cannot reach a total,
-so runs 2 and 3 add `--no-fail-fast` — the only difference from the recipe.
+`just test-rust` is `cargo nextest run --workspace`, which **fails fast**. Runs
+1 to 3 were taken on an **unaliased** machine, where four cases are red by
+design, so the recipe could not reach a total and runs 2 and 3 add
+`--no-fail-fast` — the only difference from the recipe. Runs 4 and 5 were taken
+after `just loopback-aliases`, and are the recipe verbatim.
 
 | Run                                   | Summary                                                     |
 | ------------------------------------- | ----------------------------------------------------------- |
@@ -320,6 +382,22 @@ so runs 2 and 3 add `--no-fail-fast` — the only difference from the recipe.
 | 2 — `--no-fail-fast`, 1276 s          | `2002 tests run: 1995 passed (1 slow), 7 failed, 0 skipped` |
 | 3 — `--no-fail-fast`, 1200 s          | `2002 tests run: 1997 passed, 5 failed, 0 skipped`          |
 | `--test staff_sign_in --no-fail-fast` | `27 tests run: 23 passed, 4 failed, 0 skipped`              |
+
+Then `just loopback-aliases` was run with a password at the terminal, and the
+same suite was measured again — the branch that could not be reached before:
+
+| Run                                   | Summary                                              |
+| ------------------------------------- | ---------------------------------------------------- |
+| `--test staff_sign_in --no-fail-fast` | **`27 tests run: 27 passed, 0 skipped`**             |
+| 4 — `just test-rust` verbatim         | `1634/2002 tests run: 1633 passed, 1 failed` — § 4   |
+| 5 — `just test-rust` verbatim         | `1522/2002 tests run: 1521 passed, 1 failed` — § 4   |
+| _`mapped_port` added here_            |                                                      |
+| 6 — `just test-rust` verbatim         | `1743/2002 tests run: 1742 passed, 1 failed` — § 4   |
+| 7 — `just test-rust` verbatim, 1158 s | **`2002 tests run: 2002 passed, 0 skipped`, exit 0** |
+
+**Run 7 is the point of this page.** `just test-rust`, the recipe verbatim, no
+flags, reaching a total with nothing red — which is what could not be done on
+this machine when the work started.
 
 Run 1 was cancelled at 1925 by the first macOS bind failure, which is what
 fail-fast does; both cases this page fixes had already run and passed by then.
@@ -377,6 +455,10 @@ change touches.
   reachable by the path that produced the failure. The sweep case can no longer
   exit on a first empty claim at all, and no rail request can now be issued
   against a WireMock that reports zero mappings.
-- **It does not verify the four sign-in cases passing on this machine.** Adding
-  a `lo0` alias needs root, and this session had no non-interactive `sudo`. What
-  is measured is the new diagnostic, not the green run behind it. See § Evidence.
+- ~~**It does not verify the four sign-in cases passing on this machine.**
+  Adding a `lo0` alias needs root, and this session had no non-interactive
+  `sudo`. What is measured is the new diagnostic, not the green run behind
+  it.~~ **Closed the same day.** The recipe was run with a password at the
+  terminal, `lo0` took all ten aliases, and the suite then read **27 passed, 0
+  failed, 0 skipped** — so both halves are now measured: the diagnostic an
+  unaliased machine gets, and the green run an aliased one gets. § Evidence.
