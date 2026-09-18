@@ -675,3 +675,111 @@ the wrong background is worse than no run: it is a claim nobody re-checks.**
 The lock is now a position assertion on the `@import` plus a read of the built
 stylesheet, in
 [verification/2026-09-12-storybook-restored.md](verification/2026-09-12-storybook-restored.md).
+
+## 2026-09-18 — `verify-versions`, the release that armed it, and the tests it went two pull requests without
+
+`verify-versions` is the thirteenth gate in `just verify`. It was added on
+2026-09-17 by [#201](https://github.com/vaam-apps/vpay/pull/201), it went red
+the next morning, and it was right: the first release release-please ever cut
+here ([#203](https://github.com/vaam-apps/vpay/pull/203)) had destroyed two of
+the files it was watching.
+
+### What #203 did, and why
+
+`release-please-config.json` listed `deploy/helm/vpay/Chart.yaml` and
+`sdks/flutter/vpay_checkout_flutter/pubspec.yaml` in `extra-files` as **bare
+strings**, on the assumption that a bare string gets the annotation-only
+`Generic` updater. It does not. release-please infers an updater from the file
+extension (`src/strategies/base.ts`, `extraFileUpdates`, byte-identical from
+`17.6.0` — which `googleapis/release-please-action@v5` resolves to — through
+`17.11.2`):
+
+```text
+.json        -> CompositeUpdater(GenericJson('$.version'),  Generic)
+.yaml/.yml   -> CompositeUpdater(GenericYaml('$.version'),  Generic)
+.toml        -> CompositeUpdater(GenericToml('$.version'),  Generic)
+.xml         -> CompositeUpdater(GenericXml('/*/version'),  Generic)
+anything else-> Generic
+```
+
+`CompositeUpdater` runs them in order and the document updater is first.
+`GenericYaml` is js-yaml's `loadAll` followed by `dump`; its own doc comment
+says the parser "does reformat the document and removes all comments". So the
+annotation was gone before the half that reads it was handed the text.
+
+| File                          | Lines     | Version effect                                                                                                                                                     |
+| ----------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `deploy/helm/vpay/Chart.yaml` | 48 → 13   | chart `version:` **downgraded** `0.2.0` → `0.1.1` by `$.version` — the one field the config deliberately excluded — and the annotated `appVersion` left at `0.1.0` |
+| `sdks/flutter/…/pubspec.yaml` | 60 → 45   | `version:` correct only by accident; `$.version` happens to be the right key for a pubspec                                                                         |
+| four `Cargo.toml`             | unchanged | only the annotated lines moved                                                                                                                                     |
+| `sdks/nodejs/src/version.ts`  | unchanged | only the annotated line moved                                                                                                                                      |
+
+**The survivors are the interesting ones**, because neither is safe by virtue of
+being a manifest. A Cargo manifest has no _top-level_ `version` key — it is
+under `[workspace.package]` or `[package]` — so `GenericToml`'s `$.version`
+matched nothing and it returned the bytes unchanged. `.ts` buys no updater at
+all. `vsms` escaped the identical configuration by the same accident: its two
+`.yaml` extra-files are compose files, which carry no top-level `version:`.
+
+### What [#204](https://github.com/vaam-apps/vpay/pull/204) did
+
+Restored both files verbatim from `a475a2d8`, moved `appVersion` and the plugin
+to `0.1.1`, rewrote **every** `extra-files` entry as
+`{"type": "generic", "path": …}` — which routes to release-please's
+`case 'generic'` and runs the annotation-only updater whatever the extension —
+and taught the gate to refuse a bare string outright, naming the incident. A
+follow-up commit taught the parser the compact one-line object spelling as well
+as the multi-line one.
+
+### What this change adds
+
+**Tests.** Two pull requests moved this gate and neither landed one; #204 proved
+its new rule by editing the real config by hand and putting it back, which works
+exactly once. `version_tests` in `.xtask/src/main.rs` now pins nine behaviours,
+and the load-bearing one is `a_bare_string_entry_is_refused_and_the_message_names_the_repair`:
+**that config was this repository's own state two commits ago, and every gate
+here was green on it.**
+
+**One hole, named rather than closed.** The compact-object branch is entered
+only when a line carries both `"type"` and `"path"`, so a single-line object
+with a `"path"` and **no** `"type"` matches no branch and is skipped in
+silence — where the multi-line spelling of the same mistake is a hard error. It
+is caught today only by the "found no `type: generic` entries" tripwire, and
+only when it is the sole entry of its kind.
+`a_single_line_object_with_no_type_is_skipped_silently_and_that_is_a_known_hole`
+pins it. It is left as it is deliberately: #204 states that this parser is kept
+identical to `vsms`' copy so the two cannot drift, and closing it needs the same
+edit in both repositories. Written down here so it is a known gap rather than an
+unknown one.
+
+**And three things #203's fallout left behind**, none of them the gate:
+
+- `CHANGELOG.md` — created by the release, in release-please's own style (`*`
+  bullets, a double blank line before each `###`), and rejected by
+  `prettier --check`. `master`'s `web` job was red on it and on `AGENTS.md` from
+  2026-09-17 until this change. The changelog is now in `.prettierignore` with
+  the reason: release-please splices a new section into that file at every
+  release, so formatting it buys one clean run and makes every future release
+  pull request red.
+- `deploy/helm/vpay/Chart.yaml`'s own `version:`, `0.2.0` → `0.2.1`. `#204`
+  moved `appVersion` to `0.1.1` and left the chart version behind, and the
+  file's own rule two lines below says why that is half an edit:
+  `values.yaml`'s `images.*.tag` defaults to `appVersion`, so a chart left at
+  `0.2.0` now resolves a different image than the `0.2.0` anyone already has.
+- the gate count. `AGENTS.md` and [../status.md](../status.md) both said
+  **twelve** from 2026-09-17, when the recipe grew its thirteenth entry, until
+  2026-09-18 — and `docs/status.md`'s gate table had no `verify-versions` row at
+  all. AGENTS.md's own paragraph asks the next change to fix exactly this; it
+  took three.
+
+### What is still not checked
+
+Named rather than left to look like an oversight: **nothing here runs
+release-please.** This gate reads two JSON files as text. It can say that the
+config is in a shape whose behaviour is known and that every version it names
+agrees today; it cannot say what release-please will write. The first real
+confirmation is the next release pull request's own diff, and it should be read
+before it is merged.
+
+The full record, with the mutation outputs, is in
+[verification/2026-09-17-release-please-yaml-rewrite.md](verification/2026-09-17-release-please-yaml-rewrite.md).

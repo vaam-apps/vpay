@@ -7990,6 +7990,200 @@ fn cargo_manifests(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// `verify-versions`' parser, pinned.
+///
+/// [#201](https://github.com/vaam-apps/vpay/pull/201) added the gate and
+/// [#204](https://github.com/vaam-apps/vpay/pull/204) gave it the bare-string
+/// refusal after `v0.1.1` destroyed two files; neither landed a test, and #204
+/// proved its rule by editing the real config by hand and putting it back. That
+/// works once. This module is what makes the rules survive the next edit —
+/// including the one rule whose whole value is that it refuses the shape the
+/// repository itself was in two commits ago.
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    /// A config in the shape `json.dump(indent=2)` and prettier both produce,
+    /// so these tests fail the way the real file would.
+    fn config(entries: &str) -> String {
+        format!("{{\n  \"extra-files\": [\n{entries}\n  ]\n}}\n")
+    }
+
+    const GENERIC_CHART: &str = "    {\n      \"type\": \"generic\",\n      \"path\": \"deploy/helm/vpay/Chart.yaml\"\n    }";
+    const JSON_PKG: &str = "    {\n      \"type\": \"json\",\n      \"path\": \"sdks/nodejs/package.json\",\n      \"jsonpath\": \"$.version\"\n    }";
+
+    /// The split the rest of `verify_versions` depends on: a `generic` entry is
+    /// checked for an annotation, a `json` one is read for `$.version`. Putting
+    /// a YAML file in the second list is what the parser did before #204, and
+    /// it made the gate open `Chart.yaml` looking for a `"version"` field.
+    #[test]
+    fn a_generic_entry_and_a_json_entry_land_in_different_lists() {
+        let (generic, json_paths) =
+            release_please_extra_files(&config(&format!("{GENERIC_CHART},\n{JSON_PKG}")))
+                .expect("one entry of each kind parses");
+        assert_eq!(generic, ["deploy/helm/vpay/Chart.yaml"]);
+        assert_eq!(json_paths, ["sdks/nodejs/package.json"]);
+        // The `"jsonpath"` line must not be mistaken for a second `"path"`.
+        assert_eq!(json_paths.len(), 1);
+    }
+
+    /// #204's second commit taught the parser the compact spelling. Nothing
+    /// pinned it, and the failure it fixes is quiet: a skipped entry is a file
+    /// release-please rewrites and this gate never looks at.
+    #[test]
+    fn the_single_line_object_spelling_is_parsed_too() {
+        let (generic, json_paths) = release_please_extra_files(&config(
+            "    { \"type\": \"generic\", \"path\": \"Cargo.toml\" },\n    { \"type\": \"json\", \"path\": \"sdks/nodejs/package.json\", \"jsonpath\": \"$.version\" }",
+        ))
+        .expect("the compact spelling parses");
+        assert_eq!(generic, ["Cargo.toml"]);
+        assert_eq!(json_paths, ["sdks/nodejs/package.json"]);
+    }
+
+    /// **The regression itself, as a test.** This is the config this repository
+    /// carried until #204, and every gate here was green on it while the next
+    /// release stood ready to destroy `Chart.yaml` again.
+    #[test]
+    fn a_bare_string_entry_is_refused_and_the_message_names_the_repair() {
+        for path in [
+            "deploy/helm/vpay/Chart.yaml",
+            "sdks/flutter/vpay_checkout_flutter/pubspec.yaml",
+            "Cargo.toml",
+            "sdks/nodejs/src/version.ts",
+        ] {
+            let err = release_please_extra_files(&config(&format!(
+                "    \"{path}\",\n{GENERIC_CHART},\n{JSON_PKG}"
+            )))
+            .expect_err("a bare string is not a pass");
+            assert!(err.contains(path), "names the file: {err}");
+            assert!(
+                err.contains("\"type\": \"generic\""),
+                "names the repair: {err}"
+            );
+        }
+    }
+
+    /// An updater this check has not been taught is an error naming the type,
+    /// never a skip. `yaml`, `toml`, `xml` and `pom` are all real
+    /// release-please types, and each of them reparses the file it names.
+    #[test]
+    fn an_unmodelled_type_is_refused_by_name() {
+        for ty in ["yaml", "toml", "xml", "pom"] {
+            let err = release_please_extra_files(&config(&format!(
+                "    {{\n      \"type\": \"{ty}\",\n      \"path\": \"some/file\"\n    }},\n{GENERIC_CHART},\n{JSON_PKG}"
+            )))
+            .expect_err("an unmodelled type is not a pass");
+            assert!(err.contains("some/file"), "names the file: {err}");
+            assert!(err.contains(ty), "names the type: {err}");
+        }
+    }
+
+    /// The multi-line branch consumes the `"type"` it saw last, so an object
+    /// with a `"path"` and no `"type"` before it is refused rather than guessed
+    /// at. release-please's own config schema requires the key.
+    #[test]
+    fn a_multi_line_object_with_no_type_is_refused() {
+        let err = release_please_extra_files(&config(&format!(
+            "    {{\n      \"path\": \"deploy/helm/vpay/Chart.yaml\"\n    }},\n{JSON_PKG}"
+        )))
+        .expect_err("an object with no type is not a pass");
+        assert!(err.contains("no \"type\""), "says what is missing: {err}");
+    }
+
+    /// **A known hole, pinned rather than hidden.** The compact branch is
+    /// entered only when the line carries BOTH keys, so a single-line object
+    /// with a `"path"` and no `"type"` matches no branch at all and is skipped
+    /// in silence — where the multi-line spelling of the same mistake is an
+    /// error. It is caught today only by the emptiness tripwires below.
+    ///
+    /// It is left as it is on purpose: this parser is kept byte-identical to
+    /// `vsms`' copy so the two cannot drift, and closing this needs the change
+    /// made in both. `docs/status/gates.md` § 2026-09-18 names it.
+    #[test]
+    fn a_single_line_object_with_no_type_is_skipped_silently_and_that_is_a_known_hole() {
+        let (generic, json_paths) = release_please_extra_files(&config(&format!(
+            "    {{ \"path\": \"deploy/helm/vpay/Chart.yaml\" }},\n{GENERIC_CHART},\n{JSON_PKG}"
+        )))
+        .expect("today it parses — this assertion is the record of a gap, not an endorsement");
+        assert_eq!(
+            generic,
+            ["deploy/helm/vpay/Chart.yaml"],
+            "the typed entry, once — the untyped one contributed nothing"
+        );
+        assert_eq!(json_paths, ["sdks/nodejs/package.json"]);
+    }
+
+    /// Both emptiness tripwires. The parser reads one JSON key per line, so a
+    /// reformat it cannot follow must fail loudly rather than find nothing and
+    /// call the repository clean.
+    #[test]
+    fn a_config_this_parser_cannot_follow_is_an_error_in_both_directions() {
+        let no_generic = release_please_extra_files(&config(JSON_PKG))
+            .expect_err("no generic entry is a reformat, not a clean config");
+        assert!(no_generic.contains("generic"), "{no_generic}");
+
+        let no_json = release_please_extra_files(&config(GENERIC_CHART))
+            .expect_err("no json entry is a reformat, not a clean config");
+        assert!(no_json.contains("json"), "{no_json}");
+    }
+
+    /// `verify_versions` compares the first version-shaped substring of every
+    /// annotated line, because `Generic`'s own `String.replace` is not global.
+    /// What counts as "the first" is therefore the whole comparison.
+    #[test]
+    fn the_first_semver_on_a_line_is_what_release_please_would_replace() {
+        assert_eq!(
+            first_semver("appVersion: \"0.1.1\" # x-release-please-version"),
+            Some("0.1.1".to_owned())
+        );
+        assert_eq!(
+            first_semver("version: 0.1.1 # x-release-please-version"),
+            Some("0.1.1".to_owned())
+        );
+        assert_eq!(
+            first_semver(
+                "vpay-core = { path = \"backends/crates/vpay-core\", version = \"0.1.1\" } # x-release-please-version"
+            ),
+            Some("0.1.1".to_owned())
+        );
+        assert_eq!(
+            first_semver("version = \"0.1.1\" # x-release-please-version, was 0.2.0"),
+            Some("0.1.1".to_owned()),
+            "only the first"
+        );
+        assert_eq!(first_semver("publish_to: none"), None, "no digits at all");
+        assert_eq!(
+            first_semver("version: \"0.1\""),
+            None,
+            "two segments is not"
+        );
+        // A range is not a version, but it is three segments, so it reads as
+        // one. Harmless today — `kubeVersion:` carries no annotation, so this
+        // function is never handed it — but a line that grew both a range and
+        // an annotation would compare the wrong number.
+        assert_eq!(
+            first_semver("kubeVersion: \">=1.27.0-0\""),
+            Some("1.27.0".to_owned())
+        );
+    }
+
+    /// `value_after` is what the compact branch reads both keys with. An
+    /// unterminated or empty value must be `None` rather than a path made of
+    /// whatever followed.
+    #[test]
+    fn value_after_reads_the_quoted_value_and_nothing_else() {
+        let line = "{ \"type\": \"generic\", \"path\": \"a/b.yaml\" }";
+        assert_eq!(value_after(line, "\"type\":"), Some("generic".to_owned()));
+        assert_eq!(value_after(line, "\"path\":"), Some("a/b.yaml".to_owned()));
+        assert_eq!(value_after(line, "\"jsonpath\":"), None, "absent key");
+        assert_eq!(
+            value_after("{ \"path\": \"\" }", "\"path\":"),
+            None,
+            "empty"
+        );
+    }
+}
+
 #[cfg(test)]
 mod doc_report_tests {
     use super::*;

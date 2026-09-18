@@ -25,7 +25,24 @@ type: application
 # from `values.schema.json` — so a values file that pinned
 # `images.worker.digest` fails `helm lint` (the schema is
 # `additionalProperties: false`) instead of pinning a digest nothing pulls.
-version: 0.2.0
+#
+# 0.2.0 -> 0.2.1 on 2026-09-18. A patch: nothing rendered changes shape, but
+# what a default install PULLS does. `appVersion` moved 0.1.0 -> 0.1.1 with
+# the `v0.1.1` release, and the block below is the rule that makes that one
+# edit rather than two — `values.yaml`'s `images.*.tag` defaults to
+# `appVersion`, so a chart left at 0.2.0 now resolves to a different image
+# than the 0.2.0 anyone already has. #204 restored this file and moved
+# `appVersion` without moving this line; that half is finished here.
+#
+# THIS LINE READ `0.1.1` ON `master` FROM 2026-09-17 UNTIL #204 — a downgrade
+# nobody typed, and the chart behind its own app. `#203`, the first
+# release-please release, did it, and the mechanism is in
+# `release_please_extra_files`' doc comment and AGENTS.md § Releasing: a
+# bare-string `extra-files` entry gets an updater chosen from the file
+# extension, and `.yaml` gets one that reparses and re-serialises the whole
+# document. Every entry is `{"type": "generic"}` now and `cargo xtask
+# verify-versions` refuses a bare string outright.
+version: 0.2.1
 
 # The application version this chart was written against. It is NOT a pin:
 # `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and

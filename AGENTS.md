@@ -19,12 +19,12 @@ CI runs it.
 `just verify` is the gates the `verify` recipe lists in the `justfile`, and
 one report. **The recipe is the list; this paragraph is a description of it,
 and it has gone stale at nearly every count it has carried** — see below. On
-this commit the gates are twelve (`verify-no-mocks`, `verify-status`,
+this commit the gates are thirteen (`verify-no-mocks`, `verify-status`,
 `verify-errors`, `verify-sdk-parity`, `verify-links`, `verify-npm-scope`,
 `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`,
-`verify-ui`, `verify-migrations`) and they fail the build. If that list and
-the recipe disagree, the recipe is right: read it, and fix this paragraph in
-the same commit. The report
+`verify-ui`, `verify-migrations`, `verify-versions`) and they fail the build.
+If that list and the recipe disagree, the recipe is right: read it, and fix
+this paragraph in the same commit. The report
 (`verify-docs`) never does — it prints doc-comment volume per crate, in-file
 comment volume per crate, the number of `#[doc = include_str!]` modules, the
 production functions of 80 lines or more, every ` ```ignore ` doctest
@@ -47,9 +47,22 @@ fails when a migration file's SHA-256 no longer matches
 migration's whole bytes and a comment reflowed after the file shipped stops
 every database that applied the original from booting — which is what PR #39
 did, with every job in CI green.
-Ten of the twelve are `cargo xtask` commands; `check-schema` and `verify-ui` are
-justfile recipes — the first shells out to the CrateStack CLI, a binary this
-workspace does not build, and the second is a handful of `git grep`s.
+`verify-versions` makes it **thirteen** on 2026-09-17
+([#201](https://github.com/vaam-apps/vpay/pull/201)): every version
+release-please owns must agree, and every line it has to rewrite must still
+carry its `x-release-please-version` comment. _(This paragraph and the list
+above said "twelve" from then until 2026-09-18, wrong from the moment the
+recipe grew its thirteenth entry — which is exactly the staleness the first
+sentence of this section exists to warn about, earned by the change that added
+the warning's newest example.)_ Since 2026-09-18 it also refuses an
+`extra-files` entry written as a bare string, which is what destroyed
+`deploy/helm/vpay/Chart.yaml` on the first release
+([#204](https://github.com/vaam-apps/vpay/pull/204)); § Releasing has the
+mechanism.
+Eleven of the thirteen are `cargo xtask` commands; `check-schema` and
+`verify-ui` are justfile recipes — the first shells out to the CrateStack CLI,
+a binary this workspace does not build, and the second is a handful of
+`git grep`s.
 There is one more check, `cargo xtask verify-citations` (`just
 docs-check-citations`), which is a gate but **not** part of `just verify` or
 `just ci`: it needs the network and a GitHub token. Run it when you add or
@@ -394,7 +407,7 @@ There are **fourteen** such pins: eleven in the root manifest, and three more in
 by running `cargo metadata`, not by reading. All eighteen version lines this
 repository owns carry an `x-release-please-version` comment, and
 `just verify-versions` (in `just ci`, via `verify`) fails if any is missing —
-including on a *new* internal dependency, which is the realistic way this gets
+including on a _new_ internal dependency, which is the realistic way this gets
 armed for the next person.
 
 Deliberately not bumped, each for a stated reason: `Chart.yaml`'s own
@@ -406,7 +419,7 @@ example's `pubspec.lock` (nothing enforces it; `flutter pub get` rewrites it).
 
 **The first tag.** `.release-please-manifest.json` seeds `0.1.0` — what every
 manifest already says while unreleased — so the next release is `0.1.1` or
-`0.2.0`, *not* `0.1.0`. To make the first tag exactly `v0.1.0`, put
+`0.2.0`, _not_ `0.1.0`. To make the first tag exactly `v0.1.0`, put
 `Release-As: 0.1.0` in a commit footer; release-please honours it. That is a
 maintainer's call.
 

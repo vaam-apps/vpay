@@ -35,6 +35,25 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-17-release-please-yaml-rewrite.md](verification/2026-09-17-release-please-yaml-rewrite.md) —
+  the first release release-please ever cut (#203) destroyed two of the files
+  it was told to bump. A **bare-string** `extra-files` entry does not get the
+  annotation-only updater; release-please infers one from the file extension,
+  and `.yaml` gets `GenericYaml('$.version')`, which reparses and re-serialises
+  the document. `deploy/helm/vpay/Chart.yaml` went from 48 lines to 13, its
+  hand-managed chart `version:` was **downgraded** `0.2.0` → `0.1.1` — the one
+  field the config deliberately excluded — and its annotated `appVersion` was
+  left behind. #204 restored both files and made every entry
+  `{"type": "generic"}`. **This page is what that left**: the gate had moved
+  twice with no test at all, so nine now pin it — including the config from
+  #203 itself, which every gate here was green on; a hole is named rather than
+  closed, because the parser is kept identical to `vsms`' copy; and three
+  pieces of fallout were still on `master` ten hours later — `CHANGELOG.md` and
+  `AGENTS.md` still failing `prettier --check` in CI's `web` job, the chart
+  version left behind by its own `appVersion`, and a gate count that said
+  twelve in two files while the recipe printed thirteen. Says plainly what it
+  does not prove: nothing here runs release-please, so the next release pull
+  request's diff is the first real confirmation.
 - [verification/2026-09-16-adr-0022.md](verification/2026-09-16-adr-0022.md) —
   ADR-0022 (surface isolation and independent scaling): `deployment.surfaces`
   and conditional `/v1`/`/dash/v1` mounting, the dashboard runner stage's real

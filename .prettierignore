@@ -99,3 +99,19 @@ sdks/flutter/**/.dart_tool/
 # which 17 were these. `just ci` runs `fmt-check` first, so master's whole
 # gate was red on vendored content nobody here should be rewriting.
 .agents/skills/
+
+# Written by release-please, in release-please's own style, on every release —
+# `*` bullets rather than `-`, and a double blank line before each `###`
+# heading. Prettier CAN parse this markdown and MUST NOT rewrite it: the
+# changelog updater splices a NEW section into the file at each release and
+# does not touch what is already there, so formatting the file buys one clean
+# run and makes every future release pull request red on `fmt-check-web` — the
+# one pull request nobody can repair by hand without taking the release apart.
+#
+# Measured 2026-09-17: `v0.1.1` (#203) created this file and `master`'s `web`
+# job failed on it the same night. On that file prettier's rewrite is two
+# bullet markers and two blank lines — small, and it would be re-earned in
+# full by the section the NEXT release appends. Hand-editing the changelog is
+# not the repair either: release-please owns the file, and an edit it did not
+# make is an edit it will not preserve.
+CHANGELOG.md
