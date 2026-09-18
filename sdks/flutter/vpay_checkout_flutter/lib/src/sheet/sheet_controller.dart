@@ -344,6 +344,30 @@ final class SheetController extends ChangeNotifier {
     await _handOffToBrowser(url);
   }
 
+  /// Sends a payer who came back without finishing back to the rail's own
+  /// page — `controller.ts`'s `resumeRedirect`, and the action
+  /// [CheckoutResumeRedirect] exists to offer.
+  ///
+  /// No confirm: the intent is already `requires_action` and the charge
+  /// already exists, so confirming again would ask the rail for a second
+  /// one. This only re-opens the URL that intent is still carrying, through
+  /// the same [_handOffToBrowser] the first redirect used — so the dismissal
+  /// handling, the stop-URL matching and the poll-on-return are all the
+  /// ones that were already there, not a second copy.
+  Future<void> resumeRedirect() async {
+    final CheckoutScreenState s = _state;
+    if (s is! CheckoutResumeRedirect) {
+      return;
+    }
+    // `_handOffToBrowser` reads the URL off `CheckoutRedirecting`, so the
+    // sheet moves there first — which is also the honest screen while the
+    // browser is opening, exactly as it is on the first attempt.
+    _setState(
+      CheckoutRedirecting(context: s.context, rail: s.rail, url: s.url),
+    );
+    await _handOffToBrowser(s.url);
+  }
+
   /// Hands the redirecting state's URL to [VpayCheckoutPlatform] — the
   /// "existing browser host" issue #189 names — and waits for it to report
   /// either a matched stop URL or a dismissal, exactly the two signals

@@ -10,7 +10,7 @@ import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 /// type system alone.
 void main() {
   group('i18n completeness', () {
-    // 71, not the web page's 72, and the difference is deliberate rather
+    // 74, not the web page's 75, and the difference is deliberate rather
     // than a key that went missing. `en.ts`/`fr.ts` carry
     // `outcome.back_to` and `outcome.back_to_unnamed`; this sheet carries
     // one `outcome.done` in their place. On the hosted page the payer
@@ -27,8 +27,8 @@ void main() {
     test(
       'both dictionaries carry the same keys, with one stated divergence',
       () {
-        expect(vpayCheckoutMessageKeys.length, 71);
-        expect(vpayCheckoutMessageKeysFr.length, 71);
+        expect(vpayCheckoutMessageKeys.length, 74);
+        expect(vpayCheckoutMessageKeysFr.length, 74);
         expect(vpayCheckoutMessageKeys, contains('outcome.done'));
         expect(vpayCheckoutMessageKeys, isNot(contains('outcome.back_to')));
         expect(

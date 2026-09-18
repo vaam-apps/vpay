@@ -85,6 +85,7 @@ export 'src/sheet/checkout_screen.dart'
         CheckoutReadyRedirect,
         CheckoutRedirectRequired,
         CheckoutRedirecting,
+        CheckoutResumeRedirect,
         CheckoutRefuse,
         CheckoutRefused,
         CheckoutScreenState,

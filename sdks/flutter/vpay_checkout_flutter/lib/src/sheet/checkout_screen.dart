@@ -181,6 +181,49 @@ final class CheckoutReadyRedirect extends CheckoutScreenState {
   final String? problem;
 }
 
+/// The payer has a redirect to finish on the rail's own page and is not on
+/// it — they closed it, came back, or reloaded into a session whose intent
+/// is still `requires_action`.
+///
+/// **Not [CheckoutWaiting], and that distinction is the whole point of this
+/// class.** `processing` means the rail is still moving and the status will
+/// change on its own, so a spinner is honest. `requires_action` means the
+/// *payer* is the one who has to move, and if they abandoned the rail's page
+/// nothing about this intent changes until they go back to it. Showing
+/// "check your phone" there is false twice over — a redirect rail never sees
+/// the payer's number, and there is nothing in flight to validate — and it
+/// polls a value only the payer can change until the budget dies.
+///
+/// The port of `machine.ts`'s `resume_redirect`, added on both surfaces on
+/// 2026-09-17 for the same reason.
+final class CheckoutResumeRedirect extends CheckoutScreenState {
+  const CheckoutResumeRedirect({
+    required this.context,
+    required this.rails,
+    required this.url,
+    this.rail,
+  });
+
+  final CheckoutContext context;
+
+  /// So the secondary "choose another method" action can offer one, the
+  /// same way [CheckoutReadyRedirect] carries them.
+  final RailChoices rails;
+
+  /// Where to send the payer back to — `next_action.redirect_to_url`, which
+  /// `vpay-api`'s `rendered_intent` rebuilds from the stored charge row on
+  /// *every* read of a `requires_action` intent (and hard-errors when it
+  /// cannot), so a polled intent carries it exactly as a freshly-confirmed
+  /// one does.
+  final String url;
+
+  /// Nullable for the same reason [CheckoutWaiting.rail] is: a bare intent
+  /// does not name the rail it was confirmed against, so a state reached
+  /// from a fresh read has no rail to show, while one reached from a poll
+  /// mid-flow does.
+  final SupportedRail? rail;
+}
+
 final class CheckoutConfirming extends CheckoutScreenState {
   const CheckoutConfirming({required this.context, required this.rail});
 
@@ -214,7 +257,15 @@ final class CheckoutRedirecting extends CheckoutScreenState {
   });
 
   final CheckoutContext context;
-  final SupportedRail rail;
+
+  /// Nullable since 2026-09-17, when [CheckoutResumeRedirect] gained the
+  /// ability to send a payer back to the rail: a resume reached from a
+  /// fresh read has no rail to name, because a confirmed intent does not
+  /// carry the one it was confirmed against. The only reader is
+  /// `SheetController._resumePollingAfterRedirectReturn`, which passes it
+  /// straight to [CheckoutWaiting.rail] — already nullable, for the same
+  /// reason.
+  final SupportedRail? rail;
   final String url;
 }
 
@@ -370,11 +421,38 @@ CheckoutScreenState stateForContext(CheckoutContext context) {
     allowedMethods: context.allowedMethods,
   );
 
+  if (intent.status == PaymentIntentStatus.requiresAction) {
+    // The rail is not the one still moving here — the PAYER is. They have a
+    // redirect to finish on the rail's own page, and if they abandoned it
+    // (closed the tab, swiped the browser away) nothing about this intent
+    // changes until they go back to it. `CheckoutWaiting`'s spinner would be
+    // both false — nothing is "on their phone", a redirect rail never sees a
+    // payer's number — and unresolvable, until the poll budget dies.
+    //
+    // `vpay-api`'s `rendered_intent` rebuilds `next_action` from the stored
+    // charge row on every read of a `requires_action` intent and hard-errors
+    // when it cannot, so the URL is here unless the server itself is broken.
+    // If it is somehow absent, fall through to the waiting screen — the same
+    // "this sheet has learnt nothing that says otherwise" answer the rest of
+    // this file gives a claim it cannot check.
+    final String? url = intent.redirectUrl;
+    if (url != null) {
+      return CheckoutResumeRedirect(
+        context: context,
+        rails: rails,
+        url: url,
+        // Not recoverable from a bare intent — a confirmed intent does not
+        // name the rail it was confirmed against.
+        rail: null,
+      );
+    }
+  }
+
   if (intent.status == PaymentIntentStatus.processing ||
       intent.status == PaymentIntentStatus.requiresAction) {
-    // Already confirmed — a reload, or a payer coming back to the tab. The
-    // rail that was chosen is not recoverable from the intent (a confirmed
-    // intent does not name it), so the waiting screen shows without one.
+    // Already confirmed and genuinely in flight — a reload, or a payer
+    // coming back to the tab. The rail that was chosen is not recoverable
+    // from the intent, so the waiting screen shows without one.
     return CheckoutWaiting(context: context, rail: null, notice: null);
   }
 
@@ -588,6 +666,7 @@ CheckoutContext? _contextOfAny(CheckoutScreenState state) => switch (state) {
   CheckoutSelectRail(:final context) => context,
   CheckoutCollectMsisdn(:final context) => context,
   CheckoutReadyRedirect(:final context) => context,
+  CheckoutResumeRedirect(:final context) => context,
   CheckoutConfirming(:final context) => context,
   CheckoutWaiting(:final context) => context,
   CheckoutRedirecting(:final context) => context,

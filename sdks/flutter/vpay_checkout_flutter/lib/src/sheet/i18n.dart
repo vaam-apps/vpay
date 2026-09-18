@@ -70,6 +70,17 @@ const Map<String, String> _en = <String, String>{
   'state.redirecting_title': 'Taking you to Orange Money',
   'state.redirecting_body': 'You will come back here once you have paid.',
 
+  // `requires_action`: the payer has a redirect to finish on the rail's own
+  // page and is not on it. Deliberately NOT `state.waiting_*` — that pair
+  // claims the payment is moving on its own, which is false here and
+  // unresolvable without the payer's own next step. Same three keys, same
+  // strings, as `frontends/apps/checkout/src/i18n/en.ts`.
+  'state.resume_redirect_title': 'Payment not completed',
+  'state.resume_redirect_body':
+      "You did not finish this payment on the provider's page. Nothing has "
+      'been taken.',
+  'state.resume_redirect_continue': 'Return to the payment page',
+
   'outcome.succeeded_title': 'Payment received',
   'outcome.succeeded_body': '{merchant} has been told you paid {amount}.',
   'outcome.succeeded_body_unnamed':
@@ -185,6 +196,12 @@ const Map<String, String> _fr = <String, String>{
   'state.redirecting_title': 'Redirection vers Orange Money',
   'state.redirecting_body':
       'Vous reviendrez ici une fois le paiement effectué.',
+
+  'state.resume_redirect_title': 'Paiement non abouti',
+  'state.resume_redirect_body':
+      'Vous n\u2019avez pas terminé ce paiement sur la page de '
+      'l\u2019opérateur. Rien n\u2019a été prélevé.',
+  'state.resume_redirect_continue': 'Retourner à la page de paiement',
 
   'outcome.succeeded_title': 'Paiement reçu',
   'outcome.succeeded_body':
