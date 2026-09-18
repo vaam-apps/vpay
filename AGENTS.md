@@ -293,6 +293,14 @@ status. The authenticated status query is the only thing that moves money.
 a rail means making it pass — not writing a new suite. If you find yourself
 writing rail-specific conformance tests, the port leaked.
 
+**`just test-rust` needs one thing on macOS that it does not need on Linux.**
+Four cases in `backends/tests/integration/tests/staff_sign_in.rs` simulate
+distinct client source addresses by binding them, and macOS assigns only
+`127.0.0.1` to `lo0` where Linux assigns the whole `127.0.0.0/8` to `lo`. Run
+`just loopback-aliases` once per boot; CI is unaffected, and the suite now says
+so itself rather than failing with `os error 49` (2026-09-18). The full note is
+in [CLAUDE.md](CLAUDE.md) § "Things that will waste your time".
+
 Do not stub inside the browser in Cypress. The rails are stubbed at the
 infrastructure layer, so the app under test is the app that ships.
 

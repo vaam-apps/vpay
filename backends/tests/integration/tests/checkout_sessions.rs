@@ -51,7 +51,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use serde_json::Value;
@@ -2233,36 +2233,14 @@ async fn the_housekeeping_sweep_expires_a_stale_session_and_spares_a_paying_one(
         .await
         .context("seeding the singleton jobs a worker seeds at boot")?;
 
+    // `run_until`'s doc comment carries the mechanism: right after
+    // `seed_singletons`, a `None` from `run_once` means "nothing claimable
+    // this instant", not "nothing left to claim" — the sweep job's `run_at`
+    // is stamped from this process's clock, not the database's, and a
+    // bounded retry with no patience for that gap is what made this case a
+    // load flake instead of a reliable one.
     let endpoints = support::no_webhook_endpoints();
-    let egress = support::default_egress_policy();
-    let mut swept = false;
-    for _ in 0..8 {
-        let Some(settled) = vpay_worker::run_once(
-            h.repositories.as_ref(),
-            &h.adapters,
-            &h.rails,
-            &RecoveryPolicy::default(),
-            &vpay_worker::WebhookContext {
-                endpoints: &endpoints,
-                egress,
-            },
-            "checkout-sessions-sweep",
-        )
-        .await?
-        else {
-            break;
-        };
-        if settled.kind == "sweep_expired" {
-            assert_eq!(
-                settled.error, None,
-                "the housekeeping sweep must not fail: {:?}",
-                settled.error
-            );
-            swept = true;
-            break;
-        }
-    }
-    assert!(swept, "the housekeeping sweep never ran");
+    run_until(&h, &endpoints, "sweep_expired").await?;
 
     assert_eq!(
         stored_session(&h.pool, &abandoned.id).await?,
@@ -2395,6 +2373,21 @@ fn two_endpoints_for_a() -> vpay_worker::EndpointRegistry {
 /// Drives the shipping loop until a job of `kind` has finished, and answers
 /// how many jobs ran on the way.
 ///
+/// Polls on a wall-clock deadline rather than a fixed number of claims.
+/// `seed_singletons` stamps a singleton's `run_at` from this **process's**
+/// clock (`OffsetDateTime::now_utc()`, `run_loop.rs`), but `Jobs::claim`'s
+/// `WHERE run_at <= now()` is evaluated by the **Postgres server's** own
+/// clock, inside its testcontainer (`jobs.rs`). Those are two different
+/// clocks: a job seeded a fraction of a second "ahead" of the database's own
+/// view of now claims nothing on the very next call, and `run_once` answers
+/// `None` — not because the queue is empty, but because nothing is claimable
+/// *yet*. The shipping `run_loop` never notices this, because an empty claim
+/// there just waits out `IDLE_SLEEP` and asks again, for as long as the
+/// process runs. A fixed number of immediate re-claims has none of that
+/// patience, and that gap — not which job gets interleaved first — is what
+/// turned this into a load-dependent flake: the skew is small enough that a
+/// quiet machine never shows it and a loaded one occasionally does.
+///
 /// It does **not** call `support::make_every_job_runnable`: two of the cases
 /// below defer a `poll_charge` job on purpose so that the sweep, and not the
 /// poll ladder, is what decides the session's fate, and a helper that pulled
@@ -2406,8 +2399,14 @@ async fn run_until(
 ) -> anyhow::Result<usize> {
     let egress = support::default_egress_policy();
     let mut ran = 0_usize;
-    for _ in 0..16 {
-        let Some(settled) = vpay_worker::run_once(
+    // Five seconds is a couple of orders of magnitude past any clock skew or
+    // scheduler jitter between this process and the Postgres testcontainer;
+    // a `kind` that still has not run by then is not waiting on a clock, and
+    // the deadline lets that real failure through instead of masking it
+    // behind the same `None` a few milliseconds of skew would also produce.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let claimed = vpay_worker::run_once(
             h.repositories.as_ref(),
             &h.adapters,
             &h.rails,
@@ -2415,9 +2414,18 @@ async fn run_until(
             &vpay_worker::WebhookContext { endpoints, egress },
             "checkout-sessions-expiry",
         )
-        .await?
-        else {
-            anyhow::bail!("the loop ran out of work before `{kind}` ran");
+        .await?;
+        let Some(settled) = claimed else {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "`{kind}` never became claimable within 5s ({ran} other job(s) ran first)"
+            );
+            // Nothing claimable *this instant* is not the same as nothing
+            // left to claim — see the doc comment above. A short bounded
+            // wait before asking again; the deadline above, not this sleep,
+            // is what bounds the loop.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
         };
         ran += 1;
         if settled.kind == kind {
@@ -2428,8 +2436,11 @@ async fn run_until(
             );
             return Ok(ran);
         }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "`{kind}` never ran within 5s ({ran} other job(s) ran first)"
+        );
     }
-    anyhow::bail!("`{kind}` never ran")
 }
 
 /// One housekeeping sweep, then one outbox drain — and **nothing after it**,

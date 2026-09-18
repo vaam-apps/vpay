@@ -51,7 +51,7 @@
 use std::error::Error as _;
 use std::future::Future;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use testcontainers::core::{AccessMode, IntoContainerPort as _, Mount, WaitFor};
 use testcontainers::runners::AsyncRunner as _;
@@ -136,6 +136,25 @@ const WIREMOCK_PORT: u16 = 8080;
 /// Where the image reads its `mappings/` and `__files/` from.
 const WIREMOCK_ROOT: &str = "/home/wiremock";
 
+/// How long [`wait_for_mappings_loaded`] waits, after the container's Docker
+/// healthcheck has already passed, for `/__admin/mappings` to report at
+/// least one loaded mapping. See that function for why the healthcheck alone
+/// does not already prove this.
+///
+/// Five seconds: loading the handful of small JSON files any one rail's
+/// `mappings/` directory holds, from a read-only bind mount on an
+/// already-started JVM, has no reason to approach this. A container still
+/// answering zero mappings after five seconds is failing for some other
+/// reason, and this bound turns that into a clear error instead of a wait
+/// that only ever ends at `cargo nextest`'s own per-test timeout.
+const MAPPINGS_READY_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How often [`wait_for_mappings_loaded`] polls while waiting. Same cadence
+/// as the healthcheck it runs after (testcontainers' own `HealthWaitStrategy`
+/// polls `docker inspect` every 100 ms too) — this second gate costs no
+/// coarser a resolution than the first one already does.
+const MAPPINGS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Starts a WireMock container serving `mappings_dir`, retrying only a
 /// host-port collision (the same policy [`start_postgres_with_retry`] uses).
 ///
@@ -175,12 +194,34 @@ const WIREMOCK_ROOT: &str = "/home/wiremock";
 ///
 /// # Readiness
 ///
-/// [`WaitFor::healthcheck`], which uses the image's own
-/// `curl -f http://localhost:8080/__admin/health` (a 5 s start period, polled
-/// every 100 ms). Not a log-line match: the banner this image prints is
-/// decorative, colour-coded and version-dependent, and matching it would
-/// break on an upgrade for no reason. Not a fixed sleep either — that is how
-/// a suite becomes slow *and* flaky at once.
+/// Two gates, in order. First [`WaitFor::healthcheck`], which uses the
+/// image's own `curl -f http://localhost:8080/__admin/health` (a 5 s start
+/// period, polled every 100 ms). Not a log-line match: the banner this image
+/// prints is decorative, colour-coded and version-dependent, and matching it
+/// would break on an upgrade for no reason. Not a fixed sleep either — that
+/// is how a suite becomes slow *and* flaky at once.
+///
+/// Second, [`wait_for_mappings_loaded`]. The healthcheck alone was once
+/// believed sufficient — `compose.yml`'s own comment on this image still
+/// says so — but WireMock 3.9.2's `/__admin/health` turns out to be an
+/// unconditional 200 with no check behind it at all (see that function's
+/// doc for the source citation), so a passing healthcheck proves only that
+/// the JVM started and `/__admin/*` is routed. It proves nothing about
+/// whether *this process's* connection to the mapped host port — as opposed
+/// to the container-internal loopback the Docker healthcheck itself probes
+/// — is actually serving the mappings this call bind-mounted. Added after a
+/// load flake in
+/// `not_found_is_never_on_its_own_a_failure::case_2_orange_money`
+/// (2026-09-18: a rail's first request, always its token call, got a 404
+/// from a live host on a run seen only once across several full-workspace
+/// runs).
+/// The investigation could not conclusively pin the exact remaining
+/// mechanism — WireMock's own mapping load is provably synchronous and
+/// precedes the port opening at all, so the gap this closes is either an
+/// implementation detail future WireMock releases owe nothing to, or a
+/// brief staleness in the host-side port mapping itself; either way, this
+/// probe closes it, because it exercises the same path and the same
+/// resource a real rail request depends on.
 ///
 /// The caller owns the returned container: dropping it stops and removes it.
 ///
@@ -195,7 +236,7 @@ pub async fn start_wiremock(
     let (image, tag) = WIREMOCK_IMAGE;
     let host_path = mappings_dir.display().to_string();
 
-    retry_container_start(image, || {
+    let container = retry_container_start(image, || {
         GenericImage::new(image, tag)
             .with_exposed_port(WIREMOCK_PORT.tcp())
             .with_wait_for(WaitFor::healthcheck())
@@ -206,7 +247,128 @@ pub async fn start_wiremock(
             )
             .start()
     })
-    .await
+    .await?;
+
+    let port = container.get_host_port_ipv4(WIREMOCK_PORT).await?;
+    wait_for_mappings_loaded(port).await?;
+
+    Ok(container)
+}
+
+/// Blocks until `port`'s `/__admin/mappings` reports at least one loaded
+/// mapping, or returns a diagnostic error once [`MAPPINGS_READY_DEADLINE`]
+/// passes.
+///
+/// # Why the healthcheck above is not enough
+///
+/// [`WaitFor::healthcheck`] waits for the image's own Docker `HEALTHCHECK`,
+/// `curl -f http://localhost:8080/__admin/health`, to succeed. Read directly
+/// from the pinned `3.9.2` tag's own source
+/// (`HealthCheckTask.execute()`, `com.github.tomakehurst.wiremock.admin.tasks`,
+/// `wiremock/wiremock@3.9.2`): that endpoint unconditionally builds and
+/// returns HTTP 200. There is no call to `Admin::isHealthy` left in it —
+/// that method (`HealthChecker.isHealthy`, itself never more than
+/// `default boolean isHealthy() { return true; }`) and the branch that
+/// called it existed for exactly one PR
+/// (github.com/wiremock/wiremock/pull/2303, merged 2023-08-22) and were
+/// already gone by the tag this image pins. A passing healthcheck proves the
+/// JVM started and Jetty is routing `/__admin/*` — nothing about whether the
+/// mappings this container was bind-mounted with are the ones this
+/// *process's* connection to the mapped host port will see.
+///
+/// Separately, and only as an observation this function does not lean on:
+/// WireMock 3.9.2 loads its bind-mounted `mappings/` directory synchronously
+/// inside `WireMockApp`'s constructor and only starts the Jetty listener
+/// afterwards (`WireMockServerRunner.run()` constructs the server, then
+/// calls `.start()` on it, never the reverse, and `JettyHttpServer.start()`
+/// is where `jettyServer.start()` — the actual socket bind — happens; none
+/// of that runs from the constructor). So a WireMock process, today, cannot
+/// answer *any* HTTP request before its own mappings are loaded. That
+/// ordering is an implementation detail no WireMock release has documented
+/// as a contract, and it says nothing about a concern entirely outside the
+/// container: whether the ephemeral host port Docker just handed back is,
+/// at the instant this function is called, already routing end-to-end to
+/// *this* container rather than to whatever this same port number briefly
+/// meant for the previous container that held it. Asking the admin API for
+/// a real count, over the same path a rail request will use, is the one
+/// probe that answers the question this function exists to answer, whatever
+/// the exact remaining mechanism turns out to be.
+///
+/// # Not a sleep
+///
+/// This polls a real, checkable condition — WireMock's own count of loaded
+/// mappings, `meta.total` in `/__admin/mappings`'s response — every
+/// [`MAPPINGS_POLL_INTERVAL`], and returns as soon as it is positive, which
+/// in the ordinary case is within a poll or two of the healthcheck above
+/// already having passed. A fixed delay would have to be tuned to the
+/// slowest host this suite ever runs on and would then cost that long on
+/// every faster run; this costs only as long as the condition takes to
+/// become true, and fails loudly — rather than hanging or silently
+/// proceeding — if it never does within [`MAPPINGS_READY_DEADLINE`].
+///
+/// # Errors
+///
+/// [`TestcontainersError::Other`] if the vendored-roots client cannot be
+/// built, or if no poll before the deadline ever saw a positive
+/// `meta.total`.
+async fn wait_for_mappings_loaded(port: u16) -> Result<(), TestcontainersError> {
+    let http = vpay_provider::http::client()
+        .map_err(|error| TestcontainersError::Other(Box::new(error)))?;
+    let url = format!("http://127.0.0.1:{port}/__admin/mappings");
+    let started = Instant::now();
+
+    loop {
+        if let Ok(response) = http.get(&url).send().await
+            && let Ok(body) = response.text().await
+            && mappings_total(&body).is_some_and(|total| total > 0)
+        {
+            return Ok(());
+        }
+
+        if started.elapsed() >= MAPPINGS_READY_DEADLINE {
+            return Err(TestcontainersError::Other(
+                format!(
+                    "vpay-testkit: WireMock at 127.0.0.1:{port} never reported a loaded \
+                     mapping in /__admin/mappings within {MAPPINGS_READY_DEADLINE:?} of its \
+                     Docker healthcheck passing; check the bind-mounted mappings directory"
+                )
+                .into(),
+            ));
+        }
+        tokio::time::sleep(MAPPINGS_POLL_INTERVAL).await;
+    }
+}
+
+/// Digs `meta.total` out of an `/__admin/mappings` response body by hand:
+/// `{"mappings":[...],"meta":{"total":N}}` (`stub-mappings.yaml` in
+/// WireMock's own swagger schemas, checked against the pinned `3.9.2` tag).
+///
+/// Same reason `requests_matching` in the conformance suite hand-parses
+/// `/__admin/requests/count`: this crate's `serde_json` dependency is
+/// test-only (`Cargo.toml`), and a single integer after a known key does not
+/// need a parser pulled in just to be read by the one thing that ships.
+///
+/// `None` for a body with no `"total"` key or a non-numeric value after it —
+/// [`wait_for_mappings_loaded`] treats that exactly like a low count: keep
+/// polling until the deadline, never trust a body it cannot make sense of.
+///
+/// It reads the **last** `"total"` in the body, not the first. The response
+/// carries every loaded mapping before `meta`, and a mapping is free to
+/// contain whatever JSON a rail's own payload needs — including a `total`
+/// key of its own. `backends/tests/conformance/wiremock/orange/mappings/
+/// token.json` already says "in total" in a `metadata` comment today
+/// (harmless: unquoted), and the first rail response body that carries a
+/// real `"total"` field would otherwise silently make this function answer
+/// about a stub instead of about WireMock's own count. `meta` is last, so
+/// the last occurrence is the right one.
+fn mappings_total(body: &str) -> Option<u64> {
+    let (_, after) = body.rsplit_once("\"total\"")?;
+    let digits: String = after
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 /// The retry policy itself, generic over what is being started.
@@ -298,7 +460,7 @@ mod tests {
     use testcontainers::TestcontainersError;
 
     use super::{
-        MAX_ATTEMPTS, PORT_COLLISION, RETRY_BACKOFF, WIREMOCK_PORT, collided_port,
+        MAX_ATTEMPTS, PORT_COLLISION, RETRY_BACKOFF, WIREMOCK_PORT, collided_port, mappings_total,
         retry_container_start, start_wiremock,
     };
 
@@ -508,5 +670,48 @@ mod tests {
             1,
             "a non-collision failure must not be retried at all"
         );
+    }
+
+    /// The real shape `/__admin/mappings` answers with once WireMock has
+    /// loaded a rail's stubs, verbatim per WireMock's own
+    /// `stub-mappings.yaml` schema.
+    #[test]
+    fn mappings_total_reads_a_positive_count() {
+        let body = r#"{"mappings":[{"id":"a"},{"id":"b"}],"meta":{"total":2}}"#;
+        assert_eq!(mappings_total(body), Some(2));
+    }
+
+    /// The shape a container answers with before anything has loaded, or
+    /// after Docker created an empty directory for a `mappings_dir` that did
+    /// not exist. `total: 0` must read as "zero", not be confused with
+    /// "the key is missing" — `wait_for_mappings_loaded` needs the two told
+    /// apart only for the deadline's error message, but the parser itself
+    /// must not blur them.
+    #[test]
+    fn mappings_total_reads_zero_as_zero_not_as_missing() {
+        let body = r#"{"mappings":[],"meta":{"total":0}}"#;
+        assert_eq!(mappings_total(body), Some(0));
+    }
+
+    /// A body this function cannot make sense of — the admin API answering
+    /// something unexpected, empty, or not JSON at all — must be `None`,
+    /// which `wait_for_mappings_loaded` treats as "not ready yet, keep
+    /// polling", never as a crash or a false-positive "ready".
+    /// A stub whose own response body carries a `total` field must not be
+    /// what this function answers about. `meta` is serialised after every
+    /// mapping, so reading the LAST occurrence is what keeps the count
+    /// WireMock's rather than a rail payload's — reading the first would
+    /// answer `0` here and hang until the deadline.
+    #[test]
+    fn a_stubs_own_total_field_does_not_shadow_wiremocks_count() {
+        let body = r#"{"mappings":[{"response":{"jsonBody":{"total":0}}}],"meta":{"total":1}}"#;
+        assert_eq!(mappings_total(body), Some(1));
+    }
+
+    #[test]
+    fn mappings_total_is_none_for_a_body_without_the_key() {
+        assert_eq!(mappings_total("{}"), None);
+        assert_eq!(mappings_total(""), None);
+        assert_eq!(mappings_total("not json at all"), None);
     }
 }

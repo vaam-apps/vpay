@@ -239,6 +239,16 @@ build-dist:
 
 test: test-rust test-doc test-web
 
+# Four cases in backends/tests/integration/tests/staff_sign_in.rs simulate
+# distinct client source addresses with `reqwest::ClientBuilder::local_address`
+# on 127.0.0.2 through 127.0.0.35. Linux assigns the whole 127.0.0.0/8 range
+# to `lo`, so this needs nothing there and CI (Linux) is unaffected either
+# way; macOS assigns only 127.0.0.1 to `lo0`, so on an unaliased Mac those
+# four fail to bind (`os error 49`) — run `just loopback-aliases` once per
+# boot first (measured 2026-09-18; see CLAUDE.md § "Things that will waste
+# your time"). On Linux, and therefore in CI, nothing needs doing.
+#
+# macOS: run `just loopback-aliases` once per boot before this.
 test-rust:
     cargo nextest run --workspace
 
@@ -246,6 +256,51 @@ test-rust:
 # Expect failures; this is for seeing what is NOT covered, not for CI.
 test-rust-all:
     cargo nextest run --workspace --run-ignored all
+
+# The one-time fix `test-rust`'s comment above points at, and the fix
+# `support::client_bound_to`'s own preflight error names.
+#
+# macOS assigns only 127.0.0.1 to `lo0` by default; Linux assigns the whole
+# 127.0.0.0/8 range to `lo`. `staff_sign_in.rs`'s four per-source-address
+# rate-limit cases bind loopback addresses up to 127.0.0.35 to simulate
+# distinct callers, which is why they need nothing on Linux (CI) and need
+# this recipe on a Mac. A no-op on Linux — detected with `uname -s`, not
+# skipped by a flag, because the whole /8 already being on `lo` there is the
+# actual reason nothing needs adding, not an arbitrary exemption — and
+# idempotent: each address is checked against `ifconfig lo0`'s own output
+# before `alias … up` runs, so a second run neither errors nor re-adds
+# anything, and only a genuinely missing address prompts for `sudo`.
+#
+# These aliases do NOT survive a reboot. Safe and cheap to re-run any time
+# `just test-rust` reports `os error 49` again.
+#
+# Alias the ten loopback addresses staff_sign_in.rs sends from onto lo0 (macOS only).
+loopback-aliases:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" != "Darwin" ]; then
+        echo "loopback-aliases: $(uname -s) already assigns the whole 127.0.0.0/8 to lo — nothing to do"
+        exit 0
+    fi
+    # Exactly what backends/tests/integration/tests/staff_sign_in.rs binds:
+    # 127.0.0.2 and .3 (the_sign_in_rate_limit_is_per_source_address),
+    # 127.0.0.4 (the_second_factor_is_rate_limited_and_not_only_the_password),
+    # 127.0.0.20 (a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget),
+    # and 127.0.0.30 through .35 (two_replicas_share_one_sign_in_budget, which
+    # binds `127.0.0.30 + n` for n in 0..6). Verified against the source on
+    # 2026-09-18 — `grep -n local_address` there before adding an address
+    # here that no test actually uses.
+    addrs="127.0.0.2 127.0.0.3 127.0.0.4 127.0.0.20 127.0.0.30 127.0.0.31 127.0.0.32 127.0.0.33 127.0.0.34 127.0.0.35"
+    current="$(ifconfig lo0)"
+    for addr in $addrs; do
+        if grep -q "inet $addr " <<< "$current"; then
+            echo "loopback-aliases: $addr already on lo0"
+        else
+            sudo ifconfig lo0 alias "$addr" up
+            echo "loopback-aliases: added $addr to lo0"
+        fi
+    done
+    echo "loopback-aliases: lo0 now carries every address staff_sign_in.rs needs (does not survive a reboot)"
 
 # Doctests — a SECOND test runner, not a flag on the first one.
 #

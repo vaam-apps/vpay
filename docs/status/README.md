@@ -35,6 +35,20 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+- [verification/2026-09-18-macos-loopback-and-two-load-flakes.md](verification/2026-09-18-macos-loopback-and-two-load-flakes.md) —
+  three ways `just test-rust` fails on a macOS developer machine and in no CI
+  job. Four **deterministic** failures in `staff_sign_in.rs`, because its
+  per-source-address rate-limit cases bind loopback addresses macOS does not
+  assign to `lo0` and Linux does to `lo`: fixed with a preflighting helper that
+  names `just loopback-aliases`, explicitly **not** by gating or ignoring them.
+  Two **load** flakes, each seen once in three runs: the housekeeping sweep's
+  bounded `run_once` retry, which loses because a job's `run_at` comes from the
+  test process's clock and `Jobs::claim`'s `now()` from the database's, now a
+  deadline poll; and a conformance 404 from a live WireMock, because
+  `/__admin/health` at the pinned 3.9.2 tag returns a hardcoded 200 and proves
+  nothing about the stub tree — `start_wiremock` now waits for a positive
+  `meta.total` on the mapped host port, and `compose.yml`'s claim to the
+  contrary is struck through. No assertion weakened, nothing ignored.
 - [verification/2026-09-16-privacy-inventory-gate.md](verification/2026-09-16-privacy-inventory-gate.md) —
   the personal-data inventory of issue #144 and `verify-privacy-inventory`, the
   fourteenth gate; amended 2026-09-17 with the `DROP TABLE` hole that let both

@@ -70,7 +70,8 @@ use vpay_db::{NewPaymentIntent, NewStaff, Repositories};
 mod support;
 
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    client_bound_to, ensure_crypto_provider_installed, generate_key, merchant_client,
+    migrated_postgres, serve,
 };
 
 const CLIENT_A: &str = "acme-cameroon";
@@ -1491,17 +1492,11 @@ async fn a_deployment_without_staff_auth_serves_no_login() -> anyhow::Result<()>
 async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
     let harness = harness().await?;
 
-    let from = |ip: [u8; 4]| {
-        reqwest::Client::builder()
-            .local_address(std::net::IpAddr::from(ip))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("a client bound to a loopback source address")
-    };
+    let from = client_bound_to;
 
     // Exactly the budget, from one source, on ten distinct addresses.
     for n in 0..10 {
-        let response = from([127, 0, 0, 2])
+        let response = from([127, 0, 0, 2])?
             .post(format!("{}/dash/v1/staff/login", harness.base_url))
             .form(&[
                 ("email", format!("burner-{n}@example.test").as_str()),
@@ -1518,7 +1513,7 @@ async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
     }
 
     // A different source, a different address, its first ever attempt.
-    let response = from([127, 0, 0, 3])
+    let response = from([127, 0, 0, 3])?
         .post(format!("{}/dash/v1/staff/login", harness.base_url))
         .form(&[("email", "innocent@example.test"), ("password", "wrong")])
         .send()
@@ -1533,7 +1528,7 @@ async fn the_sign_in_rate_limit_is_per_source_address() -> anyhow::Result<()> {
 
     // And the exhausted source is still exhausted — the control must not have
     // passed because the limiter stopped working altogether.
-    let response = from([127, 0, 0, 2])
+    let response = from([127, 0, 0, 2])?
         .post(format!("{}/dash/v1/staff/login", harness.base_url))
         .form(&[("email", "burner-0@example.test"), ("password", "wrong")])
         .send()
@@ -1597,11 +1592,7 @@ async fn the_second_factor_is_rate_limited_and_not_only_the_password() -> anyhow
         .await?;
     anyhow::ensure!(status == 200, "enrolling the account: {status} {body}");
 
-    let client = reqwest::Client::builder()
-        .local_address(std::net::IpAddr::from([127, 0, 0, 4]))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("a client bound to a loopback source address");
+    let client = client_bound_to([127, 0, 0, 4])?;
 
     // The password leg, honestly, from this test's own address: a session at
     // `pending_totp` is what an attacker who has phished one password holds.
@@ -1756,11 +1747,7 @@ async fn a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget() ->
     ))
     .await?;
 
-    let client = reqwest::Client::builder()
-        .local_address(std::net::IpAddr::from([127, 0, 0, 20]))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("a client bound to a loopback source address");
+    let client = client_bound_to([127, 0, 0, 20])?;
 
     // Five wrong passwords, each claiming a different client address, each on
     // a different email so that only the ADDRESS budget can be what refuses.
@@ -2106,11 +2093,7 @@ async fn two_replicas_share_one_sign_in_budget() -> anyhow::Result<()> {
         } else {
             &replica_url
         };
-        let response = reqwest::Client::builder()
-            .local_address(std::net::IpAddr::from([127, 0, 0, 30 + n]))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("a client bound to a loopback source address")
+        let response = client_bound_to([127, 0, 0, 30 + n])?
             .post(format!("{base_url}/dash/v1/staff/login"))
             .form(&[("email", STAFF_EMAIL), ("password", "wrong")])
             .send()

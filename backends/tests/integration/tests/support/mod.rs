@@ -24,7 +24,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
@@ -101,6 +101,70 @@ pub(crate) fn ensure_crypto_provider_installed() {
             .install_default()
             .ok();
     });
+}
+
+/// A `reqwest::Client` that sends every request from exactly `ip` on this
+/// machine's loopback interface — how `staff_sign_in.rs`'s per-source-address
+/// rate-limit cases simulate distinct callers without a second machine.
+///
+/// # Why this preflights the bind instead of just building the client
+///
+/// `reqwest::ClientBuilder::local_address` does not bind anything itself: it
+/// only records the address for the socket `connect()` opens on first use.
+/// A `[u8; 4]` this machine has no local interface for therefore builds a
+/// perfectly good `Client`, and the bind does not fail until the first
+/// `send()`, deep inside `reqwest`'s transport, as an opaque
+///
+/// ```text
+/// error sending request for url (…): client error (Connect)
+///   1: tcp bind local error
+///   2: Can't assign requested address (os error 49)
+/// ```
+///
+/// with nothing at the call site pointing at the cause. Binding a throwaway
+/// `TcpListener` here, synchronously, at client-construction time, asks the
+/// kernel the same question `reqwest` would otherwise ask lazily — so it
+/// never changes the verdict, only when and how it is reported — and turns
+/// that transport error into a message that names the fix.
+///
+/// # Why the fix is a per-machine alias, not code
+///
+/// Linux assigns the whole `127.0.0.0/8` range to `lo`, so every address
+/// this suite uses is already local and CI (which runs on Linux) is green.
+/// macOS assigns only `127.0.0.1` to `lo0` by default; every other
+/// `127.0.0.0/8` address needs an explicit alias, and that alias does not
+/// survive a reboot. `just loopback-aliases` adds every address this suite
+/// needs, once. See `CLAUDE.md` § "Things that will waste your time".
+///
+/// # Errors
+///
+/// Names the exact `sudo ifconfig` fix if `ip` is not assigned to a local
+/// interface, or reports why if the `reqwest::Client` itself fails to build.
+pub(crate) fn client_bound_to(ip: [u8; 4]) -> anyhow::Result<reqwest::Client> {
+    let addr = IpAddr::from(ip);
+
+    // The preflight described above. The bound `TcpListener` is dropped (and
+    // the port released) at the end of this statement — it exists only to
+    // ask the kernel the question `reqwest` would otherwise ask lazily, so
+    // the failure surfaces here, with our own message, instead of inside the
+    // first `send()`.
+    TcpListener::bind((addr, 0)).with_context(|| {
+        format!(
+            "{addr} is not assigned to a local interface, so no client can send from it \
+             (EADDRNOTAVAIL, os error 49). Linux assigns the whole 127.0.0.0/8 range to `lo`, \
+             which is why CI is green; macOS assigns only 127.0.0.1 to `lo0`, so every other \
+             127.0.0.0/8 address this suite binds needs an explicit alias on this machine — and \
+             the alias does not survive a reboot. One-time fix: `sudo ifconfig lo0 alias {addr} \
+             up`, or `just loopback-aliases` for every address this suite needs at once. See \
+             CLAUDE.md § \"Things that will waste your time\"."
+        )
+    })?;
+
+    reqwest::Client::builder()
+        .local_address(addr)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("a client bound to a loopback source address")
 }
 
 /// An RSA keypair in the two shapes these suites need: the private half as a

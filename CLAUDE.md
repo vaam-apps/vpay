@@ -138,3 +138,18 @@ verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   `docs/reference/vpay-db/cratestack.md`. `vpay-db.md` § CrateStack is a
   pointer to it and keeps that heading on purpose: four doc comments in
   `backends/crates/vpay-db/src/` link to `vpay-db.md#cratestack`.
+- Four `backends/tests/integration/tests/staff_sign_in.rs` cases —
+  `the_sign_in_rate_limit_is_per_source_address`,
+  `the_second_factor_is_rate_limited_and_not_only_the_password`,
+  `a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` and
+  `two_replicas_share_one_sign_in_budget` — simulate distinct client source
+  addresses with `reqwest::ClientBuilder::local_address` on `127.0.0.2`
+  through `127.0.0.35`. Linux assigns the whole `127.0.0.0/8` range to `lo`,
+  so CI (Linux) is green; macOS assigns only `127.0.0.1` to `lo0`, so on an
+  unaliased Mac each of the four failed with an opaque `client error
+(Connect): tcp bind local error: Can't assign requested address (os error
+49)` — measured 2026-09-18. Run `just loopback-aliases` once per boot (the
+  aliases do not survive a reboot). The four now build their clients through
+  `support::client_bound_to`, which preflights the bind, so a still-missing
+  alias now fails with a message naming this fix instead of that opaque
+  transport error.

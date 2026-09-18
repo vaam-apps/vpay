@@ -26,13 +26,27 @@ services:
   # Stands in for MTN MoMo. A *host*, not a linked mock.
   #
   # The healthcheck is what makes `docker compose up --wait` mean something
-  # for this service (`just demo-up`). WireMock 3.5+ serves
-  # `/__admin/health`, its own readiness answer — "the admin API is up AND
-  # the mappings under /home/wiremock have been loaded" — which a TCP-connect
-  # probe cannot distinguish from a JVM that has bound the port and not yet
-  # read the stub tree. `curl` is in the image (verified against
+  # for this service (`just demo-up`) — but it means LESS than this comment
+  # claimed until 2026-09-18. `curl` is in the image (verified against
   # wiremock/wiremock:3.9.2, which is Debian-based and carries both curl and
   # wget), so no extra binary is added to reach it.
+  #
+  # ~~"WireMock 3.5+ serves `/__admin/health`, its own readiness answer — the
+  # admin API is up AND the mappings under /home/wiremock have been loaded —
+  # which a TCP-connect probe cannot distinguish from a JVM that has bound
+  # the port and not yet read the stub tree."~~ **Corrected 2026-09-18.**
+  # `HealthCheckTask.execute()` at the pinned `3.9.2` tag never touches the
+  # `Admin` it is handed: it returns HTTP 200 with a hardcoded "Wiremock is
+  # ok" body on every call. Read from wiremock/wiremock@3.9.2 itself, not
+  # inferred. A passing healthcheck here therefore proves the JVM started and
+  # `/__admin/*` is routed, and nothing whatever about the stub tree.
+  #
+  # Known gap, left visible rather than quietly patched: `--wait` can
+  # therefore return for this service before it serves a stub. The Rust test
+  # suites do not rely on it — `vpay_testkit::containers::start_wiremock`
+  # gained its own `/__admin/mappings` count probe on 2026-09-18, after this
+  # hollow gate was traced to a conformance flake — but `just demo-up` still
+  # does. See docs/status/verification/2026-09-18-macos-loopback-and-two-load-flakes.md.
   wiremock-mtn:
     image: wiremock/wiremock:3.9.2
     command: ["--global-response-templating", "--verbose"]

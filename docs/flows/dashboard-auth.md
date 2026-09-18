@@ -143,6 +143,22 @@ one file and therefore one transaction, and it copies every live row's material
 pepper and the sealed secret opens under the same unchanged key — so there is
 no instant at which anybody cannot sign in.
 
+**Four of those cases cannot run at all on an unaliased Mac, and that is host
+setup rather than a gap in the claim (2026-09-18).**
+`the_sign_in_rate_limit_is_per_source_address`,
+`the_second_factor_is_rate_limited_and_not_only_the_password`,
+`a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` and
+`two_replicas_share_one_sign_in_budget` bind distinct loopback **source
+addresses** — the thing under test, which is why none of it can be simulated
+with a header: two of the four exist to prove `X-Forwarded-For` is _not_
+honoured from an untrusted peer ([rate-limiting.md](dashboard-auth/rate-limiting.md)).
+Linux assigns the whole `127.0.0.0/8` to `lo`, so CI measures all four; macOS
+assigns only `127.0.0.1` to `lo0`, so they need `just loopback-aliases` once
+per boot. They are **not** gated or ignored, and a Mac without the aliases is
+correctly red — it now says so, naming the fix, instead of failing with
+`os error 49`. See
+[status/verification/2026-09-18-macos-loopback-and-two-load-flakes.md](../status/verification/2026-09-18-macos-loopback-and-two-load-flakes.md).
+
 Two things a reader of this page should carry away from it. **The replay guard
 is `Credentials::advance_counter` now**, a compare-and-swap on the credential
 row rather than on the person, with its `NOT NULL` counter argument intact
