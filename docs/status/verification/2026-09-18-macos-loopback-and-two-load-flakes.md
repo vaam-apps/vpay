@@ -173,7 +173,7 @@ not a production one: `run_loop`'s `Ok(None) => idle(…)` waits out `IDLE_SLEEP
 and asks again, for as long as the process lives. Only the test's hand-rolled,
 sleepless, eight-try loop lacked that patience.
 
-### The fix
+### The fix: a deadline instead of a count
 
 The test now calls `run_until`, the helper this same file already had for the
 `checkout.session.expired` cases — which carried the **identical** defect
@@ -192,7 +192,7 @@ Every assertion the case made, it still makes: the sweep reported no error, the
 abandoned session is `expired`/`unpaid`, the paying session is `open`/`unpaid`,
 and its charge is still live.
 
-### Deliberately not changed
+### Deliberately not changed: the two clocks themselves
 
 **The two clocks themselves.** A job whose `run_at` comes from the app and whose
 claim predicate comes from the database is a real asymmetry, and it is named
@@ -260,7 +260,7 @@ container. **Which of those two the observed 404 came from was not pinned**, and
 this page does not claim it was. The fix closes both, because it asks the
 question over the same path and the same resource a real rail request uses.
 
-### The fix
+### The fix: a second gate that asks a real question
 
 `start_wiremock` now runs a second gate after the healthcheck:
 `wait_for_mappings_loaded` polls `GET /__admin/mappings` **on the mapped host
@@ -284,7 +284,7 @@ three mappings directories it is ever pointed at (`mtn`: 8 files, `orange`: 5,
 the webhook receiver: 3) are non-empty, so the `total > 0` condition is
 satisfiable everywhere it is used.
 
-### Deliberately not changed
+### Deliberately not changed: nextest's config, and the demo stack
 
 - **`.config/nextest.toml`.** No cross-test race was found, so no test-group
   change is warranted. Every existing group and comment is exactly as found —
