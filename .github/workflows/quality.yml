@@ -80,9 +80,6 @@ jobs:
       codeql-languages: ${{ needs.changes.outputs.code == 'true' && '["rust","javascript-typescript","actions"]' || '[]' }}
       docs-globs: ${{ needs.changes.outputs.docs == 'true' && '**/*.md' || '' }}
       fail-on-broken-links: false
-    secrets:
-      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
 
   lint:
     name: lint
@@ -109,6 +106,3 @@ jobs:
     with:
       scanners: "vuln,secret,misconfig"
       upload-sarif: true
-    secrets:
-      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
