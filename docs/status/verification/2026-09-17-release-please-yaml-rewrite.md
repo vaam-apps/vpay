@@ -52,8 +52,9 @@ Checking formatting...
 [warn] Code style issues found in 2 files. Run Prettier with --write to fix.
 ```
 
-So CI's `web` job was **still red**, ten hours after the release and after the
-pull request that fixed the release. Three more, none of which any gate catches:
+So CI's `web` job was **still red** — the morning after the release (`eb078020`
+merged 23:10, `aeb9e242` 07:38), and after the pull request that repaired it.
+Three more, none of which any gate catches:
 
 1. `grep -n "release_please_extra_files\|classify_extra_file\|value_after"` over
    `.xtask/src/main.rs` found the definitions and the call sites and **no test**.
