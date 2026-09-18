@@ -340,3 +340,237 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image.name }}
           DIGEST: ${{ steps.index.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  # --- SDK publishing ---------------------------------------------------
+  #
+  # Two of the five directories under `sdks/` are actually ready to ship —
+  # see this PR's own description for the full per-SDK rundown. The other
+  # three are deliberately untouched by this workflow:
+  #
+  #   - sdks/rust           `publish = false` in Cargo.toml, on purpose:
+  #                          its own comment says the wire contract it
+  #                          implements has no server to talk to yet
+  #                          (docs/status.md). Publishing a client for an
+  #                          API nobody can reach would be actively
+  #                          misleading, not merely premature.
+  #   - sdks/flutter         `publish_to: none` in pubspec.yaml, on
+  #                          purpose: "not published yet (2026-09-13)" —
+  #                          see docs/sdks/parity.md, which as of this
+  #                          writing still records the Android/deep-link
+  #                          verification as incomplete.
+  #   - sdks/stripe-compat   `"private": true`, version pinned at 0.0.0:
+  #                          an internal parity-test shim against
+  #                          `sdks/nodejs`, never a package a merchant
+  #                          installs. `cargo xtask verify-npm-scope`
+  #                          already asserts this shape (no
+  #                          `publishConfig`, no `@vaam-apps/vpay-*` name).
+  #
+  # `sdks/nodejs` (`@vaam-apps/vpay-sdk`) and `sdks/stripe-js`
+  # (`@vaam-apps/vpay-stripe-js`) are both in `release-please-config.json`'s
+  # `extra-files`, both declare `publishConfig.access: "public"`, and both
+  # are exactly what `cargo xtask verify-npm-scope` already treats as
+  # publishable (a `dist/`-pointing `main`, a `files` allowlist, a
+  # `prepack` that builds). The packaging was ready; only the step that
+  # actually runs `npm publish` was missing.
+
+  sdk-version:
+    name: check SDK versions match the tag
+    runs-on: ubuntu-latest
+    outputs:
+      is_tag: ${{ steps.v.outputs.is_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never pushes; nothing here needs the checkout token to
+          # survive past the clone.
+          persist-credentials: false
+      # Refuse a tag pushed against manifests release-please did not
+      # actually bump to match. vsms's own release.yml carries the scar
+      # this guards against verbatim: v0.3.2 there tagged a release whose
+      # `sed` extraction silently returned an EMPTY string — the pattern
+      # was anchored to end-of-line, and every one of these lines carries
+      # a trailing `# x-release-please-version` comment, so `[v] == ""`
+      # was never true and every publish step's `if:` was skipped while
+      # the job itself still reported green. `[^"]*".*$`, never `.*"$`,
+      # for exactly that reason.
+      - name: tag matches the SDK manifest versions
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          WS="$(sed -n 's/^version = "\([^"]*\)".*$/\1/p' Cargo.toml | head -1)"
+          NODE_SDK="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdks/nodejs/package.json | head -1)"
+          STRIPE_JS_SDK="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdks/stripe-js/package.json | head -1)"
+          echo "tag=${TAG} workspace=${WS} node-sdk=${NODE_SDK} stripe-js-sdk=${STRIPE_JS_SDK}"
+          for v in "$WS" "$NODE_SDK" "$STRIPE_JS_SDK"; do
+            [[ "$v" == "$TAG" ]] || { echo "::error::tag v${TAG} does not match a manifest version (see above, blank means the sed pattern matched nothing)"; exit 1; }
+          done
+      - id: v
+        run: echo "is_tag=${{ startsWith(github.ref, 'refs/tags/') }}" >> "$GITHUB_OUTPUT"
+
+  publish-node-sdk:
+    name: publish @vaam-apps/vpay-sdk to npm
+    needs: sdk-version
+    runs-on: ubuntu-latest
+    # Narrower than the workflow-level block (which also grants
+    # `packages: write` for the GHCR jobs above): this job never touches
+    # GHCR, only the npm registry, and `id-token: write` is here for npm
+    # provenance (Sigstore/Rekor), not for the auth exchange — see the
+    # note on the publish step below for why the two are different things
+    # in this repository specifically.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never pushes; nothing here needs the checkout token to
+          # survive past the clone.
+          persist-credentials: false
+      # No `version:` here on purpose, matching `ci.yml`'s own `web`/`e2e`
+      # jobs: `pnpm/action-setup` refuses to run when both it and
+      # `package.json`'s `packageManager` name a version
+      # ("Multiple versions of pnpm specified"). `package.json` is this
+      # repository's single source of truth (pnpm@9.15.0).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: 'https://registry.npmjs.org'
+          # `package-manager-cache: false`, explicitly — setup-node's own
+          # default is `true` (caches automatically off the manifest's
+          # `packageManager` field). This job holds NPM_TOKEN and publishes
+          # to a public registry, and restoring a package-manager cache
+          # into that context is exactly zizmor's cache-poisoning shape:
+          # a cache an untrusted run could have populated, replayed into a
+          # privileged publish step. Runs once per release; a cold install
+          # costs seconds, not minutes.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        working-directory: sdks/nodejs
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, typecheck, test
+        working-directory: sdks/nodejs
+        run: |
+          pnpm run build
+          pnpm run typecheck
+          pnpm run test
+
+      # pnpm 9.15.0's `pack` has no `--dry-run` (`pnpm help pack` lists
+      # only `--json`/`--pack-destination` — confirmed against the pinned
+      # version locally, not assumed from newer pnpm's docs; `publish
+      # --dry-run` below IS supported at this version and is the real
+      # dry-run check). This runs the actual pack into the runner's own
+      # scratch directory, which GitHub Actions discards with the runner
+      # — nothing is uploaded and nothing is left in the working tree.
+      - name: Package pack validation
+        working-directory: sdks/nodejs
+        run: pnpm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Publish dry-run
+        working-directory: sdks/nodejs
+        run: pnpm publish --dry-run --no-git-checks
+
+      # Classic token auth, NOT npm Trusted Publishing (OIDC) — a
+      # deliberate deviation from vsms's own `publish-node-sdk`, for two
+      # independent reasons, either one of which alone would be enough:
+      #
+      #   1. This repository pins `packageManager: pnpm@9.15.0`
+      #      (root package.json). pnpm's own OIDC token exchange for npm
+      #      Trusted Publishing landed in pnpm 11 — 10.16/10.17 cannot do
+      #      it at all, and 9.15.0 predates it by two majors. Bumping the
+      #      pin to unblock this one job is a repository-wide decision
+      #      (every other CI job, and every contributor's local install,
+      #      moves with it) and out of scope here — see this PR's
+      #      description.
+      #   2. Even with pnpm 11, npm Trusted Publishing cannot bootstrap a
+      #      package that has never been published: a Trusted Publisher
+      #      can only be attached to a name that already exists on the
+      #      registry (vsms's own AGENTS.md documents this exact
+      #      constraint, learned the hard way). `@vaam-apps/vpay-sdk` has
+      #      never been published, so the very first release needs a
+      #      token-based publish regardless of pnpm version.
+      #
+      # `--provenance` is unaffected by either of those — pnpm has
+      # supported it since 8.4, well before Trusted Publishing existed,
+      # and it only needs `id-token: write` (granted above) plus a
+      # supported CI provider. It is orthogonal to *how* the publish is
+      # authenticated, so it still runs here even though auth is a
+      # classic token.
+      #
+      # `NPM_TOKEN` (an npm "Automation" token — the type exempt from the
+      # 2FA-on-publish OTP prompt, matching AGENTS.md's own `EOTP` note
+      # for vsms) is a registry-side secret this repository does not yet
+      # have; see this PR's description for what the maintainer needs to
+      # create before this step can succeed.
+      - name: Publish to npm (classic token; see comment above for why not OIDC)
+        if: needs.sdk-version.outputs.is_tag == 'true'
+        working-directory: sdks/nodejs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --access public --provenance --no-git-checks
+
+  publish-stripe-js-sdk:
+    name: publish @vaam-apps/vpay-stripe-js to npm
+    needs: sdk-version
+    runs-on: ubuntu-latest
+    # See publish-node-sdk's own comment block for why this is
+    # `contents: read` + `id-token: write` rather than the workflow-level
+    # `packages: write` too, and for why auth is a classic token rather
+    # than OIDC.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never pushes; nothing here needs the checkout token to
+          # survive past the clone.
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: 'https://registry.npmjs.org'
+          # `package-manager-cache: false`, explicitly — setup-node's own
+          # default is `true` (caches automatically off the manifest's
+          # `packageManager` field). This job holds NPM_TOKEN and publishes
+          # to a public registry, and restoring a package-manager cache
+          # into that context is exactly zizmor's cache-poisoning shape:
+          # a cache an untrusted run could have populated, replayed into a
+          # privileged publish step. Runs once per release; a cold install
+          # costs seconds, not minutes.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        working-directory: sdks/stripe-js
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, typecheck, test
+        working-directory: sdks/stripe-js
+        run: |
+          pnpm run build
+          pnpm run typecheck
+          pnpm run test
+
+      # See publish-node-sdk's own pack step for why this has no
+      # `--dry-run` at this pnpm pin.
+      - name: Package pack validation
+        working-directory: sdks/stripe-js
+        run: pnpm pack --pack-destination "${{ runner.temp }}"
+
+      - name: Publish dry-run
+        working-directory: sdks/stripe-js
+        run: pnpm publish --dry-run --no-git-checks
+
+      # `NPM_TOKEN` is shared with publish-node-sdk: one Automation token
+      # scoped to the `@vaam-apps` npm org can publish both packages, so
+      # this is the same secret, not a second one to create.
+      - name: Publish to npm (classic token; see publish-node-sdk for why not OIDC)
+        if: needs.sdk-version.outputs.is_tag == 'true'
+        working-directory: sdks/stripe-js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --access public --provenance --no-git-checks
