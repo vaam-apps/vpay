@@ -1,0 +1,114 @@
+# Calls the org-wide quality workflows in vaam-apps/.github.
+#
+# The implementations live in one place; what this file owns is the answer to
+# "has anything meaningful changed", which is necessarily per-repo.
+#
+# Gating is a per-job `if:` over a paths-filter job, never `on.pull_request.paths`.
+# A skipped job still reports and satisfies a required status check; a workflow
+# that never triggers reports nothing and blocks the PR forever on a check that
+# will never arrive.
+name: quality
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions: {}
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+      iac: ${{ steps.filter.outputs.iac }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            # Positive lists, never '**' plus '!' exclusions: paths-filter ORs
+            # its rules through picomatch, so '**' matches everything and the
+            # negations never subtract.
+            code:
+              - 'backends/**'
+              - 'frontends/**'
+              - 'sdks/**'
+              - 'crates/**'
+              - '.xtask/**'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/package.json'
+            docs:
+              - '**/*.md'
+              - '**/*.adoc'
+              - 'docs/**'
+            iac:
+              - '**/Dockerfile*'
+              - 'compose*.yaml'
+              - 'compose*.yml'
+              - 'deploy/**'
+              - 'charts/**'
+              - 'helm/**'
+              - '.github/workflows/**'
+            any:
+              - '**'
+
+  sast:
+    name: SAST
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.docs == 'true'
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    uses: vaam-apps/.github/.github/workflows/sast.yml@main
+    with:
+      codeql-languages: ${{ needs.changes.outputs.code == 'true' && '["rust","javascript-typescript","actions"]' || '[]' }}
+      docs-globs: ${{ needs.changes.outputs.docs == 'true' && '**/*.md' || '' }}
+      fail-on-broken-links: false
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+  lint:
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    permissions:
+      contents: read
+      statuses: write
+    uses: vaam-apps/.github/.github/workflows/lint.yml@main
+    with:
+      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$'
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+  trivy:
+    name: trivy
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.iac == 'true'
+    permissions:
+      security-events: write
+      contents: read
+    uses: vaam-apps/.github/.github/workflows/trivy.yml@main
+    with:
+      scanners: "vuln,secret,misconfig"
+      upload-sarif: true
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
