@@ -679,10 +679,10 @@ stylesheet, in
 ## 2026-09-18 — `verify-versions`, the release that armed it, and the tests it went two pull requests without
 
 `verify-versions` is the thirteenth gate in `just verify`. It was added on
-2026-09-17 by [#201](https://github.com/vaam-apps/vpay/pull/201), it went red
-the next morning, and it was right: the first release release-please ever cut
-here ([#203](https://github.com/vaam-apps/vpay/pull/203)) had destroyed two of
-the files it was watching.
+2026-09-17 by [#201](https://github.com/vaam-apps/vpay/pull/201) and it was red
+on `master` the same night — correctly: the first release release-please ever
+cut here ([#203](https://github.com/vaam-apps/vpay/pull/203), merged 23:10) had
+destroyed two of the files it was watching.
 
 ### What #203 did, and why
 
