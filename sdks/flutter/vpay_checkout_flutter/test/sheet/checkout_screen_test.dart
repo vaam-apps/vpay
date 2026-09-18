@@ -274,31 +274,32 @@ void main() {
       expect(state.notice, isNull);
     });
 
-    test('requires_action offers to resume the redirect, not a false "check '
-        'your phone"', () {
-      // The bug this pins, fixed 2026-09-17 on both surfaces:
-      // `requires_action` used to share the `waiting` branch with
-      // `processing`. They are opposites — `processing` means the rail is
-      // still moving, `requires_action` means the PAYER has a redirect to
-      // finish and, if they abandoned it, nothing changes again until
-      // they do.
-      final PaymentIntent requiresAction = _intent(
-        status: PaymentIntentStatus.requiresAction,
-        redirectUrl: 'https://rail.example/hosted/tok_abc',
-      );
-      final CheckoutContext context = _context(intent: requiresAction);
-      final CheckoutScreenState state = stateForContext(context);
-      expect(state, isA<CheckoutResumeRedirect>());
-      expect(
-        (state as CheckoutResumeRedirect).url,
-        'https://rail.example/hosted/tok_abc',
-      );
-      // Not recoverable from a bare intent, same as `CheckoutWaiting`.
-      expect(state.rail, isNull);
-    });
+    test(
+      'requires_action offers to resume the redirect, never a false wait',
+      () {
+        // The bug this pins, fixed 2026-09-17 on both surfaces:
+        // `requires_action` used to share the `waiting` branch with
+        // `processing`. They are opposites — `processing` means the rail is
+        // still moving, `requires_action` means the PAYER has a redirect to
+        // finish and, if they abandoned it, nothing changes again until
+        // they do.
+        final PaymentIntent requiresAction = _intent(
+          status: PaymentIntentStatus.requiresAction,
+          redirectUrl: 'https://rail.example/hosted/tok_abc',
+        );
+        final CheckoutContext context = _context(intent: requiresAction);
+        final CheckoutScreenState state = stateForContext(context);
+        expect(state, isA<CheckoutResumeRedirect>());
+        expect(
+          (state as CheckoutResumeRedirect).url,
+          'https://rail.example/hosted/tok_abc',
+        );
+        // Not recoverable from a bare intent, same as `CheckoutWaiting`.
+        expect(state.rail, isNull);
+      },
+    );
 
-    test('requires_action with no redirect url falls back to waiting rather '
-        'than inventing a screen with nowhere to go', () {
+    test('requires_action with no redirect url falls back to waiting', () {
       // `vpay-api`'s `rendered_intent` guarantees `next_action` on a
       // `requires_action` intent, so this is the server-is-broken path.
       // Falling back is the same "learnt nothing that says otherwise"
