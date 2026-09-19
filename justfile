@@ -3492,7 +3492,13 @@ image_namespace := "vaam-apps"
 # GHCR authentication, and `cosign sign`. Nothing local can stand in for those.
 # The first evidence for any of them is a real run — see docs/runbooks/release.md.
 #
-# Build the four release images for the host platform, then check the chart.
+# The same division applies to the chart. `release.yml`'s `publish-chart` job
+# packages `deploy/helm/vpay` and pushes it to `ghcr.io/<owner>/charts/vpay`;
+# the packaging runs here, and the already-published guard, the push and the
+# signature do not, because all three need a registry to answer.
+#
+# Build the three release images for the host platform, then check and package
+# the chart.
 release-dry-run:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -3544,9 +3550,33 @@ release-dry-run:
     echo "==> helm-check"
     just helm-check
 
-    echo "release-dry-run: ok — three images built for $platform, chart checked."
+    # The chart is a release artefact too since `release.yml` grew its
+    # `publish-chart` job: a `v*` tag pushes `deploy/helm/vpay` to
+    # `ghcr.io/<owner>/charts/vpay` as an OCI artefact, tagged with
+    # `Chart.yaml`'s `version:`. Exactly one step of that is reproducible
+    # without a registry — the packaging — so exactly that one runs here.
+    # It is not merely a lint: `helm package` is what fails on a chart
+    # whose `version:` is not valid semver, and that failure in the
+    # workflow would land AFTER the three images are pushed and signed.
+    #
+    # The tarball goes to a scratch directory that is removed on the way
+    # out. Writing it into the tree would leave an untracked `.tgz` beside
+    # the chart that `helm` itself would then try to package on the next
+    # run.
+    echo "==> helm package (the one step of publish-chart that needs no registry)"
+    chart_out="$(mktemp -d)"
+    trap 'rm -rf "$chart_out"' EXIT
+    helm package deploy/helm/vpay --destination "$chart_out"
+    chart_version="$(sed -n 's/^version: *\([^ #]*\).*$/\1/p' deploy/helm/vpay/Chart.yaml | head -1)"
+    test -f "$chart_out/vpay-$chart_version.tgz" \
+        || { echo "release-dry-run: helm package produced no vpay-$chart_version.tgz; the workflow pushes that exact filename" >&2; exit 1; }
+    echo "release-dry-run: chart packages as vpay-$chart_version.tgz"
+
+    echo "release-dry-run: ok — three images built for $platform, chart checked and packaged."
     echo "release-dry-run: NOT covered: the other architecture, provenance/SBOM,"
-    echo "release-dry-run: push-by-digest, the manifest merge, and cosign signing."
+    echo "release-dry-run: push-by-digest, the manifest merge, and cosign signing —"
+    echo "release-dry-run: nor, for the chart, the already-published guard, the"
+    echo "release-dry-run: helm push or its signature. All of those need a registry."
 
 
 # -------------------------------------------------------------- dev loop ---

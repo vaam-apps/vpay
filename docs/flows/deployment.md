@@ -181,6 +181,98 @@ builds for the host architecture, then `just helm-check`. It rehearses neither
 the registry, nor the attestations, nor the signature, nor the other
 architecture. [../runbooks/release.md](../runbooks/release.md) is the procedure.
 
+## 2a. The chart itself: how it is published and signed
+
+The chart is a fourth artifact, published to the same registry as the images
+and by the same workflow, but on its own path: `release.yml`'s
+`publish-chart` job pushes `deploy/helm/vpay` to
+`oci://ghcr.io/vaam-apps/charts/vpay` — an OCI artifact, not a second
+hosting mechanism, since Helm has needed no separate chart-repository format
+since 3.8.
+
+**Tags only**, which is the one place this job does not mirror §2. An OCI
+chart's tag is not a label a workflow step chooses; `helm push` reads it
+straight from `Chart.yaml`'s own `version:`, and there is no second name a
+`type=raw,value=edge` step could move independently of it. An `edge` chart
+would therefore mean either republishing one version over itself on every
+push to `master`, or inventing accumulating pre-release version strings that
+`helm search` would then happily offer as real. Between releases the chart
+stays what it has always been — a directory in a clone, installed with `helm
+upgrade --install vpay deploy/helm/vpay`, which `deploy/helm/vpay/README.md`
+has always described and which `just helm-check` exercises on every PR — so
+the job only runs `if: startsWith(github.ref, 'refs/tags/v')`.
+
+**`needs: [namespace, merge]`**, and specifically the images' `merge` job
+rather than the per-architecture builds: the chart's `values.yaml` defaults
+`images.*.tag` to `.Chart.AppVersion`, so a chart published before the three
+images it names exist would resolve to tags GHCR does not have yet. The
+chart cannot come before the thing it points at.
+
+**The republish guard.** `helm push` to an OCI registry overwrites an
+existing tag silently — no error, no warning, exit 0 either way. Before
+pushing, the job runs `helm show chart oci://ghcr.io/vaam-apps/charts/vpay
+--version <chart version>`; if that succeeds, the version is already
+published and the job fails the release rather than overwriting it, naming
+the fix (bump `Chart.yaml`'s `version:`) in the error. Images need no
+equivalent guard because their tag is derived straight from the git tag that
+triggered the build, which is different on every release by construction;
+the chart's tag is `Chart.yaml`'s hand-maintained `version:`, and a release
+that forgets to bump it is exactly the gap this guard exists to catch.
+
+**Signed exactly as the images are**: keyless cosign, the workflow's GitHub
+OIDC token, the same certificate identity (`release.yml` at that ref). The
+`cosign verify` command §2 gives works against the chart with only the
+reference changed.
+
+**The whole job as a state machine.** Every transition below is one step of
+`publish-chart` in
+[../../.github/workflows/release.yml](../../.github/workflows/release.yml)
+(the job is lines 392-527 as of 2026-09-19); the three edges that refuse are
+labelled with what the reader will actually see in the run log.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> Skipped: push to master
+    note right of Skipped
+        No edge chart, by design. Between
+        releases the chart is a directory
+        in a clone.
+    end note
+    Skipped --> [*]
+
+    [*] --> ImagesMerged: push of a v* tag
+    ImagesMerged --> ReadChartYaml: needs merge — all three<br/>images pushed and signed
+
+    ReadChartYaml --> Linted: appVersion == tag
+    ReadChartYaml --> Refused: appVersion != tag — the chart<br/>would default images.*.tag to an<br/>image this release did not build
+
+    Linted --> Asked: helm lint, four value sets
+    Linted --> Refused: a value set stops rendering
+
+    Asked --> Refused: helm show chart exits 0 —<br/>already published, bump<br/>Chart.yaml version
+    Asked --> Undecidable: helm failed, but not<br/>with "not found"
+    Asked --> Pushed: "not found" — never published
+
+    Pushed --> Signed: cosign sign, keyless,<br/>over the manifest digest
+    Signed --> [*]
+
+    Refused --> [*]: red run, and the three<br/>images are already public
+    Undecidable --> [*]: red run, nothing pushed
+```
+
+Two things the diagram is meant to make unmissable. **`Refused` is reachable
+after the images are already public** — the chart is the last artifact, so a
+guard that fires leaves a release with three published images and no chart,
+which is a state a maintainer has to finish by hand (bump `version:`, re-run
+the job). And **`Undecidable` is a separate state from `Refused` on purpose**:
+"the registry did not answer" is not "the chart is already there", and the job
+stops rather than pushing past a question it could not get an answer to.
+
+This section covers the mechanism; cutting a release, reading the guard's
+output, and verifying the chart's signature are procedure, not mechanism, and
+belong in [../runbooks/release.md](../runbooks/release.md).
+
 ## 3. What must exist before a pod can start
 
 Both binaries refuse to start rather than start half-configured. Every item
@@ -651,6 +743,16 @@ What does not exist, stated plainly:
   control on the ledger-balance check.
   [ADR-0013](../adr/0013-database-backups-and-retention.md) records the
   backup obligations and is **proposed** — no backup has ever been taken.
+- **Added 2026-09-19: `release.yml` gained a `publish-chart` job (§2a),
+  pushing `deploy/helm/vpay` to `oci://ghcr.io/vaam-apps/charts/vpay` on a
+  `v*` tag.** Like every other line of this chart, it has never run: no tag
+  has triggered it, no chart has ever been pushed to that registry, nothing
+  has been signed, and no `cosign verify` has been read against a chart
+  manifest. No cluster has ever installed this chart from a registry, or any
+  other way — that was already true above and stays true. See the Helm
+  chart publishing row in [../status/infrastructure.md](../status/infrastructure.md)
+  for the guard mechanics and [../runbooks/release.md](../runbooks/release.md)
+  for the procedure once there is a first tag to rehearse it against.
 
 **Added 2026-09-03 (Step 6, block C): the instrumentation §6a describes.**
 All twelve metric names are now emitted, each at exactly one seam — thirteen

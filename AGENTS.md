@@ -440,6 +440,17 @@ plugin's podspec/gradle boilerplate (`0.0.1` / `1.0-SNAPSHOT`, never wired to
 `pubspec.yaml` and already inconsistent with each other), and the Flutter
 example's `pubspec.lock` (nothing enforces it; `flutter pub get` rewrites it).
 
+**Added 2026-09-19: publishing the chart makes that hand-bump load-bearing.**
+`release.yml`'s `publish-chart` job pushes `deploy/helm/vpay` to
+`oci://ghcr.io/vaam-apps/charts/vpay`, and `helm push` derives the artifact's
+tag from `Chart.yaml`'s `version:` directly — there is no second name, and no
+release-please output, that could stand in for it. A release that forgets to
+bump it no longer passes quietly: the job's own guard checks whether that
+version is already published before pushing and fails the release if it is,
+rather than silently overwriting a chart people already have (`helm push`
+overwrites an existing OCI tag with no warning). See
+[docs/flows/deployment.md](docs/flows/deployment.md) §2a.
+
 **The first tag.** `.release-please-manifest.json` seeds `0.1.0` — what every
 manifest already says while unreleased — so the next release is `0.1.1` or
 `0.2.0`, _not_ `0.1.0`. To make the first tag exactly `v0.1.0`, put

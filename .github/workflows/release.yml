@@ -341,6 +341,191 @@ jobs:
           DIGEST: ${{ steps.index.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
+  # --- Helm chart publishing --------------------------------------------
+  #
+  # The chart at `deploy/helm/vpay` goes to the same registry as the images
+  # it deploys, as an OCI artifact: `ghcr.io/<owner>/charts/vpay`. Helm has
+  # had no separate repository format requirement since 3.8 — an OCI registry
+  # IS the repository — so this adds a publish path and no new hosting.
+  #
+  # Four decisions, each of which the reader is entitled to disagree with,
+  # so each is argued rather than asserted:
+  #
+  # (1) `charts/` in the path, not `ghcr.io/<owner>/vpay`. The chart and the
+  #     three images are packages under one owner, listed in one place, and
+  #     `vpay` sitting beside `vpay-server` with a different artifact type
+  #     inside it is a trap for whoever reads that list next. `charts/vpay`
+  #     says what it is. It costs nothing: GHCR paths nest, and that is
+  #     checked rather than assumed — `helm show chart
+  #     oci://ghcr.io/prometheus-community/charts/prometheus --version 27.4.0`
+  #     answers from a real, anonymous GHCR read (2026-09-19).
+  #
+  # (2) **Tags only.** There is no `edge` chart, deliberately, and this is
+  #     the one place this workflow does not mirror what it does for images.
+  #     An OCI chart's tag is not a label someone chose — `helm push` derives
+  #     it from `Chart.yaml`'s `version:` and there is no second name to move
+  #     — so an `edge` chart means either republishing one version over
+  #     itself on every merge, or inventing `0.2.1-edge.<sha>` versions that
+  #     accumulate forever and that `helm search` will happily offer. Between
+  #     releases the chart is a directory in a clone (`helm upgrade --install
+  #     vpay deploy/helm/vpay`), which is what `deploy/helm/vpay/README.md`
+  #     has always told people to do and what `just helm-check` exercises on
+  #     every PR.
+  #
+  # (3) `needs: merge`. The chart's `values.yaml` defaults `images.*.tag` to
+  #     `.Chart.AppVersion`, so a chart published before the images it names
+  #     are pushed is a chart that resolves to tags GHCR does not have yet.
+  #     Depending on `merge` (all three images, all architectures, merged and
+  #     signed) means the chart cannot exist before the thing it pulls.
+  #
+  # (4) Signed with cosign, keyless, exactly as the images are. A chart is an
+  #     OCI manifest like any other and `cosign sign` treats it as one; the
+  #     certificate identity is this same workflow file, so
+  #     `docs/runbooks/release.md` §3's verification command works on the
+  #     chart with only the reference changed.
+  #
+  # What this job does NOT do: it does not bump `Chart.yaml`'s `version:`.
+  # That line is still hand-edited (AGENTS.md § Releasing says why, and
+  # `cargo xtask verify-versions` deliberately exempts it) — but publishing
+  # makes forgetting it fail the release instead of passing silently, which
+  # is what the "already published" guard below is for.
+  publish-chart:
+    name: publish the Helm chart to GHCR (OCI)
+    runs-on: ubuntu-latest
+    needs: [namespace, merge]
+    # A chart is only ever published for a release. See decision (2) above.
+    if: startsWith(github.ref, 'refs/tags/v')
+    env:
+      NAMESPACE: ${{ needs.namespace.outputs.namespace }}
+    # Same shape as `merge`, and for the same reasons: a job-level block
+    # replaces the workflow-level one outright, and `id-token: write` is
+    # here because this job signs.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes a commit; the chart goes to a registry, not
+          # to git.
+          persist-credentials: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      # Both versions in `Chart.yaml`, read once, with the empty-match scar
+      # `sdk-version` above carries verbatim: `[^"#]*`, never `.*$`, because
+      # both lines end in a comment and a pattern anchored to end-of-line
+      # matches nothing while the job stays green.
+      #
+      # `appVersion` must equal the tag — release-please owns that line
+      # (`release-please-config.json`'s `extra-files`), so it does by
+      # construction on a tag release-please cut, and this check is what
+      # catches a tag cut by hand. `version:` is NOT compared to the tag:
+      # the chart has its own lifecycle and is routinely a different number.
+      - id: chart
+        name: read Chart.yaml, and refuse a tag its appVersion contradicts
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          VERSION="$(sed -n 's/^version: *\([^ #]*\).*$/\1/p' deploy/helm/vpay/Chart.yaml | head -1)"
+          APP_VERSION="$(sed -n 's/^appVersion: *"\([^"]*\)".*$/\1/p' deploy/helm/vpay/Chart.yaml | head -1)"
+          echo "tag=${TAG} chart-version=${VERSION} appVersion=${APP_VERSION}"
+          [[ -n "$VERSION" ]] || { echo "::error::Chart.yaml has no readable 'version:' (blank means the sed pattern matched nothing)"; exit 1; }
+          [[ "$APP_VERSION" == "$TAG" ]] || { echo "::error::Chart.yaml appVersion '${APP_VERSION}' is not tag v${TAG}; the chart would default images.*.tag to an image this release did not build"; exit 1; }
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # `ci.yml` does not run on tags (`push: { branches: [master] }`), so
+      # nothing has linted this chart since the commit that became the tag
+      # was a pull request. `helm lint` over the same four value sets
+      # `just helm-check` lints is offline and takes seconds; the rest of
+      # that recipe (kubeconform, the twenty-four guard fixtures) needs the
+      # network and belongs where it already is, on the PR.
+      - name: helm lint (the four value sets, as `just helm-check` does)
+        run: |
+          set -euo pipefail
+          helm lint deploy/helm/vpay
+          for f in ci/values-full.yaml ci/values-route.yaml ci/values-route-networkpolicy.yaml; do
+            helm lint deploy/helm/vpay -f "deploy/helm/vpay/$f"
+          done
+
+      # `github.actor` and the token go in through the environment rather
+      # than through `${{ }}` inside the script, which is zizmor's
+      # template-injection shape and the same way `docker/login-action`
+      # receives them in `build` and `merge`.
+      - name: log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: helm registry login "$REGISTRY" --username "$ACTOR" --password-stdin <<< "$GHCR_TOKEN"
+
+      # The guard that makes the hand-bump load-bearing. `helm push` to an
+      # OCI registry overwrites an existing version **silently** — measured,
+      # not assumed: pushing the same chart twice against a local `registry:2`
+      # returned exit 0 both times with no warning. So a release whose
+      # `Chart.yaml` `version:` was not bumped would replace the chart people
+      # already have with one that resolves to different images, which is
+      # precisely the hazard `Chart.yaml`'s own 0.2.0 -> 0.2.1 comment
+      # describes, arriving through the registry instead of through a clone.
+      #
+      # Three outcomes, not two, because "the command failed" is not one
+      # answer. Measured against a local registry:
+      #
+      #   exit 0                                   -> published; stop.
+      #   `... "FetchReference" ... : not found`   -> never published, or the
+      #                                               package does not exist
+      #                                               at all (the two are
+      #                                               textually identical and
+      #                                               mean the same thing
+      #                                               here); push.
+      #   anything else (`dial tcp ... connection
+      #   refused`, TLS, 5xx)                      -> the registry did not
+      #                                               answer the question.
+      #                                               Stop rather than push
+      #                                               past it.
+      - name: refuse to republish a chart version that already exists
+        env:
+          CHART: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
+          VERSION: ${{ steps.chart.outputs.version }}
+        run: |
+          set -euo pipefail
+          if out="$(helm show chart "$CHART" --version "$VERSION" 2>&1)"; then
+            echo "::error::${CHART}:${VERSION} is already published. Bump 'version:' in deploy/helm/vpay/Chart.yaml — it is hand-edited on purpose (AGENTS.md § Releasing), and this release would otherwise overwrite a published chart in place."
+            exit 1
+          elif ! grep -q 'not found' <<< "$out"; then
+            echo "::error::could not determine whether ${CHART}:${VERSION} is published — helm failed for a reason that is not 'not found', so this job will not push past it: ${out}"
+            exit 1
+          fi
+          echo "${CHART}:${VERSION} is not published yet; proceeding"
+
+      # `helm push` prints BOTH its `Pushed:` and `Digest:` lines to
+      # **stderr** and leaves stdout empty — measured against a local
+      # `registry:2`, and the reason this redirects rather than piping
+      # stdout. The digest is the chart manifest's, and it is what cosign
+      # signs and what `docs/runbooks/release.md` tells a consumer to pin.
+      - id: push
+        name: package and push the chart
+        env:
+          REPO: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
+          VERSION: ${{ steps.chart.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm package deploy/helm/vpay --destination "${RUNNER_TEMP}/chart"
+          helm push "${RUNNER_TEMP}/chart/vpay-${VERSION}.tgz" "$REPO" 2>&1 | tee "${RUNNER_TEMP}/push.log"
+          digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' "${RUNNER_TEMP}/push.log" | head -1)"
+          [[ -n "$digest" ]] || { echo "::error::helm push printed no 'Digest:' line; there is nothing to sign — see the log above"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "${IMAGE}:${VERSION}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Same identity, same Rekor, same caveat as the images: renaming this
+      # file breaks every downstream `cosign verify`.
+      - name: cosign sign (keyless, GitHub OIDC)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
   # --- SDK publishing ---------------------------------------------------
   #
   # Two of the five directories under `sdks/` are actually ready to ship —

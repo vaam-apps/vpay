@@ -46,9 +46,9 @@ here.
 ## 1. What a release is
 
 A `v*` tag on `master`. Pushing it runs
-[`release.yml`](../../.github/workflows/release.yml), which builds four images
-on two architectures, merges each pair into a manifest list, applies the tags,
-and signs each manifest-list digest with cosign.
+[`release.yml`](../../.github/workflows/release.yml), which builds three
+images on two architectures, merges each pair into a manifest list, applies
+the tags, and signs each manifest-list digest with cosign.
 
 | Trigger                  | Tags produced (per image)      |
 | ------------------------ | ------------------------------ |
@@ -57,27 +57,48 @@ and signs each manifest-list digest with cosign.
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
-The four images are `ghcr.io/vaam-apps/vpay-server`, `-worker`, `-dashboard`
-and `-checkout` (step-6 decision (1), plus `vpay-checkout` from Step 9 D3 on
+**A `v*` tag does not stop at images.** It also publishes `deploy/helm/vpay`
+itself, as an OCI artifact of its own that the table above does not show,
+because it is not "per image" and it is not produced on a `master` merge at
+all — only a tag publishes a chart, deliberately, so there is no `edge` chart
+the way there is an `edge` image. See §8.
+
+The three images are `ghcr.io/vaam-apps/vpay-server`, `-dashboard` and
+`-checkout` (step-6 decision (1), plus `vpay-checkout` from Step 9 D3 on
 2026-09-04 — this section said "three" until the 2026-09-05 review pass
-noticed the count had moved). The chart deploys `-server` and `-worker`
-always and `-checkout` behind `checkout.enabled` (default false);
+noticed the count had moved, and then said "four" until 2026-09-19, which
+is the error described next). ~~The four images are … `-worker` …~~ **The
+count moved back on 2026-09-07 and this page did not follow it for twelve
+days.** Issue #77 retired `vpay-worker`: there is one backend image, and the
+worker Deployment runs `vpay-server` with `args: ["worker"]`. `release.yml`'s
+`build` and `merge` matrices have listed three images since, and
+`just release-dry-run` builds three. Corrected 2026-09-19.
+
+The chart deploys `-server` always — as both the server and the worker
+workload — and `-checkout` behind `checkout.enabled` (default false);
 `vpay-dashboard` is published and **not** templated — see
 `deploy/helm/vpay/README.md` for why.
 
 ## 2. Cutting a tag
 
-Before you tag, the thing worth checking is the one CI cannot: that `master` is
-green _and_ that the chart's `appVersion` and the tag agree, because
-`values.yaml`'s `images.*.tag` defaults to `.Chart.AppVersion`.
+Before you tag, the thing worth checking is the ones CI cannot: that `master`
+is green, that the chart's `appVersion` and the tag agree (because
+`values.yaml`'s `images.*.tag` defaults to `.Chart.AppVersion`), and that
+`Chart.yaml`'s `version:` has actually moved since the last release that
+published a chart. That third check is new (2026-09-19, `publish-chart`): a
+release whose chart `version:` is unchanged does not merely look wrong, it
+**fails the run** at `publish-chart`'s republish guard, after the three
+images have already built and pushed — see §8. Catch it here, before tagging,
+not there.
 
 ```bash
 just verify              # the two self-checks
 just ci                  # everything CI runs, in CI's order
-just release-dry-run     # the four images for THIS host's arch, then helm-check
+just release-dry-run     # the three images for THIS host's arch, then the chart
 gh run list --branch master --limit 3
 
 grep -n '^appVersion:' deploy/helm/vpay/Chart.yaml   # must match the tag, sans `v`
+grep -n '^version:' deploy/helm/vpay/Chart.yaml      # must differ from the last published chart version, or §8's guard fails the run
 
 git tag -a v1.2.3 -m 'vpay 1.2.3'
 git push origin v1.2.3
@@ -194,6 +215,10 @@ gone by construction rather than by an instruction you have to follow. It is
 _not_ gone for a rolling upgrade that spans a migration, which is §5's
 subject.
 
+**The chart itself is pinned and installed the same way its images are** —
+by an explicit `--version` rather than a moving reference, because there is
+no `latest`-equivalent for a chart either. See §8.
+
 ## 5. Rolling back
 
 Roll back by pinning the previous digest and upgrading — not by moving a tag.
@@ -239,6 +264,10 @@ Everything above. Specifically:
 - **No `v*` tag has ever been pushed.** Every run took the
   `type=raw,value=edge` branch, so the semver tag path (`{{version}}`,
   `{{major}}.{{minor}}`) in §1's table has never produced a tag.
+- **`publish-chart` has never run, for the same reason (2026-09-19).** It
+  triggers only on a `v*` tag, and none has been pushed since the job landed.
+  Nothing has been pushed to `oci://ghcr.io/vaam-apps/charts`, no chart has
+  been signed, and no `cosign verify` has been read against one — see §8.
 - **No image from any run has been pulled or executed anywhere**, and GHCR
   package visibility is unmeasured (the token lacks `read:packages`;
   anonymous pull is refused). A green push is not a reachable image.
@@ -352,3 +381,118 @@ should override it with `lto = "thin"` (much cheaper links, a slower binary
 by an unmeasured amount) is a maintainer's decision about the shipped
 artefact, not a build-plumbing one. It is named here because it, and not
 cargo-chef, is what now bounds a release rebuild.
+
+## 8. Publishing the chart
+
+Added 2026-09-19: `release.yml` gained a `publish-chart` job. This section is
+numbered `8` rather than slotted in as a new `5` — where chart publishing
+would belong, next to §4's pinning — for a reason that will not go away with
+a more thorough pass. Live pages cite §5, §6 and §7 by number
+(`docs/runbooks/rotate-signing-key.md`,
+`docs/runbooks/restore-from-backup.md`, and a `See … §7` in
+`docs/status/infrastructure.md`) and could be updated; the notes under
+`docs/plans/` cite §4, §6 and §7 as well, and those are dated records of what
+this page said at the time, so editing them to match a later numbering would
+falsify the archive rather than maintain it. The numbering is therefore
+append-only. §1 and §4 above link forward to this section instead.
+
+**What publishes it, and when.** `publish-chart` (`needs: [namespace,
+merge]`) packages `deploy/helm/vpay` and pushes it as an OCI artifact, same as
+an image. `needs: [namespace, merge]` is not incidental: the chart cannot
+exist before the three images it names, because `values.yaml` defaults
+`images.*.tag` to `.Chart.AppVersion`, so `publish-chart` waits for `merge` —
+the job that assembles and tags the manifest lists — to finish first. Its
+`if:` is `startsWith(github.ref, 'refs/tags/v')` and nothing else: unlike the
+images, this chart has no `edge` build at all. A merge to `master` publishes
+three images and zero charts. See §1.
+
+**Where it lands.** `oci://ghcr.io/<namespace>/charts/vpay`, under the same
+`namespace` job the images use (lowercased `github.repository_owner`) — today
+that is `oci://ghcr.io/vaam-apps/charts/vpay`.
+
+**The tag is `Chart.yaml`'s `version:`, not the app version and not the git
+tag.** `helm push` derives the OCI tag from the chart it is packaging; there
+is no second name for the job to set. `publish-chart` does read `appVersion`
+and refuses to proceed if it disagrees with the tag (`values.yaml`'s
+`images.*.tag` defaults to `.Chart.AppVersion`, so a mismatch would ship a
+chart that defaults to an image this release never built) — but that check is
+about `appVersion`, never about `version:`. `version:` has its own lifecycle
+and is routinely a different number than the release it ships alongside;
+`Chart.yaml`'s own comment already argues for this (0.2.0 -> 0.2.1). See §2
+for the check to run on `version:` before you tag.
+
+**`helm push` silently overwrites an existing version — measured, not
+assumed.** Against a throwaway local `registry:2` (2026-09-19), pushing the
+same packaged chart twice returned exit 0 both times, with no warning either
+time. Left alone, a release that forgot to bump `version:` would silently
+replace a chart people already have with one that resolves to different
+images — the same hazard `Chart.yaml`'s 0.2.0 -> 0.2.1 comment already
+describes, arriving through the registry instead of through a clone. So
+before packaging anything, the job runs:
+
+```bash
+helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
+```
+
+and reads three outcomes out of it, not two, because "the command failed" is
+not by itself an answer — also measured against the same local registry:
+
+| Outcome                                                         | Reads as                                                                                    | Job does                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------- |
+| exit 0                                                          | `$VERSION` is already published                                                             | fail                          |
+| exit non-zero, output contains `not found`                      | not published yet — a missing version and a missing chart name are textually identical here | proceed to package and push   |
+| exit non-zero, anything else (`connection refused`, TLS, a 5xx) | the registry did not answer the question                                                    | fail rather than push past it |
+
+**The remedy, when the guard fires, is exactly one thing: bump `version:` in
+`deploy/helm/vpay/Chart.yaml`, then cut the tag again.** The job's own error
+message says so. Nothing about the guard can tell "this version was
+deliberately re-published" from "somebody forgot to bump it" — it cannot,
+since `helm push` would happily do either — so it always fails rather than
+guess, and the fix is always the hand-edit, never a retry.
+
+Past the guard, the job packages, pushes, and reads the digest back out of
+`helm push`'s own log — measured to print both its `Pushed:` and `Digest:`
+lines to **stderr**, with stdout empty, which is why the job redirects rather
+than piping stdout:
+
+```bash
+helm package deploy/helm/vpay --destination "$RUNNER_TEMP/chart"
+helm push "$RUNNER_TEMP/chart/vpay-$VERSION.tgz" oci://ghcr.io/vaam-apps/charts
+```
+
+The digest is the chart manifest's own — measured to carry
+`config.mediaType: application/vnd.cncf.helm.config.v1+json` and a single
+layer of `application/vnd.cncf.helm.chart.content.v1.tar+gzip`, and
+`cosign triangulate` resolves it, confirming cosign addresses a chart exactly
+as it addresses an image. `publish-chart` signs that digest the same way
+`merge` signs an image's: keyless, against the workflow's GitHub OIDC token.
+
+**Verifying the signature** is §3's command with the reference changed to the
+chart, and — unlike §3's own image example — the identity regexp tightened to
+tags only, because a tag is the only thing that ever publishes a chart:
+
+```bash
+IMAGE=ghcr.io/vaam-apps/charts/vpay:0.2.1
+
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE"
+```
+
+**Installing and pinning** follows §4's shape, with the chart's own version in
+place of an image's digest:
+
+```bash
+helm show values oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1
+helm template vpay oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1 -f your-values.yaml
+helm upgrade --install vpay oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1 -f your-values.yaml
+```
+
+`helm search` will not find any of this — an OCI registry carries no
+`index.yaml`, so there is nothing for `helm search repo` or `helm search hub`
+to read. `deploy/helm/vpay/README.md`'s Install section covers this path
+alongside the local-checkout one, including what to do between releases, when
+there is no chart tag to point at.
+
+**None of the above has run for real.** See §6.

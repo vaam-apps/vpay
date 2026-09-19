@@ -87,6 +87,53 @@ helm template vpay deploy/helm/vpay -f my-values.yaml | less
 helm upgrade --install vpay deploy/helm/vpay -f my-values.yaml
 ```
 
+### Installing a released chart from the registry
+
+Every `v*` tag also publishes this chart to `oci://ghcr.io/vaam-apps/charts/vpay`
+(`publish-chart` in `.github/workflows/release.yml`; see
+[docs/runbooks/release.md](../../../docs/runbooks/release.md) §8 for what
+publishes it and when). That is a second way to get the chart, not a
+replacement for the local-checkout path above — there is deliberately no
+`edge` chart, so between releases (any commit that has not been tagged) the
+local checkout is the only way to install this chart at all.
+
+```bash
+# Chart version, not the app version and not the git tag: Chart.yaml's
+# `version:` (0.2.1 on this branch as of 2026-09-19). `helm push` derives the
+# OCI tag from the chart it packages, and the two numbers move on separate
+# schedules — see release.md §8 for why.
+VERSION=0.2.1
+
+helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
+helm show values oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
+helm template vpay oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION" \
+  -f my-values.yaml | less
+helm upgrade --install vpay oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION" \
+  -f my-values.yaml
+```
+
+`helm search` will not find any of this. An OCI registry carries no
+`index.yaml` for `helm search repo` or `helm search hub` to read, so there is
+no index to search — you either already have the chart's coordinates and
+version (above), or you read them off a release.
+
+Verify the signature before you trust a pull — same certificate identity as
+the images, tightened to tags only, because a tag is the only thing that
+publishes a chart at all (there is no `edge` chart to loosen the regexp for,
+unlike the image example in release.md §3):
+
+```bash
+IMAGE=ghcr.io/vaam-apps/charts/vpay:0.2.1
+
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE"
+```
+
+None of this has run for real yet — read [Status](#status) before you rely on
+it.
+
 A minimal real `my-values.yaml`:
 
 ```yaml
@@ -896,6 +943,21 @@ helm-check` report that the guard "did not fire" and name it. See the
   four. The unproven half is the pull, not the push: nobody has pulled one,
   and GHCR package visibility could not be measured (no `read:packages` scope;
   anonymous pull refused).
+- **The `publish-chart` job itself has never run (2026-09-19).** This is a
+  separate, net-new claim from the images bullet above — that one is about
+  the images the chart _references_, this one is about the chart _artifact_.
+  No `v*` tag has been pushed since `publish-chart` landed, so no chart has
+  ever been pushed to `oci://ghcr.io/vaam-apps/charts/vpay`, nothing has been
+  signed, and the registry install commands in [Install](#install) are read
+  from the job's source, not from a run of it.
+- Nobody has installed this chart from the registry, and no cluster has ever
+  run one that was (that was already true of the local-checkout path too, and
+  stays true either way).
+- GHCR package visibility for the chart is unmeasured, for the same reason
+  it is for the images: the first push creates the package private, and
+  nothing has pushed yet to even ask GHCR the question. Making
+  `ghcr.io/vaam-apps/charts/vpay` public, if that is wanted, will be the same
+  one-time human change in the package's settings the images still need.
 
 ### Follow-ups
 
