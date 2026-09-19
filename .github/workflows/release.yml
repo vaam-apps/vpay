@@ -82,9 +82,14 @@ env:
 # SBOM into the image index itself (`provenance: mode=max`, `sbom: true`),
 # which needs only `packages: write`. Add it back in the job that needs it if
 # `actions/attest-build-provenance` ever lands here.
+#
+# `packages: write` is NOT here either, for the same reason: only `build`
+# and `merge` touch GHCR. `merge` already declared its own block; `build`
+# used to inherit this one, and now declares it too. A workflow-level
+# grant reaches every job, including the two npm publish jobs that must
+# never be able to write a package to GHCR.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   # A GHCR path must be lowercase; `github.repository_owner` is not
@@ -115,6 +120,13 @@ jobs:
     name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
     runs-on: ${{ matrix.platform.runner }}
     needs: [namespace]
+    # Declared here rather than inherited from a workflow-level grant:
+    # this job pushes per-architecture images to GHCR, and it is the only
+    # job besides `merge` that needs to. `id-token: write` is deliberately
+    # absent - `merge` signs, these builds do not.
+    permissions:
+      contents: read
+      packages: write
     env:
       NAMESPACE: ${{ needs.namespace.outputs.namespace }}
     strategy:
@@ -158,7 +170,13 @@ jobs:
             runner: ubuntu-24.04-arm
             docker: linux/arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job builds and pushes to GHCR with GITHUB_TOKEN, never
+          # over git. Leaving the checkout token in .git/config would let
+          # any later step - or anything that archives the workspace -
+          # reuse it.
+          persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -237,7 +255,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -267,7 +285,7 @@ jobs:
           - name: vpay-dashboard
           - name: vpay-checkout
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image.name }}-*
@@ -599,10 +617,10 @@ jobs:
     runs-on: ubuntu-latest
     # Narrower than the workflow-level block (which also grants
     # `packages: write` for the GHCR jobs above): this job never touches
-    # GHCR, only the npm registry, and `id-token: write` is here for npm
-    # provenance (Sigstore/Rekor), not for the auth exchange — see the
-    # note on the publish step below for why the two are different things
-    # in this repository specifically.
+    # GHCR, only the npm registry. `id-token: write` does double duty:
+    # npm provenance (Sigstore/Rekor) AND the Trusted Publishing OIDC
+    # exchange that authenticates the publish — see the note on the
+    # publish step below for why those are two different things.
     permissions:
       contents: read
       id-token: write
@@ -616,7 +634,7 @@ jobs:
       # jobs: `pnpm/action-setup` refuses to run when both it and
       # `package.json`'s `packageManager` name a version
       # ("Multiple versions of pnpm specified"). `package.json` is this
-      # repository's single source of truth (pnpm@9.15.0).
+      # repository's single source of truth (pnpm@11.18.0).
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -624,9 +642,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           # `package-manager-cache: false`, explicitly — setup-node's own
           # default is `true` (caches automatically off the manifest's
-          # `packageManager` field). This job holds NPM_TOKEN and publishes
-          # to a public registry, and restoring a package-manager cache
-          # into that context is exactly zizmor's cache-poisoning shape:
+          # `packageManager` field). This job publishes to a public registry
+          # with an OIDC-minted credential, and restoring a package-manager
+          # cache into that context is exactly zizmor's cache-poisoning shape:
           # a cache an untrusted run could have populated, replayed into a
           # privileged publish step. Runs once per release; a cold install
           # costs seconds, not minutes.
@@ -643,58 +661,72 @@ jobs:
           pnpm run typecheck
           pnpm run test
 
-      # pnpm 9.15.0's `pack` has no `--dry-run` (`pnpm help pack` lists
-      # only `--json`/`--pack-destination` — confirmed against the pinned
-      # version locally, not assumed from newer pnpm's docs; `publish
-      # --dry-run` below IS supported at this version and is the real
-      # dry-run check). This runs the actual pack into the runner's own
-      # scratch directory, which GitHub Actions discards with the runner
-      # — nothing is uploaded and nothing is left in the working tree.
+      # `pnpm pack --dry-run` — available since the pin moved to pnpm 11
+      # (9.15.0's `pack` had only `--json`/`--pack-destination`, which is
+      # why this step used to pack into the runner's scratch directory).
+      # Confirmed against 11.18.0's own `pack --help`, not assumed from
+      # docs. Matches how vsms's equivalent job does it.
       - name: Package pack validation
         working-directory: sdks/nodejs
-        run: pnpm pack --pack-destination "${{ runner.temp }}"
+        run: pnpm pack --dry-run
 
       - name: Publish dry-run
         working-directory: sdks/nodejs
         run: pnpm publish --dry-run --no-git-checks
 
-      # Classic token auth, NOT npm Trusted Publishing (OIDC) — a
-      # deliberate deviation from vsms's own `publish-node-sdk`, for two
-      # independent reasons, either one of which alone would be enough:
+      # npm Trusted Publishing (OIDC). No token is read here: `setup-node`
+      # above sets the registry, and pnpm performs the OIDC exchange itself
+      # using the `id-token: write` this job already grants.
       #
-      #   1. This repository pins `packageManager: pnpm@9.15.0`
-      #      (root package.json). pnpm's own OIDC token exchange for npm
-      #      Trusted Publishing landed in pnpm 11 — 10.16/10.17 cannot do
-      #      it at all, and 9.15.0 predates it by two majors. Bumping the
-      #      pin to unblock this one job is a repository-wide decision
-      #      (every other CI job, and every contributor's local install,
-      #      moves with it) and out of scope here — see this PR's
-      #      description.
-      #   2. Even with pnpm 11, npm Trusted Publishing cannot bootstrap a
-      #      package that has never been published: a Trusted Publisher
-      #      can only be attached to a name that already exists on the
-      #      registry (vsms's own AGENTS.md documents this exact
-      #      constraint, learned the hard way). `@vaam-apps/vpay-sdk` has
-      #      never been published, so the very first release needs a
-      #      token-based publish regardless of pnpm version.
+      # The pin must be >= 11.1.3, not merely "pnpm 11". `setup-node` with
+      # `registry-url` writes an .npmrc containing
+      # `_authToken=${NODE_AUTH_TOKEN}`, and this job deliberately does not
+      # set that variable - so the placeholder stays unexpanded. Before
+      # 11.1.3 pnpm passed the literal `${NODE_AUTH_TOKEN}` through as a
+      # bearer token and the publish failed with a masked 404 even though
+      # OIDC was configured correctly (pnpm#11513). 11.1.3 treats an
+      # unresolved placeholder as empty, which is what lets OIDC be the
+      # auth source. The pin is 11.18.0, well past it.
       #
-      # `--provenance` is unaffected by either of those — pnpm has
-      # supported it since 8.4, well before Trusted Publishing existed,
-      # and it only needs `id-token: write` (granted above) plus a
-      # supported CI provider. It is orthogonal to *how* the publish is
-      # authenticated, so it still runs here even though auth is a
-      # classic token.
+      # This replaced classic-token auth once BOTH of the blockers recorded
+      # here previously were cleared, on 2026-09-19:
       #
-      # `NPM_TOKEN` (an npm "Automation" token — the type exempt from the
-      # 2FA-on-publish OTP prompt, matching AGENTS.md's own `EOTP` note
-      # for vsms) is a registry-side secret this repository does not yet
-      # have; see this PR's description for what the maintainer needs to
-      # create before this step can succeed.
-      - name: Publish to npm (classic token; see comment above for why not OIDC)
+      #   1. pnpm's publish-side OIDC exchange is a pnpm 11 feature; this
+      #      repository pinned `pnpm@9.15.0`, two majors short. The pin is
+      #      now `pnpm@11.18.0`, matching vsms. (Not "10.21+", which an
+      #      earlier revision of this comment claimed: v10.21.0's trusted-
+      #      publishing entry is the install-side `trustPolicy` setting,
+      #      not publishing. Every publish-side OIDC entry in pnpm's
+      #      changelog is v11.x.)
+      #
+      #      That pin moved in its own change, not this one, and it was
+      #      not free: pnpm 11 refuses to install at all when a
+      #      dependency's build script is not allow-listed, which took
+      #      `pnpm-workspace.yaml`'s `allowBuilds` block and an
+      #      `engines.pnpm` floor of >=11. An earlier revision of this
+      #      comment called the bump cheap on the strength of
+      #      `install --lockfile-only` producing a byte-identical
+      #      lockfile; that resolves without installing, and the
+      #      conclusion drawn from it was wrong.
+      #   2. Trusted Publishing cannot bootstrap a name that has never been
+      #      published — a Trusted Publisher can only attach to a package
+      #      that already exists. Both packages were published manually at
+      #      0.2.1, so there is now something to attach to.
+      #
+      # This depends on a registry-side setting that does not live in this
+      # repository: each package needs a Trusted Publisher on npmjs.com
+      # pointing at `vaam-apps/vpay` and this exact workflow filename. If
+      # `release.yml` is ever renamed, publishing breaks until that entry is
+      # repointed — the same binding vsms's own `ui` workflow comment warns
+      # about.
+      #
+      # `--provenance` is unchanged and orthogonal: pnpm has supported it
+      # since 8.4, it predates Trusted Publishing, and it needs only
+      # `id-token: write` plus a recognised CI provider. It attests what was
+      # built; OIDC authenticates who is publishing.
+      - name: Publish to npm (Trusted Publishing / OIDC)
         if: needs.sdk-version.outputs.is_tag == 'true'
         working-directory: sdks/nodejs
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm publish --access public --provenance --no-git-checks
 
   publish-stripe-js-sdk:
@@ -703,8 +735,9 @@ jobs:
     runs-on: ubuntu-latest
     # See publish-node-sdk's own comment block for why this is
     # `contents: read` + `id-token: write` rather than the workflow-level
-    # `packages: write` too, and for why auth is a classic token rather
-    # than OIDC.
+    # `packages: write` too. `id-token: write` now does double duty here:
+    # provenance attestation AND the OIDC exchange that authenticates the
+    # publish.
     permissions:
       contents: read
       id-token: write
@@ -721,9 +754,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           # `package-manager-cache: false`, explicitly — setup-node's own
           # default is `true` (caches automatically off the manifest's
-          # `packageManager` field). This job holds NPM_TOKEN and publishes
-          # to a public registry, and restoring a package-manager cache
-          # into that context is exactly zizmor's cache-poisoning shape:
+          # `packageManager` field). This job publishes to a public registry
+          # with an OIDC-minted credential, and restoring a package-manager
+          # cache into that context is exactly zizmor's cache-poisoning shape:
           # a cache an untrusted run could have populated, replayed into a
           # privileged publish step. Runs once per release; a cold install
           # costs seconds, not minutes.
@@ -744,18 +777,16 @@ jobs:
       # `--dry-run` at this pnpm pin.
       - name: Package pack validation
         working-directory: sdks/stripe-js
-        run: pnpm pack --pack-destination "${{ runner.temp }}"
+        run: pnpm pack --dry-run
 
       - name: Publish dry-run
         working-directory: sdks/stripe-js
         run: pnpm publish --dry-run --no-git-checks
 
-      # `NPM_TOKEN` is shared with publish-node-sdk: one Automation token
-      # scoped to the `@vaam-apps` npm org can publish both packages, so
-      # this is the same secret, not a second one to create.
-      - name: Publish to npm (classic token; see publish-node-sdk for why not OIDC)
+      # No shared secret any more: both packages authenticate by OIDC, so
+      # each needs its OWN Trusted Publisher entry on npmjs.com. Unlike an
+      # org-scoped Automation token, a Trusted Publisher is per package.
+      - name: Publish to npm (Trusted Publishing / OIDC)
         if: needs.sdk-version.outputs.is_tag == 'true'
         working-directory: sdks/stripe-js
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm publish --access public --provenance --no-git-checks
