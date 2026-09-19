@@ -47,7 +47,7 @@ version: 0.2.1
 # The application version this chart was written against. It is NOT a pin:
 # `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and
 # an image bump are the same edit unless a tag or digest is set explicitly.
-appVersion: "0.2.0" # x-release-please-version
+appVersion: "0.2.1" # x-release-please-version
 
 # `seccompProfile` on a pod spec (used by both Deployments) is GA from 1.19,
 # `PodDisruptionBudget` in `policy/v1` from 1.21, and the

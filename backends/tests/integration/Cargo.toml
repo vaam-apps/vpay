@@ -97,7 +97,7 @@ serde_json.workspace = true
 # list it; `version` is required alongside `path` because `deny.toml` sets
 # `wildcards = "deny"` and a path-only dependency is a wildcard requirement to
 # `cargo deny check bans`. Same declaration `vpay-api` already uses.
-vpay-sdk = { path = "../../../sdks/rust", version = "0.2.0" } # x-release-please-version
+vpay-sdk = { path = "../../../sdks/rust", version = "0.2.1" } # x-release-please-version
 # `tests/merchant_token_flow.rs`: runs the real `vpay_api::router` on a real
 # socket (`axum::serve`) rather than through `tower::ServiceExt::oneshot`,
 # because the resource-server validator fetches the JWKS over HTTP from the

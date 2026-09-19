@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/vaam-apps/vpay/compare/v0.2.0...v0.2.1) (2026-09-19)
+
+
+### Continuous Integration
+
+* pin every action in release-please.yml to a commit SHA ([#213](https://github.com/vaam-apps/vpay/issues/213)) ([848c5b4](https://github.com/vaam-apps/vpay/commit/848c5b40d73b16f5562c21823d9b4c71520c4d9d))
+
 ## [0.2.0](https://github.com/vaam-apps/vpay/compare/v0.1.1...v0.2.0) (2026-09-18)
 
 
