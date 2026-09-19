@@ -93,9 +93,10 @@ jobs:
       # fires that filter: git reports the move as a delete plus an add, and
       # the REST path splits `renamed` the same way. None of the rules below
       # carries an `added|modified:` status key, so deletions match too.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
@@ -296,7 +297,9 @@ jobs:
     name: self-checks (no-mocks, status)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # One source of truth for the compiler version: `rust-toolchain.toml`.
       # `dtolnay/rust-toolchain@stable` would install *today's* stable and let
       # rustup silently download the pinned one on the first `cargo` call —
@@ -310,7 +313,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo xtask verify-no-mocks
       - run: cargo xtask verify-status
       - name: verify-errors (ADR-0011)
@@ -353,10 +356,12 @@ jobs:
       # missing, the version pin unreadable, the CrateStack CLI missing, the
       # schema not parsing.
       #
-      # `just` is pinned to a full commit SHA rather than the `@v2` the `rust`
-      # and `e2e` jobs use, matching what `web` and `deploy` do — this is the
-      # step that decides whether a tool that gates a merge can be swapped by
-      # whoever can move a tag.
+      # `just` is pinned to a full commit SHA, matching what `web` and
+      # `deploy` do — this is the step that decides whether a tool that gates
+      # a merge can be swapped by whoever can move a tag. `rust` and `e2e`
+      # pin their own `taiki-e/install-action` step too now that every action
+      # in this workflow is pinned, just at a separately-verified patch
+      # release (v2.87.16) rather than this v2.87.4.
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
@@ -547,7 +552,9 @@ jobs:
       # `pnpm install` would otherwise trigger.
       CYPRESS_INSTALL_BINARY: 0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - id: toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       # Pinned to a commit of `master` (the ref the `toolchain:` input is
@@ -562,8 +569,8 @@ jobs:
           # "Unexpected input(s) 'clippy'" and clippy only worked because the
           # runner image happens to preinstall it.
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
           # Comma-separated in one string; a flow-style `{ tool: nextest, just }`
           # would repeat the `components:` mistake noted above.
@@ -572,8 +579,8 @@ jobs:
       # test. Before nextest on purpose: the test builds `dist/` on demand if
       # it is absent, and a build failure should be reported by the step
       # whose job it is rather than as a mysterious test failure.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @vaam-apps/vpay-sdk build
@@ -627,7 +634,9 @@ jobs:
     if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - id: toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       # Pinned to a commit of `master` (the ref the `toolchain:` input is
@@ -636,7 +645,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with: { command: check }
 
   web:
@@ -650,20 +659,24 @@ jobs:
       # This job never runs Cypress; skip the ~200 MB binary download.
       CYPRESS_INSTALL_BINARY: 0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # No `version:` here on purpose: pnpm/action-setup@v4 refuses to run
       # when both it and package.json's `packageManager` name a version
       # ("Multiple versions of pnpm specified"). package.json is the single
-      # source of truth (pnpm@9.15.0). This was the workflow's first-ever
+      # source of truth (pnpm@11.18.0). This was the workflow's first-ever
       # run and it failed on exactly that, 2026-09-02.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version-file: .nvmrc, cache: pnpm }
-      # For `just audit-web` below. Pinned to a full commit SHA rather than
-      # the `@v2` the `rust` and `e2e` jobs use — matching what `deploy`
-      # does, and for the reason stated there: a mutable tag is a promise
-      # from whoever can move it, and this is the step that decides whether
-      # a known-vulnerable dependency can land.
+      # For `just audit-web` below. Pinned to a full commit SHA — matching
+      # what `deploy` does, and for the reason stated there: a mutable tag is
+      # a promise from whoever can move it, and this is the step that decides
+      # whether a known-vulnerable dependency can land. `rust` and `e2e` pin
+      # their own `taiki-e/install-action` step too now that every action in
+      # this workflow is pinned, just at a separately-verified patch release
+      # (v2.87.16) rather than this v2.87.4.
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: just
@@ -671,7 +684,7 @@ jobs:
       # and setup-node's pnpm-store cache does not cover it — the same reason
       # the `e2e` job caches ~/.cache/Cypress. ~115 MB per cold run, for the
       # `test-storybook` step at the end of this job.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -756,16 +769,18 @@ jobs:
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version-file: .nvmrc, cache: pnpm }
       # The Cypress binary lives outside node_modules (~/.cache/Cypress) and
       # is not covered by setup-node's pnpm-store cache.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
           tool: just
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/Cypress
           key: cypress-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -781,7 +796,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # With `CYPRESS_INSTALL_BINARY` unset, the `cypress` package's own
       # postinstall downloads the binary during `pnpm install`. `verify` then
       # proves it is actually runnable before a stack is built for it.
@@ -1048,7 +1063,7 @@ jobs:
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: compose-logs, path: compose.log }
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml down -v
@@ -1075,12 +1090,15 @@ jobs:
     if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # Third-party actions in this job are pinned to a full commit SHA, the
-      # way `release.yml` pins every one of its own: a mutable tag like `@v4`
-      # is a promise from whoever can move it, and this job is the only gate
-      # on the chart. `actions/*` stays on its tag to match the rest of this
-      # file — one convention per file, and GitHub owns that namespace.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Every action in this workflow, `actions/*` included, is pinned to a
+      # full commit SHA the way `release.yml` pins every one of its own: a
+      # mutable tag like `@v4` is a promise from whoever can move it, and this
+      # job is the only gate on the chart. The per-file split this comment used
+      # to describe (`actions/*` on its tag, third-party actions on a SHA) is
+      # gone — zizmor's blanket unpinned-uses policy now pins everything here.
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v3.16.1
