@@ -30,10 +30,15 @@ name: release
 # — and four `cosign sign` steps that each logged "Pushing signature to:" and
 # a Rekor tlog index (server 2717616118, worker 2717617767, dashboard
 # 2717616040, checkout 2717615975). What is still true of the original
-# sentence: **no `v*` tag has been pushed**, so the
-# `type=semver` path below has never been taken, and nobody has run
-# `cosign verify` against any of those digests. See docs/status.md and
-# docs/runbooks/release.md.
+# sentence, corrected 2026-09-19: it said **no `v*` tag has been pushed**, so
+# the `type=semver` path below "has never been taken". That stopped being
+# true on 2026-09-17. Three tags exist — `v0.1.1`, `v0.2.0` and `v0.2.1` —
+# and this workflow ran on each (`35275194212`, `35361829971`,
+# `35430925331`); every `build` and every `merge` job succeeded in all three,
+# so the `type=semver` path HAS been taken and has produced real tags. The
+# two later runs are red only on the npm publish jobs. What survives from
+# that sentence is its last clause: nobody has run `cosign verify` against
+# any of those digests. See docs/status.md and docs/runbooks/release.md.
 #
 # Two Dockerfiles, three targets, one shape: both are built from the
 # repository root (`context: .`), exactly as `compose.e2e.yml` builds them.

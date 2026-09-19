@@ -33,13 +33,28 @@ https://ghcr.io/token?scope=repository:vaam-apps/vpay-server:pull` answers
 are **not anonymously pullable**; it does not by itself distinguish "private"
 from "absent", and the run log above is what establishes that they exist.
 
-**What is still true, and it is the fourth clause:** **no `v*` tag has been
-pushed.** Every run above took the `type=raw,value=edge` branch, so §2's semver
-table is still unexercised, and §3's `cosign verify` has never been run by
-anyone — see "What is unproven" (§6). This runbook's _tag-cutting_ half is
-therefore still written from the workflow file rather than from a procedure
-anyone has followed. Read [../status.md](../status.md) before you trust a step
-here.
+~~**What is still true, and it is the fourth clause:** **no `v*` tag has been
+pushed.**~~ **Retired 2026-09-19, and it had been wrong for two weeks.** Three
+tags exist — `v0.1.1`, `v0.2.0` and `v0.2.1` — and `release.yml` ran on every
+one of them:
+
+| Tag      | Run           | Outcome                                         |
+| -------- | ------------- | ----------------------------------------------- |
+| `v0.1.1` | `35275194212` | every job succeeded                             |
+| `v0.2.0` | `35361829971` | `merge` succeeded; both npm publish jobs failed |
+| `v0.2.1` | `35430925331` | `merge` succeeded; both npm publish jobs failed |
+
+So §2's semver table **is** exercised: `{{version}}` and `{{major}}.{{minor}}`
+have produced real tags. The failures on the two most recent runs are confined
+to `publish-node-sdk` and `publish-stripe-js-sdk`; every `build` and every
+`merge` job succeeded on all three, which is the half a chart release depends
+on (§5 — `publish-chart` is `needs: merge`).
+
+What remains true is narrower and worth keeping: §3's `cosign verify` has
+still never been run by anyone against anything this repository produced, so
+that section is still written from Fulcio's documented identity format rather
+than from a certificate somebody read. Read [../status.md](../status.md)
+before you trust a step here.
 
 ---
 
@@ -261,13 +276,26 @@ Everything above. Specifically:
   and read the triple back
   ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why the
   `+crt-static` entry is needed).
-- **No `v*` tag has ever been pushed.** Every run took the
+- ~~**No `v*` tag has ever been pushed.** Every run took the
   `type=raw,value=edge` branch, so the semver tag path (`{{version}}`,
-  `{{major}}.{{minor}}`) in §1's table has never produced a tag.
-- **`publish-chart` has never run, for the same reason (2026-09-19).** It
-  triggers only on a `v*` tag, and none has been pushed since the job landed.
+  `{{major}}.{{minor}}`) in §1's table has never produced a tag.~~ **Retired
+  2026-09-19:** three tags have been pushed and `release.yml` ran on each —
+  see the correction at the top of this page for the runs and what failed in
+  them. The semver tag path is exercised.
+- **`publish-chart` has never executed its steps (2026-09-19).** It has been
+  _evaluated_ once: in run `35454036800`, the first `master` run to carry it,
+  it reported `skipped` while the other thirteen jobs succeeded — which is
+  the whole of the evidence that its `if:` gate works and that adding it
+  disturbs nothing on a merge. Everything inside the job is still unrun.
   Nothing has been pushed to `oci://ghcr.io/vaam-apps/charts`, no chart has
   been signed, and no `cosign verify` has been read against one — see §8.
+
+  _This bullet first said "for the same reason" as the retired no-tag bullet
+  above, which was wrong twice over: tags do exist, and the actual reason is
+  narrower — `publish-chart` landed on `master` after `v0.2.1` was cut, so no
+  tag has yet been pushed **with the job present**. The next tag is its first
+  real execution._
+
 - **No image from any run has been pulled or executed anywhere**, and GHCR
   package visibility is unmeasured (the token lacks `read:packages`;
   anonymous pull is refused). A green push is not a reachable image.
