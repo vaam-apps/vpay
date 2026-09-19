@@ -159,7 +159,7 @@ with, those are the only description of what is inside.
 digest>` runs with the workflow's GitHub OIDC token; there is no key to store
 or rotate, and verification names the workflow instead:
 
-```
+```bash
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/(tags/v.*|heads/master)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -352,7 +352,7 @@ exits 78 naming a file it can no longer see.
 
 So the overlay is mounted as a single file with `subPath`:
 
-```
+```text
 /config/application.yml            <- baked into the image
 /config/application-<profile>.yml  <- ConfigMap, subPath mount
 ```

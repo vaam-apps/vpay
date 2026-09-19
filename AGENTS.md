@@ -420,7 +420,7 @@ caret range does **not** cross a minor boundary — so moving
 `[workspace.package].version` to `0.2.0` while those stay behind does not look
 untidy, it fails to resolve:
 
-```
+```text
 error: failed to select a version for the requirement `vpay-core = "^0.1.0"`
 candidate versions found which didn't match: 0.2.0
 ```

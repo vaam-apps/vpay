@@ -289,7 +289,7 @@ still cannot work. Each guard calls Helm's `fail`, so `helm lint`,
 `helm template`, `helm install` and `helm upgrade` all abort, and each message
 names itself so a test can assert _which_ one fired:
 
-```
+```text
 Error: execution error at (vpay/templates/deployment-server.yaml:1:4):
 vpay chart guard "grace-period": terminationGracePeriodSeconds is 25 but
 shutdownGraceSeconds is 25; the kubelet would SIGKILL the process while it is
