@@ -17,6 +17,32 @@ packages:
 # Verified by layout, not by reading: with isolated linking the root
 # node_modules holds only the 3 declared root dependencies; under hoisting it
 # would hold the whole transitive tree.
+#
+# `engines.pnpm` in package.json moved from ">=9" to ">=11" alongside this.
+# ">=9" was a real hole once these keys left `.npmrc`: pnpm 9 does not read
+# settings from this file and does not error on them, so a contributor on
+# pnpm 9 would have passed the engine check and got a SILENTLY different
+# install - hoisted linking, and none of the `overrides` below applying,
+# which brings back the advisories they exist to clear. The floor is 11
+# rather than 10 because `allowBuilds` at the end of this file, and the
+# `strictDepBuilds` behaviour that makes it mandatory, are pnpm 11.
+#
+# Worth recording rather than quietly fixing: `release.yml`'s own comment
+# warned that bumping this pin "is a repository-wide decision (every other
+# CI job, and every contributor's local install, moves with it)". That was
+# exactly right, not over-caution - the bump broke `rust`, `web` and `e2e`
+# on its first CI run. See `allowBuilds` below for what it took.
+#
+# KNOWN STALE, deliberately not fixed here: three comments in
+# `.github/workflows/ci.yml` and `release.yml` still name `pnpm@9.15.0` as
+# the pin. Correcting them was tried and reverted, because super-linter
+# lints CHANGED files only - both workflows predate this repository's
+# zizmor adoption and have never been scanned, so editing a single comment
+# in them surfaces 34 pre-existing findings (29 in ci.yml, 5 in
+# release.yml: unpinned action refs, artipacked, one workflow-level
+# `packages: write`). Paying that down is real work and does not belong in
+# a pnpm settings change. release.yml's share is cleared by the OIDC PR,
+# which has to touch that file anyway; ci.yml's is still outstanding.
 engineStrict: true
 saveExact: false
 strictPeerDependencies: true
