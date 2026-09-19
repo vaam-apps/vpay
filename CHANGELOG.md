@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.2](https://github.com/vaam-apps/vpay/compare/v0.2.1...v0.2.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **ci:** guard fromJSON so a no-commit release-please run does not fail ([03e6bbf](https://github.com/vaam-apps/vpay/commit/03e6bbfad45a9aea3898df9daf915d70edb4d162))
+* **ci:** pin every action in ci.yml to a commit SHA (DS-0002) ([#221](https://github.com/vaam-apps/vpay/issues/221)) ([a761bc7](https://github.com/vaam-apps/vpay/commit/a761bc7367976d76452dcad1c218e6d4114650e2))
+* **ci:** scan the default branch on push, not just pull_request ([#220](https://github.com/vaam-apps/vpay/issues/220)) ([afc89b9](https://github.com/vaam-apps/vpay/commit/afc89b9ee7aba8811b60b8e4a10acc7099db2c6b))
+* **erasure:** redact the last payment error pair and webhook response excerpt on customer erasure ([#211](https://github.com/vaam-apps/vpay/issues/211)) ([6cda795](https://github.com/vaam-apps/vpay/commit/6cda79568f89e1d1c77ccb837b00b13f84a4425d))
+
+
+### Continuous Integration
+
+* **pnpm:** move settings and overrides to pnpm-workspace.yaml, pin pnpm 11 ([#217](https://github.com/vaam-apps/vpay/issues/217)) ([a8b5c0a](https://github.com/vaam-apps/vpay/commit/a8b5c0ad28b1d242e07fb1fe91f006f43dc6542c))
+* **release:** publish by OIDC instead of a classic token ([#215](https://github.com/vaam-apps/vpay/issues/215)) ([a8d1764](https://github.com/vaam-apps/vpay/commit/a8d17641e91537b06e2b56e0dbd41add41ed92d9))
+* **release:** publish the Helm chart to GHCR as an OCI artifact ([#219](https://github.com/vaam-apps/vpay/issues/219)) ([35848b5](https://github.com/vaam-apps/vpay/commit/35848b5cf8903738f3dba2bf34b1359dfcc74843))
+
 ## [0.2.1](https://github.com/vaam-apps/vpay/compare/v0.2.0...v0.2.1) (2026-09-19)
 
 
