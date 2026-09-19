@@ -82,9 +82,14 @@ env:
 # SBOM into the image index itself (`provenance: mode=max`, `sbom: true`),
 # which needs only `packages: write`. Add it back in the job that needs it if
 # `actions/attest-build-provenance` ever lands here.
+#
+# `packages: write` is NOT here either, for the same reason: only `build`
+# and `merge` touch GHCR. `merge` already declared its own block; `build`
+# used to inherit this one, and now declares it too. A workflow-level
+# grant reaches every job, including the two npm publish jobs that must
+# never be able to write a package to GHCR.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   # A GHCR path must be lowercase; `github.repository_owner` is not
@@ -115,6 +120,13 @@ jobs:
     name: build ${{ matrix.image.name }} (${{ matrix.platform.arch }})
     runs-on: ${{ matrix.platform.runner }}
     needs: [namespace]
+    # Declared here rather than inherited from a workflow-level grant:
+    # this job pushes per-architecture images to GHCR, and it is the only
+    # job besides `merge` that needs to. `id-token: write` is deliberately
+    # absent - `merge` signs, these builds do not.
+    permissions:
+      contents: read
+      packages: write
     env:
       NAMESPACE: ${{ needs.namespace.outputs.namespace }}
     strategy:
@@ -158,7 +170,13 @@ jobs:
             runner: ubuntu-24.04-arm
             docker: linux/arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job builds and pushes to GHCR with GITHUB_TOKEN, never
+          # over git. Leaving the checkout token in .git/config would let
+          # any later step - or anything that archives the workspace -
+          # reuse it.
+          persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -237,7 +255,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -267,7 +285,7 @@ jobs:
           - name: vpay-dashboard
           - name: vpay-checkout
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image.name }}-*
@@ -431,7 +449,7 @@ jobs:
       # jobs: `pnpm/action-setup` refuses to run when both it and
       # `package.json`'s `packageManager` name a version
       # ("Multiple versions of pnpm specified"). `package.json` is this
-      # repository's single source of truth (pnpm@9.15.0).
+      # repository's single source of truth (pnpm@11.18.0).
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -474,6 +492,16 @@ jobs:
       # npm Trusted Publishing (OIDC). No token is read here: `setup-node`
       # above sets the registry, and pnpm performs the OIDC exchange itself
       # using the `id-token: write` this job already grants.
+      #
+      # The pin must be >= 11.1.3, not merely "pnpm 11". `setup-node` with
+      # `registry-url` writes an .npmrc containing
+      # `_authToken=${NODE_AUTH_TOKEN}`, and this job deliberately does not
+      # set that variable - so the placeholder stays unexpanded. Before
+      # 11.1.3 pnpm passed the literal `${NODE_AUTH_TOKEN}` through as a
+      # bearer token and the publish failed with a masked 404 even though
+      # OIDC was configured correctly (pnpm#11513). 11.1.3 treats an
+      # unresolved placeholder as empty, which is what lets OIDC be the
+      # auth source. The pin is 11.18.0, well past it.
       #
       # This replaced classic-token auth once BOTH of the blockers recorded
       # here previously were cleared, on 2026-09-19:
