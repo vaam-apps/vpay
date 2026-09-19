@@ -943,13 +943,15 @@ helm-check` report that the guard "did not fire" and name it. See the
   four. The unproven half is the pull, not the push: nobody has pulled one,
   and GHCR package visibility could not be measured (no `read:packages` scope;
   anonymous pull refused).
-- **The `publish-chart` job itself has never run (2026-09-19).** This is a
-  separate, net-new claim from the images bullet above — that one is about
-  the images the chart _references_, this one is about the chart _artifact_.
-  No `v*` tag has been pushed since `publish-chart` landed, so no chart has
-  ever been pushed to `oci://ghcr.io/vaam-apps/charts/vpay`, nothing has been
-  signed, and the registry install commands in [Install](#install) are read
-  from the job's source, not from a run of it.
+- **The `publish-chart` job has never executed its steps (2026-09-19).** This
+  is a separate, net-new claim from the images bullet above — that one is
+  about the images the chart _references_, this one is about the chart
+  _artifact_. The job has been evaluated once, in `master` run
+  `35454036800`, where it reported `skipped` as its `refs/tags/v` gate
+  requires. No `v*` tag has been pushed since `publish-chart` landed, so no
+  chart has ever been pushed to `oci://ghcr.io/vaam-apps/charts/vpay`, nothing
+  has been signed, and the registry install commands in [Install](#install)
+  are read from the job's source, not from a run of it.
 - Nobody has installed this chart from the registry, and no cluster has ever
   run one that was (that was already true of the local-checkout path too, and
   stays true either way).

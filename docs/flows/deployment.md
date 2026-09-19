@@ -714,8 +714,11 @@ What does not exist, stated plainly:
   on `ubuntu-24.04-arm` — this bullet used to say it never had anywhere, and
   that sentence is gone rather than struck because it is simply no longer
   true ([ADR-0014](../adr/0014-builder-host-musl-triple.md) still records why
-  the `+crt-static` entry is needed). **What has still not happened:** no `v*` tag
-  has been pushed, so the semver tag path is unexercised; nobody has pulled
+  the `+crt-static` entry is needed). **What has still not happened** (corrected
+  2026-09-19 — the first clause used to read "no `v*` tag has been pushed, so
+  the semver tag path is unexercised", and three tags with three runs make
+  that false; see [../runbooks/release.md](../runbooks/release.md) §6)**:**
+  nobody has pulled
   any of these images or checked GHCR package visibility, so this repository
   has never observed an image at those names _from the outside_; and no
   `cosign verify` has been run, so no Fulcio certificate or Rekor entry has
@@ -745,10 +748,13 @@ What does not exist, stated plainly:
   backup obligations and is **proposed** — no backup has ever been taken.
 - **Added 2026-09-19: `release.yml` gained a `publish-chart` job (§2a),
   pushing `deploy/helm/vpay` to `oci://ghcr.io/vaam-apps/charts/vpay` on a
-  `v*` tag.** Like every other line of this chart, it has never run: no tag
-  has triggered it, no chart has ever been pushed to that registry, nothing
-  has been signed, and no `cosign verify` has been read against a chart
-  manifest. No cluster has ever installed this chart from a registry, or any
+  `v*` tag.** It has been evaluated exactly once and did nothing, on purpose:
+  in run `35454036800`, the first `master` run carrying it, it reported
+  `skipped` while the other thirteen jobs succeeded. That is real evidence for
+  one narrow claim — the `refs/tags/v` gate holds and the job costs a `master`
+  merge nothing — and for no other. No tag has triggered it, no chart has ever
+  been pushed to that registry, nothing has been signed, and no
+  `cosign verify` has been read against a chart manifest. No cluster has ever installed this chart from a registry, or any
   other way — that was already true above and stays true. See the Helm
   chart publishing row in [../status/infrastructure.md](../status/infrastructure.md)
   for the guard mechanics and [../runbooks/release.md](../runbooks/release.md)
