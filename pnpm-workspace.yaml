@@ -178,3 +178,39 @@ overrides:
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
+
+# ---------------------------------------------------------------------------
+# allowBuilds
+# ---------------------------------------------------------------------------
+# New in this PR, and required by the pnpm 9 -> 11 pin above, not by the
+# settings move. pnpm 9 ran every dependency's install/postinstall script
+# unconditionally. pnpm 10 stopped running them unless allow-listed, and
+# pnpm 11 turned "some were ignored" from a warning into a hard
+# ERR_PNPM_IGNORED_BUILDS failure (`strictDepBuilds`, on by default). So a
+# pnpm 11 install against the pnpm 9 config fails outright — reproduced
+# locally on pnpm 11.18.0, the same version CI resolves, before writing
+# this block.
+#
+# These four are exactly the packages in this workspace that have a build
+# script, and all four already ran on master under pnpm 9. Naming them is
+# therefore STRICTLY NARROWER than the status quo, not a new grant of
+# trust: master's posture is "run anything", this is "run these four".
+#
+# Each one needs its script to produce a working install, which is why
+# none is set to false:
+#   prisma / @prisma/engines — fetch the query engine binaries; without
+#     them every Prisma call fails at runtime, not at install time.
+#   cypress — downloads the browser test binary into ~/.cache/Cypress;
+#     without it `cypress run` reports no installed version.
+#   esbuild — installs/validates the platform-native binary behind the JS
+#     shim.
+#
+# A note for whoever adds the next dependency with a build script: pnpm
+# will fail the install and WRITE a scaffolded stub into this block with
+# `set this to true or false` placeholders. Decide deliberately and
+# replace the placeholder — a stub left in place is not valid config.
+allowBuilds:
+  "@prisma/engines": true
+  cypress: true
+  esbuild: true
+  prisma: true
