@@ -282,19 +282,34 @@ Everything above. Specifically:
   2026-09-19:** three tags have been pushed and `release.yml` ran on each —
   see the correction at the top of this page for the runs and what failed in
   them. The semver tag path is exercised.
-- **`publish-chart` has never executed its steps (2026-09-19).** It has been
+- ~~**`publish-chart` has never executed its steps (2026-09-19).** It has been
   _evaluated_ once: in run `35454036800`, the first `master` run to carry it,
   it reported `skipped` while the other thirteen jobs succeeded — which is
   the whole of the evidence that its `if:` gate works and that adding it
   disturbs nothing on a merge. Everything inside the job is still unrun.
   Nothing has been pushed to `oci://ghcr.io/vaam-apps/charts`, no chart has
-  been signed, and no `cosign verify` has been read against one — see §8.
+  been signed, and no `cosign verify` has been read against one — see §8.~~
+  **Retired 2026-09-20: the next tag was its first real execution, and it
+  failed.** `v0.2.2` (run `35491807158`) pushed `charts/vpay:0.2.1` and then
+  failed at `cosign sign` with `UNAUTHORIZED: unauthenticated: User cannot be
+authenticated with the token provided` — a real, published, unsigned chart,
+  and also a mislabelled one: it was pushed while `version:` still read
+  `0.2.1` against an `appVersion` of `0.2.2`. Measured against the registry
+  the same day: one tag (`0.2.1`), no `.sig` manifest (HTTP 404), and an
+  anonymous manifest pull that answers HTTP 200 — the package is **public**,
+  which corrects the standing assumption below that a first push leaves a
+  private package needing a human to flip a setting. §8 now describes the
+  guard fix this failure prompted and what a maintainer should do about a run
+  stuck the same way; that fix has never run either. What remains true,
+  narrower than before: no `cosign verify` has been read against a real
+  signed chart, because none exists.
 
   _This bullet first said "for the same reason" as the retired no-tag bullet
-  above, which was wrong twice over: tags do exist, and the actual reason is
+  above, which was wrong twice over: tags do exist, and the actual reason was
   narrower — `publish-chart` landed on `master` after `v0.2.1` was cut, so no
-  tag has yet been pushed **with the job present**. The next tag is its first
-  real execution._
+  tag had yet been pushed **with the job present**. The next tag, `v0.2.2`,
+  was that first real execution, and it is recorded above rather than
+  predicted here now that it has happened._
 
 - **No image from any run has been pulled or executed anywhere**, and GHCR
   package visibility is unmeasured (the token lacks `read:packages`;
@@ -438,16 +453,23 @@ three images and zero charts. See §1.
 `namespace` job the images use (lowercased `github.repository_owner`) — today
 that is `oci://ghcr.io/vaam-apps/charts/vpay`.
 
-**The tag is `Chart.yaml`'s `version:`, not the app version and not the git
-tag.** `helm push` derives the OCI tag from the chart it is packaging; there
-is no second name for the job to set. `publish-chart` does read `appVersion`
-and refuses to proceed if it disagrees with the tag (`values.yaml`'s
-`images.*.tag` defaults to `.Chart.AppVersion`, so a mismatch would ship a
-chart that defaults to an image this release never built) — but that check is
-about `appVersion`, never about `version:`. `version:` has its own lifecycle
-and is routinely a different number than the release it ships alongside;
-`Chart.yaml`'s own comment already argues for this (0.2.0 -> 0.2.1). See §2
-for the check to run on `version:` before you tag.
+**The tag is `Chart.yaml`'s `version:` — and since #225, that no longer moves
+independently of the app version or the git tag.** `helm push` derives the
+OCI tag from the chart it is packaging; there is no second name for the job
+to set. `publish-chart` reads both `version:` and `appVersion` and refuses to
+proceed unless `version == appVersion == tag`. That check used to cover only
+`appVersion` (`values.yaml`'s `images.*.tag` defaults to `.Chart.AppVersion`,
+so a mismatch there would ship a chart that defaults to an image this release
+never built) — `version:` was hand-bumped and deliberately left unchecked,
+on the theory that the chart had its own release lifecycle separate from the
+app's (`Chart.yaml`'s own comment argued for exactly this, 0.2.0 -> 0.2.1).
+It no longer does: release-please owns both lines now
+(`release-please-config.json`'s `extra-files`), so they move together by
+construction, and the added check is what catches a tag cut by hand or an
+annotation that silently stopped being rewritten — which is exactly how this
+repository lost `Chart.yaml` once (`Chart.yaml`'s own history records it).
+**The chart can no longer be released independently of the application.**
+See §2 for the check to run on `version:` before you tag.
 
 **`helm push` silently overwrites an existing version — measured, not
 assumed.** Against a throwaway local `registry:2` (2026-09-19), pushing the
@@ -462,21 +484,47 @@ before packaging anything, the job runs:
 helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
 ```
 
-and reads three outcomes out of it, not two, because "the command failed" is
-not by itself an answer — also measured against the same local registry:
+and reads **four** outcomes out of it, not three. It was three until
+2026-09-20, and the missing one cost a release: push-then-sign is not atomic,
+and a guard that can only tell "published" from "not published" cannot tell
+"somebody already released this" from "this job died halfway through
+releasing it" — so a signing failure turned into a release the pipeline could
+not finish (below). The fourth outcome is what a signature answers, verified
+against the real unsigned chart and specifically under cosign **v2.6.1** —
+the version `cosign-installer` puts on the runner, not whatever a
+maintainer's own machine has:
 
-| Outcome                                                         | Reads as                                                                                    | Job does                      |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------- |
-| exit 0                                                          | `$VERSION` is already published                                                             | fail                          |
-| exit non-zero, output contains `not found`                      | not published yet — a missing version and a missing chart name are textually identical here | proceed to package and push   |
-| exit non-zero, anything else (`connection refused`, TLS, a 5xx) | the registry did not answer the question                                                    | fail rather than push past it |
+| `helm show chart`                                                      | Reads as                                                                                    | Job does                                                 |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| exit 0, `cosign download signature <image>@<digest>` finds a signature | a real collision — this version is already published and signed                             | fail                                                     |
+| exit 0, **no** signature found                                         | a previous run died between its push and its `cosign sign`                                  | **resume**: skip the push, sign the digest already there |
+| exit non-zero, output contains `not found`                             | not published yet — a missing version and a missing chart name are textually identical here | proceed to package and push                              |
+| exit non-zero, anything else (`connection refused`, TLS, a 5xx)        | the registry did not answer the question                                                    | fail rather than push past it                            |
 
-**The remedy, when the guard fires, is exactly one thing: bump `version:` in
-`deploy/helm/vpay/Chart.yaml`, then cut the tag again.** The job's own error
-message says so. Nothing about the guard can tell "this version was
-deliberately re-published" from "somebody forgot to bump it" — it cannot,
-since `helm push` would happily do either — so it always fails rather than
-guess, and the fix is always the hand-edit, never a retry.
+The digest for the resume row comes off `helm show chart`'s own **stderr**,
+which carries a `Digest:` line the same way `helm push`'s does. Re-packaging
+to recompute it would not work: `helm package` is not byte-reproducible, so a
+second package of identical content hashes differently and a signature made
+against it would attach to a copy nobody pulls.
+
+**The remedy depends on which `exit 0` row fired.** A real collision (already
+signed) still means one thing: bump `version:` in `deploy/helm/vpay/Chart.yaml`
+— since #225 that is release-please's job, not a hand-edit, so reaching this
+in practice means the annotation was dropped or a tag was cut by hand — then
+cut the tag again. **A died-between-push-and-sign collision (published, no
+signature) needs nothing but a re-run of the job on the same tag.** It
+resumes on its own: skips the push, signs the digest already in the registry,
+and completes the release. It does not need a version bump or a new tag.
+
+**This is not hypothetical — it is what happened.** Run `35491807158` (tag
+`v0.2.2`, 2026-09-20) is exactly the died-between-push-and-sign case:
+`cosign sign` failed with `UNAUTHORIZED: unauthenticated: User cannot be
+authenticated with the token provided` after the push had already succeeded,
+leaving a real, published, unsigned `charts/vpay:0.2.1`. The three-outcome
+guard that existed then could not tell that apart from a real collision, and
+refused every re-run of that tag — see §6. The resume path above is the fix,
+and **it has never run**: nothing signed exists yet, so the "published AND
+signed" branch above is also untested.
 
 Past the guard, the job packages, pushes, and reads the digest back out of
 `helm push`'s own log — measured to print both its `Pushed:` and `Digest:`
@@ -500,7 +548,7 @@ chart, and — unlike §3's own image example — the identity regexp tightened 
 tags only, because a tag is the only thing that ever publishes a chart:
 
 ```bash
-IMAGE=ghcr.io/vaam-apps/charts/vpay:0.2.1
+IMAGE=ghcr.io/vaam-apps/charts/vpay:<VERSION>
 
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/tags/v.*$' \
@@ -508,13 +556,23 @@ cosign verify \
   "$IMAGE"
 ```
 
+**Do not put `0.2.1` in for `<VERSION>`.** It is the one chart version
+published so far, and it fails the command above: `cosign sign` never
+completed against it (§6), so `charts/vpay:0.2.1` is unsigned, and it is also
+mislabelled — pushed while `version:` still read `0.2.1` against an
+`appVersion` of `0.2.2`. Nothing will ever repair it in place; the republish
+guard above keys on the version being released, so it stays published,
+unsigned and wrong until somebody deletes it. Use whichever version you have
+confirmed both exists and passes `cosign verify` — nothing qualifies as of
+2026-09-20.
+
 **Installing and pinning** follows §4's shape, with the chart's own version in
 place of an image's digest:
 
 ```bash
-helm show values oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1
-helm template vpay oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1 -f your-values.yaml
-helm upgrade --install vpay oci://ghcr.io/vaam-apps/charts/vpay --version 0.2.1 -f your-values.yaml
+helm show values oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
+helm template vpay oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION" -f your-values.yaml
+helm upgrade --install vpay oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION" -f your-values.yaml
 ```
 
 `helm search` will not find any of this — an OCI registry carries no
@@ -523,4 +581,4 @@ to read. `deploy/helm/vpay/README.md`'s Install section covers this path
 alongside the local-checkout one, including what to do between releases, when
 there is no chart tag to point at.
 
-**None of the above has run for real.** See §6.
+**One real run exists, and it failed.** See §6.

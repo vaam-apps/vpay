@@ -97,12 +97,27 @@ replacement for the local-checkout path above — there is deliberately no
 `edge` chart, so between releases (any commit that has not been tagged) the
 local checkout is the only way to install this chart at all.
 
+**⛔ Do not install `charts/vpay:0.2.1`.** It is the only chart version
+published so far, and it is both mislabelled and unsigned: run `35491807158`
+(tag `v0.2.2`, 2026-09-20, `publish-chart`'s first real execution) pushed it
+while `Chart.yaml`'s `version:` still read `0.2.1` but `appVersion` had
+already moved to `0.2.2`, then failed at `cosign sign` with `UNAUTHORIZED:
+unauthenticated: User cannot be authenticated with the token provided` before
+it could sign the chart it had just pushed. It therefore defaults
+`images.*.tag` to a release it does not match, and carries no signature to
+catch that with. **Nothing will ever repair it in place** — the republish
+guard in release.md §8 keys on the chart version being released, and the next
+release is `0.2.3` or later, never `0.2.1` again — so it stays published,
+unsigned and wrong until somebody deletes it. See [Status](#status).
+
 ```bash
 # Chart version, not the app version and not the git tag: Chart.yaml's
-# `version:` (0.2.1 on this branch as of 2026-09-19). `helm push` derives the
-# OCI tag from the chart it packages, and the two numbers move on separate
-# schedules — see release.md §8 for why.
-VERSION=0.2.1
+# `version:`. release-please owns this line (since #225), the same way it
+# already owned `appVersion:`, so the two move together with the tag by
+# construction — a real release never republishes 0.2.1. Put in the version a
+# release actually published, which `cosign verify` below confirms is signed;
+# nothing qualifies as of 2026-09-20.
+VERSION=<the version a real, signed release published>
 
 helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
 helm show values oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
@@ -123,7 +138,7 @@ publishes a chart at all (there is no `edge` chart to loosen the regexp for,
 unlike the image example in release.md §3):
 
 ```bash
-IMAGE=ghcr.io/vaam-apps/charts/vpay:0.2.1
+IMAGE=ghcr.io/vaam-apps/charts/vpay:<VERSION>
 
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/vaam-apps/vpay/\.github/workflows/release\.yml@refs/tags/v.*$' \
@@ -131,8 +146,9 @@ cosign verify \
   "$IMAGE"
 ```
 
-None of this has run for real yet — read [Status](#status) before you rely on
-it.
+Nothing published so far passes this — `0.2.1` is unsigned, and it is the
+only version that has ever been pushed. Read [Status](#status) before you
+rely on any of this.
 
 A minimal real `my-values.yaml`:
 
@@ -943,23 +959,39 @@ helm-check` report that the guard "did not fire" and name it. See the
   four. The unproven half is the pull, not the push: nobody has pulled one,
   and GHCR package visibility could not be measured (no `read:packages` scope;
   anonymous pull refused).
-- **The `publish-chart` job has never executed its steps (2026-09-19).** This
-  is a separate, net-new claim from the images bullet above — that one is
-  about the images the chart _references_, this one is about the chart
-  _artifact_. The job has been evaluated once, in `master` run
-  `35454036800`, where it reported `skipped` as its `refs/tags/v` gate
-  requires. No `v*` tag has been pushed since `publish-chart` landed, so no
-  chart has ever been pushed to `oci://ghcr.io/vaam-apps/charts/vpay`, nothing
-  has been signed, and the registry install commands in [Install](#install)
-  are read from the job's source, not from a run of it.
+- **`publish-chart` has now executed its steps, and failed (2026-09-20).**
+  This is a separate claim from the images bullet above — that one is about
+  the images the chart _references_, this one is about the chart _artifact_.
+  Run `35491807158` (tag `v0.2.2`) is the job's first real execution:
+  thirteen other jobs went green and `publish-chart` went red, at
+  `cosign sign`, with `UNAUTHORIZED: unauthenticated: User cannot be
+authenticated with the token provided` — after the chart had already been
+  pushed. Measured against the registry the same day: `ghcr.io/vaam-apps/charts/vpay`
+  carries exactly one tag, `0.2.1`; its `.sig` manifest answers HTTP 404
+  (unsigned); an anonymous manifest pull answers HTTP 200. **That last point
+  corrects the claim two bullets below used to make**, that the first push
+  creates a private package needing a human — it did not; the package is
+  public. `charts/vpay:0.2.1` is also mislabelled: it was published while
+  `Chart.yaml`'s `version:` was `0.2.1` and `appVersion` had already moved to
+  `0.2.2`, so it defaults `images.*.tag` to a release it does not match, and
+  nothing will ever repair it — see [Install](#install).
+- **The push-then-sign guard could not resume, and that stranded the release.**
+  Before this branch it had three outcomes and stopped on "already
+  published," so a re-run of `v0.2.2` would have seen the chart that same run
+  had just pushed and refused before it could ever sign it — push-then-sign is
+  not atomic, and a guard that cannot tell "somebody already released this"
+  from "this job died halfway through releasing it" turns any signing failure
+  into a release the pipeline cannot finish. This branch gives it a fourth
+  outcome: published with no signature found now means resume (skip the push,
+  sign the existing digest) rather than fail. **This path has never run** —
+  nothing signed exists yet, so the "published AND signed" branch is untested
+  too. See [docs/runbooks/release.md](../../../docs/runbooks/release.md) §8.
 - Nobody has installed this chart from the registry, and no cluster has ever
   run one that was (that was already true of the local-checkout path too, and
   stays true either way).
-- GHCR package visibility for the chart is unmeasured, for the same reason
-  it is for the images: the first push creates the package private, and
-  nothing has pushed yet to even ask GHCR the question. Making
-  `ghcr.io/vaam-apps/charts/vpay` public, if that is wanted, will be the same
-  one-time human change in the package's settings the images still need.
+- GHCR package visibility for the chart is no longer unmeasured: see the
+  first bullet above — the package is public, confirmed by an anonymous pull
+  against the one tag that has been pushed.
 
 ### Follow-ups
 

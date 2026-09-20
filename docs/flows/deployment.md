@@ -208,21 +208,47 @@ rather than the per-architecture builds: the chart's `values.yaml` defaults
 images it names exist would resolve to tags GHCR does not have yet. The
 chart cannot come before the thing it points at.
 
-**The republish guard.** `helm push` to an OCI registry overwrites an
-existing tag silently — no error, no warning, exit 0 either way. Before
-pushing, the job runs `helm show chart oci://ghcr.io/vaam-apps/charts/vpay
---version <chart version>`; if that succeeds, the version is already
-published and the job fails the release rather than overwriting it, naming
-the fix (bump `Chart.yaml`'s `version:`) in the error. Images need no
-equivalent guard because their tag is derived straight from the git tag that
-triggered the build, which is different on every release by construction;
-the chart's tag is `Chart.yaml`'s hand-maintained `version:`, and a release
-that forgets to bump it is exactly the gap this guard exists to catch.
+**The version checks.** `appVersion` must equal the tag, and since
+2026-09-20 so must `version:` — release-please owns that line now and the job
+asserts all three agree. It did not always: `version:` was hand-bumped until
+`v0.2.2` published a chart numbered **0.2.1**, because `appVersion` moved and
+nothing moved `version:`. AGENTS.md § Releasing records that change and its
+cost, which is that the chart can no longer be released independently of the
+application.
+
+**The republish guard, and why it has four answers rather than two.**
+`helm push` to an OCI registry overwrites an existing tag silently — no
+error, no warning, exit 0 either way. Before pushing, the job asks
+`helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version <chart
+version>`.
+
+The obvious reading of a hit is "already released, stop". That was the
+original design and it was wrong, because **push-then-sign is not atomic**.
+In the job's first real run the push succeeded and the signature did not, and
+the guard then refused every re-run — it saw the chart that same run had
+pushed. The release could not be finished by the pipeline that started it.
+
+So a hit is now split by whether a **signature** exists. Published and signed
+is a real collision and stops the release. Published and unsigned means a
+previous run died in the gap, and the job resumes: it skips the push entirely
+and signs the digest already in the registry. Re-packaging would not do —
+`helm package` is not byte-reproducible, so a second package of identical
+content hashes differently and the signature would attach to a copy nobody
+pulls.
 
 **Signed exactly as the images are**: keyless cosign, the workflow's GitHub
 OIDC token, the same certificate identity (`release.yml` at that ref). The
 `cosign verify` command §2 gives works against the chart with only the
 reference changed.
+
+**Two logins, because `helm` and `cosign` do not share a credential store.**
+`helm registry login` writes `$XDG_CONFIG_HOME/helm/registry/config.json`;
+cosign resolves credentials through go-containerregistry's default keychain,
+which reads `~/.docker/config.json`. The job does both. This is not caution —
+it is what the first real run cost: `helm push` succeeded against a registry
+the job had authenticated to and `cosign sign` died on the next line with
+`UNAUTHORIZED: unauthenticated`. `merge` never hit it because it logs in with
+`docker/login-action`, which writes the file cosign reads.
 
 **The whole job as a state machine.** Every transition below is one step of
 `publish-chart` in
@@ -244,28 +270,31 @@ stateDiagram-v2
     [*] --> ImagesMerged: push of a v* tag
     ImagesMerged --> ReadChartYaml: needs merge — all three<br/>images pushed and signed
 
-    ReadChartYaml --> Linted: appVersion == tag
-    ReadChartYaml --> Refused: appVersion != tag — the chart<br/>would default images.*.tag to an<br/>image this release did not build
+    ReadChartYaml --> Refused: version or appVersion<br/>disagrees with the tag
+    ReadChartYaml --> Linted: all three agree
 
     Linted --> Asked: helm lint, four value sets
     Linted --> Refused: a value set stops rendering
 
-    Asked --> Refused: helm show chart exits 0 —<br/>already published, bump<br/>Chart.yaml version
+    Asked --> Refused: published AND signed —<br/>a real collision
+    Asked --> Resume: published, NOT signed —<br/>a previous run died here
     Asked --> Undecidable: helm failed, but not<br/>with "not found"
     Asked --> Pushed: "not found" — never published
 
     Pushed --> Signed: cosign sign, keyless,<br/>over the manifest digest
+    Resume --> Signed: sign the digest already<br/>in the registry, push nothing
     Signed --> [*]
 
     Refused --> [*]: red run, and the three<br/>images are already public
     Undecidable --> [*]: red run, nothing pushed
 ```
 
-Two things the diagram is meant to make unmissable. **`Refused` is reachable
+Three things the diagram is meant to make unmissable. **`Refused` is reachable
 after the images are already public** — the chart is the last artifact, so a
-guard that fires leaves a release with three published images and no chart,
-which is a state a maintainer has to finish by hand (bump `version:`, re-run
-the job). And **`Undecidable` is a separate state from `Refused` on purpose**:
+guard that fires leaves a release with three published images and no chart.
+**`Resume` is how a half-finished release is repaired**, and it is why a
+re-run is now the right response to a signing failure rather than a wasted
+one. And **`Undecidable` is a separate state from `Refused` on purpose**:
 "the registry did not answer" is not "the chart is already there", and the job
 stops rather than pushing past a question it could not get an answer to.
 
@@ -748,17 +777,37 @@ What does not exist, stated plainly:
   backup obligations and is **proposed** — no backup has ever been taken.
 - **Added 2026-09-19: `release.yml` gained a `publish-chart` job (§2a),
   pushing `deploy/helm/vpay` to `oci://ghcr.io/vaam-apps/charts/vpay` on a
-  `v*` tag.** It has been evaluated exactly once and did nothing, on purpose:
-  in run `35454036800`, the first `master` run carrying it, it reported
-  `skipped` while the other thirteen jobs succeeded. That is real evidence for
-  one narrow claim — the `refs/tags/v` gate holds and the job costs a `master`
-  merge nothing — and for no other. No tag has triggered it, no chart has ever
-  been pushed to that registry, nothing has been signed, and no
-  `cosign verify` has been read against a chart manifest. No cluster has ever installed this chart from a registry, or any
-  other way — that was already true above and stays true. See the Helm
-  chart publishing row in [../status/infrastructure.md](../status/infrastructure.md)
-  for the guard mechanics and [../runbooks/release.md](../runbooks/release.md)
-  for the procedure once there is a first tag to rehearse it against.
+  `v*` tag. It ran for real on 2026-09-20 and half-worked.** ~~It has been
+  evaluated exactly once and did nothing, on purpose.~~ Tag `v0.2.2`, run
+  `35491807158`: thirteen jobs green, `publish-chart` red. The chart **was
+  pushed** — `charts/vpay:0.2.1` is in the registry and is **publicly
+  pullable**, which an anonymous GHCR token confirms — and `cosign sign` then
+  failed with `UNAUTHORIZED: unauthenticated`, because `helm registry login`
+  and cosign read different credential stores (§2a). So the registry holds a
+  chart that **nothing has signed**, and `cosign verify` still has never been
+  run against a chart manifest.
+
+  That artifact is also **mislabelled**: it went up numbered `0.2.1` while
+  `appVersion` was `0.2.2`, so it defaults `images.*.tag` to a release it is
+  not named for. **Nothing will repair it** — the resume path below keys on
+  the version being released, and the next release is a later one. It stays
+  published, unsigned and wrong until somebody deletes it.
+  `deploy/helm/vpay/README.md` says so where a reader about to install would
+  look.
+
+  Three fixes followed, all on 2026-09-20 and none of them yet executed: the
+  second registry login ([#223](https://github.com/vaam-apps/vpay/pull/223)),
+  release-please taking ownership of `Chart.yaml`'s `version:` so the
+  mislabelling cannot recur
+  ([#225](https://github.com/vaam-apps/vpay/pull/225)), and the guard's
+  resume path (§2a), which is what makes a re-run able to finish a release
+  stranded between push and signature. **The next tag is their first
+  execution**, exactly as `v0.2.2` was the job's.
+
+  No cluster has ever installed this chart, from a registry or any other way
+  — that was already true above and stays true. See the Helm chart publishing
+  row in [../status/infrastructure.md](../status/infrastructure.md) and
+  [../runbooks/release.md](../runbooks/release.md) §8 for the procedure.
 
 **Added 2026-09-03 (Step 6, block C): the instrumentation §6a describes.**
 All twelve metric names are now emitted, each at exactly one seam — thirteen

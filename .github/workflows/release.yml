@@ -510,44 +510,74 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # `helm push` to an
-      # OCI registry overwrites an existing version **silently** — measured,
-      # not assumed: pushing the same chart twice against a local `registry:2`
-      # returned exit 0 both times with no warning. So a release whose
-      # `Chart.yaml` `version:` was not bumped would replace the chart people
-      # already have with one that resolves to different images, which is
-      # precisely the hazard `Chart.yaml`'s own 0.2.0 -> 0.2.1 comment
-      # describes, arriving through the registry instead of through a clone.
+      # `helm push` to an OCI registry overwrites an existing version
+      # **silently** — measured, not assumed: pushing the same chart twice
+      # against a local `registry:2` returned exit 0 both times with no
+      # warning. Something has to refuse, and this is it.
       #
-      # Three outcomes, not two, because "the command failed" is not one
-      # answer. Measured against a local registry:
+      # FOUR outcomes, not three. It was three until 2026-09-20, and the
+      # missing one cost a release. In run `35491807158` (tag `v0.2.2`) the
+      # push succeeded and `cosign sign` failed, leaving
+      # `charts/vpay:0.2.1` published and unsigned — and the three-outcome
+      # guard then refused every re-run, because it saw the chart that same
+      # run had pushed. Push-then-sign is not atomic, so a guard that cannot
+      # tell "somebody already released this" from "this job died halfway
+      # through releasing it" turns any signing failure into a release the
+      # pipeline cannot finish. The error message that shipped with the
+      # three-outcome version already guessed at this case — "either the tag
+      # is being re-run or that bump did not happen" — but still stopped.
       #
-      #   exit 0                                   -> published; stop.
-      #   `... "FetchReference" ... : not found`   -> never published, or the
-      #                                               package does not exist
-      #                                               at all (the two are
-      #                                               textually identical and
-      #                                               mean the same thing
-      #                                               here); push.
-      #   anything else (`dial tcp ... connection
-      #   refused`, TLS, 5xx)                      -> the registry did not
-      #                                               answer the question.
-      #                                               Stop rather than push
-      #                                               past it.
-      - name: refuse to republish a chart version that already exists
+      # A signature is what tells the two apart. `cosign download signature`
+      # exits non-zero when there is none: verified against the real unsigned
+      # `charts/vpay:0.2.1`, and verified under cosign **v2.6.1**
+      # specifically, which is what `cosign-installer` puts on the runner.
+      #
+      #   exit 0, signature found  -> a real collision. Stop.
+      #   exit 0, NO signature     -> died between push and sign. Resume:
+      #                               skip the push, sign what is there.
+      #   `... "FetchReference" ... : not found`
+      #                            -> never published (a missing version and
+      #                               a missing package are textually
+      #                               identical here and mean the same
+      #                               thing). Push.
+      #   anything else (`dial tcp ... connection refused`, TLS, 5xx)
+      #                            -> the registry did not answer the
+      #                               question. Stop rather than push past it.
+      #
+      # The digest comes off `helm show chart`'s own stderr, which carries a
+      # `Digest:` line exactly as `helm push` does — verified against the
+      # published chart. Re-packaging to recompute it would not work:
+      # `helm package` is not byte-reproducible, so a second package of
+      # identical content hashes differently and the signature would attach
+      # to a copy nobody pulls.
+      - id: state
+        name: what is already published, and is it signed?
         env:
           CHART: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
+          IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
           VERSION: ${{ steps.chart.outputs.version }}
         run: |
           set -euo pipefail
           if out="$(helm show chart "$CHART" --version "$VERSION" 2>&1)"; then
-            echo "::error::${CHART}:${VERSION} is already published, and this release would otherwise overwrite a published chart in place. Since 2026-09-20 release-please bumps Chart.yaml's 'version:', so reaching this means either the tag is being re-run or that bump did not happen — check the annotation before bumping anything by hand."
-            exit 1
+            digest="$(sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' <<< "$out" | head -1)"
+            if [[ -z "$digest" ]]; then
+              echo "::error::${CHART}:${VERSION} is published but helm printed no 'Digest:' line for it, so this job cannot tell whether it is signed. Refusing to push over it."
+              exit 1
+            fi
+            if cosign download signature "${IMAGE}@${digest}" > /dev/null 2>&1; then
+              echo "::error::${CHART}:${VERSION} is already published AND signed, and this release would otherwise overwrite a published chart in place. Since 2026-09-20 release-please bumps Chart.yaml's 'version:', so reaching this means that bump did not happen — check the annotation before bumping anything by hand."
+              exit 1
+            fi
+            echo "${CHART}:${VERSION} is published (${digest}) but carries no signature — a previous run died between its push and its signature. Resuming: this run signs it and does NOT push."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           elif ! grep -q 'not found' <<< "$out"; then
             echo "::error::could not determine whether ${CHART}:${VERSION} is published — helm failed for a reason that is not 'not found', so this job will not push past it: ${out}"
             exit 1
+          else
+            echo "${CHART}:${VERSION} is not published yet; proceeding to package and push"
+            echo "published=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "${CHART}:${VERSION} is not published yet; proceeding"
 
       # `helm push` prints BOTH its `Pushed:` and `Digest:` lines to
       # **stderr** and leaves stdout empty — measured against a local
@@ -556,6 +586,10 @@ jobs:
       # signs and what `docs/runbooks/release.md` tells a consumer to pin.
       - id: push
         name: package and push the chart
+        # Skipped on a resume: the chart is already in the registry, and
+        # re-pushing would only add a second, differently-hashed copy of
+        # identical content for the signature to miss.
+        if: steps.state.outputs.published != 'true'
         env:
           REPO: oci://${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts
           IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
@@ -574,8 +608,14 @@ jobs:
       - name: cosign sign (keyless, GitHub OIDC)
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/charts/vpay
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+          # Whichever step established it: the push on a normal release, the
+          # state probe on a resume. Exactly one of the two runs.
+          DIGEST: ${{ steps.push.outputs.digest || steps.state.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DIGEST" ]] || { echo "::error::no digest from either the push or the state probe; there is nothing to sign"; exit 1; }
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          echo "signed ${IMAGE}@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
 
   # --- SDK publishing ---------------------------------------------------
   #
