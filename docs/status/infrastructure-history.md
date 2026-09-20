@@ -4,7 +4,7 @@ _Archived from [docs/status.md](../status.md) on 2026-09-11 by exp57, which spli
 
 _It still says "above" and "below" where it once pointed at another part of the same page. Those targets are on sibling pages now, and [README.md](README.md) is the index of them._
 
-### Docker / compose — made bootable, proven by CI run `33647189156`
+## Docker / compose — made bootable, proven by CI run `33647189156`
 
 Both Dockerfiles and `compose.e2e.yml` date from 2026-08-09 (musl host
 target, non-root UID 65532, `.dockerignore`). Two days later `--config` /
@@ -51,11 +51,18 @@ for that. The rows above cite CI run
 boots, `/healthz` answers 200 and the one Cypress spec passes," and nothing
 about what the stack can do once up — it still serves only `/healthz`.
 
-### `cargo deny` — fixed properly, not suppressed
+## `cargo deny` — fixed properly, not suppressed
 
-`cargo deny check` previously failed and is now clean, without adding a single
-`ignore` entry to `deny.toml` (`ignore = []`, confirmed by reading the file).
-Two real dependency upgrades did the work:
+`cargo deny check` previously failed and is now clean. ~~This was done
+without adding a single `ignore` entry to `deny.toml` (`ignore = []`,
+confirmed by reading the file).~~ **Corrected 2026-09-20: false when written.**
+`deny.toml` has held `RUSTSEC-2023-0071` (the `rsa` Marvin-Attack exception)
+since 2026-08-09, predating this section's own events — the "2026-09-02"
+paragraph below already says "`ignore` still holding only the `rsa` entry
+above," which contradicts the sentence this correction replaces. See
+[infrastructure.md](infrastructure.md)'s `deny.toml` row for the current,
+maintained state of that exception. Two real dependency upgrades did the
+work described below:
 
 - `time` 0.3.45 → 0.3.47, a production dependency (reachable from
   `vpay-core` via `sqlx`'s `time` feature, not only from `dev-dependencies`),
@@ -107,7 +114,7 @@ with no `rust_version`. The crates that set the 1.88 ceiling are now
 / `testcontainers-modules` 0.15.0 — the old comment named only `time` and the
 two `testcontainers` crates.
 
-### Toolchain pin — `1.95.0` → `1.98.0` (2026-09-05)
+## Toolchain pin — `1.95.0` → `1.98.0` (2026-09-05)
 
 **Why it moved.** CrateStack 0.11.1 is what this repository had adopted when
 this pin moved (0.12.0 since 2026-09-07, which declares the same floor), and
@@ -122,7 +129,7 @@ last release that supports 1.95.0.
 the evidence that the bump is both necessary and sufficient, not an
 assumption:
 
-```
+```text
 $ cargo +1.95.0 install cratestack-cli --version 0.11.1 --locked   # exit 101
 error: cannot install package `cratestack-cli 0.11.1`, it requires rustc 1.98.0 or newer,
 while the currently active rustc version is 1.95.0
@@ -205,7 +212,7 @@ on 2026-09-05**, which brought [ADR-0016](../adr/0016-engineering-standards.md)'
 branch's ten, all in `xtask` (184 → 194). `verify-toolchain` is the **tenth**
 gate after that rebase, not the eighth it was written as.
 
-### Migration manifest — applied migrations are immutable (2026-09-07, issue #76)
+## Migration manifest — applied migrations are immutable (2026-09-07, issue #76)
 
 **Landed.** `backends/migrations/MANIFEST.sha256` records the SHA-256 of every
 migration file's bytes, and `verify-migrations` is the **eleventh** gate in

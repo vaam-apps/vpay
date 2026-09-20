@@ -35,6 +35,21 @@ Named by the newest date in each block, not by a single date: entries were
 appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
+**This list is not the whole of [verification/](verification/), and does not
+try to be.** Re-measured 2026-09-20: the directory holds 58 files today; this
+list names 35 of them. This is a hand-maintained list, not a generated one,
+and the 23 it omits were simply never appended to it. Most of the 23 are
+still findable: they are linked individually from the area page whose
+section they verify (for example
+`verification/2026-09-13-adr-0018-admin-role-review.md` from
+[backend.md](backend.md), or `verification/2026-09-14-flutter-review.md` from
+[mobile-flutter-plugin.md](mobile-flutter-plugin.md)) — but at least one,
+`verification/2026-09-13-credential-split.md`, is linked from nowhere else in
+this repository and is only reachable by browsing the directory. A
+hand-maintained list is exactly how this gap happened; browse
+[verification/](verification/) directly for the complete, current file set
+rather than trusting this list to be exhaustive.
+
 - [verification/2026-09-18-macos-loopback-and-two-load-flakes.md](verification/2026-09-18-macos-loopback-and-two-load-flakes.md) —
   three ways `just test-rust` fails on a macOS developer machine and in no CI
   job. Four **deterministic** failures in `staff_sign_in.rs`, because its

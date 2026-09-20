@@ -15,3 +15,18 @@ The Next.js dashboard reads state and performs per-record operations (re-poll a 
 ## Consequences
 
 Support work that must happen at 2am is possible without a deploy; configuration changes still take a pull request. The rule that generates the boundary: the dashboard acts on records, never on configuration.
+
+## Addendum (2026-09-20): implementation state, not a revised decision
+
+The Decision above describes the dashboard performing per-record writes
+(re-poll a charge, replay a webhook, issue a refund, annotate an unresolved
+charge), each producing an `audit_log` row. None of that is built yet.
+Re-measured 2026-09-20 by reading the code directly:
+`backends/crates/vpay-api/src/dash/` holds only `mod.rs` and
+`payment_intents.rs`, and that module's own doc comment says so in as many
+words — this surface mounts `GET` and nothing else. The writes this Decision
+describes are **designed but unbuilt**; `/dash/v1` is read-only today.
+
+This is not "abandoned" and not "superseded" — that call belongs to the
+maintainer, and nothing here makes it. It is a record of what exists against
+a Decision that still stands.

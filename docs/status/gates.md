@@ -113,7 +113,7 @@ exactly one — had never been compiled by CI at all.
 landed** (`cargo xtask verify-docs`; `prose` excludes doc lines inside a
 ` ``` ` fence, which are compiled examples rather than comment volume):
 
-```
+```text
   crate                        prose       ex     code     ratio
   vpay-adapter-mtn-momo          395       13      625     63.2%
   vpay-adapter-orange-money      389       16      559     69.5%
@@ -283,12 +283,18 @@ read into it:
   to `@vaam-apps/*`"): `@vaam-apps/vpay-sdk` and `@vaam-apps/vpay-stripe-js`.
   Each carries `publishConfig.access: "public"` (a scoped package defaults to
   `restricted`), `repository`/`homepage`/`bugs` on `github.com/vaam-apps/vpay`,
-  a `license`, a `description`, and a `prepack` that builds. **Nothing is
+  a `license`, a `description`, and a `prepack` that builds. ~~**Nothing is
   published, and nothing can be until a release workflow exists** — no
-  workflow in `.github/workflows/` runs `npm publish` or reads an `NPM_TOKEN`,
-  and `npm view` answered `E404` for both names on 2026-09-05. Removing the
-  flag makes a release possible without editing a manifest; it does not
-  perform one.
+  workflow in `.github/workflows/` runs `npm publish` or reads an
+  `NPM_TOKEN`, and `npm view` answered `E404` for both names on
+  2026-09-05.~~ **Corrected 2026-09-20: both packages are live.**
+  `release.yml` now has a `publish-node-sdk` job and a
+  `publish-stripe-js-sdk` job, each running
+  `pnpm publish --access public --provenance --no-git-checks`; re-run today,
+  `npm view @vaam-apps/vpay-sdk version` and
+  `npm view @vaam-apps/vpay-stripe-js version` both return `0.3.0`. Removing
+  the flag made a release possible without editing a manifest; the workflow
+  now performs one.
 - **`@vaam-apps/vpay-stripe-compat` stays `"private": true`, and its
   `publishConfig` was removed rather than kept.** It is a conformance suite,
   not a library — its own README says so — with no build, no `main`, no

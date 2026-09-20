@@ -20,7 +20,7 @@ between the two on `docs/status.md` as it was:
 - [cratestack/2026-09-13-credentials.md](cratestack/2026-09-13-credentials.md) — migration 0044, `model Credential`
 - [cratestack/2026-09-13-dashboard-procedure-transport.md](cratestack/2026-09-13-dashboard-procedure-transport.md) — the first transport, mounting it
 
-### CrateStack
+## CrateStack
 
 **This section used to be a transcript. It is a gate now (2026-09-05).**
 `just check-schema` runs `cratestack check --schema schemas/vpay.cstack` and
@@ -58,7 +58,7 @@ used to record that `cratestack-cli 0.11.1` declares
 `rust-version = "1.98.0"` while `rust-toolchain.toml` pinned `1.95.0`, so
 `cargo install` run _inside_ the worktree refused with
 
-```
+```text
 error: cannot install package `cratestack-cli 0.11.1`, it requires rustc 1.98.0 or newer,
 while the currently active rustc version is 1.95.0
 `cratestack-cli 0.8.15` supports rustc 1.95.0
@@ -94,7 +94,7 @@ edit.
 
 The gate's output on this tree:
 
-```
+```text
 $ just check-schema
 check-schema: cratestack 0.12.0, schema schemas/vpay.cstack (15 model/enum declarations, datasource present)
 schema OK: schemas/vpay.cstack
@@ -189,10 +189,18 @@ What this does and does not prove:
   drift" below.** Comparing the two is not the same as either of them driving
   the other, so the sentences above are unaffected.
 - **`docs/flows/*.md` Status sections did not change, and that is checked
-  rather than assumed.** The only two flow documents that mention this file —
-  `docs/flows/ledger.md` and `docs/flows/configuration.md` — cite it for what
-  its _grammar cannot express_, which the gate does not touch; neither
-  Status section makes a claim about whether the file parses.
+  rather than assumed.** ~~The only two flow documents that mention this
+  file — `docs/flows/ledger.md` and `docs/flows/configuration.md` — cite it
+  for what its _grammar cannot express_, which the gate does not touch;
+  neither Status section makes a claim about whether the file parses.~~
+  **Corrected 2026-09-20:** `grep -rl "vpay.cstack" docs/flows/*.md` now
+  returns **four** files, not two — `docs/flows/dashboard-auth.md` and
+  `docs/flows/invoices.md` also mention it, but as the model source for a
+  table entry, not for a grammar gap. `docs/flows/ledger.md` and
+  `docs/flows/configuration.md` are still the only two citing a _grammar_
+  gap, so the claim this bullet exists to make — that the gate's own
+  concern (whether the file parses) is untouched by any flow doc's Status
+  section — still holds for all four.
 - ~~**Content is a design sketch, not full coverage.** It models only entities
   with a real, tested Rust type to mirror: `Currency`, `Provider`,
   `PaymentIntent`, `Charge`, and the new `LedgerTransaction`/`LedgerEntry`
@@ -240,7 +248,7 @@ What this does and does not prove:
   merchant a `merchant_payable` posting belongs to. That is a real gap in the
   Rust type this schema mirrors, not something to paper over in the schema.
 
-### CrateStack 0.11.1 → 0.12.0 (2026-09-07)
+## CrateStack 0.11.1 → 0.12.0 (2026-09-07)
 
 **Nothing in this repository had to change but the version.** The CLI and the
 library moved together, as the pin's own comment requires: `justfile`'s
@@ -323,7 +331,7 @@ agree on the absolute number for this schema, which is what this page's
 2026-09-07 entry already argued from file identity. CI runs 0.12.0; if it
 disagrees, CI is the evidence.
 
-```
+```text
 drift detected in 25 table(s)/view(s) (192 change(s) total)
 19 column(s) have a Postgres type cratestack could not confidently map
 ```
@@ -379,7 +387,7 @@ way and on the same host as the entry above, with the same caveat and the same
 force: **cratestack 0.11.1 on `PATH`, not the pinned 0.12.0**, the drift test
 warning about it and not failing. The report read
 
-```
+```text
 drift detected in 25 table(s)/view(s) (194 change(s) total)
 ```
 
