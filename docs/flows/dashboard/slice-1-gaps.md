@@ -16,8 +16,9 @@ pepper, mandatory RFC 6238 TOTP with a compare-and-swap replay guard,
 server-side sessions with an absolute and an idle bound, and the
 authorization-code grant with PKCE served for the dashboard client only.
 
-`backends/tests/integration/tests/staff_sign_in.rs` (13 cases) drives it end
-to end and **mints no token of its own**.
+`backends/tests/integration/tests/staff_sign_in.rs` (~~13 cases~~ **27,
+re-measured 2026-09-20**) drives it end to end and **mints no token of its
+own**.
 
 ~~It is not built because building it requires a decision nobody has taken~~ —
 and the paragraph that followed, about `authkestra-op` authenticating nobody,
@@ -143,7 +144,7 @@ repository said it: **setting `VPAY_DASHBOARD_PUBLIC_ORIGIN` is necessary and
 not sufficient behind a proxy that rewrites `Host`.** vpay's check passes, and
 Next's own then aborts the action with
 
-```
+```text
 `x-forwarded-host` header with value `vpay-dashboard.internal` does not match
 `origin` header with value `localhost:13200` from a forwarded Server Actions
 request. Aborting the action.

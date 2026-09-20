@@ -136,9 +136,14 @@ has retried.
 
 ## JWKS publication and key rotation
 
-- vpay publishes `/dash/v1/.well-known/openid-configuration` and
+- ~~vpay publishes `/dash/v1/.well-known/openid-configuration` and
   `/dash/v1/jwks.json`, backed by `authkestra_op::handlers::discovery` and
-  `::jwks`.
+  `::jwks`.~~ **Corrected 2026-09-20: it does not.** There is one issuer and
+  one JWKS, on `/v1`, not `/dash/v1` — the table below ("Where each piece
+  lives") already says so: `/userinfo`, discovery and `/jwks.json` on
+  `/dash/v1` are **"Not served."** The dashboard's own validator fetches
+  `/v1/oauth/jwks.json` (`backends/apps/vpay-server/src/main.rs:1126-1136`,
+  `loopback_jwks_url`).
 - Signing keys are `RS256` (asymmetric only, enforced by `OpConfig`).
 - Key generation and rotation are vpay's own operational responsibility —
   Authkestra does not ship a rotation policy, a key type, or any key store at

@@ -60,9 +60,11 @@ in the browser, `dashboard.cy.ts` asserts the session cookie is `httpOnly`,
 that `document.cookie` cannot see it, and that no JWT appears anywhere in the
 rendered page.
 
-**Not built:** every other slice (2–6); every write, and therefore no
-`audit_log`; no sweep of expired sessions or authorization codes; no key
-rotation. See "What slice 1 did NOT build" above and
+~~**Not built:** every other slice (2–6)~~ **corrected 2026-09-20: slices 2
+(deliveries only) and 3 are built — see the Slices table in
+[../dashboard.md](../dashboard.md).** Not built: slices 4–6; every write, and
+therefore no `audit_log`; no sweep of expired sessions or authorization
+codes; no key rotation. See "What slice 1 did NOT build" above and
 [../status.md](../../status.md) for the row-by-row picture.
 
 **Built and proven, 2026-09-11 (exp56): the BFF's method policy and its first

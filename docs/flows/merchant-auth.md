@@ -21,7 +21,7 @@ Everything below was derived from what the pinned OP actually enforces —
 
 ## The handshake
 
-```
+```text
 merchant backend (SDK)                         vpay (as OP for /v1)
       |                                                     |
       | 1. mint assertion: RS256 JWT, iss=sub=client_id,    |
@@ -314,10 +314,12 @@ refund"~~. Wave 3 arrived. Arm F mounted `POST /v1/refunds`,
 retrieve in **both** merchant SDKs, with the `destination` a
 `RefundDestination::Required` rail needs:
 
-    POST /v1/refunds
-      payment_intent=pi_...
-      amount=2000                          # omit for a full refund
-      destination[mtn_momo][msisdn]=%2B237600000200
+```text
+POST /v1/refunds
+  payment_intent=pi_...
+  amount=2000                          # omit for a full refund
+  destination[mtn_momo][msisdn]=%2B237600000200
+```
 
 The rail's own code is the outer key — the same envelope
 `payment_method_data[<rail_code>]` uses on the confirm path — and the payee
@@ -440,12 +442,16 @@ work does not close them.
 
 **Not done, and not hidden by any of the above:**
 
-- **No rail call, so no payment.** The SDKs implement eight resource
+- ~~**No rail call, so no payment.** The SDKs implement eight resource
   endpoints; the server now routes five of them (create, retrieve, list,
-  cancel, confirm) and none of the other three. **`confirm` stops at the
-  adapter's `NotImplemented` and answers `501`** — no HTTP request has ever
+  cancel, confirm) and none of the other three. `confirm` stops at the
+  adapter's `NotImplemented` and answers `501` — no HTTP request has ever
   been made to a rail by this code, and no payment intent has ever left
-  `requires_payment_method` except into `canceled`.
+  `requires_payment_method` except into `canceled`.~~ **Corrected 2026-09-20:
+  confirm has reached a real rail since 2026-09-03 (Step 3)** — see "Updated
+  2026-09-03 (Step 3)" above and the `confirm` row in
+  [merchant-auth/resource-contract.md](merchant-auth/resource-contract.md)
+  for current state.
 - **`next_action` is never populated and `return_url` is dropped.** A
   redirect confirm validates `return_url` and discards it; `charges` has no
   column for it, and the `next_action` it would feed can only come from a

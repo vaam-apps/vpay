@@ -25,14 +25,14 @@ The dashboard is built in slices, and the navigation is only ever allowed to
 link to slices that exist. A menu entry for a page nobody wrote is the same
 lie as an empty table.
 
-| Slice | What it is                                 | State                                                           |
-| ----- | ------------------------------------------ | --------------------------------------------------------------- |
-| 1     | Payments — list and detail                 | **Built.** The two `/dash/v1` reads, the sign-in, and the pages |
-| 2     | Webhooks — deliveries, retries, signatures | Not started                                                     |
-| 3     | Checkout sessions                          | Not started                                                     |
-| 4     | Balances and the ledger                    | Not started                                                     |
-| 5     | Settings                                   | Not started                                                     |
-| 6     | Rail health                                | Not started                                                     |
+| Slice | What it is                                 | State                                                                                                                                                                                              |
+| ----- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | Payments — list and detail                 | **Built.** The two `/dash/v1` reads, the sign-in, and the pages                                                                                                                                    |
+| 2     | Webhooks — deliveries, retries, signatures | ~~Not started~~ **Corrected 2026-09-20: deliveries built** — a read-only list, `GET /api/dash/deliveries` over `search_webhook_deliveries.rs`. Retries and signature replay are still not started. |
+| 3     | Checkout sessions                          | ~~Not started~~ **Corrected 2026-09-20: built** — a read-only list, `GET /api/dash/checkouts` over `search_checkout_sessions.rs`.                                                                  |
+| 4     | Balances and the ledger                    | Not started                                                                                                                                                                                        |
+| 5     | Settings                                   | Not started                                                                                                                                                                                        |
+| 6     | Rail health                                | Not started                                                                                                                                                                                        |
 
 ## What slice 1 built (2026-09-06)
 
@@ -130,9 +130,11 @@ reads, the boundary and the two boot refusals are built and proven
 (2026-09-06); a staff member can sign in (2026-09-07,
 [ADR-0017](../adr/0017-staff-authentication.md)); the pages exist and a real
 browser signs in through the real OP and reads this merchant's payments
-(2026-09-07). **Not built: every other slice (2–6); every write, and therefore
+(2026-09-07). ~~**Not built: every other slice (2–6)**~~ **corrected
+2026-09-20: slices 2 (deliveries only) and 3 are built — see the Slices table
+above.** Not built: slices 4–6; every write, and therefore
 no `audit_log`; no sweep of expired sessions or authorization codes; no key
-rotation.** ~~The BFF added on 2026-09-11 has no consumer, and Lane 3 of the
+rotation. ~~The BFF added on 2026-09-11 has no consumer, and Lane 3 of the
 Refine plan was declined rather than started.~~ **Corrected 2026-09-12:**
 lanes 3 and 4 are built — the payments list and detail render through Refine
 hooks, and `src/dash/resources.ts` replaced `nav.tsx`'s second list.

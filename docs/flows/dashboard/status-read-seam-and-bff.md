@@ -304,9 +304,12 @@ them `h1`), and `<a href>` paging (`@vaam-apps/ui`'s `Pagination` renders
 callback buttons and disables rather than omits an absent control; two
 Cypress legs assert on anchors).
 
-**Still one resource.** `/dash/v1` serves `payment_intents` and nothing else,
-so the rail has one entry. A console with more sections is what a backend
-exposes, not what a framework provides.
+~~**Still one resource.** `/dash/v1` serves `payment_intents` and nothing
+else, so the rail has one entry.~~ **Corrected 2026-09-20: five now** —
+`payment_intents`, `refunds`, `webhook_deliveries`, `customers` and
+`checkout_sessions` each have a routed page and a rail entry. See the Slices
+table in [../dashboard.md](../dashboard.md). A console with more sections is
+what a backend exposes, not what a framework provides.
 
 ## 2026-09-12, later — the browser-side read is withdrawn, measured
 

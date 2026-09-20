@@ -85,9 +85,15 @@ _Split out of [docs/flows/hosted-checkout.md](../hosted-checkout.md) on 2026-09-
   (`src/testing/idb-stub.ts`), which models the object graph the adapter
   walks and nothing else — no transaction lifetime, no quota, no versions
   above 1.
-- **`@base-ui-components/react` is pinned at `1.0.0-rc.0`**, which is the
+- ~~**`@base-ui-components/react` is pinned at `1.0.0-rc.0`**, which is the
   latest release that package has: there is no 1.0.0. A release candidate on
-  a payment page is a maintainer's call and is recorded as one.
+  a payment page is a maintainer's call and is recorded as one.~~
+  **Corrected 2026-09-20: not a dependency of this app any more.** It is not
+  in `frontends/apps/checkout/package.json` at all — the `@vaam-apps/ui`
+  cutover (2026-09-12) replaced this app's own UI primitives with that
+  package, and `@base-ui/react` (the renamed successor —
+  [`docs/plans/2026-09-07-ui-revamp.md`](../../plans/2026-09-07-ui-revamp.md)
+  §0.1) is not a direct dependency here either.
 - ~~**The Storybook stories are reviewed under the wrong theme.** The shared
   Storybook (`frontends/packages/ui/.storybook`) configures `corporate` and
   `business`; this app ships `bumblebee` alone. The stories show layout and

@@ -9,7 +9,7 @@ timer, no DOM — with the React layer as wiring. That is what makes every refus
 and every transition a test rather than a branch inside an effect nobody can
 reach twice.
 
-```
+```text
                     ┌──────────────────────────────────────────┐
    load             │                                          │
    ────► loading ───┤ credentials missing → invalid link       │
@@ -196,16 +196,24 @@ only these four screens and not only this repository. The full trace,
 including the three mutations' exact values and results, is
 `shop-hosted.cy.ts`'s own header comment.
 
-**So issue #73's contrast half is still open**, and this is why: the
-harness is real (real browser, real axe-core, correctly wired across
-`cy.origin()`), it is exercised on every CI run and logs what it finds
-(`incomplete`, not silently), and it still cannot confirm or deny WCAG AA
-compliance on this theme. Closing it for real needs one of — an axe-core
-release that tolerates a fully transparent `background-image` ancestor;
-removing or conditioning daisyUI's scroll-lock `background-image` (a
-behavioural change to a third-party base style, and if scroll-locking a
-`<dialog>`/`Drawer` matters here, a real cost); or a measurement that does
-not walk the DOM for a background colour at all. **Not covered: the
+**So issue #73's contrast half is still open on the Cypress route
+specifically**, and this is why: the harness is real (real browser, real
+axe-core, correctly wired across `cy.origin()`), it is exercised on every CI
+run and logs what it finds (`incomplete`, not silently), and it still cannot
+confirm or deny WCAG AA compliance on this theme through daisyUI's own
+scroll-lock `background-image` blocking axe-core's rule. Closing _this route_
+for real needs one of — an axe-core release that tolerates a fully
+transparent `background-image` ancestor; removing or conditioning daisyUI's
+scroll-lock `background-image` (a behavioural change to a third-party base
+style, and if scroll-locking a `<dialog>`/`Drawer` matters here, a real
+cost); or a measurement that does not walk the DOM for a background colour
+at all. ~~The question stays open.~~ **Corrected 2026-09-20: answered a
+different way.** `just test-storybook` (Storybook's `addon-a11y`, over a real
+Chromium, `test: "error"`) runs the checkout's 22 stories in CI's `web` job
+(`.github/workflows/ci.yml`) and does produce a verdict — see
+[`../../status/frontend.md`](../../status/frontend.md)'s Storybook row for
+the numbers. This does not make the Cypress route above work; it closes the
+underlying question by a route that does not depend on it. **Not covered: the
 `canceled` outcome kind** (`PaymentIntent.status === "canceled"`, distinct
 from the rail declines the `failed` cases above drive) — no spec anywhere
 cancels an intent out from under an open checkout, so nothing has rendered

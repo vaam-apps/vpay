@@ -57,7 +57,7 @@ unreadable, not YAML, a top level that is not a mapping, a key of the wrong
 type, a value that fails its rule: each costs exactly that key, prints one
 `WARN` naming the file and the key, and leaves the rest standing.
 
-```
+```text
 [vpay-checkout] configuration: no file at /etc/vpay/checkout/branding.yaml — using defaults
 [vpay-checkout] configuration: config.yaml: checkout.allowed_methods is empty — ignored, every rail stays on offer
 ```
@@ -80,10 +80,18 @@ default:
   ~~`:root[data-theme="bumblebee"]`~~ **`:root[data-theme="dark"]`
   (2026-09-12, the `@vaam-apps/ui` cutover — `@vpay/ui` is deleted and this
   app's theme moved with it, per decision 3: kept, retargeted)** block in
-  `<head>` is enough. `src/config/theme.ts` converts sRGB to OKLCh
+  `<head>` is enough. ~~`src/config/theme.ts` converts sRGB to OKLCh
   with Ottosson's matrices and daisyUI's own foreground rule — no colour
   library on a payment page — and its tests assert the output against values
   produced by **daisyUI's own converter** for six colours, so a drift is a
-  failing test rather than a page that is quietly the wrong colour. The
+  failing test rather than a page that is quietly the wrong colour.~~
+  **Corrected 2026-09-20: that code is gone.** daisyUI 5 takes any CSS
+  colour on `--color-primary`, so `#rrggbb` is emitted as written, once
+  re-validated, with no conversion at all. `src/config/theme.ts`'s own
+  docstring says why: "color-mix is a browser primitive" now does the one
+  computation daisyUI still does not derive — the _foreground_ painted on
+  top of `--color-primary` — 80% of the way to white or black by daisyUI's
+  own rule, and `theme.test.ts` asserts the resulting contrast directly
+  rather than against a six-colour comparison with daisyUI's converter. The
   colour that goes _on_ the primary is derived, not configured, so a
   combination nobody can read text on is not one this file can produce.

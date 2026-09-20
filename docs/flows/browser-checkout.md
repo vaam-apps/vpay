@@ -458,14 +458,20 @@ completion message crosses from the merchant's own `success_url` page to
 [hosted-checkout.md](hosted-checkout.md)'s status only because the code lives
 in the browser SDK.
 
-**It is deliberately not an embedded session in a popup.** Inside a popup
+~~**It is deliberately not an embedded session in a popup.** Inside a popup
 `window.parent === window`, so `frontends/apps/checkout`'s
 `createFrameChannel` returns `null` and vpay's page says nothing at all —
 which is correct for a frame protocol and is why the popup uses the hosted
 page. Making the checkout page able to talk to an opener is a change to that
 app and is written up as a request in
 [../plans/exp22-shop-demo-notes/opus.md](../plans/exp22-shop-demo-notes/opus.md),
-not taken here.
+not taken here.~~ **Corrected 2026-09-20: it was taken.**
+`frontends/apps/checkout/src/lib/controller.ts` handles `channel.peer ===
+"opener"` — the popup case is a first-class peer, not an absence of one. See
+[hosted-checkout/page-memory-and-protocols.md](hosted-checkout/page-memory-and-protocols.md)
+§ "The popup, and why it is a third peer" for the wire, and
+[hosted-checkout.md](hosted-checkout.md)'s Status section for what is proven
+about it.
 
 Proven by `sdks/stripe-js/src/popup.test.ts` — 27 cases, all against **stub
 windows**, because jsdom implements neither `window.open` nor cross-window

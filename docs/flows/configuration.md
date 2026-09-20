@@ -615,12 +615,22 @@ than a feature it added:**
   `to_provider_config_names_a_currency_it_cannot_parse`). The two timeouts
   are constants, not YAML knobs: no deployment has asked for a different
   budget and a knob nobody sets is a knob nobody has tested.
-- **Seven environment variables** are now referenced by
+- ~~**Seven environment variables** are now referenced by
   `config/application.yml` and must be supplied by every deployment. Six are
   rail credentials — `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`,
   `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET` — and the
   seventh, added 2026-09-03 with Step 5, is **`MERCHANT_WEBHOOK_SECRET`**, the
-  `${VAR}` behind `merchant_clients[].webhooks[].secrets`. All seven are set on
+  `${VAR}` behind `merchant_clients[].webhooks[].secrets`.~~ **Corrected
+  2026-09-20: ten** (re-measured — every `${VAR}` reference in
+  `config/application.yml`, excluding the literal `${VAR}` placeholder its own
+  comments use as an example). Nine are rail credentials —
+  `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`, `ORANGE_MERCHANT_KEY`,
+  `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`, and the three
+  `MTN_DISBURSEMENT_*` variables (`MTN_DISBURSEMENT_API_KEY`,
+  `MTN_DISBURSEMENT_API_USER`, `MTN_DISBURSEMENT_SUBSCRIPTION_KEY`) that
+  arrived 2026-09-16 with the refund path — and the tenth is
+  **`MERCHANT_WEBHOOK_SECRET`**, the `${VAR}` behind
+  `merchant_clients[].webhooks[].secrets`. All ten are set on
   **both** services in `compose.e2e.yml` (which `compose.demo.yml` layers on
   top of, inheriting them) and listed in `.env.example`; miss one and the
   process exits `78` at boot, by design — **including `vpay-server`**, which

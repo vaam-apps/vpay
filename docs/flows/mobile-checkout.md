@@ -1,14 +1,20 @@
 # Mobile checkout (`vpay_checkout_flutter`)
 
-**What this is.** A Flutter plugin that opens vpay's hosted checkout page — the
-same page [hosted-checkout.md](hosted-checkout.md) describes — in the payer's
-own browser on Android, iOS, macOS and web, and answers the merchant's app
-with a typed result once the payment is actually decided. **Revised
-2026-09-16**: there is no in-app WebView any more, on any platform — a
-partial (bottom-sheet) Custom Tab on Android, `SFSafariViewController` on
-iOS, the default browser via `NSWorkspace` on macOS, the same `window.open`
-popup on web it always used. See the Status section's final entry for why
-and what it costs. Requested by the
+**What this is.** ~~A Flutter plugin that opens vpay's hosted checkout page —
+the same page [hosted-checkout.md](hosted-checkout.md) describes — in the
+payer's own browser on Android, iOS, macOS and web, and answers the
+merchant's app with a typed result once the payment is actually decided.~~
+**Corrected 2026-09-20: true only for the `redirect` rail.** Since 2026-09-17
+(issue #189 lane 2), `mtn_momo` and `orange_money` render as a native
+`VpayCheckoutSheet` — exported from
+[`sdks/flutter/vpay_checkout_flutter/lib/vpay_checkout_flutter.dart`](../../sdks/flutter/vpay_checkout_flutter/lib/vpay_checkout_flutter.dart)
+— never opening the browser at all; the browser described below is now the
+`redirect`-rail handler only. See the Status section's final two entries.
+**Revised 2026-09-16**: there is no in-app WebView any more, on any platform
+(for the `redirect` rail) — a partial (bottom-sheet) Custom Tab on Android,
+`SFSafariViewController` on iOS, the default browser via `NSWorkspace` on
+macOS, the same `window.open` popup on web it always used. See the Status
+section's final entry for why and what it costs. Requested by the
 maintainer on 2026-09-13, verbatim: _"Let's develop a custom vpay flutter
 plugin. We'll do it by using a new Activity (android), UIViewController
 (iOS/…) and similar for web. We'll do the payment activity in the mobile
@@ -61,16 +67,23 @@ mechanism.
    A navigation matches a stop URL on **scheme, host, port and path only** —
    query and fragment are ignored — so a merchant's own tracking parameters on
    `success_url` do not break the match.
-3. **Open the payer's own browser** on the platform host — a partial
+3. ~~**Open the payer's own browser** on the platform host — a partial
    (bottom-sheet) Custom Tab on Android, `SFSafariViewController` on iOS,
    the default browser via `NSWorkspace` on macOS, or a `window.open` popup
-   on web (Lane C) — loading `session.url` from `POST /v1/checkout/sessions`.
-   **Since D5's 2026-09-16 revision there is no in-app WebView on any
-   platform** (see the Status section's final entry), so the host cannot
-   watch a navigation any more; its only job is to show the page and report
-   two things back over a typed channel: "an incoming deep link matched one
-   of these stop URLs" (unverified on every platform as of this revision) or
-   "the payer left."
+   on web (Lane C) — loading `session.url` from `POST /v1/checkout/sessions`.~~
+   **Corrected 2026-09-20: this step now runs only for the `redirect` rail.**
+   Since 2026-09-17 (issue #189 lane 2), `mtn_momo` and `orange_money` skip
+   the browser entirely and render `VpayCheckoutSheet`, a native Flutter
+   widget tree — see the Status section's final two entries. For `redirect`,
+   the browser step is unchanged: a partial (bottom-sheet) Custom Tab on
+   Android, `SFSafariViewController` on iOS, the default browser via
+   `NSWorkspace` on macOS, or a `window.open` popup on web (Lane C) — loading
+   `session.url` from `POST /v1/checkout/sessions`. **Since D5's 2026-09-16
+   revision there is no in-app WebView on any platform** (see the Status
+   section's final entry), so the host cannot watch a navigation any more;
+   its only job is to show the page and report two things back over a typed
+   channel: "an incoming deep link matched one of these stop URLs"
+   (unverified on every platform as of this revision) or "the payer left."
 4. **Resolve.** On a reached stop URL, or on dismissal, the plugin polls the
    payment intent — on a budget, and (D4) **before** reporting anything for a
    dismissal, never immediately as "canceled." A dismissed sheet fifteen
