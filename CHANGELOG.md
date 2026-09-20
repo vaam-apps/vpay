@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/vaam-apps/vpay/compare/v0.3.1...v0.4.0) (2026-09-20)
+
+
+### Features
+
+* **xtask:** verify-doc-counts, so a number in a document cannot drift silently ([#233](https://github.com/vaam-apps/vpay/issues/233)) ([67c90ea](https://github.com/vaam-apps/vpay/commit/67c90ea5335b5baa032783d68ac4c80198dd89ac))
+
 ## [0.3.1](https://github.com/vaam-apps/vpay/compare/v0.3.0...v0.3.1) (2026-09-20)
 
 

@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1" # x-release-please-version
+version = "0.4.0" # x-release-please-version
 edition = "2024"
 # Floor of the whole resolved dependency graph's own declared `rust-version`
 # fields (`cargo metadata` → max over every package's `rust_version`, incl.
@@ -450,22 +450,22 @@ rstest = "0.23"
 # `version` alongside `path` is required: cargo-deny's `[bans] wildcards =
 # "deny"` policy (deny.toml) flags any workspace dep with only a path and no
 # version as a wildcard dependency.
-vpay-config = { path = "backends/crates/vpay-config", version = "0.3.1" } # x-release-please-version
-vpay-core = { path = "backends/crates/vpay-core", version = "0.3.1" } # x-release-please-version
-vpay-db = { path = "backends/crates/vpay-db", version = "0.3.1" } # x-release-please-version
-vpay-ledger = { path = "backends/crates/vpay-ledger", version = "0.3.1" } # x-release-please-version
-vpay-provider = { path = "backends/crates/vpay-provider", version = "0.3.1" } # x-release-please-version
-vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo", version = "0.3.1" } # x-release-please-version
-vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money", version = "0.3.1" } # x-release-please-version
-vpay-api = { path = "backends/crates/vpay-api", version = "0.3.1" } # x-release-please-version
-vpay-worker = { path = "backends/crates/vpay-worker", version = "0.3.1" } # x-release-please-version
-vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.3.1" } # x-release-please-version
+vpay-config = { path = "backends/crates/vpay-config", version = "0.4.0" } # x-release-please-version
+vpay-core = { path = "backends/crates/vpay-core", version = "0.4.0" } # x-release-please-version
+vpay-db = { path = "backends/crates/vpay-db", version = "0.4.0" } # x-release-please-version
+vpay-ledger = { path = "backends/crates/vpay-ledger", version = "0.4.0" } # x-release-please-version
+vpay-provider = { path = "backends/crates/vpay-provider", version = "0.4.0" } # x-release-please-version
+vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo", version = "0.4.0" } # x-release-please-version
+vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money", version = "0.4.0" } # x-release-please-version
+vpay-api = { path = "backends/crates/vpay-api", version = "0.4.0" } # x-release-please-version
+vpay-worker = { path = "backends/crates/vpay-worker", version = "0.4.0" } # x-release-please-version
+vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.4.0" } # x-release-please-version
 # The merchant SDK is a workspace member like the rest, but it is not a vpay
 # *component*: it is what a merchant depends on. Only `examples/merchant-demo`
 # takes it, and only so the demo drives the shipping artefact rather than a
 # second copy of the handshake. No `backends/` crate may depend on it — the
 # arrow points outward.
-vpay-sdk = { path = "sdks/rust", version = "0.3.1" } # x-release-please-version
+vpay-sdk = { path = "sdks/rust", version = "0.4.0" } # x-release-please-version
 
 [profile.release]
 opt-level = 3
