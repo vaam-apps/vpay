@@ -2,7 +2,12 @@
 
 Every `.sql` file here is applied, in filename order, by
 `sqlx::migrate!("../../migrations")` — from `vpay_db::migrations`, which both
-binaries call at boot, and from every container-backed test suite.
+binaries call at boot, and from every container-backed test suite. There are
+**48** <!-- count:files-with-suffix backends/migrations .sql --> of them,
+re-measured 2026-09-20 and gated from that day by
+`cargo xtask verify-doc-counts`, which re-counts the directory on every
+`just verify` — so this figure cannot drift the way the prose counts elsewhere
+in this repository did until then.
 
 ## The one rule: a migration that has shipped is never edited
 
@@ -12,7 +17,7 @@ database whose recorded checksum no longer matches the file. Changing so much
 as a word in a comment therefore stops every database that applied the original
 from booting:
 
-```
+```text
 migration 28 was previously applied but has been modified
 ```
 

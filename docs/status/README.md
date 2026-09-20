@@ -36,8 +36,8 @@ appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
-try to be.** Re-measured 2026-09-20: the directory holds 58 files today; this
-list names 35 of them. This is a hand-maintained list, not a generated one,
+try to be.** Re-measured 2026-09-20: the directory holds 59 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 36 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. Most of the 23 are
 still findable: they are linked individually from the area page whose
 section they verify (for example
@@ -50,6 +50,19 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-09-20-doc-counts-gate.md](verification/2026-09-20-doc-counts-gate.md) —
+  `verify-doc-counts`, the **fifteenth** gate, and the survey that argued for
+  it: 35 checkably-false claims in the live docs, **thirteen** of them numbers
+  that were right when measured and drifted after, and **not one** of them in a
+  claim any gate reads. Carries the gate's output on this tree and all seven
+  of its failure modes driven as mutations of the real files, including the one
+  that matters most — an unknown marker kind is a hard error, never a skip. The
+  `verify-gates` measurer reads the `justfile`'s own `verify:` line, so the
+  gate checks the number its own arrival moved from fourteen to fifteen. One
+  re-measurement contradicted the page it was added to and is recorded rather
+  than smoothed over: the Rust SDK exposes **35** resource methods, not the
+  fourteen two pages still built arithmetic on, and the routed-method count
+  that arithmetic produced is left un-re-derived rather than guessed.
 - [verification/2026-09-18-macos-loopback-and-two-load-flakes.md](verification/2026-09-18-macos-loopback-and-two-load-flakes.md) —
   three ways `just test-rust` fails on a macOS developer machine and in no CI
   job. Four **deterministic** failures in `staff_sign_in.rs`, because its

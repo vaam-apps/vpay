@@ -16,8 +16,8 @@ pepper, mandatory RFC 6238 TOTP with a compare-and-swap replay guard,
 server-side sessions with an absolute and an idle bound, and the
 authorization-code grant with PKCE served for the dashboard client only.
 
-`backends/tests/integration/tests/staff_sign_in.rs` (~~13 cases~~ **27,
-re-measured 2026-09-20**) drives it end to end and **mints no token of its
+`backends/tests/integration/tests/staff_sign_in.rs` (~~13 cases~~ **27** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs -->,
+re-measured 2026-09-20) drives it end to end and **mints no token of its
 own**.
 
 ~~It is not built because building it requires a decision nobody has taken~~ —

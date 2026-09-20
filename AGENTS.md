@@ -19,11 +19,14 @@ CI runs it.
 `just verify` is the gates the `verify` recipe lists in the `justfile`, and
 one report. **The recipe is the list; this paragraph is a description of it,
 and it has gone stale at nearly every count it has carried** — see below. On
-this commit the gates are fourteen (`verify-no-mocks`, `verify-status`,
+this commit the gates are 15 <!-- count:verify-gates --> (`verify-no-mocks`, `verify-status`,
 `verify-errors`, `verify-sdk-parity`, `verify-links`, `verify-npm-scope`,
 `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`,
 `verify-ui`, `verify-migrations`, `verify-versions`,
-`verify-privacy-inventory`) and they fail the build. If that list and the
+`verify-privacy-inventory`, `verify-doc-counts`) and they fail the build. That
+number is written in digits and carries a `count:verify-gates` marker because
+`verify-doc-counts` re-reads it off the recipe on every `just verify`; the
+names beside it are still prose nothing checks. If that list and the
 recipe disagree, the recipe is right: read it, and fix this paragraph in the
 same commit. The report
 (`verify-docs`) never does — it prints doc-comment volume per crate, in-file
@@ -63,7 +66,17 @@ mechanism. And `verify-privacy-inventory` makes it **fourteen**, the same day
 ([#187](https://github.com/vaam-apps/vpay/pull/187), issue #144): every
 database column the migrations create is classified in
 `schemas/privacy-inventory.yaml`, and every classification names a live
-column, in both directions.
+column, in both directions. And `verify-doc-counts` makes it **fifteen** on
+2026-09-20: every number a document marks with an HTML comment reading
+`count:KIND ARG...`, on the same line as the digits, must still equal what the
+tree measures. It is the first gate here whose own arrival moves a number it
+checks — the tally in the paragraph above is one of the counts it reads — and
+it came out of a survey that found 35 checkably-false claims in the live docs,
+thirteen of them numbers that had silently drifted, and not one of them in a
+claim any gate reads. **Write the opening delimiter out in a `*.md` file and
+the gate will try to measure your example**: it scans raw text and has no
+notion of a code span, which is why this paragraph names the marker without
+it.
 
 The two thirteenth gates were written on branches that never saw each other,
 exactly as `verify-npm-scope` and `check-schema` were on 2026-09-05, and the
@@ -74,7 +87,7 @@ said "Eleven of the thirteen", which was right for a tree that had not seen
 #201 and wrong for one that had. `master` at `eb078020` said "twelve" and "Ten
 of the twelve". Neither side was right for the merge, which is fourteen and
 twelve.)_
-Twelve of the fourteen are `cargo xtask` commands; `check-schema` and
+Thirteen of the fifteen are `cargo xtask` commands; `check-schema` and
 `verify-ui` are justfile recipes — the first shells out to the CrateStack CLI,
 a binary this workspace does not build, and the second is a handful of
 `git grep`s.
@@ -354,7 +367,7 @@ process to a reader who will decide what to do. A skill briefs an agent that is
 already doing it, and is therefore judged on a different question: not "is this
 accurate and complete" but "would an agent that read only this do the right
 thing on its first attempt". That is why they are a separate repository — a
-briefing that has to clear fourteen gates to be corrected is a briefing nobody
+briefing that has to clear fifteen gates to be corrected is a briefing nobody
 corrects — and why drift between them and this tree is gated rather than
 trusted.
 

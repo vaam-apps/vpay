@@ -107,10 +107,14 @@ token written in a comment of any kind, in a `#[doc = "…"]` attribute or insid
 any string, raw-string or character literal is prose, and prose declares
 nothing.
 
-`just verify` is **fourteen gates and one advisory report**. What each one
-refuses, and what each printed when all fourteen were re-run, one invocation
-each, on **2026-09-18** on this branch's merge of `master` at `bd5c85d1`, on
-macOS with `cratestack` 0.12.0 on `PATH`. _(The column before it was 2026-09-17
+`just verify` is **15** <!-- count:verify-gates --> gates and one advisory
+report. What each one refuses, and what the first fourteen printed when they
+were re-run, one invocation each, on **2026-09-18** on this branch's merge of
+`master` at `bd5c85d1`, on macOS with `cratestack` 0.12.0 on `PATH`; the
+fifteenth row, `verify-doc-counts`, landed 2026-09-20 and was measured then.
+The figure above is in digits and carries a marker because it is the number
+this repository has got wrong most often, and `verify-doc-counts` is the gate
+that now reads it off the `verify:` recipe. _(The column before it was 2026-09-17
 on the merge of `eb078020`, and before that 2026-09-16 on `888b00c3` with
 `DOCKER_HOST=unix:///run/user/1000/docker.sock`. It is re-run rather than
 annotated every time a merge moves the numbers, which is the third time in
@@ -142,7 +146,7 @@ no longer exists; the history is the paragraph you are reading.)_
 | `verify-status`            | an undeclared — or a stale — `NotImplemented` token                                                                                                                             | 1 unimplemented item                                  |
 | `verify-errors`            | an unclassified error type, or `anyhow` in a library crate                                                                                                                      | 20 error types, 17 `#[from]` variants                 |
 | `verify-sdk-parity`        | an SDK capability with no row, or a row naming no capability                                                                                                                    | 662 proving tests, 37 dated gaps, 35 methods, 39 rows |
-| `verify-links`             | a repository link that resolves to no tracked path                                                                                                                              | 1 741 links in 402 files                              |
+| `verify-links`             | a repository link that resolves to no tracked path                                                                                                                              | 1 789 links in 404 files                              |
 | `verify-npm-scope`         | an unpublishable manifest, or a retired package name outside the record                                                                                                         | 2 publishable packages, 1 private                     |
 | `check-schema`             | a `schemas/vpay.cstack` that does not type-check                                                                                                                                | 27 declarations, under 0.12.0; see the note below     |
 | `verify-serde`             | a serialisable type that does not spell the wire convention                                                                                                                     | 102 types, 17 exemptions                              |
@@ -150,9 +154,20 @@ no longer exists; the history is the paragraph you are reading.)_
 | `verify-toolchain`         | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                                  | 1.98.0                                                |
 | `verify-ui`                | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12)                | nothing: silent on success, exit 0 only               |
 | `verify-migrations`        | an applied migration whose bytes changed                                                                                                                                        | 48 files                                              |
-| `verify-versions`          | a release version reference that disagrees, a line release-please must rewrite with no `x-release-please-version` comment, or a bare-string `extra-files` entry (PR #201, #204) | 21 version references, all 0.1.1                      |
+| `verify-versions`          | a release version reference that disagrees, a line release-please must rewrite with no `x-release-please-version` comment, or a bare-string `extra-files` entry (PR #201, #204) | 22 version references, all 0.3.1                      |
 | `verify-privacy-inventory` | a migrated column with no inventory classification, or an inventory row naming no live column (issue #144, 2026-09-16)                                                          | 295 columns / 25 elements / 10 surfaces               |
+| `verify-doc-counts`        | a documented number that no longer equals what the tree measures, a marker whose kind no measurer knows, and finding no marker at all (2026-09-20)                              | 13 counts in 11 of 262 markdown files                 |
 | `verify-docs`              | **nothing — it exits 0 whatever it finds**                                                                                                                                      | advisory report                                       |
+
+_(**Two rows were re-run on 2026-09-20** with the fifteenth gate, because
+this change moved one of them and the other had gone stale on `master`:
+`verify-links` 1 741/402 → **1 789/404** (this change adds a verification page
+and the two links to it; the rest arrived with merges since 2026-09-18), and
+`verify-versions` 21 references at 0.1.1 → **22 at 0.3.1**, which is the
+`chore: release master` of 2026-09-20 (#227) and nothing this change did. The
+other twelve rows were re-run on the same invocation — `just verify`, which
+runs all fifteen — and every one of them printed what it printed on
+2026-09-18.)_
 
 _(`verify-versions` had no row here at all from 2026-09-17, when
 [#201](https://github.com/vaam-apps/vpay/pull/201) added it as the recipe's
@@ -234,13 +249,24 @@ Those numbers are a measurement of one tree on one day — `888b00c3`, 2026-09-1
 — not a promise. **They are `just verify`'s gates invoked one at a time, not
 `just verify` itself and not `just ci`**, which this branch's agents were
 instructed not to run; that distinction is the whole of what the
-fourteen-in-a-row recipe adds. What each
+fifteen-in-a-row recipe adds. What each
 gate used to miss, the mutation that proved each hole shut, and the dates every
-one of these counts moved on, are in [status/gates.md](status/gates.md) — 509
-lines of it, unedited, plus three dated sections appended below that text. Read
+one of these counts moved on, are in [status/gates.md](status/gates.md) — the
+archive, plus an undated `verify-ui` section and **five** dated ones appended
+below that text. _(This said "509 lines of it, unedited, plus three dated
+sections" until 2026-09-20. All three halves were wrong. The archive was **519**
+lines when [#129](https://github.com/vaam-apps/vpay/pull/129) split it out
+(`7977368b`); it is **not** unedited — `diff`ing that commit's copy against
+today's archive text shows three amendments in four hunks, two of them dated
+corrections written into the archive itself (2026-09-15's third `verify-status`
+direction and 2026-09-20's "both packages are live"), the third a code-fence
+language; and the dated sections had been four since 2026-09-18. The line count is dropped rather than re-measured, because
+"509 lines, unedited" was two claims and only one of them was about a number.
+This is also the drift `verify-doc-counts` exists for and cannot catch:
+"three" is a word, and the gate reads digits only.)_ Read
 the numbers in it as date-stamps rather than totals: it calls
 `verify-sdk-parity` the reader of "the fourth machine-checked document", which
-was true on 2026-09-03, when four of these fourteen gates existed.
+was true on 2026-09-03, when four of these fifteen gates existed.
 
 ### Unimplemented items tracked by `verify-status`
 
@@ -338,8 +364,8 @@ asserted:
 - both merchant SDKs' `Refund.fee`, with the parity row and its five tests.
 
 None of those four bullets _begins_ with a backticked path, and none may:
-`verify-status` reads exactly that shape — `- ` then a backtick — as a
-declared `NotImplemented` token, and the docs→code half of the gate would
+`verify-status` reads exactly that shape — a `-`, a space, then a backtick —
+as a declared `NotImplemented` token, and the docs→code half of the gate would
 then fail because no shipping code carries one. That is the gate working
 rather than a trap, and it is why each bullet above opens with a noun.
 
@@ -482,8 +508,9 @@ they were written:
 
 _(This section replaced the `mtn_momo::refund` bullet that stood here from
 Step 3 to 2026-09-15, which said "nothing honest can be built yet". It also
-does not begin with a backticked path, and may not: `verify-status` reads
-`- ` followed by a backtick as a declared token, and the docs→code half of
+does not begin with a backticked path, and may not: `verify-status` reads a
+`-` and a space followed by a backtick as a declared token, and the docs→code
+half of
 the gate would then fail because no shipping code carries a `mtn_momo::refund`
 token any more.)_
 **Also missing, and larger:** no **shipping** path writes a `refunds` row.
@@ -557,7 +584,8 @@ builds once OOM-killed the host). ~~**Read that as what it is:** the thirteen
 gates have been run on this head, and the full workspace test run, the web
 job and the doctest sweep that `just ci` adds on top of them have been run on
 **no** commit of this branch by anything but GitHub Actions.~~ **Struck
-2026-09-18**, on two counts: the gates are **fourteen**, and the whole of
+2026-09-18**, on two counts: the gates were **fourteen** by then — **fifteen**
+since `verify-doc-counts` landed on 2026-09-20 — and the whole of
 `just ci` — the workspace test run, the doctest sweep, the web job, `deny` and
 `audit-web` — has now been run on this head, step by step because the recipe
 stops at its first failure. The evidence, including the four `staff_sign_in`

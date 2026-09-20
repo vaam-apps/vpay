@@ -171,6 +171,17 @@ is `refunds.create` and `balance.retrieve`. The "two of thirteen" this
 sentence read until the rebase was measured on a tree without issue #47's
 resource.
 
+**That "fourteen" is a 2026-09-06 measurement and is kept as one.** Re-measured
+2026-09-20, `vpay-sdk` exposes **35** <!-- count:pub-async-fn sdks/rust/src/resources.rs --> resource methods —
+`pub async fn` in `sdks/rust/src/resources.rs`, across nine resources — and
+`verify-sdk-parity` independently enumerates the same 35 across 39 rows of
+[../sdks/parity.md](../sdks/parity.md). That figure is gated from 2026-09-20 by
+`cargo xtask verify-doc-counts`. **How many of the 35 have no route is
+deliberately not re-derived here**: "two of fourteen" was measured against a
+fourteen-method SDK, the invoices and invoice-items resources landed after it,
+and nobody has taken the equivalent measurement since. Saying so is cheaper
+than guessing, and this page is read as if its numbers were taken today.
+
 **Not done, stated plainly:** neither SDK has been exercised against a
 _deployed_ vpay. What changed on 2026-09-02 is that the server half of the
 contract exists — `/v1/oauth/token`, discovery and JWKS are served — and the

@@ -10,7 +10,7 @@ and for the shortest statement of the rules that always apply — start with
 
 ```bash
 just verify    # the self-checks the justfile's `verify` recipe lists —
-               # fourteen on 2026-09-17, and the recipe echoes its own count
+               # fifteen on 2026-09-20, and the recipe echoes its own count
                # on success
                # — all of which must pass before AND after your change, plus
                # the `verify-docs` report, which never fails
@@ -26,7 +26,10 @@ answers which question.
 _(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
 said "ten" until `verify-migrations` landed on 2026-09-07, and "thirteen"
 until `verify-versions` (#201) and `verify-privacy-inventory` (#187) both
-landed on 2026-09-17.
+landed on 2026-09-17. It said "fourteen" until `verify-doc-counts` landed on
+2026-09-20 — the gate that ends this particular sequence, because the count is
+**15** <!-- count:verify-gates --> and a `just verify` whose recipe disagreed
+with that figure would now fail on it.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
 moved it; that is the copy to trust, and this one now agrees with it.)_
 

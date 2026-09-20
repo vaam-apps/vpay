@@ -119,8 +119,9 @@ was reachable over HTTP and by nothing a person could click.
 
 ~~**No login has ever been performed.**~~ Corrected 2026-09-07
 ([ADR-0017](../adr/0017-staff-authentication.md)). ~~Thirteen cases~~
-**27 cases (re-measured 2026-09-20: `grep -c '^#\[tokio::test\]'
-backends/tests/integration/tests/staff_sign_in.rs`)** in
+**27 cases** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs --> — re-measured 2026-09-20, and
+gated from that day by `cargo xtask verify-doc-counts`, which re-counts
+`#[tokio::test]` in that file on every `just verify` — in
 `backends/tests/integration/tests/staff_sign_in.rs` drive the real
 `vpay_api::router` on a real socket over a real Postgres, and **that suite
 mints no token at all**: every token it presents came out of
@@ -360,9 +361,9 @@ Solved by changing the _validator_ rather than the grant — ADR-0017 decision
 
 What is proven about the dashboard **validator** is now proven about the whole
 path: `backends/tests/integration/tests/dashboard_read_surface.rs`
-(~~15 cases~~ **21 — see above, "grew from 16 to 21"**) covers which rows a
+(~~15 cases~~ **21** <!-- count:tokio-tests backends/tests/integration/tests/dashboard_read_surface.rs --> — see above, "grew from 16 to 21") covers which rows a
 validly-minted token may read and which credentials are refused, and
-`staff_sign_in.rs` (~~13 cases~~ **27, re-measured 2026-09-20**) covers how
+`staff_sign_in.rs` (~~13 cases~~ **27** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs -->, re-measured 2026-09-20) covers how
 one is obtained. The first file's own header still opens by saying it proves
 nothing about signing in, and that remains true _of that file_.
 

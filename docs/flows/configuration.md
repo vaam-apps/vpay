@@ -621,9 +621,12 @@ than a feature it added:**
   `ORANGE_MERCHANT_KEY`, `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET` — and the
   seventh, added 2026-09-03 with Step 5, is **`MERCHANT_WEBHOOK_SECRET`**, the
   `${VAR}` behind `merchant_clients[].webhooks[].secrets`.~~ **Corrected
-  2026-09-20: ten** (re-measured — every `${VAR}` reference in
+  2026-09-20: 10** <!-- count:env-vars config/application.yml --> (re-measured, and gated from the same day by
+  `cargo xtask verify-doc-counts` — every `${VAR}` reference in
   `config/application.yml`, excluding the literal `${VAR}` placeholder its own
-  comments use as an example). Nine are rail credentials —
+  comments use as an example, which the measurer skips because all four of its
+  occurrences sit in `#` comments, and comments never reach the resolver
+  either). Nine are rail credentials —
   `MTN_SUBSCRIPTION_KEY`, `MTN_API_KEY`, `MTN_API_USER`, `ORANGE_MERCHANT_KEY`,
   `ORANGE_CLIENT_ID`, `ORANGE_CLIENT_SECRET`, and the three
   `MTN_DISBURSEMENT_*` variables (`MTN_DISBURSEMENT_API_KEY`,

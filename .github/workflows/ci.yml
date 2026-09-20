@@ -524,6 +524,17 @@ jobs:
       # steps above it, so the recipe and this workflow cannot drift.
       - name: verify-privacy-inventory (every migrated column is classified)
         run: just verify-privacy-inventory
+      # New 2026-09-20, the fifteenth gate, and the only one here that changes
+      # a number it is itself responsible for checking: its `verify-gates`
+      # measurer counts the `verify:` recipe's dependencies, and this gate
+      # joining that recipe moved the tally from fourteen to fifteen in every
+      # document that states it. It is the only step in this job that reads
+      # prose: nothing else in `just ci` opens a `*.md` to ask whether a
+      # number in it is still true, which is how thirteen drifted counts
+      # survived to the 2026-09-20 documentation survey. Through the justfile,
+      # like the steps above it, so the recipe and this workflow cannot drift.
+      - name: verify-doc-counts (every marked number still measures)
+        run: just verify-doc-counts
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

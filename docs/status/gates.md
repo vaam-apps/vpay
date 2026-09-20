@@ -1022,3 +1022,96 @@ before it is merged.
 
 The full record, with the mutation outputs, is in
 [verification/2026-09-17-release-please-yaml-rewrite.md](verification/2026-09-17-release-please-yaml-rewrite.md).
+
+## 2026-09-20 — `verify-doc-counts`, the fifteenth gate
+
+New 2026-09-20, and the **fifteenth** gate. It reads `*.md` and fails when a
+number a document has marked as countable no longer equals what this tree
+counts.
+
+**The measurement that argued for it.** A documentation survey the same day
+found **35** checkably-false claims in the live docs. Thirteen were a number
+that was right when somebody measured it and drifted afterwards: test-case
+counts in two flow pages, the migration count, the environment-variable count
+in `../flows/configuration.md`, an SDK method count, and the gate tally itself.
+
+**The other half of that measurement is the part that makes this a gate rather
+than a cleanup.** Every claim in this repository that a gate already reads came
+through the same survey clean. `verify-serde` parses ADR-0016's exemption table
+and produced no finding. `verify-sdk-parity` resolves 662 test citations in
+[../sdks/parity.md](../sdks/parity.md) and produced no finding. All 35 findings
+were in prose no gate reads. The difference is not that prose is written less
+carefully than a table — it is that nothing re-reads prose.
+
+### The marker
+
+A count is protected by an HTML comment opening `count:KIND ARG...`, on the
+**same line** as the digits it guards. The guarded number is the last run of
+ASCII digits before the marker on that line, so `**27**`, `` `27` `` and `(27)`
+all read as 27, and the canonical placement is immediately after the number
+rather than at the end of the line — a line ending `re-measured 2026-09-20`
+would otherwise guard `20`.
+
+Same-line is safe because `.prettierrc.json` sets `proseWrap: "preserve"`:
+prettier does not reflow prose here, so no formatter can separate a marker from
+its number. It is also the whole mechanism, which is why a marker with no `-->`
+on its own line is a hard error rather than a non-marker.
+
+The six measurers are a closed set — `tokio-tests`, `files-with-suffix`,
+`env-vars`, `pub-async-fn`, `dir-entries` and `verify-gates` — and an unknown
+kind **fails**. A gate that skipped what it did not understand would print
+success for a number nothing measured, which is the defect this gate exists to
+remove, committed by the gate.
+
+Finding **no** marker at all fails for the same reason: a check wired into
+`just verify` that protects nothing is worse than no check, because its green
+is read as evidence.
+
+### `verify-gates`, and why this gate changed the number it protects
+
+`just verify`'s own tally has read "three", "ten", "thirteen" and "fourteen" at
+different points in this repository's life, and was wrong for days on each
+move — this file's own 2026-09-18 section records the last of those, where
+`AGENTS.md` and [../status.md](../status.md) said twelve for a day after the
+recipe grew its thirteenth entry.
+
+`count:verify-gates` counts the dependencies of the `justfile`'s `verify:`
+line, minus the advisory `verify-docs`, exactly as the recipe's own echo does.
+It reads the recipe rather than a list kept beside it, because the recipe is
+what runs.
+
+Adding this gate moved that number from fourteen to fifteen, so the gate
+changed a number it is itself responsible for checking. Both halves were done
+in one change: the recipe grew `verify-doc-counts`, and the tally in
+`AGENTS.md`, `CLAUDE.md` and [../status.md](../status.md) was rewritten in
+digits with a marker on it. `README.md` and this file's prose still spell it
+out in words and are **not** gated — see § What is deliberately not checked.
+
+### What is deliberately not checked
+
+- **Numbers written as words.** "Fourteen gates" is invisible. A document that
+  wants its count protected has to switch to digits, which is a real cost in a
+  repository whose prose spells numbers out. The trade is deliberate: an
+  English number-word parser would be a second thing that can be wrong.
+- **Counts in the frozen archives.** `docs/plans/` and
+  `verification/` are dated records. A number that was true on the day it was
+  written is correct there even after the tree moves, and gating them would
+  demand the archive be falsified to keep the build green.
+- **The `justfile`'s own echo string, and every non-markdown file.** The gate
+  reads `*.md`. `count:verify-gates` reads the `verify:` dependency list; the
+  sentence the recipe echoes afterwards, and the `justfile` header block above
+  it, are still prose changed by hand.
+- **A marker inside a code span.** The gate scans raw text and has no notion of
+  a fence or a backtick, so a `*.md` file that spells the opening delimiter out
+  to explain the syntax will have its example measured. Found by writing
+  `AGENTS.md`'s paragraph about this gate, which failed it. Documents describe
+  the marker as `count:KIND ARG...` for that reason. This is a live constraint,
+  not a defect to fix later: making the parser skip code spans would add a
+  second parser that can be wrong about which text is real.
+
+### Measured on this tree, 2026-09-20
+
+`cargo xtask verify-doc-counts` — **13 documented counts in 11 of 262 markdown
+files**, all agreeing. Each of the five failure modes was driven against a
+temporary tree and against the real one; the outputs are in
+[verification/2026-09-20-doc-counts-gate.md](verification/2026-09-20-doc-counts-gate.md).

@@ -783,6 +783,18 @@ are routed**. The count is
 ([../sdks/parity.md](../sdks/parity.md)). The "thirteen" this paragraph read
 until the rebase was measured on a tree without issue #47's resource.
 
+**That whole paragraph is a 2026-09-06 measurement and is kept as one.**
+Re-measured 2026-09-20: `vpay_sdk` exposes **35** <!-- count:pub-async-fn sdks/rust/src/resources.rs --> resource methods, across nine
+resources — the `customers`, `invoices` and `invoice_items` resources and
+`refunds.{update,cancel}` all landed after the count above — and
+`verify-sdk-parity` enumerates the same 35 across 39 rows of
+[../sdks/parity.md](../sdks/parity.md) independently. That figure is gated by
+`cargo xtask verify-doc-counts` from 2026-09-20. **How many of the 35 are
+routed is deliberately not re-derived here**: "twelve of the fourteen" was
+measured against a fourteen-method SDK, and nobody has taken the equivalent
+measurement since. The enumeration above is left intact as the record of what
+was counted on 2026-09-06, not as a description of the SDK today.
+
 **The Node SDK has now spoken to a vpay, in exactly one respect.** Its
 `verifyWebhook` verifies a `Vpay-Signature` this server emitted, in a
 subprocess, in `backends/tests/integration/tests/webhooks.rs`

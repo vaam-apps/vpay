@@ -7,8 +7,8 @@
 //! recipe rather than an xtask command because it shells out to the
 //! CrateStack CLI, a binary this workspace does not build — see the
 //! `justfile` for it, and for `verify-ui` (2026-09-07), a `git grep` gate on
-//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **fourteen**, twelve
-//! of them commands here.
+//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **fifteen**,
+//! thirteen of them commands here.
 //!
 //! _(This said "All but one" while naming two, and "On 2026-09-07 the recipe
 //! lists twelve", until 2026-09-18. The count was two behind by then —
@@ -75,12 +75,20 @@
 //!   a privacy-relevant column could be added to a migration with no record
 //!   of the data it holds, and nothing failed.
 //!
-//! A **sixteenth** gate needs the network, so it is opt-in
-//! (`just docs-check-citations`) and is **not** part of `just ci`. Sixteenth
-//! and not eleventh: fourteen gates, then the advisory `verify-docs` report,
-//! then this. _(It said "eleventh" — true when the recipe listed ten — until
-//! 2026-09-18. The `justfile`'s own header block already counted it this
-//! way.)_:
+//! * `verify-doc-counts` — every number a document marks as countable still
+//!   equals what this tree counts, including the gate tally in the sentence
+//!   above. New 2026-09-20, out of a survey that found 35 checkably-false
+//!   claims in the live docs, thirteen of them numbers that had drifted, and
+//!   not one of them in a claim any gate reads. It is the only gate here that
+//!   changed a number it is itself responsible for checking: adding it is what
+//!   made the recipe's tally fifteen.
+//!
+//! A **seventeenth** gate needs the network, so it is opt-in
+//! (`just docs-check-citations`) and is **not** part of `just ci`.
+//! Seventeenth and not eleventh: fifteen gates, then the advisory
+//! `verify-docs` report, then this. _(It said "eleventh" — true when the
+//! recipe listed ten — until 2026-09-18, and "sixteenth" until 2026-09-20.
+//! The `justfile`'s own header block already counted it this way.)_:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
 //!   document cites as evidence exists. It fails rather than skips when `gh`
@@ -147,6 +155,7 @@ fn main() -> ExitCode {
         "verify-migrations" => verify_migrations(&root),
         "verify-versions" => verify_versions(&root),
         "verify-privacy-inventory" => verify_privacy_inventory(&root),
+        "verify-doc-counts" => verify_doc_counts(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -162,7 +171,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_toolchain(&root))
             .and_then(|()| verify_migrations(&root))
             .and_then(|()| verify_versions(&root))
-            .and_then(|()| verify_privacy_inventory(&root)),
+            .and_then(|()| verify_privacy_inventory(&root))
+            .and_then(|()| verify_doc_counts(&root)),
         // Not `Result`-shaped like the gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -177,7 +187,7 @@ fn main() -> ExitCode {
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
                  |verify-toolchain|verify-migrations|verify-versions\
-                 |verify-privacy-inventory|verify-all>\n\
+                 |verify-privacy-inventory|verify-doc-counts|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -5610,6 +5620,537 @@ fn check_migrations(
     } else {
         Err(problems)
     }
+}
+
+// ---------------------------------------------------------------------------
+// verify-doc-counts
+// ---------------------------------------------------------------------------
+
+/// The opening of the marker that binds a number in prose to something this
+/// gate can count: `<!-- count:KIND ARG… -->`.
+const COUNT_MARKER_OPEN: &str = "<!-- count:";
+
+/// The `verify` recipe's one dependency that is a report rather than a gate.
+/// `count:verify-gates` subtracts it, because the recipe's own echo does.
+const COUNT_ADVISORY_REPORT: &str = "verify-docs";
+
+/// Every `KIND` this gate understands, in the order the error message lists
+/// them. An unknown kind is a **failure**, so this array is the whole
+/// vocabulary and adding a marker means adding a measurer.
+const COUNT_KINDS: [&str; 6] = [
+    "dir-entries",
+    "env-vars",
+    "files-with-suffix",
+    "pub-async-fn",
+    "tokio-tests",
+    "verify-gates",
+];
+
+/// Directory *names* this gate never descends into, at any depth.
+const DOC_COUNT_SKIPPED_NAMES: [&str; 3] = ["node_modules", "target", ".git"];
+
+/// Directories this gate never descends into, named by their path from the
+/// repository root.
+///
+/// `docs/plans/` and `docs/status/verification/` are frozen dated records. A
+/// number that was true on the day it was written is *correct* there, and a
+/// gate that re-measured it would demand the archive be falsified to stay
+/// green. `.claude/worktrees/` holds full second checkouts of this repository
+/// — the trap [`cargo_manifests`] documents, and the reason `.prettierignore`
+/// names it too.
+const DOC_COUNT_SKIPPED_PATHS: [&str; 3] = [
+    "docs/plans",
+    "docs/status/verification",
+    ".claude/worktrees",
+];
+
+/// What one `<!-- count:… -->` occurrence turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MarkerScan {
+    /// A well-formed marker.
+    Marker(CountMarker),
+    /// `<!-- count:` with no `-->` after it **on the same line**. This is a
+    /// failure rather than a non-marker: the same-line rule is the whole of
+    /// how a marker stays attached to its number, so a marker that straddles
+    /// a line break must be said out loud, not quietly ignored.
+    Unterminated { line: usize },
+}
+
+/// One `<!-- count:KIND ARG… -->` marker and the number it guards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CountMarker {
+    /// 1-based, so the message is a line a human can jump to.
+    line: usize,
+    /// The word after `count:`. Empty when the marker carried nothing, which
+    /// reports as an unknown kind rather than as a skip.
+    kind: String,
+    args: Vec<String>,
+    /// The last run of ASCII digits before the marker on its own line.
+    /// `None` is a failure: a marker guarding no number checks nothing.
+    cited: Option<usize>,
+}
+
+/// A measurement, and the command a human can run to see it for themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Measured {
+    value: usize,
+    how: String,
+}
+
+/// Every `<!-- count:… -->` occurrence in `text`, with the number each guards.
+///
+/// Pure, so every way a marker can be malformed is a unit test rather than a
+/// mutation of a real document somebody ran once.
+fn count_markers(text: &str) -> Vec<MarkerScan> {
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let number = index + 1;
+        let mut from = 0usize;
+        while let Some(offset) = line[from..].find(COUNT_MARKER_OPEN) {
+            let open = from + offset;
+            let body_start = open + COUNT_MARKER_OPEN.len();
+            let Some(close) = line[body_start..].find("-->") else {
+                out.push(MarkerScan::Unterminated { line: number });
+                break;
+            };
+            let mut words = line[body_start..body_start + close].split_whitespace();
+            out.push(MarkerScan::Marker(CountMarker {
+                line: number,
+                kind: words.next().unwrap_or_default().to_owned(),
+                args: words.map(str::to_owned).collect(),
+                cited: cited_number(&line[..open]),
+            }));
+            from = body_start + close + "-->".len();
+        }
+    }
+    out
+}
+
+/// The last run of ASCII digits in `before`, which is the number the marker
+/// that follows it guards.
+///
+/// Reading the *last* run rather than the first is what lets the marker sit
+/// directly behind its number in a sentence that already contains others:
+/// `**27 cases** <!-- … -->` and `` `27` <!-- … -->`` and `(27) <!-- … -->`
+/// all read 27, because every character between the digits and the marker is
+/// markdown punctuation this ignores. It is also why the canonical placement
+/// is *immediately after* the number rather than at the end of the line —
+/// a line ending `re-measured 2026-09-20 <!-- … -->` would otherwise guard
+/// `20`.
+fn cited_number(before: &str) -> Option<usize> {
+    // Everything after the last digit is markdown punctuation — `**`, a
+    // backtick, a bracket, a space — and is dropped before the run is read.
+    let through_last_digit = before.trim_end_matches(|c: char| !c.is_ascii_digit());
+    let digits = through_last_digit
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .count();
+    through_last_digit
+        .get(through_last_digit.len().checked_sub(digits)?..)?
+        .parse()
+        .ok()
+}
+
+/// Every distinct `${UPPER_SNAKE_CASE}` reference in `text`, ignoring whole-
+/// line `#` comments.
+///
+/// The comment rule is not cosmetic. `config/application.yml` tells its reader
+/// to "write every credential as a `${VAR}` placeholder" — four times, in
+/// comments — and a counter that read those would say eleven where the
+/// deployment must supply ten. Comments never reach the resolver either: it
+/// runs over the parsed YAML, by which point they are gone.
+fn env_var_references(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut at = 0usize;
+        while let Some(offset) = line[at..].find("${") {
+            let open = at + offset + 2;
+            let Some(close) = line[open..].find('}') else {
+                break;
+            };
+            let name = &line[open..open + close];
+            let upper_snake = name.bytes().next().is_some_and(|b| b.is_ascii_uppercase())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+            if upper_snake {
+                out.insert(name.to_owned());
+            }
+            at = open + close + 1;
+        }
+    }
+    out
+}
+
+/// How many gates the `verify` recipe lists, which is the number this
+/// repository has got wrong more often than any other.
+///
+/// The recipe line is the authority — every prose count in the tree is a
+/// description of it — so this reads the line rather than a list kept beside
+/// it, and subtracts `verify-docs` exactly as the recipe's own echo does.
+fn verify_recipe_gates(justfile: &str) -> Result<usize, String> {
+    let line = justfile
+        .lines()
+        .find(|line| line.starts_with("verify:"))
+        .ok_or_else(|| {
+            "justfile: no line beginning `verify:`. `count:verify-gates` counts that recipe's \
+             dependencies, so with no such line this gate can no longer check the number it \
+             exists to protect — a tally that has read \"three\", \"ten\", \"thirteen\" and \
+             \"fourteen\" at different times and was wrong for days on each move. If the recipe \
+             has been renamed, rewrite this measurer for whatever names the gate list now"
+                .to_owned()
+        })?;
+    let gates = line["verify:".len()..]
+        .split_whitespace()
+        .filter(|dep| *dep != COUNT_ADVISORY_REPORT)
+        .count();
+    if gates == 0 {
+        return Err(
+            "justfile: the `verify:` recipe lists no gate at all (only `verify-docs`, or \
+             nothing). `count:verify-gates` would report 0 and every document citing it would \
+             have to say 0 to stay green, which is a gate agreeing with a repository that \
+             checks nothing"
+                .to_owned(),
+        );
+    }
+    Ok(gates)
+}
+
+/// What `KIND ARG…` measures on this tree, or why it cannot be measured.
+///
+/// The `Err` arm carries the whole sentence a contributor reads, because the
+/// four ways a marker can be unmeasurable — unknown kind, wrong arity, absent
+/// path, unreadable recipe — need four different repairs.
+fn measure_count(root: &Path, kind: &str, args: &[String]) -> Result<Measured, String> {
+    match kind {
+        "tokio-tests" => {
+            let [path] = count_args(kind, args, "a path to a Rust test file")?;
+            let text = count_read(root, path)?;
+            Ok(Measured {
+                value: text
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with("#[tokio::test]"))
+                    .count(),
+                how: format!("grep -c '^[[:space:]]*#\\[tokio::test\\]' {path}"),
+            })
+        }
+        "files-with-suffix" => {
+            let [dir, suffix] = count_args(kind, args, "a directory and a filename suffix")?;
+            let mut value = 0usize;
+            for entry in count_read_dir(root, dir)? {
+                let entry = entry.map_err(|e| format!("{dir}: cannot read an entry: {e}"))?;
+                let is_file = entry.path().is_file();
+                if is_file && entry.file_name().to_string_lossy().ends_with(suffix) {
+                    value += 1;
+                }
+            }
+            Ok(Measured {
+                value,
+                how: format!("ls {dir}/*{suffix} | wc -l"),
+            })
+        }
+        "env-vars" => {
+            let [path] = count_args(kind, args, "a path to a configuration file")?;
+            let text = count_read(root, path)?;
+            Ok(Measured {
+                value: env_var_references(&text).len(),
+                how: format!(
+                    "grep -v '^[[:space:]]*#' {path} | grep -o '\\${{[A-Z][A-Z0-9_]*}}' | sort -u | wc -l"
+                ),
+            })
+        }
+        "pub-async-fn" => {
+            let [path] = count_args(kind, args, "a path to a Rust source file")?;
+            let text = count_read(root, path)?;
+            Ok(Measured {
+                value: text.matches("pub async fn").count(),
+                how: format!("grep -o 'pub async fn' {path} | wc -l"),
+            })
+        }
+        "dir-entries" => {
+            let [dir] = count_args(kind, args, "a directory")?;
+            let mut value = 0usize;
+            for entry in count_read_dir(root, dir)? {
+                let entry = entry.map_err(|e| format!("{dir}: cannot read an entry: {e}"))?;
+                if entry.path().is_dir() {
+                    value += 1;
+                }
+            }
+            Ok(Measured {
+                value,
+                how: format!("find {dir} -mindepth 1 -maxdepth 1 -type d | wc -l"),
+            })
+        }
+        "verify-gates" => {
+            let [] = count_args(kind, args, "nothing — the `justfile` is the argument")?;
+            let justfile = fs::read_to_string(root.join("justfile"))
+                .map_err(|e| format!("justfile: cannot read: {e}"))?;
+            Ok(Measured {
+                value: verify_recipe_gates(&justfile)?,
+                how: "grep '^verify:' justfile".to_owned(),
+            })
+        }
+        other => Err(format!(
+            "unknown count kind `{other}`. The kinds are: {}. A gate that skipped a marker it \
+             did not understand would print success for a number nothing measured, so this is a \
+             failure and not a warning: add a measurer for `{other}` to `measure_count`, or use \
+             a kind that already exists",
+            COUNT_KINDS.join(", ")
+        )),
+    }
+}
+
+/// `args` as a fixed-size array when there are exactly `N` of them, or the
+/// sentence explaining what this kind wanted.
+///
+/// The array is what lets each measurer destructure its arguments by name
+/// (`let [dir, suffix] = …`) instead of indexing, which this workspace's
+/// `clippy::indexing_slicing` deny would refuse anyway — and which would be a
+/// panic waiting for the first marker written with too few arguments.
+fn count_args<'a, const N: usize>(
+    kind: &str,
+    args: &'a [String],
+    wanted: &str,
+) -> Result<[&'a str; N], String> {
+    if args.len() != N {
+        return Err(format!(
+            "`count:{kind}` takes {N} argument(s) — {wanted} — and was given {}: `{}`",
+            args.len(),
+            args.join("` `")
+        ));
+    }
+    let mut out = [""; N];
+    for (slot, arg) in out.iter_mut().zip(args) {
+        *slot = arg.as_str();
+    }
+    Ok(out)
+}
+
+/// A file a marker names, or why the number on that line can no longer be
+/// confirmed.
+fn count_read(root: &Path, rel: &str) -> Result<String, String> {
+    fs::read_to_string(root.join(rel)).map_err(|e| {
+        format!(
+            "`{rel}` cannot be read ({e}). The number this line states was measured from that \
+             file, so nothing can confirm it any more: point the marker at whatever replaced \
+             the file, or delete the claim together with its marker"
+        )
+    })
+}
+
+/// A directory a marker names, with the same failure as [`count_read`].
+fn count_read_dir(root: &Path, rel: &str) -> Result<fs::ReadDir, String> {
+    fs::read_dir(root.join(rel)).map_err(|e| {
+        format!(
+            "`{rel}` cannot be read as a directory ({e}). The number this line states was \
+             measured from its contents, so nothing can confirm it any more: point the marker \
+             at whatever replaced the directory, or delete the claim together with its marker"
+        )
+    })
+}
+
+/// Every markdown file this gate reads, as repository-relative paths with `/`
+/// separators, sorted so the report is stable.
+fn doc_count_files(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_doc_count_files(root, "", &mut out);
+    out.sort();
+    out
+}
+
+fn collect_doc_count_files(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.path().is_dir() {
+            if DOC_COUNT_SKIPPED_NAMES.contains(&name.as_str())
+                || DOC_COUNT_SKIPPED_PATHS.contains(&rel.as_str())
+            {
+                continue;
+            }
+            collect_doc_count_files(&entry.path(), &rel, out);
+        } else if name.ends_with(".md") {
+            out.push(rel);
+        }
+    }
+}
+
+/// Fail unless every number a document marks as countable still equals what
+/// this tree counts.
+///
+/// # Why this exists
+///
+/// A documentation survey on 2026-09-20 found 35 checkably-false claims in the
+/// live docs, and **thirteen of them were a number that was right when
+/// somebody measured it and drifted afterwards** — test-case counts, the
+/// migration count, the environment-variable count, an SDK method count, and
+/// the gate tally itself. Not one of the 35 was a claim a gate reads. Every
+/// *gated* claim came through the same survey clean: `verify-serde` parses
+/// ADR-0016's exemption table, `verify-sdk-parity` resolves 662 test
+/// citations, and neither produced a single finding. The difference is not
+/// that prose is written less carefully than a table; it is that nothing
+/// re-reads prose. This gate is the smallest thing that makes a number in a
+/// sentence as re-read as a row in a matrix.
+///
+/// The gate tally is the sharpest case and the reason the `verify-gates`
+/// measurer exists. `just verify`'s own count has read "three", "ten",
+/// "thirteen" and "fourteen" at different times and was wrong for days on
+/// every move — including the move this gate itself makes, from fourteen to
+/// fifteen. So the measurer reads the `verify:` recipe line rather than any
+/// list kept beside it, and subtracts `verify-docs` exactly as the recipe's
+/// own echo does.
+///
+/// # The marker
+///
+/// A count is protected by an HTML comment on the **same line** as its digits:
+///
+/// ```markdown
+/// **27 cases** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs -->
+/// ```
+///
+/// Same line is load-bearing, and it is safe because `.prettierrc.json` sets
+/// `proseWrap: "preserve"`: prettier does not reflow prose here, so a marker
+/// cannot be split from the number it guards by a formatter. The guarded
+/// number is the **last** run of digits before the marker on that line
+/// ([`cited_number`]), so the canonical placement is immediately after the
+/// number — `**27**`, `` `27` `` and `(27)` all read as 27, but a marker
+/// parked at the end of a line ending `re-measured 2026-09-20` would guard
+/// `20`.
+///
+/// # What this deliberately does not check
+///
+/// * **Numbers written as words.** "Fourteen gates" is invisible to this gate;
+///   a document that wants its count protected has to switch to digits. That
+///   is a real cost in a repository whose prose spells numbers out, and it is
+///   the trade: a word-to-number parser would be a second thing that can be
+///   wrong, and an English-language one at that.
+/// * **Counts in the frozen archives.** `docs/plans/` and
+///   `docs/status/verification/` are dated records. A number that was true on
+///   the day it was written is correct there even once the tree has moved, and
+///   gating them would demand the archive be falsified to keep the build
+///   green.
+/// * **The `justfile`'s own echo string.** `count:verify-gates` reads the
+///   `verify:` dependency list; the sentence the recipe echoes afterwards is
+///   prose in a file this gate does not scan (it reads `*.md` only). The two
+///   still have to be changed together by hand.
+///
+/// # Every way it fails, all hard
+///
+/// A measured value that differs from the cited one; a kind no measurer
+/// knows; a path or directory that has gone; a marker with no digits before
+/// it; the wrong number of arguments for a kind; and **finding no marker at
+/// all**, which means the gate is wired into `just verify` and protecting
+/// nothing — the documentation failure it exists to prevent, committed by the
+/// gate itself.
+fn verify_doc_counts(root: &Path) -> Result<(), String> {
+    let files = doc_count_files(root);
+    let mut problems = Vec::new();
+    let mut checked = 0usize;
+    let mut annotated = 0usize;
+
+    for rel in &files {
+        let text = match fs::read_to_string(root.join(rel)) {
+            Ok(text) => text,
+            Err(e) => {
+                problems.push(format!("{rel}: cannot read: {e}"));
+                continue;
+            }
+        };
+        let scans = count_markers(&text);
+        if scans.is_empty() {
+            continue;
+        }
+        annotated += 1;
+        for scan in scans {
+            let marker = match scan {
+                MarkerScan::Unterminated { line } => {
+                    problems.push(format!(
+                        "{rel}:{line}: `<!-- count:` with no `-->` on the same line. A marker \
+                         must open and close on the line carrying the digits it guards — that \
+                         is the whole mechanism keeping the two attached — so this one guards \
+                         nothing and is refused rather than skipped"
+                    ));
+                    continue;
+                }
+                MarkerScan::Marker(marker) => marker,
+            };
+            let measured = match measure_count(root, &marker.kind, &marker.args) {
+                Ok(measured) => measured,
+                Err(why) => {
+                    problems.push(format!("{rel}:{}: {why}", marker.line));
+                    continue;
+                }
+            };
+            let Some(cited) = marker.cited else {
+                problems.push(format!(
+                    "{rel}:{}: `count:{}` guards no number — there is no digit before it on \
+                     this line. Move the marker onto the line that carries the figure, \
+                     immediately after it, and write the figure in digits: a count spelled out \
+                     in words cannot be checked. It measures {} today (`{}`)",
+                    marker.line, marker.kind, measured.value, measured.how
+                ));
+                continue;
+            };
+            if cited == measured.value {
+                checked += 1;
+                continue;
+            }
+            problems.push(format!(
+                "{rel}:{}: this line says {cited}, but `count:{}{}` measures {}. A reader sizes \
+                 their expectations by the number in the sentence, and this one stopped being \
+                 true without anything going red — which is the whole reason the marker is \
+                 there. Run `{}` to see it, then write {} here; do not delete the marker",
+                marker.line,
+                marker.kind,
+                if marker.args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", marker.args.join(" "))
+                },
+                measured.value,
+                measured.how,
+                measured.value
+            ));
+        }
+    }
+
+    if !problems.is_empty() {
+        return Err(format!(
+            "{} documented count(s) no longer measure what they claim:\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+    if checked == 0 {
+        return Err(format!(
+            "no `<!-- count:KIND ARG… -->` marker in any of the {} markdown file(s) this gate \
+             reads. It is wired into `just verify` and protecting nothing, which is exactly the \
+             failure it exists to catch in the documentation: a check that passes because it \
+             checked nothing. Annotate a count — `docs/status.md`'s gate tally is the one this \
+             gate was built for — or take it out of the `verify` recipe",
+            files.len()
+        ));
+    }
+
+    println!(
+        "verify-doc-counts: ok — {checked} documented count(s) in {annotated} of {} markdown \
+         file(s) agree with what this tree measures",
+        files.len()
+    );
+    Ok(())
 }
 
 /// The personal-data inventory (issue #144, ADR-0020, RFC-0002).
@@ -14690,5 +15231,476 @@ mod migration_manifest_tests {
             "this test is only meaningful while a non-.sql file sits in backends/migrations"
         );
         verify_migrations(&root).expect("this repository's own migrations match its manifest");
+    }
+}
+
+/// Every way `verify-doc-counts` can fail, and the one way it passes.
+///
+/// The shape follows [`migration_tests`]: each case here was first driven as a
+/// mutation of the real tree — change a cited number, point a marker at a
+/// deleted file, invent a kind — and these are those mutations pinned, so
+/// deleting a branch of [`verify_doc_counts`] or [`measure_count`] fails the
+/// build rather than quietly widening what the gate tolerates.
+///
+/// The last test is the one this gate would be worthless without: it runs
+/// against this repository's own documentation, the same way
+/// [`verify_status_reports_both_directions_from_the_gate_itself`] does.
+#[cfg(test)]
+mod doc_count_tests {
+    use super::*;
+    use crate::signing_key_tests::TempDir;
+
+    /// The opening delimiter, assembled rather than written out.
+    ///
+    /// Spelling `<!-- count:` as a literal in a file the gate reads is exactly
+    /// the trap `AGENTS.md` fell into, and this module is a file the gate does
+    /// not read — but the habit is worth keeping where a doc-comment example
+    /// could one day be lifted into a `*.md`.
+    fn marker(kind: &str, args: &str) -> String {
+        if args.is_empty() {
+            format!("<!-- count:{kind} -->")
+        } else {
+            format!("<!-- count:{kind} {args} -->")
+        }
+    }
+
+    /// A throwaway tree, written file by file with its parent directories.
+    ///
+    /// A real directory rather than a string passed to a helper, for the same
+    /// reason `toolchain_tests::tree` builds one: the gate resolves every
+    /// marker argument under `root`, and a fixture that skipped that would
+    /// prove nothing about the gate `just verify` runs.
+    fn tree(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new("verify-doc-counts");
+        for (rel, body) in files {
+            let path = dir.path().join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("the temp tree is creatable");
+            }
+            fs::write(&path, body).expect("the fixture file is writable");
+        }
+        dir
+    }
+
+    /// Two `#[tokio::test]`s, one of them indented, and a line that merely
+    /// mentions the attribute in prose.
+    const TWO_TOKIO_TESTS: &str = "\
+// #[tokio::test] in a comment is still an attribute on its own line, and is
+#[tokio::test]
+async fn one() {}
+    #[tokio::test]
+    async fn two() {}
+";
+
+    /// A `verify:` recipe with three gates and the advisory report, which
+    /// `count:verify-gates` must read as three.
+    const JUSTFILE: &str = "\
+verify: verify-a verify-b verify-c verify-docs
+    @echo \"verify: ok\"
+";
+
+    // -- one passing marker of each of the six kinds --------------------
+
+    #[test]
+    fn a_tokio_test_count_that_agrees_passes() {
+        let dir = tree(&[
+            ("tests/x.rs", TWO_TOKIO_TESTS),
+            (
+                "docs/a.md",
+                &format!(
+                    "**2 cases** {} drive it\n",
+                    marker("tokio-tests", "tests/x.rs")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("2 cited, 2 measured");
+    }
+
+    #[test]
+    fn a_files_with_suffix_count_that_agrees_passes() {
+        let dir = tree(&[
+            ("m/0001_a.sql", "-- a\n"),
+            ("m/0002_b.sql", "-- b\n"),
+            ("m/README.md", "not a migration and not a marker\n"),
+            (
+                "docs/a.md",
+                &format!(
+                    "There are 2 {} of them\n",
+                    marker("files-with-suffix", "m .sql")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("the README beside them is not a .sql file");
+    }
+
+    #[test]
+    fn an_env_var_count_that_agrees_passes() {
+        let dir = tree(&[
+            (
+                "config/application.yml",
+                "# write every credential as a ${VAR} placeholder\nkey: ${MTN_API_KEY}\nagain: ${MTN_API_KEY}\nother: ${ORANGE_CLIENT_ID}\n",
+            ),
+            (
+                "docs/a.md",
+                &format!(
+                    "Corrected 2026-09-20: 2 {} must be supplied\n",
+                    marker("env-vars", "config/application.yml")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path())
+            .expect("distinct, and the commented ${VAR} example is not one of them");
+    }
+
+    #[test]
+    fn a_pub_async_fn_count_that_agrees_passes() {
+        let dir = tree(&[
+            (
+                "sdk/resources.rs",
+                "impl R {\n    pub async fn create() {}\n    pub async fn retrieve() {}\n    async fn private() {}\n}\n",
+            ),
+            (
+                "docs/a.md",
+                &format!(
+                    "exposes **2** {} resource methods\n",
+                    marker("pub-async-fn", "sdk/resources.rs")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("a private async fn is not a resource method");
+    }
+
+    #[test]
+    fn a_dir_entries_count_that_agrees_passes() {
+        let dir = tree(&[
+            ("docs/flows/one/page.md", "# one\n"),
+            ("docs/flows/two/page.md", "# two\n"),
+            ("docs/flows/loose.md", "# a file, not a directory\n"),
+            (
+                "docs/a.md",
+                &format!(
+                    "**2 of these are a directory** {}\n",
+                    marker("dir-entries", "docs/flows")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("files beside the directories are not counted");
+    }
+
+    #[test]
+    fn a_verify_gates_count_that_agrees_passes() {
+        let dir = tree(&[
+            ("justfile", JUSTFILE),
+            (
+                "docs/a.md",
+                &format!("the gates are 3 {}\n", marker("verify-gates", "")),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("three gates, with verify-docs subtracted");
+    }
+
+    /// The advisory report is subtracted, and the recipe line is the list.
+    #[test]
+    fn the_gate_tally_subtracts_the_advisory_report() {
+        assert_eq!(verify_recipe_gates(JUSTFILE), Ok(3));
+    }
+
+    /// **The case this whole measurer exists for.** This repository's tally has
+    /// read "three", "ten", "thirteen" and "fourteen" and was wrong for days on
+    /// each move; a `verify:` line nobody can find must fail loudly rather than
+    /// measure zero, because a zero would quietly demand every document say
+    /// zero to stay green.
+    #[test]
+    fn a_justfile_with_no_verify_recipe_fails_rather_than_measuring_nothing() {
+        let error =
+            verify_recipe_gates("test:\n    cargo test\n").expect_err("there is no verify recipe");
+        assert!(
+            error.contains("no line beginning `verify:`") && error.contains("fourteen"),
+            "the message must say the gate can no longer check the number it protects: {error}"
+        );
+        let error = verify_recipe_gates("verify: verify-docs\n").expect_err("no gate at all");
+        assert!(error.contains("lists no gate at all"), "{error}");
+    }
+
+    // -- the five failure modes ----------------------------------------
+
+    /// A mismatch names both numbers and the command that shows it, because a
+    /// message that named only one leaves the reader guessing which to trust.
+    #[test]
+    fn a_mismatched_count_fails_and_names_both_numbers() {
+        let dir = tree(&[
+            ("tests/x.rs", TWO_TOKIO_TESTS),
+            (
+                "docs/a.md",
+                &format!(
+                    "**13 cases** {} drive it\n",
+                    marker("tokio-tests", "tests/x.rs")
+                ),
+            ),
+        ]);
+        let error = dir_error(&dir, "13 is not 2");
+        assert!(
+            error.contains("docs/a.md:1")
+                && error.contains("says 13")
+                && error.contains("measures 2")
+                && error.contains("grep -c"),
+            "the message must name the line, both numbers and the command: {error}"
+        );
+    }
+
+    /// **An unknown kind is a hard error, never a skip.** A gate that ignored
+    /// what it did not understand would print `ok` for a marker nothing
+    /// measured — a green that means less than it looks, which is the thing
+    /// this gate exists to remove from the documentation.
+    #[test]
+    fn an_unknown_kind_fails_rather_than_being_skipped() {
+        let dir = tree(&[(
+            "docs/a.md",
+            &format!("**7 things** {}\n", marker("lines-of-code", "src/lib.rs")),
+        )]);
+        let error = dir_error(&dir, "no measurer knows `lines-of-code`");
+        assert!(
+            error.contains("unknown count kind `lines-of-code`")
+                && error.contains("tokio-tests")
+                && error.contains("verify-gates"),
+            "the message must name the kind and the closed vocabulary: {error}"
+        );
+    }
+
+    /// A path that has gone takes the claim with it: nothing can confirm the
+    /// number any more, so the gate says so rather than passing on an absence.
+    #[test]
+    fn a_marker_naming_a_path_that_does_not_exist_fails() {
+        let dir = tree(&[(
+            "docs/a.md",
+            &format!("**27 cases** {}\n", marker("tokio-tests", "tests/gone.rs")),
+        )]);
+        let error = dir_error(&dir, "tests/gone.rs is not there");
+        assert!(
+            error.contains("`tests/gone.rs` cannot be read")
+                && error.contains("nothing can confirm it"),
+            "the message must name the path and what its absence costs: {error}"
+        );
+    }
+
+    /// A directory that has gone fails the same way, through the same
+    /// sentence — `dir-entries` and `files-with-suffix` do not read files.
+    #[test]
+    fn a_marker_naming_a_directory_that_does_not_exist_fails() {
+        let dir = tree(&[(
+            "docs/a.md",
+            &format!("**6 of these** {}\n", marker("dir-entries", "docs/flows")),
+        )]);
+        let error = dir_error(&dir, "docs/flows is not there");
+        assert!(error.contains("cannot be read as a directory"), "{error}");
+    }
+
+    /// A marker with no digits before it guards nothing. The message carries
+    /// the measured value anyway, so the repair is one paste rather than a
+    /// second invocation.
+    #[test]
+    fn a_marker_with_no_number_before_it_fails() {
+        let dir = tree(&[
+            ("tests/x.rs", TWO_TOKIO_TESTS),
+            (
+                "docs/a.md",
+                &format!(
+                    "Two cases {} drive it\n",
+                    marker("tokio-tests", "tests/x.rs")
+                ),
+            ),
+        ]);
+        let error = dir_error(&dir, "`Two` is a word");
+        assert!(
+            error.contains("guards no number")
+                && error.contains("a count spelled out in words cannot be checked")
+                && error.contains("It measures 2 today"),
+            "the message must explain the digits rule and give the measurement: {error}"
+        );
+    }
+
+    /// Wrong arity is its own repair, so it is its own message.
+    #[test]
+    fn the_wrong_number_of_arguments_for_a_kind_fails() {
+        let dir = tree(&[
+            ("m/0001_a.sql", "-- a\n"),
+            (
+                "docs/a.md",
+                &format!("There are 1 {}\n", marker("files-with-suffix", "m")),
+            ),
+        ]);
+        let error = dir_error(&dir, "files-with-suffix needs a suffix too");
+        assert!(
+            error.contains("takes 2 argument(s)") && error.contains("was given 1"),
+            "{error}"
+        );
+    }
+
+    /// The same-line rule is the whole mechanism, so a marker that straddles a
+    /// line break is refused rather than treated as prose.
+    #[test]
+    fn a_marker_with_no_closing_delimiter_on_its_line_fails() {
+        let dir = tree(&[(
+            "docs/a.md",
+            "**2 cases** <!-- count:tokio-tests tests/x.rs\n-->\n",
+        )]);
+        let error = dir_error(&dir, "the marker does not close on its line");
+        assert!(error.contains("with no `-->` on the same line"), "{error}");
+    }
+
+    /// **Zero markers is a failure.** The gate would otherwise be wired into
+    /// `just verify` and protecting nothing, which is a green that certifies
+    /// an empty check — the documentation defect it exists to catch, committed
+    /// by the gate itself.
+    #[test]
+    fn a_tree_with_no_marker_at_all_fails() {
+        let dir = tree(&[("docs/a.md", "There are 48 migrations.\n")]);
+        let error = dir_error(&dir, "nothing is annotated");
+        assert!(
+            error.contains("protecting nothing") && error.contains("1 markdown file(s)"),
+            "{error}"
+        );
+    }
+
+    // -- the reading rules ---------------------------------------------
+
+    /// Digits inside markdown punctuation read as the number, because every
+    /// number in this repository's prose is wrapped in something.
+    #[test]
+    fn digits_inside_markdown_punctuation_are_read_correctly() {
+        assert_eq!(cited_number("**27**"), Some(27));
+        assert_eq!(cited_number("`27`"), Some(27));
+        assert_eq!(cited_number("(27) "), Some(27));
+        assert_eq!(cited_number("~~13 cases~~ **27**, "), Some(27));
+        assert_eq!(cited_number("no digits here"), None);
+        assert_eq!(cited_number(""), None);
+    }
+
+    /// The *last* run, which is why the canonical placement is immediately
+    /// after the number: a marker parked at the end of a line that ends in a
+    /// date would guard the date.
+    #[test]
+    fn the_last_run_of_digits_wins_which_is_why_placement_matters() {
+        assert_eq!(
+            cited_number("**27 cases**, re-measured 2026-09-20"),
+            Some(20)
+        );
+        assert_eq!(cited_number("**27 cases** "), Some(27));
+    }
+
+    /// Two markers on one line are two checks, not one.
+    #[test]
+    fn a_line_may_carry_more_than_one_marker() {
+        let line = format!(
+            "**2** {} and **3** {}",
+            marker("tokio-tests", "a.rs"),
+            marker("dir-entries", "d")
+        );
+        let scans = count_markers(&line);
+        assert_eq!(
+            scans,
+            vec![
+                MarkerScan::Marker(CountMarker {
+                    line: 1,
+                    kind: "tokio-tests".to_owned(),
+                    args: vec!["a.rs".to_owned()],
+                    cited: Some(2),
+                }),
+                MarkerScan::Marker(CountMarker {
+                    line: 1,
+                    kind: "dir-entries".to_owned(),
+                    args: vec!["d".to_owned()],
+                    cited: Some(3),
+                }),
+            ]
+        );
+    }
+
+    /// `${VAR}` in a whole-line comment is an example, not a variable a
+    /// deployment must supply — the difference between ten and eleven in
+    /// `docs/flows/configuration.md`.
+    #[test]
+    fn a_commented_placeholder_is_not_an_environment_variable() {
+        let refs = env_var_references(
+            "# write every credential as a ${VAR} placeholder\n  # and a ${VAR} again\nkey: ${MTN_API_KEY}\nlower: ${not_upper}\n",
+        );
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(refs.contains("MTN_API_KEY"), "{refs:?}");
+    }
+
+    // -- scope ----------------------------------------------------------
+
+    /// **A frozen dated record is not gated.** A number that was true the day
+    /// it was written is correct in `docs/plans/` and in
+    /// `docs/status/verification/`, and a gate that re-measured it would
+    /// demand the archive be falsified to keep the build green. The second
+    /// half of this test is what stops it from passing for the wrong reason:
+    /// the identical line outside the archive fails.
+    #[test]
+    fn a_count_in_a_frozen_archive_is_ignored_and_the_same_line_elsewhere_is_not() {
+        let stale = format!(
+            "**13 cases** {} drove it\n",
+            marker("tokio-tests", "tests/x.rs")
+        );
+        let dir = tree(&[
+            ("tests/x.rs", TWO_TOKIO_TESTS),
+            ("docs/plans/old.md", &stale),
+            ("docs/status/verification/2026-09-11.md", &stale),
+            (
+                "docs/a.md",
+                &format!(
+                    "**2 cases** {} drive it\n",
+                    marker("tokio-tests", "tests/x.rs")
+                ),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("the archives are frozen, the live page agrees");
+
+        let dir = tree(&[("tests/x.rs", TWO_TOKIO_TESTS), ("docs/live.md", &stale)]);
+        let error = dir_error(&dir, "the same line outside the archive is checked");
+        assert!(error.contains("docs/live.md:1"), "{error}");
+    }
+
+    /// Nested checkouts and installed packages are somebody else's tree — the
+    /// same trap [`cargo_manifests`] documents, where a filesystem walk found
+    /// every other session's worktree.
+    #[test]
+    fn a_count_in_a_nested_checkout_or_a_package_tree_is_ignored() {
+        let stale = format!("**13 cases** {}\n", marker("tokio-tests", "tests/x.rs"));
+        let dir = tree(&[
+            ("tests/x.rs", TWO_TOKIO_TESTS),
+            (".claude/worktrees/other/docs/a.md", &stale),
+            ("sdks/nodejs/node_modules/pkg/readme.md", &stale),
+            ("target/doc/a.md", &stale),
+            (
+                "docs/a.md",
+                &format!("**2 cases** {}\n", marker("tokio-tests", "tests/x.rs")),
+            ),
+        ]);
+        verify_doc_counts(dir.path()).expect("only this tree's own documentation is read");
+    }
+
+    /// `verify_doc_counts`' error, for a case that must fail.
+    fn dir_error(dir: &TempDir, why: &str) -> String {
+        verify_doc_counts(dir.path()).expect_err(why)
+    }
+
+    /// **This repository's own documentation, not a fixture** — the gate is
+    /// only worth having if it reads what `just verify` reads, and this is the
+    /// test that fails when a marker is added to a page and the number under
+    /// it moves. It also pins the two rules that have no other home on the
+    /// real tree: that at least one marker exists, and that the gate tally in
+    /// `AGENTS.md`, `CLAUDE.md` and `docs/status.md` equals the `verify:`
+    /// recipe's own list — the number this repository has got wrong more often
+    /// than any other.
+    #[test]
+    fn the_repository_itself_passes() {
+        let root = repo_root();
+        verify_doc_counts(&root).expect("this repository's documented counts still measure");
+        let justfile = fs::read_to_string(root.join("justfile")).expect("the justfile is readable");
+        assert!(
+            verify_recipe_gates(&justfile).expect("the verify recipe parses") >= COUNT_KINDS.len(),
+            "a sanity floor: this repository has more gates than this gate has measurers"
+        );
     }
 }

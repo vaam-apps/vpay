@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Fourteen invariants this repo enforces on itself, all wired into `just verify`:
+# Fifteen invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -41,6 +41,10 @@
 #     schemas/privacy-inventory.yaml, and every classification names a live
 #     column, in both directions (`verify-privacy-inventory`, 2026-09-16,
 #     issue #144 — ADR-0020, RFC-0002)
+#   * every number a document marks `<!-- count:KIND ARG... -->` still equals
+#     what the tree measures — including this list's own gate tally, which the
+#     `verify-gates` measurer reads off the `verify:` recipe below rather than
+#     off any prose (`verify-doc-counts`, 2026-09-20)
 #
 # This block said "Eleven" and listed eleven until 2026-09-11: the
 # `verify-migrations` bullet had been pasted into the MIDDLE of the sentence
@@ -56,12 +60,18 @@
 # order they landed. Both bullets are above; the recipe below is the list, and
 # it echoes its own count.
 #
-# `just verify` prints a fifteenth thing that is NOT an invariant and never
+# `verify-doc-counts` makes it **fifteen** on 2026-09-20, out of a survey that
+# found thirteen drifted numbers in the live docs and not one in a gated
+# claim. It is the first gate whose own arrival changes a number it checks:
+# every "fourteen" below became a "fifteen" in the same change, and the gate
+# would have failed the build if one had been missed.
+#
+# `just verify` prints a sixteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A sixteenth check is a gate that is NOT in `just ci`, because it needs the
+# A seventeenth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -1502,7 +1512,8 @@ audit-web:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
 # verify-repositories, verify-toolchain, verify-ui, verify-migrations,
-# verify-versions, verify-privacy-inventory, and then verify-docs last.
+# verify-versions, verify-privacy-inventory, verify-doc-counts, and then
+# verify-docs last.
 #
 # _(That list named eleven and stopped at `verify-ui` until 2026-09-17. It had
 # been three gates short since `verify-versions` (PR #201) and one short since
@@ -1583,9 +1594,19 @@ audit-web:
 # `verify-npm-scope` (its nearest relative in subject, not in date) for the
 # same reason every gate above it is where it is: the list is chronological.
 #
-# The fourteen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-docs
-    @echo "verify: ok — the fourteen gates above passed; the verify-docs report is advisory"
+# `verify-doc-counts` joined on 2026-09-20 as the fifteenth, and it is the
+# only gate here that changes a number it is itself responsible for checking:
+# the tally in this echo, in this file's header block, in AGENTS.md, in
+# CLAUDE.md, in README.md and in docs/status.md all moved from fourteen to
+# fifteen with it, and three of those are now annotated
+# `<!-- count:verify-gates -->` and read off the recipe line below. It is last
+# among the gates rather than slotted in by subject for the same reason every
+# gate above it is where it is: the list is chronological, so every ordinal
+# already written down elsewhere stays true when a gate is added.
+#
+# The fifteen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-docs
+    @echo "verify: ok — the fifteen gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -2390,6 +2411,29 @@ verify-migrations:
 # stale inventory row cannot survive the column it named.
 verify-privacy-inventory:
     cargo xtask verify-privacy-inventory
+
+# Every number a document marks `<!-- count:KIND ARG... -->` still equals what
+# the tree measures. Fifteenth gate, new 2026-09-20.
+#
+# The motivating measurement: a documentation survey that day found 35
+# checkably-false claims in the live docs, thirteen of them numbers that were
+# right when someone measured them and drifted after. None was a claim a gate
+# reads — every GATED claim came through the same survey clean, including
+# ADR-0016's exemption table (`verify-serde`) and the 662 test citations
+# `verify-sdk-parity` resolves.
+#
+# Four things it refuses rather than tolerates, because each would leave it
+# green while checking less than it looks: an unknown KIND, a path that has
+# gone, a marker with no digits on its line, and finding NO marker at all.
+# The last is the one that matters most here — a gate in this list that
+# protects nothing is the exact defect it was written to catch.
+#
+# The `verify-gates` measurer reads the `verify:` recipe line above, which is
+# the number this repository has got wrong more often than any other: it has
+# read "three", "ten", "thirteen" and "fourteen", and was wrong for days on
+# every move. See `verify_doc_counts` in `.xtask/src/main.rs`.
+verify-doc-counts:
+    cargo xtask verify-doc-counts
 
 # Append the current migration files' SHA-256 lines to the manifest.
 #

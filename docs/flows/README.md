@@ -39,7 +39,7 @@ code expresses it belongs in `../reference/`.
 Every flow here is _designed_. See [../status.md](../status.md) for which parts
 are actually built.
 
-**Six of these are an overview plus a directory**, since 2026-09-11: each of
+**6 of these are an overview plus a directory** <!-- count:dir-entries docs/flows -->, since 2026-09-11: each of
 [hosted-checkout.md](hosted-checkout.md), [customers.md](customers.md),
 [dashboard.md](dashboard.md), [webhooks.md](webhooks.md),
 [merchant-auth.md](merchant-auth.md) and [dashboard-auth.md](dashboard-auth.md)
