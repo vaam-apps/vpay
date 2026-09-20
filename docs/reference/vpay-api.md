@@ -100,12 +100,22 @@ address was always pointing at.
 The `/v1` nest mounts `v1::V1_ROUTES` and a 404 fallback for everything else,
 which is the production behaviour and not a placeholder: `/v1/payment_intents`,
 `/v1/events`, `/v1/checkout/sessions` and — since 2026-09-05, issue #45 —
-`GET /v1/refunds/{id}` are real, and `POST /v1/refunds` and `/v1/balance` are
-not implemented and are therefore not routed ([status.md](../status.md)).
-The refund pair is the one place a _read_ is mounted without its create, and
+`GET /v1/refunds/{id}` are real, and ~~`POST /v1/refunds` and `/v1/balance` are
+not implemented and are therefore not routed ([status.md](../status.md)). The
+refund pair is the one place a _read_ is mounted without its create, and
 `v1::refunds`' own module doc carries the argument: creating a refund needs
 `ProviderAdapter::refund`, which no adapter implements, while reading one is
-the authoritative read every other money movement on this surface has. The
+the authoritative read every other money movement on this surface has.~~
+**Corrected 2026-09-20:** all five refund routes have been mounted since
+2026-09-16 (RFC-0003 § 2) —
+`mount: || post(refunds::create).get(refunds::list)` at
+`backends/crates/vpay-api/src/v1/mod.rs:289` and
+`mount: || post(refunds::cancel)` at `:309` — so `v1::refunds` reaches
+`Refunds::create`, `cancel` and both reads. `/v1/balance` is still
+deliberately unrouted (`mod.rs:185`); that half of the original claim held.
+What remains unbuilt is **settlement**: `Settlement::apply_refund_succeeded`
+has no shipping caller, so no refund a merchant creates today is ever marked
+settled, regardless of what the rail does. See [status.md](../status.md). The
 boundary is observable in three answers —
 
 - `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the

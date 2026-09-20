@@ -109,8 +109,16 @@ you are here to answer.
    `order_id` + `amount` + `pay_token`).
 4. Reconcile against the rail's settlement statement for that day, by amount and
    timestamp.
-5. Record the finding in the charge's annotation field. **Always** — the next
-   person needs your reasoning, not just your conclusion.
+5. ~~Record the finding in the charge's annotation field. **Always** — the
+   next person needs your reasoning, not just your conclusion.~~ **Corrected
+   2026-09-20:** there is no annotation field. `grep -rn annotation
+backends/migrations/*.sql` finds nothing — the `charges` table has no such
+   column, and no other mechanism records a finding against a charge.
+   [`docs/runbooks/demo/dashboard-sign-in.md`](demo/dashboard-sign-in.md)
+   already says so: "there is no re-poll, no replay, no refund and no
+   annotation". Record your reasoning wherever your team actually keeps
+   investigation notes today — the next person still needs it; this repository
+   just has nowhere to put it yet.
 
 ## Escalate when
 

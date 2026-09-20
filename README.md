@@ -1,3 +1,6 @@
+<!-- The header below is deliberately centered, so the H1 is not the first
+     line and the file opens with inline HTML. Both are intentional. -->
+<!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
 # vpay
@@ -133,7 +136,9 @@ and behind a merchant bearer token and a scope check:
 | `/v1/invoice_items`                    | `POST`                                                             |
 | `/v1/invoice_items/{id}`               | `GET`, `POST`, `PATCH`, `DELETE`                                   |
 | `/v1/events`                           | `GET`, `GET {id}`                                                  |
-| `/v1/refunds/{id}`                     | `GET`                                                              |
+| `/v1/refunds`                          | `POST`, `GET`                                                      |
+| `/v1/refunds/{id}`                     | `GET`, `POST`                                                      |
+| `/v1/refunds/{id}/cancel`              | `POST`                                                             |
 | `/v1/account_holders`                  | `GET`                                                              |
 
 `POST`/`PATCH` are one handler on both `/v1/invoices/{id}` and
@@ -184,7 +189,7 @@ WireMock, never called by MTN or Orange.
 
 ## Layout
 
-```
+```text
 backends/
   crates/       vpay-core, -config, -db, -ledger, -provider, adapters, -api, -worker, -testkit
   apps/         vpay-server                    (one musl → scratch image; `worker` is a subcommand)
@@ -363,13 +368,16 @@ Three commands, with genuinely different requirements:
 | `just test`     | **Docker**, and Node                                     | `cargo nextest run --workspace`, `cargo test --doc --workspace` and `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. The adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006) |
 | `just test-e2e` | Docker, and Cypress's binary                             | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does                                                                                                                                                                                                                                                       |
 
-`just verify-ignored` is the count that keeps the suite honest. Measured on
-this tree, 2026-09-07: **0 ignored, 46 test binaries, 1563 tests listed**.
-Two of those three are pinned exactly — `expected_ignored` and
-`expected_suites` — and moving either fails the recipe until it and
-`docs/status.md` move with it. The third is a **floor**, not a pin
-(`min_tests`, currently 1080): the total is free to rise, and does, so read
-it as a measurement rather than a guarantee.
+`just verify-ignored` is the count that keeps the suite honest. ~~Measured on
+this tree, 2026-09-07: **0 ignored, 46 test binaries, 1563 tests listed**.~~
+**Re-measured 2026-09-20: 0 ignored, 48 test binaries, 2028 tests listed** —
+`expected_suites` moved 46 → 47 → 48 across 2026-09-12 and 2026-09-13 (see the
+justfile's own dated log), and the total climbed with it. Two of those three
+are pinned exactly — `expected_ignored` and `expected_suites` — and moving
+either fails the recipe until it and `docs/status.md` move with it. The third
+is a **floor**, not a pin (`min_tests`, currently 1080): the total is free to
+rise, and does, so read the count above as a snapshot of the day it was
+measured, not a promise it will still read the same tomorrow.
 
 `just ci` is what to run before opening a PR: CI's self-checks, `rust`, `web`
 and supply-chain steps, in CI's order. The two jobs it does not cover are CI's

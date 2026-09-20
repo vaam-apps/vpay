@@ -110,7 +110,7 @@ The chart refuses to render if
 `fail` in `templates/_validate.tpl` named `grace-period`, so `helm lint`,
 `helm template`, `helm install` and `helm upgrade` all abort with:
 
-```
+```text
 vpay chart guard "grace-period": terminationGracePeriodSeconds is 25 but
 shutdownGraceSeconds is 25; the kubelet would SIGKILL the process while it is
 still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
@@ -237,10 +237,14 @@ Everything operational on this page. Specifically:
   what is still true about older images.
 - ~~**No image exists** at `ghcr.io/vaam-apps/vpay-server` or `-worker`;
   `release.yml` has never run, so every digest a values file could pin today
-  would be invented~~ ([release.md](release.md)). **Retired 2026-09-05:**
+  would be invented~~ ([release.md](release.md)). ~~**Retired 2026-09-05:**
   `release.yml` has run 13 times on `master`, 12 green; the latest,
   `33929374661`, pushed and cosign-signed a manifest list for each of the four
-  images. A digest pinned from that run is measured, not invented. **What
+  images.~~ **Corrected 2026-09-20:** that tally is stale — read
+  [release.md](release.md)'s own header for the current run count, and note
+  there are three images now, not four (`vpay-worker` was retired by issue
+  #77 on 2026-09-07; this page's own header, above, already says so). A
+  digest pinned from a green run is still measured, not invented. **What
   replaces this bullet:** nobody has ever _pulled_ one of those images, GHCR
   package visibility is unmeasured (the available token has no
   `read:packages` scope and anonymous pull is refused), and no `cosign verify`

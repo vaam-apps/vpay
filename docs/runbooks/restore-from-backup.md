@@ -11,7 +11,9 @@ against a scratch `postgres:16-alpine` with all 21 migrations applied**, on a
 fixture built to contain one torn ledger transaction. The queries run, and
 §4's ledger check found the torn transaction and then reported clean once it
 was repaired — so it is checking the data and not itself. That is the whole
-of the evidence. See §7.
+of the evidence. See §7. _(Footnote added 2026-09-20: 21 was correct for that
+2026-09-03 run; `backends/migrations/*.sql` has grown to 48 since. This is a
+provenance statement about a past run, not a claim about the current schema.)_
 
 ---
 
@@ -24,7 +26,7 @@ of the evidence. See §7.
 | A rolled-back deploy                            | **No.** Migrations do not roll back; see [release.md](release.md) §5 |
 | A retired signing key crash-looping the server  | **No.** See [rotate-signing-key.md](rotate-signing-key.md)           |
 
-## 2. Restore into a scratch database. Always.
+## 2. Restore into a scratch database — always
 
 **Never restore over a live database.** Restore to a _new_ instance or a new
 database name, verify it with §4, and only then decide whether to cut over.
@@ -101,10 +103,18 @@ note), so "balance(`merchant_payable`) per merchant" is not computable from
 these tables. Per-transaction balance is what the schema supports checking,
 and it is what this drill claims.
 
-**Both tables are empty on any database restored today**, because no code in
+~~**Both tables are empty on any database restored today**, because no code in
 this repository posts to the ledger. The queries are correct and they will
 find nothing, which is not the same as passing. Re-read this section the day
-ledger persistence lands.
+ledger persistence lands.~~ **Corrected 2026-09-20:** ledger persistence has
+landed. `backends/crates/vpay-db/src/settlement.rs:294` and `:399` both call
+`crate::ledger::post_in_tx` — every successful capture has posted to the
+ledger since 2026-09-15 (RFC-0003 § 4), so on a database that has taken real
+traffic these tables are not empty and the queries are checking live data, not
+an always-empty fixture. What is still true: refund postings do not ship,
+because nothing settles a `pending` refund (`Settlement::apply_refund_succeeded`
+has no shipping caller), so a restored database with unresolved refunds can
+still show `ledger_entries` that never account for them.
 
 ### 4b. `one_charge_per_intent` holds, and still fires
 
@@ -139,7 +149,7 @@ ROLLBACK;
 
 The expected outcome is an **error**:
 
-```
+```text
 ERROR:  duplicate key value violates unique constraint "one_charge_per_intent"
 DETAIL:  Key (payment_intent_id)=(...) already exists.
 ```
@@ -200,6 +210,9 @@ Quarterly, per ADR-0013 §6.
 
 ### What was actually run, 2026-09-03
 
+_(Footnote added 2026-09-20: 21 migrations were current on 2026-09-03; there
+are 48 now. The number below is provenance for that run, not a live count.)_
+
 Not a drill — there was no backup. A scratch `postgres:16-alpine` container
 with **all 21 migrations applied in order**, loaded with a fixture holding two
 charges on two intents, one balanced ledger transaction (5000 debit
@@ -208,7 +221,7 @@ charges on two intents, one balanced ledger transaction (5000 debit
 2900 credit — the shape a restore to the wrong instant produces), one
 unanswered `provider_requests` row and one overdue `poll_charge` job.
 
-```
+```text
 == A1. Ledger balance, per transaction per currency (expect ZERO rows) ==
  transaction_id | currency_code | debits | credits
 ----------------+---------------+--------+---------
@@ -220,7 +233,7 @@ After inserting the missing 100 credit leg, the same query returned `(0 rows)`.
 That is the negative control: the check fails on torn data and passes on
 whole data, so it is reading the rows and not asserting itself.
 
-```
+```text
 == B1. one_charge_per_intent index is present (expect exactly one row) ==
  CREATE UNIQUE INDEX one_charge_per_intent ON public.charges USING btree (payment_intent_id)
 (1 row)

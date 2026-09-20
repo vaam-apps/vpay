@@ -69,7 +69,11 @@ has ever run.
 1 566. Each keeps its own path and its own headings — in particular
 `vpay-db.md#cratestack`, which four doc comments in
 `backends/crates/vpay-db/src/` link to — and indexes the per-table and
-per-surface pages beneath it. [vpay-worker.md](vpay-worker.md) is 833 lines and
-was deliberately left whole: it is one process described once. See
+per-surface pages beneath it. ~~[vpay-worker.md](vpay-worker.md) is 833 lines and
+was deliberately left whole~~ — **corrected 2026-09-20:** `wc -l
+docs/reference/vpay-worker.md` now returns 887, not 833; an exact line count
+in prose goes stale on every edit, which is how this one did, so this page
+stops stating one. [vpay-worker.md](vpay-worker.md) was deliberately left
+whole: it is one process described once. See
 [../README.md](../README.md) for the counts and for what the split did and did
 not change.

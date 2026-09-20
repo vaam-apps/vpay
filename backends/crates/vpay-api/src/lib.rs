@@ -38,8 +38,17 @@
 //!
 //! [`resource_auth`] supplies the bearer-token validation now mounted in
 //! front of `/v1` — see [`router`]'s "Route tree" section for exactly which
-//! paths sit inside and outside it. `/dash/v1` is still mounted nowhere:
-//! that surface needs the dashboard OIDC login flow, which is later work.
+//! paths sit inside and outside it. ~~`/dash/v1` is still mounted nowhere:
+//! that surface needs the dashboard OIDC login flow, which is later
+//! work.~~ **Corrected 2026-09-20:** `/dash/v1` is mounted, conditionally —
+//! [`AppState::staff_login`] is `Some` only on a deployment configured for
+//! the staff surface (ADR-0022's `deployment.surfaces`), and a deployment
+//! that omits it gets the same honest 404 an unmounted route would, not a
+//! panic. See [`AppState::staff_login`]'s own doc comment and
+//! [`require_dashboard_token`]. Three integration suites exercise it against
+//! a real Postgres: `staff_sign_in.rs`, `dashboard_read_surface.rs` and
+//! `dashboard_procedure_transport.rs`. None of this runs on any live
+//! deployment yet — see `docs/status.md`.
 //!
 //! Since Step 5c there is a **third** surface, [`browser`]: two routes under
 //! `/v1/browser` that a payer's own page calls with a publishable key and the

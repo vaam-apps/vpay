@@ -7,7 +7,10 @@ contradicting a settled charge**. It also says how to read the gauge line the
 loop emits every 60 s.
 
 Every SQL statement below was run against a database with all 21 migrations
-applied. Nothing here is a `just` recipe, because there is none for the queue
+applied. _(Footnote added 2026-09-20: that count is the fixture's provenance,
+not a live figure — `ls backends/migrations/*.sql | wc -l` now returns 48.
+The statements below are unaffected; they only need the tables to exist.)_
+Nothing here is a `just` recipe, because there is none for the queue
 — the repository ships no operator CLI, and inventing one in a runbook would
 be worse than a `psql` prompt. In the local stack that prompt is:
 
@@ -20,7 +23,7 @@ docker compose exec postgres psql -U vpay -d vpay
 Each worker logs one line a minute, at `INFO`, with the message `job loop
 gauge` (`vpay_worker::run_loop::gauge_loop`):
 
-```
+```text
 worker_id=vpay-worker-7f4c/1/9e21ab7c claimed=412 finished=380 rescheduled=30
 dead_lettered=1 lost=0 queue_behind_seconds=4  "job loop gauge"
 ```
@@ -191,7 +194,7 @@ charge is live and nothing is polling it. Treat it as a dead-lettered job
 
 ### Alert
 
-```
+```text
 alert=true job_id=… charge_id=… charge_state=succeeded rail_answer=failed
 "the rail reports the opposite of this charge's settled state; vpay has not
 changed the charge — reconcile it against the rail's settlement statement"

@@ -873,13 +873,28 @@ integration reach staff-only state. See
 [ADR-0008](../adr/0008-dashboard-scope.md) and
 [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md).
 
-**Status: not implemented.** No `/dash/v1` route, no `/login`, no
+~~**Status: not implemented.** No `/dash/v1` route, no `/login`, no
 `/authorize`, no session store — `authkestra-engine` is pinned without its
 `sql-postgres` feature, so none is compiled in. The signing keys and the
 JWKS endpoint that landed on 2026-09-02 serve `/v1` and are not a step
 toward this surface being reachable; there is also an unresolved audience
-problem in the authorization-code grant that must be settled first. See
-[../flows/dashboard-auth.md](../flows/dashboard-auth.md).
+problem in the authorization-code grant that must be settled first.~~
+**Corrected 2026-09-20: built, mounted and tested.** `/dash/v1/staff`
+(sign-in, TOTP, PKCE token exchange — [ADR-0017](../adr/0017-staff-authentication.md))
+and the `/dash/v1` read surface behind `require_dashboard_token`
+(`backends/crates/vpay-api/src/lib.rs:1021`) both exist. Mounting is
+conditional, not unconditional: `AppState::staff_login` is `Some` only on a
+deployment configured for the staff surface (ADR-0022's
+`deployment.surfaces`), and a deployment that omits it gets the honest 404
+`require_dashboard_token` and `staff_login()` (`lib.rs:386-390`) both name,
+not a `500` claiming the router is broken. Three integration suites exercise
+it against a real Postgres: `staff_sign_in.rs`, `dashboard_read_surface.rs`
+and `dashboard_procedure_transport.rs`
+(`backends/tests/integration/tests/`). **Implemented and tested is not
+deployed**: per `docs/status.md`, no cluster has ever run vpay, so this
+surface does not run anywhere today. See
+[../flows/dashboard-auth.md](../flows/dashboard-auth.md) for the session
+model and [docs/status.md](../status.md) for the deployment picture.
 
 ## `/provider/{code}/callback` — rail callbacks
 

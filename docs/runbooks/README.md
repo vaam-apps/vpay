@@ -114,10 +114,12 @@ that page is evidence about MTN or Orange.
 - [restore-from-backup.md](restore-from-backup.md) is the newest with real
   evidence behind part of it: every SQL statement in it was executed on
   2026-09-03 against a scratch `postgres:16-alpine` with all 21 migrations
-  applied, including a negative control in which the ledger-balance check
-  found a deliberately torn transaction and then reported clean once it was
-  repaired. **Nothing about backups, PITR or the restore itself was
-  exercised — no backup of any vpay database has ever been taken.**
+  applied (48 now — a provenance statement about that run, not a live count,
+  _footnote added 2026-09-20_), including a negative control in which the
+  ledger-balance check found a deliberately torn transaction and then
+  reported clean once it was repaired. **Nothing about backups, PITR or the
+  restore itself was exercised — no backup of any vpay database has ever been
+  taken.**
 - [deploy-and-rollback.md](deploy-and-rollback.md),
   [rotate-signing-key.md](rotate-signing-key.md) and
   [rotate-rail-credentials.md](rotate-rail-credentials.md) are written from
@@ -126,7 +128,10 @@ that page is evidence about MTN or Orange.
   cluster**, because no cluster has ever run vpay.
 - [release.md](release.md): at the time it was written no tag had been pushed,
   `.github/workflows/release.yml` had never run, and no image existed to
-  verify a signature on. **Updated 2026-09-05: the workflow has since run 13
+  verify a signature on. ~~**Updated 2026-09-05: the workflow has since run 13
   times on `master`, 12 green, and the latest (`33929374661`) published and
-  cosign-signed all four images** — so only the _tag-cutting_ half of that
-  runbook is still unfollowed; see its header for the digests.
+  cosign-signed all four images**~~ — **corrected 2026-09-20:** both numbers
+  are stale now, which is what duplicating them here caused. Read
+  [release.md](release.md)'s own header for the current run count and image
+  count instead of a tally kept in sync nowhere. Only the _tag-cutting_ half
+  of that runbook is still unfollowed.

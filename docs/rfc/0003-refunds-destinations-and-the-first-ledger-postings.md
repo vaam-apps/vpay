@@ -14,9 +14,11 @@
 vpay cannot return money. Three separate gaps sit behind that one sentence, and
 they are usually collapsed into each other:
 
-1. **No route.** `POST /v1/refunds` is declared in
+1. ~~**No route.** `POST /v1/refunds` is declared in
    [docs/flows/merchant-auth/resource-contract.md](../flows/merchant-auth/resource-contract.md)
-   and mounted nowhere. Only `GET /v1/refunds/{id}` is served (issue #45).
+   and mounted nowhere. Only `GET /v1/refunds/{id}` is served (issue #45).~~
+   **Corrected 2026-09-20: closed.** See item 3 below — all five refund
+   routes are mounted since 2026-09-16 (§ 2).
 2. **No writer.** Nothing in this repository inserts a `refunds` row. One
    statement updates them — `refunds::settle_in_tx`, reached through
    `Settlement::apply_refund_succeeded` — and it can only ever act on a row an
@@ -67,7 +69,7 @@ must be agnostic in the core and specific only at the rail.
 **Wire shape**, mirroring the confirm path's existing
 `payment_method_data[<rail_code>][msisdn]` convention:
 
-```
+```text
 POST /v1/refunds
   payment_intent=pi_...
   amount=2000                          # omit for a full refund
