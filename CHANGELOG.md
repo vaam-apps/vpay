@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1](https://github.com/vaam-apps/vpay/compare/v0.3.0...v0.3.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **release:** publish-chart signs, refuses a stale version, and can resume ([#226](https://github.com/vaam-apps/vpay/issues/226)) ([8092c3d](https://github.com/vaam-apps/vpay/commit/8092c3d8f06acc21b2146d673dfb8bf84e6dc7c8))
+* **release:** the chart guard can resume a release stranded between push and sign ([8092c3d](https://github.com/vaam-apps/vpay/commit/8092c3d8f06acc21b2146d673dfb8bf84e6dc7c8))
+
+
+### Documentation
+
+* charts/vpay:0.2.1 was deleted, so stop warning readers away from it ([#229](https://github.com/vaam-apps/vpay/issues/229)) ([74123da](https://github.com/vaam-apps/vpay/commit/74123da018b2d34e4a276227e5db3301b6a6bb80))
+* **flows:** retire thirteen stale claims, most of them understating what exists ([#231](https://github.com/vaam-apps/vpay/issues/231)) ([7b3ebf9](https://github.com/vaam-apps/vpay/commit/7b3ebf93afd69572cf0455dcf7d4bfa00bed6a8a))
+* retire ten stale claims, two of which would have cost an operator time ([#230](https://github.com/vaam-apps/vpay/issues/230)) ([5ab9199](https://github.com/vaam-apps/vpay/commit/5ab9199f6374248994e6c47b63c463d87db0d2b0))
+* **status:** retire ten stale claims, and record implementation state on two ADRs ([#232](https://github.com/vaam-apps/vpay/issues/232)) ([a014463](https://github.com/vaam-apps/vpay/commit/a014463c5ca14247be3f5266a8119b7b8fb69f0f))
+* the chart publishes and signs — and AGENTS.md is prettier-clean again ([8ad5050](https://github.com/vaam-apps/vpay/commit/8ad5050563fb5522b3492ce77d4c536d8f2f43d5))
+* the chart publishes and signs, and AGENTS.md is prettier-clean again ([#228](https://github.com/vaam-apps/vpay/issues/228)) ([8ad5050](https://github.com/vaam-apps/vpay/commit/8ad5050563fb5522b3492ce77d4c536d8f2f43d5))
+
 ## [0.3.0](https://github.com/vaam-apps/vpay/compare/v0.2.2...v0.3.0) (2026-09-20)
 
 

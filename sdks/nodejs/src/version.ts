@@ -9,4 +9,4 @@
  * releases. A hand-written constant has no such landmine — it just needs to
  * be bumped alongside `package.json`'s own `version` field.
  */
-export const SDK_VERSION = "0.3.0"; // x-release-please-version
+export const SDK_VERSION = "0.3.1"; // x-release-please-version
