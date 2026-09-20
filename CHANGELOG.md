@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/vaam-apps/vpay/compare/v0.2.2...v0.3.0) (2026-09-20)
+
+
+### Features
+
+* **release:** let release-please own the chart version too ([#225](https://github.com/vaam-apps/vpay/issues/225)) ([f5492e5](https://github.com/vaam-apps/vpay/commit/f5492e56610dfe07c1adb55238290b1b7cf88b1f))
+
+
+### Bug Fixes
+
+* **release:** give the chart job the docker login cosign actually reads ([#223](https://github.com/vaam-apps/vpay/issues/223)) ([5230136](https://github.com/vaam-apps/vpay/commit/523013630d33a584ffa23acf26f905e040679838))
+
 ## [0.2.2](https://github.com/vaam-apps/vpay/compare/v0.2.1...v0.2.2) (2026-09-20)
 
 
