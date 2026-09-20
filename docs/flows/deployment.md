@@ -777,32 +777,50 @@ What does not exist, stated plainly:
   backup obligations and is **proposed** — no backup has ever been taken.
 - **Added 2026-09-19: `release.yml` gained a `publish-chart` job (§2a),
   pushing `deploy/helm/vpay` to `oci://ghcr.io/vaam-apps/charts/vpay` on a
-  `v*` tag. It ran for real on 2026-09-20 and half-worked.** ~~It has been
-  evaluated exactly once and did nothing, on purpose.~~ Tag `v0.2.2`, run
+  `v*` tag. Its first real execution, on 2026-09-20, half-worked; its
+  second, later the same day, worked end to end.** Tag `v0.2.2`, run
   `35491807158`: thirteen jobs green, `publish-chart` red. The chart **was
   pushed** — `charts/vpay:0.2.1` is in the registry and is **publicly
   pullable**, which an anonymous GHCR token confirms — and `cosign sign` then
   failed with `UNAUTHORIZED: unauthenticated`, because `helm registry login`
-  and cosign read different credential stores (§2a). So the registry holds a
-  chart that **nothing has signed**, and `cosign verify` still has never been
-  run against a chart manifest.
+  and cosign read different credential stores (§2a).
 
   That artifact is also **mislabelled**: it went up numbered `0.2.1` while
   `appVersion` was `0.2.2`, so it defaults `images.*.tag` to a release it is
-  not named for. **Nothing will repair it** — the resume path below keys on
+  not named for. **Nothing will repair it** — the resume path (§2a) keys on
   the version being released, and the next release is a later one. It stays
   published, unsigned and wrong until somebody deletes it.
   `deploy/helm/vpay/README.md` says so where a reader about to install would
   look.
 
-  Three fixes followed, all on 2026-09-20 and none of them yet executed: the
-  second registry login ([#223](https://github.com/vaam-apps/vpay/pull/223)),
-  release-please taking ownership of `Chart.yaml`'s `version:` so the
-  mislabelling cannot recur
+  Three fixes followed, all on 2026-09-20: the second registry login
+  ([#223](https://github.com/vaam-apps/vpay/pull/223)), release-please taking
+  ownership of `Chart.yaml`'s `version:` so the mislabelling cannot recur
   ([#225](https://github.com/vaam-apps/vpay/pull/225)), and the guard's
-  resume path (§2a), which is what makes a re-run able to finish a release
-  stranded between push and signature. **The next tag is their first
-  execution**, exactly as `v0.2.2` was the job's.
+  resume path (§2a). **The next tag, `v0.3.0` (run `35492982589`, `chore:
+release master`), was their first execution, and it succeeded**: all
+  fourteen jobs green, including `publish-chart` — the chart packaged,
+  pushed, and signed. `charts/vpay:0.2.1` is untouched by this and everything
+  said about it above stays true; `0.3.0` is a second, separate, correctly
+  labelled tag alongside it.
+
+  **Be precise about what `0.3.0` establishes and what it does not.** The
+  registry now holds a chart that has been signed — that part of the earlier
+  claim is false for `0.3.0`, though still true for `0.2.1`. But `cosign
+verify` still has never been run against a chart manifest, or against
+  anything else in this repository: it was attempted from an authoring
+  machine and could not reach sigstore's TUF CDN
+  (`tuf-repo-cdn.sigstore.dev`, `dial tcp: connect: connection refused`,
+  twice). So what is established is that `0.3.0`'s signature exists and
+  `cosign download signature` can find it, not that the Fulcio certificate
+  identity or the Rekor entry have been checked. **Also be precise about
+  what `v0.3.0` does not establish: it was a clean first-time publish — the
+  guard's "not found → push" branch — not a resume.** The resume branch
+  itself, the one that repairs a release stranded between push and
+  signature, has still never fired in a real run; checking the guard's
+  "published AND signed" branch against the real registry now that `0.3.0`
+  is signed does confirm it correctly reports a collision, but that is a
+  different branch from resume.
 
   No cluster has ever installed this chart, from a registry or any other way
   — that was already true above and stays true. See the Helm chart publishing

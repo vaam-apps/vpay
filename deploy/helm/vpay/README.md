@@ -97,27 +97,36 @@ replacement for the local-checkout path above — there is deliberately no
 `edge` chart, so between releases (any commit that has not been tagged) the
 local checkout is the only way to install this chart at all.
 
-**⛔ Do not install `charts/vpay:0.2.1`.** It is the only chart version
-published so far, and it is both mislabelled and unsigned: run `35491807158`
-(tag `v0.2.2`, 2026-09-20, `publish-chart`'s first real execution) pushed it
-while `Chart.yaml`'s `version:` still read `0.2.1` but `appVersion` had
-already moved to `0.2.2`, then failed at `cosign sign` with `UNAUTHORIZED:
-unauthenticated: User cannot be authenticated with the token provided` before
-it could sign the chart it had just pushed. It therefore defaults
-`images.*.tag` to a release it does not match, and carries no signature to
-catch that with. **Nothing will ever repair it in place** — the republish
-guard in release.md §8 keys on the chart version being released, and the next
-release is `0.2.3` or later, never `0.2.1` again — so it stays published,
-unsigned and wrong until somebody deletes it. See [Status](#status).
+**⛔ Do not install `charts/vpay:0.2.1`.** It is mislabelled and unsigned: run
+`35491807158` (tag `v0.2.2`, 2026-09-20, `publish-chart`'s first real
+execution) pushed it while `Chart.yaml`'s `version:` still read `0.2.1` but
+`appVersion` had already moved to `0.2.2`, then failed at `cosign sign` with
+`UNAUTHORIZED: unauthenticated: User cannot be authenticated with the token
+provided` before it could sign the chart it had just pushed. It therefore
+defaults `images.*.tag` to a release it does not match, and carries no
+signature to catch that with. **Nothing will ever repair it in place** — the
+republish guard in release.md §8 keys on the chart version being released, and
+the next release is `0.2.3` or later, never `0.2.1` again — so it stays
+published, unsigned and wrong until somebody deletes it.
+
+**`charts/vpay:0.3.0` is a different story: it is the first chart release
+that published and signed cleanly.** Run `35492982589` (tag `v0.3.0`,
+2026-09-20, `chore: release master`) succeeded end to end — all fourteen
+jobs green, including `publish-chart` — and `cosign download signature`
+against `0.3.0`'s digest finds a signature. Be precise about what that
+establishes: a signature exists and can be downloaded, not that anyone has
+run `cosign verify` against it and confirmed the certificate identity or the
+Rekor entry check out — see the note below the `cosign verify` example. See
+[Status](#status).
 
 ```bash
 # Chart version, not the app version and not the git tag: Chart.yaml's
 # `version:`. release-please owns this line (since #225), the same way it
 # already owned `appVersion:`, so the two move together with the tag by
-# construction — a real release never republishes 0.2.1. Put in the version a
-# release actually published, which `cosign verify` below confirms is signed;
-# nothing qualifies as of 2026-09-20.
-VERSION=<the version a real, signed release published>
+# construction — a real release never republishes 0.2.1. 0.3.0 is published
+# and a signature exists for it (run 35492982589), but `cosign verify` below
+# has never actually been run against it by anyone — see the note under it.
+VERSION=0.3.0
 
 helm show chart oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
 helm show values oci://ghcr.io/vaam-apps/charts/vpay --version "$VERSION"
@@ -146,9 +155,17 @@ cosign verify \
   "$IMAGE"
 ```
 
-Nothing published so far passes this — `0.2.1` is unsigned, and it is the
-only version that has ever been pushed. Read [Status](#status) before you
-rely on any of this.
+Nobody has actually run this command against a vpay chart and had it
+succeed. `0.2.1` is unsigned, so it would fail outright. `0.3.0` has a
+signature — `cosign sign` reported success in run `35492982589` and `cosign
+download signature` finds it — but `cosign verify` itself has never
+completed against it: it was attempted from an authoring machine and could
+not reach sigstore's TUF CDN (`tuf-repo-cdn.sigstore.dev`, `dial tcp:
+connect: connection refused`, twice). So what is established for `0.3.0` is
+that a signature exists and can be downloaded, not that the Fulcio
+certificate identity or the Rekor entry check out — this command is still
+written from Fulcio's documented identity format, not from a certificate
+anyone has read. Read [Status](#status) before you rely on any of this.
 
 A minimal real `my-values.yaml`:
 
@@ -975,23 +992,36 @@ authenticated with the token provided` — after the chart had already been
   `Chart.yaml`'s `version:` was `0.2.1` and `appVersion` had already moved to
   `0.2.2`, so it defaults `images.*.tag` to a release it does not match, and
   nothing will ever repair it — see [Install](#install).
-- **The push-then-sign guard could not resume, and that stranded the release.**
-  Before this branch it had three outcomes and stopped on "already
-  published," so a re-run of `v0.2.2` would have seen the chart that same run
-  had just pushed and refused before it could ever sign it — push-then-sign is
-  not atomic, and a guard that cannot tell "somebody already released this"
-  from "this job died halfway through releasing it" turns any signing failure
-  into a release the pipeline cannot finish. This branch gives it a fourth
-  outcome: published with no signature found now means resume (skip the push,
-  sign the existing digest) rather than fail. **This path has never run** —
-  nothing signed exists yet, so the "published AND signed" branch is untested
-  too. See [docs/runbooks/release.md](../../../docs/runbooks/release.md) §8.
+- **`publish-chart` has since executed its steps and succeeded (2026-09-20).**
+  Tag `v0.3.0`, run `35492982589` (`chore: release master`): all fourteen
+  jobs green, including `publish-chart` — the chart packaged, pushed, and
+  signed. This is the first end-to-end success of the chart path, and #223's
+  second registry login (below) is what made signing work this time.
+  `charts/vpay:0.2.1` is unchanged by this — still published, still
+  unsigned, still mislabelled; everything above about it stays true.
+- **The push-then-sign guard could not resume, and that stranded the
+  `v0.2.2` release.** Before this branch it had three outcomes and stopped on
+  "already published," so a re-run of `v0.2.2` would have seen the chart that
+  same run had just pushed and refused before it could ever sign it —
+  push-then-sign is not atomic, and a guard that cannot tell "somebody
+  already released this" from "this job died halfway through releasing it"
+  turns any signing failure into a release the pipeline cannot finish. This
+  branch gives it a fourth outcome: published with no signature found now
+  means resume (skip the push, sign the existing digest) rather than fail.
+  **The "published AND signed" branch is no longer untested** — checked
+  against the real registry now that `0.3.0` is signed, it correctly reports
+  a collision and refuses to re-push. **The resume branch itself — skip the
+  push, sign the digest already there — has still never run.** `v0.3.0` took
+  the "not found → push" branch: it was a clean first-time publish, not a
+  release stranded between push and sign, so nothing has yet exercised the
+  actual resume. See
+  [docs/runbooks/release.md](../../../docs/runbooks/release.md) §8.
 - Nobody has installed this chart from the registry, and no cluster has ever
   run one that was (that was already true of the local-checkout path too, and
   stays true either way).
 - GHCR package visibility for the chart is no longer unmeasured: see the
   first bullet above — the package is public, confirmed by an anonymous pull
-  against the one tag that has been pushed.
+  against the tags that have been pushed.
 
 ### Follow-ups
 

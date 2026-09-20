@@ -300,9 +300,12 @@ authenticated with the token provided` — a real, published, unsigned chart,
   which corrects the standing assumption below that a first push leaves a
   private package needing a human to flip a setting. §8 now describes the
   guard fix this failure prompted and what a maintainer should do about a run
-  stuck the same way; that fix has never run either. What remains true,
-  narrower than before: no `cosign verify` has been read against a real
-  signed chart, because none exists.
+  stuck the same way; **the resume branch that fix adds has still never
+  run** — the next tag, `v0.3.0` (run `35492982589`), published and signed
+  cleanly on its first attempt, so it took the guard's "not found → push"
+  branch, not a resume. What remains true, narrower than before: a signature
+  now exists on `0.3.0` and can be downloaded, but no `cosign verify` has
+  been read against it or any other vpay chart — see §8.
 
   _This bullet first said "for the same reason" as the retired no-tag bullet
   above, which was wrong twice over: tags do exist, and the actual reason was
@@ -522,9 +525,19 @@ and completes the release. It does not need a version bump or a new tag.
 authenticated with the token provided` after the push had already succeeded,
 leaving a real, published, unsigned `charts/vpay:0.2.1`. The three-outcome
 guard that existed then could not tell that apart from a real collision, and
-refused every re-run of that tag — see §6. The resume path above is the fix,
-and **it has never run**: nothing signed exists yet, so the "published AND
-signed" branch above is also untested.
+refused every re-run of that tag — see §6. The resume path above is the fix.
+
+**The next tag, `v0.3.0` (run `35492982589`, `chore: release master`),
+published and signed cleanly on its first attempt** — all fourteen jobs
+green, including `publish-chart`. That is the "not found → push" row of the
+table above, not a resume: `0.3.0` had never been published before, so there
+was nothing to resume from. It does mean the first row of the table —
+`published AND signed` → real collision → fail — is no longer untested:
+checked against the real registry now that a signed `0.3.0` exists, the
+guard correctly reports a collision and refuses to re-push. **What is still
+true is narrower: the resume row itself has never actually fired in a CI
+run.** Nothing has yet died between push and sign a second time for it to
+resume from.
 
 Past the guard, the job packages, pushes, and reads the digest back out of
 `helm push`'s own log — measured to print both its `Pushed:` and `Digest:`
@@ -556,15 +569,22 @@ cosign verify \
   "$IMAGE"
 ```
 
-**Do not put `0.2.1` in for `<VERSION>`.** It is the one chart version
-published so far, and it fails the command above: `cosign sign` never
-completed against it (§6), so `charts/vpay:0.2.1` is unsigned, and it is also
-mislabelled — pushed while `version:` still read `0.2.1` against an
-`appVersion` of `0.2.2`. Nothing will ever repair it in place; the republish
-guard above keys on the version being released, so it stays published,
-unsigned and wrong until somebody deletes it. Use whichever version you have
-confirmed both exists and passes `cosign verify` — nothing qualifies as of
-2026-09-20.
+**Do not put `0.2.1` in for `<VERSION>`.** It fails the command above:
+`cosign sign` never completed against it (§6), so `charts/vpay:0.2.1` is
+unsigned, and it is also mislabelled — pushed while `version:` still read
+`0.2.1` against an `appVersion` of `0.2.2`. Nothing will ever repair it in
+place; the republish guard above keys on the version being released, so it
+stays published, unsigned and wrong until somebody deletes it.
+
+**`0.3.0` is different: it is published and a signature exists for it** (run
+`35492982589`, 2026-09-20). But nobody has actually run the command above
+against it and had it succeed — it was attempted from an authoring machine
+and could not reach sigstore's TUF CDN (`tuf-repo-cdn.sigstore.dev`, `dial
+tcp: connect: connection refused`, twice). So `cosign download signature`
+finding a signature on `0.3.0` is established; the command above actually
+confirming the Fulcio certificate identity and the Rekor entry is not. Use
+whichever version you have personally run this command against and watched
+pass — that is still nobody's `0.3.0`, as of 2026-09-20.
 
 **Installing and pinning** follows §4's shape, with the chart's own version in
 place of an image's digest:
@@ -581,4 +601,6 @@ to read. `deploy/helm/vpay/README.md`'s Install section covers this path
 alongside the local-checkout one, including what to do between releases, when
 there is no chart tag to point at.
 
-**One real run exists, and it failed.** See §6.
+**Two real runs exist: the first failed, the second succeeded.** `v0.2.2`
+(run `35491807158`) pushed and then failed to sign; `v0.3.0` (run
+`35492982589`) published and signed cleanly. See §6.

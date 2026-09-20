@@ -447,7 +447,7 @@ annotated line now; see below for what the hand-bump cost.
 `v0.2.2` published a chart numbered **0.2.1** — `appVersion` moved and
 `version:` did not, because nothing bumped it and nobody remembered. The
 guard described below did not fire, because it only refuses a version that is
-*already published*, and 0.2.1 never had been. So the release was internally
+_already published_, and 0.2.1 never had been. So the release was internally
 consistent and still wrong. `version:` now carries
 `x-release-please-version`, `release.yml` asserts
 `version == appVersion == tag`, and `verify-versions` covers it like every
