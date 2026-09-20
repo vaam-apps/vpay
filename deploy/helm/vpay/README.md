@@ -97,17 +97,20 @@ replacement for the local-checkout path above — there is deliberately no
 `edge` chart, so between releases (any commit that has not been tagged) the
 local checkout is the only way to install this chart at all.
 
-**⛔ Do not install `charts/vpay:0.2.1`.** It is mislabelled and unsigned: run
+**`charts/vpay:0.2.1` was deleted from GHCR on 2026-09-20 — it was mislabelled
+and unsigned, and nothing would ever have repaired it in place.** Run
 `35491807158` (tag `v0.2.2`, 2026-09-20, `publish-chart`'s first real
 execution) pushed it while `Chart.yaml`'s `version:` still read `0.2.1` but
 `appVersion` had already moved to `0.2.2`, then failed at `cosign sign` with
 `UNAUTHORIZED: unauthenticated: User cannot be authenticated with the token
 provided` before it could sign the chart it had just pushed. It therefore
-defaults `images.*.tag` to a release it does not match, and carries no
-signature to catch that with. **Nothing will ever repair it in place** — the
-republish guard in release.md §8 keys on the chart version being released, and
-the next release is `0.2.3` or later, never `0.2.1` again — so it stays
-published, unsigned and wrong until somebody deletes it.
+defaulted `images.*.tag` to a release it did not match, and carried no
+signature to catch that with. The republish guard in release.md §8 keys on
+the chart version being released, and the next release is `0.2.3` or later,
+never `0.2.1` again — so it could never have been repaired by a re-run, and
+the maintainer deleted that package version outright rather than leave it
+published, unsigned and wrong. There is nothing at `charts/vpay:0.2.1` to
+install, pull, or warn against any more.
 
 **`charts/vpay:0.3.0` is a different story: it is the first chart release
 that published and signed cleanly.** Run `35492982589` (tag `v0.3.0`,
@@ -156,7 +159,9 @@ cosign verify \
 ```
 
 Nobody has actually run this command against a vpay chart and had it
-succeed. `0.2.1` is unsigned, so it would fail outright. `0.3.0` has a
+succeed. `0.2.1` was unsigned, and it would have failed outright — moot now,
+since that package version was deleted from GHCR on 2026-09-20 (see
+[Install](#install)). `0.3.0` is the only version left, and it has a
 signature — `cosign sign` reported success in run `35492982589` and `cosign
 download signature` finds it — but `cosign verify` itself has never
 completed against it: it was attempted from an authoring machine and could
@@ -983,22 +988,25 @@ helm-check` report that the guard "did not fire" and name it. See the
   thirteen other jobs went green and `publish-chart` went red, at
   `cosign sign`, with `UNAUTHORIZED: unauthenticated: User cannot be
 authenticated with the token provided` — after the chart had already been
-  pushed. Measured against the registry the same day: `ghcr.io/vaam-apps/charts/vpay`
-  carries exactly one tag, `0.2.1`; its `.sig` manifest answers HTTP 404
-  (unsigned); an anonymous manifest pull answers HTTP 200. **That last point
-  corrects the claim two bullets below used to make**, that the first push
-  creates a private package needing a human — it did not; the package is
-  public. `charts/vpay:0.2.1` is also mislabelled: it was published while
+  pushed. Measured against the registry that day: `ghcr.io/vaam-apps/charts/vpay`
+  carried exactly one tag, `0.2.1`; its `.sig` manifest answered HTTP 404
+  (unsigned); an anonymous manifest pull answered HTTP 200. **That last point
+  corrected the claim two bullets below used to make**, that the first push
+  creates a private package needing a human — it did not; the package was
+  public. `charts/vpay:0.2.1` was also mislabelled: it was published while
   `Chart.yaml`'s `version:` was `0.2.1` and `appVersion` had already moved to
-  `0.2.2`, so it defaults `images.*.tag` to a release it does not match, and
-  nothing will ever repair it — see [Install](#install).
+  `0.2.2`, so it defaulted `images.*.tag` to a release it did not match. The
+  republish guard could never have repaired it in place — see
+  [Install](#install) — so the maintainer deleted that package version from
+  GHCR outright on 2026-09-20, the same day.
 - **`publish-chart` has since executed its steps and succeeded (2026-09-20).**
   Tag `v0.3.0`, run `35492982589` (`chore: release master`): all fourteen
   jobs green, including `publish-chart` — the chart packaged, pushed, and
   signed. This is the first end-to-end success of the chart path, and #223's
   second registry login (below) is what made signing work this time.
-  `charts/vpay:0.2.1` is unchanged by this — still published, still
-  unsigned, still mislabelled; everything above about it stays true.
+  `charts/vpay:0.2.1` was deleted from GHCR later the same day, once `0.3.0`
+  had published and signed cleanly; `0.3.0` and its signature are the only
+  chart artifacts left in the registry.
 - **The push-then-sign guard could not resume, and that stranded the
   `v0.2.2` release.** Before this branch it had three outcomes and stopped on
   "already published," so a re-run of `v0.2.2` would have seen the chart that

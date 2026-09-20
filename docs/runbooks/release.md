@@ -305,7 +305,10 @@ authenticated with the token provided` — a real, published, unsigned chart,
   cleanly on its first attempt, so it took the guard's "not found → push"
   branch, not a resume. What remains true, narrower than before: a signature
   now exists on `0.3.0` and can be downloaded, but no `cosign verify` has
-  been read against it or any other vpay chart — see §8.
+  been read against it or any other vpay chart — see §8. `charts/vpay:0.2.1`
+  itself is gone: the maintainer deleted that package version from GHCR on
+  2026-09-20, the same day, once `0.3.0` had published and signed cleanly —
+  see §8's Install section for what is left in the registry now.
 
   _This bullet first said "for the same reason" as the retired no-tag bullet
   above, which was wrong twice over: tags do exist, and the actual reason was
@@ -569,22 +572,27 @@ cosign verify \
   "$IMAGE"
 ```
 
-**Do not put `0.2.1` in for `<VERSION>`.** It fails the command above:
-`cosign sign` never completed against it (§6), so `charts/vpay:0.2.1` is
-unsigned, and it is also mislabelled — pushed while `version:` still read
-`0.2.1` against an `appVersion` of `0.2.2`. Nothing will ever repair it in
-place; the republish guard above keys on the version being released, so it
-stays published, unsigned and wrong until somebody deletes it.
+**`charts/vpay:0.2.1` no longer exists, so there is nothing to put in for
+`<VERSION>` there.** It would have failed the command above anyway:
+`cosign sign` never completed against it (§6), so it was unsigned, and it was
+also mislabelled — pushed while `version:` still read `0.2.1` against an
+`appVersion` of `0.2.2`. The republish guard could never have repaired it in
+place — it keys on the version being released, and the next release is
+`0.2.3` or later, never `0.2.1` again — so rather than leave it published,
+unsigned and wrong, the maintainer deleted that package version from GHCR
+on 2026-09-20. Nothing is published at `0.2.1` to pull, sign, or warn
+against any more.
 
 **`0.3.0` is different: it is published and a signature exists for it** (run
-`35492982589`, 2026-09-20). But nobody has actually run the command above
-against it and had it succeed — it was attempted from an authoring machine
-and could not reach sigstore's TUF CDN (`tuf-repo-cdn.sigstore.dev`, `dial
-tcp: connect: connection refused`, twice). So `cosign download signature`
-finding a signature on `0.3.0` is established; the command above actually
-confirming the Fulcio certificate identity and the Rekor entry is not. Use
-whichever version you have personally run this command against and watched
-pass — that is still nobody's `0.3.0`, as of 2026-09-20.
+`35492982589`, 2026-09-20), and it is the only chart version left in the
+registry. But nobody has actually run the command above against it and had
+it succeed — it was attempted from an authoring machine and could not reach
+sigstore's TUF CDN (`tuf-repo-cdn.sigstore.dev`, `dial tcp: connect:
+connection refused`, twice). So `cosign download signature` finding a
+signature on `0.3.0` is established; the command above actually confirming
+the Fulcio certificate identity and the Rekor entry is not. Use whichever
+version you have personally run this command against and watched pass —
+that is still nobody's `0.3.0`, as of 2026-09-20.
 
 **Installing and pinning** follows §4's shape, with the chart's own version in
 place of an image's digest:

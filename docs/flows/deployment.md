@@ -780,18 +780,20 @@ What does not exist, stated plainly:
   `v*` tag. Its first real execution, on 2026-09-20, half-worked; its
   second, later the same day, worked end to end.** Tag `v0.2.2`, run
   `35491807158`: thirteen jobs green, `publish-chart` red. The chart **was
-  pushed** — `charts/vpay:0.2.1` is in the registry and is **publicly
-  pullable**, which an anonymous GHCR token confirms — and `cosign sign` then
+  pushed** — `charts/vpay:0.2.1` was in the registry and was **publicly
+  pullable**, which an anonymous GHCR token confirmed — and `cosign sign` then
   failed with `UNAUTHORIZED: unauthenticated`, because `helm registry login`
   and cosign read different credential stores (§2a).
 
-  That artifact is also **mislabelled**: it went up numbered `0.2.1` while
-  `appVersion` was `0.2.2`, so it defaults `images.*.tag` to a release it is
-  not named for. **Nothing will repair it** — the resume path (§2a) keys on
-  the version being released, and the next release is a later one. It stays
-  published, unsigned and wrong until somebody deletes it.
-  `deploy/helm/vpay/README.md` says so where a reader about to install would
-  look.
+  That artifact was also **mislabelled**: it went up numbered `0.2.1` while
+  `appVersion` was `0.2.2`, so it defaulted `images.*.tag` to a release it was
+  not named for. **Nothing would ever have repaired it in place** — the
+  resume path (§2a) keys on the version being released, and the next release
+  is a later one — so rather than leave it published, unsigned and wrong,
+  the maintainer deleted that package version from GHCR on 2026-09-20, the
+  same day `0.3.0` published cleanly. `charts/vpay:0.2.1` no longer exists;
+  there is nothing left to install by accident and nothing left to warn a
+  reader away from.
 
   Three fixes followed, all on 2026-09-20: the second registry login
   ([#223](https://github.com/vaam-apps/vpay/pull/223)), release-please taking
@@ -800,13 +802,11 @@ What does not exist, stated plainly:
   resume path (§2a). **The next tag, `v0.3.0` (run `35492982589`, `chore:
 release master`), was their first execution, and it succeeded**: all
   fourteen jobs green, including `publish-chart` — the chart packaged,
-  pushed, and signed. `charts/vpay:0.2.1` is untouched by this and everything
-  said about it above stays true; `0.3.0` is a second, separate, correctly
-  labelled tag alongside it.
+  pushed, and signed. `0.3.0` and its signature are the only chart artifacts
+  left in the registry now that `0.2.1` has been deleted.
 
   **Be precise about what `0.3.0` establishes and what it does not.** The
-  registry now holds a chart that has been signed — that part of the earlier
-  claim is false for `0.3.0`, though still true for `0.2.1`. But `cosign
+  registry now holds a chart that has been signed. But `cosign
 verify` still has never been run against a chart manifest, or against
   anything else in this repository: it was attempted from an authoring
   machine and could not reach sigstore's TUF CDN
