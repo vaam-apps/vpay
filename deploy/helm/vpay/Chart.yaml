@@ -15,8 +15,28 @@ name: vpay
 description: vpay payment gateway — API server and background worker
 type: application
 
-# Chart version. Bumped by hand; there is no release automation for the chart
-# itself yet (the container images are block A's `release.yml`, this is not).
+# Chart version. Owned by release-please since 2026-09-20, via the trailing
+# annotation comment on the `version:` line below — it was hand-bumped until
+# then, and the paragraphs below are the history of what that cost.
+#
+# Do not name that annotation token anywhere else in this file, including in
+# prose. `cargo xtask verify-versions` scans every line of an extra-file for
+# the literal string and expects a version to rewrite beside it, so a comment
+# that merely mentions it fails the gate. That is not hypothetical: the first
+# draft of this very paragraph did exactly that.
+#
+# Why it changed: at `v0.2.2` this line still read 0.2.1 while `appVersion`
+# moved to 0.2.2, because nothing bumped it and nobody remembered to. The
+# chart published as 0.2.1 and then failed to sign (a separate bug, #223), so
+# the release left a published, UNSIGNED chart whose number matched no
+# release. Chart version now tracks the release version exactly, and
+# `release.yml` asserts `version == appVersion == tag` rather than only
+# checking `appVersion`.
+#
+# The cost of that choice, stated plainly: the chart can no longer be released
+# independently of the application. A chart-only fix now waits for the next
+# app release, or gets one cut for it. That is the trade for never again
+# publishing a chart whose version is a number nobody chose.
 #
 # 0.1.0 -> 0.2.0 on 2026-09-07 (issue #77). A minor bump rather than a patch
 # because the rendered output changes and a values file can break: the worker
@@ -42,7 +62,7 @@ type: application
 # extension, and `.yaml` gets one that reparses and re-serialises the whole
 # document. Every entry is `{"type": "generic"}` now and `cargo xtask
 # verify-versions` refuses a bare string outright.
-version: 0.2.1
+version: 0.2.2 # x-release-please-version
 
 # The application version this chart was written against. It is NOT a pin:
 # `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and

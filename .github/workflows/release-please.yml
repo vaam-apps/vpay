@@ -39,11 +39,11 @@ name: release-please
 # ---------------------------------------------------------------------------
 # Deliberately NOT bumped
 # ---------------------------------------------------------------------------
-#   - `deploy/helm/vpay/Chart.yaml`'s `version:` (line 28, currently 0.2.0).
-#     That is the CHART's own version on its own lifecycle — its own comment
-#     says "Bumped by hand", and it is already ahead of the app because the
-#     rendered output changed at issue #77 without the app moving. Only
-#     `appVersion` tracks a release.
+#   (`deploy/helm/vpay/Chart.yaml`'s `version:` was on this list until
+#   2026-09-20, on the grounds that the chart had its own lifecycle. It does
+#   not any more: `v0.2.2` published a chart numbered 0.2.1 because nothing
+#   bumped it, so BOTH `version:` and `appVersion` now carry
+#   `x-release-please-version` and track the release.)
 #   - Every `0.0.0` private package (`frontends/**`, `examples/**`,
 #     `sdks/stripe-compat`). They are `private: true` and nothing consumes
 #     their version; the container images they become are tagged from the git

@@ -427,20 +427,34 @@ candidate versions found which didn't match: 0.2.0
 
 There are **fourteen** such pins: eleven in the root manifest, and three more in
 `vpay-api`, `vpay-worker` and `backends/tests/integration` that were found only
-by running `cargo metadata`, not by reading. All eighteen version lines this
+by running `cargo metadata`, not by reading. All nineteen version lines this
 repository owns carry an `x-release-please-version` comment, and
 `just verify-versions` (in `just ci`, via `verify`) fails if any is missing —
 including on a _new_ internal dependency, which is the realistic way this gets
 armed for the next person.
 
-Deliberately not bumped, each for a stated reason: `Chart.yaml`'s own
-`version:` (the chart's separate lifecycle — its comment says "bumped by hand",
-and it is already ahead of the app), every `0.0.0` private package, the Flutter
-plugin's podspec/gradle boilerplate (`0.0.1` / `1.0-SNAPSHOT`, never wired to
-`pubspec.yaml` and already inconsistent with each other), and the Flutter
-example's `pubspec.lock` (nothing enforces it; `flutter pub get` rewrites it).
+Deliberately not bumped, each for a stated reason: every `0.0.0` private
+package, the Flutter plugin's podspec/gradle boilerplate (`0.0.1` /
+`1.0-SNAPSHOT`, never wired to `pubspec.yaml` and already inconsistent with
+each other), and the Flutter example's `pubspec.lock` (nothing enforces it;
+`flutter pub get` rewrites it).
 
-**Added 2026-09-19: publishing the chart makes that hand-bump load-bearing.**
+`Chart.yaml`'s own `version:` **was** on that list — the chart had its own
+lifecycle and was hand-bumped — until 2026-09-20. It is the nineteenth
+annotated line now; see below for what the hand-bump cost.
+
+**Added 2026-09-19, superseded 2026-09-20: the hand-bump is gone.**
+`v0.2.2` published a chart numbered **0.2.1** — `appVersion` moved and
+`version:` did not, because nothing bumped it and nobody remembered. The
+guard described below did not fire, because it only refuses a version that is
+*already published*, and 0.2.1 never had been. So the release was internally
+consistent and still wrong. `version:` now carries
+`x-release-please-version`, `release.yml` asserts
+`version == appVersion == tag`, and `verify-versions` covers it like every
+other line. The cost, stated plainly: the chart can no longer be released
+independently of the application.
+
+The original entry, kept because the guard it describes is still there:
 `release.yml`'s `publish-chart` job pushes `deploy/helm/vpay` to
 `oci://ghcr.io/vaam-apps/charts/vpay`, and `helm push` derives the artifact's
 tag from `Chart.yaml`'s `version:` directly — there is no second name, and no

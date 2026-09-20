@@ -407,11 +407,12 @@ jobs:
   #     `docs/runbooks/release.md` §3's verification command works on the
   #     chart with only the reference changed.
   #
-  # What this job does NOT do: it does not bump `Chart.yaml`'s `version:`.
-  # That line is still hand-edited (AGENTS.md § Releasing says why, and
-  # `cargo xtask verify-versions` deliberately exempts it) — but publishing
-  # makes forgetting it fail the release instead of passing silently, which
-  # is what the "already published" guard below is for.
+  # `Chart.yaml`'s `version:` is bumped by release-please as of 2026-09-20
+  # (it carries `x-release-please-version`, like `appVersion`), so chart
+  # version, appVersion and tag are one number. Until then it was hand-edited
+  # and `v0.2.2` shipped a chart numbered 0.2.1 because nobody remembered.
+  # The "already published" guard below stays regardless: it is what stops a
+  # `helm push` silently overwriting a chart people already have.
   publish-chart:
     name: publish the Helm chart to GHCR (OCI)
     runs-on: ubuntu-latest
@@ -441,11 +442,16 @@ jobs:
       # both lines end in a comment and a pattern anchored to end-of-line
       # matches nothing while the job stays green.
       #
-      # `appVersion` must equal the tag — release-please owns that line
-      # (`release-please-config.json`'s `extra-files`), so it does by
-      # construction on a tag release-please cut, and this check is what
-      # catches a tag cut by hand. `version:` is NOT compared to the tag:
-      # the chart has its own lifecycle and is routinely a different number.
+      # BOTH must equal the tag. release-please owns both lines
+      # (`release-please-config.json`'s `extra-files`), so they do by
+      # construction on a tag it cut, and these checks are what catch a tag
+      # cut by hand — or an annotation that silently stopped being rewritten,
+      # which is exactly how this repository lost its Chart.yaml once.
+      #
+      # `version:` was deliberately NOT compared here until 2026-09-20, on
+      # the grounds that the chart had its own lifecycle. It no longer does:
+      # release-please bumps it, so a mismatch is now a defect rather than a
+      # legitimate difference.
       - id: chart
         name: read Chart.yaml, and refuse a tag its appVersion contradicts
         run: |
@@ -456,6 +462,7 @@ jobs:
           echo "tag=${TAG} chart-version=${VERSION} appVersion=${APP_VERSION}"
           [[ -n "$VERSION" ]] || { echo "::error::Chart.yaml has no readable 'version:' (blank means the sed pattern matched nothing)"; exit 1; }
           [[ "$APP_VERSION" == "$TAG" ]] || { echo "::error::Chart.yaml appVersion '${APP_VERSION}' is not tag v${TAG}; the chart would default images.*.tag to an image this release did not build"; exit 1; }
+          [[ "$VERSION" == "$TAG" ]] || { echo "::error::Chart.yaml version '${VERSION}' is not tag v${TAG}. release-please owns this line via x-release-please-version; a mismatch means the annotation was dropped or the tag was cut by hand. At v0.2.2 this published a chart numbered 0.2.1 and nothing caught it"; exit 1; }
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       # `ci.yml` does not run on tags (`push: { branches: [master] }`), so
@@ -503,7 +510,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The guard that makes the hand-bump load-bearing. `helm push` to an
+      # `helm push` to an
       # OCI registry overwrites an existing version **silently** — measured,
       # not assumed: pushing the same chart twice against a local `registry:2`
       # returned exit 0 both times with no warning. So a release whose
@@ -534,7 +541,7 @@ jobs:
         run: |
           set -euo pipefail
           if out="$(helm show chart "$CHART" --version "$VERSION" 2>&1)"; then
-            echo "::error::${CHART}:${VERSION} is already published. Bump 'version:' in deploy/helm/vpay/Chart.yaml — it is hand-edited on purpose (AGENTS.md § Releasing), and this release would otherwise overwrite a published chart in place."
+            echo "::error::${CHART}:${VERSION} is already published, and this release would otherwise overwrite a published chart in place. Since 2026-09-20 release-please bumps Chart.yaml's 'version:', so reaching this means either the tag is being re-run or that bump did not happen — check the annotation before bumping anything by hand."
             exit 1
           elif ! grep -q 'not found' <<< "$out"; then
             echo "::error::could not determine whether ${CHART}:${VERSION} is published — helm failed for a reason that is not 'not found', so this job will not push past it: ${out}"
