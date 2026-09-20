@@ -2401,7 +2401,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "merchant-demo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4774,7 +4774,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vpay-adapter-mtn-momo"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4789,7 +4789,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-adapter-orange-money"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4804,7 +4804,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-api"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4848,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-config"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "figment",
@@ -4866,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
@@ -4879,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-db"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4908,7 +4908,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-ledger"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "thiserror",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-provider"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "metrics",
@@ -4938,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-sdk"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "authkestra-op",
  "base64 0.22.1",
@@ -4963,7 +4963,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -4996,7 +4996,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-testkit"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde_json",
  "testcontainers",
@@ -5009,7 +5009,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-conformance"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rstest",
  "serde_json",
@@ -5027,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-integration"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5069,7 +5069,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-worker"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "axum",
  "hex",
@@ -5488,7 +5488,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "rand 0.8.7",
