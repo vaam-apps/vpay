@@ -482,6 +482,27 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: helm registry login "$REGISTRY" --username "$ACTOR" --password-stdin <<< "$GHCR_TOKEN"
 
+      # A SECOND login, to a different credential store, and both are needed.
+      # `helm registry login` above writes helm's own store
+      # (`HELM_REGISTRY_CONFIG`, default ~/.config/helm/registry/config.json);
+      # `cosign` does not read that file, it reads the docker config. So at
+      # v0.2.2 the chart pushed fine and the signature that follows it failed
+      # with `UNAUTHORIZED: unauthenticated: User cannot be authenticated with
+      # the token provided` against
+      # `POST /v2/vaam-apps/charts/vpay/blobs/uploads/` — a real, published,
+      # UNSIGNED chart. The `build` and `merge` jobs never hit this because
+      # they authenticate with `docker/login-action` and their `cosign sign`
+      # inherits it; this job was the only one using helm's login alone.
+      #
+      # Keep both rather than dropping the helm one: `helm push` reads
+      # HELM_REGISTRY_CONFIG, and whether it falls back to the docker config
+      # is version-dependent and not something a release path should rely on.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # The guard that makes the hand-bump load-bearing. `helm push` to an
       # OCI registry overwrites an existing version **silently** — measured,
       # not assumed: pushing the same chart twice against a local `registry:2`
