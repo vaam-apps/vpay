@@ -85,7 +85,7 @@ jobs:
       security-events: write
       contents: read
       actions: read
-    uses: vaam-apps/.github/.github/workflows/sast.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/sast.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
     with:
       codeql-languages: ${{ needs.changes.outputs.code == 'true' && '["rust","javascript-typescript","actions"]' || '[]' }}
       docs-globs: ${{ needs.changes.outputs.docs == 'true' && '**/*.md' || '' }}
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: read
       statuses: write
-    uses: vaam-apps/.github/.github/workflows/lint.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/lint.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
     with:
       filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$'
     secrets:
@@ -121,7 +121,7 @@ jobs:
     permissions:
       security-events: write
       contents: read
-    uses: vaam-apps/.github/.github/workflows/trivy.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/trivy.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
     with:
       scanners: "vuln,secret,misconfig"
       upload-sarif: true
