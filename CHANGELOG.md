@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/vaam-apps/vpay/compare/v0.4.0...v0.4.1) (2026-09-21)
+
+
+### Chores
+
+* **ci:** bump the vaam-apps/.github workflow pin to pick up the lint fix ([#235](https://github.com/vaam-apps/vpay/issues/235)) ([7134ecb](https://github.com/vaam-apps/vpay/commit/7134ecbbaa7466f78216dd94571fc0bd045ff9dd))
+
 ## [0.4.0](https://github.com/vaam-apps/vpay/compare/v0.3.1...v0.4.0) (2026-09-20)
 
 
